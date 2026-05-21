@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build / packaging artefacts
+build/
+dist/
+*.so
+*.pyd
+
+# Local dev / debug junk
+_probe/
+gui_debug.log
+*.log
+
+# Solve cache (per-project pickles keyed by SHA-1 of the .PrjPcb's path)
+.cache/
+
+# User-specific solution outputs and example designs (don't ship)
+*.pkl
+ExampleDesigns/*
+ExampleProjects/
+
+# ...except the Sandbox example design — ship only the Altium source files
+!ExampleDesigns/Sandbox/
+ExampleDesigns/Sandbox/*
+!ExampleDesigns/Sandbox/*.SchDoc
+!ExampleDesigns/Sandbox/*.SchLib
+!ExampleDesigns/Sandbox/*.PcbDoc
+!ExampleDesigns/Sandbox/*.PcbLib
+!ExampleDesigns/Sandbox/*.PrjPcb
+!ExampleDesigns/Sandbox/*.PrjPcbStructure
+# __Previews, History and Project Logs folders stay ignored via the Sandbox/* rule above
+
+# Editor metadata
+.vscode/
+.idea/
+*.swp
+
+# Override the parent repo's broad ignores: README screenshots are intentional
+!screenshots/
+!screenshots/*.png
