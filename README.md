@@ -1,4 +1,4 @@
-# FYPA — FEM Y-parameter Power Analyser
+# FYPA - FEM Y-parameter Power Analyser
 
 Power-Delivery-Network (PDN) analysis for Altium PCB designs. Extracts copper
 geometry directly from a `.PrjPcb` project, runs a 2-D FEM Laplace solver per
