@@ -186,6 +186,31 @@ def _triangle_icon(color: str, up: bool = True) -> QIcon:
     return QIcon(pm)
 
 
+def _square_icon(color: str) -> QIcon:
+    """A small filled-square :class:`QIcon` for the SERIES free-marker
+    button — the square glyph mirrors the SERIES directive marker (see
+    ``PdnViewer._ROLE_MARKER_STYLE``)."""
+    pm = QPixmap(20, 20)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setBrush(QColor(color))
+    p.setPen(QColor("#101010"))
+    p.drawRect(QRectF(4.0, 4.0, 12.0, 12.0))
+    p.end()
+    return QIcon(pm)
+
+
+def _role_marker_icon(role: str, color: str) -> QIcon:
+    """Free-marker toolbar icon for ``role`` — an up / down triangle for
+    SOURCE / SINK, a square for SERIES."""
+    if role == "SOURCE":
+        return _triangle_icon(color, up=True)
+    if role == "SINK":
+        return _triangle_icon(color, up=False)
+    return _square_icon(color)
+
+
 # FYPA branding assets — stacked above the H2 on the welcome window.
 # Both are pre-rendered PNGs because Qt's QSvgRenderer can't handle the
 # clipPaths in the master SVGs (the red/blue arrow triangles are
@@ -2057,6 +2082,14 @@ class _GradientBar(QWidget):
     _HANDLE_HALF_W: int = 6
     _N_TICKS: int = 5
 
+    # Engineering SI prefixes (powers of 1000), exponent → symbol. One
+    # prefix is picked per render from the data magnitude and folded into
+    # the axis title so the tick labels can stay plain numbers.
+    _SI_PREFIXES: dict[int, str] = {
+        -15: "f", -12: "p", -9: "n", -6: "µ", -3: "m",
+        0: "", 3: "k", 6: "M", 9: "G", 12: "T",
+    }
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         # Data bounds (the absolute extents the slider spans) and user-
@@ -2070,8 +2103,12 @@ class _GradientBar(QWidget):
         self._cmap_name: str = "viridis"
         self._cmap_gradient: QLinearGradient | None = None
         self._dragging: str | None = None  # 'low', 'high', or None
-        # Metric name + unit shown above the strip, e.g. "Voltage [V]".
-        self._title: str = ""
+        # Metric name + unit shown above the strip, e.g. "Voltage" / "V".
+        # Kept separate so an engineering SI prefix (chosen per render
+        # from the data range) can be folded into the unit at paint time
+        # — e.g. a ~1 mV axis renders its title as "Voltage [mV]".
+        self._label: str = ""
+        self._unit: str = ""
         # Log-spaced value axis. When True the handle ↔ value mapping is
         # logarithmic; the data range must be strictly positive for it to
         # take effect (callers floor it — see PdnViewer._render).
@@ -2084,8 +2121,14 @@ class _GradientBar(QWidget):
         self._rebuild_gradient()
 
     def setTitle(self, label: str, unit: str) -> None:
-        """Set the heading shown above the strip, e.g. ``Voltage [V]``."""
-        self._title = f"{label} [{unit}]" if unit else (label or "")
+        """Set the heading shown above the strip, e.g. ``Voltage`` / ``V``.
+
+        The unit gets an SI prefix folded in at paint time (see
+        :meth:`_display_title` / :meth:`_si_scale`), so the rendered
+        heading may read ``Voltage [mV]`` even though ``unit`` is ``V``.
+        """
+        self._label = label or ""
+        self._unit = unit or ""
         self.update()
 
     def setColormap(self, cmap_name: str) -> None:
@@ -2209,8 +2252,9 @@ class _GradientBar(QWidget):
         p.setBrush(Qt.NoBrush)
         p.drawRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5))
 
-        # Title ("Voltage [V]" etc.).
-        if self._title:
+        # Title ("Voltage [mV]" etc. — SI prefix folded in per render).
+        title = self._display_title()
+        if title:
             f = p.font()
             f.setPointSizeF(9.0)
             f.setBold(True)
@@ -2219,7 +2263,7 @@ class _GradientBar(QWidget):
             p.drawText(
                 QRectF(self._CHIP_PAD, self._CHIP_PAD,
                        self.width() - 2 * self._CHIP_PAD, self._TITLE_H),
-                Qt.AlignLeft | Qt.AlignVCenter, self._title,
+                Qt.AlignLeft | Qt.AlignVCenter, title,
             )
 
         # Gradient strip + border.
@@ -2259,9 +2303,11 @@ class _GradientBar(QWidget):
 
     def _draw_ticks(self, p: QPainter, strip: QRectF) -> None:
         """Draw ``_N_TICKS`` evenly-spaced tick marks under the strip,
-        each labelled with the data value at that position."""
-        log = self._log_ok()
-        decimals = self._tick_decimals()
+        each labelled with the data value at that position. Values are
+        divided by the axis SI prefix's divisor so the labels stay plain
+        numbers (the prefix lives in the title — see :meth:`_si_scale`)."""
+        divisor, _prefix = self._si_scale(self._data_min, self._data_max,
+                                          self._unit)
         f = p.font()
         f.setPointSizeF(8.0)
         f.setBold(False)
@@ -2273,11 +2319,10 @@ class _GradientBar(QWidget):
         for i in range(n):
             t = i / (n - 1)
             x = strip.left() + t * strip.width()
-            value = self._x_to_value(x)
+            value = self._x_to_value(x) / divisor
             p.setPen(self._TICK)
             p.drawLine(QPointF(x, mark_top), QPointF(x, mark_bot))
-            text = (f"{value:.3g}" if log
-                    else self._fmt_tick(value, decimals))
+            text = self._fmt_tick(value)
             # Keep the end labels inside the chip — left-align the first,
             # right-align the last, centre the rest.
             if i == 0:
@@ -2292,25 +2337,46 @@ class _GradientBar(QWidget):
             p.setPen(self._TEXT)
             p.drawText(box, align, text)
 
-    def _tick_decimals(self) -> int:
-        """Decimal places for the (linear) tick labels — enough to tell
-        adjacent ticks apart across the current data span."""
-        span = abs(self._data_max - self._data_min)
-        if span <= 0.0 or not math.isfinite(span):
-            return 2
-        step = span / max(self._N_TICKS - 1, 1)
-        if step <= 0.0:
-            return 2
-        return min(8, max(0, 1 - math.floor(math.log10(step))))
+    @classmethod
+    def _si_scale(cls, data_min: float, data_max: float,
+                  unit: str) -> tuple[float, str]:
+        """Pick one engineering SI prefix for the whole axis.
+
+        Returns ``(divisor, prefix_symbol)``: a tick value divided by
+        ``divisor`` prints as a plain number, and ``prefix_symbol`` is
+        prepended to the unit in the title (e.g. ``V`` → ``mV``). Falls
+        back to ``(1.0, "")`` when there is no unit or the data
+        magnitude is zero / non-finite.
+        """
+        mag = max(abs(data_min), abs(data_max))
+        if not unit or not math.isfinite(mag) or mag <= 0.0:
+            return 1.0, ""
+        exp = int(math.floor(math.log10(mag) / 3.0) * 3)
+        exp = max(min(cls._SI_PREFIXES), min(max(cls._SI_PREFIXES), exp))
+        return 10.0 ** exp, cls._SI_PREFIXES[exp]
+
+    def _display_title(self) -> str:
+        """Heading shown above the strip, with the active SI prefix
+        folded into the unit — e.g. ``Voltage [mV]``."""
+        if not self._unit:
+            return self._label
+        _divisor, prefix = self._si_scale(
+            self._data_min, self._data_max, self._unit)
+        return f"{self._label} [{prefix}{self._unit}]"
 
     @staticmethod
-    def _fmt_tick(value: float, decimals: int) -> str:
+    def _fmt_tick(value: float) -> str:
+        """Format an already-SI-scaled tick value as a plain number.
+
+        No scientific notation — the SI prefix in the axis title
+        carries the magnitude. ~3 significant figures, trailing zeros
+        stripped."""
         if not math.isfinite(value):
             return "—"
-        av = abs(value)
-        if av != 0.0 and (av < 1e-3 or av >= 1e5):
-            return f"{value:.2e}"
-        s = f"{value:.{decimals}f}"
+        if value == 0.0:
+            return "0"
+        digits = min(6, max(0, 2 - int(math.floor(math.log10(abs(value))))))
+        s = f"{value:.{digits}f}"
         if "." in s:
             s = s.rstrip("0").rstrip(".")
         return s or "0"
@@ -3919,6 +3985,21 @@ class PdnViewer(QMainWindow):
         # "drop a free marker of this role on the next viewport click" —
         # None, or "SOURCE" / "SINK".
         self._editor_pending_marker: str | None = None
+        # In-progress free-marker drag — a dict carrying the directive id,
+        # its layer, the drag-start anchor / net, and the last on-copper
+        # position; None when no drag is active. See _on_marker_drag_*.
+        self._marker_drag: dict | None = None
+        # Re-entrancy guard for the X / Y text-box on-copper check so the
+        # focus shuffle of the revert warning can't recurse.
+        self._suppress_coord_check: bool = False
+        # Undo / redo stacks dedicated to free-marker movement — each
+        # record is {"id", "old_xy", "new_xy", "old_p_net", "new_p_net"}.
+        self._marker_move_undo: list[dict] = []
+        self._marker_move_redo: list[dict] = []
+        # Cached non-editor marker groups, so a free-marker drag can do a
+        # marker-only refresh without re-walking every pin (see
+        # _refresh_editor_markers).
+        self._non_editor_marker_groups: list | None = None
         # Pending (unsolved) editor rails surfaced in the Rails list.
         self._pending_rails: dict[str, list[str]] = {}
         self._pending_rail_items: list = []
@@ -4692,6 +4773,14 @@ class PdnViewer(QMainWindow):
         self._gl_viewer.viewChanged.connect(self._on_gl_view_changed)
         self._gl_viewer.mouseHoveredAt.connect(self._on_gl_mouse_hovered)
         self._gl_viewer.clicked.connect(self._on_gl_clicked)
+        # Editor-mode free-marker dragging: the hit-test lets the viewer
+        # claim a press over a marker, and the editorDrag* signals drive
+        # the constrained move (see _on_marker_drag_*).
+        self._gl_viewer.set_editor_drag_hit_test(self._marker_drag_hit_test)
+        self._gl_viewer.editorDragStarted.connect(self._on_marker_drag_started)
+        self._gl_viewer.editorDragMoved.connect(self._on_marker_drag_moved)
+        self._gl_viewer.editorDragReleased.connect(
+            self._on_marker_drag_released)
 
         plot_layout.addWidget(self._gl_viewer, 1)
 
@@ -6738,10 +6827,15 @@ class PdnViewer(QMainWindow):
     # NOTE: keys match the role string produced by
     # altium_loader.build_solve_metadata() — that strips the trailing "Spec"
     # off the dataclass name and uppercases it (so ResistorSpec → RESISTOR).
+    # Keyed by the role string seen in the relevant context: solved
+    # directives carry the Spec class name (``RESISTOR`` for a SERIES
+    # element — see altium_loader), while editor directives carry the
+    # ``EDITOR_ROLES`` name (``SERIES``). Both keys map to the same style.
     _ROLE_MARKER_STYLE: dict[str, dict] = {
         "SOURCE":    {"symbol": "tri_up",   "color": "#ff3030", "size": 18, "label": "SOURCE"},
         "SINK":      {"symbol": "tri_down", "color": "#3aa8ff", "size": 16, "label": "SINK"},
         "RESISTOR":  {"symbol": "s",        "color": "#3aff8a", "size": 12, "label": "SERIES"},
+        "SERIES":    {"symbol": "s",        "color": "#3aff8a", "size": 12, "label": "SERIES"},
         "REGULATOR": {"symbol": "d",        "color": "#ff66ff", "size": 14, "label": "REGULATOR"},
     }
 
@@ -8546,44 +8640,65 @@ class PdnViewer(QMainWindow):
             # the per-bucket coloured marker batch below so the 2D view
             # shows the same heatmap the cylinders show in 3D.
             if not in_3d and not is_via_current:
-                via_pts: set[tuple[float, float]] = set()
+                # (x, y) -> diameter_mm: dedup across visible layers while
+                # keeping each via's physical diameter so the orange dot
+                # is sized to the real footprint. The GL viewer floors the
+                # drawn size at _VIA_MARKER_MIN_PX so vias stay visible
+                # when zoomed out.
+                via_pts: dict[tuple[float, float], float] = {}
                 for lid in target_layer_ids:
-                    vxs, vys = self._collect_via_positions(lid, rail_members)
-                    for vx, vy in zip(vxs, vys):
-                        via_pts.add((vx, vy))
+                    vxs, vys, vds = self._collect_via_positions(
+                        lid, rail_members)
+                    for vx, vy, vd in zip(vxs, vys, vds):
+                        via_pts[(vx, vy)] = vd
                 if via_pts:
-                    via_xs = np.fromiter((p[0] for p in via_pts), dtype=np.float64)
-                    via_ys = np.fromiter((p[1] for p in via_pts), dtype=np.float64)
+                    n_via = len(via_pts)
+                    via_xs = np.fromiter((p[0] for p in via_pts),
+                                         dtype=np.float64, count=n_via)
+                    via_ys = np.fromiter((p[1] for p in via_pts),
+                                         dtype=np.float64, count=n_via)
+                    via_ds = np.fromiter(via_pts.values(),
+                                         dtype=np.float64, count=n_via)
                     groups.append(MarkerGroup(
                         xs=via_xs,
                         ys=via_ys,
                         color="#ff8c00",
                         symbol="o",
-                        size=6,
+                        size=6,  # ignored when world_diameters_mm is set
                         edge_color="#000000",
                         edge_width=0.4,
+                        world_diameters_mm=via_ds,
+                        min_pixel_diameter=self._VIA_MARKER_MIN_PX,
                     ))
                     legend_rows.append(("VIA", "o", "#ff8c00"))
 
                 # PTH (plated through-hole) markers — same gating, light
                 # grey so they don't compete with the orange via dots.
                 # 3D path uses the cylinder batch instead.
-                pth_pts: set[tuple[float, float]] = set()
+                pth_pts: dict[tuple[float, float], float] = {}
                 for lid in target_layer_ids:
-                    pxs, pys = self._collect_pth_positions(lid, rail_members)
-                    for px, py in zip(pxs, pys):
-                        pth_pts.add((px, py))
+                    pxs, pys, pds = self._collect_pth_positions(
+                        lid, rail_members)
+                    for px, py, pd in zip(pxs, pys, pds):
+                        pth_pts[(px, py)] = pd
                 if pth_pts:
-                    pth_xs = np.fromiter((p[0] for p in pth_pts), dtype=np.float64)
-                    pth_ys = np.fromiter((p[1] for p in pth_pts), dtype=np.float64)
+                    n_pth = len(pth_pts)
+                    pth_xs = np.fromiter((p[0] for p in pth_pts),
+                                         dtype=np.float64, count=n_pth)
+                    pth_ys = np.fromiter((p[1] for p in pth_pts),
+                                         dtype=np.float64, count=n_pth)
+                    pth_ds = np.fromiter(pth_pts.values(),
+                                         dtype=np.float64, count=n_pth)
                     groups.append(MarkerGroup(
                         xs=pth_xs,
                         ys=pth_ys,
                         color=self._PTH_COLOR_HEX,
                         symbol="o",
-                        size=6,
+                        size=6,  # ignored when world_diameters_mm is set
                         edge_color="#000000",
                         edge_width=0.4,
+                        world_diameters_mm=pth_ds,
+                        min_pixel_diameter=self._VIA_MARKER_MIN_PX,
                     ))
                     legend_rows.append(("PTH", "o", self._PTH_COLOR_HEX))
 
@@ -8615,7 +8730,10 @@ class PdnViewer(QMainWindow):
             ))
 
         # Editor-mode directive markers (placed sources / sinks) — only
-        # populated while editor mode is active.
+        # populated while editor mode is active. The non-editor groups are
+        # cached so a free-marker drag can refresh just the markers via
+        # _refresh_editor_markers without re-walking every pin.
+        self._non_editor_marker_groups = list(groups)
         groups.extend(self._editor_marker_groups())
 
         self._gl_viewer.set_markers(groups)
@@ -8704,15 +8822,35 @@ class PdnViewer(QMainWindow):
             self._arrow_density_timer = timer
         timer.start(80)
 
+    def _via_marker_diameter_mm(self, entry: dict) -> float:
+        """Physical diameter (mm) used to size a via / PTH marker dot.
+
+        Drill diameter preferred — the same convention as the 3D via
+        cylinders (:meth:`_push_via_cylinders`) and the Via Current
+        overlay (the drill bore is the current-carrying barrel). Falls
+        back to the outer pad diameter, then to
+        :data:`_VIA_MARKER_FALLBACK_DIAM_MM` when neither is present."""
+        drill = float(entry.get("hole_diameter_mm") or 0.0)
+        if drill > 0.0:
+            return drill
+        outer = float(entry.get("diameter_mm") or 0.0)
+        if outer > 0.0:
+            return outer
+        return self._VIA_MARKER_FALLBACK_DIAM_MM
+
     def _collect_via_positions(self, target_layer_id: int | None,
                                rail_members: set[str],
-                               ) -> tuple[list[float], list[float]]:
+                               ) -> tuple[list[float], list[float],
+                                          list[float]]:
         """Vias whose span includes ``target_layer_id`` AND whose net is in
-        ``rail_members``. Returns parallel xs/ys lists for ``ax.scatter``."""
+        ``rail_members``. Returns parallel xs/ys lists plus each via's
+        physical diameter (mm) so the marker overlay can size the orange
+        dot to the real via footprint."""
         if target_layer_id is None or self.metadata is None:
-            return [], []
+            return [], [], []
         xs: list[float] = []
         ys: list[float] = []
+        diams: list[float] = []
         for v in self.metadata.get("vias", []):
             ls = v.get("layer_start")
             le = v.get("layer_end")
@@ -8725,20 +8863,23 @@ class PdnViewer(QMainWindow):
                 continue
             xs.append(v.get("x_mm", 0.0))
             ys.append(v.get("y_mm", 0.0))
-        return xs, ys
+            diams.append(self._via_marker_diameter_mm(v))
+        return xs, ys, diams
 
     def _collect_pth_positions(self, target_layer_id: int | None,
                                rail_members: set[str],
-                               ) -> tuple[list[float], list[float]]:
+                               ) -> tuple[list[float], list[float],
+                                          list[float]]:
         """Plated-through-hole pads whose span includes ``target_layer_id``
         AND whose net is in ``rail_members``. Mirrors
-        :meth:`_collect_via_positions`; PTHs span the full enabled stack so
-        every visible copper layer hits the same set of pads (the marker-
-        builder dedups across layers)."""
+        :meth:`_collect_via_positions` (xs/ys + physical diameter mm); PTHs
+        span the full enabled stack so every visible copper layer hits the
+        same set of pads (the marker-builder dedups across layers)."""
         if target_layer_id is None or self.metadata is None:
-            return [], []
+            return [], [], []
         xs: list[float] = []
         ys: list[float] = []
+        diams: list[float] = []
         for p in self.metadata.get("pths", []):
             ls = p.get("layer_start")
             le = p.get("layer_end")
@@ -8751,7 +8892,8 @@ class PdnViewer(QMainWindow):
                 continue
             xs.append(p.get("x_mm", 0.0))
             ys.append(p.get("y_mm", 0.0))
-        return xs, ys
+            diams.append(self._via_marker_diameter_mm(p))
+        return xs, ys, diams
 
     def _on_colormap_changed(self, cmap_name: str) -> None:
         """The colour-scale dropdown picked a new scheme. Recolour every
@@ -8942,6 +9084,10 @@ class PdnViewer(QMainWindow):
             ("Shift+H", self._hotkey_cycle_colormap_reverse),
             ("B", self._toggle_sidebar),
             ("E", self._hotkey_toggle_editor),
+            # Free-marker move undo / redo — no-ops outside editor mode.
+            ("Ctrl+Z", self._undo_marker_move),
+            ("Ctrl+Shift+Z", self._redo_marker_move),
+            ("Ctrl+Y", self._redo_marker_move),
         )
         # Hold references so the shortcuts don't get garbage-collected.
         self._hotkey_shortcuts = []
@@ -9088,19 +9234,21 @@ class PdnViewer(QMainWindow):
         self._editor_toggle_btn = btn
 
         # Free-marker palette — red up-triangle SOURCE / blue down-triangle
-        # SINK, matching the solved-directive markers (_ROLE_MARKER_STYLE).
-        # Hidden until editor mode is entered.
-        for role, attr, up, tip in (
-            ("SOURCE", "_editor_add_source_btn", True,
+        # SINK / green square SERIES, matching the solved-directive markers
+        # (_ROLE_MARKER_STYLE). Hidden until editor mode is entered.
+        for role, attr, tip in (
+            ("SOURCE", "_editor_add_source_btn",
              "Drop a free SOURCE — click, then click copper"),
-            ("SINK", "_editor_add_sink_btn", False,
+            ("SINK", "_editor_add_sink_btn",
              "Drop a free SINK — click, then click copper"),
+            ("SERIES", "_editor_add_series_btn",
+             "Drop a free SERIES element — click, then click copper"),
         ):
             style = self._ROLE_MARKER_STYLE[role]
             mbtn = QToolButton(self._gl_viewer)
             mbtn.setCheckable(True)
             mbtn.setCursor(Qt.PointingHandCursor)
-            mbtn.setIcon(_triangle_icon(style["color"], up=up))
+            mbtn.setIcon(_role_marker_icon(role, style["color"]))
             mbtn.setIconSize(QSize(18, 18))
             mbtn.setFixedSize(34, 34)
             mbtn.setToolTip(tip)
@@ -9144,7 +9292,8 @@ class PdnViewer(QMainWindow):
         btn.move(x, margin)
         btn.raise_()
         x += btn.width() + gap
-        for attr in ("_editor_add_source_btn", "_editor_add_sink_btn"):
+        for attr in ("_editor_add_source_btn", "_editor_add_sink_btn",
+                     "_editor_add_series_btn"):
             b = getattr(self, attr, None)
             if b is not None and not b.isHidden():
                 b.move(x, margin)
@@ -9201,12 +9350,14 @@ class PdnViewer(QMainWindow):
         if not self._editor_mode:
             self._editor_selection = None
             self._editor_pending_marker = None
+            self._marker_drag = None
             self._clear_editor_highlight()
         else:
             self._update_pending_rails()
-        # Source / sink free-marker buttons live in the viewport overlay
-        # and are visible only while editor mode is active.
-        for attr in ("_editor_add_source_btn", "_editor_add_sink_btn"):
+        # Source / sink / series free-marker buttons live in the viewport
+        # overlay and are visible only while editor mode is active.
+        for attr in ("_editor_add_source_btn", "_editor_add_sink_btn",
+                     "_editor_add_series_btn"):
             b = getattr(self, attr, None)
             if b is not None:
                 b.setVisible(self._editor_mode)
@@ -9221,8 +9372,8 @@ class PdnViewer(QMainWindow):
 
     _EDITOR_DEFAULT_HINT = (
         "Click a component or a copper region in the viewport to assign a "
-        "PDN role, or use the red / blue triangle buttons at the top-left "
-        "of the viewport to drop a free source / sink."
+        "PDN role, or use the triangle / square buttons at the top-left "
+        "of the viewport to drop a free source / sink / series element."
     )
 
     def _update_editor_panel(self) -> None:
@@ -9251,7 +9402,8 @@ class PdnViewer(QMainWindow):
         buttons' checked state."""
         pend = self._editor_pending_marker
         for role, attr in (("SOURCE", "_editor_add_source_btn"),
-                           ("SINK", "_editor_add_sink_btn")):
+                           ("SINK", "_editor_add_sink_btn"),
+                           ("SERIES", "_editor_add_series_btn")):
             b = getattr(self, attr, None)
             if b is not None and b.isChecked() != (pend == role):
                 b.setChecked(pend == role)
@@ -9330,15 +9482,39 @@ class PdnViewer(QMainWindow):
 
     def _connected_nets(self, net: str | None) -> set[str]:
         """Nets electrically connected to ``net`` — the net itself plus
-        anything bridged to it by a SERIES directive (via the rail-group
-        union-find). Same-net copper is connected by definition, including
-        across layers through vias."""
+        anything bridged to it by a SERIES directive. Same-net copper is
+        connected by definition, including across layers through vias.
+
+        Solved SERIES bridges are folded in via the rail-group union-find
+        (``_rail_to_members``); editor SERIES directives the user has
+        placed but not yet resolved are folded in here as well, so the
+        connectivity highlight spans them before a re-solve."""
         if not net:
             return set()
+        group: set[str] = {net}
         for members in self._rail_to_members.values():
             if net in members:
-                return set(members)
-        return {net}
+                group = set(members)
+                break
+        # Each editor SERIES directive shorts its P and N nets together.
+        # Iterate to closure so a chain of bridges resolves transitively.
+        bridges = [
+            (d.p_net, d.n_net)
+            for d in (self._project.editor_directives
+                      if self._project is not None else [])
+            if d.role == "SERIES" and d.p_net and d.n_net
+        ]
+        changed = True
+        while changed:
+            changed = False
+            for a, b in bridges:
+                if a in group and b not in group:
+                    group.add(b)
+                    changed = True
+                elif b in group and a not in group:
+                    group.add(a)
+                    changed = True
+        return group
 
     def _component_at(self, world_x: float, world_y: float) -> dict | None:
         """Metadata component record whose bounding box covers the point,
@@ -9813,6 +9989,55 @@ class PdnViewer(QMainWindow):
             sel["unlocked"] = True
             self._populate_editor_form()
 
+    def _build_free_marker_location(self, lay, directive) -> None:
+        """Location block for a selected free marker: the fixed layer plus
+        editable X / Y boxes and free-marker move undo / redo buttons. The
+        layer is shown read-only — a free marker's layer is fixed once it
+        has been placed."""
+        t = _T()
+        lay.addWidget(QLabel("Location"))
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+
+        layer_lbl = QLabel(_esc(directive.layer or "?"))
+        layer_lbl.setToolTip("A free marker's layer is fixed once placed.")
+        layer_lbl.setStyleSheet(f"color: {t['fg_muted']};")
+        form.addRow("Layer", layer_lbl)
+
+        ax, ay = directive.anchor_xy or (0.0, 0.0)
+        self._ef_loc_x = QLineEdit(f"{float(ax):.4f}")
+        self._ef_loc_x.setValidator(QDoubleValidator(-1e9, 1e9, 4))
+        self._ef_loc_x.setToolTip("X position (mm) — must stay on copper")
+        self._ef_loc_x.editingFinished.connect(
+            self._on_free_marker_coord_edited)
+        form.addRow("X (mm)", self._ef_loc_x)
+        self._ef_loc_y = QLineEdit(f"{float(ay):.4f}")
+        self._ef_loc_y.setValidator(QDoubleValidator(-1e9, 1e9, 4))
+        self._ef_loc_y.setToolTip("Y position (mm) — must stay on copper")
+        self._ef_loc_y.editingFinished.connect(
+            self._on_free_marker_coord_edited)
+        form.addRow("Y (mm)", self._ef_loc_y)
+        lay.addLayout(form)
+
+        hint = QLabel(
+            "Drag the marker, or edit X / Y — the location must stay on "
+            "copper of its layer, or it reverts.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {t['fg_muted']}; font-size: 8pt;")
+        lay.addWidget(hint)
+
+        moves = QHBoxLayout()
+        self._ef_undo_move = QPushButton("↶ Undo move")
+        self._ef_undo_move.setToolTip("Undo the last free-marker move")
+        self._ef_undo_move.clicked.connect(self._undo_marker_move)
+        self._ef_redo_move = QPushButton("↷ Redo move")
+        self._ef_redo_move.setToolTip("Redo the last undone free-marker move")
+        self._ef_redo_move.clicked.connect(self._redo_marker_move)
+        moves.addWidget(self._ef_undo_move)
+        moves.addWidget(self._ef_redo_move)
+        lay.addLayout(moves)
+        self._update_marker_undo_buttons()
+
     def _populate_editor_form(self) -> None:
         """(Re)build the PDN-role form for the current component / free
         selection. A plain copper selection has no form."""
@@ -9833,6 +10058,17 @@ class PdnViewer(QMainWindow):
             title = "<b>Free marker</b>"
         lay.addWidget(QLabel(title))
 
+        # Free markers are moveable — a fixed-layer label, editable X / Y
+        # boxes, and dedicated move undo / redo. Attributes are reset here
+        # so the rest of the form (and the drag path) never touches a
+        # QLineEdit left dangling by the _clear_layout above.
+        self._ef_loc_x = None
+        self._ef_loc_y = None
+        self._ef_undo_move = None
+        self._ef_redo_move = None
+        if sel["kind"] == "free" and existing is not None:
+            self._build_free_marker_location(lay, existing)
+
         # A component carrying PDN_* directives in the Altium schematic is
         # shown read-only with an Unlock button — until the user unlocks it
         # (or an editor override already exists), no editable form appears.
@@ -9848,7 +10084,7 @@ class PdnViewer(QMainWindow):
         form = QFormLayout()
         form.setContentsMargins(0, 0, 0, 0)
         self._ef_role = QComboBox()
-        self._ef_role.addItems(["SOURCE", "SINK"])
+        self._ef_role.addItems(["SOURCE", "SINK", "SERIES"])
         self._ef_role.currentTextChanged.connect(self._on_editor_role_changed)
         form.addRow("PDN role", self._ef_role)
         self._ef_value = QLineEdit()
@@ -9896,9 +10132,12 @@ class PdnViewer(QMainWindow):
         lay.addWidget(self._ef_status)
 
         if existing is not None:
-            role = existing.role if existing.role in ("SOURCE", "SINK") else "SINK"
+            role = (existing.role
+                    if existing.role in ("SOURCE", "SINK", "SERIES")
+                    else "SINK")
             self._ef_role.setCurrentText(role)
-            val = existing.current if role == "SINK" else existing.voltage
+            val = {"SINK": existing.current,
+                   "SERIES": existing.resistance}.get(role, existing.voltage)
             self._ef_value.setText("" if val is None else f"{val:g}")
             self._ef_single.setChecked(existing.single_net)
             self._ef_two.setChecked(not existing.single_net)
@@ -9943,13 +10182,22 @@ class PdnViewer(QMainWindow):
         self._update_editor_panel()
 
     def _on_editor_role_changed(self, role: str) -> None:
-        """Swap the value field between voltage (SOURCE) and current
-        (SINK)."""
+        """Swap the value field between voltage (SOURCE), current (SINK)
+        and resistance (SERIES). SERIES always bridges two nets, so its
+        current model is forced to two-net and the radios are locked."""
         if not hasattr(self, "_ef_value_label"):
             return
         self._ef_value_label.setText(
-            "Current (A)" if role == "SINK" else "Voltage (V)"
+            {"SINK": "Current (A)", "SERIES": "Resistance (Ω)"}.get(
+                role, "Voltage (V)")
         )
+        if hasattr(self, "_ef_two"):
+            is_series = role == "SERIES"
+            if is_series and not self._ef_two.isChecked():
+                self._ef_two.setChecked(True)
+            self._ef_single.setEnabled(not is_series)
+            self._ef_two.setEnabled(not is_series)
+            self._on_editor_model_changed()
 
     def _on_editor_model_changed(self, *_args) -> None:
         """Two-net shows both the 'P net' and 'N net' pickers; single-net
@@ -9971,21 +10219,36 @@ class PdnViewer(QMainWindow):
             return
         role = self._ef_role.currentText()
         txt = self._ef_value.text().strip()
+        quantity = {"SINK": "current", "SERIES": "resistance"}.get(
+            role, "voltage")
         try:
             value = float(txt)
         except ValueError:
             self._ef_status.setText(
                 f"<span style='color:{_T()['err']};'>Enter a numeric "
-                f"{'current' if role == 'SINK' else 'voltage'} value.</span>"
+                f"{quantity} value.</span>"
             )
             return
-        single = self._ef_single.isChecked()
+        if role == "SERIES" and value <= 0:
+            self._ef_status.setText(
+                f"<span style='color:{_T()['err']};'>SERIES resistance "
+                "must be greater than zero.</span>"
+            )
+            return
+        # SERIES always bridges two real nets — never single-net.
+        single = self._ef_single.isChecked() and role != "SERIES"
         p_net = self._ef_pnet.currentText() or None
         n_net = self._ef_nnet.currentText() if not single else None
         if not p_net:
             self._ef_status.setText(
                 f"<span style='color:{_T()['err']};'>"
                 "Pick a P net.</span>"
+            )
+            return
+        if role == "SERIES" and not n_net:
+            self._ef_status.setText(
+                f"<span style='color:{_T()['err']};'>Pick an N net — a "
+                "SERIES element bridges two nets.</span>"
             )
             return
 
@@ -9997,6 +10260,7 @@ class PdnViewer(QMainWindow):
         d.n_net = n_net
         d.voltage = value if role in ("SOURCE", "REGULATOR") else None
         d.current = value if role == "SINK" else None
+        d.resistance = value if role == "SERIES" else None
         if sel["kind"] == "component":
             d.kind = "component"
             d.designator = sel.get("designator")
@@ -10035,8 +10299,10 @@ class PdnViewer(QMainWindow):
         self._populate_editor_form()
 
     def _place_free_marker(self, world_x: float, world_y: float) -> None:
-        """Drop a free source / sink marker on the copper under the cursor
-        and open its form. No-op (with a hint) if the click missed copper."""
+        """Drop a free source / sink / series marker on the copper under the
+        cursor and open its form. No-op (with a hint) if the click missed
+        copper. A SERIES marker is created two-net with its N net still
+        unset — the form prompts for it before the directive can resolve."""
         from fypa.project_file import EditorDirective
         role = self._editor_pending_marker
         if role is None:
@@ -10051,9 +10317,11 @@ class PdnViewer(QMainWindow):
         layer_id = pick.get("layer_id")
         d = EditorDirective(
             kind="free", role=role, anchor_xy=(world_x, world_y),
-            layer=layer, layer_id=layer_id, single_net=True, p_net=net,
+            layer=layer, layer_id=layer_id,
+            single_net=(role != "SERIES"), p_net=net,
             voltage=(3.3 if role == "SOURCE" else None),
             current=(1.0 if role == "SINK" else None),
+            resistance=(0.01 if role == "SERIES" else None),
         )
         self._ensure_project().upsert_directive(d)
         self._editor_pending_marker = None
@@ -10063,6 +10331,302 @@ class PdnViewer(QMainWindow):
         self._update_pending_rails()
         self._populate_editor_form()
         self._render()
+
+    # --- Editor mode: free-marker move (drag + X/Y edit + undo) -------------
+
+    def _refresh_editor_markers(self) -> None:
+        """Marker-only viewport refresh — re-push the cached non-editor
+        marker groups plus freshly rebuilt editor-directive markers,
+        without rebuilding the FEM mesh. Used on every tick of a
+        free-marker drag so the move stays smooth."""
+        cached = self._non_editor_marker_groups
+        if cached is None:
+            self._render()
+            return
+        self._gl_viewer.set_markers(
+            list(cached) + self._editor_marker_groups())
+
+    def _free_marker_layer_id(self, directive) -> int | None:
+        """The Altium copper layer id a free marker is pinned to — its
+        stored ``layer_id``, else resolved from its physical layer name."""
+        if directive.layer_id is not None:
+            return directive.layer_id
+        if directive.layer:
+            return self._phys_name_to_layer_id.get(directive.layer)
+        return None
+
+    def _copper_on_layer_at(self, world_x: float, world_y: float,
+                            layer_id: int | None) -> dict | None:
+        """Netted copper of the given layer under the point, or ``None``.
+        Unlike :meth:`_copper_at_point` this never crosses to another
+        layer — a free marker's layer is fixed, so its move must stay on
+        it. Net-less copper is skipped so a moved marker always re-derives
+        a real net, exactly as placement requires."""
+        md = self.metadata
+        if not md or layer_id is None:
+            return None
+        pt = _sg.Point(world_x, world_y)
+        for rec in md.get("all_copper") or []:
+            if rec.get("layer_id") != layer_id or not rec.get("net"):
+                continue
+            for poly in rec.get("polygons", []):
+                prepped = self._copper_poly_prepared(poly)
+                if prepped is None:
+                    continue
+                try:
+                    if prepped.contains(pt):
+                        return {"net": rec.get("net"), "layer_id": layer_id}
+                except Exception:
+                    continue
+        return None
+
+    def _point_on_marker_layer(self, directive,
+                               world_x: float, world_y: float) -> bool:
+        """Whether ``(world_x, world_y)`` lands on copper of the free
+        marker's fixed layer. Falls back to 'any copper' only when the
+        marker's layer can't be determined."""
+        layer_id = self._free_marker_layer_id(directive)
+        if layer_id is None:
+            return self._copper_at_point(world_x, world_y) is not None
+        return self._copper_on_layer_at(world_x, world_y, layer_id) is not None
+
+    def _marker_drag_hit_test(self, world_x: float,
+                              world_y: float) -> bool:
+        """GL-viewer hook — True when a draggable free marker sits under
+        the point, so the viewer claims the press as a move gesture.
+        Disabled while a marker-drop is armed (that press places a new
+        marker instead)."""
+        if not self._editor_mode or self._editor_pending_marker is not None:
+            return False
+        return self._free_marker_at(world_x, world_y) is not None
+
+    def _on_marker_drag_started(self, world_x: float,
+                                world_y: float) -> None:
+        """Begin a free-marker drag — record the start anchor / net and
+        select the grabbed marker (a press with no drag still selects)."""
+        marker = self._free_marker_at(world_x, world_y)
+        if marker is None or marker.anchor_xy is None:
+            self._marker_drag = None
+            return
+        start = (float(marker.anchor_xy[0]), float(marker.anchor_xy[1]))
+        self._marker_drag = {
+            "id": marker.id,
+            "start_xy": start,
+            "start_p_net": marker.p_net,
+            "last_valid": start,
+        }
+        if (self._editor_selection or {}).get("id") != marker.id:
+            self._select_free_marker(marker)
+
+    def _on_marker_drag_moved(self, world_x: float,
+                              world_y: float) -> None:
+        """Track a free-marker drag — move the marker to the cursor while
+        it stays on copper of its layer, else hold it at the last valid
+        spot so it can't be dragged off copper."""
+        drag = self._marker_drag
+        if drag is None or self._project is None:
+            return
+        d = self._project.directive_by_id(drag["id"])
+        if d is None:
+            return
+        if self._point_on_marker_layer(d, world_x, world_y):
+            drag["last_valid"] = (float(world_x), float(world_y))
+        nx, ny = drag["last_valid"]
+        d.anchor_xy = (nx, ny)
+        # setText doesn't fire editingFinished, so the live readout costs
+        # nothing and keeps the on-copper check off the drag path.
+        self._sync_free_marker_coord_fields(nx, ny)
+        self._refresh_editor_markers()
+
+    def _on_marker_drag_released(self, world_x: float,
+                                 world_y: float) -> None:
+        """Finish a free-marker drag — commit the move (recording it for
+        undo) when it actually moved, else just leave it selected."""
+        drag = self._marker_drag
+        self._marker_drag = None
+        if drag is None or self._project is None:
+            return
+        d = self._project.directive_by_id(drag["id"])
+        if d is None:
+            return
+        new_xy = drag["last_valid"]
+        start_xy = drag["start_xy"]
+        if (abs(new_xy[0] - start_xy[0]) < 1e-9
+                and abs(new_xy[1] - start_xy[1]) < 1e-9):
+            d.anchor_xy = start_xy
+            self._populate_editor_form()
+            return
+        self._commit_marker_move(d, start_xy, drag["start_p_net"], new_xy)
+        self._populate_editor_form()
+
+    def _commit_marker_move(self, directive, old_xy, old_p_net,
+                            new_xy) -> None:
+        """Apply a committed free-marker move: update the anchor, re-derive
+        the net from the copper under the new spot (a free marker's net
+        follows its copper, mirroring placement), record it for undo, and
+        refresh the viewport. Does NOT rebuild the panel form — the caller
+        owns that, so it can defer it out of a text-box signal."""
+        directive.anchor_xy = (float(new_xy[0]), float(new_xy[1]))
+        pick = self._copper_on_layer_at(
+            new_xy[0], new_xy[1], self._free_marker_layer_id(directive))
+        if pick and pick.get("net"):
+            directive.p_net = pick["net"]
+        self._record_marker_move(directive.id, old_xy, new_xy,
+                                 old_p_net, directive.p_net)
+        self._mark_project_dirty()
+        self._update_pending_rails()
+        self._apply_editor_highlight(
+            self._connected_nets(directive.p_net)
+            if directive.p_net else set())
+
+    def _record_marker_move(self, marker_id, old_xy, new_xy,
+                            old_p_net, new_p_net) -> None:
+        """Push a free-marker move onto the undo stack; a fresh move
+        invalidates the redo stack."""
+        self._marker_move_undo.append({
+            "id": marker_id,
+            "old_xy": (float(old_xy[0]), float(old_xy[1])),
+            "new_xy": (float(new_xy[0]), float(new_xy[1])),
+            "old_p_net": old_p_net,
+            "new_p_net": new_p_net,
+        })
+        self._marker_move_redo.clear()
+        self._update_marker_undo_buttons()
+
+    def _undo_marker_move(self) -> None:
+        """Undo the most recent free-marker move — restore its previous
+        anchor + net. Dedicated to marker movement only."""
+        if not self._editor_mode or not self._marker_move_undo:
+            return
+        rec = self._marker_move_undo[-1]
+        d = (self._project.directive_by_id(rec["id"])
+             if self._project else None)
+        self._marker_move_undo.pop()
+        if d is None:   # marker was removed — drop the stale record
+            self._update_marker_undo_buttons()
+            return
+        d.anchor_xy = rec["old_xy"]
+        d.p_net = rec["old_p_net"]
+        self._marker_move_redo.append(rec)
+        self._after_marker_undo_redo(d)
+
+    def _redo_marker_move(self) -> None:
+        """Redo the most recently undone free-marker move."""
+        if not self._editor_mode or not self._marker_move_redo:
+            return
+        rec = self._marker_move_redo[-1]
+        d = (self._project.directive_by_id(rec["id"])
+             if self._project else None)
+        self._marker_move_redo.pop()
+        if d is None:
+            self._update_marker_undo_buttons()
+            return
+        d.anchor_xy = rec["new_xy"]
+        d.p_net = rec["new_p_net"]
+        self._marker_move_undo.append(rec)
+        self._after_marker_undo_redo(d)
+
+    def _after_marker_undo_redo(self, directive) -> None:
+        """Shared tail of undo / redo — reselect the marker and refresh
+        the viewport + panel."""
+        self._editor_selection = {"kind": "free", "id": directive.id}
+        self._mark_project_dirty()
+        self._update_pending_rails()
+        self._update_marker_undo_buttons()
+        self._apply_editor_highlight(
+            self._connected_nets(directive.p_net)
+            if directive.p_net else set())
+        self._populate_editor_form()
+
+    def _update_marker_undo_buttons(self) -> None:
+        """Enable / disable the panel's marker move undo / redo buttons to
+        match the stacks (no-op when the form isn't showing them)."""
+        btn = getattr(self, "_ef_undo_move", None)
+        if btn is not None:
+            try:
+                btn.setEnabled(bool(self._marker_move_undo))
+            except RuntimeError:
+                pass
+        btn = getattr(self, "_ef_redo_move", None)
+        if btn is not None:
+            try:
+                btn.setEnabled(bool(self._marker_move_redo))
+            except RuntimeError:
+                pass
+
+    def _sync_free_marker_coord_fields(self, x: float, y: float) -> None:
+        """Push ``(x, y)`` into the panel's X / Y text boxes without
+        firing the on-copper check (``setText`` raises no editingFinished)."""
+        for attr, val in (("_ef_loc_x", x), ("_ef_loc_y", y)):
+            box = getattr(self, attr, None)
+            if box is None:
+                continue
+            try:
+                box.setText(f"{val:.4f}")
+            except RuntimeError:
+                pass   # widget rebuilt out from under us — harmless
+
+    def _on_free_marker_coord_edited(self) -> None:
+        """Check an X / Y text-box edit once focus leaves the box: the new
+        location must sit on copper of the marker's fixed layer. If not,
+        warn the user and revert to the previous location."""
+        if self._suppress_coord_check:
+            return
+        sel = self._editor_selection
+        if not sel or sel.get("kind") != "free":
+            return
+        d = self._directive_for_selection()
+        if d is None or d.anchor_xy is None:
+            return
+        old_xy = (float(d.anchor_xy[0]), float(d.anchor_xy[1]))
+        try:
+            nx = float(self._ef_loc_x.text())
+            ny = float(self._ef_loc_y.text())
+        except (ValueError, RuntimeError):
+            self._sync_free_marker_coord_fields(*old_xy)
+            return
+        if abs(nx - old_xy[0]) < 1e-7 and abs(ny - old_xy[1]) < 1e-7:
+            return   # no real change
+        if not self._point_on_marker_layer(d, nx, ny):
+            self._suppress_coord_check = True
+            try:
+                QMessageBox.warning(
+                    self, "Location not on copper",
+                    f"({nx:g}, {ny:g}) mm is not on copper of layer "
+                    f"{d.layer or '?'}.\n\n"
+                    "The free marker location is being reverted back to "
+                    f"({old_xy[0]:g}, {old_xy[1]:g}) mm.",
+                )
+            finally:
+                self._suppress_coord_check = False
+            self._sync_free_marker_coord_fields(*old_xy)
+            return
+        self._commit_marker_move(d, old_xy, d.p_net, (nx, ny))
+        # Targeted refresh only — rebuilding the whole form here would
+        # delete the QLineEdit mid-signal and steal focus while the user
+        # is still tabbing between the X / Y boxes.
+        self._sync_free_marker_coord_fields(
+            float(d.anchor_xy[0]), float(d.anchor_xy[1]))
+        self._refresh_free_marker_net_combo()
+
+    def _refresh_free_marker_net_combo(self) -> None:
+        """Resync the form's net picker to the selected free marker's
+        current ``p_net`` — used after a move re-derived the net, so the
+        combo (and a subsequent Apply) reflect the copper it now sits on.
+        A no-op when the form isn't currently showing the picker."""
+        combo = getattr(self, "_ef_pnet", None)
+        d = self._directive_for_selection()
+        if combo is None or d is None:
+            return
+        try:
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItems(self._form_p_nets(self._editor_selection))
+            if d.p_net:
+                self._set_combo(combo, d.p_net)
+            combo.blockSignals(False)
+        except RuntimeError:
+            pass   # form rebuilt out from under us — harmless
 
     def _editor_marker_groups(self) -> list:
         """MarkerGroups for the placed editor directives — drawn only in

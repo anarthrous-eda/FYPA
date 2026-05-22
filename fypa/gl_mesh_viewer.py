@@ -129,6 +129,65 @@ void main() {
 }
 """
 
+# Thick-line shader for the layer / pad / stub outline batch. The vertex
+# stage just MVP-transforms (same inputs as the flat line shader); the
+# geometry stage widens each GL_LINES segment into a screen-space quad of
+# constant pixel width. glLineWidth past 1.0 is rejected on Core profile
+# drivers, so the width has to be real geometry — and doing it per-segment
+# in clip space keeps it a constant pixel width at any zoom.
+_THICK_LINE_VERTEX_SHADER_SRC = """
+#version 330 core
+layout(location = 0) in vec3 a_position;
+layout(location = 1) in vec3 a_color;
+uniform mat4 u_mvp;
+out vec3 v_color;
+void main() {
+    gl_Position = u_mvp * vec4(a_position, 1.0);
+    v_color = a_color;
+}
+"""
+
+_THICK_LINE_GEOMETRY_SHADER_SRC = """
+#version 330 core
+layout(lines) in;
+layout(triangle_strip, max_vertices = 4) out;
+in vec3 v_color[];
+out vec3 g_color;
+uniform vec2 u_viewport;   // render-target size in pixels
+uniform float u_half_px;   // half the desired line width, in pixels
+void main() {
+    vec4 c0 = gl_in[0].gl_Position;
+    vec4 c1 = gl_in[1].gl_Position;
+    // Segment direction in pixel space, so the width is isotropic on
+    // screen regardless of the viewport aspect ratio.
+    vec2 n0 = c0.xy / c0.w;
+    vec2 n1 = c1.xy / c1.w;
+    vec2 dir = (n1 - n0) * u_viewport;
+    float len = length(dir);
+    if (len < 1e-6) return;          // zero-length segment: emit nothing
+    dir /= len;
+    // Perpendicular, half-width pixels, converted back to an NDC offset.
+    vec2 off = vec2(-dir.y, dir.x) * u_half_px * 2.0 / u_viewport;
+    // Apply as a clip-space shift (offset * w keeps it constant in NDC).
+    vec4 e0 = vec4(off * c0.w, 0.0, 0.0);
+    vec4 e1 = vec4(off * c1.w, 0.0, 0.0);
+    gl_Position = c0 + e0; g_color = v_color[0]; EmitVertex();
+    gl_Position = c0 - e0; g_color = v_color[0]; EmitVertex();
+    gl_Position = c1 + e1; g_color = v_color[1]; EmitVertex();
+    gl_Position = c1 - e1; g_color = v_color[1]; EmitVertex();
+    EndPrimitive();
+}
+"""
+
+_THICK_LINE_FRAGMENT_SHADER_SRC = """
+#version 330 core
+in vec3 g_color;
+out vec4 frag_color;
+void main() {
+    frag_color = vec4(g_color, 1.0);
+}
+"""
+
 # Fullscreen-pass shader for the supersampling (SSAA) downsample. A single
 # clip-space-covering triangle is generated from gl_VertexID alone — no VBO
 # needed — and the fragment shader samples the resolved oversize colour
@@ -166,6 +225,14 @@ _EDITOR_BG_HEX = "#272735"
 # _EDITOR_MARKER_SELECT_SCALE) so the two selection cues read as one
 # consistent style.
 _EDITOR_SELECTION_BOX_PX = 3.6
+
+# Width (device px) of the layer / pad / stub outline overlay. glLineWidth
+# past 1.0 raises GL_INVALID_VALUE on Core profile drivers, so the width
+# is produced by the thick-line geometry shader, which expands each
+# GL_LINES segment into a screen-space quad of this constant pixel width —
+# uniform at every zoom (a world-space ribbon would turn finely
+# tessellated copper outlines spiky). Coder-tunable.
+_OUTLINE_WIDTH_PX = 2.0
 
 
 @dataclass
@@ -232,6 +299,14 @@ class GLMeshViewer(QOpenGLWidget):
     # press + release with the cursor moving < a few pixels). Useful for
     # "click empty space to clear a highlight" interactions.
     clicked = Signal(float, float)
+    # Editor-mode free-marker drag. A left press that the registered
+    # hit-test claims fires editorDragStarted; subsequent moves fire
+    # editorDragMoved; the release fires editorDragReleased. All carry
+    # the cursor's world-mm position. While a drag is active the widget
+    # neither pans nor emits ``clicked``.
+    editorDragStarted = Signal(float, float)
+    editorDragMoved = Signal(float, float)
+    editorDragReleased = Signal(float, float)
 
     # Maximum cursor movement (in screen pixels) between press and
     # release that still counts as a click rather than a drag. 4 px is
@@ -277,6 +352,13 @@ class GLMeshViewer(QOpenGLWidget):
         self._line_pos_vbo: QOpenGLBuffer | None = None
         self._line_col_vbo: QOpenGLBuffer | None = None
         self._line_u_mvp_loc: int = -1
+        # Thick-line program — the outline batch's geometry shader widens
+        # each GL_LINES segment to a constant pixel width (the _line_vao /
+        # VBOs above are reused; only the shader program differs).
+        self._thick_line_program: QOpenGLShaderProgram | None = None
+        self._thick_u_mvp_loc: int = -1
+        self._thick_u_viewport_loc: int = -1
+        self._thick_u_half_px_loc: int = -1
         # Via cylinder rendering (GL_TRIANGLES). Shares the line shader
         # (vec3 pos + vec3 colour, no LUT). Only drawn in 3D mode.
         self._cyl_vao: QOpenGLVertexArrayObject | None = None
@@ -331,8 +413,10 @@ class GLMeshViewer(QOpenGLWidget):
         # blending so dimmed copper (alpha < 1) shows the background through.
         self._pending_alpha: np.ndarray | None = None
         self._n_alpha: int = 0
-        # Outline (line) batch — packed (N, 2) positions + (N, 3) colours
-        # where vertices come in pairs (GL_LINES). N == 2 * num_segments.
+        # Outline batch — the layer / pad / stub outlines. Packed (N, 3)
+        # positions + (N, 3) colours, vertices in pairs (GL_LINES), so
+        # N == 2 * num_segments. The thick-line geometry shader widens
+        # each segment at draw time (see _draw_lines).
         self._n_line_vertices: int = 0
         self._pending_line_positions: np.ndarray | None = None
         self._pending_line_colors: np.ndarray | None = None
@@ -488,6 +572,14 @@ class GLMeshViewer(QOpenGLWidget):
         # (or a non-component) is selected.
         self._editor_selection_bbox: tuple[
             float, float, float, float] | None = None
+        # Free-marker drag: the host registers a pure hit-test callback
+        # (``world_x, world_y -> bool``); a left press over a marker is
+        # claimed as a drag gesture instead of a pan / click, and the
+        # editorDrag* signals report it back so the host can move the
+        # marker (constrained to copper) without rebuilding the mesh.
+        self._editor_drag_hit_test = None
+        self._editor_drag_active: bool = False
+        self._editor_cursor_state: str = "default"
         self._bg_normal = (self._bg_r, self._bg_g, self._bg_b)
         # Editor-mode clear colour, from the coder-tunable _EDITOR_BG_HEX.
         self._bg_editor = QColor(_EDITOR_BG_HEX).getRgbF()[:3]
@@ -711,6 +803,9 @@ class GLMeshViewer(QOpenGLWidget):
         in pairs (``GL_LINES``), so N == 2 * num_segments. A (N, 2)
         array is broadcast to z=0. ``colors`` is an (N, 3) float array
         of RGB triples in [0..1]. The two arrays must have matching N.
+
+        The segments are widened to a visible line at draw time by the
+        thick-line geometry shader (see :meth:`_draw_lines`).
         """
         pos2_or_3 = np.ascontiguousarray(positions, dtype=np.float32)
         if pos2_or_3.ndim != 2 or pos2_or_3.shape[1] not in (2, 3):
@@ -1186,7 +1281,32 @@ class GLMeshViewer(QOpenGLWidget):
         if on == self._editor_mode:
             return
         self._editor_mode = on
+        # Leaving editor mode cancels any in-progress free-marker drag.
+        if not on:
+            self._editor_drag_active = False
+        self._apply_editor_cursor("default")
         self.update()
+
+    def set_editor_drag_hit_test(self, hit_test) -> None:
+        """Register the host's free-marker hit-test — a callable
+        ``(world_x, world_y) -> bool`` that reports whether a draggable
+        free marker sits under the point. Pass ``None`` to disable
+        editor-mode marker dragging."""
+        self._editor_drag_hit_test = hit_test
+
+    def _apply_editor_cursor(self, state: str) -> None:
+        """Set the viewport cursor for editor-mode marker dragging —
+        ``"open"`` hovering a marker, ``"closed"`` while dragging one,
+        ``"default"`` otherwise. A no-op when unchanged."""
+        if state == self._editor_cursor_state:
+            return
+        self._editor_cursor_state = state
+        if state == "open":
+            self.setCursor(Qt.OpenHandCursor)
+        elif state == "closed":
+            self.setCursor(Qt.ClosedHandCursor)
+        else:
+            self.unsetCursor()
 
     def set_editor_selection_bbox(self, bbox) -> None:
         """Set (or clear, with ``None``) the component bounding box drawn
@@ -1406,6 +1526,27 @@ class GLMeshViewer(QOpenGLWidget):
         self._line_pos_vbo.create()
         self._line_col_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
         self._line_col_vbo.create()
+
+        # Thick-line program for the outline batch — a geometry shader
+        # widens each GL_LINES segment into a constant-pixel-width quad.
+        # Separate from the flat line program because a `layout(lines)`
+        # geometry shader only accepts line primitives, while the line
+        # program is also used for triangle batches (board outline, etc.).
+        thick_prog = QOpenGLShaderProgram()
+        thick_prog.addShaderFromSourceCode(QOpenGLShader.Vertex,
+                                           _THICK_LINE_VERTEX_SHADER_SRC)
+        thick_prog.addShaderFromSourceCode(QOpenGLShader.Geometry,
+                                           _THICK_LINE_GEOMETRY_SHADER_SRC)
+        thick_prog.addShaderFromSourceCode(QOpenGLShader.Fragment,
+                                           _THICK_LINE_FRAGMENT_SHADER_SRC)
+        if not thick_prog.link():
+            log = thick_prog.log()
+            raise RuntimeError(
+                f"GLMeshViewer: thick-line shader link failed: {log}")
+        self._thick_line_program = thick_prog
+        self._thick_u_mvp_loc = thick_prog.uniformLocation("u_mvp")
+        self._thick_u_viewport_loc = thick_prog.uniformLocation("u_viewport")
+        self._thick_u_half_px_loc = thick_prog.uniformLocation("u_half_px")
 
         # Via cylinder VAO/VBOs — share the line shader.
         self._cyl_vao = QOpenGLVertexArrayObject()
@@ -1916,10 +2057,34 @@ class GLMeshViewer(QOpenGLWidget):
         prog.release()
 
     def _draw_lines(self) -> None:
-        """Draw the outline batch as GL_LINES with per-vertex colour."""
-        prog = self._line_program
+        """Draw the layer / pad / stub outline batch as GL_LINES.
+
+        The thick-line program's geometry shader widens each segment into
+        a screen-space quad ``_OUTLINE_WIDTH_PX`` device px wide — a width
+        that stays constant in pixels at every zoom. glLineWidth past 1.0
+        raises GL_INVALID_VALUE on Core profile drivers, so the width has
+        to be built as geometry rather than set as line state."""
+        prog = self._thick_line_program
+        if prog is None:
+            return
         prog.bind()
-        prog.setUniformValue(self._line_u_mvp_loc, self._current_mvp())
+        prog.setUniformValue(self._thick_u_mvp_loc, self._current_mvp())
+        # u_half_px MUST be set with raw glUniform*: PySide6 mis-resolves
+        # the lone-scalar QOpenGLShaderProgram.setUniformValue overload to
+        # the int glUniform path, which is GL_INVALID_OPERATION on a float
+        # uniform (the vec2 and mat4 overloads resolve fine). u_viewport
+        # uses a raw call too, just to keep the two together. The program
+        # is bound, so the raw glUniform calls target it.
+        #
+        # u_viewport is the final on-screen size — NDC is resolution
+        # independent, so the offset yields _OUTLINE_WIDTH_PX final pixels
+        # whether the scene renders direct or into the supersample buffer.
+        dpr = self.devicePixelRatio()
+        GL.glUniform2f(self._thick_u_viewport_loc,
+                       float(max(1.0, self.width() * dpr)),
+                       float(max(1.0, self.height() * dpr)))
+        GL.glUniform1f(self._thick_u_half_px_loc,
+                       float(_OUTLINE_WIDTH_PX) * 0.5)
 
         self._line_vao.bind()
         self._line_pos_vbo.bind()
@@ -1931,9 +2096,6 @@ class GLMeshViewer(QOpenGLWidget):
         GL.glVertexAttribPointer(1, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
         self._line_col_vbo.release()
 
-        # Force a 1-pixel line; Core profile drivers vary on glLineWidth
-        # support past 1.0, but 1.0 is universally allowed.
-        GL.glLineWidth(1.0)
         GL.glDrawArrays(GL.GL_LINES, 0, self._n_line_vertices)
 
         GL.glDisableVertexAttribArray(0)
@@ -2434,6 +2596,24 @@ class GLMeshViewer(QOpenGLWidget):
 
     def mousePressEvent(self, ev) -> None:
         if ev.button() == Qt.LeftButton:
+            # Editor mode: a left press that lands on a draggable free
+            # marker becomes a marker drag rather than a pan / click.
+            if (self._editor_mode and self._view_mode == "2d"
+                    and self._editor_drag_hit_test is not None):
+                wx, wy = self.screen_to_world(ev.position().x(),
+                                              ev.position().y())
+                try:
+                    on_marker = bool(self._editor_drag_hit_test(wx, wy))
+                except Exception:
+                    on_marker = False
+                if on_marker:
+                    self._editor_drag_active = True
+                    self._press_origin = None
+                    self._is_panning = False
+                    self._apply_editor_cursor("closed")
+                    self.editorDragStarted.emit(wx, wy)
+                    ev.accept()
+                    return
             self._press_origin = QPointF(ev.position())
             self._press_center = (self._view_center_x, self._view_center_y)
             self._is_panning = False
@@ -2472,6 +2652,25 @@ class GLMeshViewer(QOpenGLWidget):
 
     def mouseMoveEvent(self, ev) -> None:
         pos = ev.position()
+        # Editor-mode free-marker drag — report the cursor world position
+        # to the host and skip every pan / hover code path below.
+        if self._editor_drag_active:
+            wx, wy = self.screen_to_world(pos.x(), pos.y())
+            self._last_hover_pixel = (float(pos.x()), float(pos.y()))
+            self.editorDragMoved.emit(wx, wy)
+            return
+        # Hover cursor: an open hand over a draggable free marker so the
+        # "moveable" affordance is discoverable.
+        if (self._editor_mode and self._view_mode == "2d"
+                and self._editor_drag_hit_test is not None
+                and self._press_origin is None
+                and self._right_press_origin is None):
+            hx, hy = self.screen_to_world(pos.x(), pos.y())
+            try:
+                over = bool(self._editor_drag_hit_test(hx, hy))
+            except Exception:
+                over = False
+            self._apply_editor_cursor("open" if over else "default")
         # Left-button drag is no longer wired to pan. We only track its
         # drag-distance so the click-clears-highlight handler can ignore
         # accidental movements.
@@ -2575,6 +2774,14 @@ class GLMeshViewer(QOpenGLWidget):
 
     def mouseReleaseEvent(self, ev) -> None:
         if ev.button() == Qt.LeftButton:
+            if self._editor_drag_active:
+                self._editor_drag_active = False
+                wx, wy = self.screen_to_world(ev.position().x(),
+                                              ev.position().y())
+                self._apply_editor_cursor("open")
+                self.editorDragReleased.emit(wx, wy)
+                ev.accept()
+                return
             was_panning = self._is_panning
             self._press_origin = None
             self._is_panning = False

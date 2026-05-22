@@ -49,7 +49,11 @@ class EditorDirective:
     single-net directive (the ``n`` terminal is an ideal 0 V return);
     ``False`` is a full two-net current-path loop using both ``p_net`` and
     ``n_net``. ``voltage`` is meaningful for SOURCE / REGULATOR, ``current``
-    for SINK; the unused one is ``None``.
+    for SINK, ``resistance`` for SERIES; the unused ones are ``None``.
+
+    A SERIES directive always bridges two real nets (a ferrite bead, sense
+    resistor, 0 Ω jumper, …), so it is inherently two-net — ``single_net``
+    is ``False`` and both ``p_net`` and ``n_net`` are required.
     """
 
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
@@ -64,6 +68,7 @@ class EditorDirective:
     n_net: str | None = None
     voltage: float | None = None
     current: float | None = None
+    resistance: float | None = None       # SERIES only, ohms
     # When set, this editor directive replaces (overrides) the Altium
     # schematic directive carrying this designator — the re-solve drops the
     # schematic one so they don't both stamp a lumped element. ``None`` for
@@ -93,6 +98,8 @@ class EditorDirective:
             n_net=d.get("n_net"),
             voltage=(None if d.get("voltage") is None else float(d["voltage"])),
             current=(None if d.get("current") is None else float(d["current"])),
+            resistance=(None if d.get("resistance") is None
+                        else float(d["resistance"])),
             overrides_designator=d.get("overrides_designator"),
         )
 

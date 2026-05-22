@@ -6,7 +6,8 @@ project file as :class:`~fypa.project_file.EditorDirective` records.
 
 Before a re-solve, :func:`apply_editor_directives` converts each editor
 directive into a real :class:`~fypa.altium_annotations.SourceSpec` /
-:class:`~fypa.altium_annotations.SinkSpec` and appends it to the loaded
+:class:`~fypa.altium_annotations.SinkSpec` / :class:`~fypa.altium_annotations.ResistorSpec`
+and appends it to the loaded
 project's :class:`~fypa.altium_annotations.AnnotationResult`. From there
 :func:`fypa.altium_loader.build_problem` treats it exactly like a schematic
 directive — it meshes the referenced nets and stamps the lumped element.
@@ -31,7 +32,7 @@ _EDITOR_SCHDOC = "(editor)"
 
 
 def apply_editor_directives(loaded, editor_directives) -> list[str]:
-    """Append synthetic SourceSpec / SinkSpec specs to
+    """Append synthetic SourceSpec / SinkSpec / ResistorSpec specs to
     ``loaded.annotations.directives`` — one per editor directive.
 
     ``loaded`` is a :class:`fypa.altium_loader.LoadedProject`; it is mutated
@@ -104,6 +105,16 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
                         bridged.append(nm.upper())
         for other in bridged[1:]:
             _uf_union(bridged[0], other)
+
+    # Editor SERIES directives bridge two nets as well — they aren't in
+    # ``loaded.annotations.directives`` yet (they get appended below), so
+    # union their P / N nets here, same reasoning as the schematic
+    # ResistorSpec loop above: a single-net SOURCE / SINK on either side of
+    # the bridge then shares one rail return group.
+    for _ed in editor_directives:
+        if (getattr(_ed, "role", "") or "").upper() == "SERIES" \
+                and _ed.p_net and _ed.n_net:
+            _uf_union(_ed.p_net.upper(), _ed.n_net.upper())
 
     _rail_return_group: dict[str, int] = {}
 
@@ -190,7 +201,7 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
     group_net: dict[int, str] = {}
     for ed in editor_directives:
         label = ed.designator or f"editor:{ed.id}"
-        if ed.role not in ("SOURCE", "SINK"):
+        if ed.role not in ("SOURCE", "SINK", "SERIES"):
             warnings.append(
                 f"{label}: role {ed.role!r} is not supported by the editor "
                 "re-solve; skipped."
@@ -212,8 +223,17 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
                 f"{label}: P net {ed.p_net!r} not found on the board; skipped."
             )
             continue
+        # SERIES always bridges two real nets; SOURCE / SINK honour the
+        # directive's single-net flag.
+        two_net = (not ed.single_net) or ed.role == "SERIES"
         n_term = None
-        if not ed.single_net:
+        if two_net:
+            if ed.role == "SERIES" and not ed.n_net:
+                warnings.append(
+                    f"{label}: SERIES needs both a P net and an N net; "
+                    "skipped."
+                )
+                continue
             n_term = _resolve_terminal(
                 ed.n_net, designator=ed.designator,
                 fallback_xy=fallback_xy, fallback_layer_id=fallback_lid,
@@ -227,7 +247,7 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
         # Single-net directives get their rail's own return group; two-net
         # directives carry a real N terminal and need none.
         return_group = (_return_group_for(ed.p_net)
-                        if ed.single_net and ed.p_net else None)
+                        if not two_net and ed.p_net else None)
         spec_designator = ed.designator or f"EDIT_{ed.id}"
 
         if ed.role == "SOURCE":
@@ -239,7 +259,7 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
                 voltage=float(ed.voltage), p=p_term, n=n_term,
                 channel_index=None, return_group=return_group,
             )
-        else:  # SINK
+        elif ed.role == "SINK":
             if ed.current is None:
                 warnings.append(f"{label}: SINK has no current; skipped.")
                 continue
@@ -247,6 +267,22 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
                 designator=spec_designator, schdoc_name=_EDITOR_SCHDOC,
                 current=float(ed.current), p=p_term, n=n_term,
                 channel_index=None, return_group=return_group,
+            )
+        else:  # SERIES — a lumped resistance bridging the two nets
+            if ed.resistance is None:
+                warnings.append(f"{label}: SERIES has no resistance; skipped.")
+                continue
+            if ed.resistance <= 0:
+                warnings.append(
+                    f"{label}: SERIES resistance must be positive, got "
+                    f"{ed.resistance}; skipped."
+                )
+                continue
+            # n_term is guaranteed non-None here: SERIES forces two_net and
+            # the missing-N-net case was caught above.
+            spec = ResistorSpec(
+                designator=spec_designator, schdoc_name=_EDITOR_SCHDOC,
+                resistance=float(ed.resistance), p=p_term, n=n_term,
             )
         loaded.annotations.directives.append(spec)
         applied += 1
