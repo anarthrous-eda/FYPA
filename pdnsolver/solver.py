@@ -110,6 +110,20 @@ _JACOBI_EPS_REL: float = 1e-10
 # MINRES fallback: relative tolerance and iteration ceiling.
 _MINRES_RTOL: float = 1e-10
 _MINRES_MAXITER: int = 5000
+# MINRES fallback wall-clock budget. A 1–2 M-variable symmetric-indefinite
+# system with only a Jacobi preconditioner can need thousands of iterations;
+# without a budget the solve looks frozen (no GUI feedback) and the user
+# cancels it. On timeout the best iterate so far is kept. Override via env
+# for very large boards.
+_MINRES_TIME_BUDGET_S: float = float(
+    os.environ.get("PDNSOLVER_MINRES_BUDGET_S", "180"),
+)
+# Log MINRES progress every N iterations so the GUI substage feed shows the
+# iterative solve advancing instead of appearing hung.
+_MINRES_PROGRESS_EVERY: int = 250
+# When every direct solve fails, report this many worst-residual rows — they
+# localise the near-floating copper region that drove the matrix singular.
+_SINGULAR_DIAG_ROWS: int = 12
 # Tikhonov ridge (last-resort regularisation): ``lambda = max(
 # _RIDGE_LAMBDA_FLOOR, _RIDGE_LAMBDA_REL·max|diag|)``.
 _RIDGE_LAMBDA_FLOOR: float = 1e-9
@@ -1729,103 +1743,216 @@ def compute_power_density(voltage: mesh.ZeroForm, conductivity: float) -> mesh.T
     return power_density
 
 
+class _MinresTimeout(Exception):
+    """Raised from the MINRES callback when its wall-clock budget is spent."""
+
+
+class _MinresProgress:
+    """MINRES ``callback``: keeps the latest iterate, logs progress to the
+    GUI substage feed, and raises :class:`_MinresTimeout` once the wall-clock
+    budget is exhausted — so a multi-million-variable iterative solve reports
+    progress instead of appearing frozen, and can never hang indefinitely."""
+
+    def __init__(self, label: str, budget_s: float) -> None:
+        self._label = label
+        self._budget_s = budget_s
+        self._t0 = time.monotonic()
+        self.iterations = 0
+        self.last_x: "np.ndarray | None" = None
+
+    def __call__(self, xk: np.ndarray) -> None:
+        self.iterations += 1
+        self.last_x = xk
+        elapsed = time.monotonic() - self._t0
+        if self.iterations % _MINRES_PROGRESS_EVERY == 0:
+            log.info(
+                "MINRES (%s) fallback: iteration %d, elapsed %.0fs.",
+                self._label, self.iterations, elapsed,
+            )
+        if elapsed > self._budget_s:
+            raise _MinresTimeout()
+
+
+def _pardiso_solve_sym(
+    L_csc: "scipy.sparse.csc_matrix", r: np.ndarray,
+) -> np.ndarray:
+    """Symmetric-indefinite PARDISO solve (mtype -2).
+
+    PARDISO factorises only the upper triangle here — markedly faster than
+    the unsymmetric factorisation. Two requirements: it must be given just
+    ``triu(L)`` (the full matrix crashes MKL), and the diagonal must be
+    structurally complete — the MNA Lagrange rows (ground node, voltage
+    sources) carry no diagonal entry, which PARDISO rejects as "input
+    inconsistent", so the diagonal is materialised (missing entries become
+    explicit zeros, numerically a no-op). A fresh solver instance is used so
+    its factorisation is freed straight after via ``free_memory()``.
+    """
+    M = scipy.sparse.triu(L_csc, format="csr")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # scipy setdiag notice
+        M.setdiag(M.diagonal())
+    solver = _pypardiso.PyPardisoSolver(mtype=-2)
+    try:
+        return solver.solve(M, r)
+    finally:
+        solver.free_memory()
+
+
+def _log_singular_diagnostic(
+    L_csc: "scipy.sparse.csc_matrix",
+    r: np.ndarray,
+    v: np.ndarray,
+    row_describer: "Callable[[int], str]",
+) -> None:
+    """Log the equations the failed direct solve left unsatisfied.
+
+    The rows with the largest ``|L·v - r|`` are where the factorisation's
+    small pivots landed — i.e. the variables spanning the matrix's
+    near-null-space. Mapped back through ``row_describer`` to a copper
+    (layer, net) slab and location, they localise the near-floating region
+    that drove the matrix near-singular.
+    """
+    try:
+        resid_vec = np.abs(np.asarray(L_csc @ v - r, dtype=DTYPE))
+        k = int(min(_SINGULAR_DIAG_ROWS, resid_vec.size))
+        if k <= 0:
+            return
+        worst = np.argpartition(resid_vec, -k)[-k:]
+        worst = worst[np.argsort(resid_vec[worst])[::-1]]
+        lines = [
+            f"      |L·v-r|={resid_vec[i]:.4g}  ->  {row_describer(int(i))}"
+            for i in worst
+        ]
+        log.warning(
+            "Worst-residual equations from the failed direct solve (these "
+            "localise the near-singular region — inspect this copper for a "
+            "missing or barely-connected return path):\n%s",
+            "\n".join(lines),
+        )
+    except Exception as e:  # diagnostic only — never break the solve
+        log.debug("Singular-region diagnostic failed: %s", e)
+
+
 def _solve_robust(
     L_csc: "scipy.sparse.csc_matrix",
     r: np.ndarray,
     symmetric: bool = False,
+    row_describer: "Callable[[int], str] | None" = None,
 ) -> tuple[np.ndarray, str, int, float]:
-    """Solve ``L_csc @ v = r`` with automatic fallback to MINRES when the
-    direct solve fails.
+    """Solve ``L_csc @ v = r`` with staged automatic fallback when the direct
+    solve fails.
 
-    Returns ``(v, method_used, iterations, residual_norm)`` where
-    ``method_used`` is one of ``"pardiso"`` (MKL PARDISO, when installed),
-    ``"superlu"`` (scipy's direct solver), ``"minres"`` (Jacobi-preconditioned)
-    or ``"minres+ridge"`` (Jacobi-preconditioned with Tikhonov regularisation
-    as a final fallback), ``iterations`` is the iteration count for iterative
-    methods (1 for direct), and ``residual_norm`` is ``||L·v - r||`` measured
-    against the original system — already needed here for the fallback check,
-    so it is handed back rather than recomputed by the caller.
+    Returns ``(v, method_used, iterations, residual_norm)``. ``method_used``
+    is the solver that produced ``v``: ``"pardiso-sym"`` / ``"pardiso"`` (MKL
+    PARDISO, symmetric-indefinite or unsymmetric), ``"superlu"`` (scipy's
+    direct solver), ``"minres"`` / ``"minres+ridge"`` (Jacobi-preconditioned
+    iterative, the latter with Tikhonov regularisation), or
+    ``"direct-best-effort"`` when nothing reaches tolerance and the least-bad
+    direct solve is handed back. ``iterations`` is the iteration count for
+    iterative methods (1 for direct), and ``residual_norm`` is ``||L·v - r||``
+    against the original system — already needed for the fallback check, so
+    it is handed back rather than recomputed by the caller.
 
     The MNA matrix assembled by this solver is **symmetric indefinite**:
     Laplacian + Resistor stamps contribute positive eigenvalues, and the
     VoltageSource and ground-constraint Lagrange rows contribute negative
-    ones. SuperLU usually handles this without issue — but pathological
-    topologies (small isolated meshes connected only by lumped elements,
-    heavily fragmented power nets, weakly-coupled mesh components) push
-    the matrix close to singular, at which point SuperLU silently returns
-    a solution with a huge residual. The Lagrange-multiplier rows
-    (ground_node_current, VoltageSource currents) are particularly
-    sensitive — they end up wildly wrong, which propagates to nonsensical
-    downstream voltages.
+    ones. A direct factorisation usually handles this without issue — but
+    pathological topologies (small isolated meshes connected only by lumped
+    elements, heavily fragmented power nets, weakly-coupled mesh components)
+    push the matrix near-singular, at which point the factorisation gets
+    small pivots and silently returns a solution with a huge residual. The
+    Lagrange-multiplier rows (ground_node_current, VoltageSource currents)
+    are particularly sensitive — they end up wildly wrong, propagating to
+    nonsensical downstream voltages.
 
-    Detection: after the direct solve, compute the relative residual
-    ``||L @ v - r|| / ||r||``. If it's larger than a tight tolerance, the
-    direct factorisation didn't actually converge — fall back to MINRES,
-    which is the standard iterative solver for symmetric indefinite
-    systems. Jacobi preconditioning (1/|diag|) cheaply improves the
-    condition number and is usually enough.
+    Detection at every stage is the same check: the residual ``||L·v - r||``
+    must fall below ``max(abs floor, rel_tol·||r||)``. Recovery is staged,
+    cheapest first — a near-singular matrix can defeat one factorisation's
+    pivoting but not another's, so a failed direct solve is retried with
+    progressively more robust pivoting before the (slow) iterative fallback:
+
+      1. PARDISO symmetric-indefinite (Bunch-Kaufman pivoting) — primary,
+         when the matrix is symmetric and PARDISO is installed.
+      2. PARDISO unsymmetric (full MKL pivoting) — stronger pivoting.
+      3. SuperLU (partial pivoting).
+      4. Jacobi-preconditioned MINRES, warm-started from the best direct
+         solve and bounded by a wall-clock budget.
+      5. MINRES with a Tikhonov ridge as a last resort.
+
+    Each direct retry costs a few seconds — cheap insurance against a
+    multi-minute MINRES run. The result returned is whichever candidate has
+    the smallest residual, so a fallback never returns a worse answer than
+    the direct solve it replaced. When ``row_describer`` is supplied and
+    every direct solve fails, the worst-residual rows are logged through it
+    to pinpoint the offending copper region.
     """
     r_norm = float(np.linalg.norm(r))
     # Tolerance: residual should be well below the RHS magnitude. 1e-6
-    # is conservative — a well-conditioned direct LU gives ~1e-12.
+    # is conservative — a well-conditioned direct solve gives ~1e-12.
     abs_tol = max(_DIRECT_SOLVE_ABS_TOL_FLOOR, _DIRECT_SOLVE_REL_TOL * r_norm)
 
-    # Primary direct solve: MKL PARDISO when available (multithreaded and
-    # markedly faster than SuperLU on large systems), else scipy's SuperLU.
-    # Either way the residual check below is the safety net — a bad solve
-    # falls through to MINRES regardless of which direct solver ran.
+    def _residual(vec: np.ndarray) -> float:
+        return float(np.linalg.norm(L_csc @ vec - r))
+
+    # --- Staged direct solve ---------------------------------------------
+    # Build the attempt list cheapest/fastest first. Symmetric matrices get
+    # the fast symmetric-indefinite PARDISO path as primary; the unsymmetric
+    # PARDISO factorisation (stronger, full pivoting) and SuperLU follow as
+    # progressively more robust retries. Each is checked by the same
+    # residual test; the first that passes wins.
+    attempts: list = []
     if _HAVE_PARDISO:
         _configure_mkl_threads()
-        try:
-            if symmetric:
-                # Real symmetric indefinite (mtype -2): PARDISO factorises
-                # only the upper triangle — markedly faster than the
-                # unsymmetric factorisation. Two requirements: it must be
-                # given just triu(L) (the full matrix crashes MKL), and the
-                # diagonal must be structurally complete — the MNA Lagrange
-                # rows (ground node, voltage sources) carry no diagonal
-                # entry, which PARDISO rejects as "input inconsistent", so
-                # the diagonal is materialised (missing entries become
-                # explicit zeros, numerically a no-op). A fresh solver
-                # instance is used so its factorisation is freed straight
-                # after via free_memory().
-                M = scipy.sparse.triu(L_csc, format="csr")
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")  # scipy setdiag notice
-                    M.setdiag(M.diagonal())
-                _sym = _pypardiso.PyPardisoSolver(mtype=-2)
-                try:
-                    v = _sym.solve(M, r)
-                finally:
-                    _sym.free_memory()
-                direct_method = "pardiso-sym"
-            else:
-                v = _pypardiso.spsolve(L_csc, r)
-                direct_method = "pardiso"
-        except Exception as e:
-            log.warning("PARDISO solve failed (%s) — falling back to SuperLU.", e)
-            v = scipy.sparse.linalg.spsolve(L_csc, r)
-            direct_method = "superlu"
-    else:
-        v = scipy.sparse.linalg.spsolve(L_csc, r)
-        direct_method = "superlu"
-    residual_norm = float(np.linalg.norm(L_csc @ v - r))
-    if residual_norm <= abs_tol:
-        log.debug(
-            "Direct solve (%s): residual=%.4g (≤ tol=%.4g, ||r||=%.4g) — good.",
-            direct_method, residual_norm, abs_tol, r_norm,
-        )
-        return v, direct_method, 1, residual_norm
+        if symmetric:
+            attempts.append(
+                ("pardiso-sym", lambda: _pardiso_solve_sym(L_csc, r)))
+        attempts.append(("pardiso", lambda: _pypardiso.spsolve(L_csc, r)))
+    attempts.append(
+        ("superlu", lambda: scipy.sparse.linalg.spsolve(L_csc, r)))
 
+    best_v: "np.ndarray | None" = None
+    best_res = math.inf
+    best_method = "none"
+    for label, run in attempts:
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")  # singular-matrix notices
+                v = run()
+        except Exception as e:
+            log.warning("Direct solve (%s) raised (%s) — trying next method.",
+                        label, e)
+            continue
+        residual_norm = _residual(v)
+        if residual_norm <= abs_tol:
+            log.debug(
+                "Direct solve (%s): residual=%.4g (<= tol=%.4g, ||r||=%.4g) "
+                "— good.", label, residual_norm, abs_tol, r_norm,
+            )
+            return v, label, 1, residual_norm
+        log.warning(
+            "Direct solve (%s) returned residual=%.4g (> tol=%.4g, "
+            "||r||=%.4g) — near-singular, trying a more robust method.",
+            label, residual_norm, abs_tol, r_norm,
+        )
+        if residual_norm < best_res:
+            best_v, best_res, best_method = v, residual_norm, label
+
+    # --- Every direct solve failed ---------------------------------------
     log.warning(
-        "Direct solve (%s) returned residual=%.4g (>> tol=%.4g, ||r||=%.4g). "
-        "The matrix is near-singular — the factorisation has small pivots "
-        "and the solution doesn't satisfy L·v=r. Falling back to MINRES "
-        "with Jacobi preconditioning. This is usually triggered by small "
-        "isolated meshes connected only via lumped elements, or by heavily "
-        "fragmented power nets. See KNOWN_ISSUES.md.",
-        direct_method, residual_norm, abs_tol, r_norm,
+        "All direct solves failed (best was %s, residual=%.4g >> tol=%.4g, "
+        "||r||=%.4g). The matrix is near-singular — the factorisation has "
+        "small pivots and the solution doesn't satisfy L·v=r. This is "
+        "usually caused by a near-floating copper region: an isolated mesh "
+        "connected only via lumped elements, or a fragmented power net with "
+        "a barely-there return path. Note the matrix depends only on the "
+        "board topology, not on the source/sink values — editing those "
+        "changes which RHS directions expose the singularity, not the "
+        "singularity itself. Falling back to MINRES with Jacobi "
+        "preconditioning. See KNOWN_ISSUES.md.",
+        best_method, best_res, abs_tol, r_norm,
     )
+    if row_describer is not None and best_v is not None:
+        _log_singular_diagnostic(L_csc, r, best_v, row_describer)
 
     # Jacobi preconditioner: M⁻¹ ≈ diag(1/|L_ii|). Cheap and effective for
     # symmetric matrices with widely-varying diagonal entries (our case —
@@ -1837,26 +1964,40 @@ def _solve_robust(
               _JACOBI_EPS_REL * float(diag_abs.max()) if diag_abs.size
               else _JACOBI_EPS_FLOOR)
     inv_diag = 1.0 / np.where(diag_abs > eps, diag_abs, eps)
-    M = scipy.sparse.diags(inv_diag, format="csc")
+    M_precond = scipy.sparse.diags(inv_diag, format="csc")
 
-    # MINRES tolerance: scipy's default is 1e-5 (rtol). Tighten to 1e-10
-    # since we're already in the fallback path because the direct solve
-    # failed — convergence speed matters less than accuracy here.
-    # maxiter: cap at a reasonable bound. For a 400K matrix, well-
-    # preconditioned MINRES typically converges in a few hundred
-    # iterations. 5000 is a generous ceiling that catches genuine
-    # non-convergence without burning hours.
-    v, info = scipy.sparse.linalg.minres(
-        L_csc, r, rtol=_MINRES_RTOL, maxiter=_MINRES_MAXITER, M=M,
-    )
-    residual_norm = float(np.linalg.norm(L_csc @ v - r))
+    # Warm-start MINRES from the best direct solve. Even a failed direct
+    # solve is usually correct across most of the system — only the
+    # near-null-space components are wrong — so it is a far better x0 than
+    # zero and cuts the iteration count substantially.
+    x0 = best_v
+
+    # MINRES tolerance: scipy's default is 1e-5 (rtol). Tightened to 1e-10
+    # since we're already in the fallback path. maxiter is a hard ceiling;
+    # the wall-clock budget enforced by the callback is the practical bound
+    # — without it a multi-million-variable solve appears to hang.
+    progress = _MinresProgress("Jacobi", _MINRES_TIME_BUDGET_S)
+    try:
+        v, info = scipy.sparse.linalg.minres(
+            L_csc, r, x0=x0, rtol=_MINRES_RTOL, maxiter=_MINRES_MAXITER,
+            M=M_precond, callback=progress,
+        )
+    except _MinresTimeout:
+        v = progress.last_x if progress.last_x is not None else (
+            x0 if x0 is not None else np.zeros_like(r))
+        info = -1
+        log.warning(
+            "MINRES hit its %.0fs wall-clock budget after %d iterations — "
+            "keeping the best iterate so far and trying ridge regularisation.",
+            _MINRES_TIME_BUDGET_S, progress.iterations,
+        )
+    residual_norm = _residual(v)
     if info == 0 and residual_norm <= abs_tol:
         log.info(
-            "MINRES converged: residual=%.4g (≤ tol=%.4g).",
-            residual_norm, abs_tol,
+            "MINRES converged: residual=%.4g (<= tol=%.4g) in %d iterations.",
+            residual_norm, abs_tol, progress.iterations,
         )
-        # scipy.minres doesn't expose iteration count
-        return v, "minres", 0, residual_norm
+        return v, "minres", progress.iterations, residual_norm
 
     log.warning(
         "MINRES did not converge cleanly: info=%d, residual=%.4g "
@@ -1874,15 +2015,41 @@ def _solve_robust(
               else _RIDGE_LAMBDA_FLOOR)
     L_ridge = L_csc + lam * scipy.sparse.identity(L_csc.shape[0], format="csc",
                                                   dtype=DTYPE)
-    v, info = scipy.sparse.linalg.minres(
-        L_ridge, r, rtol=_MINRES_RTOL, maxiter=_MINRES_MAXITER, M=M,
+    progress = _MinresProgress("ridge", _MINRES_TIME_BUDGET_S)
+    try:
+        v_ridge, info = scipy.sparse.linalg.minres(
+            L_ridge, r, x0=(v if v is not None else x0), rtol=_MINRES_RTOL,
+            maxiter=_MINRES_MAXITER, M=M_precond, callback=progress,
+        )
+    except _MinresTimeout:
+        v_ridge = progress.last_x if progress.last_x is not None else v
+        info = -1
+        log.warning(
+            "MINRES+ridge hit its %.0fs budget after %d iterations.",
+            _MINRES_TIME_BUDGET_S, progress.iterations,
+        )
+    ridge_res = _residual(v_ridge)
+
+    # Return whichever candidate has the smallest residual against the
+    # original system — plain MINRES, MINRES+ridge, or the best direct
+    # solve. A fallback must never hand back a worse answer than it started
+    # with. NaN residuals (a singular direct solve) sort last.
+    candidates = [("minres", v, residual_norm),
+                  ("minres+ridge", v_ridge, ridge_res)]
+    if best_v is not None:
+        candidates.append(("direct-best-effort", best_v, best_res))
+    method, v_final, res_final = min(
+        candidates,
+        key=lambda c: c[2] if math.isfinite(c[2]) else math.inf,
     )
-    residual_norm = float(np.linalg.norm(L_csc @ v - r))
     log.info(
-        "MINRES+ridge (λ=%.4g): info=%d, residual_against_original=%.4g.",
-        lam, info, residual_norm,
+        "MINRES+ridge (λ=%.4g): info=%d, residual=%.4g. Best available "
+        "solution: method=%s, residual=%.4g (tol=%.4g)%s.",
+        lam, info, ridge_res, method, res_final, abs_tol,
+        "" if res_final <= abs_tol else " — STILL ABOVE TOLERANCE; results "
+        "for the near-floating region are unreliable",
     )
-    return v, "minres+ridge", 0, residual_norm
+    return v_final, method, progress.iterations, res_final
 
 
 def _record_stage(timings: list, label: str, t0: float, extra: str = "") -> None:
@@ -2166,8 +2333,47 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
     # for exactly this case (symmetric indefinite, ill-conditioned). With
     # a Jacobi preconditioner it converges reliably even when direct LU
     # cannot. See KNOWN_ISSUES.md for the test case that motivated this.
+    # Diagnostic hook: when every direct solve fails, _solve_robust calls
+    # this to turn a worst-residual (reduced) matrix row back into a
+    # human-readable location — the copper (layer, net) slab and coordinates
+    # — so the near-floating region that drove the matrix singular can be
+    # pinpointed. The reduced→full index map is materialised lazily, only
+    # if a failure actually occurs.
+    _n_vert = len(vindex.global_index_to_vertex_index)
+    _n_internal = node_indexer.internal_node_count
+    _n_extra = len(node_indexer.extra_source_to_global_index)
+    _reduced_to_full: list = []
+
+    def _describe_solver_row(reduced_idx: int) -> str:
+        if inverse is None:
+            full = int(reduced_idx)
+        else:
+            if not _reduced_to_full:
+                r2f = np.empty(M, dtype=np.int64)
+                r2f[inverse] = np.arange(N, dtype=np.int64)
+                _reduced_to_full.append(r2f)
+            full = int(_reduced_to_full[0][reduced_idx])
+        if full < _n_vert:
+            mesh_i, vtx_i = vindex.global_index_to_vertex_index[full]
+            layer_name = prob.layers[mesh_index_to_layer_index[mesh_i]].name
+            try:
+                pt = meshes[mesh_i].vertices.to_object(vtx_i).p
+                where = f" near ({pt.x:.3f}, {pt.y:.3f}) mm"
+            except Exception:
+                where = ""
+            return (f"copper on (layer,net) slab '{layer_name}'{where} "
+                    f"[mesh {mesh_i}]")
+        full -= _n_vert
+        if full < _n_internal:
+            return "lumped-network internal node (no copper attachment)"
+        full -= _n_internal
+        if full < _n_extra:
+            return "voltage-source current variable (MNA Lagrange row)"
+        return "ground-reference variable (an isolated subsystem)"
+
     v_solve, solver_method, solver_iterations, residual_norm = _solve_robust(
         L_csc, r_solve, symmetric=matrix_is_symmetric,
+        row_describer=_describe_solver_row,
     )
     # Expand the reduced solution back to the full N-variable space so every
     # downstream consumer (per-layer ZeroForms, diagnostics) is unchanged —

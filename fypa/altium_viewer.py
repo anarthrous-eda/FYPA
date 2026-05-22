@@ -186,31 +186,6 @@ def _triangle_icon(color: str, up: bool = True) -> QIcon:
     return QIcon(pm)
 
 
-def _square_icon(color: str) -> QIcon:
-    """A small filled-square :class:`QIcon` for the SERIES free-marker
-    button — the square glyph mirrors the SERIES directive marker (see
-    ``PdnViewer._ROLE_MARKER_STYLE``)."""
-    pm = QPixmap(20, 20)
-    pm.fill(Qt.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing, True)
-    p.setBrush(QColor(color))
-    p.setPen(QColor("#101010"))
-    p.drawRect(QRectF(4.0, 4.0, 12.0, 12.0))
-    p.end()
-    return QIcon(pm)
-
-
-def _role_marker_icon(role: str, color: str) -> QIcon:
-    """Free-marker toolbar icon for ``role`` — an up / down triangle for
-    SOURCE / SINK, a square for SERIES."""
-    if role == "SOURCE":
-        return _triangle_icon(color, up=True)
-    if role == "SINK":
-        return _triangle_icon(color, up=False)
-    return _square_icon(color)
-
-
 # FYPA branding assets — stacked above the H2 on the welcome window.
 # Both are pre-rendered PNGs because Qt's QSvgRenderer can't handle the
 # clipPaths in the master SVGs (the red/blue arrow triangles are
@@ -1099,8 +1074,18 @@ _OVERLAY_LAYERS: list[tuple[str, str, bool]] = [
 ]
 
 # Fill style a freshly-built overlay row starts in (True == solid square,
-# False == wire-mesh outline square).
+# False == wire-mesh outline square). _OVERLAY_DEFAULT_SOLID is the
+# fallback; keys in _OVERLAY_WIREMESH_BY_DEFAULT start as wire-mesh
+# instead — Components defaults to wire-mesh so it reads as outlines and
+# doesn't paint over the heatmap underneath.
 _OVERLAY_DEFAULT_SOLID = True
+_OVERLAY_WIREMESH_BY_DEFAULT: frozenset[str] = frozenset({"components"})
+
+
+def _overlay_default_solid(key: str) -> bool:
+    """Initial fill style for the Board Features row ``key`` — solid
+    unless the key opts into wire-mesh via _OVERLAY_WIREMESH_BY_DEFAULT."""
+    return key not in _OVERLAY_WIREMESH_BY_DEFAULT
 
 # ── Board Features default colours ──────────────────────────────────────────
 # Default RGB (each channel 0.0–1.0) every Board Features row is drawn in,
@@ -2898,7 +2883,8 @@ class _SolveWorker(QThread):
                                           # under the main stage label (e.g.
                                           # pdnsolver's per-step log records
                                           # during meshing + solving)
-    finished_ok = Signal(object, object)  # (LeanSolution, metadata dict)
+    finished_ok = Signal(object, object, object)  # (LeanSolution, metadata,
+                                          # pristine LoadedProject | None)
     failed = Signal(str)                  # error message for the UI
 
     def __init__(self, prjpcb_path: Path, settings,
@@ -2908,6 +2894,7 @@ class _SolveWorker(QThread):
                   use_design_cache: bool = True,
                   try_solve_cache_first: bool = False,
                   editor_directives: list | None = None,
+                  loaded_project: object | None = None,
                   parent=None) -> None:
         super().__init__(parent)
         self._prjpcb_path = prjpcb_path
@@ -2942,6 +2929,12 @@ class _SolveWorker(QThread):
         # and, like the override paths, they disable the solve cache (the
         # result diverges from the on-disk project).
         self._editor_directives = list(editor_directives or [])
+        # In-memory LoadedProject handed in by the editor 'Resolve' path:
+        # the pristine design info the viewer already holds. When set, the
+        # worker re-solves against it directly — no design-info cache read,
+        # no project-file stat, no re-extract. None for every other flow
+        # (normal load / Re-run / clean), which load design info as before.
+        self._loaded_project = loaded_project
 
     def run(self) -> None:  # type: ignore[override]
         # Bias the OS scheduler toward the GUI thread. The packaging phase
@@ -3006,7 +2999,10 @@ class _SolveWorker(QThread):
                     self.stage_changed.emit(
                         "Solve cache hit — opening viewer…"
                     )
-                    self.finished_ok.emit(cached[0], cached[1])
+                    # Solve-cache hit skips the extract entirely, so there's
+                    # no LoadedProject to hand on — a later resolve from this
+                    # viewer falls back to the design-info cache.
+                    self.finished_ok.emit(cached[0], cached[1], None)
                     return
 
             # Whole-load stage timer — logs a breakdown just before the
@@ -3014,7 +3010,15 @@ class _SolveWorker(QThread):
             _timer = _StageTimer(logging.getLogger(__name__))
 
             loaded = None
-            if self._use_design_cache and pcbdoc_resolved is not None:
+            if self._loaded_project is not None:
+                # In-memory reuse — the editor 'Resolve' path hands us the
+                # LoadedProject the viewer already holds. A resolve always
+                # re-solves against the design info that's already loaded,
+                # so there's no cache read, no project-file stat and no
+                # re-extract: just take the object as-is.
+                self.stage_changed.emit("Reusing loaded design info…")
+                loaded = self._loaded_project
+            elif self._use_design_cache and pcbdoc_resolved is not None:
                 self.stage_changed.emit("Checking design-info cache…")
                 try:
                     from fypa.cli import (
@@ -3079,7 +3083,17 @@ class _SolveWorker(QThread):
                             e,
                         )
             else:
-                self.stage_changed.emit("Design-info cache hit — reusing extract.")
+                self.stage_changed.emit(
+                    "Reusing loaded design info…"
+                    if self._loaded_project is not None
+                    else "Design-info cache hit — reusing extract."
+                )
+
+            # The design info exactly as loaded — before any stackup / sink
+            # override or editor directive is applied. Emitted to the new
+            # viewer so it can hand this same object straight back as the
+            # in-memory source for the next resolve (see _loaded_project).
+            pristine_loaded = loaded
 
             if not loaded.is_solveable:
                 _log = logging.getLogger(__name__)
@@ -3108,6 +3122,16 @@ class _SolveWorker(QThread):
                     "thickness override(s)…"
                 )
                 loaded = self._apply_stackup_overrides(loaded)
+
+            # Sink overrides and editor directives mutate ``loaded`` in
+            # place. When ``loaded`` is still the pristine object — in
+            # particular the in-memory LoadedProject the viewer also holds —
+            # clone it first so that shared copy (reused by the next
+            # resolve) is never touched. A stackup override above already
+            # returned a fresh private object, so no clone is needed then.
+            if ((self._sink_overrides or self._editor_directives)
+                    and loaded is pristine_loaded):
+                loaded = self._clone_loaded_for_edit(loaded)
 
             if self._sink_overrides:
                 self.stage_changed.emit(
@@ -3271,7 +3295,7 @@ class _SolveWorker(QThread):
             # happening instead of a stale "saving cache" message.
             self.stage_changed.emit("Opening viewer…")
             _timer.log_breakdown()
-            self.finished_ok.emit(new_solution, metadata)
+            self.finished_ok.emit(new_solution, metadata, pristine_loaded)
         except Exception as e:
             import traceback
             self.failed.emit(
@@ -3336,6 +3360,28 @@ class _SolveWorker(QThread):
                 directives[i] = _dc_replace(
                     d, current=float(self._sink_overrides[key]),
                 )
+
+    def _clone_loaded_for_edit(self, loaded):
+        """Return a copy of ``loaded`` that the sink-override / editor-
+        directive passes can mutate without touching the original.
+
+        Only ``annotations`` is copied (its ``directives`` list is what
+        those passes rewrite). The heavy ``extracted`` / ``geometry`` are
+        read-only from here on — :func:`build_problem` never mutates them —
+        so they're shared: the copy costs a few KB, not the tens of MB a
+        full clone would. This is what lets the viewer hand the worker its
+        own in-memory LoadedProject for a resolve without it being
+        corrupted for the next one."""
+        import copy as _copy
+        from fypa.altium_loader import LoadedProject
+        new_annotations = _copy.copy(loaded.annotations)
+        new_annotations.directives = list(loaded.annotations.directives)
+        return LoadedProject(
+            extracted=loaded.extracted,
+            annotations=new_annotations,
+            geometry=loaded.__dict__.get("geometry"),
+            absorbed_bridges=list(loaded.absorbed_bridges),
+        )
 
 
 def _try_solve_cache(prjpcb_path: Path,
@@ -3784,7 +3830,9 @@ class LauncherWindow(QMainWindow):
         # live elapsed-time counter for the current stage.
         self._solve_progress_updater = _SolveProgressUpdater(dlg, worker, self)
         worker.finished_ok.connect(
-            lambda sol, meta: self._on_solve_finished(sol, meta, settings)
+            lambda sol, meta, loaded: self._on_solve_finished(
+                sol, meta, loaded, settings,
+            )
         )
         worker.failed.connect(self._on_solve_failed)
         worker.finished.connect(self._cleanup_solve_worker)
@@ -3822,9 +3870,10 @@ class LauncherWindow(QMainWindow):
         QMessageBox.critical(self, "Solve failed", message)
 
     def _on_solve_finished(self, new_solution, metadata: dict,
-                           new_settings) -> None:
+                           loaded_project, new_settings) -> None:
         self._open_viewer_and_close(new_solution, metadata,
-                                    initial_settings=new_settings)
+                                    initial_settings=new_settings,
+                                    loaded_project=loaded_project)
 
     def _on_menu_open_solution(self) -> None:
         path_str, _ = QFileDialog.getOpenFileName(
@@ -3845,11 +3894,14 @@ class LauncherWindow(QMainWindow):
         self._open_viewer_and_close(solution, metadata)
 
     def _open_viewer_and_close(self, solution, metadata: dict | None,
-                               *, initial_settings=None) -> None:
+                               *, initial_settings=None,
+                               loaded_project=None) -> None:
         try:
             kwargs = {"metadata": metadata}
             if initial_settings is not None:
                 kwargs["initial_settings"] = initial_settings
+            if loaded_project is not None:
+                kwargs["loaded_project"] = loaded_project
             _t = time.monotonic()
             new_win = PdnViewer(solution, **kwargs)
             logging.getLogger(__name__).info(
@@ -3947,7 +3999,8 @@ class PdnViewer(QMainWindow):
                   via_current_warn_a: float | None = None,
                   display_percentile_high: float | None = None,
                   project: object | None = None,
-                  project_path: object | None = None):
+                  project_path: object | None = None,
+                  loaded_project: object | None = None):
         super().__init__()
         # Stashed on self so _build_ui (called below) can log per-tab
         # timings against the same start point.
@@ -3964,6 +4017,13 @@ class PdnViewer(QMainWindow):
         # :mod:`fypa.project_file`.
         self._project = project           # ProjectFile | None
         self._project_path = project_path  # Path | None
+        # In-memory LoadedProject (pristine design extract) from the worker
+        # that produced this viewer's solution. The editor 'Resolve' hands
+        # it straight back to the next worker, so a resolve never re-reads
+        # the design-info cache or re-stats the Altium project files. None
+        # when opened from a bare pickle — a resolve then falls back to the
+        # design-info cache.
+        self._loaded_project = loaded_project
         # _project_dirty: editor edits not yet written to the .fypa.
         # _solve_stale:   editor edits not yet reflected by a solve.
         # A viewer opened by a resolve already reflects the editor
@@ -4178,6 +4238,10 @@ class PdnViewer(QMainWindow):
         # :meth:`_update_markers_and_legend` from the same pin walk that
         # populates the marker overlay, so it matches exactly what's drawn.
         self._marker_hover_index_cache: dict | None = None
+        # Hover rows for the solved (schematic) directive markers, kept so
+        # a free-marker drag can recombine them with freshly rebuilt
+        # editor-directive rows without re-walking every pin.
+        self._metadata_marker_hover_rows: list[dict] = []
         # (visible_layers, rail, mode) signature of the previous render's
         # scale-controller push. Used so a render that doesn't change the
         # heatmap selection (e.g. a 2D/3D toggle) leaves the user's clamp
@@ -5121,13 +5185,14 @@ class PdnViewer(QMainWindow):
         """
         self._overlay_state: dict[str, dict] = {}
         for key, _label, has_sides in _OVERLAY_LAYERS:
+            solid0 = _overlay_default_solid(key)
             st: dict = {
                 "split": False,
-                "both": {"vis": None, "solid": _OVERLAY_DEFAULT_SOLID},
+                "both": {"vis": None, "solid": solid0},
             }
             if has_sides:
-                st["top"] = {"vis": None, "solid": _OVERLAY_DEFAULT_SOLID}
-                st["bottom"] = {"vis": None, "solid": _OVERLAY_DEFAULT_SOLID}
+                st["top"] = {"vis": None, "solid": solid0}
+                st["bottom"] = {"vis": None, "solid": solid0}
             self._overlay_state[key] = st
 
         self._overlay_colors: dict[str, tuple[float, float, float]] = dict(
@@ -8516,8 +8581,11 @@ class PdnViewer(QMainWindow):
         groups: list[MarkerGroup] = []
         legend_rows: list[tuple[str, str, str]] = []
         # Hover-index for SOURCE/SINK markers is rebuilt from the same
-        # pin walk below, so drop the stale cache up-front.
+        # pin walk below, so drop the stale cache up-front. ``hover_rows``
+        # collects the solved-directive entries; editor-directive rows are
+        # appended once the editor markers are built (see below).
         self._marker_hover_index_cache = None
+        hover_rows: list[dict] = []
 
         show_role_markers = self.show_markers_box.isChecked()
         target_layer_ids: set[int] = set()
@@ -8543,11 +8611,15 @@ class PdnViewer(QMainWindow):
             per_role: dict[tuple[str, bool],
                            tuple[list[float], list[float],
                                  list[float]]] = {}
-            hover_rows: list[dict] = []
+            # Designators whose schematic directive an editor directive
+            # overrides — their hover rows are suppressed so the bottom
+            # bar reports the (pending) editor value, not the stale one.
+            overridden = self._overridden_designators()
             for d in self.metadata.get("directives", []):
                 role = d.get("role")
                 if role not in self._ROLE_MARKER_STYLE:
                     continue
+                directive_overridden = d.get("designator") in overridden
                 directive_current = self._directive_current_for_hover(d)
                 directive_label = str(d.get("label") or d.get("designator")
                                       or "")
@@ -8592,7 +8664,7 @@ class PdnViewer(QMainWindow):
                         phys_for_pin = id_to_phys.get(lid)
                         zs.append(self._layer_z_for(phys_for_pin)
                                    if phys_for_pin else 0.0)
-                        if role in ("SOURCE", "SINK"):
+                        if role in ("SOURCE", "SINK") and not directive_overridden:
                             hover_rows.append({
                                 "x_mm": float(px),
                                 "y_mm": float(py),
@@ -8608,8 +8680,6 @@ class PdnViewer(QMainWindow):
                                     self._ROLE_MARKER_STYLE[role]["size"]
                                 ),
                             })
-
-            self._set_marker_hover_rows(hover_rows)
 
             legend_seen_roles: set[str] = set()
             for (role, is_n_side), (xs, ys, zs) in per_role.items():
@@ -8737,6 +8807,12 @@ class PdnViewer(QMainWindow):
         groups.extend(self._editor_marker_groups())
 
         self._gl_viewer.set_markers(groups)
+
+        # Hover index = solved-directive rows + editor-directive rows, so
+        # the bottom bar reports pending editor edits before a Resolve.
+        self._metadata_marker_hover_rows = hover_rows
+        self._set_marker_hover_rows(
+            hover_rows + self._editor_marker_hover_rows())
 
         if legend_rows:
             rows_html = "".join(
@@ -9234,21 +9310,22 @@ class PdnViewer(QMainWindow):
         self._editor_toggle_btn = btn
 
         # Free-marker palette — red up-triangle SOURCE / blue down-triangle
-        # SINK / green square SERIES, matching the solved-directive markers
-        # (_ROLE_MARKER_STYLE). Hidden until editor mode is entered.
-        for role, attr, tip in (
-            ("SOURCE", "_editor_add_source_btn",
+        # SINK, matching the solved-directive markers (_ROLE_MARKER_STYLE).
+        # Hidden until editor mode is entered. SERIES has no free-marker
+        # button: a free marker has a single anchor point, but a SERIES
+        # element bridges two separate copper points, so SERIES is
+        # component-bound only — assign it by selecting the part.
+        for role, attr, up, tip in (
+            ("SOURCE", "_editor_add_source_btn", True,
              "Drop a free SOURCE — click, then click copper"),
-            ("SINK", "_editor_add_sink_btn",
+            ("SINK", "_editor_add_sink_btn", False,
              "Drop a free SINK — click, then click copper"),
-            ("SERIES", "_editor_add_series_btn",
-             "Drop a free SERIES element — click, then click copper"),
         ):
             style = self._ROLE_MARKER_STYLE[role]
             mbtn = QToolButton(self._gl_viewer)
             mbtn.setCheckable(True)
             mbtn.setCursor(Qt.PointingHandCursor)
-            mbtn.setIcon(_role_marker_icon(role, style["color"]))
+            mbtn.setIcon(_triangle_icon(style["color"], up=up))
             mbtn.setIconSize(QSize(18, 18))
             mbtn.setFixedSize(34, 34)
             mbtn.setToolTip(tip)
@@ -9292,8 +9369,7 @@ class PdnViewer(QMainWindow):
         btn.move(x, margin)
         btn.raise_()
         x += btn.width() + gap
-        for attr in ("_editor_add_source_btn", "_editor_add_sink_btn",
-                     "_editor_add_series_btn"):
+        for attr in ("_editor_add_source_btn", "_editor_add_sink_btn"):
             b = getattr(self, attr, None)
             if b is not None and not b.isHidden():
                 b.move(x, margin)
@@ -9354,10 +9430,9 @@ class PdnViewer(QMainWindow):
             self._clear_editor_highlight()
         else:
             self._update_pending_rails()
-        # Source / sink / series free-marker buttons live in the viewport
-        # overlay and are visible only while editor mode is active.
-        for attr in ("_editor_add_source_btn", "_editor_add_sink_btn",
-                     "_editor_add_series_btn"):
+        # Source / sink free-marker buttons live in the viewport overlay
+        # and are visible only while editor mode is active.
+        for attr in ("_editor_add_source_btn", "_editor_add_sink_btn"):
             b = getattr(self, attr, None)
             if b is not None:
                 b.setVisible(self._editor_mode)
@@ -9372,8 +9447,8 @@ class PdnViewer(QMainWindow):
 
     _EDITOR_DEFAULT_HINT = (
         "Click a component or a copper region in the viewport to assign a "
-        "PDN role, or use the triangle / square buttons at the top-left "
-        "of the viewport to drop a free source / sink / series element."
+        "PDN role, or use the red / blue triangle buttons at the top-left "
+        "of the viewport to drop a free source / sink."
     )
 
     def _update_editor_panel(self) -> None:
@@ -9402,8 +9477,7 @@ class PdnViewer(QMainWindow):
         buttons' checked state."""
         pend = self._editor_pending_marker
         for role, attr in (("SOURCE", "_editor_add_source_btn"),
-                           ("SINK", "_editor_add_sink_btn"),
-                           ("SERIES", "_editor_add_series_btn")):
+                           ("SINK", "_editor_add_sink_btn")):
             b = getattr(self, attr, None)
             if b is not None and b.isChecked() != (pend == role):
                 b.setChecked(pend == role)
@@ -9516,14 +9590,43 @@ class PdnViewer(QMainWindow):
                     changed = True
         return group
 
-    def _component_at(self, world_x: float, world_y: float) -> dict | None:
+    def _component_side_visible(self, comp: dict) -> bool:
+        """Whether the component's side is currently drawn — i.e. the
+        Components overlay (Board Features) is showing that side.
+
+        Editor-mode selection skips components on a hidden side: you
+        can't select what you can't see. This mirrors the exact
+        visibility test in :meth:`_refresh_overlay_geometry` (a side is
+        drawn when its overlay ``vis`` is not ``None``), so selection and
+        the on-screen component boxes always agree. Components with no /
+        unknown side info, or before the overlay state is built, are
+        never blocked."""
+        side = comp.get("side")
+        if side not in ("top", "bottom"):
+            return True
+        try:
+            vis, _solid = self._overlay_side_states("components").get(
+                side, (None, None))
+        except (AttributeError, KeyError):
+            return True
+        return vis is not None
+
+    def _component_at(self, world_x: float, world_y: float, *,
+                      visible_sides_only: bool = True) -> dict | None:
         """Metadata component record whose bounding box covers the point,
-        or ``None``. Smallest box wins when component boxes nest."""
+        or ``None``. Smallest box wins when component boxes nest.
+
+        With ``visible_sides_only`` (the default, used for editor-mode
+        selection) a component whose side's copper layer is hidden is
+        skipped, so the pick can never land on an invisible component —
+        and still finds the smallest *visible* one when sides overlap."""
         if not self.metadata:
             return None
         best: dict | None = None
         best_area: float | None = None
         for rec in self.metadata.get("components", []):
+            if visible_sides_only and not self._component_side_visible(rec):
+                continue
             bbox = rec.get("bbox")
             if not bbox or len(bbox) != 4:
                 continue
@@ -9642,6 +9745,16 @@ class PdnViewer(QMainWindow):
         if comp is not None:
             self._select_component(comp)
             return
+        # A component may sit here but on a hidden side — it can't be
+        # selected. Say why, then fall through to the marker / copper
+        # underneath (whatever the user can actually see).
+        hidden = self._component_at(world_x, world_y, visible_sides_only=False)
+        if hidden is not None:
+            side = hidden.get("side") or "hidden"
+            self.statusBar().showMessage(
+                f"{hidden.get('designator') or 'Component'} is on the "
+                f"hidden {side} side — turn on the {side}-side Components "
+                "overlay to select it.", 4000)
         marker = self._free_marker_at(world_x, world_y)
         if marker is not None:
             self._select_free_marker(marker)
@@ -9916,7 +10029,11 @@ class PdnViewer(QMainWindow):
         t = _T()
         blocks: list[str] = []
         for d in directives:
+            # A ResistorSpec carries the role "RESISTOR" in solve metadata;
+            # show the user-facing "SERIES" name to match the editor form.
             role = d.get("role", "?")
+            if role == "RESISTOR":
+                role = "SERIES"
             val = d.get("value_str") or ""
             terms = d.get("terminals") or {}
             tparts = [
@@ -9947,9 +10064,11 @@ class PdnViewer(QMainWindow):
         note.setWordWrap(True)
         note.setStyleSheet(f"color: {t['fg_muted']}; font-size: 8pt;")
         lay.addWidget(note)
-        # Unlock button — only for editable roles (SOURCE / SINK); SERIES /
-        # REGULATOR directives aren't editable through this form.
-        if any(d.get("role") in ("SOURCE", "SINK") for d in directives):
+        # Unlock button — for editable roles (SOURCE / SINK / SERIES);
+        # REGULATOR directives aren't editable through this form. A
+        # schematic SERIES carries the RESISTOR role name in solve metadata.
+        if any(d.get("role") in ("SOURCE", "SINK", "RESISTOR")
+               for d in directives):
             unlock = QPushButton("🔓  Unlock to edit")
             unlock.setToolTip(
                 "Edit these PDN values in FYPA — the edited directive "
@@ -9959,10 +10078,12 @@ class PdnViewer(QMainWindow):
             lay.addWidget(unlock)
 
     def _unlockable_schematic_directive(self, sel: dict) -> dict | None:
-        """The first SOURCE / SINK schematic directive on the selected
-        component — the one the Unlock button / form edits."""
+        """The first SOURCE / SINK / SERIES schematic directive on the
+        selected component — the one the Unlock button / form edits. A
+        schematic SERIES carries the ``RESISTOR`` role in solve metadata
+        (named after its ResistorSpec)."""
         for d in self._schematic_directives_for(sel):
-            if d.get("role") in ("SOURCE", "SINK"):
+            if d.get("role") in ("SOURCE", "SINK", "RESISTOR"):
                 return d
         return None
 
@@ -10084,7 +10205,15 @@ class PdnViewer(QMainWindow):
         form = QFormLayout()
         form.setContentsMargins(0, 0, 0, 0)
         self._ef_role = QComboBox()
-        self._ef_role.addItems(["SOURCE", "SINK", "SERIES"])
+        # SERIES is component-bound only — it bridges two real pads, so a
+        # single-anchor free marker can't express it. Offer SERIES for a
+        # component selection (or when editing a directive that is already
+        # SERIES), never for a fresh free marker.
+        role_items = ["SOURCE", "SINK"]
+        if sel["kind"] == "component" or (
+                existing is not None and existing.role == "SERIES"):
+            role_items.append("SERIES")
+        self._ef_role.addItems(role_items)
         self._ef_role.currentTextChanged.connect(self._on_editor_role_changed)
         form.addRow("PDN role", self._ef_role)
         self._ef_value = QLineEdit()
@@ -10153,9 +10282,12 @@ class PdnViewer(QMainWindow):
                 )
         elif sch_unlock is not None:
             # Just unlocked, no editor override yet — seed the form from the
-            # schematic directive so the user adjusts its actual values.
-            role = sch_unlock.get("role")
-            role = role if role in ("SOURCE", "SINK") else "SINK"
+            # schematic directive so the user adjusts its actual values. A
+            # schematic SERIES carries the RESISTOR role name in metadata.
+            raw_role = sch_unlock.get("role")
+            role = {"RESISTOR": "SERIES"}.get(raw_role, raw_role)
+            if role not in ("SOURCE", "SINK", "SERIES"):
+                role = "SINK"
             self._ef_role.setCurrentText(role)
             val = sch_unlock.get("value")
             self._ef_value.setText("" if val is None else f"{val:g}")
@@ -10345,6 +10477,11 @@ class PdnViewer(QMainWindow):
             return
         self._gl_viewer.set_markers(
             list(cached) + self._editor_marker_groups())
+        # Keep the hover index in step with the moved marker — recombine
+        # the cached solved-directive rows with freshly rebuilt editor rows.
+        self._set_marker_hover_rows(
+            self._metadata_marker_hover_rows
+            + self._editor_marker_hover_rows())
 
     def _free_marker_layer_id(self, directive) -> int | None:
         """The Altium copper layer id a free marker is pinned to — its
@@ -10815,7 +10952,9 @@ class PdnViewer(QMainWindow):
 
     def _on_resolve_clicked(self) -> None:
         """Re-run the solver with the current editor directives applied,
-        reusing the cached design info (no Altium re-extraction)."""
+        reusing the in-memory design info (no cache read, no Altium
+        re-extraction). Falls back to the design-info cache only when this
+        viewer has no in-memory LoadedProject (e.g. opened from a pickle)."""
         if self._project is None or not self._project.editor_directives:
             QMessageBox.information(
                 self, "Nothing to resolve",
@@ -10839,6 +10978,7 @@ class PdnViewer(QMainWindow):
             use_design_cache=True,
             try_solve_cache_first=False,
             editor_directives=list(self._project.editor_directives),
+            loaded_project=self._loaded_project,
             dialog_title="Resolving with editor changes",
             dialog_text=(
                 "Re-solving with your editor changes…\n"
@@ -11629,6 +11769,13 @@ class PdnViewer(QMainWindow):
                 net = pin.get("net")
                 if net:
                     source_nets.add(net)
+        return self._rail_load_for_nets(source_nets)
+
+    def _rail_load_for_nets(self, source_nets: set[str]) -> float | None:
+        """Total SINK load on the rail group(s) the given nets belong to,
+        or ``None`` when the nets map to no known rail. Shared by the
+        solved-marker and editor-marker SOURCE hover so both report the
+        same KCL figure."""
         if not source_nets:
             return None
         net_to_rail: dict[str, str] = {}
@@ -11641,10 +11788,24 @@ class PdnViewer(QMainWindow):
         rail_members: set[str] = set()
         for rail in rails:
             rail_members.update(self._rail_to_members.get(rail, [rail]))
+        total, any_found = self._rail_sink_load(rail_members)
+        return total if any_found else None
+
+    def _rail_sink_load(self, rail_members: set[str]) -> tuple[float, bool]:
+        """Sum of every SINK load coupling into ``rail_members`` — solved
+        schematic directives plus pending editor directives. A schematic
+        SINK is dropped when an editor directive overrides its designator
+        so an unlocked-and-edited sink isn't counted twice. Returns
+        ``(total_amps, any_found)``."""
         total = 0.0
         any_found = False
-        for other in self.metadata.get("directives", []):
+        overridden = self._overridden_designators()
+        directives = (self.metadata.get("directives", [])
+                      if self.metadata else [])
+        for other in directives:
             if other.get("role") != "SINK":
+                continue
+            if other.get("designator") in overridden:
                 continue
             for term in (other.get("terminals") or {}).values():
                 if any(p.get("net") in rail_members
@@ -11655,7 +11816,93 @@ class PdnViewer(QMainWindow):
                         pass
                     any_found = True
                     break
-        return total if any_found else None
+        if self._project is not None:
+            for d in self._project.editor_directives:
+                if d.role != "SINK":
+                    continue
+                nets = {d.p_net, d.n_net} - {None}
+                if nets & rail_members:
+                    if d.current is not None:
+                        try:
+                            total += float(d.current)
+                        except (TypeError, ValueError):
+                            pass
+                    any_found = True
+        return total, any_found
+
+    def _overridden_designators(self) -> set[str]:
+        """Designators whose schematic PDN directive an editor directive
+        replaces. The schematic side is dropped from hover rows and the
+        rail-load sum so the (pending) editor value stands in for it."""
+        if self._project is None:
+            return set()
+        return {d.overrides_designator
+                for d in self._project.editor_directives
+                if d.overrides_designator}
+
+    def _editor_directive_current(self, d) -> float | None:
+        """Hover current for an :class:`EditorDirective` — the prescribed
+        load for a SINK, or the KCL rail-load sum for a SOURCE (same basis
+        as :meth:`_directive_current_for_hover` uses for solved markers)."""
+        if d.role == "SINK":
+            return d.current
+        if d.role == "SOURCE":
+            return self._rail_load_for_nets({d.p_net, d.n_net} - {None})
+        return None
+
+    def _editor_marker_hover_rows(self) -> list[dict]:
+        """Hover rows for the placed editor directives so the bottom-bar
+        probe reports their (pending, not-yet-resolved) source / sink
+        values instead of falling through to the stale schematic marker
+        underneath. Mirrors the point walk in :meth:`_editor_marker_groups`;
+        rows carry ``pending=True`` so the formatter can tag them."""
+        if not self._editor_mode or self._project is None:
+            return []
+        rows: list[dict] = []
+        for d in self._project.editor_directives:
+            if d.role not in ("SOURCE", "SINK"):
+                continue
+            total = self._editor_directive_current(d)
+            label = d.designator or d.id or ""
+            size_px = int(self._ROLE_MARKER_STYLE[d.role]["size"]) + 4
+            # Resolve P-side / N-side points exactly as _editor_marker_groups.
+            if d.kind == "free" and d.anchor_xy is not None:
+                sides = [("p", d.p_net,
+                          [(float(d.anchor_xy[0]),
+                            float(d.anchor_xy[1]))])]
+            elif d.kind == "component":
+                p_pts = self._component_pad_points(d.designator, [d.p_net])
+                n_pts = ([] if d.single_net or not d.n_net
+                         else self._component_pad_points(
+                             d.designator, [d.n_net]))
+                if not p_pts and not n_pts:
+                    ctr = self._component_center(d.designator)
+                    p_pts = [ctr] if ctr is not None else []
+                sides = [("p", d.p_net, p_pts), ("n", d.n_net, n_pts)]
+            else:
+                continue
+            for term_name, net, pts in sides:
+                n = len(pts)
+                if not n:
+                    continue
+                per_pin = (total / n if total is not None
+                           and np.isfinite(total) else None)
+                for (px, py) in pts:
+                    rows.append({
+                        "x_mm": float(px),
+                        "y_mm": float(py),
+                        "role": d.role,
+                        "label": label,
+                        "terminal": term_name,
+                        "net": net or "",
+                        "physical": d.layer or "",
+                        "current_a": per_pin,
+                        "directive_current_a": total,
+                        "terminal_pin_count": n,
+                        "size_px": size_px,
+                        "pending": True,
+                    })
+        return rows
 
     def _set_marker_hover_rows(self, rows: list[dict]) -> None:
         """Stash the SOURCE/SINK marker rows that the hover probe should
@@ -11728,9 +11975,12 @@ class PdnViewer(QMainWindow):
         per_pin = row.get("current_a")
         total = row.get("directive_current_a")
         n_pins = int(row.get("terminal_pin_count") or 1)
+        pending = bool(row.get("pending"))
         lines: list[str] = [f"{role} {label}"]
         if per_pin is None or not np.isfinite(per_pin):
             lines.append("I: (n/a)")
+            if pending:
+                lines.append("(pending — press Resolve)")
             return lines
         prefix = "I ≈" if role == "SOURCE" else "I ="
         lines.append(f"{prefix} {per_pin:.4g} A")
@@ -11739,6 +11989,8 @@ class PdnViewer(QMainWindow):
             lines.append(f"Total: {total:.4g} A ({n_pins} {pin_word})")
         if role == "SOURCE":
             lines.append("(rail load)")
+        if pending:
+            lines.append("(pending — press Resolve)")
         return lines
 
     def _format_marker_hover_text(self, row: dict) -> str:
@@ -11747,21 +11999,25 @@ class PdnViewer(QMainWindow):
         the terminal total so a multi-pin sink doesn't misleadingly
         report the whole load on each marker. SOURCE values are tagged
         ``≈ … (rail load)`` to flag they're derived from KCL rather than
-        prescribed by the user."""
+        prescribed by the user. Editor edits not yet resolved get a
+        trailing ``[pending — Resolve]`` so the user knows the figure is
+        their unsolved input, not a solved value."""
         role = row.get("role", "")
         label = row.get("label", "") or "?"
         per_pin = row.get("current_a")
         total = row.get("directive_current_a")
         n_pins = int(row.get("terminal_pin_count") or 1)
+        pend = "  [pending — Resolve]" if row.get("pending") else ""
         if per_pin is None or not np.isfinite(per_pin):
-            return f"   {role} {label}: I = (n/a)"
+            return f"   {role} {label}: I = (n/a){pend}"
         prefix = "I ≈" if role == "SOURCE" else "I ="
         suffix = " (rail load)" if role == "SOURCE" else ""
         if n_pins > 1 and total is not None and np.isfinite(total):
             total_part = f" ({total:.4g} A total){suffix}"
         else:
             total_part = suffix
-        return f"   {role} {label}: {prefix} {per_pin:.4g} A{total_part}"
+        return (f"   {role} {label}: {prefix} {per_pin:.4g} A"
+                f"{total_part}{pend}")
 
     def _stub_prepared_shape(self, stub: dict):
         """Return (and cache) a shapely PreparedGeometry for a stub polygon."""
@@ -13627,6 +13883,7 @@ class PdnViewer(QMainWindow):
         use_design_cache: bool = True,
         try_solve_cache_first: bool = False,
         editor_directives: list | None = None,
+        loaded_project: object | None = None,
         dialog_title: str = "Running solver",
         dialog_text: str | None = None,
         dialog_width_scale: float = 1.44,
@@ -13671,6 +13928,7 @@ class PdnViewer(QMainWindow):
             use_design_cache=use_design_cache,
             try_solve_cache_first=try_solve_cache_first,
             editor_directives=editor_directives,
+            loaded_project=loaded_project,
             parent=self,
         )
         self._solve_worker = worker
@@ -13684,14 +13942,14 @@ class PdnViewer(QMainWindow):
         # bound to the same project file so the editor state carries over.
         if editor_directives:
             worker.finished_ok.connect(
-                lambda sol, meta: self._on_resolve_finished(
-                    sol, meta, warn_a, pct, settings,
+                lambda sol, meta, loaded: self._on_resolve_finished(
+                    sol, meta, loaded, warn_a, pct, settings,
                 )
             )
         else:
             worker.finished_ok.connect(
-                lambda sol, meta: self._on_solve_finished(
-                    sol, meta, warn_a, pct, settings,
+                lambda sol, meta, loaded: self._on_solve_finished(
+                    sol, meta, loaded, warn_a, pct, settings,
                 )
             )
         worker.failed.connect(self._on_solve_failed)
@@ -13763,7 +14021,7 @@ class PdnViewer(QMainWindow):
         QMessageBox.critical(self, "Solve failed", message)
 
     def _on_solve_finished(
-        self, new_solution, metadata: dict,
+        self, new_solution, metadata: dict, loaded_project,
         warn_a: float, pct: float, new_settings,
     ) -> None:
         """Worker emitted ``finished_ok``. Open a fresh viewer bound to
@@ -13783,6 +14041,7 @@ class PdnViewer(QMainWindow):
                 initial_settings=new_settings,
                 via_current_warn_a=warn_a,
                 display_percentile_high=pct,
+                loaded_project=loaded_project,
             )
             # GC-pin the new window in a module-level list — PySide6's
             # QApplication property bag doesn't reliably hold Python refs
@@ -13832,7 +14091,7 @@ class PdnViewer(QMainWindow):
         QTimer.singleShot(0, lambda: _retire_viewer(self))
 
     def _on_resolve_finished(
-        self, new_solution, metadata: dict,
+        self, new_solution, metadata: dict, loaded_project,
         warn_a: float, pct: float, new_settings,
     ) -> None:
         """Resolve worker finished — open a fresh viewer bound to the same
@@ -13851,6 +14110,7 @@ class PdnViewer(QMainWindow):
                 display_percentile_high=pct,
                 project=self._project,
                 project_path=self._project_path,
+                loaded_project=loaded_project,
             )
             _register_viewer(new_win)
             new_win.setGeometry(prev_geometry)
