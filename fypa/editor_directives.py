@@ -112,6 +112,22 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
         return TerminalSpec(pins=tuple(pins), requested_net=net_name)
 
     warnings: list[str] = []
+
+    # Drop schematic directives that an unlocked editor directive overrides,
+    # so the two don't both stamp a lumped element on the same component.
+    override_desigs = {
+        ed.overrides_designator for ed in editor_directives
+        if getattr(ed, "overrides_designator", None)
+    }
+    if override_desigs:
+        kept = [d for d in loaded.annotations.directives
+                if d.designator not in override_desigs]
+        dropped = len(loaded.annotations.directives) - len(kept)
+        loaded.annotations.directives = kept
+        if dropped:
+            log.info("apply_editor_directives: dropped %d schematic "
+                     "directive(s) overridden by the editor.", dropped)
+
     applied = 0
     for ed in editor_directives:
         label = ed.designator or f"editor:{ed.id}"

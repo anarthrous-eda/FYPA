@@ -64,6 +64,11 @@ class EditorDirective:
     n_net: str | None = None
     voltage: float | None = None
     current: float | None = None
+    # When set, this editor directive replaces (overrides) the Altium
+    # schematic directive carrying this designator — the re-solve drops the
+    # schematic one so they don't both stamp a lumped element. ``None`` for
+    # an ordinary editor directive that simply adds a new source / sink.
+    overrides_designator: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -88,6 +93,7 @@ class EditorDirective:
             n_net=d.get("n_net"),
             voltage=(None if d.get("voltage") is None else float(d["voltage"])),
             current=(None if d.get("current") is None else float(d["current"])),
+            overrides_designator=d.get("overrides_designator"),
         )
 
 

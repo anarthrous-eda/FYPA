@@ -944,32 +944,27 @@ class SplitButton(QToolButton):
 
 # --- Board-feature colour swatch -------------------------------------------
 
+# Side (px) of the colour swatch. Matches the physical-layer list swatch
+# (the flat square in _build_layer_row) so the two controls look identical.
+_OVERLAY_SWATCH_PX = 14
+
 
 def _make_swatch_pixmap(rgb: tuple[float, float, float], *,
-                        size: int = 16) -> QPixmap:
-    """Draw a colour-swatch icon for a Board Features row — a rounded square
-    filled with ``rgb`` (each channel 0..1) and a faint theme-coloured edge."""
+                        size: int = _OVERLAY_SWATCH_PX) -> QPixmap:
+    """A flat, solid-filled colour square — drawn exactly like the physical-
+    layer list's swatch (a plain ``QPixmap.fill``: no border, no rounding,
+    no antialiasing) so a Board Features row reads identically."""
     px = QPixmap(size, size)
-    px.fill(Qt.transparent)
-    p = QPainter(px)
-    p.setRenderHint(QPainter.Antialiasing, True)
-    inset = size * 0.16
-    rect = QRectF(inset, inset, size - 2 * inset, size - 2 * inset)
-    pen = QPen(QColor(current_theme()["border"]))
-    pen.setWidthF(max(1.0, size * 0.07))
-    p.setPen(pen)
-    p.setBrush(QColor.fromRgbF(*[min(1.0, max(0.0, c)) for c in rgb]))
-    p.drawRoundedRect(rect, size * 0.16, size * 0.16)
-    p.end()
+    px.fill(QColor.fromRgbF(*[min(1.0, max(0.0, c)) for c in rgb]))
     return px
 
 
 class OverlayColorButton(QToolButton):
     """Colour-swatch button for a Board Features row.
 
-    Mirrors :class:`EyeButton` — a small auto-raise tool button the same
-    size as the eye / fill toggles it sits beside. Clicking opens a colour
-    picker; choosing a colour repaints the swatch and emits
+    Looks identical to the physical-layer list's colour box — a flat solid
+    square, borderless and the same size — but is clickable: clicking opens
+    a colour picker; choosing a colour repaints the swatch and emits
     :attr:`colorChanged` so the viewer can recolour the overlay and mark
     the project dirty."""
 
@@ -977,15 +972,20 @@ class OverlayColorButton(QToolButton):
 
     def __init__(self, parent=None, *,
                  rgb: tuple[float, float, float] = (1.0, 1.0, 1.0),
-                 icon_size: int = 16) -> None:
+                 size: int = _OVERLAY_SWATCH_PX) -> None:
         super().__init__(parent)
         self._rgb = tuple(float(c) for c in rgb)
-        self._icon_size = icon_size
-        self.setAutoRaise(True)
+        self._size = size
         self.setCursor(Qt.PointingHandCursor)
-        self.setIconSize(QSize(icon_size, icon_size))
-        self.setFixedSize(icon_size + 6, icon_size + 6)
         self.setFocusPolicy(Qt.NoFocus)
+        self.setIconSize(QSize(size, size))
+        self.setFixedSize(size, size)
+        # Borderless / transparent so only the solid swatch shows — no
+        # tool-button frame or hover tint, matching the plain QLabel swatch.
+        self.setStyleSheet(
+            "QToolButton { border: none; padding: 0px; margin: 0px;"
+            " background: transparent; }"
+        )
         self._apply_icon()
         self.clicked.connect(self._on_clicked)
 
@@ -1003,7 +1003,7 @@ class OverlayColorButton(QToolButton):
             self.colorChanged.emit(self._rgb)
 
     def _apply_icon(self) -> None:
-        self.setIcon(QIcon(_make_swatch_pixmap(self._rgb, size=self._icon_size)))
+        self.setIcon(QIcon(_make_swatch_pixmap(self._rgb, size=self._size)))
         self.setToolTip("Pick this overlay's colour")
 
     def _on_clicked(self) -> None:
@@ -1015,17 +1015,19 @@ class OverlayColorButton(QToolButton):
             self.setColorRgb((chosen.redF(), chosen.greenF(), chosen.blueF()))
 
 
-# Overlay layers shown in the Heatmap tab's "Board Features" control. Each is
-# (key, label, has_sides). ``has_sides`` rows (everything but vias) carry a
-# split button that breaks the row into separate Top / Bottom rows.
+# Overlay layers shown in the Heatmap tab's "Board Features" control, in
+# top-to-bottom row order. Each is (key, label, has_sides). ``has_sides``
+# rows (everything but vias) carry a split button that breaks the row into
+# separate Top / Bottom rows. This list drives only the UI row order — the
+# draw order is fixed independently in _refresh_overlay_geometry.
 _OVERLAY_LAYERS: list[tuple[str, str, bool]] = [
+    ("components", "Components", True),
+    ("pads", "Pads", True),
     # "silkscreen" key kept internally; label is "Overlay" to match
     # Altium's layer name (splits into Top Overlay / Bottom Overlay).
     ("silkscreen", "Overlay", True),
-    ("pads", "Pads", True),
-    ("vias", "Vias", False),
-    ("components", "Components", True),
     ("designators", "Designators", True),
+    ("vias", "Vias", False),
     # The mechanical board outline. It has no per-net association, so its
     # row carries only the "show everywhere" eye (no rails-only eye) and
     # no fill toggle — see _build_overlay_row_widget.
@@ -1041,17 +1043,20 @@ _OVERLAY_DEFAULT_SOLID = True
 # picked to stand out against the viridis heatmap and from each other.
 #
 # This table is the single place to change a *default* — edit a tuple here
-# and rebuild. At runtime each viewer copies it into ``self._overlay_colors``;
-# the per-row colour-swatch button edits that copy, and any change the user
-# makes is persisted to the .fypa project file (``viewer_settings
-# ["overlay_colors"]``) so a reopened project keeps its colours.
+# and rebuild. At runtime each viewer copies it into ``self._overlay_colors``
+# (the primary colour — used by a merged row and the Top side of a split
+# one); the per-row colour-swatch button edits that copy. A split layer's
+# Bottom row may be given its own colour, kept in ``self._overlay_bottom_
+# colors`` (``None`` = follow the primary). Both are persisted to the .fypa
+# project file (``viewer_settings["overlay_colors"]``) so a reopened project
+# keeps its colours.
 _OVERLAY_DEFAULT_COLORS: dict[str, tuple[float, float, float]] = {
-    "silkscreen":    (0.93, 0.93, 0.86),   # off-white
+    "silkscreen":    (1.00, 1.00, 0.00),   # yellow (#ffff00)
     "pads":          (1.00, 0.82, 0.29),   # amber
     "vias":          (1.00, 0.55, 0.23),   # orange (matches via cylinders)
-    "components":    (0.35, 0.82, 1.00),   # cyan
-    "designators":   (0.96, 0.96, 0.96),   # near-white text
-    "board_outline": (1.00, 0.55, 0.00),   # warm orange
+    "components":    (0.00, 0.50, 0.00),   # green (#008000)
+    "designators":   (1.00, 1.00, 0.00),   # yellow (#ffff00)
+    "board_outline": (0.50, 0.00, 0.00),   # dark red / maroon (#800000)
 }
 
 # World-space half-width (mm) of an overlay wire-mesh outline ribbon. The
@@ -4872,10 +4877,13 @@ class PdnViewer(QMainWindow):
         ``None`` (hidden), ``"rails"`` (visible on the selected rails only)
         or ``"all"`` (visible everywhere) — and ``solid`` (the fill style).
 
-        Draw colour lives separately in ``self._overlay_colors`` (keyed by
-        layer, shared by a split layer's Top / Bottom rows) — seeded from
-        :data:`_OVERLAY_DEFAULT_COLORS` and then overridden by anything the
-        open .fypa project saved.
+        Draw colour lives separately. ``self._overlay_colors`` holds the
+        primary colour per layer — used by a merged row and the Top side of
+        a split one. ``self._overlay_bottom_colors`` holds an optional
+        distinct colour for the Bottom side of a split layer (``None`` until
+        the user picks one, meaning "follow the primary"). Both are seeded
+        from :data:`_OVERLAY_DEFAULT_COLORS` / ``None`` and then overridden
+        by anything the open .fypa project saved.
         """
         self._overlay_state: dict[str, dict] = {}
         for key, _label, has_sides in _OVERLAY_LAYERS:
@@ -4890,11 +4898,22 @@ class PdnViewer(QMainWindow):
 
         self._overlay_colors: dict[str, tuple[float, float, float]] = dict(
             _OVERLAY_DEFAULT_COLORS)
+        # None == the Bottom side follows the primary colour; a tuple == the
+        # user pinned a distinct Bottom colour (only meaningful once split).
+        self._overlay_bottom_colors: dict[
+            str, tuple[float, float, float] | None] = {
+            key: None for key in _OVERLAY_DEFAULT_COLORS
+        }
         self._load_overlay_colors_from_project()
 
     def _load_overlay_colors_from_project(self) -> None:
         """Override the built-in overlay colours with any saved in the open
-        .fypa project (``viewer_settings["overlay_colors"]``). Unknown keys
+        .fypa project (``viewer_settings["overlay_colors"]``).
+
+        Each entry is ``{"primary": [r, g, b], "bottom": [r, g, b]}`` —
+        ``"bottom"`` present only when the user pinned a distinct Bottom
+        colour. A bare ``[r, g, b]`` list is also accepted (the colours
+        were stored that way before split colours existed). Unknown keys
         and malformed values are skipped so an older or hand-edited project
         still loads cleanly."""
         proj = getattr(self, "_project", None)
@@ -4902,15 +4921,28 @@ class PdnViewer(QMainWindow):
             return
         saved = (getattr(proj, "viewer_settings", None) or {}).get(
             "overlay_colors") or {}
-        for key, rgb in saved.items():
+
+        clamp = lambda c: min(1.0, max(0.0, c))
+
+        def _rgb(v):
+            try:
+                return (clamp(float(v[0])), clamp(float(v[1])),
+                        clamp(float(v[2])))
+            except (TypeError, ValueError, IndexError):
+                return None
+
+        for key, val in saved.items():
             if key not in self._overlay_colors:
                 continue
-            try:
-                r, g, b = (float(rgb[0]), float(rgb[1]), float(rgb[2]))
-            except (TypeError, ValueError, IndexError):
-                continue
-            clamp = lambda c: min(1.0, max(0.0, c))
-            self._overlay_colors[key] = (clamp(r), clamp(g), clamp(b))
+            if isinstance(val, dict):
+                primary, bottom = _rgb(val.get("primary")), _rgb(
+                    val.get("bottom"))
+            else:
+                primary, bottom = _rgb(val), None   # legacy flat form
+            if primary is not None:
+                self._overlay_colors[key] = primary
+            if bottom is not None:
+                self._overlay_bottom_colors[key] = bottom
 
     def _build_overlay_list(self) -> None:
         """(Re)populate the Overlays QListWidget from ``self._overlay_state``.
@@ -5005,12 +5037,14 @@ class PdnViewer(QMainWindow):
         layout.addWidget(all_eye)
 
         # Colour swatch — opens a picker for this overlay's draw colour.
-        # Colour is per layer, so the Top / Bottom rows of a split layer
-        # share one swatch; picking on either updates both (the list is
-        # rebuilt — see _on_overlay_color).
-        colour_btn = OverlayColorButton(rgb=self._overlay_colors[key])
+        # A merged row and the Top row share the layer's primary colour;
+        # the Bottom row of a split layer carries its own swatch (its own
+        # colour, or the primary while it is still following — see
+        # _overlay_swatch_rgb / _on_overlay_color).
+        colour_btn = OverlayColorButton(
+            rgb=self._overlay_swatch_rgb(key, variant))
         colour_btn.colorChanged.connect(
-            lambda rgb, k=key: self._on_overlay_color(k, rgb)
+            lambda rgb, k=key, v=variant: self._on_overlay_color(k, v, rgb)
         )
         layout.addWidget(colour_btn)
 
@@ -5075,16 +5109,47 @@ class PdnViewer(QMainWindow):
         self._overlay_state[key][variant]["solid"] = bool(solid)
         self._on_overlay_changed()
 
-    def _on_overlay_color(self, key: str,
+    def _overlay_swatch_rgb(self, key: str,
+                            variant: str) -> tuple[float, float, float]:
+        """Colour the swatch button on a ``(key, variant)`` row should show.
+
+        The Bottom row of a split layer shows its own pinned colour, or the
+        primary colour while it is still following it. Every other row (a
+        merged ``both`` row, or the Top row) shows the primary colour."""
+        if variant == "bottom":
+            bot = self._overlay_bottom_colors.get(key)
+            if bot is not None:
+                return bot
+        return self._overlay_colors[key]
+
+    def _overlay_color_for(self, key: str,
+                           side: str) -> tuple[float, float, float]:
+        """RGB an overlay's geometry on ``side`` ("top" / "bottom") is drawn
+        in. The Bottom side of a *split* layer uses its own pinned colour
+        when set; the Top side, and either side of a merged layer, use the
+        primary colour."""
+        if side == "bottom" and self._overlay_state.get(key, {}).get("split"):
+            bot = self._overlay_bottom_colors.get(key)
+            if bot is not None:
+                return bot
+        return self._overlay_colors[key]
+
+    def _on_overlay_color(self, key: str, variant: str,
                           rgb: tuple[float, float, float]) -> None:
         """A Board Features row's colour swatch picked a new colour.
 
-        Colour is stored per overlay layer, so a split layer's Top / Bottom
-        rows share it — the list is rebuilt (deferred a tick, as the picked
-        swatch is mid-emit) so both swatches repaint. The overlay geometry
-        is recoloured immediately, and the project is marked dirty so the
-        new colour is written to the .fypa on the next save."""
-        self._overlay_colors[key] = tuple(float(c) for c in rgb)
+        The Bottom row of a split layer pins its own colour
+        (``self._overlay_bottom_colors``); a merged or Top row sets the
+        layer's primary colour. The list is rebuilt (deferred a tick, as the
+        picked swatch is mid-emit) so a Bottom swatch still following the
+        primary repaints too. The overlay geometry is recoloured
+        immediately, and the project is marked dirty so the new colour is
+        written to the .fypa on the next save."""
+        rgb = tuple(float(c) for c in rgb)
+        if variant == "bottom":
+            self._overlay_bottom_colors[key] = rgb
+        else:
+            self._overlay_colors[key] = rgb
         self._project_dirty = True
         QTimer.singleShot(0, self._build_overlay_list)
         self._on_overlay_changed()
@@ -5169,25 +5234,52 @@ class PdnViewer(QMainWindow):
 
         rail_members = (set(self._effective_rail_members(rails))
                         if rails else set())
-        # Per-side z so overlays sit on the right copper plane in 3D mode.
+        # Per-side z for 3D placement. ``side_z`` is the outer copper plane
+        # on each side — used by vias, which span the whole board. z=0 is
+        # the top of the stackup; lower layers are negative.
         side_z = {"top": 0.0, "bottom": 0.0}
         if self._physicals:
             side_z["top"] = self._layer_z_for(self._physicals[0])
             side_z["bottom"] = self._layer_z_for(self._physicals[-1])
+        # Board features (silkscreen / pads / components / designators)
+        # physically sit on the board's outer surfaces, so top-side items
+        # are lifted ABOVE the topmost physical layer and bottom-side items
+        # dropped BELOW the lowest. The offset is one mean layer pitch so
+        # they read as clearly separate from the copper in 3D (fixed-gap
+        # fallback on a single-layer board).
+        n_phys = len(self._physicals)
+        if n_phys > 1:
+            pitch = (side_z["top"] - side_z["bottom"]) / (n_phys - 1)
+        else:
+            pitch = self._LAYER_Z_SPACING_MM
+        if pitch <= 0.0:
+            pitch = self._LAYER_Z_SPACING_MM
+        feature_z = {"top": side_z["top"] + pitch,
+                     "bottom": side_z["bottom"] - pitch}
 
-        tri_chunks: list[np.ndarray] = []
-        col_chunks: list[np.ndarray] = []
+        # Triangles split into two batches: ``under_*`` draw BEFORE the
+        # heatmap mesh (2D only — bottom-side board features sit behind the
+        # bottom copper), ``over_*`` draw after, on top. In 3D the per-side
+        # feature z + depth test handle ordering, so everything goes over.
+        in_2d = not self.view_3d_box.isChecked()
+        under_tri: list[np.ndarray] = []
+        under_col: list[np.ndarray] = []
+        over_tri: list[np.ndarray] = []
+        over_col: list[np.ndarray] = []
         labels: list[dict] = []
 
         def _emit(verts_xy: np.ndarray, z: float,
-                  rgb: tuple[float, float, float]) -> None:
+                  rgb: tuple[float, float, float], *,
+                  under: bool = False) -> None:
             if verts_xy.size == 0:
                 return
             p = np.empty((verts_xy.shape[0], 3), dtype=np.float32)
             p[:, :2] = verts_xy
             p[:, 2] = z
-            tri_chunks.append(p)
-            col_chunks.append(np.broadcast_to(
+            tri, col = ((under_tri, under_col) if under
+                        else (over_tri, over_col))
+            tri.append(p)
+            col.append(np.broadcast_to(
                 np.asarray(rgb, dtype=np.float32), p.shape).copy())
 
         def _shape_tris(ring, solid: bool) -> np.ndarray:
@@ -5205,7 +5297,6 @@ class PdnViewer(QMainWindow):
         # round-capped tracks and consecutive segments join smoothly. No
         # per-net data, so either eye ("selected rails" / "all") shows it.
         sides = self._overlay_side_states("silkscreen")
-        rgb = self._overlay_colors["silkscreen"]
         for rec in md.get("silkscreen", []):
             if rec.get("kind") == "text":
                 continue  # legacy pickles only — text isn't an Overlay item
@@ -5213,18 +5304,22 @@ class PdnViewer(QMainWindow):
             vis, _solid = sides.get(side, (None, False))
             if vis is None:
                 continue
+            rgb = self._overlay_color_for("silkscreen", side)
             poly = rec.get("polyline") or []
             if len(poly) < 2:
                 continue
             # Real track width (Altium silkscreen is thin); a small floor
             # keeps a zero-width track from collapsing to nothing.
             half = max(0.5 * float(rec.get("width_mm", 0.0) or 0.0), 0.01)
-            z = side_z.get(side, 0.0)
-            _emit(_overlay_outline_tris(poly, half, closed=False), z, rgb)
+            z = feature_z.get(side, 0.0)
+            under = in_2d and side == "bottom"
+            _emit(_overlay_outline_tris(poly, half, closed=False), z, rgb,
+                  under=under)
             # Round end caps — interior joins are already mitered.
             for end in (poly[0], poly[-1]):
                 _emit(_overlay_fan_tris(_overlay_circle_ring(
-                    float(end[0]), float(end[1]), half, 12)), z, rgb)
+                    float(end[0]), float(end[1]), half, 12)), z, rgb,
+                    under=under)
 
         # Vias — one circle per via (the Vias row has no top/bottom split).
         vsub = self._overlay_state["vias"]["both"]
@@ -5244,7 +5339,6 @@ class PdnViewer(QMainWindow):
 
         # Components — axis-aligned bounding box per component.
         sides = self._overlay_side_states("components")
-        rgb = self._overlay_colors["components"]
         for rec in md.get("components", []):
             side = rec.get("side", "top")
             vis, solid = sides.get(side, (None, False))
@@ -5252,11 +5346,12 @@ class PdnViewer(QMainWindow):
                 continue
             if vis == "rails" and not _net_match(rec.get("nets", [])):
                 continue
+            rgb = self._overlay_color_for("components", side)
             bbox = rec.get("bbox")
             if not bbox or len(bbox) != 4:
                 continue
             _emit(_shape_tris(_overlay_box_ring(*bbox), solid),
-                  side_z[side], rgb)
+                  feature_z[side], rgb, under=in_2d and side == "bottom")
 
         # Pads — outline ring per pad, drawn on whichever board side(s)
         # the pad's copper layers include (through-hole pads → both).
@@ -5267,7 +5362,6 @@ class PdnViewer(QMainWindow):
         top_lid = enabled[0] if enabled else None
         bot_lid = enabled[-1] if enabled else None
         sides = self._overlay_side_states("pads")
-        rgb = self._overlay_colors["pads"]
         for rec in md.get("pads", []):
             ring = rec.get("outline")
             if not ring:
@@ -5281,15 +5375,15 @@ class PdnViewer(QMainWindow):
                     continue
                 if vis == "rails" and not _net_match([rec.get("net")]):
                     continue
-                _emit(_shape_tris(ring, solid), side_z[side], rgb)
+                rgb = self._overlay_color_for("pads", side)
+                _emit(_shape_tris(ring, solid), feature_z[side], rgb,
+                      under=in_2d and side == "bottom")
 
         # Designators — drawn in Altium's actual single-stroke font: the
         # loader lays each one out into stroke polylines, which render as
         # thin round-capped ribbons (same path as silkscreen). TrueType-
         # font designators carry no polylines and fall back to a label.
         sides = self._overlay_side_states("designators")
-        rgb = self._overlay_colors["designators"]
-        des_hex = QColor.fromRgbF(*rgb).name()
         for rec in md.get("designators", []):
             side = rec.get("side", "top")
             vis, _solid = sides.get(side, (None, False))
@@ -5297,16 +5391,18 @@ class PdnViewer(QMainWindow):
                 continue
             if vis == "rails" and not _net_match(rec.get("nets", [])):
                 continue
+            rgb = self._overlay_color_for("designators", side)
             if rec.get("polylines"):
                 _emit(self._designator_stroke_tris(rec),
-                      side_z[side], rgb)
+                      feature_z[side], rgb,
+                      under=in_2d and side == "bottom")
             else:
                 labels.append({
                     "x": float(rec.get("x_mm", 0.0)),
                     "y": float(rec.get("y_mm", 0.0)),
-                    "z": side_z[side],
+                    "z": feature_z[side],
                     "text": rec.get("text", ""),
-                    "color": des_hex,
+                    "color": QColor.fromRgbF(*rgb).name(),
                     "height_mm": float(rec.get("height_mm", 1.0) or 1.0),
                     "rotation_deg": float(rec.get("rotation_deg", 0.0) or 0.0),
                 })
@@ -5352,9 +5448,15 @@ class PdnViewer(QMainWindow):
                         else:
                             _emit(self._copper_poly_wire(poly), z, lrgb)
 
-        if tri_chunks:
-            gv.set_overlay_fills(np.concatenate(tri_chunks, axis=0),
-                                 np.concatenate(col_chunks, axis=0))
+        # Concatenate under-mesh chunks first so the GL viewer can draw
+        # that leading slice before the heatmap mesh (2D bottom-side
+        # board features), the rest on top.
+        all_tri = under_tri + over_tri
+        if all_tri:
+            under_count = sum(c.shape[0] for c in under_tri)
+            gv.set_overlay_fills(np.concatenate(all_tri, axis=0),
+                                 np.concatenate(under_col + over_col, axis=0),
+                                 under_mesh_count=under_count)
         else:
             gv.clear_overlay_fills()
         if labels:
@@ -9082,6 +9184,9 @@ class PdnViewer(QMainWindow):
             "designator": comp.get("designator"),
             "nets": nets,
             "bbox": comp.get("bbox"),
+            # True once the user clicks "Unlock" on a component whose PDN
+            # values come from the Altium schematic — see _on_editor_unlock.
+            "unlocked": False,
         }
         highlight: set[str] = set()
         for n in nets:
@@ -9284,12 +9389,53 @@ class PdnViewer(QMainWindow):
         )
         lay.addWidget(box)
         note = QLabel(
-            "This rail is set up in the schematic — edit the component's "
-            "PDN_* parameters there to change it."
+            "This rail is set up in the Altium schematic. Unlock it to "
+            "override these values in FYPA for a re-solve."
         )
         note.setWordWrap(True)
         note.setStyleSheet(f"color: {t['fg_muted']}; font-size: 8pt;")
         lay.addWidget(note)
+        # Unlock button — only for editable roles (SOURCE / SINK); SERIES /
+        # REGULATOR directives aren't editable through this form.
+        if any(d.get("role") in ("SOURCE", "SINK") for d in directives):
+            unlock = QPushButton("🔓  Unlock to edit")
+            unlock.setToolTip(
+                "Edit these PDN values in FYPA — the edited directive "
+                "overrides the schematic one on the next resolve."
+            )
+            unlock.clicked.connect(self._on_editor_unlock)
+            lay.addWidget(unlock)
+
+    def _unlockable_schematic_directive(self, sel: dict) -> dict | None:
+        """The first SOURCE / SINK schematic directive on the selected
+        component — the one the Unlock button / form edits."""
+        for d in self._schematic_directives_for(sel):
+            if d.get("role") in ("SOURCE", "SINK"):
+                return d
+        return None
+
+    @staticmethod
+    def _terminal_primary_net(term: dict | None) -> str | None:
+        """One representative net for a metadata directive terminal — its
+        named net, else its first pin's net. ``None`` for an ideal return."""
+        if not term or term.get("ideal_return"):
+            return None
+        rn = term.get("requested_net")
+        if rn:
+            return rn
+        for p in term.get("pins", []) or []:
+            if p.get("net"):
+                return p["net"]
+        return None
+
+    def _on_editor_unlock(self) -> None:
+        """Unlock a schematic-defined component for editing — the read-only
+        info is replaced by the editable form, seeded from the schematic
+        directive. Applying it overrides the schematic directive."""
+        sel = self._editor_selection
+        if sel and sel.get("kind") == "component":
+            sel["unlocked"] = True
+            self._populate_editor_form()
 
     def _populate_editor_form(self) -> None:
         """(Re)build the PDN-role form for the current component / free
@@ -9311,15 +9457,17 @@ class PdnViewer(QMainWindow):
             title = "<b>Free marker</b>"
         lay.addWidget(QLabel(title))
 
-        # A component already carrying PDN_* directives in the Altium
-        # schematic is shown read-only — editing it means editing the
-        # schematic, and an editor directive on top would double up.
+        # A component carrying PDN_* directives in the Altium schematic is
+        # shown read-only with an Unlock button — until the user unlocks it
+        # (or an editor override already exists), no editable form appears.
+        sch_unlock: dict | None = None
         if sel["kind"] == "component":
             sch = self._schematic_directives_for(sel)
-            if sch:
+            if sch and existing is None and not sel.get("unlocked"):
                 self._build_schematic_info(lay, sch)
                 self._update_editor_panel()
                 return
+            sch_unlock = self._unlockable_schematic_directive(sel)
 
         form = QFormLayout()
         form.setContentsMargins(0, 0, 0, 0)
@@ -9383,6 +9531,35 @@ class PdnViewer(QMainWindow):
             if existing.n_net:
                 self._set_combo(self._ef_nnet, existing.n_net)
             self._ef_remove.setEnabled(True)
+            if existing.overrides_designator:
+                self._ef_status.setText(
+                    f"<span style='color:{t['warn']};'>Overrides the "
+                    "schematic directive.</span>"
+                )
+        elif sch_unlock is not None:
+            # Just unlocked, no editor override yet — seed the form from the
+            # schematic directive so the user adjusts its actual values.
+            role = sch_unlock.get("role")
+            role = role if role in ("SOURCE", "SINK") else "SINK"
+            self._ef_role.setCurrentText(role)
+            val = sch_unlock.get("value")
+            self._ef_value.setText("" if val is None else f"{val:g}")
+            terms = sch_unlock.get("terminals") or {}
+            n_term = terms.get("N")
+            single = (n_term is None) or bool(n_term.get("ideal_return"))
+            self._ef_single.setChecked(single)
+            self._ef_two.setChecked(not single)
+            p_net = self._terminal_primary_net(terms.get("P"))
+            if p_net:
+                self._set_combo(self._ef_pnet, p_net)
+            n_net = self._terminal_primary_net(n_term)
+            if n_net:
+                self._set_combo(self._ef_nnet, n_net)
+            self._ef_remove.setEnabled(False)
+            self._ef_status.setText(
+                f"<span style='color:{t['warn']};'>Unlocked — Apply "
+                "replaces the schematic directive on the next resolve.</span>"
+            )
         else:
             self._ef_remove.setEnabled(False)
         self._on_editor_role_changed(self._ef_role.currentText())
@@ -9447,6 +9624,13 @@ class PdnViewer(QMainWindow):
         if sel["kind"] == "component":
             d.kind = "component"
             d.designator = sel.get("designator")
+            # If this component has a schematic directive, mark the editor
+            # directive as its override so the re-solve drops the schematic
+            # one instead of stamping both.
+            sch_unlock = self._unlockable_schematic_directive(sel)
+            d.overrides_designator = (
+                sch_unlock.get("designator") if sch_unlock else None
+            )
         else:
             d.kind = "free"
             self._editor_selection = {"kind": "free", "id": d.id}
@@ -11970,15 +12154,29 @@ class PdnViewer(QMainWindow):
     def _store_viewer_settings(self, proj) -> None:
         """Fold persistable viewer state into ``proj.viewer_settings`` so the
         next :meth:`fypa.project_file.ProjectFile.save` writes it. Currently
-        just the Board Features overlay colours — stored in full so a
-        reopened project shows exactly the colours the user left, even if a
-        built-in default changes in a later build."""
+        just the Board Features overlay colours.
+
+        Each entry is ``{"primary": [r, g, b]}``, stored in full so a
+        reopened project shows exactly the colours the user left even if a
+        built-in default later changes. A ``"bottom"`` key is added only
+        when the user pinned a distinct Bottom-side colour for a split
+        layer — i.e. the bottom colour is written only once changed."""
         colors = getattr(self, "_overlay_colors", None)
-        if colors:
-            proj.viewer_settings["overlay_colors"] = {
-                key: [round(float(c), 6) for c in rgb]
-                for key, rgb in colors.items()
-            }
+        if not colors:
+            return
+        bottoms = getattr(self, "_overlay_bottom_colors", {})
+
+        def _enc(rgb) -> list[float]:
+            return [round(float(c), 6) for c in rgb]
+
+        out: dict[str, dict] = {}
+        for key, rgb in colors.items():
+            entry = {"primary": _enc(rgb)}
+            bot = bottoms.get(key)
+            if bot is not None:
+                entry["bottom"] = _enc(bot)
+            out[key] = entry
+        proj.viewer_settings["overlay_colors"] = out
 
     def _save_project(self, path: Path | None = None) -> bool:
         """Write the ``.fypa`` project file. Falls back to a Save-As prompt

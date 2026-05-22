@@ -807,7 +807,11 @@ def build_per_net_geometry_layers_split(
         active_b = {k: v for k, v in buckets.items() if k[1] in active_nets}
         rest_b = {k: v for k, v in buckets.items() if k[1] not in active_nets}
     else:
-        active_b, rest_b = buckets, {}
+        # No directive touches a net — treat every real net as active, but
+        # keep NO_NET copper out of the FEM regardless (it carries no rail
+        # current; it exists only for the viewer's "all copper" overlay).
+        active_b = {k: v for k, v in buckets.items() if k[1] != NO_NET}
+        rest_b = {k: v for k, v in buckets.items() if k[1] == NO_NET}
 
     # Active nets get the mesher-safe grid-snapped union; the non-active
     # nets feed the display-only overlay and never reach the mesher, so
@@ -900,7 +904,12 @@ def _build_net_layer_buckets(
     _t_buckets = time.monotonic()
 
     def _add(layer_id: int, net_index: int, geom):
-        if net_index == NO_NET or geom is None or geom.is_empty:
+        # NO_NET copper (an unassigned arc / region / free pour) is bucketed
+        # under the NO_NET key rather than dropped: it never reaches the FEM
+        # — build_per_net_geometry_layers_split routes the NO_NET bucket to
+        # the non-active geometry — but the viewer's "all copper" overlay
+        # needs it so unassigned copper still renders.
+        if geom is None or geom.is_empty:
             return
         if layer_id not in enabled_set:
             return
@@ -988,7 +997,9 @@ def build_net_layer_shapes(
 
     Through-hole pads contribute to every enabled copper layer (plated
     through, copper on every layer they span). Primitives without a net
-    assignment (``net_index == NO_NET``) are skipped.
+    assignment are bucketed under the :data:`NO_NET` key — kept so the
+    viewer's "all copper" overlay can render unassigned copper, while the
+    FEM pipeline filters the NO_NET bucket out of its active set.
     """
     buckets = _build_net_layer_buckets(proj, enabled_layers, include_vias)
     # Per-(layer, net) unary_union: shapely 2 releases the GIL inside

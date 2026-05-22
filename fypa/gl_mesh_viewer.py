@@ -311,8 +311,12 @@ class GLMeshViewer(QOpenGLWidget):
         self._pending_bdrl_positions: np.ndarray | None = None
         self._pending_bdrl_colors: np.ndarray | None = None
         # Overlay-fill batch (GL_TRIANGLES). Vertex triples; flat-coloured
-        # solid-fill polygons for the Overlays control.
+        # solid-fill polygons for the Overlays control. The leading
+        # ``_n_ovl_under_vertices`` are drawn BEFORE the heatmap mesh (2D
+        # mode — bottom-side board features behind the bottom copper); the
+        # rest after, on top.
         self._n_ovl_vertices: int = 0
+        self._n_ovl_under_vertices: int = 0
         self._pending_ovl_positions: np.ndarray | None = None
         self._pending_ovl_colors: np.ndarray | None = None
 
@@ -741,7 +745,8 @@ class GLMeshViewer(QOpenGLWidget):
         self.update()
 
     def set_overlay_fills(self, positions: np.ndarray,
-                          colors: np.ndarray) -> None:
+                          colors: np.ndarray,
+                          under_mesh_count: int = 0) -> None:
         """Push a batch of solid-fill overlay triangles to the GPU.
 
         Used by the Heatmap tab's Overlays control for overlays set to
@@ -749,7 +754,12 @@ class GLMeshViewer(QOpenGLWidget):
         component bodies. ``positions`` is an (N, 3) float array of vertex
         triples (consecutive triples form one triangle), so N must be a
         multiple of 3. ``colors`` is an (N, 3) RGB array in [0..1] of
-        matching length. Drawn on top of the heatmap in 2D and 3D.
+        matching length.
+
+        ``under_mesh_count`` (must be a multiple of 3) selects how many
+        leading vertices are drawn BEFORE the heatmap mesh — used in 2D
+        mode to push bottom-side board features behind the bottom copper.
+        The remaining vertices are drawn after the mesh, on top.
         """
         pos = np.ascontiguousarray(positions, dtype=np.float32)
         col = np.ascontiguousarray(colors, dtype=np.float32)
@@ -757,13 +767,17 @@ class GLMeshViewer(QOpenGLWidget):
             raise ValueError("positions must be (3*k, 3)")
         if col.shape != pos.shape:
             raise ValueError("colors shape must match positions")
+        if not (0 <= under_mesh_count <= pos.shape[0]) or under_mesh_count % 3 != 0:
+            raise ValueError("under_mesh_count must be a multiple of 3 in [0, N]")
         self._pending_ovl_positions = pos
         self._pending_ovl_colors = col
         self._n_ovl_vertices = pos.shape[0]
+        self._n_ovl_under_vertices = int(under_mesh_count)
         self.update()
 
     def clear_overlay_fills(self) -> None:
         self._n_ovl_vertices = 0
+        self._n_ovl_under_vertices = 0
         self._pending_ovl_positions = None
         self._pending_ovl_colors = None
         self.update()
@@ -1381,6 +1395,12 @@ class GLMeshViewer(QOpenGLWidget):
         if (self._n_sbar_under_vertices > 0
                 and self._line_program is not None):
             self._draw_series_bars(0, self._n_sbar_under_vertices)
+        # Bottom-side overlay fills (2D) likewise sit before the mesh so
+        # the bottom copper paints over them — bottom-side board features
+        # are physically below the bottom copper layer.
+        if (self._n_ovl_under_vertices > 0
+                and self._line_program is not None):
+            self._draw_overlay_fills(0, self._n_ovl_under_vertices)
         if self._n_indices > 0 and self._program is not None:
             self._draw_mesh()
             if (self._show_mesh_edges
@@ -1393,9 +1413,11 @@ class GLMeshViewer(QOpenGLWidget):
             self._draw_series_bars(over_first, over_count)
         # Overlay solid fills before the line batch so wire-mesh overlay
         # outlines (and the pad / layer outlines) sit crisply on top.
-        if (self._n_ovl_vertices > 0
+        ovl_over_first = self._n_ovl_under_vertices
+        ovl_over_count = self._n_ovl_vertices - ovl_over_first
+        if (ovl_over_count > 0
                 and self._line_program is not None):
-            self._draw_overlay_fills()
+            self._draw_overlay_fills(ovl_over_first, ovl_over_count)
         if (self._n_line_vertices > 0
                 and self._line_program is not None):
             self._draw_lines()
@@ -1730,12 +1752,14 @@ class GLMeshViewer(QOpenGLWidget):
         self._stub_vao.release()
         prog.release()
 
-    def _draw_overlay_fills(self) -> None:
-        """Draw the solid-fill overlay triangle batch via the line shader.
+    def _draw_overlay_fills(self, first: int, count: int) -> None:
+        """Draw a slice of the solid-fill overlay triangle batch via the
+        line shader. ``first`` and ``count`` are vertex indices; both must
+        be multiples of 3 so each draw covers whole triangles.
 
-        Flat-coloured polygons for the Overlays control's solid-fill mode
-        (filled pads, vias, component bodies). Drawn on top of the heatmap
-        in both 2D and 3D."""
+        Flat-coloured polygons for the Overlays control. The leading
+        ``_n_ovl_under_vertices`` (bottom-side board features in 2D) are
+        drawn before the heatmap mesh; the rest after, on top."""
         prog = self._line_program
         prog.bind()
         prog.setUniformValue(self._line_u_mvp_loc, self._current_mvp())
@@ -1750,7 +1774,7 @@ class GLMeshViewer(QOpenGLWidget):
         GL.glVertexAttribPointer(1, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
         self._ovl_col_vbo.release()
 
-        GL.glDrawArrays(GL.GL_TRIANGLES, 0, self._n_ovl_vertices)
+        GL.glDrawArrays(GL.GL_TRIANGLES, first, count)
 
         GL.glDisableVertexAttribArray(0)
         GL.glDisableVertexAttribArray(1)
