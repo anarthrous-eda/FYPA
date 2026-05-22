@@ -3009,17 +3009,28 @@ class _SolveWorker(QThread):
             # viewer opens so a clean load self-reports where its time went.
             _timer = _StageTimer(logging.getLogger(__name__))
 
+            # A resolve (editor directives present) always re-solves against
+            # the design info that's already loaded — it must never re-stat
+            # the Altium project files to revalidate it.
+            _is_resolve = bool(self._editor_directives)
+
             loaded = None
             if self._loaded_project is not None:
                 # In-memory reuse — the editor 'Resolve' path hands us the
-                # LoadedProject the viewer already holds. A resolve always
-                # re-solves against the design info that's already loaded,
-                # so there's no cache read, no project-file stat and no
-                # re-extract: just take the object as-is.
+                # LoadedProject the viewer already holds. No cache read, no
+                # project-file stat, no re-extract: take the object as-is.
                 self.stage_changed.emit("Reusing loaded design info…")
                 loaded = self._loaded_project
             elif self._use_design_cache and pcbdoc_resolved is not None:
-                self.stage_changed.emit("Checking design-info cache…")
+                # No in-memory LoadedProject — e.g. the load hit the solve
+                # cache, so nothing was extracted. Fall back to the
+                # design-info cache. On a resolve, reuse it as-is:
+                # current_fp=None skips the fingerprint compare and the
+                # project-file stat that the "Checking…" stage performs.
+                self.stage_changed.emit(
+                    "Reusing loaded design info…" if _is_resolve
+                    else "Checking design-info cache…"
+                )
                 try:
                     from fypa.cli import (
                         _design_info_fingerprint,
@@ -3030,8 +3041,11 @@ class _SolveWorker(QThread):
                     # Time it so the load breakdown reports the cost — it
                     # parallels the "Save design-info cache" stage.
                     with _timer.stage("Load design-info cache"):
-                        design_fp = _design_info_fingerprint(
-                            self._prjpcb_path, pcbdoc_resolved,
+                        design_fp = (
+                            None if _is_resolve
+                            else _design_info_fingerprint(
+                                self._prjpcb_path, pcbdoc_resolved,
+                            )
                         )
                         loaded = _try_load_cached_design_info(
                             self._prjpcb_path, design_fp,
@@ -3084,8 +3098,7 @@ class _SolveWorker(QThread):
                         )
             else:
                 self.stage_changed.emit(
-                    "Reusing loaded design info…"
-                    if self._loaded_project is not None
+                    "Reusing loaded design info…" if _is_resolve
                     else "Design-info cache hit — reusing extract."
                 )
 

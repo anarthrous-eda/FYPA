@@ -895,12 +895,18 @@ def _save_cached_solution(
 
 
 def _try_load_cached_design_info(
-    prjpcb_path: Path, current_fp: dict,
+    prjpcb_path: Path, current_fp: dict | None,
     pcbdoc_path: Path | None = None,
 ):
     """Return the cached :class:`LoadedProject` if its embedded
     design-info fingerprint matches ``current_fp``; ``None`` otherwise.
     Silently treats unreadable / outdated / corrupt cache files as misses.
+
+    Pass ``current_fp=None`` to skip the fingerprint comparison entirely
+    and return the cached design info as-is (an absent / corrupt cache is
+    still a ``None`` miss). The editor 'Resolve' path uses this: a resolve
+    re-solves against the design that's already loaded, so re-stat'ing the
+    Altium project files to revalidate the cache would be pointless work.
     """
     cache_path = _design_info_cache_path(prjpcb_path, pcbdoc_path)
     if not cache_path.exists():
@@ -927,7 +933,7 @@ def _try_load_cached_design_info(
         return None
     if not isinstance(blob, dict):
         return None
-    if blob.get("fingerprint") != current_fp:
+    if current_fp is not None and blob.get("fingerprint") != current_fp:
         log.info("Design-info cache: fingerprint mismatch — re-extracting.")
         return None
     log.info("Design-info cache hit — reusing the design extract.")
