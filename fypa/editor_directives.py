@@ -18,10 +18,14 @@ import logging
 
 log = logging.getLogger(__name__)
 
-# Shared return node for every single-net editor directive. A single-net
-# SOURCE and a single-net SINK both reference this group so their current
-# loop closes through one common ideal-0 V return (see SourceSpec docs).
-_EDITOR_RETURN_GROUP = 9001
+# Base id for editor-directive return groups. Each electrically-connected
+# rail of single-net editor directives gets its own id (BASE, BASE+1, …) so
+# its point-to-point loop closes through an ideal-0 V return that is NOT
+# shared with any other rail. Sharing one return node across unconnected
+# rails wires their copper together through a phantom conductive path and
+# drives the FEM matrix near-singular. Numbered high to stay clear of the
+# schematic parser's return-group ids, which start at 0.
+_EDITOR_RETURN_GROUP_BASE = 9001
 
 _EDITOR_SCHDOC = "(editor)"
 
@@ -36,6 +40,7 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
     could not be resolved — those are skipped rather than aborting the solve.
     """
     from fypa.altium_annotations import (
+        ResistorSpec,
         SinkSpec,
         SourceSpec,
         TerminalPin,
@@ -61,6 +66,56 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
     for i, comp in enumerate(extracted.pcb_components):
         if comp.designator:
             comp_index.setdefault(comp.designator, i)
+
+    # --- Per-rail return groups for single-net editor directives ----------
+    # Each electrically-connected rail needs its OWN ideal-0 V return node.
+    # One return group shared across the whole board lets a SINK on rail A
+    # close its loop through a SOURCE on rail B — a path the copper can't
+    # carry, so the FEM matrix goes near-singular. Mirror altium_annotations'
+    # _assign_return_groups: union connected nets, one return id per group.
+    _uf: dict[str, str] = {}
+
+    def _uf_find(name: str) -> str:
+        _uf.setdefault(name, name)
+        root = name
+        while _uf[root] != root:
+            root = _uf[root]
+        while _uf[name] != root:        # path-compress
+            _uf[name], name = root, _uf[name]
+        return root
+
+    def _uf_union(a: str, b: str) -> None:
+        ra, rb = _uf_find(a), _uf_find(b)
+        if ra != rb:
+            _uf[rb] = ra
+
+    # SERIES directives bridge two nets — keep a point-to-point check that
+    # spans a ferrite / 0 Ω link inside a single rail group.
+    for _d in loaded.annotations.directives:
+        if not isinstance(_d, ResistorSpec):
+            continue
+        bridged: list[str] = []
+        for term in (_d.p, _d.n):
+            for pin in getattr(term, "pins", ()):
+                ni = pin.net_index
+                if 0 <= ni < len(extracted.nets):
+                    nm = getattr(extracted.nets[ni], "name", None)
+                    if nm:
+                        bridged.append(nm.upper())
+        for other in bridged[1:]:
+            _uf_union(bridged[0], other)
+
+    _rail_return_group: dict[str, int] = {}
+
+    def _return_group_for(net_name: str) -> int:
+        """Return-group id for the rail ``net_name`` sits on, minting a fresh
+        id (kept clear of the schematic ids) the first time a rail is seen."""
+        root = _uf_find(net_name.upper())
+        gid = _rail_return_group.get(root)
+        if gid is None:
+            gid = _EDITOR_RETURN_GROUP_BASE + len(_rail_return_group)
+            _rail_return_group[root] = gid
+        return gid
 
     def _component_center(designator: str | None) -> tuple[float, float] | None:
         ci = comp_index.get(designator) if designator else None
@@ -129,6 +184,10 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
                      "directive(s) overridden by the editor.", dropped)
 
     applied = 0
+    # Roles applied per return group + a representative rail net name, so an
+    # open-loop rail (sinks but no source, or vice versa) can be flagged.
+    group_roles: dict[int, set[str]] = {}
+    group_net: dict[int, str] = {}
     for ed in editor_directives:
         label = ed.designator or f"editor:{ed.id}"
         if ed.role not in ("SOURCE", "SINK"):
@@ -165,7 +224,10 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
                     "skipped."
                 )
                 continue
-        return_group = _EDITOR_RETURN_GROUP if ed.single_net else None
+        # Single-net directives get their rail's own return group; two-net
+        # directives carry a real N terminal and need none.
+        return_group = (_return_group_for(ed.p_net)
+                        if ed.single_net and ed.p_net else None)
         spec_designator = ed.designator or f"EDIT_{ed.id}"
 
         if ed.role == "SOURCE":
@@ -188,6 +250,27 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
             )
         loaded.annotations.directives.append(spec)
         applied += 1
+        if return_group is not None:
+            group_roles.setdefault(return_group, set()).add(ed.role)
+            group_net.setdefault(return_group, ed.p_net or "?")
+
+    # A single-net rail only carries current with at least one SOURCE AND
+    # one SINK sharing it. Warn (rather than abort) so the rest of the solve
+    # still runs — but an open-loop rail solves to an unreliable result.
+    for gid, roles in group_roles.items():
+        rail = group_net.get(gid, "?")
+        if "SOURCE" not in roles:
+            warnings.append(
+                f"Editor rail {rail!r}: single-net SINK(s) with no SOURCE — "
+                "no current can flow (open loop). Add a single-net SOURCE on "
+                "this rail, or switch the sink to two-net mode."
+            )
+        if "SINK" not in roles:
+            warnings.append(
+                f"Editor rail {rail!r}: single-net SOURCE(s) with no SINK — "
+                "no current can flow (open loop). Add a single-net SINK on "
+                "this rail, or switch the source to two-net mode."
+            )
 
     log.info("apply_editor_directives: applied %d, skipped %d.",
              applied, len(warnings))
