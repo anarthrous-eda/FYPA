@@ -382,8 +382,8 @@ def _load_solution_pickle(path, *, lean_ify: bool = True
 #     EVERYTHING (project + all tool sources) is unchanged. Skips the
 #     ~10-60 s mesh+solve pass.
 #
-# "Load from Project" tries the solve cache first, then the design-info
-# cache, then a full extract+solve. "Load from Project (Clean)" and
+# "Import Altium Design" tries the solve cache first, then the design-info
+# cache, then a full extract+solve. "Import Altium Design (Clean)" and
 # "Reload Design Info" both bypass the cache reads and force a fresh
 # extract+solve. Both writes always happen so the next run can still use
 # the cache.

@@ -984,19 +984,27 @@ class SplitButton(QToolButton):
 
 # --- Transparency control --------------------------------------------------
 
-# Five-step transparency cycle: 0/25/50/75/100 %. Stored as an integer
-# step count [0..4] on the button — the alpha applied to the row's
-# geometry is (4 - step) / 4 (0% transparency == fully opaque == step 0).
-_TRANSPARENCY_STEPS = 5
+# Nine-step transparency grid (12.5% per step): 0, 12.5, 25, 37.5, 50, 62.5,
+# 75, 87.5, 100 %. Stored as an integer step count [0..8] on the button —
+# the alpha applied to the row's geometry is (8 - step) / 8 (0%
+# transparency == fully opaque == step 0). A plain click moves by the
+# coarse delta (two steps == 25 %) and wraps around; an alt-click moves by
+# the fine delta (one step == 12.5 %) and clamps at 0 / 100 %. Shift
+# reverses the direction (alone or with alt).
+_TRANSPARENCY_STEPS = 9
+_TRANSPARENCY_COARSE_DELTA = 2
+_TRANSPARENCY_FINE_DELTA = 1
 _TRANSPARENCY_PIXMAP_CACHE: dict[tuple[str, int, int], QPixmap] = {}
 
 
 def _make_transparency_pixmap(step: int, *, size: int = 16) -> QPixmap:
     """Pie-chart icon for the per-row transparency control.
 
-    ``step`` is the number of quarter-slices removed from a white disc.
-    0 = full disc (0% transparent), 4 = empty (100% transparent — only the
-    faint reference outline remains so the button stays visible)."""
+    ``step`` is the number of eighth-slices removed from a white disc;
+    coarse clicks remove two eighths (a quarter) at a time, alt-clicks
+    remove one eighth (12.5 %). 0 = full disc (0% transparent), 8 = empty
+    (100% transparent — only the faint reference outline remains so the
+    button stays visible)."""
     px = QPixmap(size, size)
     px.fill(Qt.transparent)
     p = QPainter(px)
@@ -1018,9 +1026,9 @@ def _make_transparency_pixmap(step: int, *, size: int = 16) -> QPixmap:
         # Start the pie at 12 o'clock (90°) and sweep counter-clockwise.
         # As ``remaining`` decreases the trailing end retracts back toward
         # 12 along the clockwise direction, so each click visually removes
-        # the next quarter slice clockwise (upper-right first, then
-        # lower-right, lower-left, upper-left).
-        span_deg = remaining * 90
+        # the next eighth slice clockwise (upper-right first, then sweeping
+        # round to the upper-left as transparency rises).
+        span_deg = remaining * (360.0 / (_TRANSPARENCY_STEPS - 1))
         path = QPainterPath()
         path.moveTo(rect.center())
         path.arcTo(rect, 90.0, float(span_deg))
@@ -1047,9 +1055,9 @@ def _transparency_pixmap(step: int, size: int = 16) -> QPixmap:
     return cached
 
 
-def _transparency_percent(step: int) -> int:
+def _transparency_percent(step: int) -> float:
     """Percentage the icon currently advertises for a given step count."""
-    return int(round(100 * step / (_TRANSPARENCY_STEPS - 1)))
+    return 100.0 * step / (_TRANSPARENCY_STEPS - 1)
 
 
 def _transparency_alpha(step: int) -> float:
@@ -1058,10 +1066,15 @@ def _transparency_alpha(step: int) -> float:
 
 
 class TransparencyButton(QToolButton):
-    """Cycles a row's transparency through 0/25/50/75/100 %.
+    """Cycles a row's transparency through 0..100 % in 12.5 % increments.
 
-    Visual is a white disc with quarter-slices removed on each click; one
-    extra click past 100% wraps back to a full opaque disc."""
+    Click behaviour
+    ---------------
+    * Plain click       — +25 % (coarse), wraps 100 % → 0 %.
+    * Shift+click       — -25 % (coarse), wraps 0 % → 100 %.
+    * Alt+click         — +12.5 % (fine), clamped at 100 %.
+    * Alt+Shift+click   — -12.5 % (fine), clamped at 0 %.
+    """
 
     toggled_transparency = Signal(int)  # 0..(_TRANSPARENCY_STEPS-1)
 
@@ -1070,6 +1083,7 @@ class TransparencyButton(QToolButton):
         super().__init__(parent)
         self._step = int(step) % _TRANSPARENCY_STEPS
         self._icon_size = icon_size
+        self._press_mods: Qt.KeyboardModifiers = Qt.NoModifier
         self.setAutoRaise(True)
         self.setCursor(Qt.PointingHandCursor)
         self.setIconSize(QSize(icon_size, icon_size))
@@ -1095,13 +1109,58 @@ class TransparencyButton(QToolButton):
 
     def _apply_icon(self) -> None:
         self.setIcon(QIcon(_transparency_pixmap(self._step, self._icon_size)))
+        pct = _transparency_percent(self._step)
+        # Drop the trailing zero on the 25 %-grid values so the common
+        # multiples-of-25 read short; fine-grid (12.5 / 37.5 / ...) keeps
+        # the half.
+        pct_text = (f"{pct:.1f}".rstrip("0").rstrip(".")) + "%"
         self.setToolTip(
-            f"Transparency: {_transparency_percent(self._step)}% — "
-            f"click to increase"
+            f"Transparency: {pct_text}\n"
+            "Click: +25 %    Shift+Click: -25 %    (wrap)\n"
+            "Alt+Click: +12.5 %    Alt+Shift+Click: -12.5 %    "
+            "(stop at 0 % / 100 %)"
         )
 
+    def mousePressEvent(self, event) -> None:
+        # Capture the modifiers at press time — QToolButton.clicked fires
+        # on release, and QApplication.keyboardModifiers() at that moment
+        # would race the user lifting Alt / Shift before the mouse button.
+        self._press_mods = event.modifiers()
+        super().mousePressEvent(event)
+
     def _on_clicked(self) -> None:
-        self.setStep(self._step + 1)
+        mods = self._press_mods
+        self._press_mods = Qt.NoModifier
+        fine = bool(mods & Qt.AltModifier)
+        reverse = bool(mods & Qt.ShiftModifier)
+        delta = (_TRANSPARENCY_FINE_DELTA if fine
+                 else _TRANSPARENCY_COARSE_DELTA)
+        if reverse:
+            delta = -delta
+        max_step = _TRANSPARENCY_STEPS - 1
+        if fine:
+            # Fine clicks stop at the boundaries so the user can hold Alt
+            # and nudge precisely without overshooting past 0 % / 100 %.
+            new_step = max(0, min(max_step, self._step + delta))
+        else:
+            # Coarse clicks "snap, then wrap": land on the boundary first,
+            # and only the next click *past* the boundary jumps to the
+            # opposite end. Preserves the original "click at 100 % returns
+            # to 0 %" feel even when the current step is off the coarse
+            # grid (e.g. after the user has nudged with Alt).
+            if reverse:
+                if self._step == 0:
+                    new_step = max_step
+                else:
+                    new_step = max(0, self._step + delta)
+            else:
+                if self._step == max_step:
+                    new_step = 0
+                else:
+                    new_step = min(max_step, self._step + delta)
+        if new_step == self._step:
+            return
+        self.setStep(new_step)
 
 
 # --- Board-feature colour swatch -------------------------------------------
@@ -3035,7 +3094,7 @@ class _SolveWorker(QThread):
         # Selects one of several .PcbDoc files in a multi-PCB project.
         # None = altium_monkey default (first PcbDoc in project order).
         self._pcbdoc_selector = pcbdoc_selector
-        # False = "Load from Project (Clean)" / "Reload Design Info" path:
+        # False = "Import Altium Design (Clean)" / "Reload Design Info" path:
         # always run extract+geometry+annotations from disk. True = try the
         # FYPA design-info cache first and fall back to a fresh load on miss.
         self._use_design_cache = bool(use_design_cache)
@@ -3372,7 +3431,7 @@ class _SolveWorker(QThread):
                 new_solution = to_lean_solution(padne_solution)
 
             # Persist the solve to the FYPA solve cache so the next
-            # "Load from Project" can skip both extract and solve.
+            # "Import Altium Design" can skip both extract and solve.
             # Skip when stackup_overrides / sink_overrides are in play —
             # the resulting solve diverges from the on-disk project, so
             # caching it would poison the next plain load. Failures are
@@ -3780,7 +3839,8 @@ def _build_help_menu(window) -> None:
 class LauncherWindow(QMainWindow):
     """Minimal launcher window shown when FYPA is invoked with no project.
 
-    Has just a File menu (Open Project / Open Solution / Exit) and a centred
+    Has just a File menu (Import Altium Design / Open Project File /
+    Load Solution / Exit) and a centred
     welcome label. Picking a project runs the same solve worker the main
     viewer uses; on success, a real :class:`PdnViewer` opens and this
     launcher closes itself.
@@ -3808,9 +3868,9 @@ class LauncherWindow(QMainWindow):
             f"<h2 style='color:{t['fg']}; margin-top:2px; margin-bottom:0;'>Altium PDN Analyser</h2>"
             f"<p style='color:{t['accent']};'>No project loaded.</p>"
             f"<p style='color:{t['fg_dim']};'>"
-            f"<a href='open-project' style='{link_style}'>Load from Project&hellip;</a>"
+            f"<a href='open-project' style='{link_style}'>Import Altium Design&hellip;</a>"
             " (Ctrl+O) to pick a <code>.PrjPcb</code>,<br>"
-            f"<a href='open-project-clean' style='{link_style}'>Load from Project (Clean)&hellip;</a>"
+            f"<a href='open-project-clean' style='{link_style}'>Import Altium Design (Clean)&hellip;</a>"
             " (Ctrl+Shift+L) to force a fresh extract + solve,<br>"
             "or "
             f"<a href='open-solution' style='{link_style}'>Load Solution&hellip;</a>"
@@ -3871,7 +3931,7 @@ class LauncherWindow(QMainWindow):
         mb = self.menuBar()
         file_menu = mb.addMenu("&File")
 
-        open_proj = QAction("&Load from Project…", self)
+        open_proj = QAction("&Import Altium Design…", self)
         open_proj.setShortcut(QKeySequence.Open)  # Ctrl+O
         open_proj.setStatusTip(
             "Pick a .PrjPcb; reuse the cached solution if the project is "
@@ -3880,7 +3940,7 @@ class LauncherWindow(QMainWindow):
         open_proj.triggered.connect(self._on_menu_open_project)
         file_menu.addAction(open_proj)
 
-        open_proj_clean = QAction("Load from Project (&Clean)…", self)
+        open_proj_clean = QAction("Import Altium Design (&Clean)…", self)
         open_proj_clean.setShortcut("Ctrl+Shift+L")
         open_proj_clean.setStatusTip(
             "Pick a .PrjPcb; ignore any cached design info or solution and "
@@ -3890,6 +3950,15 @@ class LauncherWindow(QMainWindow):
             lambda: self._on_menu_open_project(clean=True)
         )
         file_menu.addAction(open_proj_clean)
+
+        open_projfile = QAction("Open &Project File…", self)
+        open_projfile.setShortcut("Ctrl+Shift+P")
+        open_projfile.setStatusTip(
+            "Open a .fypa project file — its linked solution plus any "
+            "editor-mode changes."
+        )
+        open_projfile.triggered.connect(self._on_menu_open_project_file)
+        file_menu.addAction(open_projfile)
 
         file_menu.addSeparator()
 
@@ -4029,15 +4098,74 @@ class LauncherWindow(QMainWindow):
             return
         self._open_viewer_and_close(solution, metadata)
 
+    def _on_menu_open_project_file(self) -> None:
+        """File > Open Project File… → load a ``.fypa`` and open a viewer
+        bound to it (its linked solution + editor directives)."""
+        from fypa.project_file import ProjectFile
+        path_str, _ = QFileDialog.getOpenFileName(
+            self, "Open project file", "",
+            "FYPA project (*.fypa);;All files (*)",
+        )
+        if not path_str:
+            return
+        try:
+            proj = ProjectFile.load(Path(path_str))
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Couldn't open project",
+                f"Failed to load {path_str}:\n\n{type(e).__name__}: {e}",
+            )
+            return
+        sol_path = proj.solve_pickle
+        if not sol_path or not Path(sol_path).exists():
+            sol_path = None
+            if proj.prjpcb_path:
+                try:
+                    from fypa.cli import _solve_cache_path
+                    cand = _solve_cache_path(
+                        Path(proj.prjpcb_path),
+                        Path(proj.pcbdoc_path) if proj.pcbdoc_path else None,
+                    )
+                    if cand.exists():
+                        sol_path = str(cand)
+                except Exception:
+                    sol_path = None
+        if not sol_path:
+            QMessageBox.critical(
+                self, "Couldn't open project",
+                "The project file doesn't point to a readable solution "
+                "pickle, and no cached solve was found.",
+            )
+            return
+        try:
+            from fypa.cli import _load_solution_pickle
+            solution, metadata = _load_solution_pickle(Path(sol_path))
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Couldn't open project",
+                f"Failed to load the linked solution {sol_path}:\n\n"
+                f"{type(e).__name__}: {e}",
+            )
+            return
+        self._open_viewer_and_close(
+            solution, metadata, project=proj, project_path=Path(path_str),
+        )
+
     def _open_viewer_and_close(self, solution, metadata: dict | None,
                                *, initial_settings=None,
-                               loaded_project=None) -> None:
+                               loaded_project=None,
+                               project=None,
+                               project_path=None) -> None:
         try:
             kwargs = {"metadata": metadata}
             if initial_settings is not None:
                 kwargs["initial_settings"] = initial_settings
             if loaded_project is not None:
                 kwargs["loaded_project"] = loaded_project
+            if project is not None:
+                kwargs["project"] = project
+            if project_path is not None:
+                kwargs["project_path"] = project_path
             _t = time.monotonic()
             new_win = PdnViewer(solution, **kwargs)
             logging.getLogger(__name__).info(
@@ -4051,6 +4179,8 @@ class LauncherWindow(QMainWindow):
                 f"{type(e).__name__}: {e}",
             )
             return
+        if project is not None and getattr(project, "editor_directives", None):
+            new_win._set_solve_stale(True)
         _register_viewer(new_win)
         app = QApplication.instance()
         # The new viewer's GL widget show() is processed asynchronously,
@@ -4842,6 +4972,10 @@ class PdnViewer(QMainWindow):
             "and the net-name lookup all follow the same filter."
         )
         side.addWidget(self.rail_only_box)
+        # The control only does anything when at least one visible rail is
+        # bridged to siblings; hide it when no current selection would be
+        # affected by toggling it.
+        self._sync_rail_only_visibility()
 
         self.show_markers_box = QCheckBox("Show pin markers (I)")
         self.show_markers_box.setChecked(True)
@@ -5306,12 +5440,14 @@ class PdnViewer(QMainWindow):
     def _on_rail_eye_toggled(self, _on: bool) -> None:
         """An individual rail's eye was clicked."""
         self._sync_all_rails_eye()
+        self._sync_rail_only_visibility()
         self._render()
 
     def _on_all_rails_toggled(self, on: bool) -> None:
         """The "All Rails" eye was clicked — show or hide every rail."""
         for _name, eye in self._rail_eye_buttons:
             eye.setVisibleState(on, emit=False)
+        self._sync_rail_only_visibility()
         self._render()
 
     def _sync_all_rails_eye(self) -> None:
@@ -5325,6 +5461,28 @@ class PdnViewer(QMainWindow):
         sort order they were registered (matches the rail list UI)."""
         return [name for name, eye in self._rail_eye_buttons
                 if eye.isVisibleState()]
+
+    def _rail_only_meaningful(self) -> bool:
+        """True iff any currently-visible rail has SERIES-bridged sibling
+        nets — i.e. the "Show only rail net" filter would actually hide
+        something. When no visible rail has siblings, toggling the box
+        changes nothing, so the control is hidden by
+        :meth:`_sync_rail_only_visibility`."""
+        for name in self._visible_rails():
+            if len(self._rail_to_members.get(name, [name])) > 1:
+                return True
+        return False
+
+    def _sync_rail_only_visibility(self) -> None:
+        """Show / hide the "Show only rail net" checkbox so it only appears
+        when at least one visible rail is bridged to siblings via a
+        RESISTOR / SERIES directive. The box's checked state is preserved
+        across hides, so toggling a bridged rail back on restores the
+        previous filter."""
+        box = getattr(self, "rail_only_box", None)
+        if box is None:
+            return
+        box.setVisible(self._rail_only_meaningful())
 
     # --- Overlays control ----------------------------------------------------
 
@@ -5980,12 +6138,22 @@ class PdnViewer(QMainWindow):
             fill_by_name = dict(getattr(self, "_layer_fill_buttons", []))
             transp_by_name = dict(
                 getattr(self, "_layer_transparency_buttons", []))
-            # Emit bottom-up: the 2D view has no depth test, so the
-            # last-drawn layer wins. ``_layer_eye2_buttons`` is in panel
-            # order (topmost first), which would paint the bottom layer
-            # over the top one — sort by stackup rank descending so the
+            # Emit bottom-up: ``_layer_eye2_buttons`` is in panel order
+            # (topmost first); sort by stackup rank descending so the
             # topmost layer is emitted last, mirroring the heatmap mesh's
-            # phys_draw_order.
+            # phys_draw_order — that matches the GL_LEQUAL depth test the
+            # under-mesh batch uses in 2D (same z → later draw wins, so
+            # topmost-emitted-last still wins).
+            # In 2D the all-copper geometry rides in ``under_*`` so it
+            # paints BEFORE the heatmap mesh with depth on. The rail mesh
+            # (drawn next, same per-layer z) then paints over its own
+            # layer's all-copper, while bottom rail triangles are
+            # rejected where a higher layer's all-copper already wrote a
+            # closer z — giving cross-layer z stacking AND same-layer
+            # rail > all-copper. 3D keeps it in ``over_*`` since every
+            # vertex already carries its real z and depth ordering is
+            # global.
+            ac_bucket = {"under": True} if in_2d else {}
             for name, eye2 in sorted(
                 eye2_buttons,
                 key=lambda ne: self._phys_stackup_rank.get(ne[0], 1 << 30),
@@ -6016,19 +6184,20 @@ class PdnViewer(QMainWindow):
                     for poly in rec.get("polygons", []):
                         if solid:
                             _emit(self._triangulate_stub(poly), z, rgb,
-                                  alpha=layer_alpha)
+                                  alpha=layer_alpha, **ac_bucket)
                         else:
                             _emit(self._copper_poly_wire(poly), z, rgb,
-                                  alpha=layer_alpha)
+                                  alpha=layer_alpha, **ac_bucket)
 
         # Concatenate under-mesh chunks first so the GL viewer can draw
-        # that leading slice before the heatmap mesh (2D bottom-side
-        # board features), the rest on top.
-        # Bottom-side board features (``under_*``) draw first, before the
-        # heatmap mesh. Then the middle batch (``over_*``: vias, all-copper
-        # overlay, and in 3D every feature). Finally the top-side board
-        # features (``top_*``, 2D only) so they sit visually on top of all
-        # top copper / rails / all-copper geometry.
+        # that leading slice before the heatmap mesh.
+        # ``under_*`` (drawn before the mesh, 2D only): bottom-side board
+        # features + every layer's all-copper geometry — having all-copper
+        # paint before the mesh lets the rail mesh sit visually on top of
+        # both its own layer's other-net copper and any lower-layer
+        # all-copper. ``over_*`` (drawn after the mesh): vias and, in 3D,
+        # every feature (depth test handles ordering there). ``top_*`` (2D
+        # only): top-side board features so they sit on top of all copper.
         all_tri = under_tri + over_tri + top_tri
         if all_tri:
             under_count = sum(c.shape[0] for c in under_tri)
@@ -9494,6 +9663,10 @@ class PdnViewer(QMainWindow):
         self.show_markers_box.toggle()
 
     def _hotkey_toggle_rail_only(self) -> None:
+        # No-op when the box is hidden — it's only hidden while toggling it
+        # wouldn't change anything (no visible rail has SERIES siblings).
+        if not self.rail_only_box.isVisible():
+            return
         self.rail_only_box.toggle()
 
     def _hotkey_toggle_cursor_tooltip(self) -> None:
@@ -13496,7 +13669,7 @@ class PdnViewer(QMainWindow):
         mb = self.menuBar()
         file_menu = mb.addMenu("&File")
 
-        open_proj = QAction("&Load from Project…", self)
+        open_proj = QAction("&Import Altium Design…", self)
         open_proj.setShortcut(QKeySequence.Open)         # Ctrl+O
         open_proj.setStatusTip(
             "Pick a .PrjPcb; reuse the cached solution if the project is "
@@ -13507,7 +13680,7 @@ class PdnViewer(QMainWindow):
         )
         file_menu.addAction(open_proj)
 
-        open_proj_clean = QAction("Load from Project (&Clean)…", self)
+        open_proj_clean = QAction("Import Altium Design (&Clean)…", self)
         open_proj_clean.setShortcut("Ctrl+Shift+L")
         open_proj_clean.setStatusTip(
             "Pick a .PrjPcb; ignore any cached design info or solution and "
@@ -13684,7 +13857,7 @@ class PdnViewer(QMainWindow):
             return ""
 
     def _on_menu_open_project(self, *, clean: bool = False) -> None:
-        """File > Load from Project[ (Clean)]  →  pick a .PrjPcb and open
+        """File > Import Altium Design[ (Clean)]  →  pick a .PrjPcb and open
         it in a fresh viewer. Non-clean tries the solve cache first; clean
         always re-extracts + re-solves. Uses the current viewer's
         SolveSettings + display knobs as defaults for the new viewer."""
@@ -14101,7 +14274,7 @@ class PdnViewer(QMainWindow):
         project ignoring the design-info cache, then re-solve with whatever
         is currently in the Settings tab. Used when the user has edited the
         .PrjPcb / .PcbDoc in Altium and wants FYPA to pick up the change
-        without going via File > Load from Project (Clean).
+        without going via File > Import Altium Design (Clean).
 
         Pinned to the same PcbDoc this pickle was solved with, so multi-PCB
         projects don't silently switch boards or re-prompt the user."""
@@ -14168,7 +14341,7 @@ class PdnViewer(QMainWindow):
         """Show an indeterminate progress dialog and run :class:`_SolveWorker`
         off-thread; on success, open a fresh viewer via
         :meth:`_on_solve_finished`. Called by the Re-run button (with the
-        Settings-tab form values) and by File > Load from Project (with
+        Settings-tab form values) and by File > Import Altium Design (with
         defaults from the current viewer). Set ``use_design_cache=False`` for
         the "Clean" / Reload Design Info flows that must re-extract."""
         if dialog_text is None:

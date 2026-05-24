@@ -1821,13 +1821,15 @@ class GLMeshViewer(QOpenGLWidget):
         bg = self._bg_editor if self._editor_mode else self._bg_normal
         GL.glClearColor(bg[0], bg[1], bg[2], 1.0)
         # In 3D every pass uses depth testing for correct front/back
-        # ordering. In 2D the fills paint in submission order (painter's
-        # algorithm) so they intentionally overpaint, but the mesh pass
-        # below writes its per-vertex layer-z to the depth buffer so the
-        # outline pass can hide segments where copper of a higher layer
-        # covers them — without that, a bottom-layer outline draws over
-        # top-layer copper. Always clear depth in 2D so the seeded buffer
-        # starts fresh each frame.
+        # ordering. In 2D depth testing is selectively enabled on the
+        # layered fills (the under-mesh overlay batch — which carries the
+        # all-copper geometry — plus the rail mesh itself plus the outline
+        # pass) so they sort by their per-vertex layer-z: rail mesh sits
+        # above same-layer all-copper, top layers sit above bottom layers
+        # both for fills and for outlines. The other passes (stubs,
+        # series bars, over-mesh overlays, board outline) keep the
+        # plain painter's-order behaviour. Always clear depth in 2D so
+        # the seeded buffer starts fresh each frame.
         in_2d = self._view_mode != "3d"
         if not in_2d:
             GL.glEnable(GL.GL_DEPTH_TEST)
@@ -1849,20 +1851,31 @@ class GLMeshViewer(QOpenGLWidget):
         if (self._n_sbar_under_vertices > 0
                 and self._line_program is not None):
             self._draw_series_bars(0, self._n_sbar_under_vertices)
-        # Bottom-side overlay fills (2D) likewise sit before the mesh so
-        # the bottom copper paints over them — bottom-side board features
-        # are physically below the bottom copper layer.
+        # Under-mesh overlay batch (2D) — bottom-side board features plus
+        # every layer's all-copper geometry. Enable depth test + write
+        # with GL_LEQUAL so the layers sort by their per-vertex z (top
+        # all-copper paints above bottom all-copper above bottom-side
+        # silkscreen / designators, all of which can then be partially or
+        # fully covered by the rail mesh below).
         if (self._n_ovl_under_vertices > 0
                 and self._line_program is not None):
-            self._draw_overlay_fills(0, self._n_ovl_under_vertices)
-        if self._n_indices > 0 and self._program is not None:
-            # In 2D, seed the depth buffer with the mesh's per-vertex
-            # layer-z so the outline pass below can self-occlude. GL_ALWAYS
-            # keeps the painter-order semantics (last layer drawn wins
-            # colour); only the depth WRITE matters here.
             if in_2d:
                 GL.glEnable(GL.GL_DEPTH_TEST)
-                GL.glDepthFunc(GL.GL_ALWAYS)
+                GL.glDepthFunc(GL.GL_LEQUAL)
+            self._draw_overlay_fills(0, self._n_ovl_under_vertices)
+            if in_2d:
+                GL.glDisable(GL.GL_DEPTH_TEST)
+                GL.glDepthFunc(GL.GL_LESS)
+        if self._n_indices > 0 and self._program is not None:
+            # Rail mesh in 2D draws with GL_LEQUAL + write so a top-layer
+            # rail triangle covers the (lower-z) under-mesh all-copper at
+            # its pixel while a bottom-layer rail triangle is rejected
+            # where top-layer all-copper already wrote a closer z. Equal
+            # z (rail and same-layer all-copper) is what makes the rail
+            # paint over its own layer's all-copper.
+            if in_2d:
+                GL.glEnable(GL.GL_DEPTH_TEST)
+                GL.glDepthFunc(GL.GL_LEQUAL)
             self._draw_mesh()
             if in_2d:
                 GL.glDisable(GL.GL_DEPTH_TEST)
