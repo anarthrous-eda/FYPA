@@ -52,6 +52,7 @@ from PySide6.QtGui import (
     QBrush,
     QColor,
     QFont,
+    QFontMetricsF,
     QMatrix4x4,
     QPainter,
     QPen,
@@ -261,6 +262,24 @@ _OUTLINE_WIDTH_PX = 2.0
 
 
 @dataclass
+class LegendRow:
+    """One clickable row in the top-right legend chip.
+
+    ``key`` is emitted via :attr:`GLMeshViewer.legendRowClicked` when the
+    row is clicked; the host uses it to identify which marker group to
+    toggle. ``glyph`` is the single-character symbol drawn in ``color``
+    in the swatch column. ``hidden`` styles the row as "visibility off"
+    — a diagonal slash drawn across the row, matching the off-state of
+    the eye-icon toggle elsewhere in the UI.
+    """
+    key: str
+    label: str
+    glyph: str
+    color: str
+    hidden: bool = False
+
+
+@dataclass
 class MarkerGroup:
     """A batch of identically-styled markers — one per directive role.
 
@@ -332,6 +351,10 @@ class GLMeshViewer(QOpenGLWidget):
     editorDragStarted = Signal(float, float)
     editorDragMoved = Signal(float, float)
     editorDragReleased = Signal(float, float)
+    # Top-right legend chip row clicked. Carries the row's ``key`` as
+    # supplied via :meth:`set_overlay_top_right_legend`. The host uses it
+    # to toggle the corresponding marker category's visibility.
+    legendRowClicked = Signal(str)
 
     # Maximum cursor movement (in screen pixels) between press and
     # release that still counts as a click rather than a drag. 4 px is
@@ -514,6 +537,11 @@ class GLMeshViewer(QOpenGLWidget):
 
         # --- Data extents ---
         self._data_bounds: tuple[float, float, float, float] | None = None
+        # Max per-vertex z (in un-exaggerated mm) of the uploaded mesh.
+        # Used by the 3D wheel/middle-drag zoom to enforce a hard stop
+        # just above the copper top and to keep the apparent zoom step
+        # constant as the camera approaches the board.
+        self._data_z_max: float = 0.0
 
         # --- View mode ---
         # "2d" = orthographic top-down (the original/default behaviour).
@@ -577,6 +605,18 @@ class GLMeshViewer(QOpenGLWidget):
         # --- Overlay state (drawn via QPainter on top of GL) ---
         self._overlay_top_left_html: str = ""
         self._overlay_top_right_html: str = ""
+        # Structured top-right legend (rows with per-row click handling /
+        # hidden-state slash). When non-empty, replaces the plain-HTML
+        # top-right chip. Filled by :meth:`set_overlay_top_right_legend`.
+        self._overlay_top_right_legend: list[LegendRow] = []
+        # Hit-test rects for the structured legend, rebuilt each paint by
+        # :meth:`_draw_legend_chip`. Each entry: (widget-pixel rect, key).
+        self._legend_row_rects: list[tuple[QRectF, str]] = []
+        # Set when a left press lands on a legend row — the matching
+        # release is then swallowed so the host's empty-space ``clicked``
+        # handler doesn't also fire (which would e.g. clear the Vias-tab
+        # jump highlight as a side effect of toggling a legend row).
+        self._legend_press_consumed: bool = False
         self._markers: list[MarkerGroup] = []
         # Overlay text labels (reference designators for the Overlays
         # control). Each entry: ``{"x", "y", "z", "text", "color",
@@ -647,8 +687,10 @@ class GLMeshViewer(QOpenGLWidget):
         positions[:, 1] = ys
         if zs is not None:
             positions[:, 2] = zs
+            self._data_z_max = float(np.max(zs)) if zs.size else 0.0
         else:
             positions[:, 2] = 0.0
+            self._data_z_max = 0.0
         indices = np.asarray(tris, dtype=np.uint32).ravel()
         self._pending_positions = positions
         self._pending_indices = indices
@@ -799,6 +841,7 @@ class GLMeshViewer(QOpenGLWidget):
         self._pending_indices = None
         self._pending_values = None
         self._data_bounds = None
+        self._data_z_max = 0.0
         self.update()
 
     def set_show_mesh_edges(self, enabled: bool) -> None:
@@ -1148,6 +1191,12 @@ class GLMeshViewer(QOpenGLWidget):
     _CAM_DEFAULT_YAW_DEG: float = 0.0
     _CAM_DEFAULT_PITCH_DEG: float = 89.0
 
+    # Hard floor on the camera's height above the copper top (in scaled
+    # world units) for 3D wheel / middle-drag zoom. Tight enough to read
+    # individual traces but stops the camera before it crashes into the
+    # board (Altium-style hard stop).
+    _CAM_MIN_COPPER_CLEARANCE: float = 2.0
+
     def _fit_3d_to_data(self) -> None:
         """Centre the 3D camera target on the data and pick a distance
         that frames the board with a healthy margin."""
@@ -1164,6 +1213,42 @@ class GLMeshViewer(QOpenGLWidget):
         self._cam_target = (cx, cy, 0.0)
         self._cam_distance = max(diag / (2.0 * math.tan(
             math.radians(self._cam_fov_deg) * 0.5)), 1.0)
+
+    def _dolly_cam_distance(self, base_distance: float,
+                              factor: float) -> float:
+        """New camera distance for a wheel/middle-drag zoom step.
+
+        Naive ``base_distance * factor`` is what the old code did, and it
+        feels like the zoom slows down as the camera gets close — because
+        the camera target sits at z=0 while the copper is some way above
+        it (more so with vertical exaggeration), so the apparent
+        magnification asymptotes well before the camera actually reaches
+        the surface, and nothing stops the camera from passing through.
+
+        Instead, apply ``factor`` to the camera's *height above the
+        copper top* (in scaled world units) so each click is a constant
+        magnification step regardless of how close we already are, and
+        clamp at :attr:`_CAM_MIN_COPPER_CLEARANCE` for a hard stop.
+
+        Falls back to plain multiplicative dolly when the formula isn't
+        well-defined: no mesh uploaded yet, or the view pitched so close
+        to horizontal that "height above copper" stops mapping cleanly
+        onto camera distance.
+        """
+        z_top_scaled = self._data_z_max * self._vertical_exaggeration
+        pitch_rad = math.radians(self._cam_pitch_deg)
+        sin_p = math.sin(pitch_rad)
+        if z_top_scaled <= 0.0 or sin_p < 0.2:
+            new_dist = base_distance * factor
+            return max(min(new_dist, 1e7), 0.01)
+        tz = self._cam_target[2]
+        cam_z = tz + base_distance * sin_p
+        H = cam_z - z_top_scaled
+        H_min = self._CAM_MIN_COPPER_CLEARANCE
+        new_H = max(H * factor, H_min)
+        new_cam_z = z_top_scaled + new_H
+        new_cam_dist = (new_cam_z - tz) / sin_p
+        return max(min(new_cam_dist, 1e7), 0.01)
 
     def reset_3d_view(self) -> None:
         """Reset the 3D camera to its default yaw / pitch and re-fit
@@ -1313,6 +1398,21 @@ class GLMeshViewer(QOpenGLWidget):
 
     def set_overlay_top_right(self, html: str) -> None:
         self._overlay_top_right_html = html or ""
+        # Plain-HTML and structured legend share the same corner — setting
+        # one clears the other so we never render both stacked.
+        self._overlay_top_right_legend = []
+        self._legend_row_rects = []
+        self.update()
+
+    def set_overlay_top_right_legend(self,
+                                     rows: list[LegendRow]) -> None:
+        """Push a structured legend to the top-right chip. Each row gets
+        per-row click hit-testing (emits :attr:`legendRowClicked` with
+        the row's ``key``) and an off-state slash when ``hidden`` is set.
+        Replaces any plain-HTML chip set via :meth:`set_overlay_top_right`.
+        """
+        self._overlay_top_right_legend = list(rows)
+        self._overlay_top_right_html = ""
         self.update()
 
     def set_markers(self, groups: list[MarkerGroup]) -> None:
@@ -1344,9 +1444,11 @@ class GLMeshViewer(QOpenGLWidget):
         self._editor_drag_hit_test = hit_test
 
     def _apply_editor_cursor(self, state: str) -> None:
-        """Set the viewport cursor for editor-mode marker dragging —
-        ``"open"`` hovering a marker, ``"closed"`` while dragging one,
-        ``"default"`` otherwise. A no-op when unchanged."""
+        """Set the viewport cursor. Used for both editor-mode marker
+        dragging (``"open"`` hovering a marker, ``"closed"`` while
+        dragging one) and for the top-right legend chip (``"pointing"``
+        hovering a clickable row). ``"default"`` resets to the inherited
+        cursor. A no-op when unchanged so per-move calls don't churn."""
         if state == self._editor_cursor_state:
             return
         self._editor_cursor_state = state
@@ -1354,6 +1456,8 @@ class GLMeshViewer(QOpenGLWidget):
             self.setCursor(Qt.OpenHandCursor)
         elif state == "closed":
             self.setCursor(Qt.ClosedHandCursor)
+        elif state == "pointing":
+            self.setCursor(Qt.PointingHandCursor)
         else:
             self.unsetCursor()
 
@@ -2388,9 +2492,17 @@ class GLMeshViewer(QOpenGLWidget):
         self._draw_overlay_chip(
             painter, self._overlay_top_left_html, anchor_right=False
         )
-        self._draw_overlay_chip(
-            painter, self._overlay_top_right_html, anchor_right=True
-        )
+        # Top-right corner: structured legend takes precedence over the
+        # plain-HTML chip so per-row click handling stays consistent.
+        # Reset the hit-test list each paint — only the chip drawn this
+        # frame contributes rects.
+        self._legend_row_rects = []
+        if self._overlay_top_right_legend:
+            self._draw_legend_chip(painter)
+        else:
+            self._draw_overlay_chip(
+                painter, self._overlay_top_right_html, anchor_right=True
+            )
         painter.end()
 
     def _draw_editor_grid(self, painter: QPainter) -> None:
@@ -2694,6 +2806,90 @@ class GLMeshViewer(QOpenGLWidget):
         doc.drawContents(painter)
         painter.restore()
 
+    # Top-right legend chip — manual layout (instead of QTextDocument) so
+    # we can compute exact per-row rects for click hit-testing and draw a
+    # diagonal slash across rows whose ``hidden`` flag is set. Layout
+    # mirrors the table the plain-HTML legend used: glyph swatch column,
+    # gap, label column, with uniform row height.
+    _LEGEND_MARGIN: float = 8.0     # chip-to-widget-edge padding
+    _LEGEND_PAD_X: float = 6.0      # chip interior horizontal padding
+    _LEGEND_PAD_Y: float = 3.0      # chip interior vertical padding
+    _LEGEND_SWATCH_W: float = 16.0  # glyph column width
+    _LEGEND_LABEL_GAP: float = 6.0  # px between glyph and label
+
+    def _draw_legend_chip(self, painter: QPainter) -> None:
+        rows = self._overlay_top_right_legend
+        if not rows:
+            return
+        label_font = QFont("Segoe UI", 9)
+        glyph_font = QFont("Segoe UI", 11)
+        label_fm = QFontMetricsF(label_font)
+        glyph_fm = QFontMetricsF(glyph_font)
+        row_h = max(label_fm.height(), glyph_fm.height()) + 2.0
+
+        label_w = 0.0
+        for r in rows:
+            label_w = max(label_w, label_fm.horizontalAdvance(r.label))
+
+        content_w = (self._LEGEND_SWATCH_W + self._LEGEND_LABEL_GAP
+                     + label_w)
+        chip_w = content_w + 2 * self._LEGEND_PAD_X
+        chip_h = row_h * len(rows) + 2 * self._LEGEND_PAD_Y
+        x = self.width() - chip_w - self._LEGEND_MARGIN
+        y = self._LEGEND_MARGIN
+
+        painter.save()
+        painter.setPen(QColor("#666"))
+        painter.setBrush(QBrush(QColor(34, 34, 34, 240)))
+        painter.drawRect(QRectF(x, y, chip_w, chip_h))
+
+        for i, r in enumerate(rows):
+            row_y = y + self._LEGEND_PAD_Y + i * row_h
+            self._legend_row_rects.append(
+                (QRectF(x, row_y, chip_w, row_h), r.key))
+
+            glyph_rect = QRectF(x + self._LEGEND_PAD_X, row_y,
+                                self._LEGEND_SWATCH_W, row_h)
+            painter.setFont(glyph_font)
+            painter.setPen(QColor(r.color))
+            painter.drawText(glyph_rect,
+                             Qt.AlignVCenter | Qt.AlignHCenter, r.glyph)
+
+            label_rect = QRectF(
+                x + self._LEGEND_PAD_X + self._LEGEND_SWATCH_W
+                + self._LEGEND_LABEL_GAP,
+                row_y, label_w, row_h)
+            painter.setFont(label_font)
+            painter.setPen(QColor("#e6e6e6"))
+            painter.drawText(label_rect,
+                             Qt.AlignVCenter | Qt.AlignLeft, r.label)
+
+            if r.hidden:
+                # Diagonal slash matching the eye-icon off-state — drawn
+                # across the row's interior so both the swatch and label
+                # read as "visibility off". Same bright neutral tone as
+                # the label text so it stays visible on any swatch colour.
+                slash_pen = QPen(QColor("#e6e6e6"))
+                slash_pen.setWidthF(1.6)
+                slash_pen.setCapStyle(Qt.RoundCap)
+                painter.setPen(slash_pen)
+                painter.setBrush(Qt.NoBrush)
+                m = 2.0
+                x0 = x + self._LEGEND_PAD_X - m
+                x1 = x + chip_w - self._LEGEND_PAD_X + m
+                y0 = row_y + row_h - m
+                y1 = row_y + m
+                painter.drawLine(QPointF(x0, y0), QPointF(x1, y1))
+        painter.restore()
+
+    def _legend_row_key_at(self, pos) -> str | None:
+        """Return the key of the legend row under ``pos`` (a QPointF in
+        widget pixels), or ``None`` if the point doesn't land on a row."""
+        for rect, key in self._legend_row_rects:
+            if rect.contains(pos):
+                return key
+        return None
+
     # ------------------------------------------------------------------
     # Mouse interaction (matches Altium's PCB view conventions)
     #   Both modes: RightDrag = pan, Wheel = zoom, LeftClick = clicked,
@@ -2712,6 +2908,17 @@ class GLMeshViewer(QOpenGLWidget):
 
     def mousePressEvent(self, ev) -> None:
         if ev.button() == Qt.LeftButton:
+            # Top-right legend chip: a click on a row toggles that marker
+            # category's visibility. Handled before anything else so it
+            # never starts a pan / marker-drag gesture.
+            row_key = self._legend_row_key_at(ev.position())
+            if row_key is not None:
+                self.legendRowClicked.emit(row_key)
+                # Suppress the matching release so the empty-space click
+                # handler doesn't also fire (see _legend_press_consumed).
+                self._legend_press_consumed = True
+                ev.accept()
+                return
             # Editor mode: a left press that lands on a draggable free
             # marker becomes a marker drag rather than a pan / click.
             if (self._editor_mode and self._view_mode == "2d"
@@ -2775,18 +2982,25 @@ class GLMeshViewer(QOpenGLWidget):
             self._last_hover_pixel = (float(pos.x()), float(pos.y()))
             self.editorDragMoved.emit(wx, wy)
             return
-        # Hover cursor: an open hand over a draggable free marker so the
-        # "moveable" affordance is discoverable.
-        if (self._editor_mode and self._view_mode == "2d"
-                and self._editor_drag_hit_test is not None
-                and self._press_origin is None
-                and self._right_press_origin is None):
-            hx, hy = self.screen_to_world(pos.x(), pos.y())
-            try:
-                over = bool(self._editor_drag_hit_test(hx, hy))
-            except Exception:
-                over = False
-            self._apply_editor_cursor("open" if over else "default")
+        # Hover cursor (priority: ongoing gesture > legend chip hover >
+        # editor free-marker hover > default). Skip entirely while a
+        # press is in flight so a pan/drag doesn't fight the cursor
+        # update.
+        if (self._press_origin is None
+                and self._right_press_origin is None
+                and self._middle_press_origin is None):
+            if self._legend_row_key_at(pos) is not None:
+                self._apply_editor_cursor("pointing")
+            elif (self._editor_mode and self._view_mode == "2d"
+                    and self._editor_drag_hit_test is not None):
+                hx, hy = self.screen_to_world(pos.x(), pos.y())
+                try:
+                    over = bool(self._editor_drag_hit_test(hx, hy))
+                except Exception:
+                    over = False
+                self._apply_editor_cursor("open" if over else "default")
+            else:
+                self._apply_editor_cursor("default")
         # Left-button drag is no longer wired to pan. We only track its
         # drag-distance so the click-clears-highlight handler can ignore
         # accidental movements.
@@ -2875,9 +3089,8 @@ class GLMeshViewer(QOpenGLWidget):
                 new_cy = wy0 + (anchor_py - self.height() * 0.5) * new_mpp
                 self.set_view_center_scale(new_cx, new_cy, new_mpp)
             else:  # 3D
-                new_dist = self._middle_press_distance * factor
-                new_dist = max(min(new_dist, 1e7), 0.01)
-                self._cam_distance = new_dist
+                self._cam_distance = self._dolly_cam_distance(
+                    self._middle_press_distance, factor)
                 self.viewChanged.emit()
                 self.update()
 
@@ -2890,6 +3103,12 @@ class GLMeshViewer(QOpenGLWidget):
 
     def mouseReleaseEvent(self, ev) -> None:
         if ev.button() == Qt.LeftButton:
+            if self._legend_press_consumed:
+                # Matching release for a legend-row click — swallow it so
+                # the host's empty-space ``clicked`` handler doesn't fire.
+                self._legend_press_consumed = False
+                ev.accept()
+                return
             if self._editor_drag_active:
                 self._editor_drag_active = False
                 wx, wy = self.screen_to_world(ev.position().x(),
@@ -2931,9 +3150,10 @@ class GLMeshViewer(QOpenGLWidget):
         # 120 = one wheel click; 1.2x zoom factor per click.
         factor = pow(1.0 / 1.2, delta / 120.0)
         if self._view_mode == "3d":
-            # 3D: dolly the camera in/out (multiply distance).
-            new_dist = self._cam_distance * factor
-            self._cam_distance = max(min(new_dist, 1e7), 0.01)
+            # 3D: dolly the camera in/out. See _dolly_cam_distance for
+            # why we don't just multiply cam_distance directly.
+            self._cam_distance = self._dolly_cam_distance(
+                self._cam_distance, factor)
             self.viewChanged.emit()
             self.update()
             ev.accept()

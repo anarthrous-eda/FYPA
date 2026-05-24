@@ -1379,6 +1379,11 @@ def build_solve_metadata(
                 "P": _terminal_summary(d.p, nets),
                 "N": _terminal_summary(d.n, nets),
             }
+            # Optional PDN_MIN_V — minimum acceptable rail voltage at the
+            # sink's P terminal. The viewer's Nodes table renders a per-pin
+            # margin / pass-fail column off this. ``None`` when unset.
+            if getattr(d, "min_voltage", None) is not None:
+                common["min_voltage"] = float(d.min_voltage)
         elif isinstance(d, ResistorSpec):
             common["value"] = d.resistance
             common["unit"] = "Ohm"

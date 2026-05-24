@@ -117,6 +117,27 @@ Add `PDN_ROLE` on the component (e.g. `PDN_ROLE=SOURCE`) and the required parame
 For 2-pin parts the tool can auto-infer `PDN_P_NET` /
 `PDN_N_NET` from connectivity; for ICs you'll need to set them explicitly.
 
+### `SINK` — minimum-voltage check (`PDN_MIN_V`)
+
+A `SINK` can carry an optional `PDN_MIN_V` parameter giving the **minimum
+acceptable rail voltage at the part's P pins**. The viewer's *Nodes* tab adds
+*Min V*, *Margin* and *Status* columns: margin is the per-pin measured voltage
+minus `PDN_MIN_V`, and rows with a negative margin are highlighted in red
+(`Status = FAIL`). Sinks without `PDN_MIN_V` show `—` in those columns; the
+check is purely a post-solve report, it doesn't change what the solver does.
+
+```text
+U5 (3V3 load):
+  PDN_ROLE  = SINK
+  PDN_I     = 500mA
+  PDN_P_NET = +3V3
+  PDN_N_NET = 0V
+  PDN_MIN_V = 3.2        # fail if any +3V3 pin drops below 3.2 V
+```
+
+Indexed multi-channel sinks support `PDN<n>_MIN_V` per channel, the same way
+`PDN<n>_I` works.
+
 ### Single-net (point-to-point) check — `PDN_NET`
 
 Sometimes a net has no return reference at all — tracing power from a

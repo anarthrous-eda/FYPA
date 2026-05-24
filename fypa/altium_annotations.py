@@ -601,6 +601,10 @@ class SinkSpec(_BaseSpec):
     n: TerminalSpec | None  # ``None`` => single-net directive (see SourceSpec)
     channel_index: int | None = None  # None = legacy unindexed; int = PDN<n>_*
     return_group: int | None = None
+    # Optional minimum acceptable rail voltage (PDN_MIN_V). When set, the
+    # viewer's Nodes table compares the sink's actual P-terminal voltage
+    # against this limit and flags pass / fail per pin.
+    min_voltage: float | None = None
 
 
 @dataclass(frozen=True)
@@ -659,6 +663,21 @@ def _require_value(params: dict[str, str], key: str, role_diag: str, result: Ann
     raw = _ci_get(params, key)
     if raw is None:
         result.errors.append(f"{role_diag}: missing required parameter {key}")
+        return None
+    try:
+        return parse_si_value(raw)
+    except ValueError as e:
+        result.errors.append(f"{role_diag}: {key}={raw!r} — {e}")
+        return None
+
+
+def _optional_value(params: dict[str, str], key: str, role_diag: str,
+                    result: AnnotationResult) -> float | None:
+    """Like :func:`_require_value` but the parameter is allowed to be absent.
+    Returns ``None`` when the key isn't set; appends an error and returns
+    ``None`` when the key IS set but doesn't parse as a number."""
+    raw = _ci_get(params, key)
+    if raw is None:
         return None
     try:
         return parse_si_value(raw)
@@ -890,6 +909,9 @@ def _parse_sink(comp, proj, enabled_layers, result, bridge_groups=None,
         mode = _terminal_mode(comp.parameters, idx, role_diag, result)
         if mode is None:
             continue
+        min_v = _optional_value(
+            comp.parameters, _channel_key("MIN_V", idx), role_diag, result,
+        )
         for pcb_idx in pcb_indices:
             pcb_des = proj.pcb_components[pcb_idx].designator
             inst_diag = (
@@ -908,6 +930,7 @@ def _parse_sink(comp, proj, enabled_layers, result, bridge_groups=None,
                 specs.append(SinkSpec(
                     designator=pcb_des, schdoc_name=comp.schdoc_name,
                     current=i, p=p, n=None, channel_index=idx,
+                    min_voltage=min_v,
                 ))
                 continue
             pair = _resolve_two_terminal(
@@ -922,6 +945,7 @@ def _parse_sink(comp, proj, enabled_layers, result, bridge_groups=None,
             specs.append(SinkSpec(
                 designator=pcb_des, schdoc_name=comp.schdoc_name,
                 current=i, p=pair[0], n=pair[1], channel_index=idx,
+                min_voltage=min_v,
             ))
     return specs
 

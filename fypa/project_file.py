@@ -69,6 +69,12 @@ class EditorDirective:
     voltage: float | None = None
     current: float | None = None
     resistance: float | None = None       # SERIES only, ohms
+    # Optional minimum acceptable rail voltage at the SINK's P pins
+    # (the editor-mode equivalent of the schematic ``PDN_MIN_V`` parameter).
+    # The viewer's Nodes table compares the measured per-pin voltage against
+    # this limit and flags pass / fail. Meaningful for SINK only; ``None`` to
+    # disable the check or for non-SINK roles.
+    min_voltage: float | None = None
     # When set, this editor directive replaces (overrides) the Altium
     # schematic directive carrying this designator — the re-solve drops the
     # schematic one so they don't both stamp a lumped element. ``None`` for
@@ -100,6 +106,8 @@ class EditorDirective:
             current=(None if d.get("current") is None else float(d["current"])),
             resistance=(None if d.get("resistance") is None
                         else float(d["resistance"])),
+            min_voltage=(None if d.get("min_voltage") is None
+                         else float(d["min_voltage"])),
             overrides_designator=d.get("overrides_designator"),
         )
 

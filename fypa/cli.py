@@ -198,6 +198,11 @@ def _setup_logging(debug: bool) -> None:
     # appears in the log file. Without this, warnings.warn writes only to
     # stderr and is invisible when running through the GUI.
     logging.captureWarnings(True)
+    # In-memory mirror of every log record, used by the viewer's Messages
+    # tab. Installed here so solve-time warnings emitted before the
+    # viewer is imported are still captured.
+    from fypa.log_buffer import install as _install_msg_buffer
+    _install_msg_buffer()
     logging.getLogger(__name__).info("Log file: %s", _LOG_FILE)
 
 

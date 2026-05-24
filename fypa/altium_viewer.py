@@ -44,7 +44,13 @@ import numpy as np
 import shapely.geometry as _sg
 import shapely.prepared as _sp
 
-from fypa.gl_mesh_viewer import GLMeshViewer, MarkerGroup, _install_default_surface_format
+from fypa import log_buffer
+from fypa.gl_mesh_viewer import (
+    GLMeshViewer,
+    LegendRow,
+    MarkerGroup,
+    _install_default_surface_format,
+)
 
 
 # Application icon — shown in the title bar AND Windows taskbar.
@@ -340,6 +346,8 @@ _THEME_PRESETS: dict[str, dict[str, str]] = {
         "ok":              "#7fdc7f",   # success flash
         "warn_bg":         "#5a1a1a",   # warning cell background (table)
         "warn_fg":         "#ff9696",   # warning cell foreground (table)
+        "pass_bg":         "#1a4a1a",   # pass cell background (table)
+        "pass_fg":         "#96ff96",   # pass cell foreground (table)
         # Decoration
         "border":          "#555555",   # widget borders / table grid
         "gridline":        "#444444",   # subtle grid
@@ -375,6 +383,8 @@ _THEME_PRESETS: dict[str, dict[str, str]] = {
         "ok":              "#2e8b57",
         "warn_bg":         "#ffd6d6",
         "warn_fg":         "#a31010",
+        "pass_bg":         "#d6ffd6",
+        "pass_fg":         "#106a10",
         # Decoration
         "border":          "#b8b8b8",
         "gridline":        "#cccccc",
@@ -2483,13 +2493,31 @@ class _GradientBar(QWidget):
         mark_top = strip.bottom() + self._TICK_GAP
         mark_bot = mark_top + self._TICK_MARK
         label_top = mark_bot
+        # Pre-compute every tick value so each label can be formatted
+        # against its local spacing — constant in linear mode, but
+        # varies along the axis in log mode.
+        values: list[float] = []
         for i in range(n):
             t = i / (n - 1)
             x = strip.left() + t * strip.width()
-            value = self._x_to_value(x) / divisor
+            values.append(self._x_to_value(x) / divisor)
+        for i in range(n):
+            t = i / (n - 1)
+            x = strip.left() + t * strip.width()
+            value = values[i]
+            if n >= 2:
+                if i == 0:
+                    step = abs(values[1] - values[0])
+                elif i == n - 1:
+                    step = abs(values[-1] - values[-2])
+                else:
+                    step = min(abs(values[i + 1] - values[i]),
+                               abs(values[i] - values[i - 1]))
+            else:
+                step = 0.0
             p.setPen(self._TICK)
             p.drawLine(QPointF(x, mark_top), QPointF(x, mark_bot))
-            text = self._fmt_tick(value)
+            text = self._fmt_tick(value, step)
             # Keep the end labels inside the chip — left-align the first,
             # right-align the last, centre the rest.
             if i == 0:
@@ -2532,18 +2560,32 @@ class _GradientBar(QWidget):
         return f"{self._label} [{prefix}{self._unit}]"
 
     @staticmethod
-    def _fmt_tick(value: float) -> str:
+    def _fmt_tick(value: float, step: float = 0.0) -> str:
         """Format an already-SI-scaled tick value as a plain number.
 
         No scientific notation — the SI prefix in the axis title
-        carries the magnitude. ~3 significant figures, trailing zeros
-        stripped."""
+        carries the magnitude. Precision comes from ``step`` (the
+        spacing to the neighbouring tick): each label shows ~2 sig
+        figs of the step, so the whole axis reads at a consistent
+        scale and values smaller than the step's resolution collapse
+        to ``"0"`` instead of printing noise digits (e.g. -0.000331
+        on a 0..2.66 axis → ``0``). When ``step`` is unavailable, falls
+        back to ~3 sig figs of the value itself."""
         if not math.isfinite(value):
             return "—"
-        if value == 0.0:
+        if step > 0.0 and math.isfinite(step):
+            digits = max(0, 1 - int(math.floor(math.log10(step))))
+        elif value == 0.0:
             return "0"
-        digits = min(6, max(0, 2 - int(math.floor(math.log10(abs(value))))))
-        s = f"{value:.{digits}f}"
+        else:
+            digits = max(0, 2 - int(math.floor(math.log10(abs(value)))))
+        digits = min(6, digits)
+        # Round first so values within half a ULP of zero render as
+        # plain "0" rather than "-0.00".
+        rounded = round(value, digits)
+        if rounded == 0.0:
+            return "0"
+        s = f"{rounded:.{digits}f}"
         if "." in s:
             s = s.rstrip("0").rstrip(".")
         return s or "0"
@@ -4250,6 +4292,36 @@ class _ProjectSaveDialog(QDialog):
             super().keyPressEvent(event)
 
 
+class _MessagesSortItem(QTableWidgetItem):
+    """QTableWidgetItem that decouples sort key from displayed text.
+
+    QTableWidgetItem aliases ``Qt::EditRole`` to ``Qt::DisplayRole``
+    internally (Qt source: ``role = (role == Qt::EditRole ? Qt::DisplayRole
+    : role)`` inside ``setData``), so the usual pattern of
+    ``setData(Qt.EditRole, sort_key)`` overwrites the cell's display text
+    with the sort key — fine when the sort key happens to be the value
+    you wanted to show, but in the Messages tab we need the cell to show
+    an emoji or a formatted timestamp while still sorting by an int level
+    or a float epoch.
+
+    The fix is to stash the sort key on ``Qt::UserRole`` (which Qt leaves
+    alone) and override ``__lt__`` so QTableWidget's sort comparison
+    uses that key instead of falling back to the display string. If the
+    other item happens to be a plain QTableWidgetItem (no UserRole set),
+    we defer to the base comparison so the table doesn't crash on a
+    mixed column."""
+
+    def __lt__(self, other) -> bool:
+        a = self.data(Qt.UserRole)
+        b = other.data(Qt.UserRole) if isinstance(other, QTableWidgetItem) else None
+        if a is not None and b is not None:
+            try:
+                return a < b
+            except TypeError:
+                pass
+        return super().__lt__(other)
+
+
 class PdnViewer(QMainWindow):
     """Main window — composes the side panel and the matplotlib plot area.
 
@@ -4530,9 +4602,12 @@ class PdnViewer(QMainWindow):
 
         # The OpenGL canvas — assigned in _build_ui.
         self._gl_viewer: GLMeshViewer | None = None
-        # Legend HTML (top-right) — pushed to the GLMeshViewer's QPainter
-        # overlay layer.
-        self._legend_html: str = ""
+        # Legend rows whose markers the user has hidden by clicking the
+        # row in the top-right chip. The row stays visible (slashed) so
+        # the toggle is reversible; the matching marker groups are
+        # skipped in :meth:`_update_markers_and_legend`. Keyed by the
+        # legend label (same value used as the LegendRow ``key``).
+        self._hidden_legend_keys: set[str] = set()
         # Currently highlighted via location (world mm). When non-None,
         # a yellow ring is drawn on the GL viewer at this point — always
         # shown, even if "Show pin markers" is off. Cleared by another
@@ -4558,6 +4633,13 @@ class PdnViewer(QMainWindow):
         # scale, so a recolour reuses this and only re-bakes the colours.
         # ``(geom_key, positions, spans)`` or ``None``.
         self._stub_geom_cache: tuple | None = None
+        # Per-layer merged-and-triangulated all-copper geometry, keyed by
+        # ``(layer_name, frozenset(rail_members))``. Used when a layer's
+        # all-copper is drawn as a SOLID fill with alpha < 1.0 so that
+        # overlapping polygons in the source data can't cumulatively blend
+        # into opacity. See :meth:`_merged_solid_all_copper_tris`.
+        self._merged_all_copper_cache: dict[
+            tuple[str, frozenset], np.ndarray] = {}
 
         # Voltage-difference measurement tool. Set when the user presses
         # Shift while hovering copper that has a voltage value in either
@@ -4704,6 +4786,11 @@ class PdnViewer(QMainWindow):
         if not getattr(self, "_vias_warn_init_scheduled", False):
             self._vias_warn_init_scheduled = True
             QTimer.singleShot(0, self._init_vias_warn_count)
+        # Same pattern for Nodes — show "Nodes ⚠ N" when any sink with a
+        # PDN_MIN_V annotation has a pin below its declared minimum.
+        if not getattr(self, "_nodes_warn_init_scheduled", False):
+            self._nodes_warn_init_scheduled = True
+            QTimer.singleShot(0, self._init_nodes_warn_count)
 
     # --- UI construction -----------------------------------------------------
 
@@ -5119,6 +5206,10 @@ class PdnViewer(QMainWindow):
         self._gl_viewer.viewChanged.connect(self._on_gl_view_changed)
         self._gl_viewer.mouseHoveredAt.connect(self._on_gl_mouse_hovered)
         self._gl_viewer.clicked.connect(self._on_gl_clicked)
+        # Top-right legend chip: clicking a row toggles that marker
+        # category's visibility (and slashes the row to mark it hidden).
+        self._gl_viewer.legendRowClicked.connect(
+            self._on_legend_row_clicked)
         # Editor-mode free-marker dragging: the hit-test lets the viewer
         # claim a press over a marker, and the editorDrag* signals drive
         # the constrained move (see _on_marker_drag_*).
@@ -5206,6 +5297,17 @@ class PdnViewer(QMainWindow):
         self._vias_table_populated = False
         self._vias_tab_index = self.tabs.addTab(self._build_vias_tab(), "Vias")
         self._init_log.info("PdnViewer init: Vias tab (%.2fs)", time.monotonic() - _t)
+
+        # Messages tab — sortable, filterable view of every log record
+        # captured since the process started (see fypa.log_buffer). Lets
+        # the user audit loader / solver / editor warnings without
+        # opening fypa.log directly.
+        _t = time.monotonic()
+        self._messages_tab_index = self.tabs.addTab(
+            self._build_messages_tab(), "Messages",
+        )
+        self._init_log.info("PdnViewer init: Messages tab (%.2fs)",
+                            time.monotonic() - _t)
 
         # Settings tab — tunable physics + meshing + display knobs and a
         # Re-run button. Changes apply on the next solve (Re-run opens a
@@ -5427,14 +5529,18 @@ class PdnViewer(QMainWindow):
         self._refresh_overlay_geometry(self._visible_rails())
 
     def _on_layer_transparency_toggled(self, _step: int) -> None:
-        """A layer's all-copper transparency was cycled."""
+        """A layer's transparency was cycled. Fades both the heatmap mesh
+        (per-vertex alpha) and the all-copper overlay for that layer."""
+        self._push_mesh_alpha()
         self._refresh_overlay_geometry(self._visible_rails())
 
     def _on_all_layers_transparency_toggled(self, step: int) -> None:
-        """The "All Layers" transparency cycler — set every layer's
-        all-copper transparency at once."""
+        """The "All Layers" transparency cycler — fan out to every per-
+        layer button. Updates the mesh alpha + all-copper overlay once
+        after the fan-out so the GPU only sees a single re-push."""
         for _name, transp in self._layer_transparency_buttons:
             transp.setStep(step, emit=False)
+        self._push_mesh_alpha()
         self._refresh_overlay_geometry(self._visible_rails())
 
     def _on_rail_eye_toggled(self, _on: bool) -> None:
@@ -6144,16 +6250,21 @@ class PdnViewer(QMainWindow):
             # phys_draw_order — that matches the GL_LEQUAL depth test the
             # under-mesh batch uses in 2D (same z → later draw wins, so
             # topmost-emitted-last still wins).
-            # In 2D the all-copper geometry rides in ``under_*`` so it
-            # paints BEFORE the heatmap mesh with depth on. The rail mesh
-            # (drawn next, same per-layer z) then paints over its own
-            # layer's all-copper, while bottom rail triangles are
-            # rejected where a higher layer's all-copper already wrote a
-            # closer z — giving cross-layer z stacking AND same-layer
-            # rail > all-copper. 3D keeps it in ``over_*`` since every
-            # vertex already carries its real z and depth ordering is
-            # global.
-            ac_bucket = {"under": True} if in_2d else {}
+            # In 2D opaque all-copper rides in ``under_*`` so it paints
+            # BEFORE the heatmap mesh with depth on — the rail mesh
+            # (drawn next, same per-layer z) paints over its own layer's
+            # all-copper, and bottom rail triangles are depth-rejected
+            # where a higher layer's all-copper has already written a
+            # closer z. That cross-layer z stacking only works because
+            # the under-mesh pass also WRITES depth, which would equally
+            # depth-reject the rail mesh underneath a partially-
+            # transparent layer — turning the transparent layer into a
+            # tinted hole instead of letting the heatmap show through.
+            # So a layer at alpha < 1.0 is routed to ``over_*`` instead:
+            # drawn AFTER the mesh, no depth interference, free to blend
+            # with the mesh (or other opaque all-copper) below. 3D
+            # always uses ``over_*`` — global per-vertex z + depth
+            # handles ordering there.
             for name, eye2 in sorted(
                 eye2_buttons,
                 key=lambda ne: self._phys_stackup_rank.get(ne[0], 1 << 30),
@@ -6170,9 +6281,32 @@ class PdnViewer(QMainWindow):
                 layer_alpha = tb.alpha() if tb is not None else 1.0
                 if layer_alpha <= 0.0:
                     continue
+                # Opaque layers stay in the under-mesh batch to keep the
+                # cross-layer z stacking; transparent layers fall to
+                # ``over_*`` so the mesh underneath isn't depth-rejected.
+                ac_bucket = ({"under": True}
+                             if (in_2d and layer_alpha >= 1.0)
+                             else {})
                 qc = QColor(self._layer_color_for(name))
                 lrgb = (qc.redF(), qc.greenF(), qc.blueF())
                 z = self._layer_z_for(name)
+                # Solid + partial transparency: route through a per-layer
+                # merged triangulation so overlapping source polygons
+                # blend the layer's alpha exactly once per pixel (rather
+                # than once per overlapping polygon, which cumulatively
+                # pushes the area to opacity). The merge collapses
+                # per-net distinction, so editor-mode connectivity dim
+                # falls back to a per-rec emit on this path — the wire-
+                # mesh fill keeps the precise per-net dim anyway.
+                if (solid and layer_alpha < 1.0
+                        and not (self._editor_mode
+                                  and self._editor_highlight_nets)):
+                    merged = self._merged_solid_all_copper_tris(
+                        name, recs, rail_members)
+                    if merged is not None:
+                        _emit(merged, z, lrgb, alpha=layer_alpha,
+                              **ac_bucket)
+                    continue
                 for rec in recs:
                     net = rec.get("net")
                     if net in rail_members:
@@ -6392,8 +6526,10 @@ class PdnViewer(QMainWindow):
                     "layer_id": self._phys_name_to_layer_id.get(phys),
                     "layer_index": layer_index,
                     # Vertex count this (phys, net) contributed to the
-                    # combined mesh — used to build the editor-mode
-                    # per-vertex alpha array (see _editor_alpha_array).
+                    # combined mesh — used to build the per-vertex alpha
+                    # array (see :meth:`_combined_mesh_alpha_array`),
+                    # which folds in both the per-layer Transparency
+                    # setting and the editor-mode connectivity dim.
                     "n_vertices": n,
                     "triangulation": entry["triangulation"],
                     "interpolator": entry["interpolator"],
@@ -7109,11 +7245,11 @@ class PdnViewer(QMainWindow):
         self._gl_viewer.set_values(self._gl_scale(vs_arr).astype(np.float32))
         self._gl_viewer.set_levels(float(self._gl_scale(levels_min)),
                                     float(self._gl_scale(levels_max)))
-        # Editor-mode copper dimming: when a connectivity highlight is
-        # active, non-connected copper renders at 10% alpha. Pushed after
+        # Per-vertex mesh alpha: combines the per-layer Transparency
+        # control with editor-mode connectivity dimming. Pushed after
         # set_mesh (which invalidates any previous alpha array).
         self._gl_viewer.set_vertex_alpha(
-            self._editor_alpha_array(layer_probes, xs_arr.size)
+            self._combined_mesh_alpha_array(layer_probes, xs_arr.size)
         )
         _mark("gl_mesh_upload")
 
@@ -8192,6 +8328,107 @@ class PdnViewer(QMainWindow):
         stub["_tris_cache"] = arr
         return arr
 
+    def _merged_solid_all_copper_tris(
+        self, layer_name: str, recs: list[dict],
+        rail_members: set[str],
+    ) -> np.ndarray | None:
+        """Pre-merge a layer's all-copper polygons via shapely's
+        :func:`unary_union` and triangulate the result, so a transparent
+        solid fill blends each pixel exactly once.
+
+        The source data sometimes carries overlapping polygons for the
+        same layer (a GND plane plus smaller copper objects nominally
+        sitting in its clearances, plus pad / via-clearance fills) — each
+        overlap adds another blend pass at the layer's transparency
+        alpha, cumulatively pushing the area to opacity even when the per-
+        vertex alpha is low. Merging into one non-overlapping triangulation
+        bypasses that. Cached per ``(layer_name, frozenset(rail_members))``
+        — the metadata is fixed for the viewer's lifetime, so no other
+        invalidation is needed.
+
+        Returns ``None`` when the layer has no non-rail-member geometry.
+        Wire-mesh fill draws thin outlines that don't cumulate noticeably,
+        so the caller only routes through this for solid fill with
+        ``layer_alpha < 1.0``.
+        """
+        key = (layer_name, frozenset(rail_members))
+        cached = self._merged_all_copper_cache.get(key)
+        if cached is not None:
+            return cached if cached.size > 0 else None
+
+        from shapely.geometry import Polygon as _Polygon
+        from shapely.ops import unary_union
+
+        polys = []
+        for rec in recs:
+            net = rec.get("net")
+            if net in rail_members:
+                continue
+            for poly_dict in rec.get("polygons", []):
+                ext = poly_dict.get("exterior")
+                if ext is None:
+                    continue
+                if hasattr(ext, "size"):
+                    if ext.size == 0:
+                        continue
+                elif not ext:
+                    continue
+                holes = poly_dict.get("holes") or []
+                try:
+                    p = _Polygon(ext, holes=holes)
+                except Exception:
+                    continue
+                if p.is_empty:
+                    continue
+                if not p.is_valid:
+                    try:
+                        from shapely.validation import make_valid
+                        p = make_valid(p)
+                    except Exception:
+                        continue
+                    if p.is_empty:
+                        continue
+                polys.append(p)
+
+        if not polys:
+            self._merged_all_copper_cache[key] = np.empty(
+                (0, 2), dtype=np.float32)
+            return None
+
+        try:
+            merged = unary_union(polys)
+        except Exception:
+            merged = None
+
+        if merged is None or merged.is_empty:
+            self._merged_all_copper_cache[key] = np.empty(
+                (0, 2), dtype=np.float32)
+            return None
+
+        # Strip the union down to its Polygon components — a
+        # GeometryCollection may carry lower-dim leftovers we don't want
+        # to triangulate.
+        if merged.geom_type == "Polygon":
+            components = [merged]
+        elif merged.geom_type == "MultiPolygon":
+            components = list(merged.geoms)
+        else:
+            components = [g for g in getattr(merged, "geoms", [])
+                          if g.geom_type == "Polygon"]
+
+        chunks: list[np.ndarray] = []
+        for poly in components:
+            if poly.is_empty:
+                continue
+            tris = self._triangulate_simple_polygon(poly)
+            if tris.size > 0:
+                chunks.append(tris)
+
+        arr = (np.concatenate(chunks, axis=0) if chunks
+               else np.empty((0, 2), dtype=np.float32))
+        self._merged_all_copper_cache[key] = arr
+        return arr if arr.size > 0 else None
+
     def _triangulate_simple_polygon(self, poly) -> np.ndarray:
         """Constrained-Delaunay triangulate one OGC-valid shapely Polygon
         into a flat ``(N*3, 2)`` float32 GL_TRIANGLES vertex soup.
@@ -9006,7 +9243,7 @@ class PdnViewer(QMainWindow):
 
     def _update_markers_and_legend(self, phys_list: list[str],
                                    rail_names: list[str] | str) -> None:
-        """Build the marker overlay + legend HTML for the current view and
+        """Build the marker overlay + legend for the current view and
         push both to the GL viewer.
 
         Role markers (SOURCE / SINK / SERIES / REGULATOR) and the orange
@@ -9014,9 +9251,33 @@ class PdnViewer(QMainWindow):
         Vias-tab "Go" highlight (a yellow ring at
         :attr:`_highlight_via_xy`) is ALWAYS drawn regardless of that
         checkbox so the user can still find a via they just jumped to.
+
+        Each legend row is also a per-category visibility toggle: clicking
+        a row sets :attr:`_hidden_legend_keys` and the matching marker
+        groups are skipped on the next render (the row stays in the
+        chip, slashed).
         """
         groups: list[MarkerGroup] = []
-        legend_rows: list[tuple[str, str, str]] = []
+        # Structured legend rows pushed to the GL viewer's top-right
+        # chip. A row marked hidden suppresses its MarkerGroup above but
+        # still appears in the chip (slashed) so the toggle is
+        # discoverable + reversible.
+        legend_rows: list[LegendRow] = []
+        legend_seen_keys: set[str] = set()
+
+        def _add_legend(key: str, glyph_symbol: str, color: str,
+                        label: str | None = None) -> None:
+            if key in legend_seen_keys:
+                return
+            legend_seen_keys.add(key)
+            legend_rows.append(LegendRow(
+                key=key,
+                label=label or key,
+                glyph=self._LEGEND_GLYPHS.get(glyph_symbol, "●"),
+                color=color,
+                hidden=key in self._hidden_legend_keys,
+            ))
+
         # Hover-index for SOURCE/SINK markers is rebuilt from the same
         # pin walk below, so drop the stale cache up-front. ``hover_rows``
         # collects the solved-directive entries; editor-directive rows are
@@ -9118,11 +9379,19 @@ class PdnViewer(QMainWindow):
                                 ),
                             })
 
-            legend_seen_roles: set[str] = set()
             for (role, is_n_side), (xs, ys, zs) in per_role.items():
                 if not xs:
                     continue
                 style = self._ROLE_MARKER_STYLE[role]
+                role_key = style["label"]
+                # One legend row per role — the P / N split is a marker
+                # detail, not a separate legend entry. Add the row even
+                # when the user has hidden it (so the toggle stays
+                # reachable) but skip emitting the MarkerGroup so the
+                # markers themselves disappear from the canvas.
+                _add_legend(role_key, style["symbol"], style["color"])
+                if role_key in self._hidden_legend_keys:
+                    continue
                 groups.append(MarkerGroup(
                     xs=np.asarray(xs, dtype=np.float64),
                     ys=np.asarray(ys, dtype=np.float64),
@@ -9134,12 +9403,6 @@ class PdnViewer(QMainWindow):
                                 else "#000000"),
                     edge_width=1.6,
                 ))
-                # One legend row per role — the P / N split is a marker
-                # detail, not a separate legend entry.
-                if role not in legend_seen_roles:
-                    legend_rows.append((style["label"], style["symbol"],
-                                         style["color"]))
-                    legend_seen_roles.add(role)
 
             # Via *markers* (orange dots) — skipped in 3D where the via
             # *cylinders* (drawn natively in GL) take over the same role.
@@ -9159,25 +9422,26 @@ class PdnViewer(QMainWindow):
                     for vx, vy, vd in zip(vxs, vys, vds):
                         via_pts[(vx, vy)] = vd
                 if via_pts:
-                    n_via = len(via_pts)
-                    via_xs = np.fromiter((p[0] for p in via_pts),
-                                         dtype=np.float64, count=n_via)
-                    via_ys = np.fromiter((p[1] for p in via_pts),
-                                         dtype=np.float64, count=n_via)
-                    via_ds = np.fromiter(via_pts.values(),
-                                         dtype=np.float64, count=n_via)
-                    groups.append(MarkerGroup(
-                        xs=via_xs,
-                        ys=via_ys,
-                        color="#ff8c00",
-                        symbol="o",
-                        size=6,  # ignored when world_diameters_mm is set
-                        edge_color="#000000",
-                        edge_width=0.4,
-                        world_diameters_mm=via_ds,
-                        min_pixel_diameter=self._VIA_MARKER_MIN_PX,
-                    ))
-                    legend_rows.append(("VIA", "o", "#ff8c00"))
+                    _add_legend("VIA", "o", "#ff8c00")
+                    if "VIA" not in self._hidden_legend_keys:
+                        n_via = len(via_pts)
+                        via_xs = np.fromiter((p[0] for p in via_pts),
+                                             dtype=np.float64, count=n_via)
+                        via_ys = np.fromiter((p[1] for p in via_pts),
+                                             dtype=np.float64, count=n_via)
+                        via_ds = np.fromiter(via_pts.values(),
+                                             dtype=np.float64, count=n_via)
+                        groups.append(MarkerGroup(
+                            xs=via_xs,
+                            ys=via_ys,
+                            color="#ff8c00",
+                            symbol="o",
+                            size=6,  # ignored when world_diameters_mm set
+                            edge_color="#000000",
+                            edge_width=0.4,
+                            world_diameters_mm=via_ds,
+                            min_pixel_diameter=self._VIA_MARKER_MIN_PX,
+                        ))
 
                 # PTH (plated through-hole) markers — same gating, light
                 # grey so they don't compete with the orange via dots.
@@ -9189,25 +9453,26 @@ class PdnViewer(QMainWindow):
                     for px, py, pd in zip(pxs, pys, pds):
                         pth_pts[(px, py)] = pd
                 if pth_pts:
-                    n_pth = len(pth_pts)
-                    pth_xs = np.fromiter((p[0] for p in pth_pts),
-                                         dtype=np.float64, count=n_pth)
-                    pth_ys = np.fromiter((p[1] for p in pth_pts),
-                                         dtype=np.float64, count=n_pth)
-                    pth_ds = np.fromiter(pth_pts.values(),
-                                         dtype=np.float64, count=n_pth)
-                    groups.append(MarkerGroup(
-                        xs=pth_xs,
-                        ys=pth_ys,
-                        color=self._PTH_COLOR_HEX,
-                        symbol="o",
-                        size=6,  # ignored when world_diameters_mm is set
-                        edge_color="#000000",
-                        edge_width=0.4,
-                        world_diameters_mm=pth_ds,
-                        min_pixel_diameter=self._VIA_MARKER_MIN_PX,
-                    ))
-                    legend_rows.append(("PTH", "o", self._PTH_COLOR_HEX))
+                    _add_legend("PTH", "o", self._PTH_COLOR_HEX)
+                    if "PTH" not in self._hidden_legend_keys:
+                        n_pth = len(pth_pts)
+                        pth_xs = np.fromiter((p[0] for p in pth_pts),
+                                             dtype=np.float64, count=n_pth)
+                        pth_ys = np.fromiter((p[1] for p in pth_pts),
+                                             dtype=np.float64, count=n_pth)
+                        pth_ds = np.fromiter(pth_pts.values(),
+                                             dtype=np.float64, count=n_pth)
+                        groups.append(MarkerGroup(
+                            xs=pth_xs,
+                            ys=pth_ys,
+                            color=self._PTH_COLOR_HEX,
+                            symbol="o",
+                            size=6,  # ignored when world_diameters_mm set
+                            edge_color="#000000",
+                            edge_width=0.4,
+                            world_diameters_mm=pth_ds,
+                            min_pixel_diameter=self._VIA_MARKER_MIN_PX,
+                        ))
 
         # Via Current mode (2D fallback): emit one MarkerGroup per
         # colour bucket so each via shows its current value. The
@@ -9251,19 +9516,7 @@ class PdnViewer(QMainWindow):
         self._set_marker_hover_rows(
             hover_rows + self._editor_marker_hover_rows())
 
-        if legend_rows:
-            rows_html = "".join(
-                "<tr>"
-                f"<td><span style='color:{color}; font-size:11pt;'>"
-                f"{self._LEGEND_GLYPHS.get(symbol, '●')}</span></td>"
-                f"<td style='padding-left:6px;'>{_esc(lbl)}</td>"
-                "</tr>"
-                for lbl, symbol, color in legend_rows
-            )
-            self._legend_html = f"<table style='border-spacing:0;'>{rows_html}</table>"
-        else:
-            self._legend_html = ""
-        self._gl_viewer.set_overlay_top_right(self._legend_html)
+        self._gl_viewer.set_overlay_top_right_legend(legend_rows)
 
     # --- CAD-style fixed-scale viewport (via GLMeshViewer) -----------------
 
@@ -9977,6 +10230,70 @@ class PdnViewer(QMainWindow):
             return None   # ordering mismatch — skip dimming, never crash
         return arr
 
+    def _combined_mesh_alpha_array(self, layer_probes: list[dict],
+                                    total_vertices: int) -> np.ndarray | None:
+        """Per-vertex alpha for the heatmap mesh, combining the per-layer
+        TransparencyButton setting with editor-mode connectivity dimming.
+
+        For each (phys, net) slice in the combined mesh, the alpha is
+        ``layer_transparency_alpha * editor_dim_alpha``. Returns ``None``
+        when no adjustment is needed (every layer fully opaque AND no
+        editor highlight active) so the mesh draws on the GPU fast path."""
+        if not layer_probes:
+            return None
+        transp_by_name = dict(
+            getattr(self, "_layer_transparency_buttons", []))
+        editor_hi = (self._editor_highlight_nets
+                      if (self._editor_mode
+                          and self._editor_highlight_nets) else None)
+
+        # Cheap pre-check — bail out to the fast path when nothing wants a
+        # non-1.0 alpha. The mesh shader's constant attribute is faster
+        # than uploading + blending a per-vertex array that's all 1s.
+        layer_dim = any(
+            (transp_by_name.get(lp.get("physical")) is not None
+             and transp_by_name[lp.get("physical")].alpha() < 1.0)
+            for lp in layer_probes
+        )
+        if not layer_dim and editor_hi is None:
+            return None
+
+        parts: list[np.ndarray] = []
+        # layer_probes is top-first; the combined mesh was built
+        # bottom-first, so iterate reversed to match the xs/ys/tris order.
+        for lp in reversed(layer_probes):
+            n = int(lp.get("n_vertices", 0))
+            if n <= 0:
+                continue
+            tb = transp_by_name.get(lp.get("physical"))
+            layer_a = tb.alpha() if tb is not None else 1.0
+            if editor_hi is not None:
+                editor_a = 1.0 if lp.get("net") in editor_hi else 0.1
+            else:
+                editor_a = 1.0
+            parts.append(np.full(n, float(layer_a * editor_a),
+                                  dtype=np.float32))
+        if not parts:
+            return None
+        arr = np.concatenate(parts)
+        if arr.size != total_vertices:
+            return None   # ordering mismatch — skip dimming, never crash
+        return arr
+
+    def _push_mesh_alpha(self) -> None:
+        """Re-push the heatmap mesh's per-vertex alpha array from the
+        cached ``self._layer_probes``. Used by the layer Transparency
+        toggle to update the mesh shading without rebuilding geometry."""
+        gv = getattr(self, "_gl_viewer", None)
+        if gv is None or not self._layer_probes:
+            return
+        total = sum(int(lp.get("n_vertices", 0)) for lp in self._layer_probes)
+        if total <= 0:
+            return
+        gv.set_vertex_alpha(
+            self._combined_mesh_alpha_array(self._layer_probes, total)
+        )
+
     def _editor_dim_rgb(self, rgb: tuple[float, float, float],
                         net: str | None) -> tuple[float, float, float]:
         """Dim an all-copper overlay colour for editor-mode connectivity
@@ -10171,6 +10488,111 @@ class PdnViewer(QMainWindow):
                 best_rank = rank
                 break
         return best
+
+    def _visible_all_copper_layer_ids(self) -> dict[int, str]:
+        """``layer_id → physical_name`` for layers whose 'all copper'
+        eye2 button is currently on. The hover fallback uses this to
+        restrict bare-copper lookups to copper the user can actually
+        see — reporting a net from a hidden layer would be confusing."""
+        visible: dict[int, str] = {}
+        for name, eye2 in getattr(self, "_layer_eye2_buttons", []) or []:
+            if not eye2.isVisibleState():
+                continue
+            lid = self._phys_name_to_layer_id.get(name)
+            if lid is None:
+                continue
+            visible[lid] = name
+        return visible
+
+    def _all_copper_at_point(self, x: float, y: float) -> dict | None:
+        """Hover-fallback: topmost visible all-copper polygon covering
+        (x, y), filtered by :meth:`_visible_all_copper_layer_ids`.
+        Mirrors :meth:`_copper_at_point` but skips hidden layers, so the
+        status bar only names a net the user can see.  Returns
+        ``{"net", "physical", "layer_id"}`` or ``None``."""
+        md = self.metadata
+        if not md:
+            return None
+        records = md.get("all_copper") or []
+        if not records:
+            return None
+        visible = self._visible_all_copper_layer_ids()
+        if not visible:
+            return None
+        pt = _sg.Point(x, y)
+        best: dict | None = None
+        best_rank = 1 << 30
+        for rec in records:
+            layer_id = rec.get("layer_id")
+            phys = visible.get(layer_id)
+            if phys is None:
+                continue
+            net = rec.get("net")
+            if not net:
+                continue
+            rank = self._phys_stackup_rank.get(phys, 1 << 30)
+            if best is not None and rank >= best_rank:
+                continue
+            for poly in rec.get("polygons", []):
+                prepped = self._copper_poly_prepared(poly)
+                if prepped is None:
+                    continue
+                try:
+                    if not prepped.contains(pt):
+                        continue
+                except Exception:
+                    continue
+                best = {"net": net, "physical": phys, "layer_id": layer_id}
+                best_rank = rank
+                break
+        return best
+
+    def _all_copper_at_point_3d(self, x_px: float, y_px: float
+                                ) -> dict | None:
+        """3D variant of :meth:`_all_copper_at_point`. Walks visible
+        all-copper layers top-first, unprojects the cursor pixel onto
+        each layer's z plane, and returns the first layer whose copper
+        covers the projected point."""
+        md = self.metadata
+        if not md:
+            return None
+        records = md.get("all_copper") or []
+        if not records:
+            return None
+        visible = self._visible_all_copper_layer_ids()
+        if not visible:
+            return None
+        by_layer: dict[int, list] = {}
+        for rec in records:
+            lid = rec.get("layer_id")
+            if lid in visible:
+                by_layer.setdefault(lid, []).append(rec)
+        ordered = sorted(
+            by_layer.items(),
+            key=lambda kv: self._phys_stackup_rank.get(
+                visible[kv[0]], 1 << 30),
+        )
+        for layer_id, recs in ordered:
+            phys = visible[layer_id]
+            z = self._layer_z_for(phys)
+            wx, wy = self._gl_viewer.screen_to_world_at_z(x_px, y_px, z)
+            pt = _sg.Point(wx, wy)
+            for rec in recs:
+                net = rec.get("net")
+                if not net:
+                    continue
+                for poly in rec.get("polygons", []):
+                    prepped = self._copper_poly_prepared(poly)
+                    if prepped is None:
+                        continue
+                    try:
+                        if not prepped.contains(pt):
+                            continue
+                    except Exception:
+                        continue
+                    return {"net": net, "physical": phys,
+                            "layer_id": layer_id}
+        return None
 
     def _on_editor_click(self, world_x: float, world_y: float) -> None:
         """Editor-mode left-click: drop a pending free marker if one is
@@ -10661,6 +11083,18 @@ class PdnViewer(QMainWindow):
         self._ef_value.setValidator(QDoubleValidator(0.0, 1e12, 6))
         self._ef_value_label = QLabel("Voltage (V)")
         form.addRow(self._ef_value_label, self._ef_value)
+        # SINK-only optional minimum acceptable rail voltage (PDN_MIN_V
+        # equivalent). Blank disables the per-pin pass/fail check. Visibility
+        # is toggled by _on_editor_role_changed below.
+        self._ef_min_v = QLineEdit()
+        self._ef_min_v.setValidator(QDoubleValidator(0.0, 1e12, 6))
+        self._ef_min_v.setToolTip(
+            "Optional: minimum acceptable rail voltage at this sink's pins. "
+            "Leave blank to skip the check. Sinks below this voltage are "
+            "flagged red in the Nodes table."
+        )
+        self._ef_min_v_label = QLabel("Min V (V)")
+        form.addRow(self._ef_min_v_label, self._ef_min_v)
         lay.addLayout(form)
 
         lay.addWidget(QLabel("Current model"))
@@ -10709,6 +11143,8 @@ class PdnViewer(QMainWindow):
             val = {"SINK": existing.current,
                    "SERIES": existing.resistance}.get(role, existing.voltage)
             self._ef_value.setText("" if val is None else f"{val:g}")
+            mv = getattr(existing, "min_voltage", None)
+            self._ef_min_v.setText("" if mv is None else f"{mv:g}")
             self._ef_single.setChecked(existing.single_net)
             self._ef_two.setChecked(not existing.single_net)
             if existing.p_net:
@@ -10732,6 +11168,8 @@ class PdnViewer(QMainWindow):
             self._ef_role.setCurrentText(role)
             val = sch_unlock.get("value")
             self._ef_value.setText("" if val is None else f"{val:g}")
+            mv = sch_unlock.get("min_voltage")
+            self._ef_min_v.setText("" if mv is None else f"{mv:g}")
             terms = sch_unlock.get("terminals") or {}
             n_term = terms.get("N")
             single = (n_term is None) or bool(n_term.get("ideal_return"))
@@ -10757,13 +11195,20 @@ class PdnViewer(QMainWindow):
     def _on_editor_role_changed(self, role: str) -> None:
         """Swap the value field between voltage (SOURCE), current (SINK)
         and resistance (SERIES). SERIES always bridges two nets, so its
-        current model is forced to two-net and the radios are locked."""
+        current model is forced to two-net and the radios are locked.
+        The optional Min V (PDN_MIN_V) field is only shown for SINK."""
         if not hasattr(self, "_ef_value_label"):
             return
         self._ef_value_label.setText(
             {"SINK": "Current (A)", "SERIES": "Resistance (Ω)"}.get(
                 role, "Voltage (V)")
         )
+        if hasattr(self, "_ef_min_v"):
+            is_sink = role == "SINK"
+            self._ef_min_v.setVisible(is_sink)
+            self._ef_min_v_label.setVisible(is_sink)
+            if not is_sink:
+                self._ef_min_v.clear()
         if hasattr(self, "_ef_two"):
             is_series = role == "SERIES"
             if is_series and not self._ef_two.isChecked():
@@ -10825,6 +11270,22 @@ class PdnViewer(QMainWindow):
             )
             return
 
+        # SINK-only optional minimum-rail-voltage check. Blank disables it;
+        # any non-numeric text is rejected so a stray keystroke can't silently
+        # drop the check.
+        min_v: float | None = None
+        if role == "SINK":
+            mv_txt = self._ef_min_v.text().strip()
+            if mv_txt:
+                try:
+                    min_v = float(mv_txt)
+                except ValueError:
+                    self._ef_status.setText(
+                        f"<span style='color:{_T()['err']};'>Min V must be "
+                        "numeric (or blank to skip the check).</span>"
+                    )
+                    return
+
         existing = self._directive_for_selection()
         d = existing if existing is not None else EditorDirective()
         d.role = role
@@ -10834,6 +11295,7 @@ class PdnViewer(QMainWindow):
         d.voltage = value if role in ("SOURCE", "REGULATOR") else None
         d.current = value if role == "SINK" else None
         d.resistance = value if role == "SERIES" else None
+        d.min_voltage = min_v
         if sel["kind"] == "component":
             d.kind = "component"
             d.designator = sel.get("designator")
@@ -11442,6 +11904,18 @@ class PdnViewer(QMainWindow):
             self._highlight_via_xy = None
             self._render()
 
+    def _on_legend_row_clicked(self, key: str) -> None:
+        """Toggle visibility of the marker category whose legend row was
+        clicked. The legend row itself stays in the chip — it just flips
+        between normal and slashed (matching the off-state of the eye
+        icons used elsewhere). A full re-render rebuilds the marker
+        groups with the updated hidden set."""
+        if key in self._hidden_legend_keys:
+            self._hidden_legend_keys.discard(key)
+        else:
+            self._hidden_legend_keys.add(key)
+        self._render()
+
     # --- Voltage-difference (Shift-drag) tool -------------------------------
     #
     # When the user holds Shift while hovering copper in either Voltage or
@@ -11634,10 +12108,19 @@ class PdnViewer(QMainWindow):
         if now - self._last_probe_at < throttle:
             return
         self._last_probe_at = now
-        if not self._layer_probes:
+        # Nothing to probe at all — no FEM rail and no visible physical
+        # copper. Keep the initial-state hint rather than reporting
+        # "(no copper)" over a blank viewport.
+        has_visible_all_copper = (
+            self.metadata is not None
+            and bool(self.metadata.get("all_copper"))
+            and bool(self._visible_all_copper_layer_ids())
+        )
+        if not self._layer_probes and not has_visible_all_copper:
             self.probe_label_widget.setText("Hover the plot to probe values")
             self._hide_cursor_tooltip()
             return
+        hit = None
         if self.view_3d_box.isChecked():
             px, py = self._gl_viewer.last_hover_pixel()
             hit = self._probe_at_point_3d(px, py)
@@ -11646,11 +12129,14 @@ class PdnViewer(QMainWindow):
                 z = self._layer_z_for(lp.get("physical", ""))
                 world_x, world_y = self._gl_viewer.screen_to_world_at_z(
                     px, py, z)
-        else:
+        elif self._layer_probes:
             hit = self._probe_at_point(world_x, world_y)
         if hit is None:
-            # Fall back to stub (no-current copper) probe.
-            if self.view_3d_box.isChecked():
+            # Fall back to stub (no-current copper) probe, then to the
+            # all-copper overlay so non-rail physical copper still
+            # reports its net.
+            is_3d = self.view_3d_box.isChecked()
+            if is_3d:
                 px_, py_ = self._gl_viewer.last_hover_pixel()
                 stub_hit = self._probe_at_stub_3d(px_, py_)
             else:
@@ -11678,6 +12164,34 @@ class PdnViewer(QMainWindow):
                     f"{via_part}{marker_part}{diff_part}"
                 )
                 self._update_cursor_tooltip((v_stub, stub_info),
+                                            via_row=via_row,
+                                            marker_row=marker_row)
+                return
+            if is_3d:
+                px_, py_ = self._gl_viewer.last_hover_pixel()
+                bare_hit = self._all_copper_at_point_3d(px_, py_)
+                if bare_hit is not None:
+                    z = self._layer_z_for(bare_hit.get("physical", ""))
+                    world_x, world_y = self._gl_viewer.screen_to_world_at_z(
+                        px_, py_, z)
+            else:
+                bare_hit = self._all_copper_at_point(world_x, world_y)
+            if bare_hit is not None:
+                bare_hit = dict(bare_hit)
+                bare_hit["is_bare"] = True
+                net_part = (f"   Net = {bare_hit['net']}"
+                            if bare_hit.get("net") else "")
+                layer_part = (f"   Layer = {bare_hit['physical']}"
+                              if bare_hit.get("physical") else "")
+                diff_part = self._apply_measurement_difference(
+                    world_x, world_y, None,
+                )
+                self.probe_label_widget.setText(
+                    f"x = {world_x:>8.3f} mm   y = {world_y:>8.3f} mm"
+                    f"{net_part}{layer_part}"
+                    f"{via_part}{marker_part}{diff_part}"
+                )
+                self._update_cursor_tooltip((None, bare_hit),
                                             via_row=via_row,
                                             marker_row=marker_row)
                 return
@@ -11806,7 +12320,11 @@ class PdnViewer(QMainWindow):
         lines: list[str] = []
         if hit is not None:
             v_float, lp = hit
-            if lp.get("is_stub"):
+            if lp.get("is_bare"):
+                # Non-rail copper from the all-copper overlay — no FEM
+                # solve runs here, so just name the net / layer.
+                pass
+            elif lp.get("is_stub"):
                 if v_float is not None:
                     lines.append(f"Voltage ≈ {v_float:.5g} V")
                 lines.append("(no current)")
@@ -13157,6 +13675,19 @@ class PdnViewer(QMainWindow):
         # --- Non-heatmap tabs: remove and rebuild ---
         heatmap_idx = self._heatmap_tab_index
         current_tab_text = self.tabs.tabText(self.tabs.currentIndex())
+        # Drop the old Messages-tab buffer listener before its signaller
+        # QObject is destroyed below — leaving the listener in place
+        # would fire on each new record, hit RuntimeError from the dead
+        # QObject, and only then self-remove. Schedule the signaller for
+        # deletion explicitly because it's parented to the viewer (so
+        # it'd otherwise outlive the rebuild until the window itself
+        # closes — a small but unbounded leak on theme toggles).
+        old_msg_listener = getattr(self, "_messages_listener", None)
+        if old_msg_listener is not None:
+            log_buffer.remove_listener(old_msg_listener)
+        old_msg_signaller = getattr(self, "_messages_signaller", None)
+        if old_msg_signaller is not None:
+            old_msg_signaller.deleteLater()
         # Remove from highest index downwards so removeTab doesn't shift
         # the index of tabs we still need to remove. Skip the heatmap.
         for i in range(self.tabs.count() - 1, -1, -1):
@@ -13167,23 +13698,38 @@ class PdnViewer(QMainWindow):
             if w is not None:
                 w.setParent(None)
                 w.deleteLater()
-        # Re-add in the original order. _vias_tab_index needs refreshing
-        # because Vias is re-inserted after the others.
+        # Re-add in the original order. _nodes_tab_index / _vias_tab_index
+        # need refreshing because both tabs are re-inserted after the others.
         self.tabs.addTab(self._build_setup_tab(), "Setup")
-        self.tabs.addTab(self._build_nodes_tab(), "Nodes")
+        self._nodes_tab_index = self.tabs.addTab(
+            self._build_nodes_tab(), "Nodes",
+        )
+        self._update_nodes_tab_title(getattr(self, "_nodes_warn_count", 0))
         self._vias_tab_index = self.tabs.addTab(
             self._build_vias_tab(), "Vias",
         )
         self._update_vias_tab_title(getattr(self, "_vias_warn_count", 0))
+        # The previous Messages-tab listener is dropped on tab teardown
+        # below (the QObject signaller is destroyed with its parent);
+        # rebuilding here re-installs a fresh listener against the same
+        # global buffer so the new tab keeps receiving live records.
+        self._messages_signaller = None
+        self._messages_listener = None
+        self._messages_tab_index = self.tabs.addTab(
+            self._build_messages_tab(), "Messages",
+        )
         self.tabs.addTab(self._build_settings_tab(), "Settings")
         self.tabs.addTab(self._build_help_tab(), "Help")
-        # Restore tab selection. "Vias" gets the warning suffix appended
-        # so match by prefix.
+        # Restore tab selection. "Nodes" and "Vias" both get a warning
+        # suffix appended on failures, so match by prefix.
         for i in range(self.tabs.count()):
             label = self.tabs.tabText(i)
             if label == current_tab_text or (
                 current_tab_text.startswith("Vias")
                 and label.startswith("Vias")
+            ) or (
+                current_tab_text.startswith("Nodes")
+                and label.startswith("Nodes")
             ):
                 self.tabs.setCurrentIndex(i)
                 break
@@ -14682,6 +15228,14 @@ class PdnViewer(QMainWindow):
         ("Drop (V)",           True),
         ("|J| (A/mm)",         True),
         ("Power (W/mm^2)",     True),
+        # PDN_MIN_V check (SINK only): the declared minimum acceptable rail
+        # voltage, the measured-vs-declared margin, and the per-pin pass/fail
+        # verdict. Cells are blank ("—") for non-SINK rows and for the SINK
+        # N-terminal (the return side); the margin and status are highlighted
+        # red on FAIL so a long table can be skim-audited at a glance.
+        ("Min V (V)",          True),
+        ("Margin (V)",         True),
+        ("Status",             False),
     )
 
     def _build_nodes_tab(self) -> QWidget:
@@ -14778,11 +15332,44 @@ class PdnViewer(QMainWindow):
             finally:
                 QApplication.restoreOverrideCursor()
 
+    def _get_or_compute_node_rows(self) -> list[dict]:
+        """Run :meth:`_compute_node_report` at most once per viewer and cache
+        the result. Mirrors :meth:`_get_or_compute_via_rows` — used both by
+        the deferred PDN_MIN_V warning-count initialiser (so the tab title
+        shows "Nodes ⚠ N" before the user ever opens the tab) and by
+        :meth:`_populate_nodes_table` (so the first populate skips the
+        compute cost — it's already done)."""
+        cached = getattr(self, "_nodes_rows_cache", None)
+        if cached is None:
+            cached = self._compute_node_report()
+            self._nodes_rows_cache = cached
+        return cached
+
+    def _init_nodes_warn_count(self) -> None:
+        """Compute the Nodes warning count once the viewer is visible, so the
+        tab title shows the alert badge before the user navigates to the tab.
+        Mirrors :meth:`_init_vias_warn_count`. The warning count is the
+        number of pins on a SINK with a ``PDN_MIN_V`` annotation whose
+        measured voltage is below that minimum."""
+        rows = self._get_or_compute_node_rows()
+        warn_count = sum(1 for r in rows if r.get("status") == "FAIL")
+        self._nodes_warn_count = warn_count
+        self._update_nodes_tab_title(warn_count)
+
+    def _update_nodes_tab_title(self, warn_count: int) -> None:
+        """Append the warning count to the Nodes tab label so users see it
+        without having to open the tab. Mirrors :meth:`_update_vias_tab_title`."""
+        idx = getattr(self, "_nodes_tab_index", -1)
+        if idx < 0:
+            return
+        title = "Nodes" if warn_count == 0 else f"Nodes ⚠ {warn_count}"
+        self.tabs.setTabText(idx, title)
+
     def _populate_nodes_table(self) -> None:
         """Fill the Nodes table from the cached node report."""
         log = logging.getLogger(__name__)
         _t0 = time.monotonic()
-        rows = self._compute_node_report()
+        rows = self._get_or_compute_node_rows()
         log.info("Nodes populate: _compute_node_report %.2fs (%d rows)",
                  time.monotonic() - _t0, len(rows))
         _t1 = time.monotonic()
@@ -14791,7 +15378,17 @@ class PdnViewer(QMainWindow):
         self._nodes_rows = rows
         cols = self._NODES_TABLE_COLUMNS
         # Action-column styling, fetched once. Mirrors the Vias tab.
-        action_fg = QBrush(QColor(_T()["accent"]))
+        _t = _T()
+        action_fg = QBrush(QColor(_t["accent"]))
+        # Red highlight for FAIL rows on the PDN_MIN_V check — same palette
+        # the Vias tab uses for over-current cells. PASS gets a green
+        # counterpart so a row that was deliberately limit-checked stands
+        # out from rows where no PDN_MIN_V was declared (those stay neutral).
+        fail_bg = QBrush(QColor(_t["warn_bg"]))
+        fail_fg = QBrush(QColor(_t["warn_fg"]))
+        pass_bg = QBrush(QColor(_t["pass_bg"]))
+        pass_fg = QBrush(QColor(_t["pass_fg"]))
+        status_cols = {"Min V (V)", "Margin (V)", "Status"}
 
         # Column 0 is the action ("Go") cell; everything else is data in
         # columns 1..N. Stays aligned with _NODES_TABLE_COLUMNS and the
@@ -14800,6 +15397,7 @@ class PdnViewer(QMainWindow):
 
         self.nodes_table.setSortingEnabled(False)  # disable while loading
         self.nodes_table.setRowCount(len(rows))
+        fail_count = 0
         for r, row in enumerate(rows):
             # Clickable action cell. The original row index is stashed on
             # UserRole so the cellClicked handler can recover the row dict
@@ -14829,7 +15427,15 @@ class PdnViewer(QMainWindow):
                 row.get("drop"),
                 row.get("current_density"),
                 row.get("power_density"),
+                row.get("min_voltage"),
+                row.get("margin"),
+                row.get("status"),
             )
+            status = row.get("status")
+            is_fail = status == "FAIL"
+            is_pass = status == "PASS"
+            if is_fail:
+                fail_count += 1
             for c, (col_label, is_numeric) in enumerate(cols):
                 if c == ACTION_COL:
                     continue
@@ -14846,6 +15452,13 @@ class PdnViewer(QMainWindow):
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 else:
                     item = QTableWidgetItem(str(value))
+                if col_label in status_cols:
+                    if is_fail:
+                        item.setBackground(fail_bg)
+                        item.setForeground(fail_fg)
+                    elif is_pass:
+                        item.setBackground(pass_bg)
+                        item.setForeground(pass_fg)
                 self.nodes_table.setItem(r, c, item)
         log.info("Nodes populate: items %.2fs", time.monotonic() - _t1)
         _t2 = time.monotonic()
@@ -14863,6 +15476,11 @@ class PdnViewer(QMainWindow):
         if not getattr(self, "_nodes_click_handler_wired", False):
             self.nodes_table.cellClicked.connect(self._on_nodes_cell_clicked)
             self._nodes_click_handler_wired = True
+        # Update the tab-title badge from the actual fail count we just
+        # rendered, so it stays in sync if the deferred _init pass hasn't
+        # run yet (or if the row cache was invalidated).
+        self._nodes_warn_count = fail_count
+        self._update_nodes_tab_title(fail_count)
         self._apply_nodes_filter()  # respect current filter
         log.info("Nodes populate: TOTAL %.2fs", time.monotonic() - _t0)
 
@@ -15008,7 +15626,14 @@ class PdnViewer(QMainWindow):
             # ("U5" vs "U5#1") in the Nodes-tab table.
             display_desig = str(d.get("label") or desig)
             schdoc = d.get("schdoc", "")
+            # PDN_MIN_V is a per-directive limit on the SINK's rail (P) side.
+            # Carry it only onto SINK P-terminal pins so the per-pin margin
+            # check doesn't fire on the return (N) terminal or on non-sinks.
+            directive_min_v = (d.get("min_voltage")
+                               if role == "SINK" else None)
             for term_name, term in (d.get("terminals") or {}).items():
+                pin_min_v = (directive_min_v
+                             if term_name == "P" else None)
                 for pin in term.get("pins", []):
                     layer_id = pin.get("layer_id")
                     net = pin.get("net", "")
@@ -15027,6 +15652,7 @@ class PdnViewer(QMainWindow):
                         "x_mm": x,
                         "y_mm": y,
                         "phys": phys,
+                        "min_voltage": pin_min_v,
                     })
                     if (phys is not None and x is not None and y is not None):
                         sample_requests.setdefault((phys, net), []).append(
@@ -15068,6 +15694,18 @@ class PdnViewer(QMainWindow):
             )
             cd_val = (math.sqrt(max(pd_val * conductance, 0.0))
                       if pd_val is not None else None)
+            min_v = prep["min_voltage"]
+            # Margin = actual sample - declared minimum; ``None`` whenever
+            # either side is missing (no PDN_MIN_V on the directive, or the
+            # mesh sample failed and the row's voltage is None). Status is
+            # "PASS" when the margin is >=0 and "FAIL" when negative; left
+            # ``None`` so the table cell renders as "—" otherwise.
+            if min_v is None or voltage is None:
+                margin = None
+                status = None
+            else:
+                margin = voltage - min_v
+                status = "PASS" if margin >= 0 else "FAIL"
             rows.append({
                 "role": prep["role"],
                 "designator": prep["designator"],
@@ -15081,6 +15719,9 @@ class PdnViewer(QMainWindow):
                 "voltage": voltage,
                 "power_density": pd_val,
                 "current_density": cd_val,
+                "min_voltage": min_v,
+                "margin": margin,
+                "status": status,
             })
 
         # Now compute Drop per row: V - max(V on the same rail group).
@@ -15742,6 +16383,331 @@ class PdnViewer(QMainWindow):
         self._render()
         self._gl_viewer.set_view_center_scale(float(x), float(y), mm_per_pixel)
 
+    # --- Messages tab ------------------------------------------------------
+
+    # Columns of the Messages-tab table. (display label, numeric?) — the
+    # numeric flag is informational; sort keys are carried on the cell's
+    # Qt.UserRole via :class:`_MessagesSortItem` so the Time column sorts
+    # by epoch and the Level column by logging level number rather than
+    # by the displayed string. (Setting Qt.EditRole on a QTableWidgetItem
+    # would clobber the DisplayRole text — Qt aliases EditRole to
+    # DisplayRole for this class — which is why we don't go that route.)
+    _MESSAGES_TABLE_COLUMNS: tuple[tuple[str, bool], ...] = (
+        ("Time",    True),
+        ("Level",   True),
+        ("Source",  False),
+        ("Message", False),
+    )
+
+    # Which level checkboxes the filter row exposes, in display order.
+    # Each entry is (label, level_no). DEBUG is included so that runs
+    # launched with ``FYPA -d`` can still narrow the table down. Labels
+    # carry the same glyph the Level cell uses so users can match a row
+    # to its filter at a glance.
+    _MESSAGES_FILTER_LEVELS: tuple[tuple[str, int], ...] = (
+        ("❌ Errors",   logging.ERROR),
+        ("⚠ Warnings", logging.WARNING),
+        ("ℹ Info",     logging.INFO),
+        ("🐛 Debug",    logging.DEBUG),
+    )
+
+    @staticmethod
+    def _messages_level_glyph(level: int) -> str:
+        """Glyph shown in the Level cell instead of the raw level name.
+        Bands rather than per-int lookups so CRITICAL (>= ERROR) and any
+        custom levels in between still pick up sensible icons. The full
+        level name remains accessible via the cell's tooltip."""
+        if level >= logging.CRITICAL:
+            return "🛑"
+        if level >= logging.ERROR:
+            return "❌"
+        if level >= logging.WARNING:
+            return "⚠"
+        if level >= logging.INFO:
+            return "ℹ"
+        return "🐛"
+
+    def _build_messages_tab(self) -> QWidget:
+        """Build the Messages tab — a sortable, filterable table of every
+        log record captured since the process started (see
+        :mod:`fypa.log_buffer`). Errors, warnings, and info messages are
+        all routed here so the user can audit what the loader / solver /
+        editor reported without having to open the log file.
+
+        New records arrive on whichever thread emitted them; the bridge
+        :class:`QObject` re-emits via a queued signal so the row append
+        always lands on the GUI thread."""
+        widget = QWidget(self.tabs)
+        outer = QVBoxLayout(widget)
+        outer.setContentsMargins(8, 8, 8, 8)
+
+        # Filter bar — one checkbox per level, plus an Auto-scroll toggle
+        # and a Clear button. The Clear button drops every buffered
+        # record (process-wide) so the table reflects the current state
+        # rather than the cumulative session log.
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("Show:"))
+        self._messages_level_boxes: dict[int, QCheckBox] = {}
+        for label, level_no in self._MESSAGES_FILTER_LEVELS:
+            box = QCheckBox(label)
+            box.setChecked(True)
+            box.toggled.connect(self._apply_messages_filter)
+            filter_row.addWidget(box)
+            self._messages_level_boxes[level_no] = box
+
+        filter_row.addSpacing(12)
+        self._messages_autoscroll_box = QCheckBox("Auto-scroll")
+        self._messages_autoscroll_box.setChecked(True)
+        self._messages_autoscroll_box.setToolTip(
+            "Scroll the table to the newest message whenever a new record "
+            "arrives. Disable if you want to inspect older rows without "
+            "the view jumping under you."
+        )
+        filter_row.addWidget(self._messages_autoscroll_box)
+
+        filter_row.addStretch(1)
+        self.messages_summary_label = QLabel("")
+        self.messages_summary_label.setStyleSheet(
+            f"QLabel {{ color: {_T()['fg_muted']}; }}"
+        )
+        filter_row.addWidget(self.messages_summary_label)
+
+        clear_btn = QPushButton("Clear")
+        clear_btn.setToolTip(
+            "Drop every buffered log record. The file log (fypa.log) is "
+            "not affected."
+        )
+        clear_btn.clicked.connect(self._on_messages_clear)
+        filter_row.addWidget(clear_btn)
+        outer.addLayout(filter_row)
+
+        # Table.
+        self.messages_table = QTableWidget()
+        cols = self._MESSAGES_TABLE_COLUMNS
+        self.messages_table.setColumnCount(len(cols))
+        self.messages_table.setHorizontalHeaderLabels([c[0] for c in cols])
+        self.messages_table.setSortingEnabled(True)
+        self.messages_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.messages_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.messages_table.setAlternatingRowColors(True)
+        self.messages_table.verticalHeader().setVisible(False)
+        # Stretch the Message column so long lines use the remaining width.
+        header = self.messages_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        header.setStretchLastSection(True)
+        # Theme-driven styling — matches the Nodes / Vias tables.
+        _t = _T()
+        self.messages_table.setStyleSheet(
+            f"QTableWidget {{ background-color: {_t['bg']}; color: {_t['fg']};"
+            f"               gridline-color: {_t['gridline']};"
+            f"               alternate-background-color: {_t['bg_alt']}; }}"
+            f"QHeaderView::section {{ background-color: {_t['bg_header']}; color: {_t['fg_strong']};"
+            f"                       padding: 4px; border: 1px solid {_t['border']}; }}"
+            f"QTableWidget::item:selected {{ background-color: {_t['bg_selection']}; }}"
+        )
+        outer.addWidget(self.messages_table, 1)
+
+        # Seed the table with everything already in the buffer (e.g. solve
+        # warnings emitted before the viewer was constructed) and wire up
+        # the listener for future records. Listener uses a queued signal
+        # because log records may come from worker threads.
+        self._install_messages_listener()
+        self._populate_messages_table()
+        return widget
+
+    def _install_messages_signaller(self) -> None:
+        """Create the QObject bridge that re-emits log records on the GUI
+        thread. Idempotent — called both from :meth:`_install_messages_listener`
+        and during the theme-driven tab rebuild so a fresh tab inherits
+        the existing buffer feed."""
+        if getattr(self, "_messages_signaller", None) is not None:
+            return
+
+        class _MessagesSignaller(QObject):
+            recordReady = Signal(object)
+
+        self._messages_signaller = _MessagesSignaller(self)
+        # Qt.QueuedConnection: log records may fire on worker threads
+        # (solve worker, mesher pool callbacks). Queueing marshals the
+        # slot onto the GUI thread so QTableWidget mutations are safe.
+        self._messages_signaller.recordReady.connect(
+            self._on_messages_record, Qt.QueuedConnection,
+        )
+
+    def _install_messages_listener(self) -> None:
+        """Register the per-viewer listener with the global log buffer.
+        Safe to call repeatedly — the buffer dedupes by callable identity."""
+        self._install_messages_signaller()
+        signaller = self._messages_signaller
+        if getattr(self, "_messages_listener", None) is None:
+            # Bound closure that the log buffer can call from any thread.
+            def _listener(rec: log_buffer.MessageRecord) -> None:
+                # signaller may have been GC'd if the viewer is closing.
+                try:
+                    signaller.recordReady.emit(rec)
+                except RuntimeError:
+                    # Underlying QObject destroyed — listener is stale;
+                    # remove ourselves so the buffer stops calling us.
+                    log_buffer.remove_listener(_listener)
+            self._messages_listener = _listener
+        log_buffer.add_listener(self._messages_listener)
+
+    def _populate_messages_table(self) -> None:
+        """Rebuild the table from the global log buffer + the current
+        filter. Called once at construction and again whenever the filter
+        or the underlying buffer changes wholesale (e.g. after Clear)."""
+        table = getattr(self, "messages_table", None)
+        if table is None:
+            return
+        records = log_buffer.records()
+        # Snapshot allowed levels from the checkboxes so the loop doesn't
+        # re-check the widgets per row.
+        allowed = self._messages_allowed_levels()
+
+        table.setSortingEnabled(False)
+        table.setRowCount(0)
+        visible = 0
+        for rec in records:
+            if rec.level not in allowed:
+                continue
+            row = table.rowCount()
+            table.setRowCount(row + 1)
+            self._fill_messages_row(row, rec)
+            visible += 1
+        table.setSortingEnabled(True)
+        # Default sort: newest first (Time descending). The user can
+        # click any header to override.
+        table.sortByColumn(0, Qt.DescendingOrder)
+        # One-shot column-resize so timestamps + level + source fit
+        # without truncating; the message column has stretch turned on
+        # so it absorbs whatever's left.
+        table.resizeColumnToContents(0)
+        table.resizeColumnToContents(1)
+        table.resizeColumnToContents(2)
+        self._update_messages_summary(visible, len(records))
+
+    def _on_messages_record(self, rec: log_buffer.MessageRecord) -> None:
+        """Slot for the signaller — runs on the GUI thread thanks to the
+        QueuedConnection. Appends one row (if the filter accepts it) and
+        updates the summary label."""
+        table = getattr(self, "messages_table", None)
+        if table is None:
+            return
+        total = len(log_buffer.records())
+        allowed = self._messages_allowed_levels()
+        if rec.level in allowed:
+            table.setSortingEnabled(False)
+            row = table.rowCount()
+            table.setRowCount(row + 1)
+            self._fill_messages_row(row, rec)
+            table.setSortingEnabled(True)
+            # Preserve the user's chosen sort order by re-sorting after
+            # the append. Without this, the new row stays at the bottom
+            # regardless of the current sort column.
+            header = table.horizontalHeader()
+            table.sortByColumn(header.sortIndicatorSection(),
+                               header.sortIndicatorOrder())
+            if (getattr(self, "_messages_autoscroll_box", None) is not None
+                    and self._messages_autoscroll_box.isChecked()):
+                table.scrollToBottom()
+            visible = sum(
+                1 for r in range(table.rowCount())
+                if not table.isRowHidden(r)
+            )
+            self._update_messages_summary(visible, total)
+        else:
+            # Record didn't pass the filter — only the totals change.
+            visible = sum(
+                1 for r in range(table.rowCount())
+                if not table.isRowHidden(r)
+            )
+            self._update_messages_summary(visible, total)
+
+    def _fill_messages_row(self, row: int,
+                           rec: log_buffer.MessageRecord) -> None:
+        """Populate one row's four cells from a :class:`MessageRecord`.
+        Adds per-level colour to the Level cell so errors/warnings pop
+        without needing to read the column text."""
+        _t = _T()
+        # Time cell — displays the full local-time stamp, but sort key
+        # is the raw epoch so a roll past midnight (or a re-ordering
+        # after Clear) still sorts chronologically. Sort key lives on
+        # UserRole rather than EditRole because QTableWidgetItem aliases
+        # EditRole to DisplayRole and would clobber the formatted text;
+        # _MessagesSortItem.__lt__ reads UserRole instead.
+        time_item = _MessagesSortItem(log_buffer.format_timestamp(rec.ts))
+        time_item.setData(Qt.UserRole, float(rec.ts))
+        time_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.messages_table.setItem(row, 0, time_item)
+
+        level_item = _MessagesSortItem(self._messages_level_glyph(rec.level))
+        # Numeric sort key so ERROR sits above WARNING above INFO when
+        # the column is sorted descending — without it the alphabetical
+        # order of the emoji codepoints leaks through. See the
+        # _MessagesSortItem docstring for the EditRole-vs-DisplayRole
+        # trap that motivates using UserRole here.
+        level_item.setData(Qt.UserRole, int(rec.level))
+        # Cell only shows the glyph; full level name lives in the tooltip
+        # so users on a screen reader or hovering for clarity still get
+        # the textual label.
+        level_item.setToolTip(rec.level_name)
+        level_item.setTextAlignment(Qt.AlignCenter)
+        if rec.level >= logging.ERROR:
+            level_item.setForeground(QBrush(QColor(_t["err"])))
+        elif rec.level >= logging.WARNING:
+            level_item.setForeground(QBrush(QColor(_t["warn"])))
+        elif rec.level <= logging.DEBUG:
+            level_item.setForeground(QBrush(QColor(_t["fg_dim"])))
+        self.messages_table.setItem(row, 1, level_item)
+
+        source_item = QTableWidgetItem(rec.name)
+        source_item.setToolTip(rec.name)
+        self.messages_table.setItem(row, 2, source_item)
+
+        # Strip embedded newlines from the message so long multi-line
+        # records (e.g. tracebacks via logging.exception) stay on one
+        # row in the table. The full text is preserved in the tooltip.
+        oneline = rec.message.replace("\r\n", " | ").replace("\n", " | ")
+        msg_item = QTableWidgetItem(oneline)
+        msg_item.setToolTip(rec.message)
+        self.messages_table.setItem(row, 3, msg_item)
+
+    def _messages_allowed_levels(self) -> set[int]:
+        """Return the set of ``logging.*`` level numbers currently
+        ticked in the filter row. A record passes the filter if its
+        ``levelno`` is in this set."""
+        boxes = getattr(self, "_messages_level_boxes", None)
+        if not boxes:
+            return {lvl for _, lvl in self._MESSAGES_FILTER_LEVELS}
+        return {lvl for lvl, box in boxes.items() if box.isChecked()}
+
+    def _apply_messages_filter(self, *_args) -> None:
+        """Wholesale rebuild on filter change. The buffer is small
+        (capped at 5 000 records), so a full rebuild stays well under
+        a frame — simpler than tracking per-row visibility deltas."""
+        self._populate_messages_table()
+
+    def _on_messages_clear(self) -> None:
+        """Wipe both the underlying buffer and the table. The file log
+        is untouched; new records start flowing in immediately."""
+        log_buffer.clear()
+        table = getattr(self, "messages_table", None)
+        if table is not None:
+            table.setSortingEnabled(False)
+            table.setRowCount(0)
+            table.setSortingEnabled(True)
+        self._update_messages_summary(0, 0)
+
+    def _update_messages_summary(self, visible: int, total: int) -> None:
+        """Footer counter — "N messages shown out of M total" — kept in
+        sync with the table state."""
+        label = getattr(self, "messages_summary_label", None)
+        if label is None:
+            return
+        label.setText(
+            f"{visible} message(s) shown out of {total} total"
+        )
+
 
 def _help_tab_style() -> str:
     """Build the Help-tab inline <style> block using the active theme."""
@@ -15839,6 +16805,26 @@ when one of those has focus.</p>
   <li><b>Layer outlines</b> &mdash; the contour button on the
     <i>All Rails</i> row (hotkey <kbd>O</kbd>) traces each visible rail's
     copper polygons in the owning layer's swatch colour.</li>
+  <li><b>Transparency control</b> &mdash; the white-disc icon sits on
+    every Physical layers row and every Board Features row; the
+    <i>All Layers</i> row carries a master copy that fans its setting
+    out to every physical layer at once. Each click removes a
+    quarter-slice of the disc clockwise as the row's transparency
+    rises. For a physical layer the transparency fades both the rail
+    heatmap mesh AND the per-layer all-copper overlay; for a Board
+    Features row it fades that overlay (silkscreen / pads / components
+    / vias / designators / board outline).
+    <table>
+      <tr><th>Click</th><th>Effect</th></tr>
+      <tr><td>Click</td>
+          <td>+25 %  <span class='muted'>(coarse, wraps 100&nbsp;%&nbsp;&rarr;&nbsp;0&nbsp;%)</span></td></tr>
+      <tr><td><kbd>Shift</kbd>+click</td>
+          <td>&minus;25 %  <span class='muted'>(reverse, wraps 0&nbsp;%&nbsp;&rarr;&nbsp;100&nbsp;%)</span></td></tr>
+      <tr><td><kbd>Alt</kbd>+click</td>
+          <td>+12.5 %  <span class='muted'>(fine, stops at 100&nbsp;%)</span></td></tr>
+      <tr><td><kbd>Alt</kbd>+<kbd>Shift</kbd>+click</td>
+          <td>&minus;12.5 %  <span class='muted'>(fine reverse, stops at 0&nbsp;%)</span></td></tr>
+    </table></li>
   <li><b>Show cursor tooltip</b> &mdash; a small tooltip follows the
     mouse, showing the value of the current mode at that point along
     with the net and layer. Same info as the probe bar under the plot.</li>

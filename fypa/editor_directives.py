@@ -263,10 +263,14 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
             if ed.current is None:
                 warnings.append(f"{label}: SINK has no current; skipped.")
                 continue
+            min_v = (float(ed.min_voltage)
+                     if getattr(ed, "min_voltage", None) is not None
+                     else None)
             spec = SinkSpec(
                 designator=spec_designator, schdoc_name=_EDITOR_SCHDOC,
                 current=float(ed.current), p=p_term, n=n_term,
                 channel_index=None, return_group=return_group,
+                min_voltage=min_v,
             )
         else:  # SERIES — a lumped resistance bridging the two nets
             if ed.resistance is None:
