@@ -1,0 +1,160 @@
+# 4. Regulators — LDOs and buck converters
+
+A `REGULATOR` directive models an on-board voltage regulator: an LDO,
+a buck converter, a boost, a switching module. Unlike a `SOURCE`
+(which is a supply *edge* — what is upstream of it is assumed to be
+infinite), a `REGULATOR` models **both rails it touches**:
+
+- It pins its **output** net at the configured voltage.
+- It pulls **input** current from its input net, proportional to the
+  output current it delivers.
+
+That second behaviour is the point of having a separate REGULATOR role:
+it lets you see the IR drop on the *input* copper too, between the
+upstream source and the regulator's input pin. With a `SOURCE` on the
+regulator's output, that input-side copper carries no current in the
+solve and the input rail looks artificially clean.
+
+> Read [Section 1](01-sources-and-sinks.md) first if you have not — the
+> parameter mechanics (where to add them, hiding them, library-symbol
+> defaults) are the same.
+
+## 4.1 SOURCE vs REGULATOR — when to use which
+
+| Situation                                                                                  | Use         |
+|--------------------------------------------------------------------------------------------|-------------|
+| The rail enters the board pre-regulated (connector pin, battery, off-board supply)         | `SOURCE`    |
+| The regulator's input rail is **not** part of the PDN you are analysing                    | `SOURCE`    |
+| The regulator's input rail **is** part of the PDN, and you want to see drop on its copper  | `REGULATOR` |
+
+If every rail on your board comes in pre-regulated and you do not have
+on-board step-up / step-down conversion, you will never need
+`REGULATOR` — `SOURCE` for inputs and `SINK` for loads is the whole
+story.
+
+## 4.2 The parameter shape
+
+A REGULATOR uses six parameters — value + gain, plus four nets (two
+output, two input):
+
+| Parameter         | Purpose                                                | Example   |
+|-------------------|--------------------------------------------------------|-----------|
+| `PDN_ROLE`        | `REGULATOR`                                            | `REGULATOR` |
+| `PDN_V`           | Output voltage (volts)                                 | `3.3`     |
+| `PDN_GAIN`        | Input current / output current ratio (see 4.3)         | `0.73`    |
+| `PDN_OUT_P_NET`   | Output supply net                                      | `+3V3`    |
+| `PDN_OUT_N_NET`   | Output return net                                      | `0V`      |
+| `PDN_IN_P_NET`    | Input supply net                                       | `+5V`     |
+| `PDN_IN_N_NET`    | Input return net                                       | `0V`      |
+
+There is no auto-inference for REGULATOR — a regulator IC always has
+more than two pads, so all four net names must be set explicitly.
+
+## 4.3 Picking `PDN_GAIN`
+
+`PDN_GAIN` is the ratio of input current to output current. It depends
+on the regulator topology:
+
+| Regulator type            | `PDN_GAIN`                                       | Why                                                |
+|---------------------------|--------------------------------------------------|----------------------------------------------------|
+| **LDO** (linear)          | `1.0`                                            | Output current passes straight through from input. |
+| **Buck, 100% efficient**  | `Vout / Vin`                                     | Power balance: `Vin · Iin = Vout · Iout`.          |
+| **Buck, realistic**       | `(Vout / Vin) / efficiency`                      | Same, with efficiency divided in.                  |
+| **Boost, 100% efficient** | `Vout / Vin`                                     | Same identity — input current is *higher* than output. |
+| **Boost, realistic**      | `(Vout / Vin) / efficiency`                      | Same.                                              |
+
+Worked numbers for the common cases:
+
+- LDO any-to-any: `PDN_GAIN = 1.0`
+- Ideal buck, 5 V → 3.3 V: `3.3 / 5 = 0.66`
+- 90 % buck, 5 V → 3.3 V: `0.66 / 0.9 = 0.73`
+- Ideal boost, 5 V → 12 V: `12 / 5 = 2.4`
+- 85 % boost, 5 V → 12 V: `2.4 / 0.85 = 2.82`
+
+When in doubt, the regulator's datasheet typically gives a typical or
+worst-case efficiency curve — pick the operating point that matches
+the load current you are analysing.
+
+> `PDN_GAIN` is a **scalar**, not a function of operating point.
+> FYPA's solve is linear, so the input/output current ratio is fixed
+> for the whole solve. For a regulator whose efficiency varies
+> significantly with load, run separate solves for each operating
+> point with the corresponding `PDN_GAIN`.
+
+## 4.4 A worked example
+
+A board with a 5 V barrel-jack input feeding a 3.3 V LDO that supplies a
+500 mA load:
+
+```text
+J1 (input connector):
+  PDN_ROLE   = SOURCE
+  PDN_V      = 5
+  PDN_P_NET  = +5V
+  PDN_N_NET  = 0V
+
+U2 (3V3 LDO):
+  PDN_ROLE      = REGULATOR
+  PDN_V         = 3.3
+  PDN_GAIN      = 1.0
+  PDN_OUT_P_NET = +3V3
+  PDN_OUT_N_NET = 0V
+  PDN_IN_P_NET  = +5V
+  PDN_IN_N_NET  = 0V
+
+U5 (3V3 load):
+  PDN_ROLE  = SINK
+  PDN_I     = 500mA
+  PDN_P_NET = +3V3
+  PDN_N_NET = 0V
+```
+
+What the solver does with this:
+
+- 500 mA flows out of U2's `+3V3` output pin into U5's `+3V3` input
+  pins, through whatever `+3V3` copper exists between them. The drop
+  on that copper is visible in the `+3V3` rail's heatmap.
+- 500 mA also flows out of J1's `+5V` pin into U2's `+5V` input pin
+  (`PDN_GAIN = 1.0` because it is an LDO). The drop on that copper is
+  visible in the `+5V` rail's heatmap.
+
+Replacing U2's role with `SOURCE` would leave the `+5V` rail at a flat
+5 V everywhere — no current is modelled on its copper, so no drop. The
+`+3V3` rail's drop would still solve correctly.
+
+## 4.5 Multi-regulator topologies
+
+A board with several regulators in series (e.g. a 12 V input → 5 V
+buck → 3.3 V LDO chain) just chains REGULATOR directives:
+
+```text
+U2: REGULATOR  +12V → +5V   (PDN_GAIN = 0.5 for an 85% efficient buck)
+U3: REGULATOR  +5V  → +3V3  (PDN_GAIN = 1.0 for an LDO)
+```
+
+The two regulators are independent directives. The solver propagates
+current from each downstream SINK back through every upstream
+regulator, so a 500 mA `+3V3` load shows as 500 mA on the `+5V` rail
+between U2 and U3, and 250 mA on the `+12V` rail between J1 and U2
+(via the buck's gain).
+
+## 4.6 Troubleshooting
+
+| Message or symptom                                                 | Likely cause                                                                | Fix                                                                          |
+|--------------------------------------------------------------------|------------------------------------------------------------------------------|------------------------------------------------------------------------------|
+| `REGULATOR has four terminals, use PDN_OUT_P_NET / PDN_OUT_N_NET / PDN_IN_P_NET / PDN_IN_N_NET` | A `PDN_NET` or `PDN_P_NET` / `PDN_N_NET` was used on a REGULATOR.            | Use the four `PDN_OUT_*` / `PDN_IN_*` net parameters.                        |
+| `REGULATOR on U2: missing PDN_GAIN`                                | The `PDN_GAIN` parameter was not set.                                       | Add it. For an LDO use `1.0`; for a buck use `Vout / Vin / efficiency`.      |
+| Input rail still solves to a flat voltage everywhere                | The regulator was added as a `SOURCE`, not a `REGULATOR`.                   | Change `PDN_ROLE` to `REGULATOR` and add the input-side net parameters.      |
+| Output voltage in the solve is not `PDN_V`                          | A SINK on the output rail has its `PDN_P_NET` mis-spelled, so the rail has no closed loop and the solver falls back to a degenerate result. | Check spelling against the PCB netlist (see [1.5](01-sources-and-sinks.md#15-pre-import-checks)). |
+
+## Next steps
+
+- For series elements (fuses, ferrites, sense resistors) on a rail,
+  see [Section 3 — Series elements](03-series-elements.md).
+- For a full tour of the viewer panels, tables, and modes, see
+  [Section 5 — The viewer tour](05-viewer-tour.md).
+
+> Regulators are currently **schematic-only** — editor mode does not
+> offer a REGULATOR role. To model an on-board regulator that is not
+> in the schematic, place a SOURCE on the output rail and a SINK on
+> the input rail with the expected input current.

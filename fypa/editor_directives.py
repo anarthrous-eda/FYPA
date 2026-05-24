@@ -315,3 +315,243 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
     log.info("apply_editor_directives: applied %d, skipped %d.",
              applied, len(warnings))
     return warnings
+
+
+def apply_copper_names(loaded, copper_names) -> list[str]:
+    """Promote user-named unnamed-copper pieces into real nets on
+    ``loaded.extracted``, in place.
+
+    Each :class:`~fypa.project_file.CopperName` pins a single anchor on
+    a single copper layer to a user-given net name. ``loaded.extracted``
+    surfaces unassigned copper with ``net_index == NO_NET``; this
+    function finds the connected component of NO_NET geometry on the
+    rename's layer that contains the anchor, appends a fresh
+    :class:`~fypa.altium_extract.RawNet` carrying the new name, and
+    re-points every NO_NET primitive overlapping that component at the
+    new net. The bucketing in
+    :func:`fypa.altium_geometry.build_net_layer_shapes` then routes
+    those primitives into the new net's FEM slab instead of dropping
+    them as NO_NET.
+
+    Returns a list of human-readable warnings for renames whose anchor
+    didn't sit on a NO_NET polygon (e.g. the user named copper and then
+    the underlying design changed); the rename is skipped, not fatal.
+
+    The mutation uses :func:`dataclasses.replace` because
+    :class:`~fypa.altium_extract.ExtractedProject` is a frozen
+    dataclass — the result is a brand-new tuple of nets / regions /
+    tracks / etc., and ``loaded.extracted`` is rebound to it.
+    """
+    import dataclasses
+
+    import shapely.geometry as _sg
+    import shapely.ops as _sops
+
+    from fypa.altium_extract import NO_NET, RawNet
+    from fypa.altium_geometry import (
+        _arc_polygon,
+        _fill_polygon,
+        _region_polygon,
+        _shape_based_region_polygon,
+        _track_polygon,
+    )
+
+    warnings: list[str] = []
+    if not copper_names:
+        return warnings
+
+    extracted = loaded.extracted
+    nets = list(extracted.nets)
+    name_to_index: dict[str, int] = {n.name: i for i, n in enumerate(nets)}
+
+    # Per-rename: ``layer_id`` and a prepared polygon representing the
+    # connected component of NO_NET copper containing the anchor.
+    # Primitives matching ``net_index == NO_NET`` and overlapping this
+    # polygon get re-pointed at the rename's net_index.
+    matches: list[tuple[int, _sg.base.BaseGeometry, int]] = []
+    enabled = extracted.enabled_copper_layer_ids()
+
+    def _no_net_pieces_on_layer(layer_id: int):
+        """Every NO_NET primitive's individual polygon on ``layer_id``.
+        Used to compute the per-layer union once and reuse it for any
+        rename that targets this layer."""
+        pieces: list[_sg.base.BaseGeometry] = []
+        for t in extracted.tracks:
+            if (t.layer_id == layer_id and t.net_index == NO_NET
+                    and not t.is_keepout
+                    and not t.is_polygon_outline
+                    and t.width_mm > 0):
+                pieces.append(_track_polygon(t))
+        for a in extracted.arcs:
+            if (a.layer_id == layer_id and a.net_index == NO_NET
+                    and not a.is_keepout and a.width_mm > 0):
+                pieces.append(_arc_polygon(a))
+        for r in extracted.regions:
+            if (r.layer_id == layer_id and r.net_index == NO_NET
+                    and not r.is_keepout and not r.is_polygon_outline
+                    and not r.is_board_cutout and r.kind == 0
+                    and len(r.outline) >= 3):
+                poly = _region_polygon(r)
+                if not poly.is_empty:
+                    pieces.append(poly)
+        for r in extracted.shape_based_regions:
+            if (r.layer_id == layer_id and r.net_index == NO_NET
+                    and not r.is_keepout and not r.is_polygon_outline
+                    and not r.is_board_cutout and r.kind == 0
+                    and len(r.outline) >= 3):
+                poly = _shape_based_region_polygon(r)
+                if not poly.is_empty:
+                    pieces.append(poly)
+        for f in extracted.fills:
+            if (f.layer_id == layer_id and f.net_index == NO_NET
+                    and not f.is_keepout):
+                poly = _fill_polygon(f)
+                if poly is not None and not poly.is_empty:
+                    pieces.append(poly)
+        return pieces
+
+    # Per-layer union cache — multiple renames on the same layer reuse it.
+    union_cache: dict[int, _sg.base.BaseGeometry] = {}
+
+    for c in copper_names:
+        layer_id = int(c.layer_id)
+        if layer_id not in enabled:
+            warnings.append(
+                f"Copper rename {c.name!r}: layer {layer_id} is not in "
+                "the enabled copper stack; skipped.")
+            continue
+        if layer_id not in union_cache:
+            pieces = _no_net_pieces_on_layer(layer_id)
+            if pieces:
+                union_cache[layer_id] = _sops.unary_union(pieces)
+            else:
+                union_cache[layer_id] = _sg.GeometryCollection()
+        unioned = union_cache[layer_id]
+        if unioned.is_empty:
+            warnings.append(
+                f"Copper rename {c.name!r}: no unnamed copper on layer "
+                f"{layer_id}; skipped.")
+            continue
+        # Pick the connected component of NO_NET copper that contains
+        # the rename's anchor. Other disjoint NO_NET components stay
+        # unaffected.
+        anchor = _sg.Point(float(c.anchor_xy[0]), float(c.anchor_xy[1]))
+        components = (list(unioned.geoms)
+                      if unioned.geom_type == "MultiPolygon"
+                      else [unioned])
+        match_poly = None
+        for comp in components:
+            if comp.is_empty:
+                continue
+            try:
+                if comp.contains(anchor):
+                    match_poly = comp
+                    break
+            except Exception:
+                continue
+        if match_poly is None:
+            warnings.append(
+                f"Copper rename {c.name!r}: anchor "
+                f"({c.anchor_xy[0]:g}, {c.anchor_xy[1]:g}) is not on a "
+                f"NO_NET copper polygon on layer {layer_id}; skipped.")
+            continue
+        # Assign / reuse a net_index for the user's name. Reusing an
+        # existing entry is fine — names are unique by the time they
+        # reach here (the UI rejects collisions with named nets).
+        if c.name in name_to_index:
+            net_idx = name_to_index[c.name]
+        else:
+            nets.append(RawNet(name=c.name))
+            net_idx = len(nets) - 1
+            name_to_index[c.name] = net_idx
+        matches.append((layer_id, match_poly, net_idx))
+
+    if not matches:
+        # No anchors landed on NO_NET copper — every rename was a no-op
+        # (warned above). ``nets`` is still a fresh copy of the original
+        # tuple; no replacement needed.
+        return warnings
+
+    def _retag_no_net(primitive, poly):
+        """If ``primitive.net_index == NO_NET`` and ``poly`` intersects
+        any of the rename polygons on its layer, return a new primitive
+        with ``net_index`` set to the rename's net index. Otherwise
+        return the primitive unchanged."""
+        if primitive.net_index != NO_NET or poly is None or poly.is_empty:
+            return primitive
+        for lid, match_poly, net_idx in matches:
+            if lid != primitive.layer_id:
+                continue
+            try:
+                if match_poly.intersects(poly):
+                    return dataclasses.replace(primitive, net_index=net_idx)
+            except Exception:
+                continue
+        return primitive
+
+    # Walk each primitive list once; cheap-poly the geometry only for
+    # NO_NET entries on a layer that has a rename.
+    rename_layers = {lid for lid, _, _ in matches}
+
+    def _maybe(prim, poly_fn):
+        if prim.net_index != NO_NET or prim.layer_id not in rename_layers:
+            return prim
+        try:
+            poly = poly_fn(prim)
+        except Exception:
+            return prim
+        return _retag_no_net(prim, poly)
+
+    new_tracks = tuple(
+        _maybe(t, _track_polygon) if (
+            not t.is_keepout and not t.is_polygon_outline and t.width_mm > 0
+        ) else t
+        for t in extracted.tracks
+    )
+    new_arcs = tuple(
+        _maybe(a, _arc_polygon) if (
+            not a.is_keepout and a.width_mm > 0
+        ) else a
+        for a in extracted.arcs
+    )
+    new_regions = tuple(
+        _maybe(r, _region_polygon) if (
+            not r.is_keepout and not r.is_polygon_outline
+            and not r.is_board_cutout and r.kind == 0
+            and len(r.outline) >= 3
+        ) else r
+        for r in extracted.regions
+    )
+    new_sbr = tuple(
+        _maybe(r, _shape_based_region_polygon) if (
+            not r.is_keepout and not r.is_polygon_outline
+            and not r.is_board_cutout and r.kind == 0
+            and len(r.outline) >= 3
+        ) else r
+        for r in extracted.shape_based_regions
+    )
+    new_fills = tuple(
+        _maybe(f, _fill_polygon) if not f.is_keepout else f
+        for f in extracted.fills
+    )
+
+    loaded.extracted = dataclasses.replace(
+        extracted,
+        nets=tuple(nets),
+        tracks=new_tracks,
+        arcs=new_arcs,
+        regions=new_regions,
+        shape_based_regions=new_sbr,
+        fills=new_fills,
+    )
+
+    # If the loaded project cached its lazy unioned geometry, it's stale
+    # now — drop the cache so the next access rebuilds against the
+    # renamed primitives.
+    loaded.__dict__.pop("geometry", None)
+
+    log.info(
+        "apply_copper_names: applied %d rename(s), %d warning(s).",
+        len(matches), len(warnings),
+    )
+    return warnings

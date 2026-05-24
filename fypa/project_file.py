@@ -113,6 +113,49 @@ class EditorDirective:
 
 
 @dataclass
+class CopperName:
+    """A user-given name for a single piece of unnamed copper.
+
+    Altium copper without a net assignment surfaces as the sentinel string
+    ``"(none)"`` everywhere downstream, which collapses every disjoint
+    unnamed copper piece on the board onto one rail — the solver then
+    can't tell them apart, and any source / sink placed on one piece is
+    silently dropped (no rail of that name in the solution).
+
+    A ``CopperName`` lets the user point at a specific polygon (anchor
+    point + copper layer) and give it a real net name. At solve time
+    :func:`fypa.editor_directives.apply_copper_names` walks the extracted
+    project, finds the no-net region whose geometry contains
+    ``anchor_xy`` on ``layer_id``, adds a synthetic net carrying
+    ``name``, and re-points that region at it — so only THIS piece gets
+    the new name (the other disjoint unnamed pieces stay ``"(none)"``).
+    """
+
+    anchor_xy: tuple[float, float]
+    layer_id: int
+    name: str
+    id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "anchor_xy": [float(self.anchor_xy[0]), float(self.anchor_xy[1])],
+            "layer_id": int(self.layer_id),
+            "name": self.name,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> CopperName:
+        a = d["anchor_xy"]
+        return cls(
+            id=str(d.get("id") or uuid.uuid4().hex[:12]),
+            anchor_xy=(float(a[0]), float(a[1])),
+            layer_id=int(d["layer_id"]),
+            name=str(d["name"]),
+        )
+
+
+@dataclass
 class ProjectFile:
     """In-memory model of a ``.fypa`` document.
 
@@ -125,6 +168,7 @@ class ProjectFile:
     design_info_pickle: str | None = None
     solve_pickle: str | None = None
     editor_directives: list[EditorDirective] = field(default_factory=list)
+    copper_names: list[CopperName] = field(default_factory=list)
     net_renames: dict[str, str] = field(default_factory=dict)   # reserved
     viewer_settings: dict[str, Any] = field(default_factory=dict)
 
@@ -146,6 +190,7 @@ class ProjectFile:
             "design_info_pickle": _rel(self.design_info_pickle, base),
             "solve_pickle": _rel(self.solve_pickle, base),
             "editor_directives": [d.to_dict() for d in self.editor_directives],
+            "copper_names": [c.to_dict() for c in self.copper_names],
             "net_renames": dict(self.net_renames),
             "viewer_settings": dict(self.viewer_settings),
         }
@@ -178,6 +223,10 @@ class ProjectFile:
                 EditorDirective.from_dict(d)
                 for d in doc.get("editor_directives", [])
             ],
+            copper_names=[
+                CopperName.from_dict(c)
+                for c in doc.get("copper_names", [])
+            ],
             net_renames=dict(doc.get("net_renames", {})),
             viewer_settings=dict(doc.get("viewer_settings", {})),
         )
@@ -206,6 +255,39 @@ class ProjectFile:
             d for d in self.editor_directives if d.id != directive_id
         ]
         return len(self.editor_directives) != before
+
+    # ------------------------------------------------------------------
+    # Copper-name helpers
+    # ------------------------------------------------------------------
+
+    def copper_name_for(self, anchor_xy: tuple[float, float],
+                        layer_id: int) -> CopperName | None:
+        """The :class:`CopperName` whose anchor and layer match (within a
+        small epsilon to absorb float-stringification round-trips through
+        the project-file JSON). Returns ``None`` when no rename applies."""
+        ax, ay = float(anchor_xy[0]), float(anchor_xy[1])
+        for c in self.copper_names:
+            if int(c.layer_id) != int(layer_id):
+                continue
+            if (abs(c.anchor_xy[0] - ax) < 1e-6
+                    and abs(c.anchor_xy[1] - ay) < 1e-6):
+                return c
+        return None
+
+    def upsert_copper_name(self, copper_name: CopperName) -> None:
+        """Replace the entry with the same ``id`` if present, else append."""
+        for i, c in enumerate(self.copper_names):
+            if c.id == copper_name.id:
+                self.copper_names[i] = copper_name
+                return
+        self.copper_names.append(copper_name)
+
+    def remove_copper_name(self, copper_name_id: str) -> bool:
+        before = len(self.copper_names)
+        self.copper_names = [
+            c for c in self.copper_names if c.id != copper_name_id
+        ]
+        return len(self.copper_names) != before
 
 
 # --- path helpers -------------------------------------------------------------

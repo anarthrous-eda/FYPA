@@ -1551,8 +1551,9 @@ def build_solve_metadata(
     # preserves individual track / arc / region / shape-based-region /
     # fill records so the viewer can identify the exact primitive under
     # the cursor and show its geometric properties. Vias and pads are
-    # already individually recorded above. Skips primitives with no net
-    # (``NO_NET``) since there is nothing useful to report on those.
+    # already individually recorded above. Netless primitives are
+    # included (with ``net="(none)"``, mirroring ``_net_name``) so
+    # unrouted copper stays selectable in the viewer.
     primitives: dict[str, list[dict]] = {
         "tracks": [],
         "arcs": [],
@@ -1562,8 +1563,6 @@ def build_solve_metadata(
     }
     for i, t in enumerate(proj.tracks):
         _gil_yield(i)
-        if t.net_index == NO_NET:
-            continue
         primitives["tracks"].append({
             "id": len(primitives["tracks"]),
             "kind": "track",
@@ -1577,8 +1576,6 @@ def build_solve_metadata(
         })
     for i, a in enumerate(proj.arcs):
         _gil_yield(i)
-        if a.net_index == NO_NET:
-            continue
         primitives["arcs"].append({
             "id": len(primitives["arcs"]),
             "kind": "arc",
@@ -1593,8 +1590,6 @@ def build_solve_metadata(
         })
     for i, rg in enumerate(proj.regions):
         _gil_yield(i)
-        if rg.net_index == NO_NET:
-            continue
         primitives["regions"].append({
             "id": len(primitives["regions"]),
             "kind": "region",
@@ -1615,8 +1610,6 @@ def build_solve_metadata(
     # the properties panel.
     for i, rg in enumerate(proj.shape_based_regions):
         _gil_yield(i)
-        if rg.net_index == NO_NET:
-            continue
         pts: list[list[float]] = []
         arc_count = 0
         n = len(rg.outline)
@@ -1654,8 +1647,6 @@ def build_solve_metadata(
         })
     for i, f in enumerate(proj.fills):
         _gil_yield(i)
-        if f.net_index == NO_NET:
-            continue
         primitives["fills"].append({
             "id": len(primitives["fills"]),
             "kind": "fill",

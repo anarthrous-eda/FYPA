@@ -1,0 +1,106 @@
+# 3. Series elements — fuses, ferrites, sense resistors
+
+A `SERIES` directive tells FYPA that a real part bridges two nets with a
+known resistance. Common examples:
+
+- A **fuse** (DC resistance from the datasheet).
+- A **ferrite bead** (DC resistance — FYPA solves DC, not AC).
+- A **sense / shunt resistor** (the value printed on the part).
+- A **0 Ω jumper** (use the actual measured resistance, not zero — see
+  the note below).
+- An **inductor's DCR** (the DC resistance of the windings).
+
+Without a `SERIES` directive, FYPA sees two unconnected nets and the
+solver cannot push current between them. With a `SERIES` directive, the
+two nets are bridged by a lumped resistance, current flows, and the
+voltage drop across the part shows up in the solve.
+
+> Read [Section 1](01-sources-and-sinks.md) first if you have not — the
+> parameter mechanics (where to add them, hiding them, library-symbol
+> defaults) are the same.
+
+## 3.1 The parameter shape
+
+| Parameter   | Purpose                                                  | Example   |
+|-------------|----------------------------------------------------------|-----------|
+| `PDN_ROLE`  | `SERIES`                                                 | `SERIES`  |
+| `PDN_R`     | The DC resistance in ohms (must be > 0)                  | `0.01`    |
+| `PDN_P_NET` | The net on one side of the part — *optional for 2-pin parts* | `+5V_RAW` |
+| `PDN_N_NET` | The net on the other side — *optional for 2-pin parts*   | `+5V`     |
+
+Which side is `P` and which is `N` is arbitrary for a SERIES element;
+the model is symmetric. The labels matter only when reading the result
+in the viewer ("voltage on the `P` side of F1 is X V").
+
+> A SERIES resistance of zero is rejected — the solver would treat it as
+> a short and merge the two nets, which defeats the purpose of having a
+> SERIES directive. For a true 0 Ω jumper, enter a small but realistic
+> value (the link's measured resistance, typically a few milliohms).
+
+## 3.2 Annotating a 2-pin part
+
+Example: a 10 mΩ sense resistor **R7** between `+5V_RAW` (from the
+input connector) and `+5V` (downstream of the resistor).
+
+Select R7, open the Parameters panel, and add:
+
+| Name        | Value     |
+|-------------|-----------|
+| `PDN_ROLE`  | `SERIES`  |
+| `PDN_R`     | `0.01`    |
+
+The P / N nets are inferred from the two pads' connectivity — FYPA sees
+R7's pad 1 on `+5V_RAW`, pad 2 on `+5V`, and uses those automatically.
+
+Save the schematic. R7 is now a bridge between the two rails, and FYPA
+will report the IR drop across it (≈ 5 mV at 500 mA) in the solve.
+
+## 3.3 Annotating a 3+ pin part
+
+For a part with more than two pads (e.g. a fused power switch, a
+common-mode choke), the auto-inference cannot pick the right two
+terminals. Add `PDN_P_NET` and `PDN_N_NET` explicitly:
+
+| Name        | Value          |
+|-------------|----------------|
+| `PDN_ROLE`  | `SERIES`       |
+| `PDN_R`     | `0.05`         |
+| `PDN_P_NET` | `+12V_IN`      |
+| `PDN_N_NET` | `+12V_FUSED`   |
+
+FYPA will then collect every pad on the part that is on `+12V_IN` as
+the P terminal, every pad on `+12V_FUSED` as the N terminal. The
+remaining pins (e.g. an enable line on a power-switch IC) are
+ignored.
+
+## 3.4 What changes in the viewer
+
+Once a SERIES directive is in place:
+
+- The two rails it bridges are treated as **one rail** in the side
+  panel — the solver propagates current from a source on one side to a
+  sink on the other through the lumped resistor.
+- A SERIES marker is drawn on the board at the part location.
+- The Nodes tab shows the voltage on each side of the SERIES part, and
+  hovering over the marker reports the current through it.
+
+> SERIES is also available in editor mode — see
+> [Section 2.3](02-sources-and-sinks-editor.md#23-attaching-a-source-or-sink-to-a-component).
+> Editor SERIES is component-bound only (it bridges two real pads on
+> the same part) and uses an SI-units value (`0.01` for 10 mΩ).
+
+## 3.5 Troubleshooting
+
+| Message or symptom                                       | Likely cause                                                                | Fix                                                                          |
+|----------------------------------------------------------|------------------------------------------------------------------------------|------------------------------------------------------------------------------|
+| `PDN_R must be positive`                                  | `PDN_R = 0` or a negative value.                                            | Enter a small positive resistance (milliohms is fine).                       |
+| `SERIES on R7: ambiguous nets — please set PDN_P_NET / PDN_N_NET` | A 3+ pin part with auto-inference, or a 2-pin part with both pads on the same net. | Add `PDN_P_NET` and `PDN_N_NET` explicitly.                                  |
+| The two nets are still not connected in the solve         | The SERIES part was placed on the schematic but does not actually bridge the two nets on the PCB. | Check the PCB netlist: each pad of the SERIES part must be on the corresponding net. |
+
+## Next steps
+
+- For on-board regulators (LDO / buck) that pin an output rail's
+  voltage while pulling current from an input rail, see
+  [Section 4 — Regulators](04-regulators.md).
+- For a full tour of the viewer panels, tables, and modes, see
+  [Section 5 — The viewer tour](05-viewer-tour.md).

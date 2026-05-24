@@ -130,7 +130,7 @@ def mouse(kind, wx, wy):
 
 # --- DRAG TEST: A -> B (on-copper) -------------------------------------
 say("--- drag A -> B (on copper) ---")
-n_undo_before = len(viewer._marker_move_undo)
+n_undo_before = len(viewer._marker_undo)
 mouse("press", ax, ay)
 claimed = gl._editor_drag_active
 check("press over marker claimed as drag", claimed)
@@ -142,7 +142,7 @@ for _ in range(10): app.processEvents()
 moved_ok = (abs(mk.anchor_xy[0]-bx) < 0.05 and abs(mk.anchor_xy[1]-by) < 0.05)
 check("marker followed drag to B", moved_ok,
       "anchor now=(%.3f, %.3f)" % (mk.anchor_xy[0], mk.anchor_xy[1]))
-check("move recorded on undo stack", len(viewer._marker_move_undo) == n_undo_before + 1)
+check("move recorded on undo stack", len(viewer._marker_undo) == n_undo_before + 1)
 try:
     viewer.grab().save(os.path.join(OUT, "02_after_drag.png"))
     say("saved 02_after_drag.png")
@@ -182,7 +182,7 @@ check("X/Y boxes reset to old value after revert",
 # --- X/Y EDIT: on-copper value -> commit -------------------------------
 say("--- X/Y text edit to on-copper value ---")
 _warns.clear()
-n_undo = len(viewer._marker_move_undo)
+n_undo = len(viewer._marker_undo)
 viewer._ef_loc_x.setText("%.4f" % ax)
 viewer._ef_loc_y.setText("%.4f" % ay)
 viewer._on_free_marker_coord_edited()
@@ -191,19 +191,19 @@ check("on-copper X/Y edit committed (no warning)",
       len(_warns) == 0 and abs(mk.anchor_xy[0]-ax) < 0.05 and abs(mk.anchor_xy[1]-ay) < 0.05,
       "anchor=(%.3f,%.3f)" % (mk.anchor_xy[0], mk.anchor_xy[1]))
 check("on-copper X/Y edit recorded for undo",
-      len(viewer._marker_move_undo) == n_undo + 1)
+      len(viewer._marker_undo) == n_undo + 1)
 
 # --- UNDO / REDO -------------------------------------------------------
 say("--- undo / redo movement ---")
 before_undo = (mk.anchor_xy[0], mk.anchor_xy[1])
-viewer._undo_marker_move()
+viewer._undo_marker_action()
 for _ in range(5): app.processEvents()
 mk = viewer._project.directive_by_id(mk.id)
 after_undo = (mk.anchor_xy[0], mk.anchor_xy[1])
 check("undo moved the marker back",
       abs(after_undo[0]-before_undo[0]) > 1e-6 or abs(after_undo[1]-before_undo[1]) > 1e-6,
       "%.3f,%.3f -> %.3f,%.3f" % (before_undo[0],before_undo[1],after_undo[0],after_undo[1]))
-viewer._redo_marker_move()
+viewer._redo_marker_action()
 for _ in range(5): app.processEvents()
 mk = viewer._project.directive_by_id(mk.id)
 after_redo = (mk.anchor_xy[0], mk.anchor_xy[1])

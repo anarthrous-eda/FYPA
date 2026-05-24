@@ -27,3 +27,6 @@ pypardiso==0.4.7
 
 # --- Colormaps + CPU-side hover-probe interpolator ---
 matplotlib==3.10.9
+
+# --- ParaView VTU export (File > Export > ParaView, and `FYPA paraview` CLI) ---
+lxml==5.3.0

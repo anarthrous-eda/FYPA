@@ -16,8 +16,8 @@ import logging
 import threading
 import time
 from collections import deque
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Callable, Iterable
 
 
 # Cap so a long-running session can't grow the buffer without bound.

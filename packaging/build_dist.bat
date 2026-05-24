@@ -23,6 +23,19 @@ if errorlevel 1 (
     pause & exit /b 1
 )
 
+REM Reconcile the venv against requirements.txt so a freshly-built .venv (or
+REM one missing a recently-added dep like lxml for the ParaView exporter)
+REM picks up everything before PyInstaller does its dependency walk.
+if exist "requirements.txt" (
+    echo Reconciling .venv against requirements.txt ...
+    pip install -r requirements.txt
+    if errorlevel 1 (
+        echo ERROR: pip install -r requirements.txt failed
+        pause & exit /b 1
+    )
+    echo.
+)
+
 REM Install PyInstaller into the venv if it is not already present
 python -m PyInstaller --version >nul 2>&1
 if errorlevel 1 (

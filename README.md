@@ -14,14 +14,12 @@ Based on [padne](https://github.com/atx/padne) (the FEM solver) and uses
 [altium_monkey](https://github.com/wavenumber-eng/altium_monkey) to read the
 Altium project files.
 
-> **Disclaimer:** FYPA is a design-aid tool. Treat its results as guidance
-> and validate against measurement.
-
 > **New user?** Start with the [User Guide](docs/user-guide/README.md) for
 > a step-by-step walkthrough of common workflows.
 
 ![Heatmap viewer](screenshots/viewer.png)
-
+> **Disclaimer:** FYPA is a design-aid tool. Treat its results as guidance
+> and validate against measurement.
 ## What it does
 
 You annotate components in your Altium schematic with a small set of

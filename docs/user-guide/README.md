@@ -8,9 +8,10 @@ material (every parameter, every CLI flag), see the
 
 1. [Setting up sources and sinks in Altium, and importing into FYPA](01-sources-and-sinks.md)
 2. [Sources and sinks in the FYPA editor](02-sources-and-sinks-editor.md)
-
-*(More sections to follow: series elements, regulators, the viewer tour,
-exporting to ParaView.)*
+3. [Series elements — fuses, ferrites, sense resistors](03-series-elements.md)
+4. [Regulators — LDOs and buck converters](04-regulators.md)
+5. [The viewer tour](05-viewer-tour.md)
+6. [Exporting to ParaView](06-paraview-export.md)
 
 ## Conventions
 

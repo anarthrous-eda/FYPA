@@ -1082,8 +1082,10 @@ class TransparencyButton(QToolButton):
     ---------------
     * Plain click       — +25 % (coarse), wraps 100 % → 0 %.
     * Shift+click       — -25 % (coarse), wraps 0 % → 100 %.
+    * Right-click       — -25 % (coarse), wraps 0 % → 100 %.
     * Alt+click         — +12.5 % (fine), clamped at 100 %.
     * Alt+Shift+click   — -12.5 % (fine), clamped at 0 %.
+    * Alt+Right-click   — -12.5 % (fine), clamped at 0 %.
     """
 
     toggled_transparency = Signal(int)  # 0..(_TRANSPARENCY_STEPS-1)
@@ -1094,6 +1096,7 @@ class TransparencyButton(QToolButton):
         self._step = int(step) % _TRANSPARENCY_STEPS
         self._icon_size = icon_size
         self._press_mods: Qt.KeyboardModifiers = Qt.NoModifier
+        self._press_button: Qt.MouseButton = Qt.NoButton
         self.setAutoRaise(True)
         self.setCursor(Qt.PointingHandCursor)
         self.setIconSize(QSize(icon_size, icon_size))
@@ -1126,9 +1129,9 @@ class TransparencyButton(QToolButton):
         pct_text = (f"{pct:.1f}".rstrip("0").rstrip(".")) + "%"
         self.setToolTip(
             f"Transparency: {pct_text}\n"
-            "Click: +25 %    Shift+Click: -25 %    (wrap)\n"
-            "Alt+Click: +12.5 %    Alt+Shift+Click: -12.5 %    "
-            "(stop at 0 % / 100 %)"
+            "Click: +25 %    Shift+Click / Right-Click: -25 %    (wrap)\n"
+            "Alt+Click: +12.5 %    Alt+Shift+Click / Alt+Right-Click: "
+            "-12.5 %    (stop at 0 % / 100 %)"
         )
 
     def mousePressEvent(self, event) -> None:
@@ -1136,13 +1139,37 @@ class TransparencyButton(QToolButton):
         # on release, and QApplication.keyboardModifiers() at that moment
         # would race the user lifting Alt / Shift before the mouse button.
         self._press_mods = event.modifiers()
+        self._press_button = event.button()
+        if event.button() == Qt.RightButton:
+            # QAbstractButton.clicked only fires for the left button, so
+            # handle the right-button press directly without forwarding.
+            event.accept()
+            return
         super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.RightButton:
+            mods = self._press_mods
+            pressed_right = self._press_button == Qt.RightButton
+            self._press_mods = Qt.NoModifier
+            self._press_button = Qt.NoButton
+            # Treat as a click only if the press also started on this
+            # widget and the release is still inside its bounds.
+            if pressed_right and self.rect().contains(event.position().toPoint()):
+                self._apply_step_delta(reverse=True,
+                                       fine=bool(mods & Qt.AltModifier))
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def _on_clicked(self) -> None:
         mods = self._press_mods
         self._press_mods = Qt.NoModifier
-        fine = bool(mods & Qt.AltModifier)
-        reverse = bool(mods & Qt.ShiftModifier)
+        self._press_button = Qt.NoButton
+        self._apply_step_delta(reverse=bool(mods & Qt.ShiftModifier),
+                               fine=bool(mods & Qt.AltModifier))
+
+    def _apply_step_delta(self, *, reverse: bool, fine: bool) -> None:
         delta = (_TRANSPARENCY_FINE_DELTA if fine
                  else _TRANSPARENCY_COARSE_DELTA)
         if reverse:
@@ -3118,6 +3145,7 @@ class _SolveWorker(QThread):
                   use_design_cache: bool = True,
                   try_solve_cache_first: bool = False,
                   editor_directives: list | None = None,
+                  copper_names: list | None = None,
                   loaded_project: object | None = None,
                   parent=None) -> None:
         super().__init__(parent)
@@ -3153,6 +3181,12 @@ class _SolveWorker(QThread):
         # and, like the override paths, they disable the solve cache (the
         # result diverges from the on-disk project).
         self._editor_directives = list(editor_directives or [])
+        # FYPA editor-mode copper renames (user-given names for unnamed
+        # copper pieces). Applied to ``loaded.extracted`` before
+        # ``apply_editor_directives`` runs so the new nets exist by the
+        # time directives are matched, and so the FEM bucketer sees the
+        # renamed copper as part of those new nets instead of dropping it.
+        self._copper_names = list(copper_names or [])
         # In-memory LoadedProject handed in by the editor 'Resolve' path:
         # the pristine design info the viewer already holds. When set, the
         # worker re-solves against it directly — no design-info cache read,
@@ -3366,7 +3400,8 @@ class _SolveWorker(QThread):
             # clone it first so that shared copy (reused by the next
             # resolve) is never touched. A stackup override above already
             # returned a fresh private object, so no clone is needed then.
-            if ((self._sink_overrides or self._editor_directives)
+            if ((self._sink_overrides or self._editor_directives
+                    or self._copper_names)
                     and loaded is pristine_loaded):
                 loaded = self._clone_loaded_for_edit(loaded)
 
@@ -3376,6 +3411,20 @@ class _SolveWorker(QThread):
                     "override(s)…"
                 )
                 self._apply_sink_overrides(loaded)
+
+            if self._copper_names:
+                self.stage_changed.emit(
+                    f"Naming {len(self._copper_names)} unnamed copper "
+                    "piece(s)…"
+                )
+                from fypa.editor_directives import apply_copper_names
+                cn_warnings = apply_copper_names(
+                    loaded, self._copper_names,
+                )
+                for w in cn_warnings:
+                    logging.getLogger(__name__).warning(
+                        "Copper name not applied: %s", w,
+                    )
 
             if self._editor_directives:
                 self.stage_changed.emit(
@@ -4415,10 +4464,14 @@ class PdnViewer(QMainWindow):
         # Re-entrancy guard for the X / Y text-box on-copper check so the
         # focus shuffle of the revert warning can't recurse.
         self._suppress_coord_check: bool = False
-        # Undo / redo stacks dedicated to free-marker movement — each
-        # record is {"id", "old_xy", "new_xy", "old_p_net", "new_p_net"}.
-        self._marker_move_undo: list[dict] = []
-        self._marker_move_redo: list[dict] = []
+        # Undo / redo stacks for free-marker edits — moves and deletes.
+        # Each record carries an "op": a "move" record is
+        # {"op": "move", "id", "old_xy", "new_xy", "old_p_net", "new_p_net"};
+        # a "delete" record is {"op": "delete", "id", "directive", "index"}
+        # where ``directive`` is the removed EditorDirective and ``index``
+        # is its position in editor_directives so undo preserves z-order.
+        self._marker_undo: list[dict] = []
+        self._marker_redo: list[dict] = []
         # Cached non-editor marker groups, so a free-marker drag can do a
         # marker-only refresh without re-walking every pin (see
         # _refresh_editor_markers).
@@ -10009,10 +10062,14 @@ class PdnViewer(QMainWindow):
             ("Shift+H", self._hotkey_cycle_colormap_reverse),
             ("B", self._toggle_sidebar),
             ("E", self._hotkey_toggle_editor),
-            # Free-marker move undo / redo — no-ops outside editor mode.
-            ("Ctrl+Z", self._undo_marker_move),
-            ("Ctrl+Shift+Z", self._redo_marker_move),
-            ("Ctrl+Y", self._redo_marker_move),
+            # Free-marker edit undo / redo (move + delete) — no-ops outside
+            # editor mode.
+            ("Ctrl+Z", self._undo_marker_action),
+            ("Ctrl+Shift+Z", self._redo_marker_action),
+            ("Ctrl+Y", self._redo_marker_action),
+            # Delete the selected free marker (Ctrl+Z to restore).
+            ("Delete", self._delete_selected_free_marker),
+            ("Backspace", self._delete_selected_free_marker),
         )
         # Hold references so the shortcuts don't get garbage-collected.
         self._hotkey_shortcuts = []
@@ -10354,18 +10411,38 @@ class PdnViewer(QMainWindow):
         "of the viewport to drop a free source / sink."
     )
 
+    def _is_copper_name_selection(self, sel: dict | None) -> bool:
+        """Whether the right-hand panel should display the copper-name
+        form for ``sel``. True when a copper selection's net is the
+        unnamed sentinel ``"(none)"`` (first-time naming) OR when its
+        click point already has a :class:`CopperName` rename pinned to
+        the same polygon (so re-selecting renamed copper still surfaces
+        the form, with the user-entered name retained)."""
+        if (not sel or sel.get("kind") != "copper"
+                or sel.get("anchor_xy") is None
+                or sel.get("layer_id") is None):
+            return False
+        if sel.get("net") == "(none)":
+            return True
+        ax, ay = sel["anchor_xy"]
+        return self._copper_name_at(float(ax), float(ay),
+                                    int(sel["layer_id"])) is not None
+
     def _update_editor_panel(self) -> None:
         """Sync the right-hand panel widgets to the current selection /
         pending-marker state. The PDN form shows for component / free-marker
-        selections; a plain copper pick just updates the hint text."""
+        selections (and for unnamed copper, where it carries the
+        copper-naming form); a plain named-copper pick just updates the
+        hint text."""
         if not hasattr(self, "_editor_hint"):
             return
         sel = self._editor_selection
         kind = sel.get("kind") if sel else None
-        has_form = kind in ("component", "free")
+        unnamed_copper = self._is_copper_name_selection(sel)
+        has_form = kind in ("component", "free") or unnamed_copper
         self._editor_form_host.setVisible(has_form)
         self._editor_hint.setVisible(not has_form)
-        if kind == "copper" and sel:
+        if kind == "copper" and sel and not unnamed_copper:
             self._editor_hint.setText(
                 f"Copper net <b>{_esc(sel.get('net', '') or '')}</b> "
                 "selected — connected copper is highlighted. Select a "
@@ -10614,6 +10691,74 @@ class PdnViewer(QMainWindow):
                     best, best_area = rec, area
         return best
 
+    def _copper_name_at(self, world_x: float, world_y: float,
+                        layer_id: int | None):
+        """The :class:`~fypa.project_file.CopperName` whose anchor sits
+        on the same ``"(none)"`` polygon as (``world_x``, ``world_y``,
+        ``layer_id``), or ``None`` when none of the project's renames
+        apply here. Polygon match is by shapely containment of BOTH
+        points in the same ``all_copper`` polygon — disjoint unnamed
+        pieces with independent renames stay independent."""
+        if self._project is None or not self._project.copper_names:
+            return None
+        if layer_id is None:
+            return None
+        md = self.metadata or {}
+        candidates = [c for c in self._project.copper_names
+                      if int(c.layer_id) == int(layer_id)]
+        if not candidates:
+            return None
+        click = _sg.Point(float(world_x), float(world_y))
+        for rec in md.get("all_copper") or []:
+            if rec.get("layer_id") != int(layer_id):
+                continue
+            if rec.get("net") != "(none)":
+                continue
+            for poly in rec.get("polygons", []):
+                prepped = self._copper_poly_prepared(poly)
+                if prepped is None:
+                    continue
+                try:
+                    if not prepped.contains(click):
+                        continue
+                except Exception:
+                    continue
+                for c in candidates:
+                    anchor = _sg.Point(float(c.anchor_xy[0]),
+                                       float(c.anchor_xy[1]))
+                    try:
+                        if prepped.contains(anchor):
+                            return c
+                    except Exception:
+                        continue
+                return None
+        return None
+
+    def _copper_name_override(self, world_x: float, world_y: float,
+                               layer_id: int | None) -> str | None:
+        """The user-given net name for the unnamed copper polygon at
+        (``world_x``, ``world_y``, ``layer_id``), or ``None``. Thin
+        wrapper over :meth:`_copper_name_at`."""
+        c = self._copper_name_at(world_x, world_y, layer_id)
+        return c.name if c is not None else None
+
+    def _apply_copper_name_to_pick(self, pick: dict | None,
+                                    world_x: float, world_y: float
+                                    ) -> dict | None:
+        """If ``pick`` lands on copper currently named ``"(none)"`` and
+        a :class:`CopperName` rename pins it to a real name, return a
+        copy with the renamed net. ``None`` / non-"(none)" picks pass
+        through unchanged."""
+        if pick is None or pick.get("net") != "(none)":
+            return pick
+        new_name = self._copper_name_override(
+            world_x, world_y, pick.get("layer_id"))
+        if new_name is None:
+            return pick
+        out = dict(pick)
+        out["net"] = new_name
+        return out
+
     def _editor_copper_pick(self, world_x: float,
                             world_y: float) -> dict | None:
         """Copper under the point for editor-mode selection / marker
@@ -10624,7 +10769,11 @@ class PdnViewer(QMainWindow):
         The final fallback to :meth:`_copper_at_point` is what lets a
         source / sink land on *any* copper — ``_probe_at_point`` and
         ``_probe_at_stub`` only see the rail currently drawn in the
-        heatmap, so without it placement is limited to that rail."""
+        heatmap, so without it placement is limited to that rail.
+
+        Picks that land on copper whose net is ``"(none)"`` are passed
+        through :meth:`_apply_copper_name_to_pick` so a user-supplied
+        :class:`CopperName` rename surfaces as the new net name."""
         hit = self._probe_at_point(world_x, world_y)
         if hit is not None and hit[1].get("net"):
             info = hit[1]
@@ -10637,7 +10786,30 @@ class PdnViewer(QMainWindow):
             return {"net": stub_hit[1]["net"],
                     "physical": phys,
                     "layer_id": self._phys_name_to_layer_id.get(phys)}
-        return self._copper_at_point(world_x, world_y)
+        return self._apply_copper_name_to_pick(
+            self._copper_at_point(world_x, world_y), world_x, world_y)
+
+    def _visible_editor_copper_pick(self, world_x: float,
+                                    world_y: float) -> dict | None:
+        """Like :meth:`_editor_copper_pick`, but the all-copper fallback is
+        restricted to layers whose all-copper eye is on. The rail and stub
+        probes are inherently visible-only (they walk the rendered heatmap
+        / stub geometry), so they're reused as-is; the all-copper fallback
+        is what could otherwise hit copper on a hidden layer."""
+        hit = self._probe_at_point(world_x, world_y)
+        if hit is not None and hit[1].get("net"):
+            info = hit[1]
+            return {"net": info["net"],
+                    "physical": info.get("physical"),
+                    "layer_id": info.get("layer_id")}
+        stub_hit = self._probe_at_stub(world_x, world_y)
+        if stub_hit is not None and stub_hit[1].get("net"):
+            phys = stub_hit[1].get("physical")
+            return {"net": stub_hit[1]["net"],
+                    "physical": phys,
+                    "layer_id": self._phys_name_to_layer_id.get(phys)}
+        return self._apply_copper_name_to_pick(
+            self._all_copper_at_point(world_x, world_y), world_x, world_y)
 
     def _net_at(self, world_x: float, world_y: float) -> str | None:
         """Copper net under the point — any copper, not just the rail in
@@ -10858,25 +11030,38 @@ class PdnViewer(QMainWindow):
                                   cap_style=1, join_style=1,
                                   resolution=8)
             elif kind == "arc":
+                # Match altium_geometry._arc_polyline_points exactly so
+                # the buffered outline matches the copper polygon.
+                from fypa.altium_geometry import ARC_CHORD_TOLERANCE_MM
+                sweep_deg = ((prim["end_angle_deg"]
+                              - prim["start_angle_deg"]) % 360.0)
+                if sweep_deg == 0.0:
+                    sweep_deg = 360.0
                 start = math.radians(prim["start_angle_deg"])
-                end = math.radians(prim["end_angle_deg"])
-                sweep = end - start
-                if sweep <= 1e-9:
-                    sweep += 2.0 * math.pi
+                sweep = math.radians(sweep_deg)
                 cx, cy, r = prim["cx"], prim["cy"], prim["radius_mm"]
                 half_w = max(prim["width_mm"] * 0.5, 1e-6)
-                steps = max(8, int(abs(sweep) / math.radians(6.0)) + 1)
-                pts = [(cx + r * math.cos(start + sweep * k / steps),
-                        cy + r * math.sin(start + sweep * k / steps))
-                       for k in range(steps + 1)]
-                line = _sg.LineString(pts)
-                # Round caps + joins to match the actual copper polygon
-                # (altium_geometry._arc_polygon uses cap_style=1). Round
-                # caps at the (coincident) endpoints of a full-circle
-                # arc overlap cleanly into the tube; flat / square caps
-                # would stick a radial sliver inside the ring.
-                shp = line.buffer(half_w, cap_style=1, join_style=1,
-                                  resolution=8)
+                if r <= 0.0:
+                    shp = _sg.Point(cx, cy).buffer(half_w, resolution=8)
+                else:
+                    cos_arg = max(-1.0, 1.0 - ARC_CHORD_TOLERANCE_MM / r)
+                    max_step_rad = 2.0 * math.acos(cos_arg)
+                    if max_step_rad <= 0.0:
+                        n = max(8, int(round(sweep_deg)))
+                    else:
+                        n = max(8, int(math.ceil(sweep / max_step_rad)))
+                    pts = [(cx + r * math.cos(start + sweep * k / n),
+                            cy + r * math.sin(start + sweep * k / n))
+                           for k in range(n + 1)]
+                    line = _sg.LineString(pts)
+                    # Round caps + joins to match the actual copper
+                    # polygon (altium_geometry._arc_polygon uses
+                    # cap_style=1). Round caps at the (coincident)
+                    # endpoints of a full-circle arc overlap cleanly
+                    # into the tube; flat / square caps would stick a
+                    # radial sliver inside the ring.
+                    shp = line.buffer(half_w, cap_style=1, join_style=1,
+                                      resolution=8)
             elif kind == "fill":
                 import shapely.affinity as _sa
                 box = _sg.box(prim["x1_mm"], prim["y1_mm"],
@@ -11273,6 +11458,8 @@ class PdnViewer(QMainWindow):
             panel = getattr(self, "_editor_panel", None)
             if panel is not None:
                 panel.hide()
+
+    def _on_editor_click(self, world_x: float, world_y: float) -> None:
         """Editor-mode left-click: drop a pending free marker if one is
         armed, else select the component / placed marker / copper under
         the cursor."""
@@ -11300,11 +11487,29 @@ class PdnViewer(QMainWindow):
         if marker is not None:
             self._select_free_marker(marker)
             return
-        net = self._net_at(world_x, world_y)
-        if net:
-            self._select_copper(net)
+        hit = self._primitive_at_point(world_x, world_y)
+        if hit is not None and hit.get("net"):
+            self._select_copper(hit["net"], hit,
+                                anchor_xy=(world_x, world_y))
             return
-        # Bare substrate — clear the selection.
+        # No visible primitive — fall back to the more permissive
+        # visible-only picker (rail mesh / stub / visible all-copper).
+        pick = self._visible_editor_copper_pick(world_x, world_y)
+        if pick is not None and pick.get("net"):
+            self._select_copper(pick["net"],
+                                anchor_xy=(world_x, world_y))
+            return
+        # Copper exists here but only on a hidden layer — mention it so
+        # the user knows why nothing got selected, then fall through to
+        # clear (a click the user can't see reads as "click off copper",
+        # matching viewer-mode behaviour).
+        hidden = self._editor_copper_pick(world_x, world_y)
+        if hidden is not None and hidden.get("net"):
+            phys = hidden.get("physical") or "a hidden layer"
+            self.statusBar().showMessage(
+                f"Copper on {phys} is hidden — turn on its eye to "
+                "select it.", 4000)
+        # Bare substrate (or hidden-only copper) — clear the selection.
         self._editor_selection = None
         self._clear_editor_highlight()
         self._update_editor_panel()
@@ -11339,6 +11544,7 @@ class PdnViewer(QMainWindow):
         panel opens its PDN form so the role / value / nets can be
         edited (see :meth:`_populate_editor_form`)."""
         self._editor_selection = {"kind": "free", "id": directive.id}
+        self._gl_viewer.set_primitive_selection_outline(None)
         highlight = (self._connected_nets(directive.p_net)
                      if directive.p_net else set())
         self._apply_editor_highlight(highlight)
@@ -11357,16 +11563,30 @@ class PdnViewer(QMainWindow):
             # values come from the Altium schematic — see _on_editor_unlock.
             "unlocked": False,
         }
+        self._gl_viewer.set_primitive_selection_outline(None)
         highlight: set[str] = set()
         for n in nets:
             highlight |= self._connected_nets(n)
         self._apply_editor_highlight(highlight)
         self._populate_editor_form()
 
-    def _select_copper(self, net: str) -> None:
+    def _select_copper(self, net: str, hit: dict | None = None,
+                       anchor_xy: tuple[float, float] | None = None) -> None:
         """Select a copper net for PDN editing and highlight every net
-        connected to it."""
-        self._editor_selection = {"kind": "copper", "net": net}
+        connected to it. When ``hit`` is the primitive picker's result
+        for the click, its outline is pushed to the GL viewer as the
+        same dashed-yellow polygon used by viewer-mode copper selection.
+        ``anchor_xy`` records the click point so the right-hand panel's
+        copper-name form (shown only when ``net == "(none)"``) can pin
+        the rename to THIS polygon — its layer comes from the hit."""
+        sel: dict = {"kind": "copper", "net": net}
+        if anchor_xy is not None:
+            sel["anchor_xy"] = (float(anchor_xy[0]), float(anchor_xy[1]))
+        if hit is not None and hit.get("layer_id") is not None:
+            sel["layer_id"] = int(hit["layer_id"])
+        self._editor_selection = sel
+        rings = self._primitive_outline_rings(hit) if hit else None
+        self._gl_viewer.set_primitive_selection_outline(rings)
         self._apply_editor_highlight(self._connected_nets(net))
         self._populate_editor_form()
 
@@ -11378,10 +11598,12 @@ class PdnViewer(QMainWindow):
         self._update_editor_panel()
 
     def _clear_editor_highlight(self) -> None:
-        """Drop the connectivity highlight; copper returns to full opacity."""
+        """Drop the connectivity highlight; copper returns to full opacity.
+        Also clears the dashed-yellow outline set by a copper selection."""
         if self._editor_highlight_nets:
             self._editor_highlight_nets = set()
             self._render()
+        self._gl_viewer.set_primitive_selection_outline(None)
 
     # --- Editor mode: PDN form + free markers -------------------------------
 
@@ -11399,8 +11621,10 @@ class PdnViewer(QMainWindow):
 
     def _all_net_names(self) -> list[str]:
         """Sorted list of every net name known to this viewer — solved
-        per-net layers, rail-group members, and metadata copper / pads /
-        vias. Used to populate the N-net picker. Cached (immutable)."""
+        per-net layers, rail-group members, metadata copper / pads /
+        vias, and any user-supplied :class:`CopperName` renames. Used
+        to populate the N-net picker. Cached; invalidate by setting
+        ``_all_net_names_cache`` to ``None`` after edits."""
         cached = getattr(self, "_all_net_names_cache", None)
         if cached is not None:
             return cached
@@ -11417,6 +11641,10 @@ class PdnViewer(QMainWindow):
                 n = rec.get("net")
                 if n:
                     nets.add(n)
+        if self._project is not None:
+            for c in self._project.copper_names:
+                if c.name:
+                    nets.add(c.name)
         out = sorted(n for n in nets if n)
         self._all_net_names_cache = out
         return out
@@ -11653,9 +11881,9 @@ class PdnViewer(QMainWindow):
 
     def _build_free_marker_location(self, lay, directive) -> None:
         """Location block for a selected free marker: the fixed layer plus
-        editable X / Y boxes and free-marker move undo / redo buttons. The
-        layer is shown read-only — a free marker's layer is fixed once it
-        has been placed."""
+        editable X / Y boxes and marker-edit undo / redo buttons (covering
+        both moves and deletes). The layer is shown read-only — a free
+        marker's layer is fixed once it has been placed."""
         t = _T()
         lay.addWidget(QLabel("Location"))
         form = QFormLayout()
@@ -11689,24 +11917,186 @@ class PdnViewer(QMainWindow):
         lay.addWidget(hint)
 
         moves = QHBoxLayout()
-        self._ef_undo_move = QPushButton("↶ Undo move")
-        self._ef_undo_move.setToolTip("Undo the last free-marker move")
-        self._ef_undo_move.clicked.connect(self._undo_marker_move)
-        self._ef_redo_move = QPushButton("↷ Redo move")
-        self._ef_redo_move.setToolTip("Redo the last undone free-marker move")
-        self._ef_redo_move.clicked.connect(self._redo_marker_move)
+        self._ef_undo_move = QPushButton("↶ Undo")
+        self._ef_undo_move.setToolTip(
+            "Undo the last free-marker edit (move or delete)")
+        self._ef_undo_move.clicked.connect(self._undo_marker_action)
+        self._ef_redo_move = QPushButton("↷ Redo")
+        self._ef_redo_move.setToolTip(
+            "Redo the last undone free-marker edit (move or delete)")
+        self._ef_redo_move.clicked.connect(self._redo_marker_action)
         moves.addWidget(self._ef_undo_move)
         moves.addWidget(self._ef_redo_move)
         lay.addLayout(moves)
         self._update_marker_undo_buttons()
 
+    def _populate_copper_name_form(self, sel: dict) -> None:
+        """Populate the right-hand form with a single-field form for
+        naming a copper piece that has no Altium net name. The click
+        anchor + layer pin the rename to one specific polygon — other
+        disjoint unnamed copper on the board is unaffected. When the
+        same polygon already carries a :class:`CopperName`, the form
+        title flips to "Named copper" and the field is pre-filled with
+        the saved name so the user can review / edit / re-apply."""
+        t = _T()
+        lay = self._editor_form_layout
+        ax, ay = sel.get("anchor_xy") or (0.0, 0.0)
+        layer_id = sel.get("layer_id")
+        phys = None
+        if layer_id is not None:
+            id_to_phys = {v: k
+                          for k, v in self._phys_name_to_layer_id.items()}
+            phys = id_to_phys.get(int(layer_id))
+
+        # Polygon-based lookup (NOT a strict anchor match) so a re-click
+        # at any point on the named piece restores the saved name.
+        existing = self._copper_name_at(
+            float(ax), float(ay), int(layer_id))
+
+        if existing is not None:
+            lay.addWidget(QLabel("<b>Named copper</b>"))
+            hint = QLabel(
+                "This copper is named <b>" + _esc(existing.name)
+                + "</b> — edit the name below and Apply to rename it, or "
+                "leave it as-is. Other disjoint unnamed copper is "
+                "unaffected."
+            )
+        else:
+            lay.addWidget(QLabel("<b>Unnamed copper</b>"))
+            hint = QLabel(
+                "This copper has no net name in Altium. Give it a name "
+                "here to make it solvable — only this piece is named, "
+                "other disjoint unnamed copper stays as <b>(none)</b>."
+            )
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {t['fg_muted']}; font-size: 8pt;")
+        lay.addWidget(hint)
+
+        info = QFormLayout()
+        info.setContentsMargins(0, 0, 0, 0)
+        layer_lbl = QLabel(_esc(phys or "?"))
+        layer_lbl.setStyleSheet(f"color: {t['fg_muted']};")
+        info.addRow("Layer", layer_lbl)
+        loc_lbl = QLabel(f"({float(ax):.4f}, {float(ay):.4f}) mm")
+        loc_lbl.setStyleSheet(f"color: {t['fg_muted']};")
+        info.addRow("At", loc_lbl)
+        lay.addLayout(info)
+
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        self._ef_copper_name = QLineEdit()
+        self._ef_copper_name.setPlaceholderText("e.g. STAR_GND_PAD")
+        if existing is not None:
+            self._ef_copper_name.setText(existing.name)
+        self._ef_copper_name.returnPressed.connect(self._on_apply_copper_name)
+        form.addRow("Net name", self._ef_copper_name)
+        lay.addLayout(form)
+
+        btns = QHBoxLayout()
+        self._ef_copper_name_apply = QPushButton("Apply")
+        self._ef_copper_name_apply.clicked.connect(self._on_apply_copper_name)
+        btns.addWidget(self._ef_copper_name_apply)
+        lay.addLayout(btns)
+
+        self._ef_copper_name_status = QLabel("")
+        self._ef_copper_name_status.setWordWrap(True)
+        self._ef_copper_name_status.setStyleSheet(
+            f"color: {t['fg_muted']}; font-size: 8pt;")
+        lay.addWidget(self._ef_copper_name_status)
+
+    def _on_apply_copper_name(self) -> None:
+        """Validate the entered name, save it as a :class:`CopperName`
+        rename, and retroactively re-derive ``p_net`` for any free
+        markers already placed on the same polygon (their ``"(none)"``
+        becomes the new name so the resolve guard accepts them)."""
+        sel = self._editor_selection
+        if (not sel or sel.get("kind") != "copper"
+                or sel.get("anchor_xy") is None
+                or sel.get("layer_id") is None):
+            return
+        edit = getattr(self, "_ef_copper_name", None)
+        status = getattr(self, "_ef_copper_name_status", None)
+        if edit is None:
+            return
+        raw = edit.text().strip()
+        t = _T()
+
+        def _err(msg: str) -> None:
+            if status is not None:
+                status.setText(f"<span style='color:{t['warn']};'>"
+                               f"{_esc(msg)}</span>")
+
+        if not raw:
+            _err("Enter a net name.")
+            return
+        if raw == "(none)" or raw.lower() in {"none", "(none)"}:
+            _err("'(none)' is the unnamed-copper sentinel — pick a real name.")
+            return
+        # Disallow reusing an existing named net — that would let the user
+        # silently merge this unnamed copper onto another rail without the
+        # connectivity to support it (and confuse the FEM matrix).
+        existing_nets = {n for n in self._all_net_names() if n != "(none)"}
+        anchor = (float(sel["anchor_xy"][0]), float(sel["anchor_xy"][1]))
+        layer_id = int(sel["layer_id"])
+        # Find an existing rename via polygon containment so a re-click at
+        # a different point on the same piece updates the same record
+        # instead of creating a duplicate CopperName.
+        prev = self._copper_name_at(anchor[0], anchor[1], layer_id)
+        if raw in existing_nets and (prev is None or prev.name != raw):
+            _err(f"'{raw}' is already a net on this board — pick a "
+                 "different name.")
+            return
+
+        from fypa.project_file import CopperName
+        proj = self._ensure_project()
+        if prev is not None:
+            prev.name = raw
+        else:
+            proj.upsert_copper_name(CopperName(
+                anchor_xy=anchor, layer_id=layer_id, name=raw,
+            ))
+        # Net-name cache is stale now — the new name needs to appear in
+        # dropdowns and connectivity probes immediately.
+        self._all_net_names_cache = None
+        # Retroactively update any free marker already placed on the same
+        # piece of unnamed copper so the resolve guard accepts it.
+        updated = 0
+        for d in proj.editor_directives:
+            if (d.kind == "free" and d.p_net == "(none)"
+                    and d.anchor_xy is not None):
+                pick = self._editor_copper_pick(
+                    float(d.anchor_xy[0]), float(d.anchor_xy[1]))
+                if pick and pick.get("net") == raw:
+                    d.p_net = raw
+                    updated += 1
+        self._mark_project_dirty()
+        # Promote the selection to the now-named net so the connectivity
+        # highlight tracks it. Keep the form widgets in place (don't call
+        # _populate_editor_form) — that preserves the user's text in the
+        # field and keeps the success status visible until the next
+        # interaction.
+        sel["net"] = raw
+        self._apply_editor_highlight(self._connected_nets(raw))
+        msg = f"Named — this copper is now <b>{_esc(raw)}</b>."
+        if updated:
+            msg += (f" Updated {updated} existing marker"
+                    f"{'s' if updated != 1 else ''}.")
+        if status is not None:
+            status.setText(f"<span style='color:{t['ok']};'>{msg}</span>")
+
     def _populate_editor_form(self) -> None:
-        """(Re)build the PDN-role form for the current component / free
-        selection. A plain copper selection has no form."""
+        """(Re)build the form for the current selection: the PDN-role
+        form for a component / free-marker, the copper-naming form for
+        unnamed copper (``net == "(none)"``), or nothing for a plain
+        named-copper selection."""
         if not hasattr(self, "_editor_form_layout"):
             return
         self._clear_layout(self._editor_form_layout)
         sel = self._editor_selection
+        if self._is_copper_name_selection(sel):
+            self._populate_copper_name_form(sel)
+            self._update_editor_panel()
+            return
         if not sel or sel.get("kind") not in ("component", "free"):
             self._update_editor_panel()
             return
@@ -11999,31 +12389,59 @@ class PdnViewer(QMainWindow):
         )
 
     def _on_editor_remove(self) -> None:
-        """Delete the directive bound to the current selection."""
+        """Delete the directive bound to the current selection. Undoable
+        via Ctrl+Z (or the panel's Undo button); the prior selection is
+        captured so undo also restores it (a component-bound directive
+        re-selects its component, a free marker re-selects itself)."""
         existing = self._directive_for_selection()
         if existing is None or self._project is None:
             return
+        try:
+            idx = self._project.editor_directives.index(existing)
+        except ValueError:
+            return
+        prev_selection = (dict(self._editor_selection)
+                          if self._editor_selection else None)
         self._project.remove_directive(existing.id)
-        self._mark_project_dirty()
+        self._marker_undo.append({
+            "op": "delete",
+            "id": existing.id,
+            "directive": existing,
+            "index": idx,
+            "prev_selection": prev_selection,
+        })
+        self._marker_redo.clear()
         self._editor_selection = None
-        self._editor_highlight_nets = set()
+        self._mark_project_dirty()
         self._update_pending_rails()
-        self._render()
+        self._update_marker_undo_buttons()
+        # Empty highlight + render so the marker disappears from the
+        # viewport and connected copper returns to full opacity.
+        self._apply_editor_highlight(set())
         self._populate_editor_form()
 
     def _place_free_marker(self, world_x: float, world_y: float) -> None:
         """Drop a free source / sink / series marker on the copper under the
         cursor and open its form. No-op (with a hint) if the click missed
-        copper. A SERIES marker is created two-net with its N net still
-        unset — the form prompts for it before the directive can resolve."""
+        copper, or if the copper under the cursor is on a hidden layer —
+        the user shouldn't be able to drop a marker on copper they can't
+        see. A SERIES marker is created two-net with its N net still unset
+        — the form prompts for it before the directive can resolve."""
         from fypa.project_file import EditorDirective
         role = self._editor_pending_marker
         if role is None:
             return
-        pick = self._editor_copper_pick(world_x, world_y)
+        pick = self._visible_editor_copper_pick(world_x, world_y)
         if pick is None or not pick.get("net"):
-            self.statusBar().showMessage(
-                "No copper there — click on a copper region.", 4000)
+            hidden = self._editor_copper_pick(world_x, world_y)
+            if hidden is not None and hidden.get("net"):
+                phys = hidden.get("physical") or "a hidden layer"
+                self.statusBar().showMessage(
+                    f"Copper on {phys} is hidden — turn on its eye to "
+                    "place a marker there.", 4000)
+            else:
+                self.statusBar().showMessage(
+                    "No copper there — click on a copper region.", 4000)
             return
         net = pick["net"]
         layer = pick.get("physical")
@@ -12039,6 +12457,7 @@ class PdnViewer(QMainWindow):
         self._ensure_project().upsert_directive(d)
         self._editor_pending_marker = None
         self._editor_selection = {"kind": "free", "id": d.id}
+        self._gl_viewer.set_primitive_selection_outline(None)
         self._mark_project_dirty()
         self._apply_editor_highlight(self._connected_nets(net))
         self._update_pending_rails()
@@ -12199,76 +12618,138 @@ class PdnViewer(QMainWindow):
 
     def _record_marker_move(self, marker_id, old_xy, new_xy,
                             old_p_net, new_p_net) -> None:
-        """Push a free-marker move onto the undo stack; a fresh move
+        """Push a free-marker move onto the undo stack; a fresh edit
         invalidates the redo stack."""
-        self._marker_move_undo.append({
+        self._marker_undo.append({
+            "op": "move",
             "id": marker_id,
             "old_xy": (float(old_xy[0]), float(old_xy[1])),
             "new_xy": (float(new_xy[0]), float(new_xy[1])),
             "old_p_net": old_p_net,
             "new_p_net": new_p_net,
         })
-        self._marker_move_redo.clear()
+        self._marker_redo.clear()
         self._update_marker_undo_buttons()
 
-    def _undo_marker_move(self) -> None:
-        """Undo the most recent free-marker move — restore its previous
-        anchor + net. Dedicated to marker movement only."""
-        if not self._editor_mode or not self._marker_move_undo:
+    def _delete_selected_free_marker(self) -> None:
+        """Delete the currently selected free marker — Delete / Backspace
+        in editor mode. Routes to :meth:`_on_editor_remove` so the same
+        undo timeline / record shape is shared with the panel's Remove
+        button. Scoped to free markers (per the original feature
+        request); no-op outside editor mode or mid-drag."""
+        if not self._editor_mode or self._marker_drag is not None:
             return
-        rec = self._marker_move_undo[-1]
-        d = (self._project.directive_by_id(rec["id"])
-             if self._project else None)
-        self._marker_move_undo.pop()
-        if d is None:   # marker was removed — drop the stale record
-            self._update_marker_undo_buttons()
+        sel = self._editor_selection
+        if not sel or sel.get("kind") != "free":
             return
-        d.anchor_xy = rec["old_xy"]
-        d.p_net = rec["old_p_net"]
-        self._marker_move_redo.append(rec)
-        self._after_marker_undo_redo(d)
+        self._on_editor_remove()
 
-    def _redo_marker_move(self) -> None:
-        """Redo the most recently undone free-marker move."""
-        if not self._editor_mode or not self._marker_move_redo:
+    def _undo_marker_action(self) -> None:
+        """Undo the most recent free-marker edit (move or delete)."""
+        if not self._editor_mode or not self._marker_undo:
             return
-        rec = self._marker_move_redo[-1]
-        d = (self._project.directive_by_id(rec["id"])
-             if self._project else None)
-        self._marker_move_redo.pop()
-        if d is None:
-            self._update_marker_undo_buttons()
+        rec = self._marker_undo[-1]
+        op = rec.get("op", "move")
+        if op == "move":
+            d = (self._project.directive_by_id(rec["id"])
+                 if self._project else None)
+            self._marker_undo.pop()
+            if d is None:   # marker was removed — drop the stale record
+                self._update_marker_undo_buttons()
+                return
+            d.anchor_xy = rec["old_xy"]
+            d.p_net = rec["old_p_net"]
+            self._marker_redo.append(rec)
+            self._after_marker_undo_redo(d)
             return
-        d.anchor_xy = rec["new_xy"]
-        d.p_net = rec["new_p_net"]
-        self._marker_move_undo.append(rec)
-        self._after_marker_undo_redo(d)
+        if op == "delete":
+            self._marker_undo.pop()
+            if self._project is None:
+                self._update_marker_undo_buttons()
+                return
+            d = rec["directive"]
+            # Reinsert at the original position so z-order is preserved;
+            # clamp if the list has shrunk in the meantime.
+            idx = min(max(int(rec.get("index", 0)), 0),
+                      len(self._project.editor_directives))
+            self._project.editor_directives.insert(idx, d)
+            self._marker_redo.append(rec)
+            self._after_marker_undo_redo(d, rec.get("prev_selection"))
 
-    def _after_marker_undo_redo(self, directive) -> None:
-        """Shared tail of undo / redo — reselect the marker and refresh
-        the viewport + panel."""
-        self._editor_selection = {"kind": "free", "id": directive.id}
+    def _redo_marker_action(self) -> None:
+        """Redo the most recently undone free-marker edit."""
+        if not self._editor_mode or not self._marker_redo:
+            return
+        rec = self._marker_redo[-1]
+        op = rec.get("op", "move")
+        if op == "move":
+            d = (self._project.directive_by_id(rec["id"])
+                 if self._project else None)
+            self._marker_redo.pop()
+            if d is None:
+                self._update_marker_undo_buttons()
+                return
+            d.anchor_xy = rec["new_xy"]
+            d.p_net = rec["new_p_net"]
+            self._marker_undo.append(rec)
+            self._after_marker_undo_redo(d)
+            return
+        if op == "delete":
+            self._marker_redo.pop()
+            if self._project is None:
+                self._update_marker_undo_buttons()
+                return
+            self._project.remove_directive(rec["id"])
+            self._marker_undo.append(rec)
+            self._editor_selection = None
+            self._mark_project_dirty()
+            self._update_pending_rails()
+            self._update_marker_undo_buttons()
+            self._apply_editor_highlight(set())
+            self._populate_editor_form()
+
+    def _after_marker_undo_redo(self, directive, selection=None) -> None:
+        """Shared tail of undo / redo — reselect the directive and refresh
+        the viewport + panel. ``selection`` lets a delete-undo restore the
+        prior selection state (a component-bound directive re-selects the
+        component, with its pin-net union driving the highlight). When
+        ``None`` (the move case) the directive is selected as a free
+        marker and the highlight comes from its own net."""
+        if selection is None:
+            self._editor_selection = {"kind": "free", "id": directive.id}
+            highlight = (self._connected_nets(directive.p_net)
+                         if directive.p_net else set())
+        else:
+            sel = dict(selection)
+            self._editor_selection = sel
+            if sel.get("kind") == "component":
+                highlight = set()
+                for n in sel.get("nets") or []:
+                    highlight |= self._connected_nets(n)
+            elif sel.get("kind") == "free":
+                highlight = (self._connected_nets(directive.p_net)
+                             if directive.p_net else set())
+            else:
+                highlight = set()
         self._mark_project_dirty()
         self._update_pending_rails()
         self._update_marker_undo_buttons()
-        self._apply_editor_highlight(
-            self._connected_nets(directive.p_net)
-            if directive.p_net else set())
+        self._apply_editor_highlight(highlight)
         self._populate_editor_form()
 
     def _update_marker_undo_buttons(self) -> None:
-        """Enable / disable the panel's marker move undo / redo buttons to
+        """Enable / disable the panel's marker undo / redo buttons to
         match the stacks (no-op when the form isn't showing them)."""
         btn = getattr(self, "_ef_undo_move", None)
         if btn is not None:
             try:
-                btn.setEnabled(bool(self._marker_move_undo))
+                btn.setEnabled(bool(self._marker_undo))
             except RuntimeError:
                 pass
         btn = getattr(self, "_ef_redo_move", None)
         if btn is not None:
             try:
-                btn.setEnabled(bool(self._marker_move_redo))
+                btn.setEnabled(bool(self._marker_redo))
             except RuntimeError:
                 pass
 
@@ -12531,6 +13012,46 @@ class PdnViewer(QMainWindow):
         approx = self.rail_list.sizeHintForRow(0) or 22
         self.rail_list.setFixedHeight(self.rail_list.count() * approx + 6)
 
+    def _unnamed_copper_directives(self) -> list:
+        """Editor directives whose ``p_net`` / ``n_net`` is still the
+        ``"(none)"`` sentinel at resolve time — and which the user has
+        NOT covered with an editor-mode :class:`CopperName` rename. The
+        solver has no rail for ``"(none)"`` (and even if it did, every
+        electrically-disjoint unnamed copper piece would collapse onto
+        the same lumped net), so resolving with one of these directives
+        silently drops it from the result.
+
+        Before flagging, this method promotes any free-marker directive
+        whose anchor lands on a polygon that now carries a
+        :class:`CopperName` — the user effectively named the copper but
+        the placement-time override missed it for some reason (marker
+        placed before the rename, or the rename was applied to a
+        slightly different click point on the piece). The promoted
+        ``p_net`` carries forward to the solve, so the rail isn't
+        dropped. Directives still on truly-unnamed copper after this
+        promotion are returned for the warning dialog."""
+        if self._project is None:
+            return []
+        out = []
+        promoted = 0
+        for d in self._project.editor_directives:
+            # Auto-promote a free marker whose p_net is "(none)" if a
+            # CopperName rename now applies to its anchor.
+            if (d.p_net == "(none)" and d.kind == "free"
+                    and d.anchor_xy is not None
+                    and d.layer_id is not None):
+                c = self._copper_name_at(
+                    float(d.anchor_xy[0]), float(d.anchor_xy[1]),
+                    int(d.layer_id))
+                if c is not None:
+                    d.p_net = c.name
+                    promoted += 1
+            if d.p_net == "(none)" or d.n_net == "(none)":
+                out.append(d)
+        if promoted:
+            self._mark_project_dirty()
+        return out
+
     def _on_resolve_clicked(self) -> None:
         """Re-run the solver with the current editor directives applied,
         reusing the in-memory design info (no cache read, no Altium
@@ -12540,6 +13061,33 @@ class PdnViewer(QMainWindow):
             QMessageBox.information(
                 self, "Nothing to resolve",
                 "There are no editor directives to solve yet.",
+            )
+            return
+        unnamed = self._unnamed_copper_directives()
+        if unnamed:
+            lines = []
+            for d in unnamed:
+                if d.kind == "free" and d.anchor_xy is not None:
+                    where = (f"free {d.role} at "
+                             f"({d.anchor_xy[0]:g}, {d.anchor_xy[1]:g}) mm"
+                             f" on {d.layer or '?'}")
+                else:
+                    where = f"{d.role} on {d.designator or '?'}"
+                lines.append(f"  • {where}")
+            QMessageBox.warning(
+                self, "Name the copper first",
+                "These editor directives are placed on copper that has no "
+                "net name:\n\n"
+                + "\n".join(lines)
+                + "\n\nThe solver can't include an unnamed net in the "
+                "result — and any other unnamed copper on the board would "
+                "be lumped onto the same rail.\n\n"
+                "Fix this one of two ways:\n"
+                "  • Click the copper in editor mode and use the "
+                "<b>Unnamed copper</b> form on the right to give it a "
+                "name here, then click Apply and Resolve again.\n"
+                "  • Or name the net in Altium and re-import the design "
+                "before resolving.",
             )
             return
         prjpcb = self.metadata.get("prjpcb_path") if self.metadata else None
@@ -12559,6 +13107,7 @@ class PdnViewer(QMainWindow):
             use_design_cache=True,
             try_solve_cache_first=False,
             editor_directives=list(self._project.editor_directives),
+            copper_names=list(self._project.copper_names),
             loaded_project=self._loaded_project,
             dialog_title="Resolving with editor changes",
             dialog_text=(
@@ -12893,6 +13442,15 @@ class PdnViewer(QMainWindow):
             if bare_hit is not None:
                 bare_hit = dict(bare_hit)
                 bare_hit["is_bare"] = True
+                # An unnamed copper polygon the user has renamed in
+                # editor mode reports the new name with a "[pending
+                # resolve]" suffix until the next Resolve actually
+                # rebuilds the solution against the renamed net.
+                if bare_hit.get("net") == "(none)":
+                    c = self._copper_name_at(
+                        world_x, world_y, bare_hit.get("layer_id"))
+                    if c is not None:
+                        bare_hit["net"] = f"{c.name}  [pending resolve]"
                 net_part = (f"   Net = {bare_hit['net']}"
                             if bare_hit.get("net") else "")
                 layer_part = (f"   Layer = {bare_hit['physical']}"
@@ -14992,6 +15550,18 @@ class PdnViewer(QMainWindow):
         file_menu.addAction(open_sol)
 
         file_menu.addSeparator()
+        export_menu = file_menu.addMenu("&Export")
+
+        export_paraview = QAction("&ParaView…", self)
+        export_paraview.setStatusTip(
+            "Write the current solution as VTK files (one .vtu per copper "
+            "layer, with per-vertex voltage) into a directory of your choice "
+            "for opening in ParaView."
+        )
+        export_paraview.triggered.connect(self._on_menu_export_paraview)
+        export_menu.addAction(export_paraview)
+
+        file_menu.addSeparator()
         close_proj = QAction("&Close Project", self)
         close_proj.setShortcut("Ctrl+W")
         close_proj.setStatusTip(
@@ -15195,6 +15765,57 @@ class PdnViewer(QMainWindow):
                 f"<span style='color:{_T()['ok']};'>Saved solution to "
                 f"{_esc(path_str)}</span>"
             )
+
+    def _on_menu_export_paraview(self) -> None:
+        """File > Export > ParaView…  →  prompt for an output directory and
+        write one ``.vtu`` per copper layer there (per-vertex voltage scalar
+        field). The files open natively in ParaView for 3-D stackup views,
+        slicing, contours, etc. — see docs/user-guide/06-paraview-export.md.
+
+        On any failure we surface a short modal and leave the full traceback
+        in the Messages tab / log file (via ``logger.exception``) so the
+        user has somewhere to look without us dumping a wall of text into
+        the popup."""
+        log = logging.getLogger(__name__)
+        if self.solution is None:
+            QMessageBox.information(
+                self, "Nothing to export",
+                "There's no solution loaded in this window to export.",
+            )
+            return
+        start_dir = self._project_cache_dir_str() or self._menu_start_dir()
+        out_dir_str = QFileDialog.getExistingDirectory(
+            self, "Export to ParaView — pick output directory", start_dir,
+        )
+        if not out_dir_str:
+            return
+        n_files: int | None = None
+        try:
+            from fypa.paraview_export import export_lean_solution
+            n_files = export_lean_solution(self.solution, Path(out_dir_str))
+        except Exception:
+            log.exception(
+                "ParaView export to %s failed", out_dir_str)
+            QMessageBox.critical(
+                self, "Export Failed",
+                "Export Failed, see Messages tab or log file",
+            )
+            return
+        log.info("ParaView export wrote %d VTU file(s) to %s",
+                 n_files, out_dir_str)
+        label = getattr(self, "_settings_status_label", None)
+        if label is not None:
+            label.setText(
+                f"<span style='color:{_T()['ok']};'>Exported {n_files} "
+                f"ParaView VTU file(s) to {_esc(out_dir_str)}</span>"
+            )
+        self.statusBar().showMessage(
+            f"Exported {n_files} ParaView VTU file(s) to {out_dir_str}", 5000)
+        QMessageBox.information(
+            self, "Export Successful",
+            f"Export Successful — wrote {n_files} VTU file(s) to:\n\n"
+            f"{out_dir_str}",
+        )
 
     # --- Project file save / open -------------------------------------------
 
@@ -15587,6 +16208,7 @@ class PdnViewer(QMainWindow):
         use_design_cache: bool = True,
         try_solve_cache_first: bool = False,
         editor_directives: list | None = None,
+        copper_names: list | None = None,
         loaded_project: object | None = None,
         dialog_title: str = "Running solver",
         dialog_text: str | None = None,
@@ -15632,6 +16254,7 @@ class PdnViewer(QMainWindow):
             use_design_cache=use_design_cache,
             try_solve_cache_first=try_solve_cache_first,
             editor_directives=editor_directives,
+            copper_names=copper_names,
             loaded_project=loaded_project,
             parent=self,
         )
@@ -17526,11 +18149,11 @@ when one of those has focus.</p>
       <tr><th>Click</th><th>Effect</th></tr>
       <tr><td>Click</td>
           <td>+25 %  <span class='muted'>(coarse, wraps 100&nbsp;%&nbsp;&rarr;&nbsp;0&nbsp;%)</span></td></tr>
-      <tr><td><kbd>Shift</kbd>+click</td>
+      <tr><td><kbd>Shift</kbd>+click <i>or</i> right-click</td>
           <td>&minus;25 %  <span class='muted'>(reverse, wraps 0&nbsp;%&nbsp;&rarr;&nbsp;100&nbsp;%)</span></td></tr>
       <tr><td><kbd>Alt</kbd>+click</td>
           <td>+12.5 %  <span class='muted'>(fine, stops at 100&nbsp;%)</span></td></tr>
-      <tr><td><kbd>Alt</kbd>+<kbd>Shift</kbd>+click</td>
+      <tr><td><kbd>Alt</kbd>+<kbd>Shift</kbd>+click <i>or</i> <kbd>Alt</kbd>+right-click</td>
           <td>&minus;12.5 %  <span class='muted'>(fine reverse, stops at 0&nbsp;%)</span></td></tr>
     </table></li>
   <li><b>Show cursor tooltip</b> &mdash; a small tooltip follows the
