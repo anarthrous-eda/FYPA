@@ -23,7 +23,9 @@ filterwarnings = [
 line-length = 100
 target-version = "py311"
 # altium_monkey is a vendored git submodule with its own tooling.
-extend-exclude = ["altium_monkey", ".venv", "build", "dist"]
+# _verify_*.py are local hand-driven debug drivers (hardcoded user paths,
+# ad-hoc throwaway code) — not production source, so they're outside lint.
+extend-exclude = ["altium_monkey", ".venv", "build", "dist", "_verify_*.py"]
 
 [tool.ruff.lint]
 # Conservative first adoption: real bug-class checks only — pyflakes (`F`:

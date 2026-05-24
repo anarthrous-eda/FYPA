@@ -82,7 +82,7 @@ class EditorDirective:
         return d
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "EditorDirective":
+    def from_dict(cls, d: dict[str, Any]) -> EditorDirective:
         anchor = d.get("anchor_xy")
         return cls(
             id=str(d.get("id") or uuid.uuid4().hex[:12]),
@@ -146,7 +146,7 @@ class ProjectFile:
         tmp.replace(path)   # atomic-ish: don't leave a half-written .fypa
 
     @classmethod
-    def load(cls, path: str | Path) -> "ProjectFile":
+    def load(cls, path: str | Path) -> ProjectFile:
         """Read a ``.fypa`` document; resolve every stored path back to an
         absolute path relative to the file's own location."""
         path = Path(path)

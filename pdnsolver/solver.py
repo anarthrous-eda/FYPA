@@ -17,6 +17,7 @@ import shapely.geometry
 import shapely.wkb
 import warnings
 
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
@@ -1758,7 +1759,7 @@ class _MinresProgress:
         self._budget_s = budget_s
         self._t0 = time.monotonic()
         self.iterations = 0
-        self.last_x: "np.ndarray | None" = None
+        self.last_x: np.ndarray | None = None
 
     def __call__(self, xk: np.ndarray) -> None:
         self.iterations += 1
@@ -1802,7 +1803,7 @@ def _log_singular_diagnostic(
     L_csc: "scipy.sparse.csc_matrix",
     r: np.ndarray,
     v: np.ndarray,
-    row_describer: "Callable[[int], str]",
+    row_describer: Callable[[int], str],
 ) -> None:
     """Log the equations the failed direct solve left unsatisfied.
 
@@ -1837,7 +1838,7 @@ def _solve_robust(
     L_csc: "scipy.sparse.csc_matrix",
     r: np.ndarray,
     symmetric: bool = False,
-    row_describer: "Callable[[int], str] | None" = None,
+    row_describer: Callable[[int], str] | None = None,
 ) -> tuple[np.ndarray, str, int, float]:
     """Solve ``L_csc @ v = r`` with staged automatic fallback when the direct
     solve fails.
@@ -1910,7 +1911,7 @@ def _solve_robust(
     attempts.append(
         ("superlu", lambda: scipy.sparse.linalg.spsolve(L_csc, r)))
 
-    best_v: "np.ndarray | None" = None
+    best_v: np.ndarray | None = None
     best_res = math.inf
     best_method = "none"
     for label, run in attempts:

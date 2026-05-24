@@ -5037,9 +5037,8 @@ class PdnViewer(QMainWindow):
                                   swatch_color: str | None,
                                   label_text: str, bold: bool,
                                   second_eye: EyeButton | None = None,
-                                  fill_btn: "FillToggleButton | None" = None,
-                                  outline_btn: "OutlineToggleButton | None"
-                                  = None,
+                                  fill_btn: FillToggleButton | None = None,
+                                  outline_btn: OutlineToggleButton | None = None,
                                   ) -> QWidget:
         """Build a single row for the layer list: eye(s) + swatch + name.
 
@@ -9357,11 +9356,11 @@ class PdnViewer(QMainWindow):
         # Border + text use a fixed "go" green (not a theme token) so the
         # Resolve action reads as a positive call-to-action in both themes.
         rbtn.setStyleSheet(
-            "QPushButton { border: 1px solid %(green)s; border-radius: 6px;"
+            "QPushButton {{ border: 1px solid {green}; border-radius: 6px;"
             "  padding: 6px 12px; font-weight: bold;"
-            "  background-color: %(bg)s; color: %(green)s; }"
-            "QPushButton:hover { background-color: %(hover)s; }"
-            % {"green": "#2ca92c", "bg": t["bg"], "hover": t["bg_hover"]}
+            "  background-color: {bg}; color: {green}; }}"
+            "QPushButton:hover {{ background-color: {hover}; }}"
+            .format(green="#2ca92c", bg=t["bg"], hover=t["bg_hover"])
         )
         rbtn.clicked.connect(self._on_resolve_clicked)
         rbtn.hide()
