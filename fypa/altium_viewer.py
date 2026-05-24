@@ -837,13 +837,14 @@ def _outline_pixmap(on: bool, size: int = 16) -> QPixmap:
 
 
 class OutlineToggleButton(QToolButton):
-    """Layer-outline visibility toggle for the "All Layers" row.
+    """Layer-outline visibility toggle for the "All Rails" row.
 
     Mirrors :class:`FillToggleButton` — a small auto-raise tool button,
-    the same size as the wire-mesh / solid toggle it sits beside. Its
-    icon flips between a bright traced contour (outlines shown) and a
-    faint dotted one (outlines hidden). Drives the same state the old
-    "Show layer outlines" checkbox used to."""
+    the same size as the wire-mesh / solid toggle. Its icon flips between
+    a bright traced contour (outlines shown) and a faint dotted one
+    (outlines hidden). Drives the same state the old "Show layer
+    outlines" checkbox used to. Lives on the rails row because only the
+    currently-visible rails' copper gets traced."""
 
     toggled_outline = Signal(bool)  # True == layer outlines shown
 
@@ -979,6 +980,128 @@ class SplitButton(QToolButton):
 
     def _on_clicked(self) -> None:
         self.setSplit(not self._split)
+
+
+# --- Transparency control --------------------------------------------------
+
+# Five-step transparency cycle: 0/25/50/75/100 %. Stored as an integer
+# step count [0..4] on the button — the alpha applied to the row's
+# geometry is (4 - step) / 4 (0% transparency == fully opaque == step 0).
+_TRANSPARENCY_STEPS = 5
+_TRANSPARENCY_PIXMAP_CACHE: dict[tuple[str, int, int], QPixmap] = {}
+
+
+def _make_transparency_pixmap(step: int, *, size: int = 16) -> QPixmap:
+    """Pie-chart icon for the per-row transparency control.
+
+    ``step`` is the number of quarter-slices removed from a white disc.
+    0 = full disc (0% transparent), 4 = empty (100% transparent — only the
+    faint reference outline remains so the button stays visible)."""
+    px = QPixmap(size, size)
+    px.fill(Qt.transparent)
+    p = QPainter(px)
+    p.setRenderHint(QPainter.Antialiasing, True)
+
+    t = current_theme()
+    # Faint reference circle so the button still reads as a control at
+    # 100% transparency (when the white pie has fully vanished).
+    inset = size * 0.16
+    rect = QRectF(inset, inset, size - 2 * inset, size - 2 * inset)
+    ring = QPen(QColor(t["eye_closed"]))
+    ring.setWidthF(max(1.0, size * 0.08))
+    p.setPen(ring)
+    p.setBrush(Qt.NoBrush)
+    p.drawEllipse(rect)
+
+    remaining = max(0, _TRANSPARENCY_STEPS - 1 - int(step))
+    if remaining > 0:
+        # Start the pie at 12 o'clock (90°) and sweep counter-clockwise.
+        # As ``remaining`` decreases the trailing end retracts back toward
+        # 12 along the clockwise direction, so each click visually removes
+        # the next quarter slice clockwise (upper-right first, then
+        # lower-right, lower-left, upper-left).
+        span_deg = remaining * 90
+        path = QPainterPath()
+        path.moveTo(rect.center())
+        path.arcTo(rect, 90.0, float(span_deg))
+        path.closeSubpath()
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#ffffff"))
+        p.drawPath(path)
+        # Re-stroke the reference outline so the white pie doesn't bleed
+        # over the edge after antialiasing.
+        p.setPen(ring)
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(rect)
+
+    p.end()
+    return px
+
+
+def _transparency_pixmap(step: int, size: int = 16) -> QPixmap:
+    key = (current_theme_mode(), int(step), size)
+    cached = _TRANSPARENCY_PIXMAP_CACHE.get(key)
+    if cached is None:
+        cached = _make_transparency_pixmap(step, size=size)
+        _TRANSPARENCY_PIXMAP_CACHE[key] = cached
+    return cached
+
+
+def _transparency_percent(step: int) -> int:
+    """Percentage the icon currently advertises for a given step count."""
+    return int(round(100 * step / (_TRANSPARENCY_STEPS - 1)))
+
+
+def _transparency_alpha(step: int) -> float:
+    """Alpha (0..1) that the row's geometry should be drawn at."""
+    return (_TRANSPARENCY_STEPS - 1 - int(step)) / float(_TRANSPARENCY_STEPS - 1)
+
+
+class TransparencyButton(QToolButton):
+    """Cycles a row's transparency through 0/25/50/75/100 %.
+
+    Visual is a white disc with quarter-slices removed on each click; one
+    extra click past 100% wraps back to a full opaque disc."""
+
+    toggled_transparency = Signal(int)  # 0..(_TRANSPARENCY_STEPS-1)
+
+    def __init__(self, parent=None, *, step: int = 0,
+                 icon_size: int = 16) -> None:
+        super().__init__(parent)
+        self._step = int(step) % _TRANSPARENCY_STEPS
+        self._icon_size = icon_size
+        self.setAutoRaise(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setIconSize(QSize(icon_size, icon_size))
+        self.setFixedSize(icon_size + 6, icon_size + 6)
+        self.setFocusPolicy(Qt.NoFocus)
+        self._apply_icon()
+        self.clicked.connect(self._on_clicked)
+
+    def step(self) -> int:
+        return self._step
+
+    def alpha(self) -> float:
+        return _transparency_alpha(self._step)
+
+    def setStep(self, step: int, *, emit: bool = True) -> None:
+        s = int(step) % _TRANSPARENCY_STEPS
+        if s == self._step:
+            return
+        self._step = s
+        self._apply_icon()
+        if emit:
+            self.toggled_transparency.emit(self._step)
+
+    def _apply_icon(self) -> None:
+        self.setIcon(QIcon(_transparency_pixmap(self._step, self._icon_size)))
+        self.setToolTip(
+            f"Transparency: {_transparency_percent(self._step)}% — "
+            f"click to increase"
+        )
+
+    def _on_clicked(self) -> None:
+        self.setStep(self._step + 1)
 
 
 # --- Board-feature colour swatch -------------------------------------------
@@ -4491,13 +4614,16 @@ class PdnViewer(QMainWindow):
         )
         self.layer_list.setAlternatingRowColors(True)
 
-        # Each physical-layer row carries three controls: the primary eye
+        # Each physical-layer row carries four controls: the primary eye
         # (layer in the heatmap), a second eye that shows ALL the copper on
-        # that layer — every net, not just the analysed rails — and a
-        # wire-mesh / solid fill toggle for that all-copper view.
+        # that layer — every net, not just the analysed rails — a
+        # transparency cycler and a wire-mesh / solid fill toggle for that
+        # all-copper view.
         self._layer_eye_buttons: list[tuple[str, EyeButton]] = []
         self._layer_eye2_buttons: list[tuple[str, EyeButton]] = []
         self._layer_fill_buttons: list[tuple[str, FillToggleButton]] = []
+        self._layer_transparency_buttons: list[
+            tuple[str, TransparencyButton]] = []
 
         self._all_layers_eye = EyeButton(visible=True)
         self._all_layers_eye2 = EyeButton(
@@ -4506,15 +4632,17 @@ class PdnViewer(QMainWindow):
             tip_hide="Hide all copper on every layer",
         )
         self._all_layers_fill = FillToggleButton(solid=True)
-        # Layer-outline toggle — lives only on the "All Layers" row, just
-        # left of the wire-mesh / solid button. Replaces the old "Show
-        # layer outlines (O)" side-panel checkbox.
+        self._all_layers_transparency = TransparencyButton(step=0)
+        # Layer-outline toggle — only meaningful for the visible rails'
+        # copper (that's what the outline pass traces), so it lives on the
+        # "All Rails" row below. Replaces the old "Show layer outlines (O)"
+        # side-panel checkbox.
         self._outlines_btn = OutlineToggleButton(on=False)
         all_row = self._build_layer_row_widget(
             self._all_layers_eye, swatch_color=None,
             label_text="All Layers", bold=True,
             second_eye=self._all_layers_eye2, fill_btn=self._all_layers_fill,
-            outline_btn=self._outlines_btn,
+            transparency_btn=self._all_layers_transparency,
         )
         all_item = QListWidgetItem()
         all_item.setFlags(Qt.ItemIsEnabled)
@@ -4526,6 +4654,8 @@ class PdnViewer(QMainWindow):
             self._on_all_layers_eye2_toggled)
         self._all_layers_fill.toggled_fill.connect(
             self._on_all_layers_fill_toggled)
+        self._all_layers_transparency.toggled_transparency.connect(
+            self._on_all_layers_transparency_toggled)
         self._outlines_btn.toggled_outline.connect(self._render)
 
         for phys in self._physicals:
@@ -4539,10 +4669,13 @@ class PdnViewer(QMainWindow):
             eye2.toggled_visible.connect(self._on_layer_eye2_toggled)
             fill = FillToggleButton(solid=True)
             fill.toggled_fill.connect(self._on_layer_fill_toggled)
+            transp = TransparencyButton(step=0)
+            transp.toggled_transparency.connect(
+                self._on_layer_transparency_toggled)
             row = self._build_layer_row_widget(
                 eye, swatch_color=self._layer_color_for(phys),
                 label_text=phys, bold=False,
-                second_eye=eye2, fill_btn=fill,
+                second_eye=eye2, fill_btn=fill, transparency_btn=transp,
             )
             item = QListWidgetItem()
             item.setFlags(Qt.ItemIsEnabled)
@@ -4552,6 +4685,7 @@ class PdnViewer(QMainWindow):
             self._layer_eye_buttons.append((phys, eye))
             self._layer_eye2_buttons.append((phys, eye2))
             self._layer_fill_buttons.append((phys, fill))
+            self._layer_transparency_buttons.append((phys, transp))
 
         self._sync_all_layers_eye()
         self._sync_all_layers_eye2()
@@ -4596,6 +4730,7 @@ class PdnViewer(QMainWindow):
         all_rails_row = self._build_layer_row_widget(
             self._all_rails_eye, swatch_color=None,
             label_text="All Rails", bold=True,
+            outline_btn=self._outlines_btn,
         )
         all_rails_item = QListWidgetItem()
         all_rails_item.setFlags(Qt.ItemIsEnabled)
@@ -5039,6 +5174,7 @@ class PdnViewer(QMainWindow):
                                   second_eye: EyeButton | None = None,
                                   fill_btn: FillToggleButton | None = None,
                                   outline_btn: OutlineToggleButton | None = None,
+                                  transparency_btn: TransparencyButton | None = None,
                                   ) -> QWidget:
         """Build a single row for the layer list: eye(s) + swatch + name.
 
@@ -5046,10 +5182,13 @@ class PdnViewer(QMainWindow):
         eye — the Physical layers control uses it for the per-layer "show
         all copper on this layer" toggle. ``fill_btn``, when given, is
         pinned to the far right — the wire-mesh / solid fill style for that
-        all-copper view. ``outline_btn``, when given, sits just left of
-        ``fill_btn`` — only the "All Layers" row passes it (the layer-
-        outline toggle). The Rails list passes none of these, so its rows
-        keep the original single-eye layout."""
+        all-copper view. ``transparency_btn``, when given, sits immediately
+        left of ``fill_btn`` — the per-row transparency cycler that fades
+        the all-copper overlay. ``outline_btn``, when given, sits just left
+        of ``transparency_btn`` — the layer-outline toggle on the "All
+        Rails" row (outlines only trace rail copper, so it belongs there).
+        Per-rail and per-layer rows pass none of these and keep the
+        original single-eye layout."""
         w = QWidget()
         layout = QHBoxLayout(w)
         layout.setContentsMargins(2, 1, 6, 1)
@@ -5079,6 +5218,8 @@ class PdnViewer(QMainWindow):
         layout.addStretch(1)
         if outline_btn is not None:
             layout.addWidget(outline_btn)
+        if transparency_btn is not None:
+            layout.addWidget(transparency_btn)
         if fill_btn is not None:
             layout.addWidget(fill_btn)
         return w
@@ -5151,6 +5292,17 @@ class PdnViewer(QMainWindow):
             fill.setSolid(solid, emit=False)
         self._refresh_overlay_geometry(self._visible_rails())
 
+    def _on_layer_transparency_toggled(self, _step: int) -> None:
+        """A layer's all-copper transparency was cycled."""
+        self._refresh_overlay_geometry(self._visible_rails())
+
+    def _on_all_layers_transparency_toggled(self, step: int) -> None:
+        """The "All Layers" transparency cycler — set every layer's
+        all-copper transparency at once."""
+        for _name, transp in self._layer_transparency_buttons:
+            transp.setStep(step, emit=False)
+        self._refresh_overlay_geometry(self._visible_rails())
+
     def _on_rail_eye_toggled(self, _on: bool) -> None:
         """An individual rail's eye was clicked."""
         self._sync_all_rails_eye()
@@ -5198,13 +5350,15 @@ class PdnViewer(QMainWindow):
         self._overlay_state: dict[str, dict] = {}
         for key, _label, has_sides in _OVERLAY_LAYERS:
             solid0 = _overlay_default_solid(key)
+            # ``alpha_step`` is the TransparencyButton's step count (0..4);
+            # 0 == 0% transparent == fully opaque. New rows start opaque.
             st: dict = {
                 "split": False,
-                "both": {"vis": None, "solid": solid0},
+                "both": {"vis": None, "solid": solid0, "alpha_step": 0},
             }
             if has_sides:
-                st["top"] = {"vis": None, "solid": solid0}
-                st["bottom"] = {"vis": None, "solid": solid0}
+                st["top"] = {"vis": None, "solid": solid0, "alpha_step": 0}
+                st["bottom"] = {"vis": None, "solid": solid0, "alpha_step": 0}
             self._overlay_state[key] = st
 
         self._overlay_colors: dict[str, tuple[float, float, float]] = dict(
@@ -5384,6 +5538,15 @@ class PdnViewer(QMainWindow):
             spacer.setFixedSize(all_eye.width(), all_eye.height())
             layout.addWidget(spacer)
 
+        # Transparency control — sits immediately left of the wire-mesh /
+        # solid fill toggle on every row (including the board outline, which
+        # still benefits from being able to fade its outline ribbon).
+        transp_btn = TransparencyButton(step=int(sub.get("alpha_step", 0) or 0))
+        transp_btn.toggled_transparency.connect(
+            lambda step: self._on_overlay_transparency(key, variant, step)
+        )
+        layout.addWidget(transp_btn)
+
         # Wire-mesh / solid fill toggle, pinned to the far right of the row.
         # The board outline is always a fixed-width ribbon — solid vs
         # wire-mesh is meaningless — so that row gets an aligning spacer in
@@ -5421,6 +5584,12 @@ class PdnViewer(QMainWindow):
     def _on_overlay_fill(self, key: str, variant: str, solid: bool) -> None:
         """An overlay row's wire-mesh / solid fill toggle flipped."""
         self._overlay_state[key][variant]["solid"] = bool(solid)
+        self._on_overlay_changed()
+
+    def _on_overlay_transparency(self, key: str, variant: str,
+                                  step: int) -> None:
+        """An overlay row's transparency control cycled."""
+        self._overlay_state[key][variant]["alpha_step"] = int(step)
         self._on_overlay_changed()
 
     def _overlay_swatch_rgb(self, key: str,
@@ -5483,9 +5652,11 @@ class PdnViewer(QMainWindow):
             for side in ("top", "bottom"):
                 st[side]["vis"] = st["both"]["vis"]
                 st[side]["solid"] = st["both"]["solid"]
+                st[side]["alpha_step"] = st["both"].get("alpha_step", 0)
         else:
             st["both"]["vis"] = st["top"]["vis"]
             st["both"]["solid"] = st["top"]["solid"]
+            st["both"]["alpha_step"] = st["top"].get("alpha_step", 0)
         QTimer.singleShot(0, self._build_overlay_list)
         self._on_overlay_changed()
 
@@ -5525,6 +5696,21 @@ class PdnViewer(QMainWindow):
         b = st["both"]
         return {"top": (b["vis"], b["solid"]),
                 "bottom": (b["vis"], b["solid"])}
+
+    def _overlay_side_alpha(self, key: str) -> dict[str, float]:
+        """Per-side draw alpha (0..1) for an overlay layer, mirroring
+        :meth:`_overlay_side_states`. Reads each row's TransparencyButton
+        step (0 = opaque, 4 = invisible). A merged row's step applies to
+        both sides."""
+        st = self._overlay_state[key]
+        if st.get("split"):
+            return {
+                "top": _transparency_alpha(st["top"].get("alpha_step", 0)),
+                "bottom": _transparency_alpha(
+                    st["bottom"].get("alpha_step", 0)),
+            }
+        a = _transparency_alpha(st["both"].get("alpha_step", 0))
+        return {"top": a, "bottom": a}
 
     def _refresh_overlay_geometry(self, rails) -> None:
         """Rebuild and push the Overlays control's GL geometry.
@@ -5572,30 +5758,59 @@ class PdnViewer(QMainWindow):
         feature_z = {"top": side_z["top"] + pitch,
                      "bottom": side_z["bottom"] - pitch}
 
-        # Triangles split into two batches: ``under_*`` draw BEFORE the
+        # Triangles split into three batches: ``under_*`` draw BEFORE the
         # heatmap mesh (2D only — bottom-side board features sit behind the
-        # bottom copper), ``over_*`` draw after, on top. In 3D the per-side
-        # feature z + depth test handle ordering, so everything goes over.
+        # bottom copper), ``over_*`` draw after the mesh (vias, the per-
+        # layer all-copper overlay), and ``top_*`` draw last (2D only —
+        # top-side board features sit in front of all top copper / rails,
+        # the all-copper overlay, and every other overlay batch). In 3D the
+        # per-side feature z + depth test handle ordering, so everything
+        # goes to ``over_*``.
         in_2d = not self.view_3d_box.isChecked()
         under_tri: list[np.ndarray] = []
         under_col: list[np.ndarray] = []
         over_tri: list[np.ndarray] = []
         over_col: list[np.ndarray] = []
+        top_tri: list[np.ndarray] = []
+        top_col: list[np.ndarray] = []
         labels: list[dict] = []
 
         def _emit(verts_xy: np.ndarray, z: float,
                   rgb: tuple[float, float, float], *,
-                  under: bool = False) -> None:
+                  under: bool = False, top: bool = False,
+                  alpha: float = 1.0) -> None:
             if verts_xy.size == 0:
                 return
+            if under and top:
+                raise ValueError("under and top are mutually exclusive")
             p = np.empty((verts_xy.shape[0], 3), dtype=np.float32)
             p[:, :2] = verts_xy
             p[:, 2] = z
-            tri, col = ((under_tri, under_col) if under
-                        else (over_tri, over_col))
+            if under:
+                tri, col = under_tri, under_col
+            elif top:
+                tri, col = top_tri, top_col
+            else:
+                tri, col = over_tri, over_col
             tri.append(p)
-            col.append(np.broadcast_to(
-                np.asarray(rgb, dtype=np.float32), p.shape).copy())
+            rgba = np.empty((p.shape[0], 4), dtype=np.float32)
+            rgba[:, 0] = float(rgb[0])
+            rgba[:, 1] = float(rgb[1])
+            rgba[:, 2] = float(rgb[2])
+            rgba[:, 3] = float(alpha)
+            col.append(rgba)
+
+        # In 2D the top-side board features are routed to ``top_*`` so they
+        # paint on top of the mesh AND the all-copper overlay. In 3D the
+        # depth test handles ordering, so they stay in ``over_*``.
+        def _side_buckets(side: str) -> dict[str, bool]:
+            if not in_2d:
+                return {}
+            if side == "top":
+                return {"top": True}
+            if side == "bottom":
+                return {"under": True}
+            return {}
 
         def _shape_tris(ring, solid: bool) -> np.ndarray:
             # Solid = filled polygon; wire-mesh = thin mitered outline of
@@ -5612,12 +5827,16 @@ class PdnViewer(QMainWindow):
         # round-capped tracks and consecutive segments join smoothly. No
         # per-net data, so either eye ("selected rails" / "all") shows it.
         sides = self._overlay_side_states("silkscreen")
+        alphas = self._overlay_side_alpha("silkscreen")
         for rec in md.get("silkscreen", []):
             if rec.get("kind") == "text":
                 continue  # legacy pickles only — text isn't an Overlay item
             side = rec.get("side", "top")
             vis, solid = sides.get(side, (None, False))
             if vis is None:
+                continue
+            a = alphas.get(side, 1.0)
+            if a <= 0.0:
                 continue
             rgb = self._overlay_color_for("silkscreen", side)
             poly = rec.get("polyline") or []
@@ -5627,40 +5846,44 @@ class PdnViewer(QMainWindow):
             # keeps a zero-width track from collapsing to nothing.
             half = max(0.5 * float(rec.get("width_mm", 0.0) or 0.0), 0.01)
             z = feature_z.get(side, 0.0)
-            under = in_2d and side == "bottom"
+            bucket = _side_buckets(side)
             if solid:
                 _emit(_overlay_outline_tris(poly, half, closed=False), z,
-                      rgb, under=under)
+                      rgb, alpha=a, **bucket)
                 # Round end caps — interior joins are already mitered.
                 for end in (poly[0], poly[-1]):
                     _emit(_overlay_fan_tris(_overlay_circle_ring(
                         float(end[0]), float(end[1]), half, 12)), z, rgb,
-                        under=under)
+                        alpha=a, **bucket)
             else:
                 # Wire-mesh: the track's hollow perimeter. The round caps
                 # are part of the traced outline — no separate cap fills.
                 _emit(_overlay_ribbon_outline_tris(
                     poly, half, _OVERLAY_WIRE_HALF_MM, closed=False),
-                    z, rgb, under=under)
+                    z, rgb, alpha=a, **bucket)
 
         # Vias — one circle per via (the Vias row has no top/bottom split).
         vsub = self._overlay_state["vias"]["both"]
         if vsub["vis"] is not None:
             rgb = self._overlay_colors["vias"]
             solid = vsub["solid"]
+            via_alpha = _transparency_alpha(vsub.get("alpha_step", 0))
             rails_only = vsub["vis"] == "rails"
-            for rec in md.get("vias", []):
-                if rails_only and not _net_match([rec.get("net")]):
-                    continue
-                r = 0.5 * float(rec.get("diameter_mm", 0.0) or 0.0)
-                if r <= 0.0:
-                    continue
-                ring = _overlay_circle_ring(float(rec["x_mm"]),
-                                            float(rec["y_mm"]), r)
-                _emit(_shape_tris(ring, solid), side_z["top"], rgb)
+            if via_alpha > 0.0:
+                for rec in md.get("vias", []):
+                    if rails_only and not _net_match([rec.get("net")]):
+                        continue
+                    r = 0.5 * float(rec.get("diameter_mm", 0.0) or 0.0)
+                    if r <= 0.0:
+                        continue
+                    ring = _overlay_circle_ring(float(rec["x_mm"]),
+                                                float(rec["y_mm"]), r)
+                    _emit(_shape_tris(ring, solid), side_z["top"], rgb,
+                          alpha=via_alpha)
 
         # Components — axis-aligned bounding box per component.
         sides = self._overlay_side_states("components")
+        alphas = self._overlay_side_alpha("components")
         for rec in md.get("components", []):
             side = rec.get("side", "top")
             vis, solid = sides.get(side, (None, False))
@@ -5668,12 +5891,15 @@ class PdnViewer(QMainWindow):
                 continue
             if vis == "rails" and not _net_match(rec.get("nets", [])):
                 continue
+            a = alphas.get(side, 1.0)
+            if a <= 0.0:
+                continue
             rgb = self._overlay_color_for("components", side)
             bbox = rec.get("bbox")
             if not bbox or len(bbox) != 4:
                 continue
             _emit(_shape_tris(_overlay_box_ring(*bbox), solid),
-                  feature_z[side], rgb, under=in_2d and side == "bottom")
+                  feature_z[side], rgb, alpha=a, **_side_buckets(side))
 
         # Pads — outline ring per pad, drawn on whichever board side(s)
         # the pad's copper layers include (through-hole pads → both).
@@ -5684,6 +5910,7 @@ class PdnViewer(QMainWindow):
         top_lid = enabled[0] if enabled else None
         bot_lid = enabled[-1] if enabled else None
         sides = self._overlay_side_states("pads")
+        alphas = self._overlay_side_alpha("pads")
         for rec in md.get("pads", []):
             ring = rec.get("outline")
             if not ring:
@@ -5697,15 +5924,19 @@ class PdnViewer(QMainWindow):
                     continue
                 if vis == "rails" and not _net_match([rec.get("net")]):
                     continue
+                a = alphas.get(side, 1.0)
+                if a <= 0.0:
+                    continue
                 rgb = self._overlay_color_for("pads", side)
                 _emit(_shape_tris(ring, solid), feature_z[side], rgb,
-                      under=in_2d and side == "bottom")
+                      alpha=a, **_side_buckets(side))
 
         # Designators — drawn in Altium's actual single-stroke font: the
         # loader lays each one out into stroke polylines, which render as
         # thin round-capped ribbons (same path as silkscreen). TrueType-
         # font designators carry no polylines and fall back to a label.
         sides = self._overlay_side_states("designators")
+        alphas = self._overlay_side_alpha("designators")
         for rec in md.get("designators", []):
             side = rec.get("side", "top")
             vis, solid = sides.get(side, (None, False))
@@ -5713,18 +5944,23 @@ class PdnViewer(QMainWindow):
                 continue
             if vis == "rails" and not _net_match(rec.get("nets", [])):
                 continue
+            a = alphas.get(side, 1.0)
+            if a <= 0.0:
+                continue
             rgb = self._overlay_color_for("designators", side)
             if rec.get("polylines"):
                 _emit(self._designator_stroke_tris(rec, solid=solid),
-                      feature_z[side], rgb,
-                      under=in_2d and side == "bottom")
+                      feature_z[side], rgb, alpha=a, **_side_buckets(side))
             else:
+                # Text labels honour the row's transparency by riding the
+                # colour's alpha channel through #rrggbbaa.
+                qc = QColor.fromRgbF(rgb[0], rgb[1], rgb[2], a)
                 labels.append({
                     "x": float(rec.get("x_mm", 0.0)),
                     "y": float(rec.get("y_mm", 0.0)),
                     "z": feature_z[side],
                     "text": rec.get("text", ""),
-                    "color": QColor.fromRgbF(*rgb).name(),
+                    "color": qc.name(QColor.HexArgb),
                     "height_mm": float(rec.get("height_mm", 1.0) or 1.0),
                     "rotation_deg": float(rec.get("rotation_deg", 0.0) or 0.0),
                 })
@@ -5734,12 +5970,16 @@ class PdnViewer(QMainWindow):
         # that ISN'T part of a selected rail (the rails are already the
         # heatmap; this is the rest), in the layer's swatch colour, as a
         # wire-mesh outline or a solid fill per that row's fill toggle.
+        # The row's TransparencyButton fades that geometry without affecting
+        # the heatmap itself.
         eye2_buttons = getattr(self, "_layer_eye2_buttons", [])
         if eye2_buttons and md.get("all_copper"):
             ac_by_layer: dict[int, list] = {}
             for rec in md["all_copper"]:
                 ac_by_layer.setdefault(rec.get("layer_id"), []).append(rec)
             fill_by_name = dict(getattr(self, "_layer_fill_buttons", []))
+            transp_by_name = dict(
+                getattr(self, "_layer_transparency_buttons", []))
             # Emit bottom-up: the 2D view has no depth test, so the
             # last-drawn layer wins. ``_layer_eye2_buttons`` is in panel
             # order (topmost first), which would paint the bottom layer
@@ -5758,6 +5998,10 @@ class PdnViewer(QMainWindow):
                     continue
                 fb = fill_by_name.get(name)
                 solid = bool(fb.isSolid()) if fb is not None else False
+                tb = transp_by_name.get(name)
+                layer_alpha = tb.alpha() if tb is not None else 1.0
+                if layer_alpha <= 0.0:
+                    continue
                 qc = QColor(self._layer_color_for(name))
                 lrgb = (qc.redF(), qc.greenF(), qc.blueF())
                 z = self._layer_z_for(name)
@@ -5771,19 +6015,27 @@ class PdnViewer(QMainWindow):
                     rgb = self._editor_dim_rgb(lrgb, net)
                     for poly in rec.get("polygons", []):
                         if solid:
-                            _emit(self._triangulate_stub(poly), z, rgb)
+                            _emit(self._triangulate_stub(poly), z, rgb,
+                                  alpha=layer_alpha)
                         else:
-                            _emit(self._copper_poly_wire(poly), z, rgb)
+                            _emit(self._copper_poly_wire(poly), z, rgb,
+                                  alpha=layer_alpha)
 
         # Concatenate under-mesh chunks first so the GL viewer can draw
         # that leading slice before the heatmap mesh (2D bottom-side
         # board features), the rest on top.
-        all_tri = under_tri + over_tri
+        # Bottom-side board features (``under_*``) draw first, before the
+        # heatmap mesh. Then the middle batch (``over_*``: vias, all-copper
+        # overlay, and in 3D every feature). Finally the top-side board
+        # features (``top_*``, 2D only) so they sit visually on top of all
+        # top copper / rails / all-copper geometry.
+        all_tri = under_tri + over_tri + top_tri
         if all_tri:
             under_count = sum(c.shape[0] for c in under_tri)
-            gv.set_overlay_fills(np.concatenate(all_tri, axis=0),
-                                 np.concatenate(under_col + over_col, axis=0),
-                                 under_mesh_count=under_count)
+            gv.set_overlay_fills(
+                np.concatenate(all_tri, axis=0),
+                np.concatenate(under_col + over_col + top_col, axis=0),
+                under_mesh_count=under_count)
         else:
             gv.clear_overlay_fills()
         if labels:
@@ -7105,9 +7357,13 @@ class PdnViewer(QMainWindow):
         # User-set colour for the board-outline row (defaults to a bold
         # warm orange — reads on both viridis and the standard dark/light
         # themes without being mistaken for any of the layer swatches).
+        # Alpha follows the row's TransparencyButton.
         colour = np.asarray(self._overlay_colors["board_outline"],
                             dtype=np.float32)
-        colors = np.broadcast_to(colour, positions.shape).copy()
+        alpha = _transparency_alpha(bo_state.get("alpha_step", 0))
+        colors = np.empty((positions.shape[0], 4), dtype=np.float32)
+        colors[:, :3] = colour
+        colors[:, 3] = alpha
         self._gl_viewer.set_board_outline(positions, colors)
 
     # --- Stub-copper overlay -----------------------------------------------
@@ -12180,6 +12436,15 @@ class PdnViewer(QMainWindow):
          "Ω",
          "Per-hop resistance assigned to vias whose drill geometry is "
          "missing or degenerate. Most boards never hit this fallback."),
+        ("conductive_fill_resistivity_ohm_mm",
+         "Conductive fill resistivity",
+         "Ω·mm",
+         "Bulk resistivity of IPC-4761 conductive via-fill (copper / silver "
+         "paste). Default 5e-3 Ω·mm matches typical silver-loaded epoxy. "
+         "Lower for pure electroplated-copper fills. Only used when Altium "
+         "marks the via as filled AND the FILLING row's material classifies "
+         "as conductive — non-conductive fills leave the resistance "
+         "unchanged."),
         ("mesh_min_angle_deg",
          "Mesh minimum angle",
          "°",
@@ -14681,6 +14946,11 @@ class PdnViewer(QMainWindow):
         ("X (mm)",           True),
         ("Y (mm)",           True),
         ("Diameter (mm)",    True),
+        # IPC-4761 protection / fill — e.g. "—" (none / unprotected),
+        # "V (fill) · Copper", "VII (fill + cap) · Silver Epoxy".
+        # A "·" suffix marks vias treated as conductively filled (their
+        # per-hop R uses the parallel wall+fill model).
+        ("IPC-4761 fill",    False),
         ("V top (V)",        True),
         ("V bottom (V)",     True),
         ("|ΔV| (mV)",        True),
@@ -14851,6 +15121,7 @@ class PdnViewer(QMainWindow):
                 row.get("x_mm"),
                 row.get("y_mm"),
                 row.get("diameter_mm"),
+                row.get("ipc4761_label", "—") or "—",
                 row.get("v_top"),
                 row.get("v_bottom"),
                 # delta_v is V → display in mV for readability
@@ -14947,8 +15218,9 @@ class PdnViewer(QMainWindow):
             allowed_nets = set(self._rail_to_members.get(rail_choice, [rail_choice]))
 
         # Column indexes (must stay aligned with _VIAS_TABLE_COLUMNS).
-        # Column 0 is the "Go" action button, so Net + Current shift up.
-        NET_COL, CURRENT_COL = 1, 9
+        # Column 0 is the "Go" action button. The "IPC-4761 fill" column at
+        # index 6 pushes |I| max from 9 → 10.
+        NET_COL, CURRENT_COL = 1, 10
 
         visible = 0
         warn_visible = 0
@@ -15200,6 +15472,12 @@ class PdnViewer(QMainWindow):
             bot_lid, v_bottom = sampled_sorted[-1]
             top_name = self._layer_id_to_name(top_lid)
             bottom_name = self._layer_id_to_name(bot_lid)
+            via_dict = prep["via"]
+            ipc_label = via_dict.get("ipc4761_label", "—") or "—"
+            # Append a · marker on conductively-filled rows so users can
+            # spot at a glance which vias' R uses the parallel-shunt model.
+            if via_dict.get("is_conductive_fill"):
+                ipc_label = f"{ipc_label} ·"
             rows.append({
                 "net": prep["net"],
                 "layer_span": f"{top_name} → {bottom_name}",
@@ -15209,7 +15487,10 @@ class PdnViewer(QMainWindow):
                 "layer_ids": [lid for lid, _v in sampled_sorted],
                 "x_mm": prep["x"],
                 "y_mm": prep["y"],
-                "diameter_mm": prep["via"].get("diameter_mm"),
+                "diameter_mm": via_dict.get("diameter_mm"),
+                "ipc4761_label": ipc_label,
+                "fill_material": via_dict.get("fill_material", ""),
+                "is_conductive_fill": bool(via_dict.get("is_conductive_fill")),
                 "v_top": v_top,
                 "v_bottom": v_bottom,
                 "delta_v": v_top - v_bottom,
@@ -15383,9 +15664,8 @@ when one of those has focus.</p>
   <li><b>Show pin markers</b> &mdash; SOURCE / SINK / SERIES /
     REGULATOR / VIA overlays.</li>
   <li><b>Layer outlines</b> &mdash; the contour button on the
-    <i>All Layers</i> row (left of the wire-mesh / solid toggle, hotkey
-    <kbd>O</kbd>) traces each copper polygon's border in the layer's
-    swatch colour.</li>
+    <i>All Rails</i> row (hotkey <kbd>O</kbd>) traces each visible rail's
+    copper polygons in the owning layer's swatch colour.</li>
   <li><b>Show cursor tooltip</b> &mdash; a small tooltip follows the
     mouse, showing the value of the current mode at that point along
     with the net and layer. Same info as the probe bar under the plot.</li>
@@ -15811,7 +16091,10 @@ def _format_setup_html(solution, metadata: dict | None,
         # Per-hop via R varies; summarise the distribution from each via's
         # segments list so users can see the actual range the FEM used.
         seg_rs: list[float] = []
+        cond_fill_count = 0
         for v in metadata.get("vias", []):
+            if v.get("is_conductive_fill"):
+                cond_fill_count += 1
             for seg in v.get("segments") or []:
                 r = seg.get("resistance_ohm")
                 if r is not None and r > 0.0:
@@ -15839,6 +16122,12 @@ def _format_setup_html(solution, metadata: dict | None,
                      f"<tr><th>Via barrel resistance (per hop)</th>"
                      f"<td>{via_r_cell}</td>"
                      f"<td class='muted'>{_esc(phys.get('note_via_resistance', ''))}</td></tr>"
+                     f"<tr><th>Conductive fill resistivity</th>"
+                     f"<td class='num'>{phys.get('conductive_fill_resistivity_ohm_mm', 0)*1.0e3:.3g} mΩ·mm</td>"
+                     f"<td class='muted'>Applied as a parallel rod inside the "
+                     f"plated barrel for vias whose IPC-4761 FILLING material "
+                     f"reads as conductive — "
+                     f"<b>{cond_fill_count}</b> via(s) on this board.</td></tr>"
                      f"<tr><th>Multi-pin coupling resistance</th>"
                      f"<td class='num'>{phys.get('coupling_resistance_ohm', 0)*1000:.3f} mΩ</td>"
                      f"<td class='muted'>{_esc(phys.get('note_coupling_resistance', ''))}</td></tr>"

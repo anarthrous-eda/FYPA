@@ -103,6 +103,15 @@ class RawVia:
     layer_start: int          # Altium layer_id of via top layer
     layer_end: int            # Altium layer_id of via bottom layer
     net_index: int
+    # IPC-4761 fill / protection metadata. ``ipc4761_via_type`` is the raw
+    # Altium enum integer (0 = NONE / unprotected, 9–12 = fill variants).
+    # ``fill_material`` is the free-text material string from the FILLING
+    # IPC-4761 feature row (e.g. "", "Copper", "Silver Epoxy", "Polymer");
+    # empty when no fill row exists. FYPA's via-barrel resistance model
+    # consults these to decide whether to model a conductive-fill shunt
+    # in parallel with the plated wall.
+    ipc4761_via_type: int = 0
+    fill_material: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -471,8 +480,39 @@ def _extract_vias(pcb, ox_mm: float, oy_mm: float) -> tuple[RawVia, ...]:
             layer_start=int(v.layer_start),
             layer_end=int(v.layer_end),
             net_index=_net_index(v.net_index),
+            ipc4761_via_type=int(getattr(v, "ipc4761_via_type", 0) or 0),
+            fill_material=_via_fill_material(v),
         ))
     return tuple(out)
+
+
+# IPC-4761 FILLING feature type enum value (PcbViaStructureFeatureType.FILLING).
+# Repeated here so altium_extract has no hard import dependency on
+# altium_monkey enums — the value is part of the on-disk Altium format.
+_IPC4761_FEATURE_FILLING: int = 3
+
+
+def _via_fill_material(v) -> str:
+    """Return the IPC-4761 FILLING feature row's material string for this via.
+
+    Altium stores per-feature material strings on the via_structure side-table
+    record (see ``altium_pcb_via_structure.AltiumPcbViaStructure``). A via
+    with no structure attached (most commonly because it has IPC-4761 type
+    NONE) returns the empty string. The material text is free-form — Altium
+    surfaces it verbatim in the Via dialog — and downstream code is expected
+    to do case-insensitive substring matching ("copper", "silver", etc.) to
+    classify it.
+    """
+    structure = getattr(v, "via_structure", None)
+    if structure is None:
+        return ""
+    try:
+        feature = structure.get_feature(_IPC4761_FEATURE_FILLING)
+    except Exception:
+        return ""
+    if feature is None:
+        return ""
+    return str(getattr(feature, "material", "") or "")
 
 
 def _extract_pads(pcb, ox_mm: float, oy_mm: float) -> tuple[RawPad, ...]:

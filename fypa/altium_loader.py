@@ -78,6 +78,18 @@ COPPER_RESISTIVITY_OHM_MM: float = 1.0 / 5.95e4
 # inputs is unchanged.
 FALLBACK_VIA_RESISTANCE_OHM: float = 1.0e-3
 
+# Bulk resistivity of conductive via-fill paste (Ω·mm). Defaults to a typical
+# silver-loaded thermosetting epoxy — vendor data sheets cluster around
+# 5×10⁻⁵ Ω·cm = 5×10⁻⁶ Ω·m = 5×10⁻³ Ω·mm, i.e. ~300× annealed copper.
+# Pure copper-filled vias (electroplated copper closure) approach copper's
+# own resistivity; tune via the Settings tab if the fab specifies a value.
+#
+# Used only when a via's IPC-4761 fill row carries a material string that
+# classifies as conductive (see :func:`_is_conductive_fill`). The fill is
+# modelled as a copper-coloured rod inside the plated barrel and combined
+# with the wall via the standard parallel-resistor formula.
+CONDUCTIVE_FILL_RESISTIVITY_OHM_MM: float = 5.0e-3
+
 # Multi-pin terminal coupling. Padne requires each terminal pin to have its
 # own NodeID; pins belonging to the same terminal are tied together via small
 # "coupling" resistors in a star topology to the terminal's main NodeID.
@@ -159,6 +171,7 @@ class SolveSettings:
     plating_thickness_mm: float = PLATING_THICKNESS_MM
     coupling_resistance_ohm: float = COUPLING_RESISTANCE_OHM
     fallback_via_resistance_ohm: float = FALLBACK_VIA_RESISTANCE_OHM
+    conductive_fill_resistivity_ohm_mm: float = CONDUCTIVE_FILL_RESISTIVITY_OHM_MM
     # Meshing
     mesh_min_angle_deg: float = 20.0
     mesh_max_size_mm: float = 0.6
@@ -197,6 +210,9 @@ class SolveSettings:
         globals()["PLATING_THICKNESS_MM"] = self.plating_thickness_mm
         globals()["COUPLING_RESISTANCE_OHM"] = self.coupling_resistance_ohm
         globals()["FALLBACK_VIA_RESISTANCE_OHM"] = self.fallback_via_resistance_ohm
+        globals()["CONDUCTIVE_FILL_RESISTIVITY_OHM_MM"] = (
+            self.conductive_fill_resistivity_ohm_mm
+        )
 
     @classmethod
     def from_metadata(cls, metadata: dict | None) -> SolveSettings:
@@ -227,6 +243,10 @@ class SolveSettings:
             s.coupling_resistance_ohm = float(phys["coupling_resistance_ohm"])
         if "fallback_via_resistance_ohm" in phys:
             s.fallback_via_resistance_ohm = float(phys["fallback_via_resistance_ohm"])
+        if "conductive_fill_resistivity_ohm_mm" in phys:
+            s.conductive_fill_resistivity_ohm_mm = float(
+                phys["conductive_fill_resistivity_ohm_mm"]
+            )
         if "temperature_c" in phys:
             s.temperature_c = float(phys["temperature_c"])
         if "copper_temp_coefficient_per_c" in phys:
@@ -629,6 +649,8 @@ def _barrel_segment_resistance_ohm(
     drill_diameter_mm: float,
     hop_length_mm: float,
     plating_thickness_mm: float,
+    *,
+    conductive_fill_resistivity_ohm_mm: float | None = None,
 ) -> float:
     """DC resistance of one plated-barrel segment.
 
@@ -636,6 +658,13 @@ def _barrel_segment_resistance_ohm(
     inner radius == outer - plating thickness. If plating fills the hole
     (e.g. the drill is smaller than 2 * plating, as with via-in-pad fills)
     the barrel collapses to a solid copper rod.
+
+    When ``conductive_fill_resistivity_ohm_mm`` is supplied, the unplated
+    inner void is modelled as a *second* conducting cylinder (the fill rod)
+    in parallel with the plated wall — see IPC-4761 types V / VIa / VIb /
+    VII with a copper- or silver-paste material. The two resistances are
+    combined as ``1/R = 1/R_wall + 1/R_fill``, and the segment record's
+    effective R reflects the shunt.
 
     Falls back to :data:`FALLBACK_VIA_RESISTANCE_OHM` when geometry is missing
     or degenerate, so a missing drill size never produces a divide-by-zero or
@@ -646,12 +675,116 @@ def _barrel_segment_resistance_ohm(
     r_outer = 0.5 * drill_diameter_mm
     r_inner = r_outer - max(plating_thickness_mm, 0.0)
     if r_inner <= 0.0:
+        # Plating closes the barrel — solid copper rod, no separate fill
+        # element (there's no void left to fill).
         area_mm2 = math.pi * r_outer * r_outer
-    else:
-        area_mm2 = math.pi * (r_outer * r_outer - r_inner * r_inner)
-    if area_mm2 <= 0.0:
+        if area_mm2 <= 0.0:
+            return FALLBACK_VIA_RESISTANCE_OHM
+        return COPPER_RESISTIVITY_OHM_MM * hop_length_mm / area_mm2
+    wall_area_mm2 = math.pi * (r_outer * r_outer - r_inner * r_inner)
+    if wall_area_mm2 <= 0.0:
         return FALLBACK_VIA_RESISTANCE_OHM
-    return COPPER_RESISTIVITY_OHM_MM * hop_length_mm / area_mm2
+    r_wall = COPPER_RESISTIVITY_OHM_MM * hop_length_mm / wall_area_mm2
+    if (conductive_fill_resistivity_ohm_mm is None
+            or conductive_fill_resistivity_ohm_mm <= 0.0):
+        return r_wall
+    # Parallel shunt: solid rod of fill material inside the wall.
+    fill_area_mm2 = math.pi * r_inner * r_inner
+    if fill_area_mm2 <= 0.0:
+        return r_wall
+    r_fill = (
+        conductive_fill_resistivity_ohm_mm * hop_length_mm / fill_area_mm2
+    )
+    if r_fill <= 0.0:
+        return r_wall
+    return (r_wall * r_fill) / (r_wall + r_fill)
+
+
+# IPC-4761 via-protection enum values that include a barrel FILL operation
+# (the unplated centre void is back-filled with paste or copper). Tenting,
+# covering, plugging, and capping leave the conductive cross-section of the
+# barrel unchanged and so do NOT trigger the fill-aware resistance branch.
+#
+# Values mirror ``altium_monkey.PcbIpc4761ViaType``:
+#   5 = TYPE_5_FILLING, 10/11 = TYPE_6A/B_FILLING_AND_COVERING,
+#   12 = TYPE_7_FILLING_AND_CAPPING.
+# (Type 9 in older corpora was also TYPE_5_FILLING; both are accepted for
+# resilience against minor enum reorderings in altium_monkey.)
+_IPC4761_FILL_TYPES: frozenset[int] = frozenset({5, 9, 10, 11, 12})
+
+
+# Substrings (case-insensitive) that classify an IPC-4761 fill material as
+# electrically conductive. Altium stores the material as free text on the
+# via_structure FILLING row; common values include "Copper", "Cu",
+# "Silver Epoxy", "Ag-loaded", "Conductive Paste". Non-conductive epoxies
+# and polymers (e.g. "Polymer", "Resin", "Epoxy", "Non-Conductive") do not
+# match and so do not change the resistance.
+_CONDUCTIVE_MATERIAL_KEYWORDS: tuple[str, ...] = (
+    "conductive",
+    "copper",
+    "silver",
+    " cu",   # leading space avoids matching "Cuprate", "Cure", etc.
+    "cu ",
+    " ag",
+    "ag ",
+    "ag-",
+    "ag/",
+    "cu/",
+    "cu-",
+)
+
+
+def _is_conductive_fill(ipc4761_via_type: int, fill_material: str) -> bool:
+    """Return True iff this via is IPC-4761 filled AND the fill material's
+    name implies electrical conductivity.
+
+    A non-conductive (epoxy / polymer) fill leaves the plated wall as the
+    sole DC current path, so the resistance model is unchanged. A conductive
+    (copper / silver paste / copper-filled) fill adds a parallel rod down
+    the centre of the via, lowering the effective hop resistance.
+    """
+    if int(ipc4761_via_type) not in _IPC4761_FILL_TYPES:
+        return False
+    if not fill_material:
+        # Filled but unspecified material — conservative default: treat as
+        # non-conductive (epoxy is the much more common case). The user can
+        # override per-board by editing the IPC-4761 row in Altium.
+        return False
+    mat = f" {fill_material.lower().strip()} "
+    if "non-conductive" in mat or "nonconductive" in mat:
+        return False
+    return any(kw in mat for kw in _CONDUCTIVE_MATERIAL_KEYWORDS)
+
+
+# Friendly IPC-4761 type labels for display. Falls back to "Type {n}" /
+# "—" for unknown / NONE values. Kept here so the viewer's Vias tab and
+# any other surface can share the exact same strings.
+_IPC4761_TYPE_LABELS: dict[int, str] = {
+    0:  "—",                              # NONE / unprotected
+    1:  "Ia (tent, top)",
+    2:  "Ib (tent, both)",
+    3:  "IIa (tent + cover, top)",
+    4:  "IIb (tent + cover, both)",
+    5:  "IIIa (plug, top)",
+    6:  "IIIb (plug, both)",
+    7:  "IVa (plug + cover, top)",
+    8:  "IVb (plug + cover, both)",
+    9:  "V (fill)",
+    10: "VIa (fill + cover, top)",
+    11: "VIb (fill + cover, both)",
+    12: "VII (fill + cap)",
+}
+
+
+def ipc4761_label(ipc4761_via_type: int, fill_material: str = "") -> str:
+    """Human-readable IPC-4761 protection label for one via, optionally
+    enriched with the fill material when present (e.g. "V (fill) · Copper").
+    """
+    base = _IPC4761_TYPE_LABELS.get(int(ipc4761_via_type),
+                                     f"Type {int(ipc4761_via_type)}")
+    if int(ipc4761_via_type) in _IPC4761_FILL_TYPES and fill_material:
+        return f"{base} · {fill_material}"
+    return base
 
 
 @dataclass(frozen=True, slots=True)
@@ -662,6 +795,10 @@ class _ViaSite:
     span: tuple[int, ...]        # enabled layer ids the barrel physically reaches
     net_index: int
     drill_diameter_mm: float     # 0.0 if unknown (triggers fallback R)
+    # IPC-4761 metadata; only ``ipc4761_via_type`` and ``fill_material`` drive
+    # the resistance model, the rest is passthrough for the viewer.
+    ipc4761_via_type: int = 0
+    fill_material: str = ""
 
 
 def _coupling_networks(
@@ -669,6 +806,7 @@ def _coupling_networks(
     layer_by_layer_and_net: dict[tuple[int, int], _pp.Layer],
     layer_z_mm: dict[int, float],
     plating_thickness_mm: float | None = None,
+    conductive_fill_resistivity_ohm_mm: float | None = None,
 ) -> tuple[list[_pp.Network], list[dict]]:
     """Build small-Resistor networks coupling adjacent enabled copper layers
     at each through-hole / via location.
@@ -693,6 +831,8 @@ def _coupling_networks(
     # patched module value (Settings tab → Re-run Solver path).
     if plating_thickness_mm is None:
         plating_thickness_mm = PLATING_THICKNESS_MM
+    if conductive_fill_resistivity_ohm_mm is None:
+        conductive_fill_resistivity_ohm_mm = CONDUCTIVE_FILL_RESISTIVITY_OHM_MM
     networks: list[_pp.Network] = []
     segment_records: list[dict] = []
     skipped_unknown_net = 0
@@ -736,6 +876,12 @@ def _coupling_networks(
             else:
                 skipped_missing_layer += 1
             continue
+        is_conductive_fill = _is_conductive_fill(
+            site.ipc4761_via_type, site.fill_material,
+        )
+        fill_rho = (
+            conductive_fill_resistivity_ohm_mm if is_conductive_fill else None
+        )
         for lid_a, lid_b in zip(layers_for_net, layers_for_net[1:]):
             la = layer_by_layer_and_net[(lid_a, site.net_index)]
             lb = layer_by_layer_and_net[(lid_b, site.net_index)]
@@ -747,6 +893,7 @@ def _coupling_networks(
                 hop_length_mm = abs(z_b - z_a)
             r_hop = _barrel_segment_resistance_ohm(
                 site.drill_diameter_mm, hop_length_mm, plating_thickness_mm,
+                conductive_fill_resistivity_ohm_mm=fill_rho,
             )
             node_a, node_b = _pp.NodeID(), _pp.NodeID()
             element = _pp.Resistor(a=node_a, b=node_b, resistance=r_hop)
@@ -764,6 +911,7 @@ def _coupling_networks(
                 "hop_length_mm": hop_length_mm,
                 "drill_diameter_mm": site.drill_diameter_mm,
                 "resistance_ohm": r_hop,
+                "is_conductive_fill": is_conductive_fill,
             })
 
     if skipped_unknown_net:
@@ -801,10 +949,14 @@ def _via_through_holes(
                 x_mm=v.center.x, y_mm=v.center.y,
                 span=tuple(span), net_index=v.net_index,
                 drill_diameter_mm=float(v.hole_diameter_mm),
+                ipc4761_via_type=int(getattr(v, "ipc4761_via_type", 0) or 0),
+                fill_material=str(getattr(v, "fill_material", "") or ""),
             ))
     for p in extracted.pads:
         if not p.is_through_hole:
             continue
+        # Through-hole pads carry no IPC-4761 fill metadata in Altium —
+        # the IPC-4761 protection table is a via-only concept.
         sites.append(_ViaSite(
             x_mm=p.center.x, y_mm=p.center.y,
             span=tuple(enabled_layers), net_index=p.net_index,
@@ -1271,6 +1423,7 @@ def build_solve_metadata(
             "layer_b": seg["layer_b"],
             "hop_length_mm": seg["hop_length_mm"],
             "resistance_ohm": seg["resistance_ohm"],
+            "is_conductive_fill": bool(seg.get("is_conductive_fill", False)),
         })
 
     # Compact via list for the viewer's marker overlay and per-via current /
@@ -1283,6 +1436,8 @@ def build_solve_metadata(
         site_segments = segments_by_site.get(
             _site_key(v.center.x, v.center.y, v.net_index), []
         )
+        ipc_type = int(getattr(v, "ipc4761_via_type", 0) or 0)
+        fill_mat = str(getattr(v, "fill_material", "") or "")
         vias.append({
             "x_mm": v.center.x,
             "y_mm": v.center.y,
@@ -1292,6 +1447,10 @@ def build_solve_metadata(
             "layer_start": v.layer_start,
             "layer_end": v.layer_end,
             "segments": site_segments,
+            "ipc4761_via_type": ipc_type,
+            "ipc4761_label": ipc4761_label(ipc_type, fill_mat),
+            "fill_material": fill_mat,
+            "is_conductive_fill": _is_conductive_fill(ipc_type, fill_mat),
         })
 
     # Plated through-hole pads — same coupling-site treatment as vias in the
@@ -1325,6 +1484,12 @@ def build_solve_metadata(
                 "layer_end": pth_layer_end,
                 "designator": designator,
                 "segments": site_segments,
+                # Through-hole pads have no IPC-4761 row in Altium — show
+                # an em-dash so the Vias-tab column is uniform.
+                "ipc4761_via_type": 0,
+                "ipc4761_label": "—",
+                "fill_material": "",
+                "is_conductive_fill": False,
             })
 
     # Pad outlines for the viewer's Overlays control (the Pads row) —
@@ -1457,12 +1622,17 @@ def build_solve_metadata(
             "plating_thickness_mm": PLATING_THICKNESS_MM,
             "fallback_via_resistance_ohm": FALLBACK_VIA_RESISTANCE_OHM,
             "coupling_resistance_ohm": COUPLING_RESISTANCE_OHM,
+            "conductive_fill_resistivity_ohm_mm":
+                CONDUCTIVE_FILL_RESISTIVITY_OHM_MM,
             "note_via_resistance": (
                 "Per-via inter-layer resistance is computed from the via's "
                 "drill diameter, the plating thickness above, and the "
                 "z-distance between the centres of the two copper layers it "
                 "bridges: R = rho_Cu * L_hop / (pi * (r_outer^2 - r_inner^2)). "
-                "Hops where the geometry is unknown fall back to "
+                "Vias with an IPC-4761 conductive fill (copper / silver paste "
+                "and the like) add a parallel fill-rod resistor of resistivity "
+                "conductive_fill_resistivity_ohm_mm, so R_hop = R_wall || "
+                "R_fill. Hops where the geometry is unknown fall back to "
                 "fallback_via_resistance_ohm."
             ),
             "note_coupling_resistance": (

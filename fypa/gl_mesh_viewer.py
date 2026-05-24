@@ -129,6 +129,31 @@ void main() {
 }
 """
 
+# Flat-colour overlay shader — same MVP-only transform as the line shader
+# but the per-vertex colour carries a fourth alpha channel so Board
+# Features / per-layer all-copper rows can be drawn with partial
+# transparency without affecting any of the other line-shader batches.
+_OVERLAY_VERTEX_SHADER_SRC = """
+#version 330 core
+layout(location = 0) in vec3 a_position;
+layout(location = 1) in vec4 a_color;
+uniform mat4 u_mvp;
+out vec4 v_color;
+void main() {
+    gl_Position = u_mvp * vec4(a_position, 1.0);
+    v_color = a_color;
+}
+"""
+
+_OVERLAY_FRAGMENT_SHADER_SRC = """
+#version 330 core
+in vec4 v_color;
+out vec4 frag_color;
+void main() {
+    frag_color = v_color;
+}
+"""
+
 # Thick-line shader for the layer / pad / stub outline batch. The vertex
 # stage just MVP-transforms (same inputs as the flat line shader); the
 # geometry stage widens each GL_LINES segment into a screen-space quad of
@@ -399,6 +424,13 @@ class GLMeshViewer(QOpenGLWidget):
         self._ovl_vao: QOpenGLVertexArrayObject | None = None
         self._ovl_pos_vbo: QOpenGLBuffer | None = None
         self._ovl_col_vbo: QOpenGLBuffer | None = None
+        # Dedicated RGBA overlay shader (vec3 pos + vec4 colour). Kept
+        # separate from the shared line shader so Board Features / per-layer
+        # all-copper rows can be drawn with per-vertex alpha without the
+        # other line-shader batches (cylinders, board outline, stubs, arrows,
+        # series bars) having to grow an alpha channel they don't need.
+        self._overlay_program: QOpenGLShaderProgram | None = None
+        self._overlay_u_mvp_loc: int = -1
         self._gl_initialized: bool = False
 
         # --- CPU-side cached mesh data (re-uploaded when changed) ---
@@ -938,8 +970,10 @@ class GLMeshViewer(QOpenGLWidget):
         solid (rather than wire-mesh) fill — filled pads, vias and
         component bodies. ``positions`` is an (N, 3) float array of vertex
         triples (consecutive triples form one triangle), so N must be a
-        multiple of 3. ``colors`` is an (N, 3) RGB array in [0..1] of
-        matching length.
+        multiple of 3. ``colors`` is an (N, 4) RGBA array in [0..1] of
+        matching length — the alpha channel drives the per-row
+        transparency control. An (N, 3) RGB array is also accepted and
+        treated as fully opaque.
 
         ``under_mesh_count`` (must be a multiple of 3) selects how many
         leading vertices are drawn BEFORE the heatmap mesh — used in 2D
@@ -950,8 +984,15 @@ class GLMeshViewer(QOpenGLWidget):
         col = np.ascontiguousarray(colors, dtype=np.float32)
         if pos.ndim != 2 or pos.shape[1] != 3 or pos.shape[0] % 3 != 0:
             raise ValueError("positions must be (3*k, 3)")
-        if col.shape != pos.shape:
-            raise ValueError("colors shape must match positions")
+        # Accept either RGB or RGBA. RGB inputs are promoted to fully
+        # opaque so older call sites keep working unchanged.
+        if col.ndim != 2 or col.shape[0] != pos.shape[0] or col.shape[1] not in (3, 4):
+            raise ValueError("colors must be (N, 3) or (N, 4) matching positions")
+        if col.shape[1] == 3:
+            rgba = np.empty((col.shape[0], 4), dtype=np.float32)
+            rgba[:, :3] = col
+            rgba[:, 3] = 1.0
+            col = rgba
         if not (0 <= under_mesh_count <= pos.shape[0]) or under_mesh_count % 3 != 0:
             raise ValueError("under_mesh_count must be a multiple of 3 in [0, N]")
         self._pending_ovl_positions = pos
@@ -1023,17 +1064,25 @@ class GLMeshViewer(QOpenGLWidget):
         """Push a triangulated board-outline ribbon to the GPU.
 
         Vertices come as triples (GL_TRIANGLES), so ``positions`` is (N, 3)
-        float and N is a multiple of 3. ``colors`` is (N, 3) RGB float in
-        [0..1] matching ``positions`` length. The caller is responsible
-        for the ribbon triangulation (typically the polyline expanded by a
-        fixed mm half-width). Drawn in both 2D and 3D modes.
+        float and N is a multiple of 3. ``colors`` is (N, 4) RGBA float in
+        [0..1] (or (N, 3) RGB, promoted to fully opaque) matching
+        ``positions`` length. The caller is responsible for the ribbon
+        triangulation (typically the polyline expanded by a fixed mm
+        half-width). Drawn in both 2D and 3D modes; rendered through the
+        RGBA overlay shader so the alpha channel drives the board-outline
+        row's Transparency control.
         """
         pos = np.ascontiguousarray(positions, dtype=np.float32)
         col = np.ascontiguousarray(colors, dtype=np.float32)
         if pos.ndim != 2 or pos.shape[1] != 3 or pos.shape[0] % 3 != 0:
             raise ValueError("positions must be (3*k, 3)")
-        if col.shape != pos.shape:
-            raise ValueError("colors shape must match positions")
+        if col.ndim != 2 or col.shape[0] != pos.shape[0] or col.shape[1] not in (3, 4):
+            raise ValueError("colors must be (N, 3) or (N, 4) matching positions")
+        if col.shape[1] == 3:
+            rgba = np.empty((col.shape[0], 4), dtype=np.float32)
+            rgba[:, :3] = col
+            rgba[:, 3] = 1.0
+            col = rgba
         self._pending_bdrl_positions = pos
         self._pending_bdrl_colors = col
         self._n_bdrl_vertices = pos.shape[0]
@@ -1527,6 +1576,21 @@ class GLMeshViewer(QOpenGLWidget):
         self._line_col_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
         self._line_col_vbo.create()
 
+        # Overlay shader — same MVP-only transform as the line shader, but
+        # the per-vertex colour carries alpha so Board Features rows can
+        # fade out without disturbing any other batch.
+        overlay_prog = QOpenGLShaderProgram()
+        overlay_prog.addShaderFromSourceCode(QOpenGLShader.Vertex,
+                                             _OVERLAY_VERTEX_SHADER_SRC)
+        overlay_prog.addShaderFromSourceCode(QOpenGLShader.Fragment,
+                                             _OVERLAY_FRAGMENT_SHADER_SRC)
+        if not overlay_prog.link():
+            log = overlay_prog.log()
+            raise RuntimeError(
+                f"GLMeshViewer: overlay shader link failed: {log}")
+        self._overlay_program = overlay_prog
+        self._overlay_u_mvp_loc = overlay_prog.uniformLocation("u_mvp")
+
         # Thick-line program for the outline batch — a geometry shader
         # widens each GL_LINES segment into a constant-pixel-width quad.
         # Separate from the flat line program because a `layout(lines)`
@@ -1756,16 +1820,20 @@ class GLMeshViewer(QOpenGLWidget):
         # without needing the GL context made current off the paint path.
         bg = self._bg_editor if self._editor_mode else self._bg_normal
         GL.glClearColor(bg[0], bg[1], bg[2], 1.0)
-        # Depth test only matters in 3D where overlapping layers and
-        # cylinders need correct front/back ordering. In 2D it would
-        # discard fragments from later draws even when they intentionally
-        # paint over earlier ones.
-        if self._view_mode == "3d":
+        # In 3D every pass uses depth testing for correct front/back
+        # ordering. In 2D the fills paint in submission order (painter's
+        # algorithm) so they intentionally overpaint, but the mesh pass
+        # below writes its per-vertex layer-z to the depth buffer so the
+        # outline pass can hide segments where copper of a higher layer
+        # covers them — without that, a bottom-layer outline draws over
+        # top-layer copper. Always clear depth in 2D so the seeded buffer
+        # starts fresh each frame.
+        in_2d = self._view_mode != "3d"
+        if not in_2d:
             GL.glEnable(GL.GL_DEPTH_TEST)
-            GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
         else:
             GL.glDisable(GL.GL_DEPTH_TEST)
-            GL.glClear(GL.GL_COLOR_BUFFER_BIT)
+        GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
         self._flush_pending_uploads()
         # Stubs first — flat-grey copper polygons drawn underneath the
         # heatmap mesh. If a stub happens to overlap a solved layer
@@ -1788,7 +1856,17 @@ class GLMeshViewer(QOpenGLWidget):
                 and self._line_program is not None):
             self._draw_overlay_fills(0, self._n_ovl_under_vertices)
         if self._n_indices > 0 and self._program is not None:
+            # In 2D, seed the depth buffer with the mesh's per-vertex
+            # layer-z so the outline pass below can self-occlude. GL_ALWAYS
+            # keeps the painter-order semantics (last layer drawn wins
+            # colour); only the depth WRITE matters here.
+            if in_2d:
+                GL.glEnable(GL.GL_DEPTH_TEST)
+                GL.glDepthFunc(GL.GL_ALWAYS)
             self._draw_mesh()
+            if in_2d:
+                GL.glDisable(GL.GL_DEPTH_TEST)
+                GL.glDepthFunc(GL.GL_LESS)
             if (self._show_mesh_edges
                     and self._line_program is not None):
                 self._draw_mesh_wireframe()
@@ -1806,7 +1884,20 @@ class GLMeshViewer(QOpenGLWidget):
             self._draw_overlay_fills(ovl_over_first, ovl_over_count)
         if (self._n_line_vertices > 0
                 and self._line_program is not None):
+            # In 2D, test AND write depth so the outlines sort correctly
+            # both against the mesh (a bottom-layer outline is hidden
+            # where a higher layer's copper covers it) and against each
+            # other (where two layers' thick-line quads overlap near a
+            # shared edge, the higher-layer outline wins regardless of
+            # submission order). GL_LEQUAL keeps adjacent same-layer
+            # quads from self-occluding at joins.
+            if in_2d:
+                GL.glEnable(GL.GL_DEPTH_TEST)
+                GL.glDepthFunc(GL.GL_LEQUAL)
             self._draw_lines()
+            if in_2d:
+                GL.glDisable(GL.GL_DEPTH_TEST)
+                GL.glDepthFunc(GL.GL_LESS)
         if (self._view_mode == "3d"
                 and self._n_cyl_vertices > 0
                 and self._line_program is not None):
@@ -2156,15 +2247,18 @@ class GLMeshViewer(QOpenGLWidget):
 
     def _draw_overlay_fills(self, first: int, count: int) -> None:
         """Draw a slice of the solid-fill overlay triangle batch via the
-        line shader. ``first`` and ``count`` are vertex indices; both must
-        be multiples of 3 so each draw covers whole triangles.
+        dedicated RGBA overlay shader. ``first`` and ``count`` are vertex
+        indices; both must be multiples of 3 so each draw covers whole
+        triangles.
 
         Flat-coloured polygons for the Overlays control. The leading
         ``_n_ovl_under_vertices`` (bottom-side board features in 2D) are
-        drawn before the heatmap mesh; the rest after, on top."""
-        prog = self._line_program
+        drawn before the heatmap mesh; the rest after, on top. Alpha
+        blending is enabled around the draw so the per-row Transparency
+        control fades the geometry without affecting any other batch."""
+        prog = self._overlay_program
         prog.bind()
-        prog.setUniformValue(self._line_u_mvp_loc, self._current_mvp())
+        prog.setUniformValue(self._overlay_u_mvp_loc, self._current_mvp())
 
         self._ovl_vao.bind()
         self._ovl_pos_vbo.bind()
@@ -2173,10 +2267,13 @@ class GLMeshViewer(QOpenGLWidget):
         self._ovl_pos_vbo.release()
         self._ovl_col_vbo.bind()
         GL.glEnableVertexAttribArray(1)
-        GL.glVertexAttribPointer(1, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
+        GL.glVertexAttribPointer(1, 4, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
         self._ovl_col_vbo.release()
 
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
         GL.glDrawArrays(GL.GL_TRIANGLES, first, count)
+        GL.glDisable(GL.GL_BLEND)
 
         GL.glDisableVertexAttribArray(0)
         GL.glDisableVertexAttribArray(1)
@@ -2210,11 +2307,14 @@ class GLMeshViewer(QOpenGLWidget):
 
     def _draw_board_outline(self) -> None:
         """Draw the board-outline ribbon as flat-coloured triangles via the
-        line shader. Pre-triangulated by the caller as a fixed-mm-wide
-        ribbon so the line thickness reads boldly on any driver."""
-        prog = self._line_program
+        RGBA overlay shader. Pre-triangulated by the caller as a fixed-mm-
+        wide ribbon so the line thickness reads boldly on any driver. Alpha
+        blending is enabled around the draw so the board-outline row's
+        Transparency control fades the ribbon without affecting any other
+        batch."""
+        prog = self._overlay_program
         prog.bind()
-        prog.setUniformValue(self._line_u_mvp_loc, self._current_mvp())
+        prog.setUniformValue(self._overlay_u_mvp_loc, self._current_mvp())
 
         self._bdrl_vao.bind()
         self._bdrl_pos_vbo.bind()
@@ -2223,10 +2323,13 @@ class GLMeshViewer(QOpenGLWidget):
         self._bdrl_pos_vbo.release()
         self._bdrl_col_vbo.bind()
         GL.glEnableVertexAttribArray(1)
-        GL.glVertexAttribPointer(1, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
+        GL.glVertexAttribPointer(1, 4, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
         self._bdrl_col_vbo.release()
 
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
         GL.glDrawArrays(GL.GL_TRIANGLES, 0, self._n_bdrl_vertices)
+        GL.glDisable(GL.GL_BLEND)
 
         GL.glDisableVertexAttribArray(0)
         GL.glDisableVertexAttribArray(1)
