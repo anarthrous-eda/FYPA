@@ -17,6 +17,9 @@ Altium project files.
 > **Disclaimer:** FYPA is a design-aid tool. Treat its results as guidance
 > and validate against measurement.
 
+> **New user?** Start with the [User Guide](docs/user-guide/README.md) for
+> a step-by-step walkthrough of common workflows.
+
 ![Heatmap viewer](screenshots/viewer.png)
 
 ## What it does
