@@ -18667,7 +18667,7 @@ def _triangulate_polygon_for_stub(poly):
     )
 
 
-def _build_stub_lean_solution_from_loaded(loaded) -> "LeanSolution":
+def _build_stub_lean_solution_from_loaded(loaded):
     """Create a minimal :class:`LeanSolution` from a Gerber-derived
     LoadedProject so the viewer can open BEFORE the user has added any
     editor directives or pressed Resolve.
@@ -18739,10 +18739,7 @@ def _perform_gerber_import(parent_window) -> tuple | None:
     :meth:`LauncherWindow._open_viewer_and_close` (or the equivalent
     PdnViewer path), which constructs the ``PdnViewer`` and registers it.
     """
-    from fypa.gerber.extract import (
-        GerberStackupLayer,
-        extract_gerber_project,
-    )
+    from fypa.gerber.extract import extract_gerber_project
     from fypa.gerber.import_ui import run_gerber_import_dialogs
     from fypa.gerber.loader import load_gerber_project
     from fypa.project_file import ProjectFile

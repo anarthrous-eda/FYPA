@@ -31,7 +31,6 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
-    QHBoxLayout,
     QHeaderView,
     QLabel,
     QMessageBox,
