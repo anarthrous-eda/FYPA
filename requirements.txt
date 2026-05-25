@@ -30,3 +30,10 @@ matplotlib==3.10.9
 
 # --- ParaView VTU export (File > Export > ParaView, and `FYPA paraview` CLI) ---
 lxml==5.3.0
+
+# --- Gerber + Excellon import (File > Import Gerber Files…) ---
+# Pure-Python RS-274X / NC-drill parser. Pulls flask / quart / h2 as
+# transitive deps for its bundled web viewer; those modules aren't on our
+# import path and are excluded from the PyInstaller bundle (see
+# packaging/FYPA.spec).
+gerbonara==1.5.0

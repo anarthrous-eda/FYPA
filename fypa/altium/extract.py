@@ -1,8 +1,8 @@
 """Altium project extractor for FYPA.
 
 Loads a `.PrjPcb` via altium_monkey and produces typed, mm-normalised raw record
-dataclasses for downstream geometry meshing (altium_geometry) and FEM annotation
-parsing (altium_annotations).
+dataclasses for downstream geometry meshing (fypa.altium_geometry) and FEM annotation
+parsing (fypa.altium.annotations).
 
 Conventions
 -----------
@@ -487,7 +487,7 @@ def _extract_vias(pcb, ox_mm: float, oy_mm: float) -> tuple[RawVia, ...]:
 
 
 # IPC-4761 FILLING feature type enum value (PcbViaStructureFeatureType.FILLING).
-# Repeated here so altium_extract has no hard import dependency on
+# Repeated here so fypa.altium.extract has no hard import dependency on
 # altium_monkey enums — the value is part of the on-disk Altium format.
 _IPC4761_FEATURE_FILLING: int = 3
 
@@ -967,7 +967,7 @@ if __name__ == "__main__":
     import sys
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     if len(sys.argv) != 2:
-        print("usage: python altium_extract.py PATH_TO.PrjPcb", file=sys.stderr)
+        print("usage: python -m fypa.altium.extract PATH_TO.PrjPcb", file=sys.stderr)
         sys.exit(2)
     proj = extract_project(sys.argv[1])
     print(_summarise(proj))

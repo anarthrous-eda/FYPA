@@ -1,9 +1,10 @@
 # FYPA - FEM Y-parameter Power Analyser
 
-Power-Delivery-Network (PDN) analysis for Altium PCB designs. Extracts copper
-geometry directly from a `.PrjPcb` project, runs a 2-D FEM Laplace solver per
-copper layer to compute voltage drop and current density across power rails,
-and visualises the result in a custom OpenGL viewer with per-vertex shading.
+Power-Delivery-Network (PDN) analysis for Altium and Gerber PCB designs.
+Extracts copper geometry directly from a `.PrjPcb` project or from a Gerber
+fabrication package, runs a 2-D FEM Laplace solver per copper layer to compute
+voltage drop and current density across power rails, and visualises the result
+in a custom OpenGL viewer with per-vertex shading.
 
 **Name:** *FYPA* stands for **F**EM **Y**-parameter **P**ower **A**nalyser —
 the tool extracts the admittance (Y-parameter) matrix of each copper layer

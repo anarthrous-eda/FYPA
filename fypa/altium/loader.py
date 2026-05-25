@@ -25,7 +25,7 @@ from pathlib import Path
 import shapely.geometry
 import shapely.strtree
 
-from fypa.altium_annotations import (
+from fypa.altium.annotations import (
     AnnotationResult,
     DirectiveSpec,
     RegulatorSpec,
@@ -36,7 +36,7 @@ from fypa.altium_annotations import (
     TerminalSpec,
     parse_annotations,
 )
-from fypa.altium_extract import (
+from fypa.altium.extract import (
     ExtractedProject,
     NO_NET,
     extract_project,
@@ -2784,7 +2784,7 @@ def load_project(prjpcb_path: str | Path,
     :attr:`LoadedProject.annotations.errors` before invoking the solver.
 
     ``pcbdoc_selector`` picks one of several ``.PcbDoc`` files when the
-    project contains more than one (see :func:`altium_extract.extract_project`).
+    project contains more than one (see :func:`fypa.altium.extract.extract_project`).
 
     Auto-merge pass: SERIES directives below
     :data:`NET_MERGE_RESISTANCE_THRESHOLD_OHM` are detected as electrical
@@ -2862,7 +2862,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO,
                         format="%(levelname)s %(name)s: %(message)s")
     if len(sys.argv) != 2:
-        print("usage: python altium_loader.py PATH_TO.PrjPcb", file=sys.stderr)
+        print("usage: python -m fypa.altium.loader PATH_TO.PrjPcb", file=sys.stderr)
         sys.exit(2)
     proj = load_project(sys.argv[1])
     print(proj.diagnostic_summary())

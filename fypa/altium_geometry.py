@@ -1,6 +1,6 @@
 """Altium copper geometry builder for FYPA.
 
-Consumes an :class:`altium_extract.ExtractedProject` and produces one
+Consumes an :class:`fypa.altium.extract.ExtractedProject` and produces one
 :class:`GeometryLayer` per enabled copper layer. Each layer carries:
 
 * a Shapely ``MultiPolygon`` of all filled copper on that layer
@@ -43,7 +43,7 @@ import shapely.affinity
 import shapely.geometry
 import shapely.ops
 
-from fypa.altium_extract import (
+from fypa.altium.extract import (
     ExtractedProject,
     NO_NET,
     NO_POLYGON,
@@ -533,7 +533,7 @@ def _pad_polygon(p: RawPad) -> shapely.geometry.Polygon | None:
     # plating fills the hole's cross-section for in-plane current flow). For
     # 2.5D PDN-FEM purposes the pad is one solid copper disc on each layer
     # it touches; the hole becomes a separate inter-layer coupling element
-    # injected by altium_loader.build_problem(). Subtracting the hole would
+    # injected by fypa.altium.loader.build_problem(). Subtracting the hole would
     # leave a no-copper point at the pad centre — making the FEM unable to
     # attach via-coupling Connections at the via location.
     return _pad_outer_shape(p)
@@ -1146,7 +1146,7 @@ def _save_quicklook(layers: list[GeometryLayer], out_path: str) -> None:
 
 if __name__ == "__main__":
     import sys
-    from fypa.altium_extract import extract_project
+    from fypa.altium.extract import extract_project
 
     logging.basicConfig(level=logging.INFO,
                         format="%(levelname)s %(name)s: %(message)s")

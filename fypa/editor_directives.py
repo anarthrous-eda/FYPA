@@ -5,11 +5,11 @@ sinks without editing the Altium schematic. Those edits live in the ``.fypa``
 project file as :class:`~fypa.project_file.EditorDirective` records.
 
 Before a re-solve, :func:`apply_editor_directives` converts each editor
-directive into a real :class:`~fypa.altium_annotations.SourceSpec` /
-:class:`~fypa.altium_annotations.SinkSpec` / :class:`~fypa.altium_annotations.ResistorSpec`
+directive into a real :class:`~fypa.altium.annotations.SourceSpec` /
+:class:`~fypa.altium.annotations.SinkSpec` / :class:`~fypa.altium.annotations.ResistorSpec`
 and appends it to the loaded
-project's :class:`~fypa.altium_annotations.AnnotationResult`. From there
-:func:`fypa.altium_loader.build_problem` treats it exactly like a schematic
+project's :class:`~fypa.altium.annotations.AnnotationResult`. From there
+:func:`fypa.altium.loader.build_problem` treats it exactly like a schematic
 directive — it meshes the referenced nets and stamps the lumped element.
 """
 
@@ -35,19 +35,19 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
     """Append synthetic SourceSpec / SinkSpec / ResistorSpec specs to
     ``loaded.annotations.directives`` — one per editor directive.
 
-    ``loaded`` is a :class:`fypa.altium_loader.LoadedProject`; it is mutated
+    ``loaded`` is a :class:`fypa.altium.loader.LoadedProject`; it is mutated
     in place (the caller owns a fresh copy loaded from the design-info
     pickle). Returns a list of human-readable warnings for directives that
     could not be resolved — those are skipped rather than aborting the solve.
     """
-    from fypa.altium_annotations import (
+    from fypa.altium.annotations import (
         ResistorSpec,
         SinkSpec,
         SourceSpec,
         TerminalPin,
         TerminalSpec,
     )
-    from fypa.altium_extract import Pt2D
+    from fypa.altium.extract import Pt2D
 
     extracted = loaded.extracted
     enabled = extracted.enabled_copper_layer_ids()
@@ -72,7 +72,7 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
     # Each electrically-connected rail needs its OWN ideal-0 V return node.
     # One return group shared across the whole board lets a SINK on rail A
     # close its loop through a SOURCE on rail B — a path the copper can't
-    # carry, so the FEM matrix goes near-singular. Mirror altium_annotations'
+    # carry, so the FEM matrix goes near-singular. Mirror fypa.altium.annotations'
     # _assign_return_groups: union connected nets, one return id per group.
     _uf: dict[str, str] = {}
 
@@ -326,7 +326,7 @@ def apply_copper_names(loaded, copper_names) -> list[str]:
     surfaces unassigned copper with ``net_index == NO_NET``; this
     function finds the connected component of NO_NET geometry on the
     rename's layer that contains the anchor, appends a fresh
-    :class:`~fypa.altium_extract.RawNet` carrying the new name, and
+    :class:`~fypa.altium.extract.RawNet` carrying the new name, and
     re-points every NO_NET primitive overlapping that component at the
     new net. The bucketing in
     :func:`fypa.altium_geometry.build_net_layer_shapes` then routes
@@ -338,7 +338,7 @@ def apply_copper_names(loaded, copper_names) -> list[str]:
     the underlying design changed); the rename is skipped, not fatal.
 
     The mutation uses :func:`dataclasses.replace` because
-    :class:`~fypa.altium_extract.ExtractedProject` is a frozen
+    :class:`~fypa.altium.extract.ExtractedProject` is a frozen
     dataclass — the result is a brand-new tuple of nets / regions /
     tracks / etc., and ``loaded.extracted`` is rebound to it.
     """
@@ -347,7 +347,7 @@ def apply_copper_names(loaded, copper_names) -> list[str]:
     import shapely.geometry as _sg
     import shapely.ops as _sops
 
-    from fypa.altium_extract import NO_NET, RawNet
+    from fypa.altium.extract import NO_NET, RawNet
     from fypa.altium_geometry import (
         _arc_polygon,
         _fill_polygon,
@@ -535,6 +535,60 @@ def apply_copper_names(loaded, copper_names) -> list[str]:
         for f in extracted.fills
     )
 
+    # Vias and through-hole pads also start out NO_NET on a Gerber-sourced
+    # project (Gerber + Excellon carry no net info). Retag any whose
+    # ``center`` lies inside a rename's match polygon on a layer the
+    # via/pad spans. Without this, the via-coupling network in
+    # build_problem drops these terminals and multi-layer rails stay
+    # disconnected. On Altium-sourced projects vias arrive pre-tagged so
+    # this loop is a no-op.
+    from fypa.altium_geometry import MULTI_LAYER_PAD_LAYER_ID
+
+    def _via_layers(v):
+        lo = min(v.layer_start, v.layer_end)
+        hi = max(v.layer_start, v.layer_end)
+        return [lid for lid in enabled if lo <= lid <= hi]
+
+    def _retag_via(v):
+        if v.net_index != NO_NET:
+            return v
+        if not any(lid in rename_layers for lid in _via_layers(v)):
+            return v
+        anchor_pt = _sg.Point(float(v.center.x), float(v.center.y))
+        for lid, match_poly, net_idx in matches:
+            if lid not in _via_layers(v):
+                continue
+            try:
+                if match_poly.contains(anchor_pt):
+                    return dataclasses.replace(v, net_index=net_idx)
+            except Exception:
+                continue
+        return v
+
+    def _pad_layers(p):
+        if p.layer_id == MULTI_LAYER_PAD_LAYER_ID:
+            return list(enabled)
+        return [p.layer_id]
+
+    def _retag_pad(p):
+        if p.net_index != NO_NET:
+            return p
+        if not any(lid in rename_layers for lid in _pad_layers(p)):
+            return p
+        anchor_pt = _sg.Point(float(p.center.x), float(p.center.y))
+        for lid, match_poly, net_idx in matches:
+            if lid not in _pad_layers(p):
+                continue
+            try:
+                if match_poly.contains(anchor_pt):
+                    return dataclasses.replace(p, net_index=net_idx)
+            except Exception:
+                continue
+        return p
+
+    new_vias = tuple(_retag_via(v) for v in extracted.vias)
+    new_pads = tuple(_retag_pad(p) for p in extracted.pads)
+
     loaded.extracted = dataclasses.replace(
         extracted,
         nets=tuple(nets),
@@ -543,6 +597,8 @@ def apply_copper_names(loaded, copper_names) -> list[str]:
         regions=new_regions,
         shape_based_regions=new_sbr,
         fills=new_fills,
+        vias=new_vias,
+        pads=new_pads,
     )
 
     # If the loaded project cached its lazy unioned geometry, it's stale

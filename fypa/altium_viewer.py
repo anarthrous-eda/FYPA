@@ -2242,6 +2242,37 @@ class _FastTriSampler:
         return np.ma.masked_array(float(val), mask=False)
 
 
+class _ClickAbsorbingPanel(QWidget):
+    """QWidget that accepts (and thus swallows) mouse press / release /
+    double-click events on its empty space.
+
+    Why: the editor / copper-properties side panel is parented onto the
+    GL viewer so it floats over the viewport. Qt's default
+    QWidget.mousePressEvent ignores the event, which propagates up to
+    the GL viewer and fires its empty-space click handler — deselecting
+    the current copper. Absorbing the events here keeps clicks on the
+    panel's blank areas from reaching the viewport.
+
+    WA_StyledBackground is required so the panel's stylesheet
+    ``background-color`` actually paints — without it, QWidget subclasses
+    leave their background transparent and the GL viewport shows
+    through.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+
+    def mousePressEvent(self, ev) -> None:
+        ev.accept()
+
+    def mouseReleaseEvent(self, ev) -> None:
+        ev.accept()
+
+    def mouseDoubleClickEvent(self, ev) -> None:
+        ev.accept()
+
+
 class _GradientBar(QWidget):
     """Horizontal colormap strip with two draggable handles for vmin/vmax,
     designed to sit as an overlay on the heatmap viewer's bottom-left
@@ -2697,7 +2728,7 @@ class ScaleController(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
-        self.title_label = QLabel("<b>Color scale</b>")
+        self.title_label = QLabel("<b>Colour scale</b>")
         layout.addWidget(self.title_label)
 
         # Colour-scheme picker — recolours the heatmap live. Sits directly
@@ -2892,7 +2923,7 @@ class ScaleController(QWidget):
 
     def setLabelUnit(self, label: str, unit: str) -> None:
         # The metric name + unit are shown as the title on the overlaid
-        # strip; the side-panel header stays the static "Color scale".
+        # strip; the side-panel header stays the static "Colour scale".
         self._label = label
         self._unit = unit
         self.bar.setTitle(label, unit)
@@ -3202,7 +3233,7 @@ class _SolveWorker(QThread):
         # Windows flags the window "Not Responding" on large boards.
         self.setPriority(QThread.LowPriority)
         try:
-            from fypa.altium_loader import (
+            from fypa.altium.loader import (
                 build_problem,
                 build_solve_metadata,
                 load_project,
@@ -3366,27 +3397,6 @@ class _SolveWorker(QThread):
             # in-memory source for the next resolve (see _loaded_project).
             pristine_loaded = loaded
 
-            if not loaded.is_solveable:
-                _log = logging.getLogger(__name__)
-                from fypa.cli import _LOG_FILE as _log_file
-                try:
-                    # diagnostic_summary() touches loaded.geometry, which
-                    # lazily runs the heavy per-layer polygon union. Give
-                    # it an honest progress label + a timed stage so the
-                    # wait shows in the dialog and log instead of looking
-                    # like a hang on the "cache hit" message.
-                    self.stage_changed.emit("Building diagnostic summary…")
-                    with _timer.stage("Build diagnostic summary"):
-                        _summary = loaded.diagnostic_summary()
-                    _log.error("Project is not solveable:\n%s", _summary)
-                except Exception as _exc:
-                    _log.error("Project is not solveable (diagnostic failed: %s)", _exc)
-                self.failed.emit(
-                    f"Project is not solveable.\n\n"
-                    f"See the log file for details:\n{_log_file}"
-                )
-                return
-
             if self._stackup_overrides:
                 self.stage_changed.emit(
                     f"Applying {len(self._stackup_overrides)} stackup "
@@ -3439,6 +3449,27 @@ class _SolveWorker(QThread):
                     logging.getLogger(__name__).warning(
                         "Editor directive not applied: %s", w,
                     )
+
+            # is_solveable check runs HERE — after editor directives + copper
+            # names + overrides have been applied. A Gerber-sourced project
+            # starts with zero schematic directives; an Altium project may also
+            # rely entirely on editor-mode directives. Checking earlier would
+            # reject both even though the user has placed a SOURCE marker.
+            if not loaded.is_solveable:
+                _log = logging.getLogger(__name__)
+                from fypa.cli import _LOG_FILE as _log_file
+                try:
+                    self.stage_changed.emit("Building diagnostic summary…")
+                    with _timer.stage("Build diagnostic summary"):
+                        _summary = loaded.diagnostic_summary()
+                    _log.error("Project is not solveable:\n%s", _summary)
+                except Exception as _exc:
+                    _log.error("Project is not solveable (diagnostic failed: %s)", _exc)
+                self.failed.emit(
+                    f"Project is not solveable.\n\n"
+                    f"See the log file for details:\n{_log_file}"
+                )
+                return
 
             self.stage_changed.emit("Assembling FEM problem…")
             with _timer.stage("Build FEM problem"):
@@ -3597,13 +3628,13 @@ class _SolveWorker(QThread):
         ``loaded.geometry`` is recomputed too so the displayed per-layer
         conductance reflects the new thickness — the FEM itself reads
         ``loaded.extracted.stackup`` directly via
-        :func:`altium_loader.build_per_net_geometry_layers`, so the
+        :func:`fypa.altium.loader.build_per_net_geometry_layers`, so the
         solve correctness only depends on the new ExtractedProject.
         Skipped overrides (layer not in stackup) are silently ignored.
         """
         from dataclasses import replace as _dc_replace
         from fypa.altium_geometry import build_layer_geometries
-        from fypa.altium_loader import LoadedProject
+        from fypa.altium.loader import LoadedProject
 
         new_stackup = []
         for s in loaded.extracted.stackup:
@@ -3636,7 +3667,7 @@ class _SolveWorker(QThread):
         user deleted a SINK directive (or removed an indexed channel) in
         Altium between solves."""
         from dataclasses import replace as _dc_replace
-        from fypa.altium_annotations import SinkSpec
+        from fypa.altium.annotations import SinkSpec
         directives = loaded.annotations.directives
         for i, d in enumerate(directives):
             if not isinstance(d, SinkSpec):
@@ -3659,7 +3690,7 @@ class _SolveWorker(QThread):
         own in-memory LoadedProject for a resolve without it being
         corrupted for the next one."""
         import copy as _copy
-        from fypa.altium_loader import LoadedProject
+        from fypa.altium.loader import LoadedProject
         new_annotations = _copy.copy(loaded.annotations)
         new_annotations.directives = list(loaded.annotations.directives)
         return LoadedProject(
@@ -3712,7 +3743,7 @@ def _choose_pcbdoc(parent: QWidget | None, prjpcb_path: Path,
     pre-selected (handy for re-runs of a previously-chosen board).
     """
     try:
-        from fypa.altium_extract import list_pcbdoc_paths
+        from fypa.altium.extract import list_pcbdoc_paths
         paths = list_pcbdoc_paths(prjpcb_path)
     except Exception as e:
         logging.getLogger(__name__).warning(
@@ -3878,7 +3909,7 @@ def _show_about_dialog(parent: QWidget) -> None:
     body = QLabel(
         "<div style='text-align:center;'>"
         f"<h2 style='color:{t['fg']}; margin:6px 0 0 0;'>FYPA</h2>"
-        f"<p style='color:{t['accent']}; margin:2px 0;'>Altium PDN Analyser</p>"
+        f"<p style='color:{t['accent']}; margin:2px 0;'>Altium / Gerber PDN Analyser</p>"
         f"<p style='color:{t['fg_muted']}; margin:2px 0;'>Version {fypa_version}</p>"
         f"<p style='margin:12px 0 2px 0;'>"
         f"<a href='{_GITHUB_URL}' style='color:{t['accent']};'>{_GITHUB_URL}</a>"
@@ -3956,7 +3987,7 @@ class LauncherWindow(QMainWindow):
         )
         label = QLabel(
             "<div style='text-align:center;'>"
-            f"<h2 style='color:{t['fg']}; margin-top:2px; margin-bottom:0;'>Altium PDN Analyser</h2>"
+            f"<h2 style='color:{t['fg']}; margin-top:2px; margin-bottom:0;'>Altium / Gerber PDN Analyser</h2>"
             f"<p style='color:{t['accent']};'>No project loaded.</p>"
             f"<p style='color:{t['fg_dim']};'>"
             f"<a href='open-project' style='{link_style}'>Import Altium Design&hellip;</a>"
@@ -4042,6 +4073,16 @@ class LauncherWindow(QMainWindow):
         )
         file_menu.addAction(open_proj_clean)
 
+        open_gerber = QAction("Import &Gerber Files…", self)
+        open_gerber.setShortcut("Ctrl+G")
+        open_gerber.setStatusTip(
+            "Pick a set of Gerber (RS-274X) + Excellon drill files; "
+            "FYPA imports them and opens the editor so you can add "
+            "sources / sinks."
+        )
+        open_gerber.triggered.connect(self._on_menu_import_gerber)
+        file_menu.addAction(open_gerber)
+
         open_projfile = QAction("Open &Project File…", self)
         open_projfile.setShortcut("Ctrl+Shift+P")
         open_projfile.setStatusTip(
@@ -4069,6 +4110,19 @@ class LauncherWindow(QMainWindow):
 
         _build_help_menu(self)
 
+    def _on_menu_import_gerber(self) -> None:
+        """File > Import Gerber Files…  —  picks Gerber + drill files,
+        runs the layer-mapping + stackup dialogs, builds a LoadedProject
+        and opens it in :class:`PdnViewer` with a stub solution. The user
+        can then add directives via editor mode and press Resolve."""
+        result = _perform_gerber_import(self)
+        if result is None:
+            return
+        stub_solution, metadata, loaded, pf = result
+        self._open_viewer_and_close(
+            stub_solution, metadata, loaded_project=loaded, project=pf,
+        )
+
     def _on_menu_open_project(self, *, clean: bool = False) -> None:
         path_str, _ = QFileDialog.getOpenFileName(
             self,
@@ -4082,7 +4136,7 @@ class LauncherWindow(QMainWindow):
         proceed, pcbdoc_path = _choose_pcbdoc(self, prjpcb_path)
         if not proceed:
             return
-        from fypa.altium_loader import SolveSettings
+        from fypa.altium.loader import SolveSettings
         settings = SolveSettings()
         settings.apply_to_modules()
 
@@ -4377,7 +4431,7 @@ class PdnViewer(QMainWindow):
     """Main window — composes the side panel and the matplotlib plot area.
 
     ``metadata`` (if supplied) is the dict bundled into the solve pickle
-    by :func:`altium_loader.build_solve_metadata` — used to populate the
+    by :func:`fypa.altium.loader.build_solve_metadata` — used to populate the
     Setup tab with stackup / physics constants / directive details /
     solver stats. If ``None`` (e.g. loading a legacy pickle), the Setup
     tab shows a note explaining why metadata isn't available.
@@ -4480,12 +4534,12 @@ class PdnViewer(QMainWindow):
         self._pending_rails: dict[str, list[str]] = {}
         self._pending_rail_items: list = []
         # Solve-time + display-time settings exposed in the Settings tab.
-        # ``initial_settings`` is a :class:`altium_loader.SolveSettings` —
+        # ``initial_settings`` is a :class:`fypa.altium.loader.SolveSettings` —
         # passed by the Re-run handler so the new viewer pre-populates the
         # fields with whatever the user just submitted. Falls back to the
         # values recorded in the pickle (which match the FEM that produced
         # this solution) so opening a fresh pickle always shows the truth.
-        from fypa.altium_loader import SolveSettings as _SolveSettings
+        from fypa.altium.loader import SolveSettings as _SolveSettings
         if initial_settings is None:
             initial_settings = _SolveSettings.from_metadata(metadata)
         self._solve_settings = initial_settings
@@ -4532,6 +4586,18 @@ class PdnViewer(QMainWindow):
             phys, net = _split_composite_name(layer.name)
             self._index_by_pair[(phys, net)] = i
             physicals.add(phys)
+        # Pull in any additional physical layers that exist on the board but
+        # carry no rail through the solved FEM (Gerber: the user named
+        # copper + placed a SOURCE/SINK on TOP only, so the post-solve
+        # Solution has no BOT layer — but BOT copper still exists on the
+        # board and the user wants to be able to toggle it on via the
+        # all-copper eye). Layer ids from metadata's stackup that aren't
+        # already represented in the solution get added here.
+        if metadata:
+            for row in metadata.get("stackup", []):
+                nm = row.get("name")
+                if nm and nm not in physicals:
+                    physicals.add(nm)
 
         # Build rail groups from RESISTOR bridges + SOURCE/SINK/REGULATOR
         # terminals (the metadata bundle). The Rail dropdown shows the
@@ -4993,6 +5059,13 @@ class PdnViewer(QMainWindow):
             self._layer_transparency_buttons.append((phys, transp))
 
         self._sync_all_layers_eye()
+        # If the design has no PDN rails (Gerber import before the user has
+        # placed any directives, or any other "blank board" load), turn on
+        # the top physical layer's all-copper eye by default so the user
+        # actually sees their board on open. Without this every eye starts
+        # closed and the viewport is empty.
+        if not self._rail_names and self._layer_eye2_buttons:
+            self._layer_eye2_buttons[0][1].setVisibleState(True, emit=False)
         self._sync_all_layers_eye2()
 
         # Size the list to show every physical layer (plus the "All Layers"
@@ -5071,10 +5144,16 @@ class PdnViewer(QMainWindow):
         side.addWidget(self.rail_list)
 
         side.addSpacing(8)
-        side.addWidget(QLabel("<b>Mode</b>"))
+        self._mode_label = QLabel("<b>Mode</b>")
+        side.addWidget(self._mode_label)
         self.mode_combo = QComboBox()
         self.mode_combo.addItems([m[0] for m in _MODES])
         side.addWidget(self.mode_combo)
+        # No rails → no PDN data, so the metric picker is meaningless.
+        # Hide it alongside the colour-scale controls (see below).
+        if not self._rails:
+            self._mode_label.setVisible(False)
+            self.mode_combo.setVisible(False)
 
         side.addSpacing(8)
         side.addWidget(QLabel("<b>Board Features</b>"))
@@ -5119,6 +5198,11 @@ class PdnViewer(QMainWindow):
         self.scale_controller.colormapChanged.connect(self._on_colormap_changed)
         self.scale_controller.scaleTypeChanged.connect(self._on_scale_type_changed)
         side.addWidget(self.scale_controller, 0)
+        # No rails → no PDN analysis to colour-map, so hide the side-panel
+        # controls (Scheme / Scale / Min / Max). The bottom-left gradient
+        # strip is hidden alongside it where the overlay is set up below.
+        if not self._rails:
+            self.scale_controller.setVisible(False)
 
         side.addSpacing(8)
 
@@ -5318,7 +5402,9 @@ class PdnViewer(QMainWindow):
         # GL-viewer resize via eventFilter) keeps it pinned bottom-left.
         self._scale_overlay = self.scale_controller.bar
         self._scale_overlay.setParent(self._gl_viewer)
-        self._scale_overlay.show()
+        # Hidden when there are no rails — the heatmap is empty so the
+        # scale strip has nothing meaningful to display.
+        self._scale_overlay.setVisible(bool(self._rails))
         self._position_scale_overlay()
 
         # Probe label: updated on every mouse move over the plot. Colours
@@ -7216,7 +7302,15 @@ class PdnViewer(QMainWindow):
             self._gl_viewer.clear_series_bars()
             self._gl_viewer.clear_stub_triangles()
             self._gl_viewer.set_overlay_top_right("")
-            self._gl_viewer.clear_markers()
+            # Re-push the editor-directive markers even though there's no
+            # mesh / rails — the user is allowed to drop free SOURCE / SINK
+            # markers on a Gerber import BEFORE any rail exists, and the
+            # whole point of the click is to see them appear. Clearing
+            # markers here on the rail-less early-out would wipe the marker
+            # we just placed. _update_markers_and_legend handles the
+            # no-rails case internally (solved-directive walks early-out
+            # on their own gates).
+            self._update_markers_and_legend(phys_list, rails)
             self._refresh_board_outline()
             if not phys_list:
                 self.summary_label.setText("(no layers selected)")
@@ -7671,11 +7765,11 @@ class PdnViewer(QMainWindow):
     # AND on the dark viewbox background. ``symbol`` is a pyqtgraph marker
     # name (one of 'o', 's', 't', 'd', 'star', '+', 'x', 'p', 'h', 't1' …).
     # NOTE: keys match the role string produced by
-    # altium_loader.build_solve_metadata() — that strips the trailing "Spec"
+    # fypa.altium.loader.build_solve_metadata() — that strips the trailing "Spec"
     # off the dataclass name and uppercases it (so ResistorSpec → RESISTOR).
     # Keyed by the role string seen in the relevant context: solved
     # directives carry the Spec class name (``RESISTOR`` for a SERIES
-    # element — see altium_loader), while editor directives carry the
+    # element — see fypa.altium.loader), while editor directives carry the
     # ``EDITOR_ROLES`` name (``SERIES``). Both keys map to the same style.
     _ROLE_MARKER_STYLE: dict[str, dict] = {
         "SOURCE":    {"symbol": "tri_up",   "color": "#ff3030", "size": 18, "label": "SOURCE"},
@@ -8459,7 +8553,7 @@ class PdnViewer(QMainWindow):
         Returns an (N*3, 2) float32 array of vertex coords; consecutive
         triples form one GL_TRIANGLES triangle.
 
-        Fast path: ``altium_loader._build_stub_record`` pre-triangulates
+        Fast path: ``fypa.altium.loader._build_stub_record`` pre-triangulates
         every stub at solve time and ships the result in the pickle as
         ``stub['triangles_xy']`` — already in the (N*3, 2) float32 layout
         the GL stub batch wants, so the viewer just uploads it. Old
@@ -10301,7 +10395,7 @@ class PdnViewer(QMainWindow):
         widgets, swapped by :meth:`_show_pdn_editor_layout` /
         :meth:`_show_copper_props_layout`."""
         t = _T()
-        panel = QWidget()
+        panel = _ClickAbsorbingPanel()
         panel.setFixedWidth(300)
         panel.setStyleSheet(f"background-color: {t['bg']};")
         lay = QVBoxLayout(panel)
@@ -13053,17 +13147,31 @@ class PdnViewer(QMainWindow):
         return out
 
     def _on_resolve_clicked(self) -> None:
-        """Re-run the solver with the current editor directives applied,
-        reusing the in-memory design info (no cache read, no Altium
-        re-extraction). Falls back to the design-info cache only when this
-        viewer has no in-memory LoadedProject (e.g. opened from a pickle)."""
-        if self._project is None or not self._project.editor_directives:
+        """Re-run the solver with the current editor directives + Settings-tab
+        edits applied, reusing the in-memory design info (no cache read, no
+        Altium re-extraction). Falls back to the design-info cache only when
+        this viewer has no in-memory LoadedProject (e.g. opened from a
+        pickle).
+
+        Resolve is also reachable when only the Settings tab is dirty (no
+        editor directives) — in that case the editor-directive list is
+        simply empty and the solve runs with the new parameters."""
+        if not self._solve_stale:
             QMessageBox.information(
                 self, "Nothing to resolve",
-                "There are no editor directives to solve yet.",
+                "The current solve is already up to date with the editor "
+                "directives and Settings-tab values.",
             )
             return
-        unnamed = self._unnamed_copper_directives()
+        editor_directives = (
+            list(self._project.editor_directives)
+            if self._project is not None else []
+        )
+        copper_names = (
+            list(self._project.copper_names)
+            if self._project is not None else []
+        )
+        unnamed = self._unnamed_copper_directives() if editor_directives else []
         if unnamed:
             lines = []
             for d in unnamed:
@@ -13074,6 +13182,27 @@ class PdnViewer(QMainWindow):
                 else:
                     where = f"{d.role} on {d.designator or '?'}"
                 lines.append(f"  • {where}")
+            # Gerber-sourced projects have no Altium schematic to edit,
+            # so omit the "name it in Altium and re-import" option and
+            # collapse the two-bullet wording to a single-action instruction.
+            is_gerber = bool(self.metadata
+                             and self.metadata.get("source_kind") == "gerber")
+            if is_gerber:
+                fix_text = (
+                    "To fix this:\n"
+                    "  • Click the copper in editor mode and use the "
+                    "<b>Unnamed copper</b> form on the right to give it a "
+                    "name here, then click Apply and Resolve again."
+                )
+            else:
+                fix_text = (
+                    "Fix this one of two ways:\n"
+                    "  • Click the copper in editor mode and use the "
+                    "<b>Unnamed copper</b> form on the right to give it a "
+                    "name here, then click Apply and Resolve again.\n"
+                    "  • Or name the net in Altium and re-import the design "
+                    "before resolving."
+                )
             QMessageBox.warning(
                 self, "Name the copper first",
                 "These editor directives are placed on copper that has no "
@@ -13082,12 +13211,7 @@ class PdnViewer(QMainWindow):
                 + "\n\nThe solver can't include an unnamed net in the "
                 "result — and any other unnamed copper on the board would "
                 "be lumped onto the same rail.\n\n"
-                "Fix this one of two ways:\n"
-                "  • Click the copper in editor mode and use the "
-                "<b>Unnamed copper</b> form on the right to give it a "
-                "name here, then click Apply and Resolve again.\n"
-                "  • Or name the net in Altium and re-import the design "
-                "before resolving.",
+                + fix_text,
             )
             return
         prjpcb = self.metadata.get("prjpcb_path") if self.metadata else None
@@ -13099,16 +13223,31 @@ class PdnViewer(QMainWindow):
             )
             return
         pcbdoc = self.metadata.get("pcbdoc_path") if self.metadata else None
-        self._solve_settings.apply_to_modules()
+        # Pick up any Settings-tab edits the user made before clicking Resolve
+        # — mirrors the Re-run Solver path so the post-resolve viewer reflects
+        # exactly what was solved.
+        try:
+            (new_settings, warn_a, pct,
+             stackup_overrides) = self._gather_settings_from_form()
+        except ValueError as e:
+            QMessageBox.warning(
+                self, "Invalid solve parameter",
+                f"Can't resolve: {e}\n\n"
+                "Fix the highlighted field on the Settings tab and try again.",
+            )
+            return
+        new_settings.apply_to_modules()
         self._start_solve_worker(
-            Path(prjpcb), self._solve_settings,
-            self._via_current_warn_a, self._display_percentile_high,
+            Path(prjpcb), new_settings,
+            warn_a, pct,
+            stackup_overrides=stackup_overrides,
             pcbdoc_selector=str(pcbdoc) if pcbdoc else None,
             use_design_cache=True,
             try_solve_cache_first=False,
-            editor_directives=list(self._project.editor_directives),
-            copper_names=list(self._project.copper_names),
+            editor_directives=editor_directives,
+            copper_names=copper_names,
             loaded_project=self._loaded_project,
+            is_resolve=True,
             dialog_title="Resolving with editor changes",
             dialog_text=(
                 "Re-solving with your editor changes…\n"
@@ -14636,7 +14775,7 @@ class PdnViewer(QMainWindow):
         """Build a QGroupBox containing one labelled QLineEdit per field
         in ``fields``. The current value is pulled from ``source`` via
         ``getattr``; default-value hints come from a fresh SolveSettings."""
-        from fypa.altium_loader import SolveSettings as _SolveSettings
+        from fypa.altium.loader import SolveSettings as _SolveSettings
         from dataclasses import fields as _dc_fields
         defaults = _SolveSettings()
         # The display-only fields aren't in SolveSettings — fall back to
@@ -15227,7 +15366,7 @@ class PdnViewer(QMainWindow):
     def _on_settings_reset(self) -> None:
         """Restore every Settings-tab field to its built-in default. The
         user still has to press Re-run Solver to commit."""
-        from fypa.altium_loader import SolveSettings as _SolveSettings
+        from fypa.altium.loader import SolveSettings as _SolveSettings
         defaults = _SolveSettings()
         for key, *_ in self._SETTINGS_FIELDS:
             edit = getattr(self, f"settings_edit_{key}", None)
@@ -15438,7 +15577,7 @@ class PdnViewer(QMainWindow):
         ``(SolveSettings, via_current_warn_a, display_percentile,
         stackup_overrides)``. Raises ``ValueError``
         (caught by the Re-run handler) on bad input."""
-        from fypa.altium_loader import SolveSettings as _SolveSettings
+        from fypa.altium.loader import SolveSettings as _SolveSettings
         kwargs: dict[str, float] = {}
         for key, label, *_rest in self._SETTINGS_FIELDS:
             edit = getattr(self, f"settings_edit_{key}", None)
@@ -15505,6 +15644,16 @@ class PdnViewer(QMainWindow):
             lambda: self._on_menu_open_project(clean=True)
         )
         file_menu.addAction(open_proj_clean)
+
+        open_gerber = QAction("Import &Gerber Files…", self)
+        open_gerber.setShortcut("Ctrl+G")
+        open_gerber.setStatusTip(
+            "Pick a set of Gerber (RS-274X) + Excellon drill files; "
+            "FYPA imports them and opens the editor so you can add "
+            "sources / sinks."
+        )
+        open_gerber.triggered.connect(self._on_menu_import_gerber)
+        file_menu.addAction(open_gerber)
 
         open_projfile = QAction("Open &Project File…", self)
         open_projfile.setShortcut("Ctrl+Shift+P")
@@ -15682,6 +15831,50 @@ class PdnViewer(QMainWindow):
             return str(cache_dir)
         except Exception:
             return ""
+
+    def _on_menu_import_gerber(self) -> None:
+        """File > Import Gerber Files…  —  same flow as the launcher's
+        handler, but the resulting viewer replaces the current one.
+
+        PdnViewer doesn't share LauncherWindow's ``_open_viewer_and_close``
+        helper, so we open the new viewer directly and retire this one
+        (the same pattern ``_on_solve_finished`` / ``_on_resolve_finished``
+        use)."""
+        result = _perform_gerber_import(self)
+        if result is None:
+            return
+        stub_solution, metadata, loaded, pf = result
+        log = logging.getLogger(__name__)
+        prev_geometry = self.geometry()
+        prev_maximized = self.isMaximized()
+        prev_fullscreen = self.isFullScreen()
+        try:
+            new_win = PdnViewer(
+                stub_solution,
+                metadata=metadata,
+                loaded_project=loaded,
+                project=pf,
+            )
+            _register_viewer(new_win)
+            new_win.setGeometry(prev_geometry)
+            if prev_fullscreen:
+                new_win.showFullScreen()
+            elif prev_maximized:
+                new_win.showMaximized()
+            else:
+                new_win._pending_maximize = False
+                new_win.show()
+            _force_native_window_icon(new_win)
+            _set_window_aumid(new_win)
+        except Exception as e:
+            log.exception("Failed to open viewer after Gerber import")
+            QMessageBox.critical(
+                self, "Couldn't open viewer",
+                "Gerber import succeeded but the viewer failed to open:\n\n"
+                f"{type(e).__name__}: {e}",
+            )
+            return
+        QTimer.singleShot(0, lambda: _retire_viewer(self))
 
     def _on_menu_open_project(self, *, clean: bool = False) -> None:
         """File > Import Altium Design[ (Clean)]  →  pick a .PrjPcb and open
@@ -16210,6 +16403,7 @@ class PdnViewer(QMainWindow):
         editor_directives: list | None = None,
         copper_names: list | None = None,
         loaded_project: object | None = None,
+        is_resolve: bool | None = None,
         dialog_title: str = "Running solver",
         dialog_text: str | None = None,
         dialog_width_scale: float = 1.44,
@@ -16265,9 +16459,14 @@ class PdnViewer(QMainWindow):
         # see the opaque "Meshing + solving" step is still progressing.
         self._solve_progress_updater = _SolveProgressUpdater(dlg, worker, self)
 
-        # A resolve (editor directives present) opens the fresh viewer
-        # bound to the same project file so the editor state carries over.
-        if editor_directives:
+        # A resolve opens the fresh viewer bound to the same project file so
+        # the editor state carries over. Default heuristic: editor directives
+        # present ⇒ resolve. Callers can pin it explicitly via ``is_resolve``
+        # for the Settings-tab-only case (no editor directives but project
+        # context still must be preserved).
+        if is_resolve is None:
+            is_resolve = bool(editor_directives)
+        if is_resolve:
             worker.finished_ok.connect(
                 lambda sol, meta, loaded: self._on_resolve_finished(
                     sol, meta, loaded, warn_a, pct, settings,
@@ -17396,7 +17595,7 @@ class PdnViewer(QMainWindow):
         For each via the worst |I| across its inter-layer segments is
         reported. The voltage at the via's (x, y) is sampled on every layer
         the via touches that has copper for the via's net — those are the
-        same Layer instances :func:`altium_loader._coupling_networks` built
+        same Layer instances :func:`fypa.altium.loader._coupling_networks` built
         the via resistors between, so the segment list matches the model.
         Per-segment resistance comes from the via's own ``segments`` list in
         metadata, so a hop that crosses a thicker dielectric uses the actual
@@ -17508,7 +17707,7 @@ class PdnViewer(QMainWindow):
             # key so order-independent). Each via carries its own list
             # because R varies with drill diameter + hop length.
             # An EMPTY segments list means
-            # :func:`altium_loader._coupling_networks` skipped this via
+            # :func:`fypa.altium.loader._coupling_networks` skipped this via
             # (no copper on >=2 layers in its span, so no resistor was
             # inserted in the FEM). Reporting a "current" for such a via
             # is meaningless — every per-hop R would come from the
@@ -18175,7 +18374,7 @@ when one of those has focus.</p>
     (in 3D each arrow rides the top face of its layer).</li>
   <li><b>Arrow spacing (px)</b> &mdash; pixels between adjacent
     arrows on screen. Smaller = denser arrows.</li>
-  <li><b>Color scale</b> &mdash; the gradient strip is overlaid on the
+  <li><b>Colour scale</b> &mdash; the gradient strip is overlaid on the
     viewer's bottom-left corner (with value ticks); drag its Min / Max
     handles, type exact values in the side-panel boxes, or click the
     <b>&#8634;</b> reset button to restore the data range.</li>
@@ -18422,12 +18621,313 @@ def _set_window_aumid(window) -> None:
         )
 
 
-def main(solution, warnings_list=None, metadata=None) -> int:
+def _triangulate_polygon_for_stub(poly):
+    """Constrained Delaunay triangulation of a Shapely Polygon.
+
+    Returns ``(vertex_xys, triangles)`` as numpy arrays — ``(N, 2)``
+    float64 and ``(M, 3)`` int32 — in the format the viewer's
+    :class:`LeanLayerSolution` expects.
+
+    Uses :func:`shapely.constrained_delaunay_triangles` (GEOS 3.10+),
+    which respects the polygon boundary so the result has no triangles
+    outside the copper. Empty / invalid polygons return empty arrays.
+    """
+    import shapely
+    if poly is None or poly.is_empty or poly.area <= 0:
+        return np.zeros((0, 2), dtype=np.float64), np.zeros((0, 3), dtype=np.int32)
+    try:
+        tri_coll = shapely.constrained_delaunay_triangles(poly)
+    except Exception:
+        return np.zeros((0, 2), dtype=np.float64), np.zeros((0, 3), dtype=np.int32)
+    vert_index: dict[tuple[float, float], int] = {}
+    verts: list[tuple[float, float]] = []
+    tri_indices: list[tuple[int, int, int]] = []
+    tris = getattr(tri_coll, "geoms", [tri_coll])
+    for t in tris:
+        if t.is_empty:
+            continue
+        coords = list(t.exterior.coords)
+        if len(coords) < 4:                  # need 3 distinct verts + close
+            continue
+        idx: list[int] = []
+        for x, y in coords[:3]:
+            k = (float(x), float(y))
+            i = vert_index.get(k)
+            if i is None:
+                i = len(verts)
+                vert_index[k] = i
+                verts.append(k)
+            idx.append(i)
+        tri_indices.append((idx[0], idx[1], idx[2]))
+    if not verts:
+        return np.zeros((0, 2), dtype=np.float64), np.zeros((0, 3), dtype=np.int32)
+    return (
+        np.asarray(verts, dtype=np.float64),
+        np.asarray(tri_indices, dtype=np.int32),
+    )
+
+
+def _build_stub_lean_solution_from_loaded(loaded) -> "LeanSolution":
+    """Create a minimal :class:`LeanSolution` from a Gerber-derived
+    LoadedProject so the viewer can open BEFORE the user has added any
+    editor directives or pressed Resolve.
+
+    The stub carries one :class:`LeanLayer` per copper layer with the
+    real geometry + conductance, plus a coarse constrained-Delaunay
+    triangulation per connected copper component so the renderer has
+    real triangles to push to the GPU. All per-vertex potentials are
+    zero — the heatmap is uniform until the user runs Resolve, at
+    which point the real solution replaces this stub. Visually the
+    user sees their copper, can pan / zoom, and use editor mode to
+    drop sources / sinks.
+    """
+    from fypa.lean_solution import (
+        LeanLayer,
+        LeanLayerSolution,
+        LeanProblem,
+        LeanSolution,
+    )
+    lean_layers: list[LeanLayer] = []
+    lean_solutions: list[LeanLayerSolution] = []
+    for L in loaded.geometry:
+        lean_layers.append(LeanLayer(
+            name=f"{L.name}|(none)",
+            conductance=L.conductance,
+            shape=L.shape,
+            layer_id=L.layer_id,
+            is_plane=L.is_plane,
+            plane_net_name=None,
+        ))
+        polys = (list(L.shape.geoms)
+                 if hasattr(L.shape, "geoms")
+                 else [L.shape])
+        vertex_xys: list[np.ndarray] = []
+        triangles: list[np.ndarray] = []
+        potentials: list[np.ndarray] = []
+        power_densities: list = []
+        for p in polys:
+            verts, tris = _triangulate_polygon_for_stub(p)
+            if verts.size == 0 or tris.size == 0:
+                continue
+            vertex_xys.append(verts)
+            triangles.append(tris)
+            potentials.append(np.zeros(verts.shape[0], dtype=np.float64))
+            power_densities.append(None)
+        lean_solutions.append(LeanLayerSolution(
+            vertex_xys=vertex_xys,
+            triangles=triangles,
+            potentials=potentials,
+            power_densities=power_densities,
+        ))
+    return LeanSolution(
+        problem=LeanProblem(
+            layers=lean_layers,
+            project_name=loaded.project_name,
+        ),
+        layer_solutions=lean_solutions,
+        solver_info={"ground_node_current": 0.0, "residual_norm": 0.0},
+    )
+
+
+def _perform_gerber_import(parent_window) -> tuple | None:
+    """Run the Gerber file picker → dialog flow → extract → load chain.
+
+    Returns ``(stub_solution, metadata, loaded_project, project_file)``
+    on success, ``None`` if the user cancelled at any point.
+
+    The caller is expected to feed the result through
+    :meth:`LauncherWindow._open_viewer_and_close` (or the equivalent
+    PdnViewer path), which constructs the ``PdnViewer`` and registers it.
+    """
+    from fypa.gerber.extract import (
+        GerberStackupLayer,
+        extract_gerber_project,
+    )
+    from fypa.gerber.import_ui import run_gerber_import_dialogs
+    from fypa.gerber.loader import load_gerber_project
+    from fypa.project_file import ProjectFile
+
+    paths_str, _ = QFileDialog.getOpenFileNames(
+        parent_window,
+        "Pick Gerber + drill files to import",
+        "",
+        "Gerber / Excellon ("
+        "*.gbr *.GBR *.gtl *.GTL *.gbl *.GBL *.g* *.G* "
+        "*.cmp *.CMP *.sol *.SOL *.gko *.GKO *.gm1 *.GM1 "
+        "*.gto *.GTO *.gbo *.GBO "
+        "*.drl *.DRL *.xln *.XLN *.txt *.TXT *.tap *.TAP *.nc *.NC);;"
+        "All files (*)",
+    )
+    if not paths_str:
+        return None
+    picked = [Path(p) for p in paths_str]
+    result = run_gerber_import_dialogs(picked, parent=parent_window)
+    if result is None:
+        return None
+
+    # Synthesise a pseudo-PrjPcb path next to the gerbers — the cache
+    # key + project identity rely on having a stable Path, but no file
+    # of that name needs to exist on disk.
+    folder = picked[0].parent.resolve()
+    pseudo = folder / f"{folder.name}.fypa-gerber"
+
+    extracted, warns = extract_gerber_project(
+        copper_files=result.copper_files,
+        drill_files=result.drill_files,
+        outline_file=result.outline_file,
+        stackup=result.stackup,
+        pseudo_prjpcb_path=pseudo,
+    )
+    for w in warns:
+        logging.getLogger(__name__).warning("Gerber import: %s", w)
+
+    loaded = load_gerber_project(extracted)
+    stub_solution = _build_stub_lean_solution_from_loaded(loaded)
+
+    # all_copper records — the per-layer "all copper" overlay (second eye
+    # icon on each physical layer in the side panel) is driven by this
+    # metadata key. Without it, toggling the eye on a Gerber import would
+    # have no geometry to draw. Each Gerber-derived geometry layer
+    # becomes one record with the NO_NET sentinel as the net name —
+    # exactly the format build_solve_metadata produces for the Altium
+    # path.
+    all_copper: list[dict] = []
+    for L in loaded.geometry:
+        if L.shape is None or L.shape.is_empty:
+            continue
+        polys = (list(L.shape.geoms)
+                 if L.shape.geom_type == "MultiPolygon"
+                 else [L.shape])
+        ring_polys: list[dict] = []
+        for poly in polys:
+            ext = getattr(poly, "exterior", None)
+            if ext is None or ext.is_empty:
+                continue
+            ext_arr = np.asarray(list(ext.coords), dtype=np.float32)
+            if ext_arr.shape[0] < 2:
+                continue
+            holes_arr: list = []
+            for hole in getattr(poly, "interiors", []):
+                if hole.is_empty:
+                    continue
+                h_arr = np.asarray(list(hole.coords), dtype=np.float32)
+                if h_arr.shape[0] >= 2:
+                    holes_arr.append(h_arr)
+            ring_polys.append({"exterior": ext_arr, "holes": holes_arr})
+        if not ring_polys:
+            continue
+        all_copper.append({
+            "layer_id": int(L.layer_id),
+            "net": "(none)",
+            "polygons": ring_polys,
+        })
+
+    # Stackup rows — the viewer reads ``layer_id`` + ``name`` to map
+    # physical-layer display names to the layer ids used by all_copper /
+    # editor directives, and ``copper_thickness_mm`` +
+    # ``dielectric_thickness_mm`` to position layers in 3D view. The
+    # mil / oz / sheet_conductance / sheet_resistance derivatives are
+    # what the Setup tab's stackup table renders; mirror the format
+    # build_solve_metadata produces for the Altium path.
+    stackup_rows: list[dict] = []
+    for s in extracted.stackup:
+        cu_mm = float(s.copper_thickness_mm)
+        sheet_conductance = cu_mm * 5.95e4
+        stackup_rows.append({
+            "layer_id": int(s.layer_id),
+            "name": s.name,
+            "copper_thickness_mm": cu_mm,
+            "copper_thickness_mil": cu_mm / 0.0254,
+            "copper_thickness_oz": cu_mm / 0.0348,
+            "dielectric_thickness_mm": float(s.dielectric_thickness_mm),
+            "sheet_conductance_S": sheet_conductance,
+            "sheet_resistance_milliohm_per_sq": (
+                1000.0 / sheet_conductance if sheet_conductance > 0 else 0.0
+            ),
+            "is_plane": False,
+            "plane_net_name": None,
+            "next_layer_id": int(s.next_layer_id),
+        })
+
+    # primitives — what the viewer's click-to-select walks. Each
+    # RawShapeBasedRegion from the extract becomes one record;
+    # vias/pads/tracks/arcs/fills stay empty (Gerber doesn't have them
+    # as distinct primitives — everything is a polygon by the time it
+    # reaches us). Format matches what altium.loader.build_solve_metadata
+    # produces for the Altium path so _primitives_index walks them the
+    # same way.
+    sbr_records: list[dict] = []
+    for i, rg in enumerate(extracted.shape_based_regions):
+        outline_pts = [[float(v.pos.x), float(v.pos.y)] for v in rg.outline]
+        sbr_records.append({
+            "id": i,
+            "kind": "shape_based_region",
+            "layer_id": int(rg.layer_id),
+            "net": "(none)",
+            "outline": outline_pts,
+            "holes": [[[float(p.x), float(p.y)] for p in h] for h in rg.holes],
+            "arc_edge_count": 0,
+            "kind_code": int(rg.kind),
+            "is_polygon_outline": bool(rg.is_polygon_outline),
+            "is_keepout": bool(rg.is_keepout),
+            "is_board_cutout": bool(rg.is_board_cutout),
+            "polygon_index": int(rg.polygon_index),
+        })
+    primitives = {
+        "tracks": [], "arcs": [], "regions": [],
+        "shape_based_regions": sbr_records, "fills": [],
+    }
+
+    metadata: dict = {
+        "source_kind": "gerber",
+        "prjpcb_path": str(pseudo),
+        "pcbdoc_path": str(pseudo),
+        "project_name": pseudo.stem,
+        "all_copper": all_copper,
+        "stackup": stackup_rows,
+        "primitives": primitives,
+        # Help the Setup tab show something meaningful.
+        "gerber_files": [str(p) for p in result.copper_files.values()],
+        "drill_files": [str(p) for p in result.drill_files],
+        "outline_file": (str(result.outline_file)
+                         if result.outline_file else None),
+    }
+
+    pf = ProjectFile(
+        source_kind="gerber",
+        prjpcb_path=str(pseudo),
+        pcbdoc_path=str(pseudo),
+        gerber_files=[str(p) for p in result.copper_files.values()],
+        drill_files=[str(p) for p in result.drill_files],
+        outline_file=(str(result.outline_file)
+                      if result.outline_file else None),
+        layer_assignments={p.name: lid
+                           for lid, p in result.copper_files.items()},
+        gerber_stackup=[
+            {
+                "layer_id": s.layer_id,
+                "name": s.name,
+                "copper_thickness_mm": s.copper_thickness_mm,
+                "dielectric_thickness_mm": s.dielectric_thickness_mm,
+            }
+            for s in result.stackup
+        ],
+    )
+    return stub_solution, metadata, loaded, pf
+
+
+def main(solution, warnings_list=None, metadata=None,
+         gerber_import_target=None) -> int:
     """CLI entry — show the viewer for the given Solution and run the Qt
     event loop. Returns the QApplication exit code.
 
     If ``solution is None``, opens an empty :class:`LauncherWindow` instead
     so the user can pick a project / pickle from the File menu.
+
+    ``gerber_import_target`` (CLI ``FYPA gerber-gui`` path): when not None,
+    the launcher window opens, then immediately triggers the Gerber-import
+    flow. Pass a folder Path or a saved ``.fypa`` Path; pass any non-None
+    value to open the file picker without pre-selection.
     """
     # Windows taskbar grouping — must happen BEFORE any window is shown.
     _set_windows_app_user_model_id()
@@ -18446,6 +18946,12 @@ def main(solution, warnings_list=None, metadata=None) -> int:
         app.setWindowIcon(icon)
     if solution is None:
         win = LauncherWindow()
+        if gerber_import_target is not None:
+            # Defer the dialog one event-loop tick so the launcher window
+            # has a chance to lay out + show before the modal file picker
+            # pops over it.
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, win._on_menu_import_gerber)
     else:
         win = PdnViewer(solution, metadata=metadata)
     win.show()

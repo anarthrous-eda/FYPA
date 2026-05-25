@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from fypa.altium_annotations import (
+from fypa.altium.annotations import (
     AnnotationResult,
     ResistorSpec,
     SinkSpec,

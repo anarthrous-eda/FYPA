@@ -1,9 +1,9 @@
 """PDN_* annotation parser for FYPA.
 
-Reads :class:`altium_extract.ExtractedProject` and produces typed lumped-element
+Reads :class:`fypa.altium.extract.ExtractedProject` and produces typed lumped-element
 directive specs (``SourceSpec``, ``SinkSpec``, ``ResistorSpec``,
 ``RegulatorSpec``) plus per-terminal pad resolution against the PCB. The
-:mod:`altium_loader` module will turn these into padne ``Network`` objects.
+:mod:`fypa.altium.loader` module will turn these into padne ``Network`` objects.
 
 Annotation schema (component parameters in the schematic)
 ---------------------------------------------------------
@@ -85,7 +85,7 @@ from dataclasses import dataclass, field, replace
 
 import shapely.geometry
 
-from fypa.altium_extract import (
+from fypa.altium.extract import (
     ExtractedProject,
     NO_NET,
     Pt2D,
@@ -1252,7 +1252,7 @@ def parse_annotations(proj: ExtractedProject,
 
     for comp in proj.sch_components:
         if comp.designator.upper() in skip_set:
-            continue  # Absorbed by net-merge pre-pass — see altium_loader.
+            continue  # Absorbed by net-merge pre-pass — see fypa.altium.loader.
         role_raw = _ci_get(comp.parameters, ROLE_KEY)
         if role_raw is None:
             # Component carries no PDN_* role tag — skip silently. But warn if
@@ -1335,12 +1335,12 @@ def _describe_directive(d: DirectiveSpec) -> str:
 
 if __name__ == "__main__":
     import sys
-    from fypa.altium_extract import extract_project
+    from fypa.altium.extract import extract_project
 
     logging.basicConfig(level=logging.INFO,
                         format="%(levelname)s %(name)s: %(message)s")
     if len(sys.argv) != 2:
-        print("usage: python altium_annotations.py PATH_TO.PrjPcb", file=sys.stderr)
+        print("usage: python -m fypa.altium.annotations PATH_TO.PrjPcb", file=sys.stderr)
         sys.exit(2)
 
     proj = extract_project(sys.argv[1])

@@ -3,13 +3,18 @@
 A project file is a small JSON document that ties together everything FYPA
 needs to reopen a board exactly as the user left it:
 
-* the Altium sources it came from (``.PrjPcb`` / ``.PcbDoc``),
+* the design source it came from — either an Altium project (``.PrjPcb`` +
+  ``.PcbDoc``) or a set of Gerber + Excellon files (``gerber_files`` +
+  ``drill_files`` + an optional ``outline_file``),
 * the two cache pickles produced by the solve pipeline — ``design-info.pkl``
   (extraction + geometry, see :func:`fypa.cli._design_info_cache_path`) and
   ``solve.pkl`` (the FEM solution, see :func:`fypa.cli._solve_cache_path`),
 * any **editor-mode directives** the user has placed by hand (sources / sinks
-  dropped on components or free on copper), and
-* a reserved ``net_renames`` map for a future gerber-export mode.
+  dropped on components or free on copper),
+* a reserved ``net_renames`` map for a future gerber-export mode, and
+* (Gerber projects only) the per-file ``layer_assignments`` and per-layer
+  ``gerber_stackup`` the user confirmed in the import dialogs, so reopening
+  the project skips those dialogs.
 
 The pickles are *referenced*, not embedded — they can be large (tens to
 hundreds of MB). Paths are stored relative to the ``.fypa`` file when both sit
@@ -27,10 +32,10 @@ from typing import Any
 # Bumped whenever the on-disk schema changes incompatibly. ``load`` tolerates
 # older minor additions (missing keys fall back to defaults); a hard mismatch
 # raises so the user gets a clear error rather than silently-wrong state.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Roles an editor directive may carry. Mirrors ``VALID_ROLES`` in
-# :mod:`fypa.altium_annotations`; kept as a local copy so this module has no
+# :mod:`fypa.altium.annotations`; kept as a local copy so this module has no
 # import dependency on the (heavy) annotation stack.
 EDITOR_ROLES = ("SOURCE", "SINK", "REGULATOR", "SERIES")
 
@@ -172,6 +177,23 @@ class ProjectFile:
     net_renames: dict[str, str] = field(default_factory=dict)   # reserved
     viewer_settings: dict[str, Any] = field(default_factory=dict)
 
+    # ---- Gerber-import fields (schema v2) --------------------------------
+    # Populated when the project was imported from Gerber files instead of
+    # an Altium .PrjPcb. ``source_kind`` is the discriminator the viewer +
+    # cli consult when deciding which extract path to use on re-open.
+    source_kind: str = "altium"                                  # "altium" | "gerber"
+    gerber_files: list[str] = field(default_factory=list)        # rel to .fypa
+    drill_files: list[str] = field(default_factory=list)
+    outline_file: str | None = None
+    # basename -> Altium-convention layer id (1 Top, 32 Bottom, 2..31 inner,
+    # 33/34 silk; see fypa.gerber.extract for sentinels).
+    layer_assignments: dict[str, int] = field(default_factory=dict)
+    # Serialised GerberStackupLayer list — each dict carries layer_id /
+    # name / copper_thickness_mm / dielectric_thickness_mm. We round-trip
+    # plain dicts so that loading a v2 .fypa doesn't force a hard import
+    # of fypa.gerber.extract (PySide6 may not be needed for a CLI load).
+    gerber_stackup: list[dict[str, Any]] = field(default_factory=list)
+
     # ------------------------------------------------------------------
     # Serialisation
     # ------------------------------------------------------------------
@@ -193,6 +215,12 @@ class ProjectFile:
             "copper_names": [c.to_dict() for c in self.copper_names],
             "net_renames": dict(self.net_renames),
             "viewer_settings": dict(self.viewer_settings),
+            "source_kind": self.source_kind,
+            "gerber_files": [_rel(p, base) for p in self.gerber_files],
+            "drill_files": [_rel(p, base) for p in self.drill_files],
+            "outline_file": _rel(self.outline_file, base),
+            "layer_assignments": dict(self.layer_assignments),
+            "gerber_stackup": [dict(d) for d in self.gerber_stackup],
         }
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(json.dumps(doc, indent=2), encoding="utf-8")
@@ -229,6 +257,14 @@ class ProjectFile:
             ],
             net_renames=dict(doc.get("net_renames", {})),
             viewer_settings=dict(doc.get("viewer_settings", {})),
+            source_kind=str(doc.get("source_kind", "altium")),
+            gerber_files=[_abs(p, base) for p in doc.get("gerber_files", [])
+                          if p],
+            drill_files=[_abs(p, base) for p in doc.get("drill_files", [])
+                         if p],
+            outline_file=_abs(doc.get("outline_file"), base),
+            layer_assignments=dict(doc.get("layer_assignments", {})),
+            gerber_stackup=[dict(d) for d in doc.get("gerber_stackup", [])],
         )
 
     # ------------------------------------------------------------------

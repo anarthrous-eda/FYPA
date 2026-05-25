@@ -12,6 +12,7 @@ material (every parameter, every CLI flag), see the
 4. [Regulators — LDOs and buck converters](04-regulators.md)
 5. [The viewer tour](05-viewer-tour.md)
 6. [Exporting to ParaView](06-paraview-export.md)
+7. [Importing a board from Gerber files](07-gerber-import.md)
 
 ## Conventions
 

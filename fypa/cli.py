@@ -59,10 +59,10 @@ class _GilYieldingWriter:
             self._next_yield = time.monotonic() + self._min_interval_s
         return n
 
-from fypa.altium_annotations import _describe_directive, parse_annotations
-from fypa.altium_extract import extract_project
+from fypa.altium.annotations import _describe_directive, parse_annotations
+from fypa.altium.extract import extract_project
 from fypa.altium_geometry import _save_quicklook, build_layer_geometries
-from fypa.altium_loader import build_problem, build_solve_metadata, load_project
+from fypa.altium.loader import build_problem, build_solve_metadata, load_project
 from fypa.lean_solution import LeanSolution, to_lean_solution
 from pdnsolver import mesh as _pdn_mesh
 from pdnsolver import solver as _pdn_solver
@@ -96,7 +96,7 @@ else:
 # a singular matrix — producing garbage voltages (0.4 V instead of 3.3 V).
 #
 # The performance concern (hundreds of tiny stubs → slow triangulation) is now
-# handled by altium_loader._filter_stub_pieces and _drop_unreachable_layers,
+# handled by fypa.altium.loader._filter_stub_pieces and _drop_unreachable_layers,
 # which remove isolated copper from padne's Problem before it reaches the
 # mesher. The remaining "disconnected" components are few and small (legitimate
 # copper areas connected only via lumped elements). Letting padne mesh them
@@ -177,6 +177,16 @@ def _build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("paraview", help="Export a pickled solution to ParaView VTK")
     sp.add_argument("solution", type=Path)
     sp.add_argument("output_dir", type=Path)
+
+    sp = sub.add_parser(
+        "gerber-gui",
+        help="Open the viewer and import a board from Gerber + Excellon files",
+    )
+    sp.add_argument(
+        "input", type=Path, nargs="?", default=None,
+        help="Folder of Gerber files OR a saved .fypa with source_kind=gerber. "
+             "Omit to open the empty launcher (use File > Import Gerber Files…).",
+    )
 
     return p
 
@@ -396,7 +406,7 @@ def _load_solution_pickle(path, *, lean_ify: bool = True
 # Bump when the cache pickle format changes in an incompatible way so old
 # caches are invalidated automatically (a load with a different version
 # treats it as a miss).
-_CACHE_SCHEMA_VERSION: int = 5
+_CACHE_SCHEMA_VERSION: int = 6
 
 # Bump when a solver/loader/geometry change alters numerical output — even
 # whitespace edits to the tool sources used to invalidate the cache because
@@ -404,7 +414,7 @@ _CACHE_SCHEMA_VERSION: int = 5
 # (below) means cosmetic-only refactors no longer force a re-solve, but
 # real semantic changes still must invalidate. Bump this integer when you
 # make a change you want to force a recompute for.
-_SOLVE_SCHEMA_VERSION: int = 2
+_SOLVE_SCHEMA_VERSION: int = 3
 
 # Cache files live here, keyed by SHA-1 of the project's absolute path
 # (so projects with the same .PrjPcb basename in different directories
@@ -421,13 +431,13 @@ else:
 # fingerprint. If you edit one in a way that changes the bytes, the next
 # load invalidates the cached LoadedProject. Anything that affects the
 # raw extract / geometry build / annotation parse belongs here.
-_DESIGN_TOOL_SOURCES: tuple[Path, ...] = tuple(
-    _PKG_DIR / name for name in (
-        "altium_extract.py",
-        "altium_annotations.py",
-        "altium_geometry.py",
-        "altium_loader.py",
-    )
+_DESIGN_TOOL_SOURCES: tuple[Path, ...] = (
+    _PKG_DIR / "altium" / "extract.py",
+    _PKG_DIR / "altium" / "annotations.py",
+    _PKG_DIR / "altium_geometry.py",
+    _PKG_DIR / "altium" / "loader.py",
+    _PKG_DIR / "gerber" / "extract.py",
+    _PKG_DIR / "gerber" / "loader.py",
 )
 
 # Additional tool-side source files whose CONTENT HASH feeds into the
@@ -475,8 +485,17 @@ def _resolve_pcbdoc(prjpcb_path: Path,
     """Return the absolute path of the PcbDoc that this run will solve
     against. ``selector`` is filtered through altium_monkey's matcher;
     ``None`` picks the first PcbDoc in project order. Raises ``ValueError``
-    when the selector doesn't match any board in the project."""
-    from fypa.altium_extract import list_pcbdoc_paths
+    when the selector doesn't match any board in the project.
+
+    Gerber-sourced projects use a synthetic ``.fypa-gerber`` pseudo-path
+    in place of a real ``.PrjPcb``; for those there is no PcbDoc to
+    resolve, so we return the path unchanged.
+    """
+    # Non-Altium paths (Gerber import path; a saved .fypa with source_kind
+    # == "gerber"; etc.) have no PcbDoc collection to walk.
+    if prjpcb_path.suffix.lower() != ".prjpcb":
+        return prjpcb_path
+    from fypa.altium.extract import list_pcbdoc_paths
     paths = list_pcbdoc_paths(prjpcb_path)
     if not paths:
         raise RuntimeError(
@@ -1052,6 +1071,24 @@ def do_gui(args: argparse.Namespace) -> int:
     return altium_viewer.main(solution, metadata=metadata) or 0
 
 
+def do_gerber_gui(args: argparse.Namespace) -> int:
+    """Open the viewer's empty launcher, then immediately trigger the
+    Gerber-import flow against ``args.input`` (either a folder of
+    Gerbers or a previously-saved ``.fypa`` with ``source_kind=gerber``).
+
+    The actual file-picker + dialog flow lives in the viewer module so
+    this subcommand is a thin pre-arrangement around
+    :func:`fypa.altium_viewer.main`.
+    """
+    if not _require_pyside6("gerber-gui"):
+        return 2
+    from fypa import altium_viewer
+    return altium_viewer.main(
+        None,
+        gerber_import_target=args.input,
+    ) or 0
+
+
 def do_paraview(args: argparse.Namespace) -> int:
     try:
         from pdnsolver import paraview as _pdn_paraview
@@ -1085,6 +1122,7 @@ _DISPATCH = {
     "solve": do_solve,
     "show": do_show,
     "gui": do_gui,
+    "gerber-gui": do_gerber_gui,
     "paraview": do_paraview,
 }
 

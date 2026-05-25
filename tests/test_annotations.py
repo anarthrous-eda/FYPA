@@ -4,11 +4,11 @@ These exercise the parser's pure logic directly (no Altium extraction):
 ``_terminal_mode`` decides single-net vs two-terminal per channel, and
 ``_validate_directive_groups`` enforces the cross-directive rules — mode
 consistency within an analysis group, the open-loop check, and return-group
-assignment. See ``altium_annotations.py`` for the schema.
+assignment. See ``fypa.altium.annotations`` for the schema.
 """
 from __future__ import annotations
 
-from fypa.altium_annotations import (
+from fypa.altium.annotations import (
     AnnotationResult,
     SinkSpec,
     SourceSpec,
@@ -17,7 +17,7 @@ from fypa.altium_annotations import (
     _terminal_mode,
     _validate_directive_groups,
 )
-from fypa.altium_extract import Pt2D
+from fypa.altium.extract import Pt2D
 
 
 # --- _terminal_mode -----------------------------------------------------------
