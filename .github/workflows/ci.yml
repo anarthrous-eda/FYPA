@@ -21,22 +21,27 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
         with:
-          python-version: "3.12"
+          # Pin uv itself so CI is reproducible; bump as we adopt new uv features.
+          # Matches the version range developers pick up via `winget install astral-sh.uv`.
+          version: "0.11.x"
+          # Cache the uv resolver download + wheel cache between runs.
+          enable-cache: true
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt -r requirements-dev.txt
-          python -m pip install -e altium_monkey
+      - name: Sync dependencies (runtime + dev)
+        # `uv sync` reads pyproject.toml + uv.lock, fetches Python 3.12 per
+        # .python-version, creates .venv, installs runtime + dev groups.
+        # The `build` group (PyInstaller) is intentionally excluded — CI
+        # doesn't package, only lints and tests.
+        run: uv sync
 
       - name: Lint (ruff)
-        run: ruff check .
+        run: uv run ruff check .
 
       - name: Test (pytest — fast suite)
         # The 'slow' end-to-end regression runs on the large Imperial /
         # Methuselah designs are excluded here; run them locally with
-        # `pytest -m slow` (a few minutes each).
-        run: pytest -m "not slow"
+        # `uv run pytest -m slow` (a few minutes each).
+        run: uv run pytest -m "not slow"

@@ -11,42 +11,24 @@ REM every relative path below (.venv, build, dist, README.md) resolves there
 REM no matter where the script was launched from.
 cd /d "%~dp0.."
 
-if not exist ".venv\Scripts\activate.bat" (
-    echo ERROR: .venv not found at the repo root. Create the venv there first.
-    pause & exit /b 1
-)
-
-REM Activate the virtual environment
-call .venv\Scripts\activate.bat
+REM uv manages the venv + Python version + dependencies. Bail if it isn't on
+REM PATH so the build doesn't silently fall back to a stale .venv.
+where uv >nul 2>&1
 if errorlevel 1 (
-    echo ERROR: Failed to activate .venv
-    pause & exit /b 1
+    echo ERROR: uv not found on PATH. Install it with: winget install astral-sh.uv
+    pause ^& exit /b 1
 )
 
-REM Reconcile the venv against requirements.txt so a freshly-built .venv (or
-REM one missing a recently-added dep like lxml for the ParaView exporter)
-REM picks up everything before PyInstaller does its dependency walk.
-if exist "requirements.txt" (
-    echo Reconciling .venv against requirements.txt ...
-    pip install -r requirements.txt
-    if errorlevel 1 (
-        echo ERROR: pip install -r requirements.txt failed
-        pause & exit /b 1
-    )
-    echo.
-)
-
-REM Install PyInstaller into the venv if it is not already present
-python -m PyInstaller --version >nul 2>&1
+REM Sync runtime + dev + build groups (pulls PyInstaller in via the `build`
+REM group). Resolves the lockfile, creates / updates .venv, fetches Python
+REM 3.12 if missing.
+echo Syncing dependencies (runtime + dev + build) ...
+uv sync --group build
 if errorlevel 1 (
-    echo PyInstaller not found -- installing into .venv ...
-    pip install pyinstaller
-    if errorlevel 1 (
-        echo ERROR: pip install pyinstaller failed
-        pause & exit /b 1
-    )
-    echo.
+    echo ERROR: uv sync failed
+    pause ^& exit /b 1
 )
+echo.
 
 REM Wipe previous build artefacts for a clean output
 echo Cleaning previous build artefacts...
@@ -54,17 +36,19 @@ if exist build  rmdir /s /q build
 if exist dist   rmdir /s /q dist
 echo.
 
-REM Run PyInstaller using the project spec file (lives next to this script)
+REM Run PyInstaller using the project spec file (lives next to this script).
+REM `uv run` ensures the synced .venv interpreter is used regardless of which
+REM shell / activation state the script was launched from.
 echo Running PyInstaller ...
 echo.
-pyinstaller "%~dp0FYPA.spec"
+uv run pyinstaller "%~dp0FYPA.spec"
 
 if errorlevel 1 (
     echo.
     echo =========================================
     echo   BUILD FAILED -- see output above
     echo =========================================
-    pause & exit /b 1
+    pause ^& exit /b 1
 )
 
 REM Copy README into the dist folder so it travels with the zip
@@ -82,7 +66,7 @@ if exist "dist\FYPA.zip" del /q "dist\FYPA.zip"
 powershell -NoProfile -Command "Compress-Archive -Path 'dist\FYPA' -DestinationPath 'dist\FYPA.zip' -Force"
 if errorlevel 1 (
     echo ERROR: Failed to create dist\FYPA.zip
-    pause & exit /b 1
+    pause ^& exit /b 1
 )
 
 REM Remove the unzipped staging folder -- only the zip should remain in dist\

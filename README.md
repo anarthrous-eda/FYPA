@@ -81,22 +81,42 @@ If you cloned without `--recursive`, run:
 git submodule update --init --recursive
 ```
 
-Set up a virtual environment and install the Python dependencies.
+FYPA uses [uv](https://docs.astral.sh/uv/) for dependency and Python-version
+management. Install uv once (Windows):
+
+```sh
+winget install astral-sh.uv          # or: pip install uv
+```
+
+Then, from the repo root:
+
+```sh
+uv sync
+```
+
+That's it. `uv sync` reads `pyproject.toml` + `uv.lock`, fetches Python 3.12
+if it isn't already available (the version is pinned in `.python-version`),
+creates a `.venv\` inside the repo, and installs every runtime + dev
+dependency — including `altium_monkey` (in editable mode, picked up from the
+submodule via `[tool.uv.sources]`).
 
 > **Python version: 3.11 or 3.12 only.** The `altium_monkey` submodule pins
 > `requires-python = ">=3.11,<3.13"`, and its `numpy==2.2.3` dependency
-> does not yet ship wheels for 3.13/3.14. Python 3.11 is the tested version;
-> 3.12 also works. On Windows, install Python 3.12 from
-> [python.org](https://www.python.org/downloads/) or via
-> `winget install Python.Python.3.12`, then create the venv with the `py`
-> launcher to pick the right interpreter:
+> does not yet ship wheels for 3.13/3.14. `.python-version` pins 3.12, which
+> uv fetches automatically; to use 3.11 instead, edit that file before
+> running `uv sync`.
+
+Day-to-day commands:
 
 ```sh
-py -3.12 -m venv .venv             # or: py -3.11 -m venv .venv
-.venv\Scripts\activate             # PowerShell: .venv\Scripts\Activate.ps1
-pip install -e altium_monkey
-pip install -r requirements.txt
+uv run python FYPA.py gui path\to\YourBoard.PrjPcb   # run the app
+uv run pytest -m "not slow"                          # fast test suite
+uv run ruff check .                                  # lint
 ```
+
+`uv run` automatically syncs the venv if it's out of date, so you don't need
+to `activate` first. If you prefer the classic flow, `.venv\Scripts\activate`
+still works.
 
 `PyOpenGL` and `PyOpenGL_accelerate` are required for the GPU viewer.
 
@@ -377,13 +397,12 @@ installation — they just extract a zip and double-click the `.exe`.
 
 ### Prerequisites
 
-PyInstaller is not listed in `requirements.txt` because it is only needed
-by whoever is doing the build, not by users of the tool. Install it once
-into the project venv:
+PyInstaller is in the opt-in `build` dependency group (not installed by
+default `uv sync`) because it is only needed by whoever is doing the build,
+not by users of the tool. Pull it in once:
 
 ```sh
-.venv\Scripts\activate
-pip install pyinstaller
+uv sync --group build
 ```
 
 ### Building

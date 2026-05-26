@@ -1,8 +1,84 @@
-# Project tooling configuration for FYPA.
+# Project + tooling configuration for FYPA.
 #
 # FYPA is run as a set of top-level scripts (FYPA.py + sibling modules) rather
-# than an installed package, so this file intentionally carries no [project]
-# build metadata — it exists only to configure the dev tooling (pytest, ruff).
+# than an installed package. `[project]` exists so uv can resolve the runtime
+# dependency tree (including the altium_monkey submodule, see [tool.uv.sources]
+# below); `[tool.uv] package = false` tells uv NOT to try to build/install
+# FYPA itself as a wheel.
+#
+# Day-to-day commands:
+#   uv sync                  # runtime + dev deps (default)
+#   uv sync --no-default-groups  # runtime only (what end-users build from)
+#   uv sync --group build    # adds PyInstaller for packaging
+#   uv run pytest -m "not slow"
+#   uv run ruff check .
+
+[project]
+name = "fypa"
+version = "0.0.0"
+description = "FEM Y-parameter Power Analyser — PDN analysis for Altium and Gerber PCB designs."
+# altium_monkey pins `>=3.11,<3.13`; FYPA tracks the same window.
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    # --- Altium project parser (vendored as a git submodule; see [tool.uv.sources]) ---
+    "altium-monkey",
+
+    # --- Qt + GUI ---
+    "PySide6==6.11.1",
+
+    # --- Custom OpenGL viewer ---
+    "PyOpenGL==3.1.10",
+    "PyOpenGL_accelerate==3.1.10",
+
+    # --- FEM solver + mesher (pdnsolver/) ---
+    "numpy==2.2.3",
+    "scipy==1.17.1",
+    "shapely==2.1.2",
+    "triangle==20250106",
+
+    # Fast direct linear solver (MKL PARDISO). Optional but strongly
+    # recommended — several times faster than scipy's SuperLU on large boards.
+    # pdnsolver.solver falls back to SuperLU automatically if it is absent.
+    # Pulls in Intel MKL (~180 MB).
+    "pypardiso==0.4.7",
+
+    # --- Colormaps + CPU-side hover-probe interpolator ---
+    "matplotlib==3.10.9",
+
+    # --- ParaView VTU export (File > Export > ParaView, and `FYPA paraview` CLI) ---
+    "lxml==5.3.0",
+
+    # --- Gerber + Excellon import (File > Import Gerber Files…) ---
+    # Pure-Python RS-274X / NC-drill parser. Pulls flask / quart / h2 as
+    # transitive deps for its bundled web viewer; those modules aren't on our
+    # import path and are excluded from the PyInstaller bundle (see
+    # packaging/FYPA.spec).
+    "gerbonara==1.5.0",
+]
+
+[dependency-groups]
+# Installed by default with `uv sync`. Test + lint tooling.
+dev = [
+    "pytest==9.0.3",
+    "ruff==0.15.13",
+]
+# Opt-in via `uv sync --group build`. Only needed by whoever is producing
+# the PyInstaller bundle, not by end users.
+build = [
+    "pyinstaller",
+]
+
+[tool.uv]
+# FYPA itself is not a wheel-installable package — it's a set of scripts
+# (FYPA.py + sibling modules) run directly out of the working copy. Skip the
+# project build step; uv still resolves and installs all dependencies.
+package = false
+
+[tool.uv.sources]
+# altium_monkey lives as a git submodule at ./altium_monkey. The editable
+# install mirrors the previous `pip install -e altium_monkey` flow so in-tree
+# edits to the submodule take effect without a reinstall.
+altium-monkey = { path = "altium_monkey", editable = true }
 
 [tool.pytest.ini_options]
 # Tests import `pdnsolver` (and, for regression tests, shell out to FYPA.py),
