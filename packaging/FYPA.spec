@@ -24,9 +24,7 @@ _altium_monkey_submodules = collect_submodules('altium_monkey')
 
 a = Analysis(
     [os.path.join(_REPO_ROOT, 'FYPA.py')],
-    # altium_monkey is an editable install; add its source root as a fallback
-    # so PyInstaller finds it even if the .pth hook is missed.
-    pathex=[os.path.join(_REPO_ROOT, 'altium_monkey', 'src', 'py')],
+    pathex=[],
     binaries=[],
     datas=[
         # Icon files used by the app window / taskbar

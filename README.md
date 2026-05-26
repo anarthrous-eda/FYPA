@@ -67,20 +67,6 @@ To build the executable yourself, see
 
 ## Installation (from source)
 
-This project depends on `altium_monkey` (a git submodule) and a handful of
-PyPI packages. Clone with `--recursive` to pull the submodule in one go:
-
-```sh
-git clone --recursive git@github.com:cutreedesigns/FYPA.git
-cd FYPA
-```
-
-If you cloned without `--recursive`, run:
-
-```sh
-git submodule update --init --recursive
-```
-
 FYPA uses [uv](https://docs.astral.sh/uv/) for dependency and Python-version
 management. Install uv once (Windows):
 
@@ -88,19 +74,22 @@ management. Install uv once (Windows):
 winget install astral-sh.uv          # or: pip install uv
 ```
 
-Then, from the repo root:
+Then clone and sync:
 
 ```sh
+git clone git@github.com:cutreedesigns/FYPA.git
+cd FYPA
 uv sync
 ```
 
 That's it. `uv sync` reads `pyproject.toml` + `uv.lock`, fetches Python 3.12
 if it isn't already available (the version is pinned in `.python-version`),
 creates a `.venv\` inside the repo, and installs every runtime + dev
-dependency — including `altium_monkey` (in editable mode, picked up from the
-submodule via `[tool.uv.sources]`).
+dependency — including `altium_monkey`, which uv pulls from
+[upstream](https://github.com/wavenumber-eng/altium_monkey) at the tag pinned
+in `pyproject.toml`'s `[tool.uv.sources]`.
 
-> **Python version: 3.11 or 3.12 only.** The `altium_monkey` submodule pins
+> **Python version: 3.11 or 3.12 only.** The `altium_monkey` upstream pins
 > `requires-python = ">=3.11,<3.13"`, and its `numpy==2.2.3` dependency
 > does not yet ship wheels for 3.13/3.14. `.python-version` pins 3.12, which
 > uv fetches automatically; to use 3.11 instead, edit that file before
@@ -479,7 +468,6 @@ fypa/                    Application package:
   gl_mesh_viewer.py      Custom QOpenGLWidget — mesh-on-GPU heatmap canvas
   lean_solution.py       Compact numeric solution (cache / pickle payload)
 pdnsolver/               Vendored fork of padne (FEM solver + mesher)
-altium_monkey/           Submodule — Altium project parser
 packaging/               PyInstaller spec, build script, Altium launcher
 ```
 

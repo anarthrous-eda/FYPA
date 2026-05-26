@@ -20,7 +20,7 @@ description = "FEM Y-parameter Power Analyser — PDN analysis for Altium and Ge
 # altium_monkey pins `>=3.11,<3.13`; FYPA tracks the same window.
 requires-python = ">=3.11,<3.13"
 dependencies = [
-    # --- Altium project parser (vendored as a git submodule; see [tool.uv.sources]) ---
+    # --- Altium project parser (fetched from upstream git; see [tool.uv.sources]) ---
     "altium-monkey",
 
     # --- Qt + GUI ---
@@ -75,10 +75,9 @@ build = [
 package = false
 
 [tool.uv.sources]
-# altium_monkey lives as a git submodule at ./altium_monkey. The editable
-# install mirrors the previous `pip install -e altium_monkey` flow so in-tree
-# edits to the submodule take effect without a reinstall.
-altium-monkey = { path = "altium_monkey", editable = true }
+# altium_monkey is fetched directly from the upstream repo at a pinned tag.
+# To bump: edit the tag, then `uv lock --upgrade-package altium-monkey`.
+altium-monkey = { git = "https://github.com/wavenumber-eng/altium_monkey", tag = "v2026.5.20" }
 
 [tool.pytest.ini_options]
 # Tests import `pdnsolver` (and, for regression tests, shell out to FYPA.py),

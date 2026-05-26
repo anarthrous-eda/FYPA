@@ -95,7 +95,8 @@ wheels = [
 
 [[package]]
 name = "altium-monkey"
-source = { editable = "altium_monkey" }
+version = "2026.5.20"
+source = { git = "https://github.com/wavenumber-eng/altium_monkey?tag=v2026.5.20#b295cfafc7c7feba0409716cb45721a1da71a586" }
 dependencies = [
     { name = "cadquery" },
     { name = "freetype-py" },
@@ -103,20 +104,6 @@ dependencies = [
     { name = "pillow" },
     { name = "uharfbuzz" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "build", marker = "extra == 'release'", specifier = ">=1.2" },
-    { name = "cadquery" },
-    { name = "freetype-py" },
-    { name = "numpy", specifier = "==2.2.3" },
-    { name = "pillow", specifier = "==11.2.1" },
-    { name = "pytest", marker = "extra == 'release'", specifier = ">=8.0" },
-    { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
-    { name = "twine", marker = "extra == 'release'", specifier = ">=5.0" },
-    { name = "uharfbuzz" },
-]
-provides-extras = ["examples", "release", "test"]
 
 [[package]]
 name = "attrs"
@@ -426,7 +413,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "altium-monkey", editable = "altium_monkey" },
+    { name = "altium-monkey", git = "https://github.com/wavenumber-eng/altium_monkey?tag=v2026.5.20" },
     { name = "gerbonara", specifier = "==1.5.0" },
     { name = "lxml", specifier = "==5.3.0" },
     { name = "matplotlib", specifier = "==3.10.9" },

@@ -20,4 +20,5 @@ FYPA builds on, and vendors code from, the following projects (see
 - [padne](https://github.com/atx/padne) — the FEM PDN solver (`pdnsolver/` is a
   vendored fork).
 - [altium_monkey](https://github.com/wavenumber-eng/altium_monkey) — Altium
-  project file parser (included as a submodule).
+  project file parser (pulled in as a uv git dependency, pinned to a tag
+  in `pyproject.toml`).
