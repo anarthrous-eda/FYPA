@@ -1388,14 +1388,15 @@ def _overlay_ribbon_offsets(polyline, half_w: float, *,
     """Mitered outer / inner edge points of a constant-width ribbon
     centred on ``polyline``.
 
-    Returns ``(pts, outer, inner)`` — the cleaned centre-line vertices and
-    the two offset edges, each a float64 ``(n, 2)`` array — or ``None`` when
-    the polyline is too short to form a ribbon. The offset at each vertex
-    bisects its two adjacent edge normals, so the band keeps a clean
-    constant width even when the polyline has many short segments. A naive
-    per-segment rectangle ribbon splays those into a radial sunburst once
-    the width exceeds the segment length (e.g. a tessellated circular pad).
-    ``closed`` joins the last vertex back to the first.
+    Returns ``(pts, outer, inner)`` — the cleaned centre-line vertices
+    and the two offset edges, each a float64 ``(n, 2)`` array — or
+    ``None`` when the polyline is too short to form a ribbon. The
+    offset at each vertex bisects its two adjacent edge normals, so the
+    band keeps a clean constant width even when the polyline has many
+    short segments. Sharp corners are clamped via a tight miter limit
+    (max offset ≈ 1.25 × half_w) so spikes are sub-pixel at typical
+    zoom; the residual notch left at very sharp turns is < 0.25 ×
+    half_w, also visually negligible.
 
     Shared by :func:`_overlay_outline_tris` (which fills the band) and
     :func:`_overlay_ribbon_outline_tris` (which traces its perimeter for
@@ -1428,28 +1429,26 @@ def _overlay_ribbon_offsets(polyline, half_w: float, *,
         prev_norm[0] = enorm[0]        # open start has no incoming edge
     bis = enorm + prev_norm
     blen = np.linalg.norm(bis, axis=1)
-    # Treat near-hairpins (incoming ≈ -outgoing) as flat. With a tiny
-    # 1e-9 threshold a vertex with ``blen`` just above 1e-9 normalises
-    # to a numerically arbitrary direction, so ``dot`` (below) can come
-    # out as a small *negative* — flipping the offset to the wrong
-    # side of the polyline and producing a long triangular spike at
-    # that one vertex. 1e-3 corresponds to a turn within ~0.06° of a
-    # perfect 180° reverse, well below any meaningful corner.
+    # Near-hairpin (incoming ≈ -outgoing): bisector sum is near zero,
+    # normalised direction is numerically arbitrary. Treat as flat — the
+    # offset on either side of pts[i] is just ±enorm × half_w.
     flat = blen < 1e-3
     bis[flat] = enorm[flat]
     blen[flat] = 1.0
     bis /= blen[:, None]
-    # Miter length = half_w / cos(theta/2). Clamp by |dot| so noise on
-    # the sign cannot invert the offset; the bisector direction
-    # (already chosen on the outside of the polygon) is the only
-    # signed quantity we need to preserve. 0.5 caps the miter at
-    # 2 × half_w — anything sharper visibly spikes a triangular wedge
-    # into the polygon interior on dense pad/track outlines where
-    # cos(theta/2) crosses 0.25 (≈ a 150° turn) routinely. A 0.5 cap
-    # keeps full miters intact through 120° turns (more than enough
-    # for normal PCB corner geometry) and bevels harder turns flat.
+    # Miter length = half_w / cos(theta/2). Earlier iterations tried a
+    # generous cap (4 × half_w) followed by a proper bevel-join split;
+    # both produced visible artifacts on dense PCB pour outlines — the
+    # generous cap as long spikes, the bevel as small wedges at concave
+    # corners where the inserted bevel quad oriented incorrectly
+    # against the polygon interior. A tight clamp at |dot| ≥ 0.8 gives
+    # a max miter offset of 1.25 × half_w (so any spike is ≤ 0.25 ×
+    # half_w ≈ 6 µm at default half_w — sub-pixel at every zoom we
+    # render at) without touching the segment-quad structure of the
+    # downstream tessellator. Note: |dot| is used so sign noise from
+    # the near-hairpin branch above cannot invert the offset direction.
     dot = np.einsum("ij,ij->i", bis, enorm)
-    dot = np.maximum(np.abs(dot), 0.5)
+    dot = np.maximum(np.abs(dot), 0.8)
     off = bis * (half_w / dot)[:, None]
     return pts, pts + off, pts - off
 
@@ -8813,6 +8812,26 @@ class PdnViewer(QMainWindow):
                 repaired = None
             if repaired is not None and not repaired.is_empty:
                 poly = repaired
+        # Even on technically-valid polygons, shapely's ``unary_union`` of
+        # many disk-capped Line buffers (one per Gerber track segment)
+        # can leave tiny near-collinear vertex clusters along the trace
+        # boundary: two segments running parallel at sub-precision float32
+        # noise. Triangle interprets those as self-touching PSLG segments
+        # and silently drops the triangles around them, producing small
+        # V-shaped cuts in the solid fill of long traces. Simplify with a
+        # tolerance just above the float32-coordinate noise floor (~1e-5
+        # mm at typical board coordinates) and well below any real copper
+        # feature size (typical PCB precision is 25 µm = 2.5e-2 mm).
+        # 1e-4 mm = 100 nm welds the noise out without visibly shifting
+        # any real curve or corner.
+        try:
+            simplified = poly.simplify(1e-4, preserve_topology=True)
+        except Exception:
+            simplified = None
+        if (simplified is not None
+                and not simplified.is_empty
+                and simplified.is_valid):
+            poly = simplified
 
         # buffer(0) can split an invalid polygon into several pieces; mesh
         # each component polygon on its own PSLG and concatenate (a single
@@ -10697,8 +10716,23 @@ class PdnViewer(QMainWindow):
         :meth:`_show_copper_props_layout`."""
         t = _T()
         panel = _ClickAbsorbingPanel()
+        panel.setObjectName("EditorSidePanel")
         panel.setFixedWidth(300)
-        panel.setStyleSheet(f"background-color: {t['bg']};")
+        # QLineEdit children (copper-name, loc X / Y) need explicit theming
+        # or they fall back to the platform default (white bg, black text,
+        # near-black placeholder) which is unreadable against the dark
+        # panel background. The #id selector keeps the bg rule from
+        # cascading to every descendant.
+        panel.setStyleSheet(
+            f"QWidget#EditorSidePanel {{ background-color: {t['bg']}; }}"
+            f"QLineEdit {{ background-color: {t['bg_input']};"
+            f"            color: {t['fg']};"
+            f"            border: 1px solid {t['border']};"
+            f"            padding: 2px 4px;"
+            f"            selection-background-color: {t['bg_selection']}; }}"
+            f"QLineEdit:focus {{ border: 1px solid {t['accent']}; }}"
+            f"QLineEdit {{ placeholder-text-color: {t['fg_hint']}; }}"
+        )
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(8)

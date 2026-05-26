@@ -343,9 +343,11 @@ def apply_copper_names(loaded, copper_names) -> list[str]:
     tracks / etc., and ``loaded.extracted`` is rebound to it.
     """
     import dataclasses
+    import time
 
     import shapely.geometry as _sg
     import shapely.ops as _sops
+    import shapely.strtree as _st
 
     from fypa.altium.extract import NO_NET, RawNet
     from fypa.altium_geometry import (
@@ -360,6 +362,8 @@ def apply_copper_names(loaded, copper_names) -> list[str]:
     if not copper_names:
         return warnings
 
+    t_total0 = time.monotonic()
+    timings: dict[str, float] = {}
     extracted = loaded.extracted
     nets = list(extracted.nets)
     name_to_index: dict[str, int] = {n.name: i for i, n in enumerate(nets)}
@@ -391,6 +395,7 @@ def apply_copper_names(loaded, copper_names) -> list[str]:
     # bridge has a centre and the set of enabled layers it spans, so the
     # flood-fill below can step from one layer's component to another's
     # along the bridge.
+    t0 = time.monotonic()
     no_net_bridges: list[tuple[_sg.Point, list[int]]] = []
     for v in extracted.vias:
         if v.net_index != NO_NET:
@@ -410,105 +415,299 @@ def apply_copper_names(loaded, copper_names) -> list[str]:
             continue
         no_net_bridges.append(
             (_sg.Point(float(p.center.x), float(p.center.y)), layers))
+    timings["bridge collection"] = time.monotonic() - t0
 
-    def _no_net_pieces_on_layer(layer_id: int):
-        """Every NO_NET primitive's individual polygon on ``layer_id``.
-        Used to compute the per-layer union once and reuse it for any
-        rename that targets this layer."""
-        pieces: list[_sg.base.BaseGeometry] = []
-        for t in extracted.tracks:
-            if (t.layer_id == layer_id and t.net_index == NO_NET
-                    and not t.is_keepout
-                    and not t.is_polygon_outline
-                    and t.width_mm > 0):
-                pieces.append(_track_polygon(t))
-        for a in extracted.arcs:
-            if (a.layer_id == layer_id and a.net_index == NO_NET
-                    and not a.is_keepout and a.width_mm > 0):
-                pieces.append(_arc_polygon(a))
-        for r in extracted.regions:
-            if (r.layer_id == layer_id and r.net_index == NO_NET
-                    and not r.is_keepout and not r.is_polygon_outline
-                    and not r.is_board_cutout and r.kind == 0
-                    and len(r.outline) >= 3):
-                poly = _region_polygon(r)
-                if not poly.is_empty:
-                    pieces.append(poly)
-        for r in extracted.shape_based_regions:
-            if (r.layer_id == layer_id and r.net_index == NO_NET
-                    and not r.is_keepout and not r.is_polygon_outline
-                    and not r.is_board_cutout and r.kind == 0
-                    and len(r.outline) >= 3):
-                poly = _shape_based_region_polygon(r)
-                if not poly.is_empty:
-                    pieces.append(poly)
-        for f in extracted.fills:
-            if (f.layer_id == layer_id and f.net_index == NO_NET
-                    and not f.is_keepout):
-                poly = _fill_polygon(f)
-                if poly is not None and not poly.is_empty:
-                    pieces.append(poly)
-        return pieces
+    # Single-pass collection of NO_NET primitives across all enabled
+    # layers. Building each primitive's shapely polygon ONCE and caching
+    # it by primitive id lets the retag step at the end skip the
+    # rebuild — on a Gerber-sourced board with tens of thousands of SBRs
+    # the rebuild used to be the dominant cost of the resolve.
+    t0 = time.monotonic()
+    pieces_by_layer: dict[int, list[_sg.base.BaseGeometry]] = {}
+    prim_poly_cache: dict[int, _sg.base.BaseGeometry] = {}
+    enabled_set = set(enabled)
 
-    # Per-layer union cache — multiple renames on the same layer reuse it.
-    union_cache: dict[int, _sg.base.BaseGeometry] = {}
+    def _take(prim, poly):
+        if poly is None or poly.is_empty:
+            return
+        prim_poly_cache[id(prim)] = poly
+        pieces_by_layer.setdefault(prim.layer_id, []).append(poly)
 
-    def _layer_components(lid: int) -> list[_sg.base.BaseGeometry]:
-        if lid not in union_cache:
-            pieces = _no_net_pieces_on_layer(lid)
-            if pieces:
-                union_cache[lid] = _sops.unary_union(pieces)
-            else:
-                union_cache[lid] = _sg.GeometryCollection()
-        unioned = union_cache[lid]
-        if unioned.is_empty:
-            return []
-        return (list(unioned.geoms)
-                if unioned.geom_type == "MultiPolygon"
-                else [unioned])
+    for t in extracted.tracks:
+        if (t.layer_id in enabled_set and t.net_index == NO_NET
+                and not t.is_keepout and not t.is_polygon_outline
+                and t.width_mm > 0):
+            try:
+                _take(t, _track_polygon(t))
+            except Exception:
+                continue
+    for a in extracted.arcs:
+        if (a.layer_id in enabled_set and a.net_index == NO_NET
+                and not a.is_keepout and a.width_mm > 0):
+            try:
+                _take(a, _arc_polygon(a))
+            except Exception:
+                continue
+    for r in extracted.regions:
+        if (r.layer_id in enabled_set and r.net_index == NO_NET
+                and not r.is_keepout and not r.is_polygon_outline
+                and not r.is_board_cutout and r.kind == 0
+                and len(r.outline) >= 3):
+            try:
+                _take(r, _region_polygon(r))
+            except Exception:
+                continue
+    # SBRs are the bulk of a Gerber-sourced board's geometry (tens of
+    # thousands per project). The straight-edge / no-hole-with-arcs case
+    # (every Gerber-rendered SBR, plus most Altium ShapeBasedRegions6
+    # entries) goes through a vectorised batch path: one
+    # ``shapely.linearrings`` + one ``shapely.polygons`` C call builds all
+    # exteriors + holes at once, dropping ~10× the per-instance Python
+    # overhead. SBRs with arc edges fall through to the slow path —
+    # discretising arcs has to happen per-region anyway.
+    import numpy as _np
+    import shapely as _shp
 
-    def _flood_components(seed_lid: int, seed_poly):
-        """Walk vias / THP pads to collect every NO_NET copper component
-        electrically connected to ``seed_poly`` on ``seed_lid``. The seed
-        is included in the result. Returns a list of
-        ``(layer_id, component_polygon)`` tuples."""
-        out: list[tuple[int, _sg.base.BaseGeometry]] = [(seed_lid, seed_poly)]
-        # Visited keyed by object identity — each unary_union produces
-        # distinct component geometries we can hash by id.
-        visited: set[tuple[int, int]] = {(seed_lid, id(seed_poly))}
-        frontier: list[tuple[int, _sg.base.BaseGeometry]] = [(seed_lid, seed_poly)]
-        while frontier:
-            cur_lid, cur_poly = frontier.pop()
-            for centre, span_layers in no_net_bridges:
-                if cur_lid not in span_layers:
-                    continue
-                try:
-                    if not cur_poly.contains(centre):
+    sbr_fast: list = []          # (prim, outline_xy, [hole_xy, ...])
+    sbr_slow: list = []          # primitives that need the slow path
+    for r in extracted.shape_based_regions:
+        if not (r.layer_id in enabled_set and r.net_index == NO_NET
+                and not r.is_keepout and not r.is_polygon_outline
+                and not r.is_board_cutout and r.kind == 0
+                and len(r.outline) >= 3):
+            continue
+        if any(v.is_arc and v.radius_mm > 0.0 for v in r.outline):
+            sbr_slow.append(r)
+            continue
+        sbr_fast.append(r)
+
+    if sbr_fast:
+        # One numpy array per ring; concat once. Per-vertex tuple gather
+        # is still in Python, but the shapely construction itself is one
+        # vectorised C dispatch. The whole batch path is wrapped in
+        # try/except — any shapely / numpy upset (API drift, malformed
+        # ring, etc.) falls back to the per-region builder so the resolve
+        # still completes instead of bubbling up as an opaque crash.
+        batch_polys = None
+        try:
+            ext_arrays = [
+                _np.asarray([(v.pos.x, v.pos.y) for v in r.outline],
+                            dtype=_np.float64)
+                for r in sbr_fast
+            ]
+            ext_sizes = _np.fromiter((len(a) for a in ext_arrays),
+                                     dtype=_np.int64, count=len(ext_arrays))
+            ext_coords = _np.concatenate(ext_arrays, axis=0)
+            ext_indices = _np.repeat(_np.arange(len(sbr_fast)), ext_sizes)
+            ext_rings = _shp.linearrings(ext_coords, indices=ext_indices)
+
+            hole_arrays: list = []
+            hole_owner: list[int] = []
+            for i, r in enumerate(sbr_fast):
+                for ring in r.holes:
+                    if not ring:
                         continue
+                    hole_arrays.append(_np.asarray(
+                        [(p.x, p.y) for p in ring], dtype=_np.float64))
+                    hole_owner.append(i)
+
+            if hole_arrays:
+                # shapely 2.x: when ``indices=`` is given, ALL rings
+                # (exterior + holes) live in the same flat array, the
+                # first occurrence of each index becomes the shell, and
+                # indices must be in increasing order. So: stack
+                # exteriors then holes, then stable-sort by index — the
+                # exterior of polygon i keeps its position before any
+                # holes that target i. Passing ``holes=`` alongside
+                # ``indices=`` is explicitly disallowed.
+                hole_sizes = _np.fromiter(
+                    (len(a) for a in hole_arrays),
+                    dtype=_np.int64, count=len(hole_arrays))
+                hole_coords = _np.concatenate(hole_arrays, axis=0)
+                hole_ring_indices = _np.repeat(
+                    _np.arange(len(hole_arrays)), hole_sizes)
+                hole_rings = _shp.linearrings(
+                    hole_coords, indices=hole_ring_indices)
+                all_rings = _np.concatenate([ext_rings, hole_rings])
+                all_indices = _np.concatenate([
+                    _np.arange(len(sbr_fast), dtype=_np.int64),
+                    _np.asarray(hole_owner, dtype=_np.int64),
+                ])
+                order = _np.argsort(all_indices, kind="stable")
+                batch_polys = _shp.polygons(
+                    all_rings[order], indices=all_indices[order])
+            else:
+                batch_polys = _shp.polygons(ext_rings)
+        except Exception:
+            log.warning(
+                "apply_copper_names: SBR batch polygon build failed; "
+                "falling back to per-region build", exc_info=True)
+            batch_polys = None
+
+        if batch_polys is not None:
+            # Validity check is a single vectorised call. Most polys come
+            # from GEOS boolean output (Gerber) and are valid by
+            # construction; the rare invalid ones fall back to the
+            # per-instance sanitiser.
+            valid_mask = _shp.is_valid(batch_polys)
+            for i, prim in enumerate(sbr_fast):
+                poly = batch_polys[i]
+                if poly is None or poly.is_empty:
+                    continue
+                if not bool(valid_mask[i]):
+                    try:
+                        poly = _shape_based_region_polygon(prim)
+                    except Exception:
+                        continue
+                _take(prim, poly)
+        else:
+            for prim in sbr_fast:
+                try:
+                    _take(prim, _shape_based_region_polygon(prim))
                 except Exception:
                     continue
-                for other_lid in span_layers:
-                    if other_lid == cur_lid:
-                        continue
-                    for comp in _layer_components(other_lid):
-                        key = (other_lid, id(comp))
-                        if key in visited:
-                            continue
-                        if comp.is_empty:
-                            continue
-                        try:
-                            if comp.contains(centre):
-                                visited.add(key)
-                                out.append((other_lid, comp))
-                                frontier.append((other_lid, comp))
-                                break
-                        except Exception:
-                            continue
-        return out
 
-    # Visited across all renames so a later rename can't claim a component
-    # already absorbed into an earlier rename's flood (first wins).
-    claimed: set[tuple[int, int]] = set()
+    for r in sbr_slow:
+        try:
+            _take(r, _shape_based_region_polygon(r))
+        except Exception:
+            continue
+    for f in extracted.fills:
+        if (f.layer_id in enabled_set and f.net_index == NO_NET
+                and not f.is_keepout):
+            try:
+                _take(f, _fill_polygon(f))
+            except Exception:
+                continue
+    timings["primitive polygon build"] = time.monotonic() - t0
+
+    # Per-layer NO_NET geometry, decomposed into one polygon per
+    # electrically-disjoint copper piece, plus an STRtree for fast
+    # point-in-polygon queries. Each layer's ``unary_union`` is the
+    # dominant cost on a Gerber board (thousands of disjoint pieces per
+    # layer, 16 layers) — shapely 2 releases the GIL inside union_all,
+    # so we fan out across a thread pool the same way
+    # :func:`fypa.altium_geometry._parallel_union_buckets` does.
+    t0 = time.monotonic()
+    import shapely
+
+    def _union_layer(lid_pieces):
+        lid, pieces = lid_pieces
+        try:
+            unioned = shapely.union_all(pieces)
+        except Exception:
+            unioned = _sops.unary_union(pieces)
+        if unioned.is_empty:
+            return lid, None
+        comps = (list(unioned.geoms)
+                 if unioned.geom_type == "MultiPolygon"
+                 else [unioned])
+        comps = [c for c in comps if not c.is_empty]
+        if not comps:
+            return lid, None
+        return lid, {"shapes": comps, "tree": _st.STRtree(comps)}
+
+    layer_index: dict[int, dict] = {}
+    big_layers = sum(1 for v in pieces_by_layer.values() if len(v) > 200)
+    if big_layers >= 2 and len(pieces_by_layer) >= 2:
+        import concurrent.futures
+        import os
+        # Cap workers — union_all releases the GIL but still pegs a core
+        # per task; min(8, cpu_count()) is plenty.
+        max_workers = min(8, (os.cpu_count() or 4),
+                          len(pieces_by_layer))
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=max_workers) as ex:
+            for lid, data in ex.map(_union_layer, pieces_by_layer.items()):
+                if data is not None:
+                    layer_index[lid] = data
+    else:
+        for item in pieces_by_layer.items():
+            lid, data = _union_layer(item)
+            if data is not None:
+                layer_index[lid] = data
+    timings["per-layer union + STRtree"] = time.monotonic() - t0
+
+    if not layer_index:
+        # Nothing to rename — every rename will hit the "no unnamed copper"
+        # warning path. Skip the heavy setup.
+        for c in copper_names:
+            layer_id = int(c.layer_id)
+            if layer_id not in enabled:
+                warnings.append(
+                    f"Copper rename {c.name!r}: layer {layer_id} is not "
+                    "in the enabled copper stack; skipped.")
+            else:
+                warnings.append(
+                    f"Copper rename {c.name!r}: no unnamed copper on "
+                    f"layer {layer_id}; skipped.")
+        return warnings
+
+    # Union-find over (layer_id, component_idx) keys. Each via / THP-pad
+    # unions the components its centre falls inside, so a flood query for
+    # a rename's anchor component collapses to a single union-find lookup.
+    parent: dict[tuple[int, int], tuple[int, int]] = {}
+    for lid, data in layer_index.items():
+        for i in range(len(data["shapes"])):
+            parent[(lid, i)] = (lid, i)
+
+    def _uf_find(x):
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:
+            parent[x], x = root, parent[x]
+        return root
+
+    def _uf_union(a, b):
+        ra, rb = _uf_find(a), _uf_find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    def _component_for(layer_id: int, point) -> int | None:
+        """Index of the layer's NO_NET component containing ``point``,
+        or ``None``. STRtree-prefiltered."""
+        data = layer_index.get(layer_id)
+        if data is None:
+            return None
+        try:
+            cand = data["tree"].query(point)
+        except Exception:
+            return None
+        shapes = data["shapes"]
+        for j in cand:
+            try:
+                idx = int(j)
+            except Exception:
+                continue
+            try:
+                if shapes[idx].intersects(point):
+                    return idx
+            except Exception:
+                continue
+        return None
+
+    t0 = time.monotonic()
+    for centre, span_layers in no_net_bridges:
+        hits: list[tuple[int, int]] = []
+        for lid in span_layers:
+            idx = _component_for(lid, centre)
+            if idx is not None:
+                hits.append((lid, idx))
+        for h in hits[1:]:
+            _uf_union(hits[0], h)
+
+    members_of: dict[tuple[int, int], set[tuple[int, int]]] = {}
+    for key in parent:
+        root = _uf_find(key)
+        members_of.setdefault(root, set()).add(key)
+    timings["bridge union-find"] = time.monotonic() - t0
+
+    # Assign a rename's net_idx to every component in its anchor's
+    # union-find root. First rename wins on overlap (a later rename
+    # whose anchor lands on an already-claimed component is skipped).
+    t0 = time.monotonic()
+    component_net: dict[tuple[int, int], int] = {}
 
     for c in copper_names:
         layer_id = int(c.layer_id)
@@ -517,146 +716,138 @@ def apply_copper_names(loaded, copper_names) -> list[str]:
                 f"Copper rename {c.name!r}: layer {layer_id} is not in "
                 "the enabled copper stack; skipped.")
             continue
-        components = _layer_components(layer_id)
-        if not components:
+        data = layer_index.get(layer_id)
+        if data is None:
             warnings.append(
                 f"Copper rename {c.name!r}: no unnamed copper on layer "
                 f"{layer_id}; skipped.")
             continue
-        # Pick the connected component of NO_NET copper that contains
-        # the rename's anchor. Other disjoint NO_NET components stay
-        # unaffected.
         anchor = _sg.Point(float(c.anchor_xy[0]), float(c.anchor_xy[1]))
-        match_poly = None
-        for comp in components:
-            if comp.is_empty:
-                continue
-            try:
-                if comp.contains(anchor):
-                    match_poly = comp
-                    break
-            except Exception:
-                continue
-        if match_poly is None:
+        anchor_idx = _component_for(layer_id, anchor)
+        if anchor_idx is None:
             warnings.append(
                 f"Copper rename {c.name!r}: anchor "
                 f"({c.anchor_xy[0]:g}, {c.anchor_xy[1]:g}) is not on a "
                 f"NO_NET copper polygon on layer {layer_id}; skipped.")
             continue
-        # Assign / reuse a net_index for the user's name. Reusing an
-        # existing entry is fine — names are unique by the time they
-        # reach here (the UI rejects collisions with named nets).
         if c.name in name_to_index:
             net_idx = name_to_index[c.name]
         else:
             nets.append(RawNet(name=c.name))
             net_idx = len(nets) - 1
             name_to_index[c.name] = net_idx
-        # Flood from the anchor's component across vias / THP pads so
-        # connected NO_NET copper on adjacent layers picks up the same
-        # name. A via that lands on a NO_NET piece on one layer but on a
-        # *named* piece on another layer doesn't continue the flood — the
-        # named layer's polygon isn't part of the NO_NET union, so the
-        # frontier just stops there.
-        for lid, comp in _flood_components(layer_id, match_poly):
-            key = (lid, id(comp))
-            if key in claimed:
+        root = _uf_find((layer_id, anchor_idx))
+        for key in members_of.get(root, ()):
+            if key in component_net:
                 continue
-            claimed.add(key)
-            matches.append((lid, comp, net_idx))
+            component_net[key] = net_idx
+
+    # Flatten to the (layer_id, component_polygon, net_idx) tuples the
+    # retag helpers below already know how to consume.
+    for (lid, idx), net_idx in component_net.items():
+        matches.append((lid, layer_index[lid]["shapes"][idx], net_idx))
+    timings["rename closure"] = time.monotonic() - t0
 
     if not matches:
         # No anchors landed on NO_NET copper — every rename was a no-op
         # (warned above). ``nets`` is still a fresh copy of the original
         # tuple; no replacement needed.
+        log.info("apply_copper_names: applied 0, %d warning(s), %.2fs",
+                 len(warnings), time.monotonic() - t_total0)
         return warnings
 
-    def _retag_no_net(primitive, poly):
-        """If ``primitive.net_index == NO_NET`` and ``poly`` intersects
-        any of the rename polygons on its layer, return a new primitive
-        with ``net_index`` set to the rename's net index. Otherwise
-        return the primitive unchanged."""
+    # Component-key → net_idx for direct primitive lookup. A primitive
+    # whose polygon belongs to a renamed component gets that component's
+    # net_idx, so the retag step doesn't have to re-test geometry.
+    # Build a per-layer STRtree of *all* layer components (not just the
+    # renamed ones) so a primitive's polygon can be matched back to a
+    # component in O(log components).
+    t0 = time.monotonic()
+    rename_layers: set[int] = {lid for (lid, _), _ in component_net.items()}
+
+    def _retag_from_polygon(primitive, poly):
+        """Look up which renamed component ``poly`` falls in (one query
+        against the layer's STRtree) and re-point the primitive's
+        net_index. Returns ``primitive`` unchanged when nothing claims
+        ``poly``."""
         if primitive.net_index != NO_NET or poly is None or poly.is_empty:
             return primitive
-        for lid, match_poly, net_idx in matches:
-            if lid != primitive.layer_id:
+        data = layer_index.get(primitive.layer_id)
+        if data is None:
+            return primitive
+        try:
+            cand = data["tree"].query(poly)
+        except Exception:
+            return primitive
+        shapes = data["shapes"]
+        for j in cand:
+            try:
+                idx = int(j)
+            except Exception:
+                continue
+            net_idx = component_net.get((primitive.layer_id, idx))
+            if net_idx is None:
                 continue
             try:
-                if match_poly.intersects(poly):
-                    return dataclasses.replace(primitive, net_index=net_idx)
+                if shapes[idx].intersects(poly):
+                    return dataclasses.replace(
+                        primitive, net_index=net_idx)
             except Exception:
                 continue
         return primitive
 
-    # Walk each primitive list once; cheap-poly the geometry only for
-    # NO_NET entries on a layer that has a rename.
-    rename_layers = {lid for lid, _, _ in matches}
-
-    def _maybe(prim, poly_fn):
+    def _maybe(prim):
+        """Retag a NO_NET primitive on a rename layer using the cached
+        polygon — never rebuilds the polygon, never iterates matches."""
         if prim.net_index != NO_NET or prim.layer_id not in rename_layers:
             return prim
-        try:
-            poly = poly_fn(prim)
-        except Exception:
+        poly = prim_poly_cache.get(id(prim))
+        if poly is None:
             return prim
-        return _retag_no_net(prim, poly)
+        return _retag_from_polygon(prim, poly)
 
-    new_tracks = tuple(
-        _maybe(t, _track_polygon) if (
-            not t.is_keepout and not t.is_polygon_outline and t.width_mm > 0
-        ) else t
-        for t in extracted.tracks
-    )
-    new_arcs = tuple(
-        _maybe(a, _arc_polygon) if (
-            not a.is_keepout and a.width_mm > 0
-        ) else a
-        for a in extracted.arcs
-    )
-    new_regions = tuple(
-        _maybe(r, _region_polygon) if (
-            not r.is_keepout and not r.is_polygon_outline
-            and not r.is_board_cutout and r.kind == 0
-            and len(r.outline) >= 3
-        ) else r
-        for r in extracted.regions
-    )
-    new_sbr = tuple(
-        _maybe(r, _shape_based_region_polygon) if (
-            not r.is_keepout and not r.is_polygon_outline
-            and not r.is_board_cutout and r.kind == 0
-            and len(r.outline) >= 3
-        ) else r
-        for r in extracted.shape_based_regions
-    )
-    new_fills = tuple(
-        _maybe(f, _fill_polygon) if not f.is_keepout else f
-        for f in extracted.fills
-    )
+    new_tracks = tuple(_maybe(t) for t in extracted.tracks)
+    new_arcs = tuple(_maybe(a) for a in extracted.arcs)
+    new_regions = tuple(_maybe(r) for r in extracted.regions)
+    new_sbr = tuple(_maybe(r) for r in extracted.shape_based_regions)
+    new_fills = tuple(_maybe(f) for f in extracted.fills)
+    timings["primitive retag"] = time.monotonic() - t0
 
     # Vias and through-hole pads also start out NO_NET on a Gerber-sourced
     # project (Gerber + Excellon carry no net info). Retag any whose
-    # ``center`` lies inside a rename's match polygon on a layer the
-    # via/pad spans. Without this, the via-coupling network in
-    # build_problem drops these terminals and multi-layer rails stay
-    # disconnected. On Altium-sourced projects vias arrive pre-tagged so
-    # this loop is a no-op.
+    # ``center`` lies inside a renamed component on a layer the via/pad
+    # spans. Without this, the via-coupling network in build_problem
+    # drops these terminals and multi-layer rails stay disconnected. On
+    # Altium-sourced projects vias arrive pre-tagged so this loop is a
+    # no-op.
+    t0 = time.monotonic()
+
+    def _retag_point_centred(span_layers: list[int], centre):
+        """Find a renamed component on one of ``span_layers`` whose
+        polygon contains ``centre``. Returns the rename's ``net_idx`` or
+        ``None``. STRtree-prefiltered via the per-layer component tree."""
+        for lid in span_layers:
+            if lid not in rename_layers:
+                continue
+            idx = _component_for(lid, centre)
+            if idx is None:
+                continue
+            net_idx = component_net.get((lid, idx))
+            if net_idx is not None:
+                return net_idx
+        return None
+
     def _retag_via(v):
         if v.net_index != NO_NET:
             return v
         v_layers = _bridge_layers_for_via(v)
         if not any(lid in rename_layers for lid in v_layers):
             return v
-        anchor_pt = _sg.Point(float(v.center.x), float(v.center.y))
-        for lid, match_poly, net_idx in matches:
-            if lid not in v_layers:
-                continue
-            try:
-                if match_poly.contains(anchor_pt):
-                    return dataclasses.replace(v, net_index=net_idx)
-            except Exception:
-                continue
-        return v
+        net_idx = _retag_point_centred(
+            v_layers, _sg.Point(float(v.center.x), float(v.center.y)))
+        if net_idx is None:
+            return v
+        return dataclasses.replace(v, net_index=net_idx)
 
     def _retag_pad(p):
         if p.net_index != NO_NET:
@@ -664,19 +855,15 @@ def apply_copper_names(loaded, copper_names) -> list[str]:
         p_layers = _bridge_layers_for_pad(p)
         if not any(lid in rename_layers for lid in p_layers):
             return p
-        anchor_pt = _sg.Point(float(p.center.x), float(p.center.y))
-        for lid, match_poly, net_idx in matches:
-            if lid not in p_layers:
-                continue
-            try:
-                if match_poly.contains(anchor_pt):
-                    return dataclasses.replace(p, net_index=net_idx)
-            except Exception:
-                continue
-        return p
+        net_idx = _retag_point_centred(
+            p_layers, _sg.Point(float(p.center.x), float(p.center.y)))
+        if net_idx is None:
+            return p
+        return dataclasses.replace(p, net_index=net_idx)
 
     new_vias = tuple(_retag_via(v) for v in extracted.vias)
     new_pads = tuple(_retag_pad(p) for p in extracted.pads)
+    timings["via/pad retag"] = time.monotonic() - t0
 
     loaded.extracted = dataclasses.replace(
         extracted,
@@ -695,8 +882,11 @@ def apply_copper_names(loaded, copper_names) -> list[str]:
     # renamed primitives.
     loaded.__dict__.pop("geometry", None)
 
+    total = time.monotonic() - t_total0
     log.info(
-        "apply_copper_names: applied %d rename(s), %d warning(s).",
-        len(matches), len(warnings),
+        "apply_copper_names: applied %d rename(s), %d warning(s), %.2fs "
+        "(%s)",
+        len(matches), len(warnings), total,
+        ", ".join(f"{k}={v*1000:.0f}ms" for k, v in timings.items()),
     )
     return warnings
