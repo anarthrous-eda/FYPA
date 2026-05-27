@@ -63,15 +63,50 @@ if exist build rmdir /s /q build
 REM Package dist\FYPA\ into a single zip for sharing
 echo Creating distribution zip...
 if exist "dist\FYPA.zip" del /q "dist\FYPA.zip"
+
+REM Kill any FYPA.exe instances from a previous run -- they hold
+REM _internal\base_library.zip open and the archiver can't read it
+REM while it's mapped into a live process.
+taskkill /f /im FYPA.exe >nul 2>&1
+
+REM Compress-Archive fails on the first file lock it hits (no internal
+REM retry), and Windows Defender often holds freshly written files for
+REM a few seconds after PyInstaller finishes. Retry up to 5 times with
+REM a short wait so a transient scan doesn't kill the whole build.
+set ZIP_TRIES=0
+:zip_retry
 powershell -NoProfile -Command "Compress-Archive -Path 'dist\FYPA' -DestinationPath 'dist\FYPA.zip' -Force"
-if errorlevel 1 (
-    echo ERROR: Failed to create dist\FYPA.zip
+if not errorlevel 1 goto zip_done
+set /a ZIP_TRIES+=1
+if !ZIP_TRIES! geq 5 (
+    echo ERROR: Failed to create dist\FYPA.zip after 5 attempts
+    echo Possible cause: a process is holding a file under dist\FYPA\ open
+    echo ^(running FYPA.exe, Windows Defender scan, Explorer preview pane^).
     pause ^& exit /b 1
 )
+echo   zip attempt !ZIP_TRIES! failed, retrying...
+timeout /t 2 /nobreak >nul
+goto zip_retry
+:zip_done
 
-REM Remove the unzipped staging folder -- only the zip should remain in dist\
+REM Remove the unzipped staging folder -- only the zip should remain in
+REM dist\. Same lock-retry pattern as the zip step: rmdir /s exits as soon
+REM as one file refuses to delete (commonly mid-Defender-scan) and leaves
+REM the folder partially populated.
 echo Cleaning staging folder...
-if exist "dist\FYPA" rmdir /s /q "dist\FYPA"
+set RM_TRIES=0
+:rm_retry
+if not exist "dist\FYPA" goto rm_done
+rmdir /s /q "dist\FYPA" 2>nul
+if not exist "dist\FYPA" goto rm_done
+set /a RM_TRIES+=1
+if !RM_TRIES! geq 5 (
+    echo WARNING: Could not fully remove dist\FYPA -- leaving leftovers.
+    goto rm_done
+)
+timeout /t 2 /nobreak >nul
+goto rm_retry
+:rm_done
 
 echo.
 echo =========================================
