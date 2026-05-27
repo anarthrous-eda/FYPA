@@ -5171,6 +5171,10 @@ class PdnViewer(QMainWindow):
         self._layer_fill_buttons: list[tuple[str, FillToggleButton]] = []
         self._layer_transparency_buttons: list[
             tuple[str, TransparencyButton]] = []
+        # phys-name → QListWidgetItem, used by the selected-layer click
+        # handler and the row-background highlight.
+        self._layer_list_items: dict[str, QListWidgetItem] = {}
+        self._selected_layer: str | None = None
 
         self._all_layers_eye = EyeButton(visible=True)
         self._all_layers_eye2 = EyeButton(
@@ -5233,6 +5237,13 @@ class PdnViewer(QMainWindow):
             self._layer_eye2_buttons.append((phys, eye2))
             self._layer_fill_buttons.append((phys, fill))
             self._layer_transparency_buttons.append((phys, transp))
+            self._layer_list_items[phys] = item
+
+        # Clicking a layer row (anywhere outside its eye/fill/transparency
+        # buttons — those consume the click before itemClicked fires)
+        # toggles that layer as the selected layer; clicking the already-
+        # selected layer clears the selection back to none.
+        self.layer_list.itemClicked.connect(self._on_layer_item_clicked)
 
         self._sync_all_layers_eye()
         # If the design has no PDN rails (Gerber import before the user has
@@ -5743,6 +5754,22 @@ class PdnViewer(QMainWindow):
         "#c0c0c0",  # 14th inner (L15)
     )
 
+    # --- Selected (active) physical layer ----------------------------------
+    # When the user clicks a row in the Physical layers control, that layer
+    # becomes the "selected" / "active" layer. Only 0 or 1 layer is selected
+    # at a time. The selected layer is lifted above every other physical
+    # layer in the GPU draw order and the unselected layers' all-copper
+    # overlay is dimmed toward ``_SELECTED_LAYER_DIM_RGB`` by the blend
+    # factor below (0.0 = no change, 1.0 = fully replaced by the dim
+    # target). ``_SELECTED_LAYER_UNSEL_ALPHA`` additionally scales the
+    # unselected all-copper alpha (1.0 = no extra transparency). The row
+    # widget's background uses ``_SELECTED_LAYER_BG`` from the active
+    # theme when ``None``.
+    _SELECTED_LAYER_DIM_FACTOR: float = 0.75
+    _SELECTED_LAYER_DIM_RGB: tuple[float, float, float] = (0.22, 0.22, 0.22)
+    _SELECTED_LAYER_UNSEL_ALPHA: float = 1.0
+    _SELECTED_LAYER_BG: str | None = "#7b7b7b"  # None → theme's bg_selection
+
     def _layer_color_for(self, phys: str) -> str:
         # Colour is keyed purely on the layer's position in the stackup
         # ordering — not its name or id. Board layer names vary ("Top Layer"
@@ -5783,6 +5810,12 @@ class PdnViewer(QMainWindow):
         Per-rail and per-layer rows pass none of these and keep the
         original single-eye layout."""
         w = QWidget()
+        # Object name + WA_StyledBackground let the selected-layer
+        # highlight in _apply_layer_selection_highlight reliably paint a
+        # solid background; a plain QWidget inside a stylesheet-styled
+        # QListWidget otherwise renders transparent under setPalette.
+        w.setObjectName("layerRow")
+        w.setAttribute(Qt.WA_StyledBackground, True)
         layout = QHBoxLayout(w)
         layout.setContentsMargins(2, 1, 6, 1)
         layout.setSpacing(6)
@@ -5851,6 +5884,56 @@ class PdnViewer(QMainWindow):
         in stackup order (top first)."""
         return [name for name, eye in self._layer_eye_buttons
                 if eye.isVisibleState()]
+
+    # --- Selected (active) physical layer ----------------------------------
+
+    def _on_layer_item_clicked(self, item: QListWidgetItem) -> None:
+        """A click on a Physical layers row that landed outside the row's
+        embedded buttons. Toggle that layer as the selected layer; clicking
+        the already-selected layer clears the selection."""
+        clicked: str | None = None
+        for phys, it in self._layer_list_items.items():
+            if it is item:
+                clicked = phys
+                break
+        if clicked is None:
+            return  # "All Layers" header row or an unmapped item
+        self._selected_layer = None if self._selected_layer == clicked else clicked
+        self._apply_layer_selection_highlight()
+        self._render_with_busy_popup()
+
+    def _apply_layer_selection_highlight(self) -> None:
+        """Repaint each Physical layers row to reflect the selected layer:
+        the selected row gets the configured selection background, all
+        others revert to no styled background. The ``#layerRow`` selector
+        scopes the rule to the row widget itself so child labels stay
+        transparent and inherit the highlight."""
+        sel = self._selected_layer
+        bg = self._SELECTED_LAYER_BG or _T()["bg_selection"]
+        for phys, item in self._layer_list_items.items():
+            w = self.layer_list.itemWidget(item)
+            if w is None:
+                continue
+            if phys == sel:
+                w.setStyleSheet(
+                    f"QWidget#layerRow {{ background-color: {bg}; }}")
+            else:
+                w.setStyleSheet("")
+
+    def _selected_layer_dim_rgb(
+        self, rgb: tuple[float, float, float],
+    ) -> tuple[float, float, float]:
+        """Blend an unselected layer's swatch RGB toward the dim target
+        when a layer is selected. No-op when no layer is selected."""
+        f = max(0.0, min(1.0, float(self._SELECTED_LAYER_DIM_FACTOR)))
+        if f <= 0.0:
+            return rgb
+        tr, tg, tb = self._SELECTED_LAYER_DIM_RGB
+        return (
+            (1.0 - f) * rgb[0] + f * tr,
+            (1.0 - f) * rgb[1] + f * tg,
+            (1.0 - f) * rgb[2] + f * tb,
+        )
 
     # --- Physical-layer "all copper" (second eye + fill toggle) -------------
 
@@ -6635,9 +6718,13 @@ class PdnViewer(QMainWindow):
             # with the mesh (or other opaque all-copper) below. 3D
             # always uses ``over_*`` — global per-vertex z + depth
             # handles ordering there.
+            sel_layer = self._selected_layer
             for name, eye2 in sorted(
                 eye2_buttons,
-                key=lambda ne: self._phys_stackup_rank.get(ne[0], 1 << 30),
+                key=lambda ne: (
+                    0 if ne[0] == sel_layer else 1,
+                    self._phys_stackup_rank.get(ne[0], 1 << 30),
+                ),
                 reverse=True,
             ):
                 if not eye2.isVisibleState():
@@ -6663,7 +6750,22 @@ class PdnViewer(QMainWindow):
                              else {})
                 qc = QColor(self._layer_color_for(name))
                 lrgb = (qc.redF(), qc.greenF(), qc.blueF())
-                z = self._layer_z_for(name)
+                # When a layer is selected, every OTHER layer's all-copper
+                # is blended toward the dim target and (optionally) faded
+                # so the selected layer reads clearly above the rest.
+                if sel_layer is not None and name != sel_layer:
+                    lrgb = self._selected_layer_dim_rgb(lrgb)
+                    layer_alpha *= max(
+                        0.0, min(1.0, self._SELECTED_LAYER_UNSEL_ALPHA))
+                    if layer_alpha <= 0.0:
+                        continue
+                    # Partial alpha after the multiplier needs the over-
+                    # mesh bucket so the rail mesh underneath blends
+                    # through instead of being depth-rejected (mirrors the
+                    # existing transparency routing logic above).
+                    if in_2d and layer_alpha < 1.0:
+                        ac_bucket = {}
+                z = self._layer_render_z(name)
                 # Solid + partial transparency: route through a per-layer
                 # merged triangulation so overlapping source polygons
                 # blend the layer's alpha exactly once per pixel (rather
@@ -6861,9 +6963,16 @@ class PdnViewer(QMainWindow):
         """
         members = self._effective_rail_members(rail_names)
         # BOTTOM-first for GPU draw order (topmost rendered last → on top).
+        # A "selected" physical layer is forced to the very end of the
+        # batch so it paints above every other layer regardless of stackup
+        # rank — that's the whole point of the layer-row selection.
+        sel = self._selected_layer
         phys_draw_order = sorted(
             phys_list,
-            key=lambda p: self._phys_stackup_rank.get(p, 1 << 30),
+            key=lambda p: (
+                0 if p == sel else 1,
+                self._phys_stackup_rank.get(p, 1 << 30),
+            ),
             reverse=True,
         )
         xs_parts: list[np.ndarray] = []
@@ -6881,7 +6990,7 @@ class PdnViewer(QMainWindow):
                       and self._COPPER_THICKNESS_MM > 0.0)
         offset = 0
         for phys in phys_draw_order:
-            phys_z = self._layer_z_for(phys)
+            phys_z = self._layer_render_z(phys)
             for net in members:
                 layer_index = self._index_by_pair.get((phys, net))
                 if layer_index is None:
@@ -10432,6 +10541,29 @@ class PdnViewer(QMainWindow):
             return z
         rank = self._phys_stackup_rank.get(phys, 0)
         return -rank * self._LAYER_Z_SPACING_MM
+
+    # World-z to bump the selected layer above the topmost physical layer
+    # in 2D. The 2D ortho near/far is ±1e6 mm, so this has miles of
+    # headroom against clipping; one full layer pitch keeps it clearly
+    # above the stack without breaking the user's depth intuition.
+    _SELECTED_LAYER_2D_LIFT_MM: float = 1.0
+
+    def _layer_render_z(self, phys: str) -> float:
+        """Effective world-z used for GL submission. In 2D mode the
+        selected (active) physical layer is bumped above the topmost
+        layer so the GL_LEQUAL depth test makes it paint above every
+        other layer regardless of its real stackup position; everywhere
+        else (3D mode, or no selection) this is identical to
+        :meth:`_layer_z_for`. Keeping the physical z untouched in 3D is
+        deliberate — vias and the per-layer cylinder spans rely on the
+        real stackup z lining up across calls."""
+        if (phys == self._selected_layer
+                and getattr(self, "view_3d_box", None) is not None
+                and not self.view_3d_box.isChecked()):
+            top_z = (self._layer_z_for(self._physicals[0])
+                     if self._physicals else 0.0)
+            return top_z + self._SELECTED_LAYER_2D_LIFT_MM
+        return self._layer_z_for(phys)
 
     def _on_view_3d_toggled(self, checked: bool) -> None:
         """Switch the GL viewer between 2D and 3D modes and re-render so
