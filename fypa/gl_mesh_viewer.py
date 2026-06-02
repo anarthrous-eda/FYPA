@@ -296,6 +296,12 @@ class MarkerGroup:
     so the marker visually matches its physical footprint at zoom-in
     while staying visible (overlap is fine and intentional) at
     zoom-out. ``size`` is ignored in that mode.
+
+    ``ring_colors`` adds a second, outer outline per marker in the given
+    HTML colour — used to show the copper layer a source / sink / series
+    marker sits on. It's one entry per marker (``None``/``""`` skips that
+    marker's ring); the glyph is drawn ``ring_width`` px larger behind the
+    normal marker so the layer colour reads as a band hugging its edge.
     """
     xs: np.ndarray
     ys: np.ndarray
@@ -307,6 +313,8 @@ class MarkerGroup:
     zs: np.ndarray | None = None
     world_diameters_mm: np.ndarray | None = None
     min_pixel_diameter: float = 0.0
+    ring_colors: list[str | None] | None = None
+    ring_width: float = 0.0
 
 
 def _install_default_surface_format() -> None:
@@ -2755,6 +2763,13 @@ class GLMeshViewer(QOpenGLWidget):
             zs = group.zs
             wdiams = group.world_diameters_mm
             min_px = float(group.min_pixel_diameter)
+            # Per-marker layer-colour ring (drawn as an enlarged glyph
+            # behind the marker so the colour peeks out as a band around
+            # its edge). Only consulted when both a width and a colour
+            # list are supplied.
+            ring_colors = group.ring_colors
+            ring_w = float(group.ring_width)
+            rings_on = ring_w > 0.0 and ring_colors is not None
             for i in range(group.xs.size):
                 wx = float(group.xs[i])
                 wy = float(group.ys[i])
@@ -2774,6 +2789,23 @@ class GLMeshViewer(QOpenGLWidget):
                 if (px < -size or px > self.width() + size
                         or py < -size or py > self.height() + size):
                     continue
+                rc = ring_colors[i] if rings_on else None
+                if rc:
+                    # Stroke the SAME-size glyph with a thick layer-colour
+                    # pen, then draw the opaque marker on top. A stroke has
+                    # uniform perpendicular width on every edge (unlike a
+                    # scaled-up fill, which balloons the corners), so the
+                    # band reads as an even outline; the marker covers its
+                    # inner half, leaving a ~ring_w band of layer colour.
+                    # Round joins keep triangle/diamond corners clean.
+                    ring_pen = QPen(QColor(rc))
+                    ring_pen.setWidthF(2.0 * ring_w)
+                    ring_pen.setJoinStyle(Qt.RoundJoin)
+                    painter.setPen(ring_pen)
+                    painter.setBrush(Qt.NoBrush)
+                    self._draw_symbol(painter, px, py, group.symbol, size)
+                    painter.setBrush(fill)
+                    painter.setPen(pen)
                 self._draw_symbol(painter, px, py, group.symbol, size)
 
     @staticmethod

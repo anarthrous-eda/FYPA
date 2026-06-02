@@ -1384,6 +1384,13 @@ _N_SIDE_TERMINALS = frozenset({"N", "OUT_N", "IN_N"})
 # return-net markers apart from the black-outlined P-side ones.
 _N_NET_MARKER_EDGE = "#008000"
 
+# Width (px) of the outer layer-colour ring drawn around source / sink /
+# series markers, so the marker shows which copper layer it sits on. It's
+# stroked around the marker (uniform on every edge), so the band hugs the
+# glyph evenly; the marker covers the inner half, leaving ~this many px of
+# layer colour showing beyond its own outline.
+_MARKER_LAYER_RING_W = 4
+
 
 def _overlay_ribbon_offsets(polyline, half_w: float, *,
                             closed: bool):
@@ -3584,7 +3591,7 @@ class _SolveWorker(QThread):
                         "mode (stub solution) for manual setup."
                     )
                     self.stage_changed.emit(
-                        "No PDN settings found — opening in editor mode…"
+                        "No PDN settings found — opening design…"
                     )
                     stub_solution = _build_stub_lean_solution_from_loaded(loaded)
                     # Distinguish this Altium "needs setup" stub from a Gerber
@@ -10061,7 +10068,7 @@ class PdnViewer(QMainWindow):
             # the green outline.
             per_role: dict[tuple[str, bool],
                            tuple[list[float], list[float],
-                                 list[float]]] = {}
+                                 list[float], list[str | None]]] = {}
             # Designators whose schematic directive an editor directive
             # overrides — their hover rows are suppressed so the bottom
             # bar reports the (pending) editor value, not the stale one.
@@ -10103,11 +10110,22 @@ class PdnViewer(QMainWindow):
                         # follow the rail filter like the P side, so only
                         # markers on the selected rails appear.
                         rail_exempt = is_n_side and self._editor_mode
-                        if (not rail_exempt and rail_members
-                                and pin.get("net") not in rail_members):
-                            continue
-                        xs, ys, zs = per_role.setdefault(
-                            (role, is_n_side), ([], [], []))
+                        if not rail_exempt:
+                            if self._editor_mode:
+                                # Legacy editor behaviour: filter only when a
+                                # rail is actually selected.
+                                if (rail_members
+                                        and pin.get("net") not in rail_members):
+                                    continue
+                            else:
+                                # Viewer mode: a solved directive's markers
+                                # show only while its rail is visible. No
+                                # visible rail ⇒ no rail markers (don't fall
+                                # through to "show everything").
+                                if pin.get("net") not in rail_members:
+                                    continue
+                        xs, ys, zs, rcs = per_role.setdefault(
+                            (role, is_n_side), ([], [], [], []))
                         px = pin.get("x_mm", 0.0)
                         py = pin.get("y_mm", 0.0)
                         xs.append(px)
@@ -10115,6 +10133,8 @@ class PdnViewer(QMainWindow):
                         phys_for_pin = id_to_phys.get(lid)
                         zs.append(self._layer_z_for(phys_for_pin)
                                    if phys_for_pin else 0.0)
+                        rcs.append(self._layer_color_for(phys_for_pin)
+                                   if phys_for_pin else None)
                         if role in ("SOURCE", "SINK") and not directive_overridden:
                             hover_rows.append({
                                 "x_mm": float(px),
@@ -10132,7 +10152,7 @@ class PdnViewer(QMainWindow):
                                 ),
                             })
 
-            for (role, is_n_side), (xs, ys, zs) in per_role.items():
+            for (role, is_n_side), (xs, ys, zs, rcs) in per_role.items():
                 if not xs:
                     continue
                 style = self._ROLE_MARKER_STYLE[role]
@@ -10155,6 +10175,8 @@ class PdnViewer(QMainWindow):
                     edge_color=(_N_NET_MARKER_EDGE if is_n_side
                                 else "#000000"),
                     edge_width=1.6,
+                    ring_colors=rcs,
+                    ring_width=_MARKER_LAYER_RING_W,
                 ))
 
             # Via *markers* (orange dots) — the MarkerGroup is 2D-only
@@ -11869,6 +11891,19 @@ class PdnViewer(QMainWindow):
             visible[lid] = name
         return visible
 
+    def _visible_layer_ids(self) -> set[int]:
+        """Set of copper ``layer_id`` the user can currently see — the union
+        of the physical-layer eyes (heatmap) and the 'all copper' eye2
+        overlays. Used to gate editor-mode markers so a placed source / sink
+        only draws while the copper layer it sits on is visible."""
+        ids: set[int] = set()
+        for name in self._visible_layers():
+            lid = self._phys_name_to_layer_id.get(name)
+            if lid is not None:
+                ids.add(lid)
+        ids.update(self._visible_all_copper_layer_ids().keys())
+        return ids
+
     def _all_copper_at_point(self, x: float, y: float) -> dict | None:
         """Hover-fallback: topmost visible all-copper polygon covering
         (x, y), filtered by :meth:`_visible_all_copper_layer_ids`.
@@ -12731,6 +12766,8 @@ class PdnViewer(QMainWindow):
 
     def _component_pad_points(
         self, designator: str | None, nets,
+        visible_layer_ids: set[int] | None = None,
+        with_layer_color: bool = False,
     ) -> list[tuple[float, float]]:
         """Centres of the named component's pads that sit on any net in
         ``nets`` — one point per matching pin.
@@ -12740,19 +12777,34 @@ class PdnViewer(QMainWindow):
         at the component centre. Pad records are keyed ``"<comp>-<pad>"``
         in the metadata, so the component prefix isolates this component's
         pads. Returns ``[]`` when no pad matches, so the caller can fall
-        back to :meth:`_component_center`."""
+        back to :meth:`_component_center`.
+
+        When ``visible_layer_ids`` is given, only pads sitting on at least
+        one of those layers are returned — used to hide editor markers whose
+        copper layer the user has turned off.
+
+        With ``with_layer_color`` each point becomes ``(x, y, colour)``,
+        where ``colour`` is the swatch colour of the pad's copper layer
+        (preferring a visible one when filtering) — drives the layer-colour
+        ring on editor markers. ``None`` when the pad's layer is unknown."""
         if not designator or not self.metadata:
             return []
         want = {n for n in (nets or ()) if n}
         if not want:
             return []
+        id_to_phys = ({v: k for k, v in self._phys_name_to_layer_id.items()}
+                      if with_layer_color else {})
         prefix = f"{designator}-"
-        pts: list[tuple[float, float]] = []
+        pts: list[tuple] = []
         for rec in self.metadata.get("pads", []):
             des = rec.get("designator") or ""
             if not des.startswith(prefix):
                 continue
             if rec.get("net") not in want:
+                continue
+            lids = rec.get("layer_ids") or []
+            if visible_layer_ids is not None and not any(
+                    lid in visible_layer_ids for lid in lids):
                 continue
             ring = rec.get("outline")
             if not ring:
@@ -12760,10 +12812,20 @@ class PdnViewer(QMainWindow):
             arr = np.asarray(ring, dtype=np.float64)
             if arr.ndim != 2 or arr.shape[0] < 1:
                 continue
-            pts.append(
-                (0.5 * (float(arr[:, 0].min()) + float(arr[:, 0].max())),
-                 0.5 * (float(arr[:, 1].min()) + float(arr[:, 1].max())))
-            )
+            cx = 0.5 * (float(arr[:, 0].min()) + float(arr[:, 0].max()))
+            cy = 0.5 * (float(arr[:, 1].min()) + float(arr[:, 1].max()))
+            if with_layer_color:
+                # Colour by the pad's copper layer — favour a currently
+                # visible one so a multi-layer pad rings in the layer the
+                # user is actually looking at.
+                lid = next((l for l in lids
+                            if visible_layer_ids and l in visible_layer_ids),
+                           lids[0] if lids else None)
+                phys = id_to_phys.get(lid)
+                color = self._layer_color_for(phys) if phys else None
+                pts.append((cx, cy, color))
+            else:
+                pts.append((cx, cy))
         return pts
 
     def _directive_for_selection(self):
@@ -14067,31 +14129,54 @@ class PdnViewer(QMainWindow):
             return []
         selected = self._directive_for_selection()
         sel_id = selected.id if selected is not None else None
+        # Only draw markers whose copper layer the user can currently see —
+        # a free marker on a hidden layer, or a component pin on a hidden
+        # layer, drops out so editor markers track layer visibility.
+        visible_ids = self._visible_layer_ids()
+        id_to_phys = {v: k for k, v in self._phys_name_to_layer_id.items()}
         # Keyed (role, is_selected, is_n_side): the selected marker lands
         # in its own group (larger / thicker), and the N-side pins land in
-        # theirs so they can carry the green outline.
+        # theirs so they can carry the green outline. Each point is an
+        # ``(x, y, layer_colour)`` triple — the colour drives the marker's
+        # outer layer ring (``None`` ⇒ no ring).
         by_key: dict[tuple[str, bool, bool],
-                     list[tuple[float, float]]] = {}
-        sel_pts: list[tuple[float, float]] = []
+                     list[tuple[float, float, str | None]]] = {}
+        sel_pts: list[tuple[float, float, str | None]] = []
         for d in self._project.editor_directives:
             # Pin points split into P-side and N-side.
-            p_pts: list[tuple[float, float]] = []
-            n_pts: list[tuple[float, float]] = []
+            p_pts: list[tuple[float, float, str | None]] = []
+            n_pts: list[tuple[float, float, str | None]] = []
             if d.kind == "free" and d.anchor_xy is not None:
-                p_pts = [(float(d.anchor_xy[0]), float(d.anchor_xy[1]))]
+                lid = self._free_marker_layer_id(d)
+                if lid not in visible_ids:
+                    continue   # marker's layer is hidden
+                phys = id_to_phys.get(lid)
+                rc = self._layer_color_for(phys) if phys else None
+                p_pts = [(float(d.anchor_xy[0]), float(d.anchor_xy[1]), rc)]
             elif d.kind == "component":
-                # One marker per component pin on the directive's net(s),
-                # mirroring the solved-directive pin markers. Falls back to
-                # a single glyph at the component centre when no pad matches.
-                p_pts = self._component_pad_points(d.designator, [d.p_net])
+                # One marker per component pin on the directive's net(s) that
+                # sits on a visible layer, mirroring the solved-directive pin
+                # markers. Falls back to a single glyph at the component
+                # centre only when the directive has no matching pads at all
+                # (not merely hidden ones).
+                p_pts = self._component_pad_points(
+                    d.designator, [d.p_net], visible_ids,
+                    with_layer_color=True)
                 if not d.single_net and d.n_net:
                     n_pts = self._component_pad_points(
-                        d.designator, [d.n_net])
+                        d.designator, [d.n_net], visible_ids,
+                        with_layer_color=True)
                 if not p_pts and not n_pts:
+                    has_any_pad = bool(
+                        self._component_pad_points(d.designator, [d.p_net])
+                        or (d.n_net and self._component_pad_points(
+                            d.designator, [d.n_net])))
+                    if has_any_pad:
+                        continue   # pads exist but are all on hidden layers
                     ctr = self._component_center(d.designator)
                     if ctr is None:
                         continue
-                    p_pts = [ctr]
+                    p_pts = [(float(ctr[0]), float(ctr[1]), None)]
             else:
                 continue
             is_sel = d.id == sel_id
@@ -14122,6 +14207,8 @@ class PdnViewer(QMainWindow):
                 size=int(round((style["size"] + 4) * emph)),
                 edge_color=(_N_NET_MARKER_EDGE if is_n_side else "#101010"),
                 edge_width=sel_edge_w if is_sel else _EDITOR_MARKER_EDGE_W,
+                ring_colors=[p[2] for p in pts],
+                ring_width=_MARKER_LAYER_RING_W,
             ))
         # Yellow selection box around the emphasised marker — an unfilled
         # rectangle hugging the enlarged glyph (the *_box symbols draw the
@@ -15370,23 +15457,35 @@ class PdnViewer(QMainWindow):
         if not self._editor_mode or self._project is None:
             return []
         rows: list[dict] = []
+        visible_ids = self._visible_layer_ids()
         for d in self._project.editor_directives:
             if d.role not in ("SOURCE", "SINK"):
                 continue
             total = self._editor_directive_current(d)
             label = d.designator or d.id or ""
             size_px = int(self._ROLE_MARKER_STYLE[d.role]["size"]) + 4
-            # Resolve P-side / N-side points exactly as _editor_marker_groups.
+            # Resolve P-side / N-side points exactly as _editor_marker_groups,
+            # including the visible-layer gate so hover rows never report a
+            # marker that isn't drawn.
             if d.kind == "free" and d.anchor_xy is not None:
+                if self._free_marker_layer_id(d) not in visible_ids:
+                    continue
                 sides = [("p", d.p_net,
                           [(float(d.anchor_xy[0]),
                             float(d.anchor_xy[1]))])]
             elif d.kind == "component":
-                p_pts = self._component_pad_points(d.designator, [d.p_net])
+                p_pts = self._component_pad_points(
+                    d.designator, [d.p_net], visible_ids)
                 n_pts = ([] if d.single_net or not d.n_net
                          else self._component_pad_points(
-                             d.designator, [d.n_net]))
+                             d.designator, [d.n_net], visible_ids))
                 if not p_pts and not n_pts:
+                    has_any_pad = bool(
+                        self._component_pad_points(d.designator, [d.p_net])
+                        or (d.n_net and self._component_pad_points(
+                            d.designator, [d.n_net])))
+                    if has_any_pad:
+                        continue
                     ctr = self._component_center(d.designator)
                     p_pts = [ctr] if ctr is not None else []
                 sides = [("p", d.p_net, p_pts), ("n", d.n_net, n_pts)]
@@ -19904,11 +20003,10 @@ def _maybe_warn_needs_directives(parent_win, solution) -> None:
     QMessageBox.information(
         parent_win,
         "No PDN settings found",
-        "This design has no predefined SOURCE or REGULATOR directive, so "
-        "there's nothing to solve yet.\n\n"
-        "It's been opened in editor mode — switch on Edit, place a SOURCE "
-        "marker (plus any SINK / REGULATOR) on the copper, then press "
-        "Resolve. This is the same manual setup a Gerber import uses.",
+        "No predefined PDN parameters (SOURCE / REGULATOR) were found in "
+        "this design, so there's nothing to solve yet.\n\n"
+        "The design has loaded — switch on Edit to place sources / sinks "
+        "manually, then press Resolve.",
     )
 
 
