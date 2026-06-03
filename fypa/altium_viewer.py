@@ -1287,6 +1287,11 @@ _OVERLAY_LAYERS: list[tuple[str, str, bool]] = [
     # Altium's layer name (splits into Top Overlay / Bottom Overlay).
     ("silkscreen", "Overlay", True),
     ("designators", "Designators", True),
+    # Non-plated through holes (mounting / mechanical holes). A through
+    # feature with no side and no per-net association, so its row carries
+    # only the "show everywhere" eye (no rails-only eye), like the board
+    # outline. Available for both Altium and Gerber imports.
+    ("npth", "Non Plated TH", False),
     # The mechanical board outline. It has no per-net association, so its
     # row carries only the "show everywhere" eye (no rails-only eye) and
     # no fill toggle — see _build_overlay_row_widget.
@@ -1324,6 +1329,7 @@ _OVERLAY_DEFAULT_COLORS: dict[str, tuple[float, float, float]] = {
     "pads":          (1.00, 0.82, 0.29),   # amber
     "components":    (0.00, 0.50, 0.00),   # green (#008000)
     "designators":   (1.00, 1.00, 0.00),   # yellow (#ffff00)
+    "npth":          (0.00, 0x91 / 255, 0x90 / 255),  # teal (#009190)
     "board_outline": (0.50, 0.00, 0.00),   # dark red / maroon (#800000)
 }
 
@@ -5174,6 +5180,15 @@ class PdnViewer(QMainWindow):
         if getattr(self, "_pending_maximize", False):
             self._pending_maximize = False
             self.showMaximized()
+        # Authoritative one-time board fit. The GL resize from show /
+        # maximise normally drives this via _on_gl_view_changed, but
+        # schedule it here too (deferred a tick so the maximised geometry
+        # is applied first) so designs that push no FEM mesh — gerber
+        # imports — still frame on first show. _fit_board_to_canvas
+        # self-guards on _need_initial_fit, so whichever path runs first
+        # wins and the rest are cheap no-ops.
+        if self._need_initial_fit:
+            QTimer.singleShot(0, self._fit_board_to_canvas)
         # Once the viewer is visible, compute the Vias warning count so the
         # tab title shows "Vias ⚠ N" without the user having to click in.
         # Deferred via singleShot(0) so the first paint happens before this
@@ -5243,7 +5258,19 @@ class PdnViewer(QMainWindow):
         self._layer_list_items: dict[str, QListWidgetItem] = {}
         self._selected_layer: str | None = None
 
-        self._all_layers_eye = EyeButton(visible=True)
+        self._all_layers_eye = EyeButton(
+            visible=True,
+            tip_show=(
+                "Show the analysed rails on every layer.\n"
+                "This first column controls rail copper only (the PDN "
+                "heatmap) — use the second eye to show all copper."
+            ),
+            tip_hide=(
+                "Hide the analysed rails on every layer.\n"
+                "This first column controls rail copper only (the PDN "
+                "heatmap) — use the second eye to show all copper."
+            ),
+        )
         self._all_layers_eye2 = EyeButton(
             visible=False,
             tip_show="Show all copper on every layer",
@@ -5277,7 +5304,11 @@ class PdnViewer(QMainWindow):
         self._outlines_btn.toggled_outline.connect(self._render)
 
         for phys in self._physicals:
-            eye = EyeButton(visible=True)
+            eye = EyeButton(
+                visible=True,
+                tip_show="Show this layer's analysed rails (rail copper only)",
+                tip_hide="Hide this layer's analysed rails (rail copper only)",
+            )
             eye.toggled_visible.connect(self._on_layer_eye_toggled)
             eye2 = EyeButton(
                 visible=False,
@@ -6200,15 +6231,31 @@ class PdnViewer(QMainWindow):
             if bottom is not None:
                 self._overlay_bottom_colors[key] = bottom
 
+    def _is_gerber_source(self) -> bool:
+        """True when the open design was imported from Gerbers (rather than
+        an Altium project). Gerber imports carry no component/pad/overlay/
+        designator data, so those Board Features rows are suppressed."""
+        return bool(self.metadata
+                    and self.metadata.get("source_kind") == "gerber")
+
     def _build_overlay_list(self) -> None:
         """(Re)populate the Overlays QListWidget from ``self._overlay_state``.
 
         A split layer contributes two rows (Top / Bottom); a merged layer
         one. Called once at construction and again whenever a split toggle
-        flips, so the list re-sizes to whatever the current state needs."""
+        flips, so the list re-sizes to whatever the current state needs.
+
+        Gerber-sourced designs have no component/pad/overlay/designator
+        geometry, so only the "Board outline" row is shown for them."""
         self.overlay_list.clear()
         n_rows = 0
+        gerber_only = self._is_gerber_source()
         for key, label, has_sides in _OVERLAY_LAYERS:
+            # Gerber imports carry no component/pad/overlay/designator data,
+            # so only rows derivable from copper + drill data are shown: the
+            # board outline and non-plated through holes.
+            if gerber_only and key not in ("board_outline", "npth"):
+                continue
             if has_sides and self._overlay_state[key]["split"]:
                 self._add_overlay_row(key, "top", f"Top {label}",
                                       splittable=True)
@@ -6252,7 +6299,7 @@ class PdnViewer(QMainWindow):
         # meaningless when nothing ties the overlay to a rail. That covers
         # the mechanical board outline and the silkscreen "Overlay" layer
         # (graphics-only). Every other overlay keeps the rails-only eye.
-        has_rails_eye = key not in ("board_outline", "silkscreen")
+        has_rails_eye = key not in ("board_outline", "silkscreen", "npth")
         w = QWidget()
         layout = QHBoxLayout(w)
         layout.setContentsMargins(2, 1, 6, 1)
@@ -6530,12 +6577,11 @@ class PdnViewer(QMainWindow):
         if self._physicals:
             side_z["top"] = self._layer_z_for(self._physicals[0])
             side_z["bottom"] = self._layer_z_for(self._physicals[-1])
-        # Board features (silkscreen / pads / components / designators)
-        # physically sit on the board's outer surfaces, so top-side items
-        # are lifted ABOVE the topmost physical layer and bottom-side items
-        # dropped BELOW the lowest. The offset is one mean layer pitch so
-        # they read as clearly separate from the copper in 3D (fixed-gap
-        # fallback on a single-layer board).
+        # Board features (silkscreen / pads / components / designators /
+        # NPTH) physically sit on the board's outer surfaces, so top-side
+        # items are lifted ABOVE the topmost physical layer and bottom-side
+        # items dropped BELOW the lowest, just far enough to read as
+        # clearly separate from the copper in 3D.
         n_phys = len(self._physicals)
         if n_phys > 1:
             pitch = (side_z["top"] - side_z["bottom"]) / (n_phys - 1)
@@ -6543,8 +6589,13 @@ class PdnViewer(QMainWindow):
             pitch = self._LAYER_Z_SPACING_MM
         if pitch <= 0.0:
             pitch = self._LAYER_Z_SPACING_MM
-        feature_z = {"top": side_z["top"] + pitch,
-                     "bottom": side_z["bottom"] - pitch}
+        # Clamp the lift to a small offset. On a 2-layer board the "mean
+        # layer pitch" is the *entire* board thickness, which would float
+        # features (e.g. NPTH mounting-hole discs) a whole board-thickness
+        # off each face — they should hug the surface instead.
+        lift = min(pitch, self._FEATURE_LIFT_MM)
+        feature_z = {"top": side_z["top"] + lift,
+                     "bottom": side_z["bottom"] - lift}
 
         # Triangles split into three batches: ``under_*`` draw BEFORE the
         # heatmap mesh (2D only — bottom-side board features sit behind the
@@ -6743,6 +6794,36 @@ class PdnViewer(QMainWindow):
                 })
 
         self._pump_busy_ui()
+        # Non-plated through holes — a drilled hole through the whole board
+        # (mounting / mechanical hole) with no net. Drawn on both faces as a
+        # filled disc or a ring outline per the row's fill toggle, so it
+        # reads regardless of which side is in view. No per-net association,
+        # so only the "show everywhere" eye gates it.
+        npth_recs = md.get("npth") or []
+        if npth_recs:
+            sides = self._overlay_side_states("npth")
+            alphas = self._overlay_side_alpha("npth")
+            for side in ("top", "bottom"):
+                vis, solid = sides.get(side, (None, False))
+                if vis is None:
+                    continue
+                a = alphas.get(side, 1.0)
+                if a <= 0.0:
+                    continue
+                rgb = self._overlay_color_for("npth", side)
+                z = feature_z[side]
+                bucket = _side_buckets(side)
+                for rec in npth_recs:
+                    self._pump_busy_ui()
+                    r = 0.5 * float(rec.get("diameter_mm", 0.0) or 0.0)
+                    if r <= 0.0:
+                        continue
+                    ring = _overlay_circle_ring(
+                        float(rec.get("x_mm", 0.0)),
+                        float(rec.get("y_mm", 0.0)), r)
+                    _emit(_shape_tris(ring, solid), z, rgb, alpha=a, **bucket)
+
+        self._pump_busy_ui()
         # Physical-layer "all copper" — the per-layer second eye. For every
         # layer whose all-copper eye is on, draw all of that layer's copper
         # that ISN'T part of a selected rail (the rails are already the
@@ -6780,10 +6861,18 @@ class PdnViewer(QMainWindow):
             # always uses ``over_*`` — global per-vertex z + depth
             # handles ordering there.
             sel_layer = self._selected_layer
+            # In 2D the selected layer is forced to emit LAST so it paints
+            # on top of the dimmed others (painter's order). In 3D the
+            # per-vertex z + depth test already place each layer correctly,
+            # and depth-write-on transparency needs a strict back-to-front
+            # (stackup) draw order: forcing the selected layer last there
+            # would depth-reject the layers sitting behind it, making an
+            # unselected transparent layer read as opaque. So apply the
+            # selection priority only in 2D.
             for name, eye2 in sorted(
                 eye2_buttons,
                 key=lambda ne: (
-                    0 if ne[0] == sel_layer else 1,
+                    (0 if ne[0] == sel_layer else 1) if in_2d else 0,
                     self._phys_stackup_rank.get(ne[0], 1 << 30),
                 ),
                 reverse=True,
@@ -7993,7 +8082,7 @@ class PdnViewer(QMainWindow):
         # widget). Subsequent renders — layer toggles, mode/rail
         # changes — leave the user's pan/zoom alone.
         if self._need_initial_fit:
-            self._fit_board_to_canvas(x_min, x_max, y_min, y_max)
+            self._fit_board_to_canvas()
 
         # Summary stats over the mesh's actual values — orphan vertices
         # excluded (same reason as the scale-range filtering above). In
@@ -8261,7 +8350,7 @@ class PdnViewer(QMainWindow):
     # Half-width of the board-outline ribbon in mm. 0.2 mm reads as a
     # bold accent at typical board zooms without obscuring fine copper
     # features near the edge.
-    _BOARD_OUTLINE_HALF_WIDTH_MM: float = 0.2
+    _BOARD_OUTLINE_HALF_WIDTH_MM: float = 0.1
 
     def _refresh_board_outline(self) -> None:
         """Push or clear the board-outline ribbon overlay.
@@ -9545,7 +9634,7 @@ class PdnViewer(QMainWindow):
             # member; second eye (all-copper) bypasses that filter.
             net = v.get("net", "")
             rail_ok = (
-                (not rail_members or net in rail_members)
+                bool(rail_members) and net in rail_members
                 and any(lo_id <= lid <= hi_id for lid in visible_ids)
             )
             copper_ok = any(lo_id <= lid <= hi_id
@@ -9621,12 +9710,19 @@ class PdnViewer(QMainWindow):
                 continue
             lo_id = min(ls_id, le_id)
             hi_id = max(ls_id, le_id)
-            spanned = [lid for lid in (lo_id, hi_id) if lid in id_to_phys]
-            if not spanned:
-                continue
-            if not any(visible_ids & set(spanned)):
-                continue
-            if rail_members and p.get("net") not in rail_members:
+            # Visibility: any layer the PTH crosses (full span, not just
+            # endpoints) being visible lets it show — matching the via
+            # rule above. Primary eye (rail/heatmap) requires the PTH's
+            # net to be on a visible rail; the second eye (all-copper)
+            # bypasses that filter.
+            net = p.get("net", "")
+            rail_ok = (
+                bool(rail_members) and net in rail_members
+                and any(lo_id <= lid <= hi_id for lid in visible_ids)
+            )
+            copper_ok = any(lo_id <= lid <= hi_id
+                            for lid in copper_visible_ids)
+            if not (rail_ok or copper_ok):
                 continue
             phys_top = id_to_phys.get(lo_id)
             phys_bot = id_to_phys.get(hi_id)
@@ -10203,7 +10299,8 @@ class PdnViewer(QMainWindow):
                 # without the rail filter — same rule as the 3D cylinder
                 # path in :meth:`_push_via_cylinders`.
                 for lid in copper_layer_ids:
-                    vxs, vys, vds = self._collect_via_positions(lid, set())
+                    vxs, vys, vds = self._collect_via_positions(
+                        lid, set(), rail_scoped=False)
                     for vx, vy, vd in zip(vxs, vys, vds):
                         via_pts[(vx, vy)] = vd
                 if via_pts:
@@ -10237,6 +10334,15 @@ class PdnViewer(QMainWindow):
                     for lid in target_layer_ids:
                         pxs, pys, pds = self._collect_pth_positions(
                             lid, rail_members)
+                        for px, py, pd in zip(pxs, pys, pds):
+                            pth_pts[(px, py)] = pd
+                    # All-copper (second eye) layers add their own PTHs
+                    # without the rail filter — same rule as vias above:
+                    # a PTH shows whenever any layer within its span has
+                    # its copper eye on, regardless of net / rail.
+                    for lid in copper_layer_ids:
+                        pxs, pys, pds = self._collect_pth_positions(
+                            lid, set(), rail_scoped=False)
                         for px, py, pd in zip(pxs, pys, pds):
                             pth_pts[(px, py)] = pd
                 if pth_pts:
@@ -10307,22 +10413,53 @@ class PdnViewer(QMainWindow):
 
     # --- CAD-style fixed-scale viewport (via GLMeshViewer) -----------------
 
-    def _fit_board_to_canvas(self, x_min: float, x_max: float,
-                             y_min: float, y_max: float) -> None:
-        """Pick the largest mm-per-pixel that still fits the board into the
-        current GL canvas, with a small margin, and apply it centred on the
-        board. Guarded against re-entry from the synchronous ``viewChanged``
-        signal that ``fit_to_data`` emits.
+    def _fit_board_to_canvas(self) -> None:
+        """Frame the board in the GL canvas, with a little margin, centred —
+        the one-time fit applied when a design is first shown. No-op after
+        it succeeds, so the user's pan/zoom is preserved thereafter.
+
+        Frames the board *outline* when the design carries one, so the whole
+        board edge is in view rather than just the copper that happens to be
+        meshed (the outline usually sits a hair outside the copper, and
+        gerber imports push no FEM mesh at all). Falls back to the mesh data
+        bounds otherwise.
+
+        Gated on the canvas actually being on-screen: the first ``_render``
+        runs from ``__init__`` *before* the window is shown, when the GL
+        widget still has its pre-layout default size — fitting then yields a
+        wildly wrong (zoomed-out) scale. While not yet visible we leave
+        ``_need_initial_fit`` set so the first real GL resize (from show /
+        maximise) re-drives this via ``_on_gl_view_changed`` at the correct
+        size. Guarded against re-entry from the synchronous ``viewChanged``
+        signal that the fit emits.
         """
-        if self._gl_viewer is None:
+        if (not self._need_initial_fit or self._gl_viewer is None
+                or not self._gl_viewer.isVisible()):
+            return
+        bounds = self._board_outline_bounds() or self._data_bounds
+        if bounds is None:
             return
         self._suppress_view_changed = True
         try:
-            self._gl_viewer.fit_to_data(padding=1.05)
+            self._gl_viewer.fit_to_bounds(*bounds, padding=1.08)
             _, _, self._mm_per_pixel = self._gl_viewer.view_center_scale()
         finally:
             self._suppress_view_changed = False
         self._need_initial_fit = False
+
+    def _board_outline_bounds(
+        self,
+    ) -> tuple[float, float, float, float] | None:
+        """Axis-aligned bounding box of the board-outline polyline, or
+        ``None`` when the design has no usable outline."""
+        points = (self.metadata or {}).get("board_outline") or []
+        if len(points) < 3:
+            return None
+        ring = np.asarray(points, dtype=np.float64)
+        if ring.ndim != 2 or ring.shape[1] < 2 or not np.isfinite(ring).all():
+            return None
+        return (float(ring[:, 0].min()), float(ring[:, 0].max()),
+                float(ring[:, 1].min()), float(ring[:, 1].max()))
 
     def _on_gl_view_changed(self) -> None:
         """GLMeshViewer fired a view-change (pan/zoom/resize) signal.
@@ -10339,9 +10476,13 @@ class PdnViewer(QMainWindow):
         """
         if self._suppress_view_changed or self._gl_viewer is None:
             return
-        if self._need_initial_fit and self._data_bounds is not None:
-            x_min, x_max, y_min, y_max = self._data_bounds
-            self._fit_board_to_canvas(x_min, x_max, y_min, y_max)
+        if self._need_initial_fit:
+            # Now that the canvas is on-screen at its real size, run (or
+            # re-run) the one-time board fit. Self-guards on visibility and
+            # available bounds, so this is a cheap no-op until both hold —
+            # and gerber imports (no mesh ``_data_bounds``) still fit via
+            # their board outline.
+            self._fit_board_to_canvas()
             return
         _, _, mpp = self._gl_viewer.view_center_scale()
         if mpp > 0:
@@ -10426,7 +10567,7 @@ class PdnViewer(QMainWindow):
             # bypasses it. See :meth:`_push_via_cylinders`.
             net = v.get("net", "")
             rail_ok = (
-                (not rail_members or net in rail_members)
+                bool(rail_members) and net in rail_members
                 and any(lo <= lid <= hi for lid in target_layer_ids)
             )
             copper_ok = any(lo <= lid <= hi for lid in copper_layer_ids)
@@ -10469,13 +10610,23 @@ class PdnViewer(QMainWindow):
         return labels
 
     def _collect_via_positions(self, target_layer_id: int | None,
-                               rail_members: set[str],
+                               rail_members: set[str], *,
+                               rail_scoped: bool = True,
                                ) -> tuple[list[float], list[float],
                                           list[float]]:
-        """Vias whose span includes ``target_layer_id`` AND whose net is in
-        ``rail_members``. Returns parallel xs/ys lists plus each via's
-        physical diameter (mm) so the marker overlay can size the orange
-        dot to the real via footprint."""
+        """Vias whose span includes ``target_layer_id``. Returns parallel
+        xs/ys lists plus each via's physical diameter (mm) so the marker
+        overlay can size the orange dot to the real via footprint.
+
+        ``rail_scoped`` selects which eye is asking:
+
+        * ``True`` (first-column / heatmap eye) — only vias whose net is on
+          a visible rail show. With no rail visible (``rail_members`` empty)
+          nothing shows: the heatmap eye carries no rail to scope to, so it
+          must not fall through to "show every via".
+        * ``False`` (second-column / all-copper eye) — the rail filter is
+          bypassed entirely; every via crossing the layer shows.
+        """
         if target_layer_id is None or self.metadata is None:
             return [], [], []
         xs: list[float] = []
@@ -10489,7 +10640,7 @@ class PdnViewer(QMainWindow):
             lo, hi = (ls, le) if ls <= le else (le, ls)
             if not (lo <= target_layer_id <= hi):
                 continue
-            if rail_members and v.get("net") not in rail_members:
+            if rail_scoped and v.get("net") not in rail_members:
                 continue
             xs.append(v.get("x_mm", 0.0))
             ys.append(v.get("y_mm", 0.0))
@@ -10497,14 +10648,15 @@ class PdnViewer(QMainWindow):
         return xs, ys, diams
 
     def _collect_pth_positions(self, target_layer_id: int | None,
-                               rail_members: set[str],
+                               rail_members: set[str], *,
+                               rail_scoped: bool = True,
                                ) -> tuple[list[float], list[float],
                                           list[float]]:
-        """Plated-through-hole pads whose span includes ``target_layer_id``
-        AND whose net is in ``rail_members``. Mirrors
-        :meth:`_collect_via_positions` (xs/ys + physical diameter mm); PTHs
-        span the full enabled stack so every visible copper layer hits the
-        same set of pads (the marker-builder dedups across layers)."""
+        """Plated-through-hole pads whose span includes ``target_layer_id``.
+        Mirrors :meth:`_collect_via_positions` (xs/ys + physical diameter mm,
+        and the same ``rail_scoped`` first-/second-eye semantics); PTHs span
+        the full enabled stack so every visible copper layer hits the same
+        set of pads (the marker-builder dedups across layers)."""
         if target_layer_id is None or self.metadata is None:
             return [], [], []
         xs: list[float] = []
@@ -10518,7 +10670,7 @@ class PdnViewer(QMainWindow):
             lo, hi = (ls, le) if ls <= le else (le, ls)
             if not (lo <= target_layer_id <= hi):
                 continue
-            if rail_members and p.get("net") not in rail_members:
+            if rail_scoped and p.get("net") not in rail_members:
                 continue
             xs.append(p.get("x_mm", 0.0))
             ys.append(p.get("y_mm", 0.0))
@@ -10648,6 +10800,12 @@ class PdnViewer(QMainWindow):
     # carry per-layer thicknesses. Used only when ``_phys_z_mm`` lacks
     # an entry for the requested layer.
     _LAYER_Z_SPACING_MM: float = 0.4
+    # How far (pre-exaggeration mm) board features (NPTH, pads, silk,
+    # components, designators) hover above/below the outer copper in 3D.
+    # Capped small so they hug the surface — on a 2-layer board the mean
+    # layer pitch equals the whole board thickness, which would otherwise
+    # float them a full board-thickness off each face.
+    _FEATURE_LIFT_MM: float = 0.005
     # Copper "plate" thickness in 3D mode (pre-exaggeration mm). Picked
     # at ~25% of the layer spacing so the copper looks like a visible
     # plate from oblique angles without dominating the layer gaps.
@@ -14408,8 +14566,7 @@ class PdnViewer(QMainWindow):
             # Gerber-sourced projects have no Altium schematic to edit,
             # so omit the "name it in Altium and re-import" option and
             # collapse the two-bullet wording to a single-action instruction.
-            is_gerber = bool(self.metadata
-                             and self.metadata.get("source_kind") == "gerber")
+            is_gerber = self._is_gerber_source()
             if is_gerber:
                 fix_text = (
                     "To fix this:\n"
@@ -20332,6 +20489,15 @@ def _finish_gerber_import(result, pseudo, progress_cb=None) -> tuple:
             "is_conductive_fill": False,
         })
 
+    # Non-plated through holes (mounting / mechanical holes) — drawn as the
+    # "Non Plated TH" Board Features overlay, never meshed. NonPlated drill
+    # files contribute these (see _gerber_drill_to_vias).
+    npth_records: list[dict] = [
+        {"x_mm": float(h.center.x), "y_mm": float(h.center.y),
+         "diameter_mm": float(h.diameter_mm)}
+        for h in extracted.npth_holes
+    ]
+
     metadata: dict = {
         "source_kind": "gerber",
         "prjpcb_path": str(pseudo),
@@ -20341,6 +20507,7 @@ def _finish_gerber_import(result, pseudo, progress_cb=None) -> tuple:
         "stackup": stackup_rows,
         "primitives": primitives,
         "vias": vias_records,
+        "npth": npth_records,
         # Gerber imports have no through-hole pad records (the extract
         # docstring leaves pads/components empty); keep the key present so
         # viewer code that iterates ``metadata['pths']`` doesn't have to

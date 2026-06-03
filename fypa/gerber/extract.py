@@ -52,6 +52,7 @@ from fypa.altium.extract import (
     NO_POLYGON,
     ExtractedProject,
     Pt2D,
+    RawHole,
     RawRegionVertex,
     RawShapeBasedRegion,
     RawStackupLayer,
@@ -715,13 +716,18 @@ def _x2_drill_span_to_layer_ids(
 def _gerber_drill_to_vias(
     path: Path,
     ordered_layer_ids: list[int],
-) -> tuple[list[RawVia], list[str]]:
-    """Parse one Gerber X2 drill file → ``RawVia`` records.
+) -> tuple[list[RawVia], list[RawHole], list[str]]:
+    """Parse one Gerber X2 drill file → ``RawVia`` + ``RawHole`` records.
 
-    Round flashes (``gp.Circle`` primitives) become single vias. Routed slots
+    Plated (PTH / blind / buried / microvia) files become vias: round
+    flashes (``gp.Circle`` primitives) → one via each; routed slots
     (``gp.Line`` primitives — common for oval component-lead holes) get
     discretised into a chain of overlapping circular via stamps so they
     bridge the layer pair across the slot's full length in the FEM mesh.
+
+    NonPlated files (mechanical / mounting holes) carry no electrical role,
+    so each flash / slot becomes a ``RawHole`` instead — drawn as the
+    "Non Plated TH" Board Features overlay but never meshed.
     """
     import math
     import gerbonara.graphic_primitives as gp
@@ -729,6 +735,7 @@ def _gerber_drill_to_vias(
     from gerbonara.utils import MM
 
     vias: list[RawVia] = []
+    npth: list[RawHole] = []
     warnings: list[str] = []
     try:
         gf = GerberFile.open(str(path))
@@ -737,12 +744,13 @@ def _gerber_drill_to_vias(
             f"Couldn't parse Gerber drill file {path.name} "
             f"({type(e).__name__}: {e}); skipping."
         )
-        return vias, warnings
+        return vias, npth, warnings
 
     file_function = gf.file_attrs.get(".FileFunction") if gf.file_attrs else None
-    # NonPlated = mechanical mounting holes, no electrical role — skip.
-    if file_function and file_function[0].strip().lower() == "nonplated":
-        return vias, warnings
+    # NonPlated = mechanical mounting holes, no electrical role — collect
+    # them as NPTH holes (drawn, not meshed) rather than vias.
+    is_npth = bool(file_function
+                   and file_function[0].strip().lower() == "nonplated")
 
     layer_start, layer_end = _x2_drill_span_to_layer_ids(
         file_function, ordered_layer_ids,
@@ -753,6 +761,12 @@ def _gerber_drill_to_vias(
             if isinstance(prim, gp.Circle):
                 diam = 2.0 * float(prim.r)
                 if diam <= 0:
+                    continue
+                if is_npth:
+                    npth.append(RawHole(
+                        center=Pt2D(float(prim.x), float(prim.y)),
+                        diameter_mm=diam,
+                    ))
                     continue
                 vias.append(RawVia(
                     center=Pt2D(float(prim.x), float(prim.y)),
@@ -777,6 +791,10 @@ def _gerber_drill_to_vias(
                     t = i / (n_stamps - 1) if n_stamps > 1 else 0.0
                     cx = float(prim.x1) + dx * t
                     cy = float(prim.y1) + dy * t
+                    if is_npth:
+                        npth.append(RawHole(
+                            center=Pt2D(cx, cy), diameter_mm=w))
+                        continue
                     vias.append(RawVia(
                         center=Pt2D(cx, cy),
                         diameter_mm=w + VIA_ANNULAR_RING_HEURISTIC_MM,
@@ -786,20 +804,23 @@ def _gerber_drill_to_vias(
                         net_index=NO_NET,
                     ))
             # Arcs / regions in a drill file are uncommon; ignore quietly.
-    return vias, warnings
+    return vias, npth, warnings
 
 
 def _excellon_to_vias(
     drill_paths: list[Path],
     ordered_layer_ids: list[int],
-) -> tuple[list[RawVia], list[str]]:
-    """Parse every Excellon drill file → ``RawVia`` records (one per plated
-    hit). Excellon carries no layer-span info, so every via spans the top↔
-    bottom of the imported stack.
+) -> tuple[list[RawVia], list[RawHole], list[str]]:
+    """Parse every Excellon drill file → ``RawVia`` + ``RawHole`` records.
+
+    Plated hits become vias spanning the top↔bottom of the imported stack
+    (Excellon carries no layer-span info). Explicitly non-plated tools
+    become NPTH holes (drawn, not meshed) instead of being discarded.
     """
     from gerbonara import ExcellonFile
 
     vias: list[RawVia] = []
+    npth: list[RawHole] = []
     warnings: list[str] = []
     top_layer_id = ordered_layer_ids[0] if ordered_layer_ids else LAYER_ID_TOP
     bottom_layer_id = (
@@ -834,6 +855,8 @@ def _excellon_to_vias(
             if diam_mm <= 0:
                 continue
             if hasattr(tool, "plated") and tool.plated is False:
+                npth.append(RawHole(
+                    center=Pt2D(x, y), diameter_mm=diam_mm))
                 continue
             vias.append(RawVia(
                 center=Pt2D(x, y),
@@ -843,30 +866,34 @@ def _excellon_to_vias(
                 layer_end=bottom_layer_id,
                 net_index=NO_NET,
             ))
-    return vias, warnings
+    return vias, npth, warnings
 
 
 def _drill_files_to_vias(
     drill_paths: list[Path],
     ordered_layer_ids: list[int],
-) -> tuple[tuple[RawVia, ...], list[str]]:
+) -> tuple[tuple[RawVia, ...], tuple[RawHole, ...], list[str]]:
     """Dispatch each drill file to the Gerber X2 or Excellon parser based on
-    its actual content (filename is a hint, not authoritative)."""
+    its actual content (filename is a hint, not authoritative). Returns
+    ``(vias, npth_holes, warnings)``."""
     vias: list[RawVia] = []
+    npth: list[RawHole] = []
     warnings: list[str] = []
     excellon_batch: list[Path] = []
     for path in drill_paths:
         if _is_gerber_x2_drill(path):
-            v, w = _gerber_drill_to_vias(path, ordered_layer_ids)
+            v, h, w = _gerber_drill_to_vias(path, ordered_layer_ids)
             vias.extend(v)
+            npth.extend(h)
             warnings.extend(w)
         else:
             excellon_batch.append(path)
     if excellon_batch:
-        v, w = _excellon_to_vias(excellon_batch, ordered_layer_ids)
+        v, h, w = _excellon_to_vias(excellon_batch, ordered_layer_ids)
         vias.extend(v)
+        npth.extend(h)
         warnings.extend(w)
-    return tuple(vias), warnings
+    return tuple(vias), tuple(npth), warnings
 
 
 # --- public entry point ------------------------------------------------------
@@ -1071,9 +1098,10 @@ def extract_gerber_project(
     if not ordered_ids:
         ordered_ids = [LAYER_ID_TOP, LAYER_ID_BOTTOM]
     if drill_files:
-        vias, drill_warnings = _drill_files_to_vias(drill_files, ordered_ids)
+        vias, npth_holes, drill_warnings = _drill_files_to_vias(
+            drill_files, ordered_ids)
         warnings.extend(drill_warnings)
-        if not vias:
+        if not vias and not npth_holes:
             warnings.append(
                 "Drill file(s) supplied but produced no via records "
                 f"({', '.join(p.name for p in drill_files)}). Multi-layer "
@@ -1082,6 +1110,7 @@ def extract_gerber_project(
             )
     else:
         vias = ()
+        npth_holes = ()
         warnings.append(
             "No drill file provided (Excellon .drl/.xln/.tap/.nc or Gerber X2 "
             ".GBR<n>). Vias / through-hole pads won't be reconstructed; "
@@ -1154,10 +1183,12 @@ def extract_gerber_project(
         board_origin_mm=Pt2D(0.0, 0.0),
         board_outline=board_outline,
         texts=(),
+        npth_holes=tuple(npth_holes),
     )
     log.info(
         "Gerber extract complete: %d layers, %d SBR polygons, %d vias, "
-        "outline_pts=%d",
-        len(copper_files), len(sbr_records), len(vias), len(board_outline),
+        "%d NPTH holes, outline_pts=%d",
+        len(copper_files), len(sbr_records), len(vias), len(npth_holes),
+        len(board_outline),
     )
     return project, warnings

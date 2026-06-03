@@ -1164,9 +1164,23 @@ class GLMeshViewer(QOpenGLWidget):
         the current widget size with a small margin, then centre."""
         if self._data_bounds is None:
             return
+        x_min, x_max, y_min, y_max = self._data_bounds
+        self.fit_to_bounds(x_min, x_max, y_min, y_max, padding=padding)
+
+    def fit_to_bounds(self, x_min: float, x_max: float,
+                      y_min: float, y_max: float,
+                      padding: float = 1.05) -> None:
+        """Pick the largest mm-per-pixel that fits the given world rectangle
+        into the current widget size with a small margin, then centre.
+
+        Unlike :meth:`fit_to_data` (which keys off the pushed mesh extent),
+        this takes explicit bounds so callers can frame e.g. the board
+        outline rather than just the copper that happens to be meshed.
+        """
+        if not all(math.isfinite(v) for v in (x_min, x_max, y_min, y_max)):
+            return
         w_px = max(1, self.width())
         h_px = max(1, self.height())
-        x_min, x_max, y_min, y_max = self._data_bounds
         board_w = max(x_max - x_min, 1e-9)
         board_h = max(y_max - y_min, 1e-9)
         mpp = max(board_w * padding / w_px, board_h * padding / h_px)

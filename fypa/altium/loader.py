@@ -1462,6 +1462,11 @@ def build_solve_metadata(
     # FEM (see ``_via_through_holes``), so we ship them to the viewer with the
     # same shape as ``vias`` for the marker / 3D cylinder overlay. Span is the
     # full enabled copper stack (Altium pads have no blind/buried span).
+    # Non-plated through holes (NPTH) — mechanical / mounting holes with no
+    # copper barrel and no net. They carry no electrical role, so they are
+    # NOT coupled into the FEM like plated through holes; they are shipped
+    # to the viewer purely for the "Non Plated TH" Board Features overlay.
+    npth: list[dict] = []
     pths: list[dict] = []
     if enabled:
         pth_layer_start = enabled[0]
@@ -1471,6 +1476,19 @@ def build_solve_metadata(
         for i, p in enumerate(proj.pads):
             _gil_yield(i)
             if not p.is_through_hole:
+                continue
+            if not getattr(p, "is_plated", True):
+                # NPTH: draw it as a hole, not a plated barrel. Use the
+                # drilled hole diameter, falling back to the pad extent for
+                # the rare hole-less mechanical pad.
+                npth_d = float(p.hole_mm) or max(
+                    float(p.width_mm), float(p.height_mm))
+                if npth_d > 0:
+                    npth.append({
+                        "x_mm": p.center.x,
+                        "y_mm": p.center.y,
+                        "diameter_mm": npth_d,
+                    })
                 continue
             site_segments = segments_by_site.get(
                 _site_key(p.center.x, p.center.y, p.net_index), []
@@ -1510,6 +1528,10 @@ def build_solve_metadata(
                              for i, c in enumerate(proj.pcb_components)}
         for i, p in enumerate(proj.pads):
             _gil_yield(i)
+            # Non-plated through holes are surfaced as the dedicated
+            # "Non Plated TH" overlay, not as a copper Pad.
+            if p.is_through_hole and not getattr(p, "is_plated", True):
+                continue
             shape = _pad_outer_shape(p)
             if shape is None or shape.is_empty:
                 continue
@@ -1774,6 +1796,7 @@ def build_solve_metadata(
         "active_nets": active_nets,
         "vias": vias,
         "pths": pths,
+        "npth": npth,
         "pads": pads_outline,
         "stubs": stubs,
         "all_copper": all_copper,

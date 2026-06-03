@@ -115,6 +115,17 @@ class RawVia:
 
 
 @dataclass(frozen=True, slots=True)
+class RawHole:
+    """A non-plated through hole (NPTH) — a mechanical / mounting hole with
+    no copper barrel, no net and no layer span. It carries no electrical
+    role, so it is never meshed; it is surfaced purely so the viewer can
+    draw it as the "Non Plated TH" Board Features overlay. ``diameter_mm``
+    is the drilled hole diameter."""
+    center: Pt2D
+    diameter_mm: float
+
+
+@dataclass(frozen=True, slots=True)
 class RawPad:
     center: Pt2D
     width_mm: float
@@ -129,6 +140,7 @@ class RawPad:
     is_through_hole: bool
     is_smt: bool
     corner_radius_pct: int = 0  # 0-100; percentage of min(w,h)/2 used as corner radius
+    is_plated: bool = True      # False for NPTH mounting / mechanical holes
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,6 +349,9 @@ class ExtractedProject:
     # with an empty default so older callers that build ExtractedProject
     # without texts keep working.
     texts: tuple[RawText, ...] = ()
+    # Non-plated through holes (mounting / mechanical holes). Empty default
+    # so older callers that build ExtractedProject without them keep working.
+    npth_holes: tuple[RawHole, ...] = ()
 
     def enabled_copper_layer_ids(self) -> list[int]:
         """Layer ids forming the actually-enabled copper stack, in Top→Bottom order.
@@ -532,6 +547,7 @@ def _extract_pads(pcb, ox_mm: float, oy_mm: float) -> tuple[RawPad, ...]:
             is_through_hole=bool(p.is_through_hole),
             is_smt=bool(p.is_smt),
             corner_radius_pct=int(getattr(p, 'corner_radius_percentage', 0)),
+            is_plated=bool(getattr(p, 'is_plated', True)),
         ))
     return tuple(out)
 
