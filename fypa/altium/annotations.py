@@ -128,13 +128,17 @@ _TRAILING_UNITS: tuple[str, ...] = ("V", "A", "Ohm", "OHM", "ohm", "Ω", "Hz", "
 _VALUE_RE = re.compile(
     r"""^\s*
     (?P<sign>[+-]?)
-    (?P<int>\d+)
     (?:
-        (?P<dotfrac>\.\d*)?          # 3.3
+        (?P<int>\d+)
+        (?:
+            (?P<dotfrac>\.\d*)?          # 3.3
+            |
+            (?P<eng_letter>[a-zA-Zµ])     # 3V3 form: int + unit-letter + frac
+            (?P<eng_frac>\d+)?
+        )?
         |
-        (?P<eng_letter>[a-zA-Zµ])     # 3V3 form: int + unit-letter + frac
-        (?P<eng_frac>\d+)?
-    )?
+        (?P<leaddot>\.\d+)               # .001 — no leading integer digit
+    )
     (?P<rest>[a-zA-Zµ%Ω]*)            # SI prefix / unit suffix
     \s*$
     """,
@@ -176,8 +180,11 @@ def parse_si_value(s: str) -> float:
             magnitude *= _SI_PREFIXES[eng_letter]
         # Allow trailing unit chars after eng form: 3V3, no _rest needed.
     else:
-        dotfrac = m.group("dotfrac") or ""
-        magnitude = float(f"{int_part}{dotfrac}")
+        if m.group("leaddot"):
+            magnitude = float(m.group("leaddot"))   # ".001" → 0.001
+        else:
+            dotfrac = m.group("dotfrac") or ""
+            magnitude = float(f"{int_part}{dotfrac}")
         # rest may start with an SI prefix letter, then optionally a unit.
         if rest:
             first = rest[0]
@@ -196,13 +203,16 @@ def _ci_get(params: dict[str, str], key: str) -> str | None:
 
     Altium's parameter sheet (and copy/paste from other tools) often leaves
     a stray leading/trailing space on values — e.g. ``" SINK"`` instead of
-    ``"SINK"``. That'd otherwise reach the role validator as an unknown role
-    and bounce the directive. Strip here so every downstream consumer gets
-    the canonical value. An all-whitespace value is treated as not-present.
+    ``"SINK"`` — and on parameter *names* too (``"PDN_P_PINS "``). Either
+    would otherwise bounce the directive: a spaced value reaches the role
+    validator as an unknown role, a spaced name makes the parameter invisible
+    to lookup. Strip both ends of name and value here so every downstream
+    consumer gets the canonical form. An all-whitespace value is treated as
+    not-present.
     """
     key_l = key.lower()
     for k, v in params.items():
-        if k.lower() == key_l:
+        if k.strip().lower() == key_l:
             if v is None:
                 return None
             stripped = str(v).strip()
@@ -239,7 +249,7 @@ def _discover_channel_indices(params: dict[str, str],
     indices: set[int | None] = set()
     suffix_l = value_suffix.lower()
     for k, v in params.items():
-        m = _INDEXED_KEY_RE.match(k)
+        m = _INDEXED_KEY_RE.match(k.strip())
         if m is None:
             continue
         if m.group(2).lower() != suffix_l:
@@ -573,6 +583,23 @@ def _autoinfer_2pin_nets(proj: ExtractedProject, pcb_index: int) -> tuple[str, s
     return proj.nets[pads[0].net_index].name, proj.nets[pads[1].net_index].name
 
 
+def _autoinfer_failure_reason(proj: ExtractedProject, pcb_index: int) -> str:
+    """Human-readable reason why :func:`_autoinfer_2pin_nets` declined.
+
+    Mirrors that function's guards so the per-directive parser can tell the
+    user exactly why the P/N nets couldn't be inferred (and must be set
+    explicitly).
+    """
+    pads = [p for p in proj.pads if p.component_index == pcb_index]
+    if len(pads) != 2:
+        return f"the footprint has {len(pads)} pads, not 2"
+    if pads[0].net_index == NO_NET or pads[1].net_index == NO_NET:
+        return "a pad is not connected to any net"
+    if pads[0].net_index == pads[1].net_index:
+        return "both pads are on the same net"
+    return "the net pair is ambiguous"
+
+
 # --- directive specs ---------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -804,7 +831,7 @@ def _has_single_net_params(params: dict[str, str]) -> bool:
     Used to reject ``PDN_NET`` on SERIES / REGULATOR — single-net mode is
     SOURCE/SINK only."""
     for k, v in params.items():
-        m = _INDEXED_KEY_RE.match(k)
+        m = _INDEXED_KEY_RE.match(k.strip())
         if m and m.group(2).upper() in ("NET", "PINS") \
                 and v is not None and str(v).strip():
             return True
@@ -994,12 +1021,19 @@ def _parse_resistance(comp, proj, enabled_layers, result, bridge_groups=None,
         params = dict(comp.parameters)
         if not given:
             inferred = _autoinfer_2pin_nets(proj, pcb_idx)
-            if inferred is not None:
-                params["PDN_P_NET"], params["PDN_N_NET"] = inferred
-                result.warnings.append(
-                    f"{role_diag}: auto-inferred PDN_P_NET={inferred[0]!r}, "
-                    f"PDN_N_NET={inferred[1]!r} from 2-pin connectivity"
+            if inferred is None:
+                reason = _autoinfer_failure_reason(proj, pcb_idx)
+                result.errors.append(
+                    f"{role_diag}: PDN_P_NET and PDN_N_NET are required "
+                    f"({reason}, so the two nets cannot be auto-inferred) — "
+                    f"set them explicitly (or use PDN_P_PINS / PDN_N_PINS)"
                 )
+                continue
+            params["PDN_P_NET"], params["PDN_N_NET"] = inferred
+            result.warnings.append(
+                f"{role_diag}: auto-inferred PDN_P_NET={inferred[0]!r}, "
+                f"PDN_N_NET={inferred[1]!r} from 2-pin connectivity"
+            )
         pair = _resolve_two_terminal(
             proj, pcb_idx, params,
             "PDN_P_NET", "PDN_N_NET", "PDN_P_PINS", "PDN_N_PINS",
