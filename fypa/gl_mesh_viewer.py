@@ -82,27 +82,39 @@ _VERTEX_SHADER_SRC = """
 layout(location = 0) in vec3 a_position;
 layout(location = 1) in float a_value;
 layout(location = 2) in float a_alpha;
+layout(location = 3) in float a_neutral;
 uniform mat4 u_mvp;
 uniform vec2 u_levels;
 out float v_norm;
 out float v_alpha;
+out float v_neutral;
 void main() {
     gl_Position = u_mvp * vec4(a_position, 1.0);
     float span = max(u_levels.y - u_levels.x, 1e-30);
     v_norm = clamp((a_value - u_levels.x) / span, 0.0, 1.0);
     v_alpha = a_alpha;
+    v_neutral = a_neutral;
 }
 """
 
+# ``v_neutral`` (0 normally, 1 for "no current" copper) blends the colormap
+# colour toward a flat dim grey so copper that carries no current can be
+# greyed out on demand without leaving the per-vertex colormap path. The
+# grey matches the dead-end-stub overlay colour (0x60) so a solved dead-end
+# island and a FEM-excluded stub read identically when the user toggles
+# "Grey no current copper".
 _FRAGMENT_SHADER_SRC = """
 #version 330 core
 in float v_norm;
 in float v_alpha;
+in float v_neutral;
 uniform sampler1D u_cmap;
 out vec4 frag_color;
+const vec3 NO_CURRENT_GREY = vec3(0.376, 0.376, 0.376);
 void main() {
     vec4 c = texture(u_cmap, v_norm);
-    frag_color = vec4(c.rgb, c.a * v_alpha);
+    vec3 rgb = mix(c.rgb, NO_CURRENT_GREY, clamp(v_neutral, 0.0, 1.0));
+    frag_color = vec4(rgb, c.a * v_alpha);
 }
 """
 
@@ -404,6 +416,11 @@ class GLMeshViewer(QOpenGLWidget):
         # alpha array is uploaded, attribute 2 is fed a constant 1.0 so the
         # mesh draws fully opaque exactly as before.
         self._alpha_vbo: QOpenGLBuffer | None = None
+        # Per-vertex "neutral" mask (0/1). Optional — when no mask is
+        # uploaded, attribute 3 is fed a constant 0.0 so no copper is greyed.
+        # A 1.0 entry blends that vertex toward the no-current grey (used by
+        # the "Grey no current copper" toggle for solved dead-end islands).
+        self._neutral_vbo: QOpenGLBuffer | None = None
         self._ibo: QOpenGLBuffer | None = None
         self._cmap_tex: QOpenGLTexture | None = None
         self._u_mvp_loc: int = -1
@@ -483,6 +500,8 @@ class GLMeshViewer(QOpenGLWidget):
         # blending so dimmed copper (alpha < 1) shows the background through.
         self._pending_alpha: np.ndarray | None = None
         self._n_alpha: int = 0
+        self._pending_neutral: np.ndarray | None = None
+        self._n_neutral: int = 0
         # Outline batch — the layer / pad / stub outlines. Packed (N, 3)
         # positions + (N, 3) colours, vertices in pairs (GL_LINES), so
         # N == 2 * num_segments. The thick-line geometry shader widens
@@ -725,6 +744,10 @@ class GLMeshViewer(QOpenGLWidget):
         # ordering changed); the host re-pushes it via set_vertex_alpha.
         self._pending_alpha = None
         self._n_alpha = 0
+        # Same for the per-vertex neutral mask — re-pushed via
+        # set_vertex_neutral after each set_mesh.
+        self._pending_neutral = None
+        self._n_neutral = 0
         if data_bounds is not None:
             self._data_bounds = (float(data_bounds[0]), float(data_bounds[1]),
                                   float(data_bounds[2]), float(data_bounds[3]))
@@ -847,6 +870,26 @@ class GLMeshViewer(QOpenGLWidget):
             )
         self._pending_alpha = arr
         self._n_alpha = arr.size
+        self.update()
+
+    def set_vertex_neutral(self, neutral: np.ndarray | None) -> None:
+        """Set (or clear) the per-vertex neutral mask used to grey copper
+        that carries no current. ``neutral`` is a 0/1 (or 0..1) float array
+        matching the vertex count from the most recent :meth:`set_mesh`;
+        pass ``None`` to draw every vertex from the colormap as usual."""
+        if neutral is None:
+            self._pending_neutral = None
+            self._n_neutral = 0
+            self.update()
+            return
+        arr = np.asarray(neutral, dtype=np.float32)
+        if arr.size != self._n_vertices:
+            raise ValueError(
+                f"set_vertex_neutral length {arr.size} doesn't match vertex "
+                f"count {self._n_vertices}"
+            )
+        self._pending_neutral = arr
+        self._n_neutral = arr.size
         self.update()
 
     def set_colormap(self, lut_rgba_256: np.ndarray) -> None:
@@ -1706,6 +1749,8 @@ class GLMeshViewer(QOpenGLWidget):
         self._val_vbo.create()
         self._alpha_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
         self._alpha_vbo.create()
+        self._neutral_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
+        self._neutral_vbo.create()
         self._ibo = QOpenGLBuffer(QOpenGLBuffer.IndexBuffer)
         self._ibo.create()
 
@@ -2124,6 +2169,12 @@ class GLMeshViewer(QOpenGLWidget):
                                      self._pending_alpha.nbytes)
             self._alpha_vbo.release()
             self._pending_alpha = None
+        if self._pending_neutral is not None:
+            self._neutral_vbo.bind()
+            self._neutral_vbo.allocate(self._pending_neutral.tobytes(),
+                                       self._pending_neutral.nbytes)
+            self._neutral_vbo.release()
+            self._pending_neutral = None
         if self._pending_cmap is not None:
             self._cmap_tex.bind()
             self._cmap_tex.setData(0, QOpenGLTexture.RGBA,
@@ -2280,12 +2331,27 @@ class GLMeshViewer(QOpenGLWidget):
         else:
             GL.glDisableVertexAttribArray(2)
             GL.glVertexAttrib1f(2, 1.0)
+        # Per-vertex neutral mask (attribute 3). When present, vertices
+        # flagged 1.0 are greyed in the fragment shader; otherwise feed a
+        # constant 0.0 so the colormap is used unchanged.
+        use_neutral = (self._n_neutral == self._n_vertices
+                       and self._n_neutral > 0)
+        if use_neutral:
+            self._neutral_vbo.bind()
+            GL.glEnableVertexAttribArray(3)
+            GL.glVertexAttribPointer(3, 1, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
+            self._neutral_vbo.release()
+        else:
+            GL.glDisableVertexAttribArray(3)
+            GL.glVertexAttrib1f(3, 0.0)
         self._ibo.bind()
         GL.glDrawElements(GL.GL_TRIANGLES, self._n_indices,
                           GL.GL_UNSIGNED_INT, None)
         self._ibo.release()
         GL.glDisableVertexAttribArray(0)
         GL.glDisableVertexAttribArray(1)
+        if use_neutral:
+            GL.glDisableVertexAttribArray(3)
         if use_alpha:
             GL.glDisableVertexAttribArray(2)
             GL.glDisable(GL.GL_BLEND)

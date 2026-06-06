@@ -71,6 +71,15 @@ class EditorDirective:
     single_net: bool = True
     p_net: str | None = None
     n_net: str | None = None
+    # Optional pin restriction (the editor-mode equivalent of the schematic
+    # ``PDN_PINS`` / ``PDN_P_PINS`` / ``PDN_N_PINS`` parameters). Each is a
+    # list of pad designators (e.g. ``["1"]``) the terminal couples to;
+    # ``None`` means *every* pad of the component that sits on the terminal's
+    # net — the default for a freshly placed marker. Only meaningful for a
+    # component-bound directive; ignored for a free marker. ``p_pins`` pairs
+    # with ``p_net`` (PDN_PINS in single-net mode), ``n_pins`` with ``n_net``.
+    p_pins: list[str] | None = None
+    n_pins: list[str] | None = None
     voltage: float | None = None
     current: float | None = None
     resistance: float | None = None       # SERIES only, ohms
@@ -90,7 +99,20 @@ class EditorDirective:
         d = asdict(self)
         if self.anchor_xy is not None:
             d["anchor_xy"] = [float(self.anchor_xy[0]), float(self.anchor_xy[1])]
+        d["p_pins"] = list(self.p_pins) if self.p_pins is not None else None
+        d["n_pins"] = list(self.n_pins) if self.n_pins is not None else None
         return d
+
+    @staticmethod
+    def _coerce_pins(raw: Any) -> list[str] | None:
+        """Normalise a stored pin list to ``list[str]`` (or ``None``).
+
+        Drops blanks / whitespace; an empty result collapses to ``None`` so
+        "no restriction" and "explicitly empty" are the same thing."""
+        if not raw:
+            return None
+        pins = [str(p).strip() for p in raw if str(p).strip()]
+        return pins or None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> EditorDirective:
@@ -107,6 +129,8 @@ class EditorDirective:
             single_net=bool(d.get("single_net", True)),
             p_net=d.get("p_net"),
             n_net=d.get("n_net"),
+            p_pins=cls._coerce_pins(d.get("p_pins")),
+            n_pins=cls._coerce_pins(d.get("n_pins")),
             voltage=(None if d.get("voltage") is None else float(d["voltage"])),
             current=(None if d.get("current") is None else float(d["current"])),
             resistance=(None if d.get("resistance") is None

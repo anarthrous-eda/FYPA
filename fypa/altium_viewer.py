@@ -1857,6 +1857,36 @@ _SLIDER_CAP_PERCENTILE: float = 99.9
 _LIVE_VIEWERS: list[QMainWindow] = []
 
 
+def _restore_bundled_design_info(proj) -> None:
+    """Copy a project's bundled ``design-info`` pickle into this machine's
+    design cache, so a later editor *Resolve* can reuse the extract instead
+    of re-reading Altium source that may not have travelled with a shared
+    project.
+
+    A saved ``.fypa`` references its design-info pickle by path, but the
+    editor's re-solve loads design info from the per-machine design cache
+    (keyed to the original ``.PrjPcb`` location), never from the project's
+    own pickle — so on another machine that pickle would go unused. Seeding
+    the cache from it bridges the gap. Best-effort; failures are ignored.
+    """
+    di = getattr(proj, "design_info_pickle", None)
+    if not di or not Path(di).exists() or not proj.prjpcb_path:
+        return
+    try:
+        import shutil
+        from fypa.cli import _design_info_cache_path
+        dest = _design_info_cache_path(
+            Path(proj.prjpcb_path),
+            Path(proj.pcbdoc_path) if proj.pcbdoc_path else None,
+        )
+        if Path(di).resolve() == dest.resolve() or dest.exists():
+            return
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(di, dest)
+    except Exception:
+        pass
+
+
 def _register_viewer(win: QMainWindow) -> None:
     """Append ``win`` to the module-level strong-ref list, pruning any
     entries whose underlying QObject has already been destroyed."""
@@ -2394,14 +2424,65 @@ class _ClickAbsorbingPanel(QWidget):
     through.
     """
 
+    # Proposed new panel width (px), emitted while the user drags the
+    # left edge. The owner clamps and applies it.
+    leftEdgeResized = Signal(int)
+
+    _GRIP_W: int = 6  # width (px) of the left-edge resize hot zone
+
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.setAttribute(Qt.WA_StyledBackground, True)
+        # Needed so the cursor can switch to the resize shape on hover over
+        # the grip zone even with no button pressed.
+        self.setMouseTracking(True)
+        self._resizing = False
+        self._resize_start_global_x = 0.0
+        self._resize_start_w = 0
+        # Thin visual hint of the draggable edge. Transparent to the mouse
+        # so press / move events still reach the panel's own handlers, and
+        # parked inside the left content margin so it never overlaps the
+        # form widgets. Geometry tracked in :meth:`resizeEvent`.
+        self._grip_line = QFrame(self)
+        self._grip_line.setStyleSheet(
+            f"background-color: {_T()['border']};"
+        )
+        self._grip_line.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+    def _in_grip(self, x: float) -> bool:
+        return 0 <= x <= self._GRIP_W
+
+    def resizeEvent(self, ev) -> None:  # noqa: N802 (Qt naming)
+        super().resizeEvent(ev)
+        # Pin the visual grip line to the left edge, full height.
+        self._grip_line.setGeometry(2, 0, 2, self.height())
+        self._grip_line.raise_()
 
     def mousePressEvent(self, ev) -> None:
+        if ev.button() == Qt.LeftButton and self._in_grip(ev.position().x()):
+            self._resizing = True
+            self._resize_start_global_x = ev.globalPosition().x()
+            self._resize_start_w = self.width()
         ev.accept()
 
+    def mouseMoveEvent(self, ev) -> None:
+        if self._resizing:
+            # Right edge is pinned; dragging the left edge leftwards
+            # (smaller global x) widens the panel.
+            delta = self._resize_start_global_x - ev.globalPosition().x()
+            self.leftEdgeResized.emit(
+                int(round(self._resize_start_w + delta)))
+            ev.accept()
+            return
+        if self._in_grip(ev.position().x()):
+            self.setCursor(Qt.SizeHorCursor)
+        else:
+            self.unsetCursor()
+        super().mouseMoveEvent(ev)
+
     def mouseReleaseEvent(self, ev) -> None:
+        if self._resizing and ev.button() == Qt.LeftButton:
+            self._resizing = False
         ev.accept()
 
     def mouseDoubleClickEvent(self, ev) -> None:
@@ -2451,6 +2532,11 @@ class _GradientBar(QWidget):
     _TICK_LABEL_H: int = 13  # tick label text band
     _HANDLE_HALF_W: int = 6
     _N_TICKS: int = 5
+    # Cap on total significant figures per tick label. Keeps a
+    # near-constant field around a large value (e.g. ~100 V) from
+    # forcing many decimals onto a multi-digit integer part, which
+    # would overflow the label box and collide along the axis.
+    _MAX_SIG_FIGS: int = 5
 
     # Engineering SI prefixes (powers of 1000), exponent → symbol. One
     # prefix is picked per render from the data magnitude and folded into
@@ -2763,7 +2849,14 @@ class _GradientBar(QWidget):
         scale and values smaller than the step's resolution collapse
         to ``"0"`` instead of printing noise digits (e.g. -0.000331
         on a 0..2.66 axis → ``0``). When ``step`` is unavailable, falls
-        back to ~3 sig figs of the value itself."""
+        back to ~3 sig figs of the value itself.
+
+        Decimals are also capped against the value's own magnitude
+        (``_MAX_SIG_FIGS`` total significant figures): a near-constant
+        field around a large value (e.g. ≈100 V) would otherwise force
+        many decimals onto a multi-digit integer part, producing long
+        labels that collide along the axis. Larger numbers therefore
+        show fewer decimal places."""
         if not math.isfinite(value):
             return "—"
         if step > 0.0 and math.isfinite(step):
@@ -2772,6 +2865,12 @@ class _GradientBar(QWidget):
             return "0"
         else:
             digits = max(0, 2 - int(math.floor(math.log10(abs(value)))))
+        # Trim decimals so the whole number never exceeds _MAX_SIG_FIGS
+        # significant figures — i.e. the bigger the integer part, the
+        # fewer decimals it keeps (values < 1 are left untouched).
+        int_digits = (int(math.floor(math.log10(abs(value)))) + 1
+                      if abs(value) >= 1.0 else 0)
+        digits = min(digits, max(0, _GradientBar._MAX_SIG_FIGS - int_digits))
         digits = min(6, digits)
         # Round first so values within half a ULP of zero render as
         # plain "0" rather than "-0.00".
@@ -4612,6 +4711,7 @@ class LauncherWindow(QMainWindow):
                 f"Failed to load {path_str}:\n\n{type(e).__name__}: {e}",
             )
             return
+        _restore_bundled_design_info(proj)
         sol_path = proj.solve_pickle
         if not sol_path or not Path(sol_path).exists():
             sol_path = None
@@ -4775,6 +4875,13 @@ class _MessagesSortItem(QTableWidgetItem):
             except TypeError:
                 pass
         return super().__lt__(other)
+
+
+# Item-data role carrying the net table's per-row payload ({name, area,
+# poly_keys, ...}) on the row's first cell. Stashing it on the item — rather
+# than indexing a parallel list by visual row — keeps click / rename handlers
+# correct after the user re-sorts the table by clicking a column header.
+_NET_TABLE_ROW_ROLE = int(Qt.UserRole) + 1
 
 
 class PdnViewer(QMainWindow):
@@ -5050,6 +5157,13 @@ class PdnViewer(QMainWindow):
         # — this makes layer-toggle (re-render) re-use the already-built
         # voltage sampler instead of rebuilding it.
         self._layer_cache: dict[tuple[int, int], dict] = {}
+        # Lazily-computed set of (layer_index, mesh_index) whose solved mesh
+        # carries no current — i.e. a dead-end copper island whose only tie
+        # to the rest of the net is a single via, so KCL forces zero current
+        # through it and it sits at a uniform potential. Used by the "Grey
+        # no current copper" toggle to grey these the same way it greys
+        # FEM-excluded stubs. ``None`` until first built.
+        self._no_current_meshes: set[tuple[int, int]] | None = None
         # Per-layer cache of current-density vectors (J = -sigma * grad V).
         # Mode-independent — keyed by layer_index only — because the
         # current arrows are derived from the raw potentials regardless
@@ -5829,7 +5943,9 @@ class PdnViewer(QMainWindow):
         # pixel size and pan / zoom centre invariant when the panel
         # appears, so the visible copper doesn't shift sideways. Carries
         # the PDN editor form in editor mode and the copper-properties
-        # form in viewer mode.
+        # form in viewer mode. Width is user-adjustable (drag its left
+        # edge); seed it with the default before the panel is built.
+        self._editor_panel_width = self._EDITOR_PANEL_DEFAULT_W
         self._editor_panel = self._build_editor_panel()
         self._editor_panel.setParent(self._gl_viewer)
         self._editor_panel.hide()
@@ -7208,10 +7324,169 @@ class PdnViewer(QMainWindow):
                     members.append(m)
         return members
 
+    # Power-density thresholds for classifying a solved mesh as "no current".
+    # A dead-end island's current is ~0 (numerical noise), so its peak power
+    # density sits orders of magnitude below the board's busiest copper. Flag
+    # a mesh when its peak |power density| is at or below a small fraction of
+    # the global peak (with an absolute floor for the all-quiet case) — this
+    # cleanly catches the dead-end case without ever greying loaded copper.
+    _NO_CURRENT_PD_REL: float = 1e-4
+    _NO_CURRENT_PD_ABS: float = 1e-12
+
+    def _no_current_mesh_set(self) -> set[tuple[int, int]]:
+        """Return (and cache) the set of ``(layer_index, mesh_index)`` whose
+        solved mesh carries no current — a dead-end copper island tied to the
+        rest of its net by a single via, so KCL forces ~zero current through
+        it and it sits at a uniform potential.
+
+        Classified from each mesh's peak power density relative to the
+        board-wide peak (see ``_NO_CURRENT_PD_*``). Used by the "Grey no
+        current copper" toggle to grey these the same way it greys
+        FEM-excluded stub copper. A mesh with no power-density data is left
+        unflagged (conservative — never grey copper we can't measure)."""
+        if self._no_current_meshes is not None:
+            return self._no_current_meshes
+        result: set[tuple[int, int]] = set()
+        sol = getattr(self, "solution", None)
+        if sol is None:
+            self._no_current_meshes = result
+            return result
+        peaks: dict[tuple[int, int], float] = {}
+        global_max = 0.0
+        for li, ls in enumerate(sol.layer_solutions):
+            pds = getattr(ls, "power_densities", None) or []
+            for mi, pd in enumerate(pds):
+                arr = np.asarray(pd, dtype=np.float64)
+                if arr.size == 0:
+                    continue
+                pk = float(np.max(np.abs(arr)))
+                if not np.isfinite(pk):
+                    continue
+                peaks[(li, mi)] = pk
+                if pk > global_max:
+                    global_max = pk
+        threshold = max(self._NO_CURRENT_PD_ABS,
+                        self._NO_CURRENT_PD_REL * global_max)
+        for key, pk in peaks.items():
+            if pk <= threshold:
+                result.add(key)
+        self._no_current_meshes = result
+        return result
+
+    def _source_return_offsets(self) -> dict[str, float]:
+        """Per-net voltage offset = absolute potential at that net's SOURCE
+        return (N-terminal) pin, sampled from the full solution.
+
+        Voltage mode subtracts this per net so each net's heatmap reads its
+        true differential (``<=`` rail voltage) instead of an absolute
+        potential that floats a fraction of a mV ABOVE the rail. The float
+        is real: a directive ``VoltageSource`` pins only the *difference*
+        across its two pins, and the single global 0 V datum lands at the
+        board's lowest GND node — so a source's own return pin sits slightly
+        above 0 and drags its + net's absolute reading above the rail.
+        Referencing each net to its own source return removes that datum
+        offset.
+
+        Keyed by net name. A net with no SOURCE (e.g. GND) gets no entry and
+        is left at absolute potential. When a net has several sources the
+        one whose + pin sits highest wins (the rail's defining source),
+        mirroring the Voltage Drop anchor choice. Cached for the viewer's
+        lifetime — it depends only on the (immutable) solution.
+        """
+        cached = getattr(self, "_src_return_offset_cache", None)
+        if cached is not None:
+            return cached
+        from scipy.spatial import cKDTree
+
+        offsets: dict[str, float] = {}
+        meta = self.metadata or {}
+        sol = getattr(self, "solution", None)
+        if sol is None or not meta.get("directives"):
+            self._src_return_offset_cache = offsets
+            return offsets
+
+        id_to_phys = {v: k for k, v in self._phys_name_to_layer_id.items()}
+        # Per-(phys, net) lazily-built (kdtree, potentials) over the slab's
+        # non-orphan vertices — orphans are pinned to V=0 and would shadow
+        # the real pin value. 0.01 mm match tol matches _compute_node_report.
+        tree_cache: dict[tuple[str, str], tuple] = {}
+        _TOL_MM = 0.01
+
+        def _sample(layer_id, net: str, x, y) -> float | None:
+            phys = id_to_phys.get(layer_id)
+            if phys is None or x is None or y is None or not net:
+                return None
+            key = (phys, net)
+            if key not in tree_cache:
+                li = self._index_by_pair.get(key)
+                tree = vs = None
+                if li is not None:
+                    ls = sol.layer_solutions[li]
+                    xs_p, ys_p, vs_p = [], [], []
+                    for xys, tris_local, pot in zip(
+                        ls.vertex_xys, ls.triangles, ls.potentials,
+                    ):
+                        xys = np.asarray(xys)
+                        tris_local = np.asarray(tris_local)
+                        if xys.shape[0] == 0 or tris_local.size == 0:
+                            continue
+                        used = np.unique(tris_local.ravel())
+                        xs_p.append(xys[used, 0])
+                        ys_p.append(xys[used, 1])
+                        vs_p.append(np.asarray(pot)[used])
+                    if xs_p:
+                        pts = np.column_stack(
+                            [np.concatenate(xs_p), np.concatenate(ys_p)])
+                        tree = cKDTree(pts)
+                        vs = np.concatenate(vs_p)
+                tree_cache[key] = (tree, vs)
+            tree, vs = tree_cache[key]
+            if tree is None:
+                return None
+            dist, idx = tree.query((float(x), float(y)))
+            if dist > _TOL_MM:
+                return None
+            v = float(vs[idx])
+            return v if np.isfinite(v) else None
+
+        # net -> (ranking + pin voltage, return-pin offset).
+        best: dict[str, tuple[float, float]] = {}
+        for d in meta.get("directives", []):
+            if d.get("role") != "SOURCE":
+                continue
+            terms = d.get("terminals") or {}
+            p_pins = (terms.get("P") or {}).get("pins", [])
+            n_pins = (terms.get("N") or {}).get("pins", [])
+            if not p_pins or not n_pins:
+                continue
+            # The return-pin (N) absolute potential is the offset; take the
+            # first N pin that samples cleanly.
+            v_return = None
+            for n_pin in n_pins:
+                v_return = _sample(n_pin.get("layer_id"), n_pin.get("net", ""),
+                                   n_pin.get("x_mm"), n_pin.get("y_mm"))
+                if v_return is not None:
+                    break
+            if v_return is None:
+                continue
+            for p_pin in p_pins:
+                net = p_pin.get("net", "")
+                if not net:
+                    continue
+                v_plus = _sample(p_pin.get("layer_id"), net,
+                                 p_pin.get("x_mm"), p_pin.get("y_mm"))
+                rank = v_plus if v_plus is not None else float("-inf")
+                if net not in best or rank > best[net][0]:
+                    best[net] = (rank, v_return)
+
+        offsets = {net: off for net, (_rank, off) in best.items()}
+        self._src_return_offset_cache = offsets
+        return offsets
+
     def _build_rail_arrays(
         self, phys_list: list[str], rail_names: list[str], derive_fn,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray,
-               np.ndarray, list[dict]]:
+               np.ndarray, list[dict], np.ndarray]:
         """Combine every per-(layer, net) padne Layer for the listed physical
         layers + the selected rail groups' nets into one big mesh batch for
         the GPU, and ALSO build per-(physical_layer, net) CPU-side
@@ -7250,6 +7525,10 @@ class PdnViewer(QMainWindow):
         zs_parts: list[np.ndarray] = []
         vs_parts: list[np.ndarray] = []
         tris_parts: list[np.ndarray] = []
+        # Per-vertex "no current" mask (0/1), parallel to xs — fed to the
+        # mesh shader's neutral attribute so the "Grey no current copper"
+        # toggle can grey dead-end islands. Each piece is mesh-uniform.
+        nc_parts: list[np.ndarray] = []
         # layer_probes is ordered TOP-FIRST so the hover probe naturally
         # reports the visually-topmost layer when copper overlaps.
         layer_probes: list[dict] = []
@@ -7290,6 +7569,14 @@ class PdnViewer(QMainWindow):
                 ys_parts.append(lys)
                 zs_parts.append(lzs)
                 vs_parts.append(lvs)
+                # No-current mask for this block, aligned to lxs. The prism
+                # extrusion duplicates the vertex set top↔bottom (and adds
+                # no new vertices — side walls reuse those indices), so the
+                # mask is duplicated the same way to stay length-matched.
+                nc_block = entry["no_current_mask"]
+                if extrude_3d:
+                    nc_block = np.concatenate([nc_block, nc_block])
+                nc_parts.append(nc_block)
                 # Vectorised offset add — re-base local indices into the
                 # combined GPU batch.
                 tris_parts.append(ltris + offset)
@@ -7326,13 +7613,15 @@ class PdnViewer(QMainWindow):
             zs = np.concatenate(zs_parts)
             vs = np.concatenate(vs_parts)
             tris = np.concatenate(tris_parts, axis=0)
+            no_current = np.concatenate(nc_parts)
         else:
             xs = np.empty(0, dtype=np.float64)
             ys = np.empty(0, dtype=np.float64)
             zs = np.empty(0, dtype=np.float64)
             vs = np.empty(0, dtype=np.float64)
             tris = np.empty((0, 3), dtype=np.int32)
-        return xs, ys, zs, vs, tris, layer_probes
+            no_current = np.empty(0, dtype=np.float32)
+        return xs, ys, zs, vs, tris, layer_probes, no_current
 
     def _layer_arrays(self, layer_index: int, derive_fn) -> dict:
         """Assemble (and cache) per-layer arrays + Triangulation +
@@ -7367,10 +7656,15 @@ class PdnViewer(QMainWindow):
         mys_parts: list[np.ndarray] = []
         mvs_parts: list[np.ndarray] = []
         mtris_parts: list[np.ndarray] = []
+        # Per-vertex no-current mask (0/1), parallel to xs. Each mesh is
+        # wholly current-carrying or not, so every vertex of a flagged mesh
+        # gets 1.0. Independent of the heatmap mode, so cached on the entry.
+        mnc_parts: list[np.ndarray] = []
+        nc_set = self._no_current_mesh_set()
         offset = 0
-        for xys, tris_local, pot, pd in zip(
+        for mesh_i, (xys, tris_local, pot, pd) in enumerate(zip(
             xys_meshes, tris_meshes, pots_meshes, pds_meshes,
-        ):
+        )):
             n = xys.shape[0]
             if n < 3 or tris_local.size == 0:
                 continue
@@ -7378,6 +7672,10 @@ class PdnViewer(QMainWindow):
             mxs_parts.append(xys[:, 0])
             mys_parts.append(xys[:, 1])
             mvs_parts.append(np.asarray(values, dtype=np.float64))
+            mnc_parts.append(np.full(
+                n, 1.0 if (layer_index, mesh_i) in nc_set else 0.0,
+                dtype=np.float32,
+            ))
             # Re-base local indices into the per-layer combined batch.
             mtris_parts.append(tris_local + offset)
             offset += n
@@ -7386,10 +7684,12 @@ class PdnViewer(QMainWindow):
             xs = np.concatenate(mxs_parts)
             ys = np.concatenate(mys_parts)
             vs = np.concatenate(mvs_parts)
+            no_current_mask = np.concatenate(mnc_parts)
         else:
             xs = np.empty(0, dtype=np.float64)
             ys = np.empty(0, dtype=np.float64)
             vs = np.empty(0, dtype=np.float64)
+            no_current_mask = np.empty(0, dtype=np.float32)
         if mtris_parts:
             tris = np.concatenate(mtris_parts, axis=0)
         else:
@@ -7437,6 +7737,9 @@ class PdnViewer(QMainWindow):
             # so toggling the outline overlay is just a buffer upload.
             "outline_segments": outline_segments,
             "used_indices": used_indices,
+            # Per-vertex 0/1 mask (parallel to xs) flagging dead-end,
+            # no-current copper for the "Grey no current copper" toggle.
+            "no_current_mask": no_current_mask,
         }
         self._layer_cache[key] = entry
         return entry
@@ -7898,7 +8201,7 @@ class PdnViewer(QMainWindow):
         # every visible physical layer into one GPU batch. Per-layer
         # interpolators come back alongside for the CPU-side probe + the
         # Voltage Drop reference lookup.
-        xs, ys, zs, vs, tris, layer_probes = self._build_rail_arrays(
+        xs, ys, zs, vs, tris, layer_probes, no_current = self._build_rail_arrays(
             phys_list, rails, derive_fn,
         )
         self._layer_probes = layer_probes
@@ -8059,6 +8362,51 @@ class PdnViewer(QMainWindow):
                         lp["triangulation"], shifted,
                     )
 
+        # Voltage mode: reference each net to its own SOURCE return pin, so
+        # the heatmap reads each net's true differential (<= rail voltage)
+        # rather than an absolute potential that floats a fraction of a mV
+        # above the rail (the global 0 V datum sits at a different GND node
+        # than the source return — see _source_return_offsets). Each net is
+        # shifted by its own offset; nets with no source (GND) are left as-is.
+        if mode == "Voltage" and not is_via_current:
+            offsets = self._source_return_offsets()
+            # Build a per-vertex offset aligned to vs_arr. vs_arr is
+            # concatenated in the original (bottom-first) loop order, while
+            # layer_probes was reversed to top-first — so walk the probes in
+            # reverse to recover the concatenation order and slice by the
+            # vertex count each slab contributed.
+            off_vec = np.zeros(vs_arr.size, dtype=np.float64)
+            pos = 0
+            any_off = False
+            for lp in reversed(layer_probes):
+                n = int(lp["n_vertices"])
+                off = offsets.get(lp["net"], 0.0)
+                if off:
+                    off_vec[pos:pos + n] = off
+                    any_off = True
+                pos += n
+            if any_off and pos == vs_arr.size:
+                vs_arr = vs_arr - off_vec
+                vs_used = vs_arr[used_idx] if used_idx.size > 0 else vs_arr
+                vmin, vmax = float(vs_used.min()), float(vs_used.max())
+                vmax = _slider_data_max(vs_used, mode, vmax)
+                if vmax <= vmin:
+                    vmax = vmin + 1e-12
+                # Re-shift each layer probe's values + rebuild its sampler so
+                # the hover probe reports the referenced values too. Eager
+                # rebuild (not None) keeps the shared Voltage/Voltage-Drop
+                # cache from lazily writing the shifted field back — same
+                # reasoning as the Voltage Drop branch above.
+                for lp in layer_probes:
+                    off = offsets.get(lp["net"], 0.0)
+                    if not off:
+                        continue
+                    shifted = lp["values"] - off
+                    lp["values"] = shifted
+                    lp["interpolator"] = _FastTriSampler(
+                        lp["triangulation"], shifted,
+                    )
+
         x_min, x_max = float(xs_arr.min()), float(xs_arr.max())
         y_min, y_max = float(ys_arr.min()), float(ys_arr.max())
         self._data_bounds = (x_min, x_max, y_min, y_max)
@@ -8138,6 +8486,21 @@ class PdnViewer(QMainWindow):
         # set_mesh (which invalidates any previous alpha array).
         self._gl_viewer.set_vertex_alpha(
             self._combined_mesh_alpha_array(layer_probes, xs_arr.size)
+        )
+        # Grey solved dead-end (no-current) copper when the "Grey no current
+        # copper" toggle is on — the same toggle that greys FEM-excluded
+        # stubs. Pushed as the per-vertex neutral mask; cleared otherwise so
+        # the copper paints from the colormap as usual. Skipped in Via
+        # Current mode, where the whole copper is already a neutral backdrop.
+        grey_no_current = (
+            getattr(self, "colour_stubs_box", None) is not None
+            and self.colour_stubs_box.isChecked()
+            and not is_via_current
+            and no_current.size == xs_arr.size
+            and bool(no_current.any())
+        )
+        self._gl_viewer.set_vertex_neutral(
+            no_current if grey_no_current else None
         )
         _mark("gl_mesh_upload")
 
@@ -10332,26 +10695,16 @@ class PdnViewer(QMainWindow):
                         lid = pin.get("layer_id")
                         if lid not in target_layer_ids:
                             continue
-                        # In editor mode N-side markers skip the rail
-                        # filter so the return net (rarely the viewed
-                        # rail) always shows; in normal viewing they
-                        # follow the rail filter like the P side, so only
-                        # markers on the selected rails appear.
-                        rail_exempt = is_n_side and self._editor_mode
-                        if not rail_exempt:
-                            if self._editor_mode:
-                                # Legacy editor behaviour: filter only when a
-                                # rail is actually selected.
-                                if (rail_members
-                                        and pin.get("net") not in rail_members):
-                                    continue
-                            else:
-                                # Viewer mode: a solved directive's markers
-                                # show only while its rail is visible. No
-                                # visible rail ⇒ no rail markers (don't fall
-                                # through to "show everything").
-                                if pin.get("net") not in rail_members:
-                                    continue
+                        # A solved directive's markers — both the P side and
+                        # the return (N) side — show only while their net is
+                        # on a visible rail. This holds in editor mode as well
+                        # as normal viewing, so hiding a rail also hides its
+                        # source / sink / return markers instead of leaking
+                        # every rail's directives in at once. No visible rail
+                        # ⇒ no rail markers (don't fall through to "show
+                        # everything").
+                        if pin.get("net") not in rail_members:
+                            continue
                         xs, ys, zs, rcs = per_role.setdefault(
                             (role, is_n_side), ([], [], [], []))
                         px = pin.get("x_mm", 0.0)
@@ -11326,7 +11679,10 @@ class PdnViewer(QMainWindow):
         t = _T()
         panel = _ClickAbsorbingPanel()
         panel.setObjectName("EditorSidePanel")
-        panel.setFixedWidth(300)
+        panel.setFixedWidth(self._editor_panel_width)
+        # User can drag the panel's left edge to resize it; the owner
+        # clamps the proposed width against the live viewport size.
+        panel.leftEdgeResized.connect(self._on_editor_panel_resized)
         # QLineEdit children (copper-name, loc X / Y) need explicit theming
         # or they fall back to the platform default (white bg, black text,
         # near-black placeholder) which is unreadable against the dark
@@ -11372,7 +11728,56 @@ class PdnViewer(QMainWindow):
         self._copper_props_host.hide()
         lay.addWidget(self._copper_props_host)
 
-        lay.addStretch(1)
+        # Net inventory table (editor mode only) — every net on the board
+        # with its total copper area, ordered by area descending. Clicking
+        # a row lights up that net's copper in the viewport. See
+        # :meth:`_refresh_net_table`.
+        self._net_table_label = QLabel("<b>Nets</b>")
+        lay.addWidget(self._net_table_label)
+        self._net_table = QTableWidget(0, 2, panel)
+        self._net_table.setObjectName("NetTable")
+        self._net_table.setHorizontalHeaderLabels(["Net", "Area (mm²)"])
+        self._net_table.verticalHeader().setVisible(False)
+        self._net_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._net_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        # Click a column header to re-sort. _refresh_net_table disables this
+        # while it writes cells (so rows don't reshuffle mid-populate) and
+        # re-applies the user's chosen sort afterwards.
+        self._net_table.setSortingEnabled(True)
+        self._net_table.horizontalHeader().setSortIndicator(
+            1, Qt.DescendingOrder)
+        self._net_table.setAlternatingRowColors(True)
+        hh = self._net_table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.Stretch)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self._net_table.setStyleSheet(
+            f"QTableWidget#NetTable {{ background-color: {t['bg_input']};"
+            f"            color: {t['fg']};"
+            f"            gridline-color: {t['border']};"
+            f"            border: 1px solid {t['border']}; }}"
+            f"QTableWidget#NetTable::item:selected {{"
+            f"            background-color: {t['bg_selection']};"
+            f"            color: {t['fg']}; }}"
+            f"QHeaderView::section {{ background-color: {t['bg']};"
+            f"            color: {t['fg_muted']};"
+            f"            border: 0px; border-bottom: 1px solid {t['border']};"
+            f"            padding: 2px 4px; }}"
+        )
+        # Re-built each time the editor opens; populated rows here keep the
+        # per-row {name, area, poly_keys, renameable} payload so a click /
+        # rename doesn't have to recompute the connectivity index.
+        self._net_table_rows: list[dict] = []
+        # Set while _refresh_net_table writes cells so the itemChanged
+        # rename handler ignores its own programmatic edits.
+        self._net_table_populating: bool = False
+        self._net_table.itemSelectionChanged.connect(
+            self._on_net_table_selection)
+        self._net_table.itemChanged.connect(self._on_net_table_item_changed)
+        self._net_table_label.hide()
+        self._net_table.hide()
+        lay.addWidget(self._net_table, 1)
+
+        lay.addStretch(0)
         return panel
 
     def _show_pdn_editor_layout(self) -> None:
@@ -11384,7 +11789,8 @@ class PdnViewer(QMainWindow):
         self._editor_panel_title.setText("<b>PDN Editor</b>")
         self._editor_hint.show()
         self._copper_props_host.hide()
-        # _update_editor_panel decides whether _editor_form_host is on.
+        # _update_editor_panel decides whether _editor_form_host and the
+        # net table are on (the table shows only with nothing selected).
 
     def _show_copper_props_layout(self) -> None:
         """Switch the right panel to its viewer-mode contents (title +
@@ -11395,6 +11801,9 @@ class PdnViewer(QMainWindow):
         self._editor_hint.hide()
         self._editor_form_host.hide()
         self._copper_props_host.show()
+        if hasattr(self, "_net_table"):
+            self._net_table_label.hide()
+            self._net_table.hide()
 
     def _on_editor_mode_toggled(self, checked: bool) -> None:
         """Enter / leave editor mode — swaps the viewport look, shows /
@@ -11438,6 +11847,18 @@ class PdnViewer(QMainWindow):
                 self._connected_components_data()
             except Exception:
                 pass
+            # Mint a stable ``$NET_xxx`` name for each electrically-isolated
+            # region of un-netted copper so the net table has rows to show
+            # (and the rest of the editor has real net names to work with).
+            # That's every region on a Gerber import (no nets at all) and the
+            # no-net ``"(none)"`` pours / fills on an Altium board. Cheap +
+            # idempotent: only unnamed regions get named.
+            try:
+                self._auto_name_isolated_regions()
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "auto-naming isolated copper regions failed")
+            self._refresh_net_table()
         # Source / sink free-marker buttons live in the viewport overlay
         # and are visible only while editor mode is active.
         for attr in ("_editor_add_source_btn", "_editor_add_sink_btn"):
@@ -11458,6 +11879,30 @@ class PdnViewer(QMainWindow):
         "PDN role, or use the red / blue triangle buttons at the top-left "
         "of the viewport to drop a free source / sink."
     )
+
+    # Right-hand panel width bounds (px). The default matches the historic
+    # fixed width; the user can drag the panel's left edge between the min
+    # and "viewport minus this" cap (see :meth:`_on_editor_panel_resized`).
+    _EDITOR_PANEL_DEFAULT_W = 300
+    _EDITOR_PANEL_MIN_W = 200
+    _EDITOR_PANEL_VIEWPORT_RESERVE = 120
+
+    def _on_editor_panel_resized(self, proposed_w: int) -> None:
+        """Apply a user-dragged right-panel width, clamped to the min
+        width and to leaving a reserve strip of the viewport visible."""
+        gl = getattr(self, "_gl_viewer", None)
+        panel = getattr(self, "_editor_panel", None)
+        if gl is None or panel is None:
+            return
+        max_w = max(
+            self._EDITOR_PANEL_MIN_W,
+            gl.width() - self._EDITOR_PANEL_VIEWPORT_RESERVE,
+        )
+        w = max(self._EDITOR_PANEL_MIN_W, min(proposed_w, max_w))
+        if w != panel.width():
+            self._editor_panel_width = w
+            panel.setFixedWidth(w)
+            self._position_editor_panel()
 
     def _is_copper_name_selection(self, sel: dict | None) -> bool:
         """Whether the right-hand panel should display the copper-name
@@ -11498,6 +11943,13 @@ class PdnViewer(QMainWindow):
             )
         elif not has_form:
             self._editor_hint.setText(self._EDITOR_DEFAULT_HINT)
+        # The net inventory table is the "idle" view — show it only in
+        # editor mode with nothing selected, so a component / marker /
+        # copper selection gives its form (or hint) the full panel.
+        if hasattr(self, "_net_table"):
+            show_table = self._editor_mode and sel is None
+            self._net_table_label.setVisible(show_table)
+            self._net_table.setVisible(show_table)
         self._sync_marker_buttons()
 
     _MARKER_TIPS: dict = {
@@ -12850,6 +13302,22 @@ class PdnViewer(QMainWindow):
         if comp is not None:
             self._select_component(comp)
             return
+        # A SOURCE / SINK marker drawn for a schematic (or existing
+        # component editor) directive is a click target in its own right:
+        # the glyph is a bigger, more obvious mark than the bare footprint,
+        # so clicking it selects the owning component — opening its
+        # read-only / Unlock form (see _populate_editor_form). The marker's
+        # pin coordinate lands inside the component box, so we resolve the
+        # owner from there; visible_sides_only is off because the marker is
+        # only ever drawn on a visible layer, so its owner is reachable even
+        # if the footprint box would be gated out.
+        row = self._pick_hovered_marker(world_x, world_y)
+        if row is not None:
+            owner = self._component_at(
+                row["x_mm"], row["y_mm"], visible_sides_only=False)
+            if owner is not None:
+                self._select_component(owner)
+                return
         # A component may sit here but on a hidden side — it can't be
         # selected. Say why, then fall through to the marker / copper
         # underneath (whatever the user can actually see).
@@ -13031,6 +13499,277 @@ class PdnViewer(QMainWindow):
             self._render()
         self._gl_viewer.set_primitive_selection_outline(None)
 
+    # --- Editor mode: net inventory table -----------------------------------
+
+    def _all_copper_poly_maps(self) -> tuple[dict, dict]:
+        """``(shape_by_key, net_by_key)`` over every ``all_copper`` polygon,
+        keyed by the same ``(layer_id, id(poly_dict))`` the connected-
+        components index uses. ``shape_by_key`` re-uses the Shapely polygons
+        already built for :meth:`_layer_strtrees` (no rebuild); ``net_by_key``
+        carries each polygon's record-level net name (``"(none)"`` for
+        unnamed copper)."""
+        strt = self._layer_strtrees()
+        shape_by_key: dict[tuple[int, int], object] = {}
+        for lid, d in strt.items():
+            for shp, poly in zip(d["shapes"], d["polys"]):
+                shape_by_key[(int(lid), id(poly))] = shp
+        net_by_key: dict[tuple[int, int], str | None] = {}
+        for rec in (self.metadata or {}).get("all_copper") or []:
+            lid = rec.get("layer_id")
+            if lid is None:
+                continue
+            net = rec.get("net")
+            for poly in rec.get("polygons", []):
+                net_by_key[(int(lid), id(poly))] = net
+        return shape_by_key, net_by_key
+
+    def _copper_name_root_map(self, cc: dict | None = None) -> dict:
+        """``{component_root: name}`` for every :class:`CopperName` rename,
+        resolving each anchor to the connected-copper component it lands in.
+        Lets the net table show a user-given (or auto-minted ``$NET_xxx``)
+        name even before the next solve folds it into ``all_copper``."""
+        if cc is None:
+            cc = self._connected_components_data()
+        component_of = cc["component_of"]
+        out: dict[tuple[int, int], str] = {}
+        if self._project is None:
+            return out
+        for c in self._project.copper_names:
+            if not c.name:
+                continue
+            p = self._copper_poly_under_point(
+                float(c.anchor_xy[0]), float(c.anchor_xy[1]), int(c.layer_id))
+            if p is None:
+                continue
+            root = component_of.get((int(c.layer_id), id(p)))
+            if root is not None:
+                out[root] = c.name
+        return out
+
+    def _auto_name_isolated_regions(self) -> None:
+        """Mint a stable ``$NET_xxx`` name for each electrically-isolated
+        copper region that has no net. This is every region on a Gerber
+        import (which carries no nets at all) and the no-net ``"(none)"``
+        copper on an Altium board (pours / fills the schematic never
+        assigned a net). Each region becomes one :class:`CopperName`
+        anchored at an interior point of its largest polygon, so the name
+        persists to the ``.fypa`` and survives re-solve / reload.
+
+        The number is zero-padded to the width of the region count: 5
+        regions → ``$NET_1``…``$NET_5``; 150 regions → ``$NET_001``…
+        ``$NET_150``. Idempotent — a region already named (real net or an
+        existing CopperName) is skipped, so re-entering editor mode is a
+        no-op."""
+        md = self.metadata or {}
+        if not md.get("all_copper"):
+            return
+        from fypa.project_file import CopperName
+        shape_by_key, net_by_key = self._all_copper_poly_maps()
+        cc = self._connected_components_data()
+        members_of = cc["members_of"]
+        named_roots = set(self._copper_name_root_map(cc).keys())
+        existing_names = {n for n in self._all_net_names()
+                          if n and n != "(none)"}
+
+        candidates: list[tuple[float, tuple, set]] = []
+        for root, members in members_of.items():
+            if root in named_roots:
+                continue
+            if any(net_by_key.get(k) not in (None, "(none)") for k in members):
+                continue
+            area = sum(shape_by_key[k].area
+                       for k in members if k in shape_by_key)
+            candidates.append((area, root, members))
+        if not candidates:
+            return
+        # Largest region gets the lowest number, matching the table order.
+        candidates.sort(key=lambda t: -t[0])
+        width = max(len(str(len(candidates))), 1)
+        proj = self._ensure_project()
+        n = 0
+        for _area, _root, members in candidates:
+            best_key = max((k for k in members if k in shape_by_key),
+                           key=lambda k: shape_by_key[k].area, default=None)
+            if best_key is None:
+                continue
+            shp = shape_by_key[best_key]
+            try:
+                rp = shp.representative_point()
+                ax, ay = float(rp.x), float(rp.y)
+            except Exception:
+                c = shp.centroid
+                ax, ay = float(c.x), float(c.y)
+            lid = int(best_key[0])
+            n += 1
+            name = f"$NET_{n:0{width}d}"
+            while name in existing_names:
+                n += 1
+                name = f"$NET_{n:0{width}d}"
+            proj.upsert_copper_name(
+                CopperName(anchor_xy=(ax, ay), layer_id=lid, name=name))
+            existing_names.add(name)
+        self._all_net_names_cache = None
+        self._mark_project_dirty()
+
+    def _compute_net_table_rows(self) -> list[dict]:
+        """Per-net rows for the editor net table — one entry per effective
+        net name with its total copper area (mm²) summed across every
+        connected polygon (both layers of a two-layer pour count). Each row
+        carries the polygon-identity set used to drive the click highlight
+        and a ``renameable`` flag (true for synthetic / user-named copper,
+        false for a board's intrinsic nets). Ordered by area, descending."""
+        md = self.metadata or {}
+        if not md.get("all_copper"):
+            return []
+        shape_by_key, net_by_key = self._all_copper_poly_maps()
+        cc = self._connected_components_data()
+        members_of = cc["members_of"]
+        name_by_root = self._copper_name_root_map(cc)
+
+        agg: dict[str, dict] = {}
+        for root, members in members_of.items():
+            real_net = None
+            for k in members:
+                nn = net_by_key.get(k)
+                if nn and nn != "(none)":
+                    real_net = nn
+                    break
+            if real_net is not None:
+                name, real = real_net, True
+            else:
+                nm = name_by_root.get(root)
+                name, real = (nm if nm else "(none)"), False
+            area = sum(shape_by_key[k].area
+                       for k in members if k in shape_by_key)
+            bucket = agg.setdefault(
+                name, {"area": 0.0, "poly_keys": set(), "real": False})
+            bucket["area"] += area
+            bucket["poly_keys"].update(members)
+            bucket["real"] = bucket["real"] or real
+
+        rows = [
+            {"name": nm, "area": d["area"], "poly_keys": d["poly_keys"],
+             "real": d["real"],
+             "renameable": (not d["real"]) and nm != "(none)"}
+            for nm, d in agg.items()
+        ]
+        rows.sort(key=lambda r: -r["area"])
+        return rows
+
+    def _refresh_net_table(self) -> None:
+        """Rebuild the editor net table from the current geometry + names."""
+        table = getattr(self, "_net_table", None)
+        if table is None:
+            return
+        try:
+            rows = self._compute_net_table_rows()
+        except Exception:
+            logging.getLogger(__name__).exception("net table build failed")
+            rows = []
+        self._net_table_rows = rows
+        # Remember the current sort so a rebuild (e.g. after a rename) keeps
+        # the column / direction the user clicked, defaulting to area-desc.
+        hdr = table.horizontalHeader()
+        sort_col = hdr.sortIndicatorSection()
+        sort_order = hdr.sortIndicatorOrder()
+        if sort_col not in (0, 1):
+            sort_col, sort_order = 1, Qt.DescendingOrder
+        self._net_table_populating = True
+        try:
+            # Sorting OFF while writing cells, else each setItem re-sorts the
+            # half-built table and rows land in the wrong place.
+            table.setSortingEnabled(False)
+            table.clearContents()
+            table.setRowCount(len(rows))
+            for i, r in enumerate(rows):
+                name_item = QTableWidgetItem(r["name"])
+                flags = Qt.ItemIsEnabled | Qt.ItemIsSelectable
+                if r["renameable"]:
+                    flags |= Qt.ItemIsEditable
+                name_item.setFlags(flags)
+                # Carry the row payload on the item so click / rename stay
+                # correct after the user re-sorts by a header click.
+                name_item.setData(_NET_TABLE_ROW_ROLE, r)
+                table.setItem(i, 0, name_item)
+                area_item = _MessagesSortItem(f"{r['area']:,.2f}")
+                area_item.setData(Qt.UserRole, float(r["area"]))
+                area_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                area_item.setTextAlignment(
+                    Qt.AlignRight | Qt.AlignVCenter)
+                table.setItem(i, 1, area_item)
+            table.setSortingEnabled(True)
+            table.sortItems(sort_col, sort_order)
+        finally:
+            self._net_table_populating = False
+        if hasattr(self, "_net_table_label"):
+            self._net_table_label.setText(f"<b>Nets</b> ({len(rows)})")
+
+    def _on_net_table_selection(self) -> None:
+        """Light up the clicked net's copper in the viewport (dim the rest),
+        mirroring a copper click in the canvas."""
+        if self._net_table_populating or not self._editor_mode:
+            return
+        table = getattr(self, "_net_table", None)
+        if table is None:
+            return
+        row = table.currentRow()
+        if row < 0:
+            return
+        name_item = table.item(row, 0)
+        r = name_item.data(_NET_TABLE_ROW_ROLE) if name_item else None
+        if not r:
+            return
+        nets = self._connected_nets(r["name"]) if r["real"] else set()
+        self._apply_editor_highlight(nets, polys=r["poly_keys"])
+
+    def _on_net_table_item_changed(self, item) -> None:
+        """Commit an in-place net rename from the table. Only synthetic /
+        user-named copper is editable; the new name is written back to the
+        backing :class:`CopperName`(s) so it persists to the project."""
+        if self._net_table_populating or item is None or item.column() != 0:
+            return
+        r = item.data(_NET_TABLE_ROW_ROLE)
+        if not r:
+            return
+        old = r["name"]
+        new = item.text().strip()
+        if new == old:
+            return
+
+        def _revert() -> None:
+            self._net_table_populating = True
+            try:
+                item.setText(old)
+            finally:
+                self._net_table_populating = False
+
+        if not r["renameable"]:
+            _revert()
+            return
+        if not new or new.lower() in {"none", "(none)"}:
+            self.statusBar().showMessage("Enter a valid net name.", 4000)
+            _revert()
+            return
+        if new in {n for n in self._all_net_names() if n != old}:
+            self.statusBar().showMessage(
+                f"'{new}' is already a net on this board — pick a "
+                "different name.", 4000)
+            _revert()
+            return
+        proj = self._ensure_project()
+        renamed = 0
+        for c in proj.copper_names:
+            if c.name == old:
+                c.name = new
+                renamed += 1
+        if not renamed:
+            _revert()
+            return
+        self._all_net_names_cache = None
+        self._mark_project_dirty()
+        self._refresh_net_table()
+        self.statusBar().showMessage(f"Renamed net to {new}.", 3000)
+
     # --- Editor mode: PDN form + free markers -------------------------------
 
     def _ensure_project(self):
@@ -13092,6 +13831,7 @@ class PdnViewer(QMainWindow):
         self, designator: str | None, nets,
         visible_layer_ids: set[int] | None = None,
         with_layer_color: bool = False,
+        pin_filter=None,
     ) -> list[tuple[float, float]]:
         """Centres of the named component's pads that sit on any net in
         ``nets`` — one point per matching pin.
@@ -13110,12 +13850,19 @@ class PdnViewer(QMainWindow):
         With ``with_layer_color`` each point becomes ``(x, y, colour)``,
         where ``colour`` is the swatch colour of the pad's copper layer
         (preferring a visible one when filtering) — drives the layer-colour
-        ring on editor markers. ``None`` when the pad's layer is unknown."""
+        ring on editor markers. ``None`` when the pad's layer is unknown.
+
+        ``pin_filter`` is an optional set/list of pad designators (the
+        directive's PDN_PINS restriction); when given, only those pads are
+        returned so a single-pin source draws one marker, not one per pad on
+        the net."""
         if not designator or not self.metadata:
             return []
         want = {n for n in (nets or ()) if n}
         if not want:
             return []
+        wanted_pins = ({str(p).upper() for p in pin_filter}
+                       if pin_filter else None)
         id_to_phys = ({v: k for k, v in self._phys_name_to_layer_id.items()}
                       if with_layer_color else {})
         prefix = f"{designator}-"
@@ -13123,6 +13870,9 @@ class PdnViewer(QMainWindow):
         for rec in self.metadata.get("pads", []):
             des = rec.get("designator") or ""
             if not des.startswith(prefix):
+                continue
+            if wanted_pins is not None and \
+                    des[len(prefix):].upper() not in wanted_pins:
                 continue
             if rec.get("net") not in want:
                 continue
@@ -13322,6 +14072,26 @@ class PdnViewer(QMainWindow):
             if p.get("net"):
                 return p["net"]
         return None
+
+    @staticmethod
+    def _terminal_pin_pads(term: dict | None) -> list[str]:
+        """Pad designators of a metadata directive terminal's pins — the
+        PDN_PINS set the schematic resolved to. ``[]`` for an ideal return or
+        a terminal with no pins."""
+        if not term or term.get("ideal_return"):
+            return []
+        return [str(p.get("pad")) for p in term.get("pins", []) or []
+                if p.get("pad") not in (None, "")]
+
+    @staticmethod
+    def _parse_pin_field(text: str | None) -> list[str] | None:
+        """Parse a comma-separated 'Pins' field into a pad-designator list,
+        or ``None`` when blank (⇒ every pad of the component on the net)."""
+        if not text:
+            return None
+        pins = [p.strip() for p in text.replace(";", ",").split(",")
+                if p.strip()]
+        return pins or None
 
     def _on_editor_unlock(self) -> None:
         """Unlock a schematic-defined component for editing — the read-only
@@ -13578,6 +14348,9 @@ class PdnViewer(QMainWindow):
         # out (and tooltipped as "no named copper") until the next event
         # nudged a marker-button sync.
         self._sync_marker_buttons()
+        # The newly-named copper changes the net inventory — refresh the
+        # table so the new name appears (or an old "(none)" row shrinks).
+        self._refresh_net_table()
 
     def _populate_editor_form(self) -> None:
         """(Re)build the form for the current selection: the PDN-role
@@ -13682,6 +14455,33 @@ class PdnViewer(QMainWindow):
         self._ef_nnet.addItems(self._all_net_names())
         self._ef_nnet_label = QLabel("N net")
         form2.addRow(self._ef_nnet_label, self._ef_nnet)
+        # Optional pin restriction (PDN_PINS equivalent) — comma-separated pad
+        # designators the terminal couples to. Only meaningful for a
+        # component-bound directive: a free marker is a single anchor point, so
+        # the fields are hidden for it. Blank ⇒ every pad of the component on
+        # the net (the placement default).
+        self._ef_pins = QLineEdit()
+        self._ef_pins.setPlaceholderText("all pins on net")
+        self._ef_pins.setToolTip(
+            "Optional: comma-separated pad numbers this terminal couples to "
+            "(the PDN_PINS equivalent, e.g. \"1\" or \"1, 3\"). Leave blank "
+            "to use every pad of the component that sits on the net."
+        )
+        self._ef_pins_label = QLabel("Pins")
+        form2.addRow(self._ef_pins_label, self._ef_pins)
+        self._ef_npins = QLineEdit()
+        self._ef_npins.setPlaceholderText("all pins on N net")
+        self._ef_npins.setToolTip(
+            "Optional: comma-separated pad numbers the N terminal couples to. "
+            "Leave blank to use every pad of the component on the N net."
+        )
+        self._ef_npins_label = QLabel("N pins")
+        form2.addRow(self._ef_npins_label, self._ef_npins)
+        # Pins apply to a real component's pads only.
+        self._ef_pins_apply = sel["kind"] == "component"
+        for _w in (self._ef_pins, self._ef_pins_label,
+                   self._ef_npins, self._ef_npins_label):
+            _w.setVisible(self._ef_pins_apply)
         lay.addLayout(form2)
 
         btns = QHBoxLayout()
@@ -13715,6 +14515,8 @@ class PdnViewer(QMainWindow):
                 self._set_combo(self._ef_pnet, existing.p_net)
             if existing.n_net:
                 self._set_combo(self._ef_nnet, existing.n_net)
+            self._ef_pins.setText(", ".join(existing.p_pins or []))
+            self._ef_npins.setText(", ".join(existing.n_pins or []))
             self._ef_remove.setEnabled(True)
             if existing.overrides_designator:
                 self._ef_status.setText(
@@ -13745,6 +14547,14 @@ class PdnViewer(QMainWindow):
             n_net = self._terminal_primary_net(n_term)
             if n_net:
                 self._set_combo(self._ef_nnet, n_net)
+            # Seed the pin restriction from the schematic directive's pads so
+            # an Altium PDN_PINS source (e.g. J23 pin 1 only) stays on those
+            # pins through the override — instead of spreading to every pad on
+            # the net once it resolves as an editor directive.
+            self._ef_pins.setText(
+                ", ".join(self._terminal_pin_pads(terms.get("P"))))
+            self._ef_npins.setText(
+                ", ".join(self._terminal_pin_pads(n_term)))
             self._ef_remove.setEnabled(False)
             self._ef_status.setText(
                 f"<span style='color:{t['warn']};'>Unlocked — Apply "
@@ -13791,6 +14601,14 @@ class PdnViewer(QMainWindow):
         self._ef_nnet.setEnabled(two)
         self._ef_nnet_label.setVisible(two)
         self._ef_pnet_label.setText("P net" if two else "Net")
+        # The N-pin restriction only exists in two-net mode (single-net's N
+        # terminal is an ideal return with no pads). Keep it in step with the
+        # N-net picker, and only for a component selection.
+        if hasattr(self, "_ef_npins"):
+            show_npins = two and getattr(self, "_ef_pins_apply", False)
+            self._ef_npins.setVisible(show_npins)
+            self._ef_npins_label.setVisible(show_npins)
+            self._ef_pins_label.setText("P pins" if two else "Pins")
 
     def _on_editor_apply(self) -> None:
         """Commit the form into an :class:`EditorDirective` on the project,
@@ -13863,6 +14681,11 @@ class PdnViewer(QMainWindow):
         if sel["kind"] == "component":
             d.kind = "component"
             d.designator = sel.get("designator")
+            # Pin restriction (PDN_PINS equivalent). Blank ⇒ None ⇒ every pad
+            # on the net. The N field only applies in two-net mode.
+            d.p_pins = self._parse_pin_field(self._ef_pins.text())
+            d.n_pins = (None if single
+                        else self._parse_pin_field(self._ef_npins.text()))
             # If this component has a schematic directive, mark the editor
             # directive as its override so the re-solve drops the schematic
             # one instead of stamping both.
@@ -13872,6 +14695,8 @@ class PdnViewer(QMainWindow):
             )
         else:
             d.kind = "free"
+            d.p_pins = None
+            d.n_pins = None
             self._editor_selection = {"kind": "free", "id": d.id}
 
         self._ensure_project().upsert_directive(d)
@@ -14443,12 +15268,40 @@ class PdnViewer(QMainWindow):
         except RuntimeError:
             pass   # form rebuilt out from under us — harmless
 
+    def _directive_rail_visible(self, d) -> bool:
+        """Whether an editor directive belongs to a currently-visible rail.
+
+        Source / sink markers track the rail eyes the same way the solved
+        markers do: a directive on a hidden rail drops out, so when only one
+        rail is shown its return-path markers no longer bleed in alongside
+        every other rail's. A directive that isn't part of any solved rail
+        yet (freshly placed, not-yet-resolved) always shows so the user can
+        still see what they've just dropped while editing."""
+        net = d.p_net
+        if not net:
+            return True
+        conn = self._connected_nets(net)
+        visible_members: set[str] = set()
+        for name in self._visible_rails():
+            visible_members.update(self._rail_to_members.get(name, [name]))
+        if conn & visible_members:
+            return True
+        solved_members: set[str] = set()
+        for members in self._rail_to_members.values():
+            solved_members.update(members)
+        # On a solved-but-hidden rail ⇒ hide; on no solved rail ⇒ still show.
+        return not (conn & solved_members)
+
     def _editor_marker_groups(self) -> list:
         """MarkerGroups for the placed editor directives — drawn only in
         editor mode so they don't clutter the normal viewer. The directive
         matching the current selection is emphasised: a 30%-larger glyph
         with a 30%-thicker outline, wrapped in a yellow selection box, so
-        the selected source / sink stands out from the rest."""
+        the selected source / sink stands out from the rest.
+
+        Directives are gated to the currently-visible rails (see
+        :meth:`_directive_rail_visible`) so hiding a rail also hides its
+        source / sink / return markers."""
         if not self._editor_mode or self._project is None:
             return []
         selected = self._directive_for_selection()
@@ -14467,6 +15320,8 @@ class PdnViewer(QMainWindow):
                      list[tuple[float, float, str | None]]] = {}
         sel_pts: list[tuple[float, float, str | None]] = []
         for d in self._project.editor_directives:
+            if not self._directive_rail_visible(d):
+                continue   # marker's rail is hidden
             # Pin points split into P-side and N-side.
             p_pts: list[tuple[float, float, str | None]] = []
             n_pts: list[tuple[float, float, str | None]] = []
@@ -14485,16 +15340,17 @@ class PdnViewer(QMainWindow):
                 # (not merely hidden ones).
                 p_pts = self._component_pad_points(
                     d.designator, [d.p_net], visible_ids,
-                    with_layer_color=True)
+                    with_layer_color=True, pin_filter=d.p_pins)
                 if not d.single_net and d.n_net:
                     n_pts = self._component_pad_points(
                         d.designator, [d.n_net], visible_ids,
-                        with_layer_color=True)
+                        with_layer_color=True, pin_filter=d.n_pins)
                 if not p_pts and not n_pts:
                     has_any_pad = bool(
-                        self._component_pad_points(d.designator, [d.p_net])
+                        self._component_pad_points(
+                            d.designator, [d.p_net], pin_filter=d.p_pins)
                         or (d.n_net and self._component_pad_points(
-                            d.designator, [d.n_net])))
+                            d.designator, [d.n_net], pin_filter=d.n_pins)))
                     if has_any_pad:
                         continue   # pads exist but are all on hidden layers
                     ctr = self._component_center(d.designator)
@@ -14920,7 +15776,18 @@ class PdnViewer(QMainWindow):
         if panel is None or gl is None:
             return
         margin = 0
-        w = panel.width()
+        # Re-clamp the user-chosen width against the live viewport so a
+        # window shrink can't leave the panel wider than the viewport (which
+        # would push its draggable left edge off-screen).
+        desired_w = getattr(
+            self, "_editor_panel_width", self._EDITOR_PANEL_DEFAULT_W)
+        max_w = max(
+            self._EDITOR_PANEL_MIN_W,
+            gl.width() - self._EDITOR_PANEL_VIEWPORT_RESERVE,
+        )
+        w = max(self._EDITOR_PANEL_MIN_W, min(desired_w, max_w))
+        if w != panel.width():
+            panel.setFixedWidth(w)
         h = max(0, gl.height() - 2 * margin)
         panel.setFixedHeight(max(h, 50))
         panel.move(gl.width() - w - margin, margin)
@@ -15784,6 +16651,8 @@ class PdnViewer(QMainWindow):
         for d in self._project.editor_directives:
             if d.role not in ("SOURCE", "SINK"):
                 continue
+            if not self._directive_rail_visible(d):
+                continue   # marker's rail is hidden — keep hover in step
             total = self._editor_directive_current(d)
             label = d.designator or d.id or ""
             size_px = int(self._ROLE_MARKER_STYLE[d.role]["size"]) + 4
@@ -15798,15 +16667,17 @@ class PdnViewer(QMainWindow):
                             float(d.anchor_xy[1]))])]
             elif d.kind == "component":
                 p_pts = self._component_pad_points(
-                    d.designator, [d.p_net], visible_ids)
+                    d.designator, [d.p_net], visible_ids, pin_filter=d.p_pins)
                 n_pts = ([] if d.single_net or not d.n_net
                          else self._component_pad_points(
-                             d.designator, [d.n_net], visible_ids))
+                             d.designator, [d.n_net], visible_ids,
+                             pin_filter=d.n_pins))
                 if not p_pts and not n_pts:
                     has_any_pad = bool(
-                        self._component_pad_points(d.designator, [d.p_net])
+                        self._component_pad_points(
+                            d.designator, [d.p_net], pin_filter=d.p_pins)
                         or (d.n_net and self._component_pad_points(
-                            d.designator, [d.n_net])))
+                            d.designator, [d.n_net], pin_filter=d.n_pins)))
                     if has_any_pad:
                         continue
                     ctr = self._component_center(d.designator)
@@ -17902,15 +18773,16 @@ class PdnViewer(QMainWindow):
             if path is None:
                 return False
         path = Path(path)
-        di, _sv = self._project_pickle_paths()
-        if di and not proj.design_info_pickle:
-            proj.design_info_pickle = di
         if self.metadata:
             proj.prjpcb_path = (proj.prjpcb_path
                                 or self.metadata.get("prjpcb_path"))
             proj.pcbdoc_path = (proj.pcbdoc_path
                                 or self.metadata.get("pcbdoc_path"))
         self._store_viewer_settings(proj)
+        # Copy the solve + design-info cache pickles into the project folder
+        # so the .fypa references its own sidecars (relative paths) and the
+        # folder can be shared as a unit — see _bundle_caches_beside_project.
+        self._bundle_caches_beside_project(proj, path)
         try:
             proj.save(path)
         except Exception as e:
@@ -17923,6 +18795,61 @@ class PdnViewer(QMainWindow):
         self._project_dirty = False
         self.statusBar().showMessage(f"Saved project to {path}", 5000)
         return True
+
+    def _bundle_caches_beside_project(self, proj, path: Path) -> None:
+        """Copy the solve + design-info cache pickles into the ``.fypa``'s
+        own folder and re-point ``proj`` at those sidecars.
+
+        Without this, a saved project only *references* the per-machine
+        solve cache (``_solve_cache_path``), whose directory is keyed to the
+        original ``.PrjPcb`` location and does not exist on any other
+        machine. Sharing just the ``.fypa`` then fails to open with "doesn't
+        point to a readable solution pickle". Copying the pickles beside the
+        ``.fypa`` (stored relative on save) makes the whole project folder
+        portable.
+
+        Best-effort: a failed copy leaves ``proj`` pointing at the original
+        source so saving still succeeds (just non-portable), rather than
+        aborting the save.
+        """
+        import shutil
+
+        di_cache, sv_cache = self._project_pickle_paths()
+
+        def _adopt(current: str | None, cache: str | None,
+                   suffix: str) -> str | None:
+            target = path.with_name(path.stem + suffix)
+            src = None
+            if current and Path(current).exists():
+                src = Path(current)
+            elif cache and Path(cache).exists():
+                src = Path(cache)
+            if src is None:
+                return current
+            try:
+                if src.resolve() != target.resolve():
+                    shutil.copy2(src, target)
+                return str(target)
+            except OSError:
+                return str(src)
+
+        proj.solve_pickle = _adopt(
+            proj.solve_pickle, sv_cache, "_solve.pkl")
+        # Fall back to the in-memory solution when no pickle exists on disk
+        # yet (e.g. a board solved this session whose cache was cleared).
+        if (not proj.solve_pickle
+                or not Path(proj.solve_pickle).exists()) \
+                and self.solution is not None:
+            solve_target = path.with_name(path.stem + "_solve.pkl")
+            try:
+                from fypa.cli import save_solution_file
+                save_solution_file(solve_target, self.solution, self.metadata)
+                proj.solve_pickle = str(solve_target)
+            except Exception:
+                pass
+
+        proj.design_info_pickle = _adopt(
+            proj.design_info_pickle, di_cache, "_design-info.pkl")
 
     def _save_project_and_solution(self) -> bool:
         """Write the ``.fypa`` plus the current solution. The solution goes
@@ -17986,6 +18913,7 @@ class PdnViewer(QMainWindow):
                 f"Failed to load {path_str}:\n\n{type(e).__name__}: {e}",
             )
             return
+        _restore_bundled_design_info(proj)
         # Resolve the solution pickle: the project's own, else the design
         # cache's solve.pkl for the linked project.
         sol_path = proj.solve_pickle

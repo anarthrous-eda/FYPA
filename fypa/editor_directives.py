@@ -139,21 +139,31 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
                 sum(p.y for p in pts) / len(pts))
 
     def _resolve_terminal(net_name, *, designator, fallback_xy,
-                          fallback_layer_id):
+                          fallback_layer_id, pin_filter=None):
         """Build a TerminalSpec on ``net_name``. A component-bound directive
         with real pads on that net gets one pin per pad; otherwise a single
         synthetic pin at ``fallback_xy`` (free-marker anchor or component
-        centre). Returns ``None`` when the net name is unknown."""
+        centre). Returns ``None`` when the net name is unknown.
+
+        ``pin_filter`` is the directive's optional pad-designator restriction
+        (the PDN_PINS equivalent): when set, only the component's pads whose
+        designator is in the set couple — so a source declared on pin 1 stays
+        on pin 1 instead of spreading to every pad on the net."""
         if not net_name:
             return None
         nidx = net_index.get(net_name.upper())
         if nidx is None:
             return None
+        wanted_pins = ({str(p).upper() for p in pin_filter}
+                       if pin_filter else None)
         pins: list = []
         ci = comp_index.get(designator) if designator else None
         if ci is not None:
             for p in extracted.pads:
                 if p.component_index != ci or p.net_index != nidx:
+                    continue
+                if wanted_pins is not None and \
+                        (p.designator or "").upper() not in wanted_pins:
                     continue
                 through = getattr(p, "is_through_hole", False)
                 lid = top_layer if through else p.layer_id
@@ -214,9 +224,14 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
             fallback_xy = _component_center(ed.designator) or (0.0, 0.0)
             fallback_lid = top_layer
 
+        # Pin restrictions only apply to a component-bound terminal that
+        # actually has pads to pick from; a free marker couples at its anchor.
+        p_pins = getattr(ed, "p_pins", None) if ed.kind != "free" else None
+        n_pins = getattr(ed, "n_pins", None) if ed.kind != "free" else None
         p_term = _resolve_terminal(
             ed.p_net, designator=ed.designator,
             fallback_xy=fallback_xy, fallback_layer_id=fallback_lid,
+            pin_filter=p_pins,
         )
         if p_term is None:
             warnings.append(
@@ -237,6 +252,7 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
             n_term = _resolve_terminal(
                 ed.n_net, designator=ed.designator,
                 fallback_xy=fallback_xy, fallback_layer_id=fallback_lid,
+                pin_filter=n_pins,
             )
             if n_term is None:
                 warnings.append(

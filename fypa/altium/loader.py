@@ -1996,27 +1996,44 @@ def _filter_stub_pieces(
     pin_xys: list[tuple[float, float]],
     via_xys: list[tuple[float, float]],
 ) -> tuple[shapely.geometry.base.BaseGeometry, list]:
-    """Drop sub-pieces of a (layer, net) shape that can't carry current.
+    """Drop sub-pieces of a (layer, net) shape that are electrically isolated.
 
     A sub-piece is **kept** if either:
 
     * it contains at least one directive pin (SOURCE / SINK / REGULATOR /
       SERIES — anything that injects or draws current), OR
-    * it contains at least two via couplings (so current has a closed-loop
-      path through it — in via, out via).
+    * it contains at least one via coupling (which ties it into the rest
+      of the stack — see below).
 
-    Otherwise the piece is a **dead-end stub** (zero or one via, no pins):
-    no current can physically flow through it. Including such pieces in
-    the FEM creates a rank-deficient sub-matrix whose solution is
-    arbitrary — the solver yields garbage potentials (often "0 V mixed
-    with valid V") and leaks current into the ground-balancing node,
-    making the rest of the heatmap less trustworthy too.
+    Otherwise the piece has **no pins and no vias**: it is a truly
+    floating island with no connection to anything, so the FEM has no way
+    to reference it (its Laplacian's constant null-space is unconstrained)
+    and the solver would emit an arbitrary potential. Those pieces are
+    dropped and shown as neutral grey stub overlays instead.
+
+    A piece with a **single via and no pins** is a *dead-end* island: no
+    current flows through it (the one via is its only connection), but it
+    is NOT rank-deficient — the via barrel resistor anchors the island's
+    constant mode to the node it bridges to, so the island equilibrates to
+    that far-side voltage at zero current. That is a physically meaningful,
+    cleanly-solvable result, and the user wants to see it: the island
+    should take the voltage of the layer it vias down to (with a flat,
+    no-gradient via), not be excluded and mis-coloured by a nearest-copper
+    probe. So we KEEP single-via pieces and let the FEM solve them.
+
+    The real guard against genuinely-floating sub-systems (a piece whose
+    via only reaches other undriven copper, never a directive) is
+    :func:`_drop_unreachable_layers`, which BFS-walks the via-coupling
+    graph from every directive and drops any slab it can't reach — and the
+    solver's own connectivity/grounding handles whatever survives. Neither
+    depends on this per-piece via count, so requiring a "closed loop" of
+    two vias here only ever did harm: it deleted solvable dead-end islands.
 
     This applies even when the shape is a single connected polygon. The
     active-nets filter only checks whether the NET is active (has a
     driver on any physical layer); a single polygon on a DIFFERENT
-    physical layer that has no pins and no/one via would otherwise pass
-    into the FEM as an isolated sub-system, producing garbage voltages.
+    physical layer with no pins and no vias would otherwise pass into the
+    FEM as an isolated sub-system, producing garbage voltages.
 
     Returns ``(filtered_shape, dropped_pieces)``. The filtered shape is
     an empty MultiPolygon if every piece was dropped. ``dropped_pieces``
@@ -2070,9 +2087,8 @@ def _filter_stub_pieces(
                 has_pin = True
                 break  # one pin is enough to keep
             n_via += 1
-            if n_via >= 2:
-                break  # two distinct vias is enough to keep
-        if has_pin or n_via >= 2:
+            break  # one via anchors the piece to the rest of the stack
+        if has_pin or n_via >= 1:
             kept.append(piece)
         else:
             dropped.append(piece)
@@ -2263,11 +2279,12 @@ def build_problem(
         if active_nets and gl.net_index not in active_nets:
             continue  # belt-and-braces — active_layers is already filtered
         key = (gl.layer_id, gl.net_index)
-        # Drop disjoint stub pieces — copper sub-islands with no directive
-        # pin and ≤1 via touchdown. Such pieces carry no current; including
-        # them in the FEM yields a rank-deficient sub-matrix and the solver
-        # produces garbage (e.g. 0 V nodes mixed with valid voltages) plus
-        # a large spurious ground-node-balancing current.
+        # Drop only truly-floating stub pieces — copper sub-islands with no
+        # directive pin AND no via touchdown at all. Those have no reference
+        # in the FEM and would emit an arbitrary potential. A single-via
+        # dead-end island is KEPT: its via anchors it to the layer it
+        # bridges to, so the FEM solves it cleanly (it takes that far-side
+        # voltage at zero current) — see _filter_stub_pieces for the why.
         filtered_shape, dropped_pieces = _filter_stub_pieces(
             gl.shape,
             pin_xys_by_pair.get(key, []),

@@ -178,7 +178,11 @@ The flow is identical to 2.3, with two differences:
 
 Selecting a component that already has `PDN_*` parameters from the
 schematic opens the form in read-only mode with a summary of the
-schematic values and an **🔓 Unlock to edit** button.
+schematic values and an **🔓 Unlock to edit** button. You can select
+the component either by clicking its footprint or by clicking the
+SOURCE / SINK marker the schematic directive draws on the board — the
+marker is the easier target, and it works even when the footprint sits
+on a side whose copper is hidden.
 
 ![Read-only schematic info with unlock button](screenshots/02-unlock.png)
 
