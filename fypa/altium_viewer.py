@@ -1395,7 +1395,7 @@ _N_NET_MARKER_EDGE = "#008000"
 # stroked around the marker (uniform on every edge), so the band hugs the
 # glyph evenly; the marker covers the inner half, leaving ~this many px of
 # layer colour showing beyond its own outline.
-_MARKER_LAYER_RING_W = 4
+_MARKER_LAYER_RING_W = 3
 
 
 def _overlay_ribbon_offsets(polyline, half_w: float, *,

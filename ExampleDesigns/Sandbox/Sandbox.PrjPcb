@@ -131,226 +131,222 @@ VariationCount=0
 ParamVariationCount=0
 
 [GeneratedDocument1]
-DocumentPath=Project Outputs for Sandbox\Design Rule Check - Sandbox.html
-DItemRevisionGUID=
-
-[GeneratedDocument2]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.EXTREP
 DItemRevisionGUID=
 
-[GeneratedDocument3]
+[GeneratedDocument2]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox.EXTREP
 DItemRevisionGUID=
 
-[GeneratedDocument4]
+[GeneratedDocument3]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.GBL
 DItemRevisionGUID=
 
-[GeneratedDocument5]
+[GeneratedDocument4]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.GBO
 DItemRevisionGUID=
 
-[GeneratedDocument6]
+[GeneratedDocument5]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.GBP
 DItemRevisionGUID=
 
-[GeneratedDocument7]
+[GeneratedDocument6]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.GBS
 DItemRevisionGUID=
 
-[GeneratedDocument8]
+[GeneratedDocument7]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.GD1
 DItemRevisionGUID=
 
-[GeneratedDocument9]
+[GeneratedDocument8]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.GG1
 DItemRevisionGUID=
 
-[GeneratedDocument10]
+[GeneratedDocument9]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.GKO
 DItemRevisionGUID=
 
-[GeneratedDocument11]
+[GeneratedDocument10]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.GM1
 DItemRevisionGUID=
 
-[GeneratedDocument12]
+[GeneratedDocument11]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.GM2
 DItemRevisionGUID=
 
-[GeneratedDocument13]
+[GeneratedDocument12]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.GM3
 DItemRevisionGUID=
 
-[GeneratedDocument14]
+[GeneratedDocument13]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.GM5
 DItemRevisionGUID=
 
-[GeneratedDocument15]
+[GeneratedDocument14]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.GM13
 DItemRevisionGUID=
 
-[GeneratedDocument16]
+[GeneratedDocument15]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.GM15
 DItemRevisionGUID=
 
-[GeneratedDocument17]
+[GeneratedDocument16]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.GM16
 DItemRevisionGUID=
 
-[GeneratedDocument18]
+[GeneratedDocument17]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.GM20
 DItemRevisionGUID=
 
-[GeneratedDocument19]
+[GeneratedDocument18]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.GM21
 DItemRevisionGUID=
 
-[GeneratedDocument20]
+[GeneratedDocument19]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.GM23
 DItemRevisionGUID=
 
-[GeneratedDocument21]
+[GeneratedDocument20]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.GM24
 DItemRevisionGUID=
 
-[GeneratedDocument22]
+[GeneratedDocument21]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.GM100
 DItemRevisionGUID=
 
-[GeneratedDocument23]
+[GeneratedDocument22]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.GPB
 DItemRevisionGUID=
 
-[GeneratedDocument24]
+[GeneratedDocument23]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.GPT
 DItemRevisionGUID=
 
-[GeneratedDocument25]
+[GeneratedDocument24]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.GTL
 DItemRevisionGUID=
 
-[GeneratedDocument26]
+[GeneratedDocument25]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.GTO
 DItemRevisionGUID=
 
-[GeneratedDocument27]
+[GeneratedDocument26]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.GTP
 DItemRevisionGUID=
 
-[GeneratedDocument28]
+[GeneratedDocument27]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.GTS
 DItemRevisionGUID=
 
-[GeneratedDocument29]
+[GeneratedDocument28]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.REP
 DItemRevisionGUID=
 
-[GeneratedDocument30]
+[GeneratedDocument29]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox.REP
 DItemRevisionGUID=
 
-[GeneratedDocument31]
+[GeneratedDocument30]
 DocumentPath=Project Outputs for Free Documents\Gerber\Sandbox.RUL
 DItemRevisionGUID=
 
-[GeneratedDocument32]
+[GeneratedDocument31]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox.RUL
 DItemRevisionGUID=
 
-[GeneratedDocument33]
+[GeneratedDocument32]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox_Copper_Signal_Bot.gbr
 DItemRevisionGUID=
 
-[GeneratedDocument34]
+[GeneratedDocument33]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox_Copper_Signal_Top.gbr
 DItemRevisionGUID=
 
-[GeneratedDocument35]
+[GeneratedDocument34]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox_Keep-out.gbr
 DItemRevisionGUID=
 
-[GeneratedDocument36]
+[GeneratedDocument35]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox_Legend_Bot.gbr
 DItemRevisionGUID=
 
-[GeneratedDocument37]
+[GeneratedDocument36]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox_Legend_Top.gbr
 DItemRevisionGUID=
 
-[GeneratedDocument38]
+[GeneratedDocument37]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox_Mechanical_1.gbr
 DItemRevisionGUID=
 
-[GeneratedDocument39]
+[GeneratedDocument38]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox_Mechanical_2.gbr
 DItemRevisionGUID=
 
-[GeneratedDocument40]
+[GeneratedDocument39]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox_Mechanical_3.gbr
 DItemRevisionGUID=
 
-[GeneratedDocument41]
+[GeneratedDocument40]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox_Mechanical_5.gbr
 DItemRevisionGUID=
 
-[GeneratedDocument42]
+[GeneratedDocument41]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox_Mechanical_13.gbr
 DItemRevisionGUID=
 
-[GeneratedDocument43]
+[GeneratedDocument42]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox_Mechanical_15.gbr
 DItemRevisionGUID=
 
-[GeneratedDocument44]
+[GeneratedDocument43]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox_Mechanical_16.gbr
 DItemRevisionGUID=
 
-[GeneratedDocument45]
+[GeneratedDocument44]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox_Mechanical_20.gbr
 DItemRevisionGUID=
 
-[GeneratedDocument46]
+[GeneratedDocument45]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox_Mechanical_21.gbr
 DItemRevisionGUID=
 
-[GeneratedDocument47]
+[GeneratedDocument46]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox_Mechanical_23.gbr
 DItemRevisionGUID=
 
-[GeneratedDocument48]
+[GeneratedDocument47]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox_Mechanical_24.gbr
 DItemRevisionGUID=
 
-[GeneratedDocument49]
+[GeneratedDocument48]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox_Mechanical_100.gbr
 DItemRevisionGUID=
 
-[GeneratedDocument50]
+[GeneratedDocument49]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox_Pads_Bot.gbr
 DItemRevisionGUID=
 
-[GeneratedDocument51]
+[GeneratedDocument50]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox_Pads_Top.gbr
 DItemRevisionGUID=
 
-[GeneratedDocument52]
+[GeneratedDocument51]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox_Paste_Bot.gbr
 DItemRevisionGUID=
 
-[GeneratedDocument53]
+[GeneratedDocument52]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox_Paste_Top.gbr
 DItemRevisionGUID=
 
-[GeneratedDocument54]
+[GeneratedDocument53]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox_Profile.gbr
 DItemRevisionGUID=
 
-[GeneratedDocument55]
+[GeneratedDocument54]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox_Soldermask_Bot.gbr
 DItemRevisionGUID=
 
-[GeneratedDocument56]
+[GeneratedDocument55]
 DocumentPath=Project Outputs for Free Documents\GerberX2\Sandbox_Soldermask_Top.gbr
 DItemRevisionGUID=
 

@@ -54,13 +54,11 @@ Net names must match the schematic exactly — same case, same punctuation.
 
 ## 1.2 Annotating a source
 
-Example: a 5 V barrel jack **J1**, with rails labelled `+5V` and `0V`.
+Example: a 5 V connector **J1**, with rails labelled `+5V` and `GND`.
 
 **Step 1 — Select J1 in the schematic.**
 
 Open the schematic sheet containing J1 and single-click the component body.
-
-![J1 selected in the schematic](screenshots/01-source-select.png)
 
 **Step 2 — Open the Parameters panel.**
 
@@ -76,35 +74,32 @@ Click **Add** below the parameter list and fill in each row:
 | Name        | Value     |
 |-------------|-----------|
 | `PDN_ROLE`  | `SOURCE`  |
-| `PDN_V`     | `5V`      |
-| `PDN_P_NET` | `+5V`     |
-| `PDN_N_NET` | `0V`      |
+| `PDN_V`     | `3V3`      |
+| `PDN_P_NET` | `+3V3`     |
+| `PDN_N_NET` | `GND`      |
 
 > `PDN_V` accepts plain numbers (`5`, `3.3`) or numbers with a `V` suffix
 > (`5V`, `3.3V`). `PDN_I` accepts `0.5`, `500mA`, `0.5A`. Either form
 > works.
 
-**Step 4 — Hide the parameters (optional).**
+The parameters do not have to be visible, they will be hidden by default
 
-Right-click each new parameter and toggle **Visible** off. FYPA still
-reads them; they just no longer clutter the schematic.
+![Parameters panel filled out](screenshots/02-source-params-panel_filled.png)
 
-![Visibility toggle](screenshots/01-source-visible-off.png)
-
-**Step 5 — Save the schematic** (`Ctrl+S`).
+**Step 4 — Save the schematic** (`Ctrl+S`).
 
 ## 1.3 Annotating a sink
 
-Example: a microcontroller **U5** drawing 500 mA from the `+5V` rail.
+Example: a microcontroller **U1** drawing 500 mA from the `+5V` rail.
 
-Select U5, open the Parameters panel, and add four rows:
+Select U1, open the Parameters panel, and add four rows:
 
 | Name        | Value     |
 |-------------|-----------|
 | `PDN_ROLE`  | `SINK`    |
 | `PDN_I`     | `500mA`   |
-| `PDN_P_NET` | `+5V`     |
-| `PDN_N_NET` | `0V`      |
+| `PDN_P_NET` | `+3V3`     |
+| `PDN_N_NET` | `GND`      |
 
 Save the schematic.
 
@@ -215,8 +210,6 @@ panel lists:
 - Every **rail** FYPA inferred from the `PDN_P_NET` / `PDN_N_NET` pairs
   (in this example, `+5V → 0V`).
 - A **Nodes** tab with one row per terminal pin and its solved voltage.
-
-![Viewer on first open](screenshots/01-viewer-first-open.png)
 
 Switching the display mode from *Voltage* to *Current Density* shows
 the current flow across the copper from source to sink.
