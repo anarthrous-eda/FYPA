@@ -5743,6 +5743,18 @@ class PdnViewer(QMainWindow):
         # affected by toggling it.
         self._sync_rail_only_visibility()
 
+        self.src_ref_box = QCheckBox("Reference to source return")
+        self.src_ref_box.setChecked(True)
+        self.src_ref_box.setToolTip(
+            "Voltage mode only. On: each net's heatmap is referenced to its "
+            "own SOURCE return pin, so it reads the net's true differential "
+            "(≤ rail voltage). Off: shows absolute potential referenced "
+            "to the single global 0 V point — which can read a fraction of a "
+            "mV ABOVE the rail, because a source's return pin doesn't sit "
+            "exactly at that global 0 V."
+        )
+        side.addWidget(self.src_ref_box)
+
         self.via_span_box = QCheckBox("Show via span")
         self.via_span_box.setChecked(False)
         self.via_span_box.setToolTip(
@@ -6027,6 +6039,7 @@ class PdnViewer(QMainWindow):
         # programmatic checks without spamming renders.
         self.mode_combo.currentTextChanged.connect(self._render_with_busy_popup)
         self.rail_only_box.toggled.connect(self._render_with_busy_popup)
+        self.src_ref_box.toggled.connect(self._render_with_busy_popup)
         self.via_span_box.toggled.connect(
             lambda _checked: self._refresh_overlay_geometry(
                 self._visible_rails()))
@@ -8133,6 +8146,13 @@ class PdnViewer(QMainWindow):
         label, unit, derive_fn = self._mode_derive_fn(mode)
         is_via_current = (mode == _VIA_CURRENT_MODE)
 
+        # The "Reference to source return" toggle only affects Voltage mode —
+        # hide it elsewhere. Set here (before any early-return path) so its
+        # visibility tracks the mode even when there's no mesh to draw.
+        src_ref_box = getattr(self, "src_ref_box", None)
+        if src_ref_box is not None:
+            src_ref_box.setVisible(mode == "Voltage")
+
         # Overlays (silkscreen / pads / components / designators) are
         # independent of the FEM heatmap. Refresh them up-front so a
         # rail or 2D/3D change keeps them in sync — and so they still draw
@@ -8368,7 +8388,10 @@ class PdnViewer(QMainWindow):
         # above the rail (the global 0 V datum sits at a different GND node
         # than the source return — see _source_return_offsets). Each net is
         # shifted by its own offset; nets with no source (GND) are left as-is.
-        if mode == "Voltage" and not is_via_current:
+        # Opt-out via the "Reference to source return" toggle (default on;
+        # visibility is managed at the top of _render).
+        src_ref_on = src_ref_box is None or src_ref_box.isChecked()
+        if mode == "Voltage" and not is_via_current and src_ref_on:
             offsets = self._source_return_offsets()
             # Build a per-vertex offset aligned to vs_arr. vs_arr is
             # concatenated in the original (bottom-first) loop order, while
@@ -8456,7 +8479,8 @@ class PdnViewer(QMainWindow):
         # instead of snapping back to the auto-detected default. A linear↔log
         # switch counts as a change so the window resets to the new default.
         selection_sig = (tuple(phys_list), tuple(rails), mode,
-                         self.rail_only_box.isChecked(), self._log_active)
+                         self.rail_only_box.isChecked(), self._log_active,
+                         src_ref_on)
         preserve_scale = (self._last_scale_selection == selection_sig)
         self._last_scale_selection = selection_sig
         if preserve_scale:
