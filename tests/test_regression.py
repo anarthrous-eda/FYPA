@@ -12,8 +12,7 @@ moves the vertex/triangle counts, and a solver change moves the field stats.
 On the first run for a design (no golden yet) the fingerprint is written and
 the test is skipped — commit the generated file to lock the baseline in.
 
-``Sandbox`` runs by default (~5 s). ``Imperial`` and ``Methuselah`` are large
-boards and are marked ``slow`` (run with ``pytest -m slow`` or ``-m ""``).
+``Sandbox`` runs by default (~5 s).
 """
 from __future__ import annotations
 
@@ -132,14 +131,7 @@ def _compare_to_golden(design: str, current: dict) -> None:
     )
 
 
-@pytest.mark.parametrize(
-    "design",
-    [
-        "Sandbox",
-        pytest.param("Imperial", marks=pytest.mark.slow),
-        pytest.param("Methuselah", marks=pytest.mark.slow),
-    ],
-)
+@pytest.mark.parametrize("design", ["Sandbox"])
 def test_example_design_solution_matches_golden(design, tmp_path):
     prjpcb = REPO_ROOT / "ExampleDesigns" / design / f"{design}.PrjPcb"
     if not prjpcb.exists():

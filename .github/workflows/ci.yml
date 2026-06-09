@@ -38,8 +38,5 @@ jobs:
       - name: Lint (ruff)
         run: uv run ruff check .
 
-      - name: Test (pytest — fast suite)
-        # The 'slow' end-to-end regression runs on the large Imperial /
-        # Methuselah designs are excluded here; run them locally with
-        # `uv run pytest -m slow` (a few minutes each).
-        run: uv run pytest -m "not slow"
+      - name: Test (pytest)
+        run: uv run pytest

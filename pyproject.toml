@@ -10,7 +10,7 @@
 #   uv sync                  # runtime + dev deps (default)
 #   uv sync --no-default-groups  # runtime only (what end-users build from)
 #   uv sync --group build    # adds PyInstaller for packaging
-#   uv run pytest -m "not slow"
+#   uv run pytest
 #   uv run ruff check .
 
 [project]
@@ -84,9 +84,6 @@ altium-monkey = { git = "https://github.com/wavenumber-eng/altium_monkey", tag =
 # so the repo root must be on sys.path.
 pythonpath = ["."]
 testpaths = ["tests"]
-markers = [
-    "slow: end-to-end regression runs on the large example designs (deselect with '-m \"not slow\"')",
-]
 # Keep solver/mesher warnings visible but non-fatal during tests.
 filterwarnings = [
     "default",
