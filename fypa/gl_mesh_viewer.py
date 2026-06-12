@@ -43,6 +43,7 @@ Vector-field arrows (drawn via the line shader, in world space):
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 
 import numpy as np
@@ -354,7 +355,17 @@ def _install_default_surface_format() -> None:
     # per pixel, so sub-pixel copper renders as a (coverage-weighted)
     # antialiased fragment instead of dropping out. QOpenGLWidget honours
     # this by allocating a multisample FBO and resolving on composition.
-    fmt.setSamples(4)
+    #
+    # That per-compose multisample resolve is also a fragile driver path,
+    # and is suspected in the issue #1 whole-window composition corruption
+    # (https://github.com/anarthrous-eda/FYPA/issues/1). FYPA_MSAA lets an
+    # affected machine drop the QOpenGLWidget-level MSAA without a code
+    # change — the in-app supersampling pipeline still provides AA.
+    try:
+        samples = int(os.environ.get("FYPA_MSAA", "4"))
+    except ValueError:
+        samples = 4
+    fmt.setSamples(samples)
     fmt.setSwapInterval(1)  # vsync on — smoother and easier on the GPU
     QSurfaceFormat.setDefaultFormat(fmt)
 
