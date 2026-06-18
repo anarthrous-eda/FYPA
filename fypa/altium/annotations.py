@@ -299,6 +299,9 @@ class TerminalSpec:
     # named net, so the resolver matched pads on a bridged-equivalent net
     # instead. ``None`` when the terminal was given by a *_PINS override.
     requested_net: str | None = None
+    # True when ``requested_net`` is a local sheet label resolved via the
+    # compiled schematic netlist rather than a direct PCB net-name match.
+    resolved_via_local: bool = False
 
     @property
     def is_empty(self) -> bool:
@@ -446,6 +449,7 @@ def _resolve_terminal(
     appends a one-line note to ``warnings`` naming the bridge used.
     """
     errors: list[str] = []
+    resolved_via_local = False
     designator = proj.pcb_components[pcb_index].designator
     component_pads = [p for p in proj.pads if p.component_index == pcb_index]
     if not component_pads:
@@ -473,7 +477,6 @@ def _resolve_terminal(
             return None, errors
         net_indices = _net_indices_by_name(proj, net_name)
         matched: list[RawPad] = []
-        resolved_via_local = False
         if net_indices:
             # Apply the loader's net-merge remap so user annotations naming
             # EITHER side of an absorbed SERIES bridge (e.g. both "0V" and
@@ -607,7 +610,9 @@ def _resolve_terminal(
         )
         for p in matched
     )
-    return TerminalSpec(pins=pins, requested_net=net_name), errors
+    return TerminalSpec(
+        pins=pins, requested_net=net_name, resolved_via_local=resolved_via_local,
+    ), errors
 
 
 def _find_pcb_instances(proj: ExtractedProject, sch_designator: str) -> list[int]:

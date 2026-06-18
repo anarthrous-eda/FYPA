@@ -1369,6 +1369,25 @@ def _gil_yield(i: int, every: int = 256) -> None:
         time.sleep(0.001)
 
 
+def build_net_canonical_map(netlist) -> dict[str, str]:
+    """Map every schematic net label (``Net.name`` or alias) to ``Net.name``.
+
+    Altium's compiled netlist stores the top-level / flattened name in
+    ``Net.name`` and local or cross-sheet labels in ``aliases``. The viewer
+    uses this map so rail lists show the canonical name rather than a local
+    sheet label from ``PDN_*_NET``.
+    """
+    if netlist is None:
+        return {}
+    out: dict[str, str] = {}
+    for net in getattr(netlist, "nets", ()) or ():
+        canonical = net.name
+        for label in (canonical, *getattr(net, "aliases", ())):
+            if label:
+                out[label.upper()] = canonical
+    return out
+
+
 def build_solve_metadata(
     loaded: LoadedProject,
     problem: _pp.Problem | None = None,
@@ -1886,6 +1905,7 @@ def build_solve_metadata(
             ),
         },
         "directives": directives,
+        "net_canonical": build_net_canonical_map(proj.compiled_netlist),
         "active_nets": active_nets,
         "vias": vias,
         "pths": pths,
@@ -1964,6 +1984,7 @@ def _terminal_summary(term, nets) -> dict:
         # the user sees what they asked for even when a SERIES bridge resolved
         # the terminal onto a different (bridged-equivalent) net's pads.
         "requested_net": getattr(term, "requested_net", None),
+        "resolved_via_local": getattr(term, "resolved_via_local", False),
     }
 
 
