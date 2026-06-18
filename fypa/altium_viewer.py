@@ -5332,6 +5332,13 @@ class PdnViewer(QMainWindow):
                 parent[rb] = ra
 
         primary_candidates: set[str] = set()
+        bridge_named: set[str] = set()
+        canon_map: dict[str, str] = metadata.get("net_canonical") or {}
+
+        def _canonical(net: str) -> str:
+            if not net:
+                return net
+            return canon_map.get(net.upper(), net)
 
         for d in metadata.get("directives", []):
             role = d.get("role", "")
@@ -5356,7 +5363,18 @@ class PdnViewer(QMainWindow):
                 # Fall back to the pin nets only for a *_PINS-override
                 # terminal, which has no named net.
                 if role in ("SOURCE", "SINK", "REGULATOR"):
-                    primary_candidates.update({req} if req else nets)
+                    if t.get("resolved_via_local") and nets:
+                        # Local sheet label — show the PCB / top-level net.
+                        primary_candidates.update(_canonical(n) for n in nets)
+                    elif req:
+                        canon_req = _canonical(req)
+                        primary_candidates.add(canon_req)
+                        # User named a logical rail that resolved onto different
+                        # pad nets via a SERIES bridge — keep their name.
+                        if nets and req not in nets:
+                            bridge_named.add(canon_req)
+                    elif nets:
+                        primary_candidates.update(_canonical(n) for n in nets)
             if role == "RESISTOR" and len(nets_per_term) == 2:
                 # Bridge every net in one terminal with every net in the other.
                 for a in nets_per_term[0]:
@@ -5381,7 +5399,14 @@ class PdnViewer(QMainWindow):
                 if n.lower() in {"0v", "gnd", "ground", "vss"}:
                     return (1, n)
                 return (2, n)
-            primary = sorted(primaries, key=_primary_rank)[0]
+            canon_primaries = {_canonical(p) for p in primaries}
+            primary = sorted(
+                canon_primaries,
+                key=lambda n: (
+                    0 if n in bridge_named else 1,
+                    _primary_rank(n),
+                ),
+            )[0]
             rail_to_members[primary] = sorted(members)
 
         def _rail_sort_key(rail: str) -> tuple[int, str]:
