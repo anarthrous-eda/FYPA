@@ -22,10 +22,14 @@ from __future__ import annotations
 import logging
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from altium_monkey import AltiumDesign
+
+if TYPE_CHECKING:
+    from altium_monkey.altium_netlist_model import Netlist
 
 
 log = logging.getLogger(__name__)
@@ -341,6 +345,10 @@ class RawPcbComponent:
     # schematic component a PDN_* directive is authored on. Empty for a
     # component with no schematic origin (hand-placed on the PCB).
     source_designator: str = ""
+    # Component parameters from PrimitiveParameters/Data (populated after a
+    # schematic→PCB ECO; carries Blanket/Parameter-Set directives among others).
+    parameters: dict[str, str] = field(default_factory=dict)
+    unique_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -392,6 +400,9 @@ class ExtractedProject:
     nets: tuple[RawNet, ...]
     stackup: tuple[RawStackupLayer, ...]
     sch_components: tuple[RawSchComponent, ...]
+    # Compiled schematic netlist (multi-sheet aware). Used to translate local
+    # sheet net names in PDN_*_NET parameters to per-instance PCB connectivity.
+    compiled_netlist: Any | None = None
     # User-defined Altium origin (Board6/ORIGINX,ORIGINY), in mm. Every
     # Pt2D produced above has already had this subtracted, so coordinates
     # match what Altium displays when the user has set a custom origin.
@@ -866,6 +877,20 @@ def _extract_fills(pcb, ox_mm: float, oy_mm: float) -> tuple[RawFill, ...]:
     return tuple(out)
 
 
+def _normalise_pcb_parameters(raw: dict | None) -> dict[str, str]:
+    if not raw:
+        return {}
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        if key is None:
+            continue
+        name = str(key).strip()
+        if not name:
+            continue
+        out[name] = str(value).strip() if value is not None else ""
+    return out
+
+
 def _extract_pcb_components(pcb, ox_mm: float, oy_mm: float,
                             ) -> tuple[RawPcbComponent, ...]:
     out: list[RawPcbComponent] = []
@@ -878,6 +903,8 @@ def _extract_pcb_components(pcb, ox_mm: float, oy_mm: float,
             layer_name=str(c.layer),
             footprint=str(c.footprint),
             source_designator=str(c.raw_record.get("SOURCEDESIGNATOR", "") or ""),
+            parameters=_normalise_pcb_parameters(getattr(c, "parameters", None)),
+            unique_id=str(getattr(c, "unique_id", "") or ""),
         ))
     return tuple(out)
 
@@ -1015,6 +1042,25 @@ def list_pcbdoc_paths(prjpcb_path: str | Path) -> list[Path]:
     return list(AltiumPrjPcb(prjpcb_path).get_pcbdoc_paths())
 
 
+def _compile_schematic_netlist(design: AltiumDesign) -> Netlist | None:
+    """Compile the project schematic netlist for local-net name resolution."""
+    if not design.schdocs:
+        return None
+    try:
+        from altium_monkey.altium_netlist_compilation import compile_netlist
+        from altium_monkey.altium_netlist_options import NetlistOptions
+
+        options = (
+            NetlistOptions.from_prjpcb(design.project)
+            if design.project is not None
+            else NetlistOptions()
+        )
+        return compile_netlist(design.schdocs, design.project, options)
+    except Exception as exc:
+        log.warning("Could not compile schematic netlist: %s", exc)
+        return None
+
+
 def extract_project(prjpcb_path: str | Path,
                     pcbdoc_selector: str | Path | None = None,
                     ) -> ExtractedProject:
@@ -1052,6 +1098,8 @@ def extract_project(prjpcb_path: str | Path,
     ox_mm = mils_to_mm(origin_x_mils)
     oy_mm = mils_to_mm(origin_y_mils)
 
+    compiled_netlist = _compile_schematic_netlist(design)
+
     return ExtractedProject(
         prjpcb_path=prjpcb_path,
         pcbdoc_path=pcbdoc_path,
@@ -1067,6 +1115,7 @@ def extract_project(prjpcb_path: str | Path,
         nets=_extract_nets(pcb),
         stackup=_extract_stackup(pcb),
         sch_components=_extract_sch_components(design),
+        compiled_netlist=compiled_netlist,
         board_origin_mm=Pt2D(ox_mm, oy_mm),
         board_outline=_extract_board_outline(pcb, ox_mm, oy_mm),
     )

@@ -82,6 +82,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 
 import shapely.geometry
 
@@ -299,6 +300,110 @@ class TerminalSpec:
         return not self.pins
 
 
+@dataclass(frozen=True, slots=True)
+class PdnParameterSource:
+    """One component carrying PDN_* parameters — from schematic or PCB."""
+
+    designator: str
+    schdoc_name: str
+    parameters: dict[str, str]
+    # When set, the directive is bound to this single PCB placement (PCB
+    # parameter source after Blanket/Parameter-Set ECO).
+    pcb_index: int | None = None
+    # Schematic designator used for local-net lookup (source_designator when
+    # the directive is PCB-sourced).
+    sch_lookup_designator: str = ""
+
+    @property
+    def lookup_designator(self) -> str:
+        return self.sch_lookup_designator or self.designator
+
+
+def _schdoc_for_source_designator(proj: ExtractedProject, designator: str) -> str:
+    target = designator.upper()
+    for comp in proj.sch_components:
+        if comp.designator.upper() == target:
+            return comp.schdoc_name
+    return "(pcb)"
+
+
+def _iter_pdn_parameter_sources(proj: ExtractedProject) -> list[PdnParameterSource]:
+    """Schematic PDN directives plus PCB-only directives (Blanket ECO path)."""
+    sources: list[PdnParameterSource] = []
+    sch_with_role: set[str] = set()
+
+    for comp in proj.sch_components:
+        if _ci_get(comp.parameters, ROLE_KEY) is None:
+            continue
+        sch_with_role.add(comp.designator.upper())
+        sources.append(PdnParameterSource(
+            designator=comp.designator,
+            schdoc_name=comp.schdoc_name,
+            parameters=comp.parameters,
+            sch_lookup_designator=comp.designator,
+        ))
+
+    for idx, pcb in enumerate(proj.pcb_components):
+        if _ci_get(pcb.parameters, ROLE_KEY) is None:
+            continue
+        lookup_des = pcb.source_designator or pcb.designator
+        if lookup_des.upper() in sch_with_role:
+            continue
+        sources.append(PdnParameterSource(
+            designator=pcb.designator,
+            schdoc_name=_schdoc_for_source_designator(proj, lookup_des),
+            parameters=pcb.parameters,
+            pcb_index=idx,
+            sch_lookup_designator=lookup_des,
+        ))
+    return sources
+
+
+def _pcb_indices_for_source(comp: PdnParameterSource,
+                            proj: ExtractedProject) -> list[int]:
+    if comp.pcb_index is not None:
+        return [comp.pcb_index]
+    return _find_pcb_instances(proj, comp.designator)
+
+
+def _sheet_name_matches(schdoc_name: str, source_sheets: list[str]) -> bool:
+    if not source_sheets:
+        return True
+    if schdoc_name == "(pcb)":
+        return True
+    target = Path(schdoc_name).name.lower()
+    return any(Path(sheet).name.lower() == target for sheet in source_sheets)
+
+
+def _resolve_local_net_pins(
+    netlist,
+    sch_designator: str,
+    schdoc_name: str,
+    local_net_name: str,
+) -> list[str]:
+    """Return pin designators on ``sch_designator`` for a local sheet net name."""
+    if netlist is None:
+        return []
+    target_des = sch_designator.upper()
+    pins: list[str] = []
+    seen: set[str] = set()
+    for net in netlist.nets:
+        names = [net.name, *getattr(net, "aliases", ())]
+        if not any(n.upper() == local_net_name.upper() for n in names if n):
+            continue
+        if not _sheet_name_matches(schdoc_name, list(getattr(net, "source_sheets", ()) or ())):
+            continue
+        for term in net.terminals:
+            if term.designator.upper() != target_des:
+                continue
+            pin = str(term.pin)
+            key = pin.upper()
+            if key not in seen:
+                seen.add(key)
+                pins.append(pin)
+    return pins
+
+
 def _terminal_layer_for_pad(pad: RawPad, enabled_layers: list[int]) -> int:
     """For SMT pads → their layer; for through-hole pads → topmost enabled copper layer.
 
@@ -320,6 +425,8 @@ def _resolve_terminal(
     bridge_groups: dict[str, frozenset[str]] | None = None,
     warnings: list[str] | None = None,
     net_remap: dict[int, int] | None = None,
+    sch_lookup_designator: str | None = None,
+    schdoc_name: str | None = None,
 ) -> tuple[TerminalSpec | None, list[str]]:
     """Resolve a terminal to its participating pads.
 
@@ -360,7 +467,51 @@ def _resolve_terminal(
             )
             return None, errors
         net_indices = _net_indices_by_name(proj, net_name)
-        if not net_indices:
+        matched: list[RawPad] = []
+        resolved_via_local = False
+        if net_indices:
+            # Apply the loader's net-merge remap so user annotations naming
+            # EITHER side of an absorbed SERIES bridge (e.g. both "0V" and
+            # "Pgnd" when R2 merged them) resolve to the same canonical
+            # net_index — which is what the primitives' net_index was rewritten
+            # to in _apply_net_remap.
+            if net_remap:
+                net_indices = [net_remap.get(ix, ix) for ix in net_indices]
+            # A multi-channel net name covers several distinct nets; this
+            # component sits in exactly one channel, so matching its own pads
+            # against the whole name-class still selects only its channel's net.
+            wanted_nets = set(net_indices)
+            matched = [p for p in component_pads if p.net_index in wanted_nets]
+
+        if not matched and sch_lookup_designator and schdoc_name:
+            local_pins = _resolve_local_net_pins(
+                proj.compiled_netlist,
+                sch_lookup_designator,
+                schdoc_name,
+                net_name,
+            )
+            if local_pins:
+                wanted_pins = {pin.upper() for pin in local_pins}
+                matched = [
+                    p for p in component_pads
+                    if p.designator.upper() in wanted_pins
+                ]
+                if matched:
+                    resolved_via_local = True
+                    if warnings is not None:
+                        pcb_net_names = sorted({
+                            proj.nets[p.net_index].name
+                            for p in matched
+                            if p.net_index != NO_NET
+                        })
+                        nets_text = ", ".join(pcb_net_names) if pcb_net_names else "?"
+                        warnings.append(
+                            f"{role_diagnostic}: resolved local net "
+                            f"{net_name!r} via schematic pins "
+                            f"{sorted(local_pins)} → PCB net(s) {nets_text}"
+                        )
+
+        if not matched and not net_indices:
             # Common authoring slip is a near-miss spelling (e.g. "+3.3V" vs
             # "+3V3"). Suggest the closest extant net name(s) so the user
             # doesn't have to scan a long net list to find the right one.
@@ -372,63 +523,56 @@ def _resolve_terminal(
                 f"  Did you mean: {', '.join(repr(s) for s in suggestions)}?"
                 if suggestions else ""
             )
+            local_hint = ""
+            if sch_lookup_designator and proj.compiled_netlist is None:
+                local_hint = "  (schematic netlist unavailable for local-net fallback.)"
             errors.append(
                 f"{role_diagnostic}: net {net_name!r} does not exist on the "
-                f"PCB.{hint}"
+                f"PCB and could not be resolved as a local schematic net."
+                f"{hint}{local_hint}"
             )
             return None, errors
-        # Apply the loader's net-merge remap so user annotations naming
-        # EITHER side of an absorbed SERIES bridge (e.g. both "0V" and
-        # "Pgnd" when R2 merged them) resolve to the same canonical
-        # net_index — which is what the primitives' net_index was rewritten
-        # to in _apply_net_remap.
-        if net_remap:
-            net_indices = [net_remap.get(ix, ix) for ix in net_indices]
-        # A multi-channel net name covers several distinct nets; this
-        # component sits in exactly one channel, so matching its own pads
-        # against the whole name-class still selects only its channel's net.
-        wanted_nets = set(net_indices)
-        matched = [p for p in component_pads if p.net_index in wanted_nets]
 
-        # Bridge-aware fallback: if no pad sits on the literal net but the
-        # user has declared (via SERIES directives) that this net is bridged
-        # to others, accumulate pads from EVERY equivalent net in the bridge
-        # group. This matters when a component (e.g. a multi-output regulator)
-        # sources the rail through several parallel SERIES resistors, each
-        # with its own pre-resistor net (VOUT0_PRE, VOUT1_PRE, …) that all
-        # bridge to the same downstream rail (DAC_SOA_VDD). Previously this
-        # picked only the FIRST equivalent net, silently dropping half the
-        # source pins.
-        seen_pad_designators: set[str] = {p.designator for p in matched}
-        bridges_used: list[str] = []
-        if bridge_groups is not None:
-            group = bridge_groups.get(net_name.upper())
-            if group is not None:
-                for alt_net in sorted(group):
-                    if alt_net.upper() == net_name.upper():
-                        continue
-                    alt_indices = _net_indices_by_name(proj, alt_net)
-                    if not alt_indices:
-                        continue
-                    if net_remap:
-                        alt_indices = [net_remap.get(ix, ix) for ix in alt_indices]
-                    alt_wanted = set(alt_indices)
-                    alt_pads = [p for p in component_pads
-                                if p.net_index in alt_wanted
-                                and p.designator not in seen_pad_designators]
-                    if alt_pads:
-                        matched = matched + alt_pads
-                        seen_pad_designators.update(
-                            p.designator for p in alt_pads
-                        )
-                        bridges_used.append(alt_net)
+        if not resolved_via_local:
+            # Bridge-aware fallback: if no pad sits on the literal net but the
+            # user has declared (via SERIES directives) that this net is bridged
+            # to others, accumulate pads from EVERY equivalent net in the bridge
+            # group. This matters when a component (e.g. a multi-output regulator)
+            # sources the rail through several parallel SERIES resistors, each
+            # with its own pre-resistor net (VOUT0_PRE, VOUT1_PRE, …) that all
+            # bridge to the same downstream rail (DAC_SOA_VDD). Previously this
+            # picked only the FIRST equivalent net, silently dropping half the
+            # source pins.
+            seen_pad_designators: set[str] = {p.designator for p in matched}
+            bridges_used: list[str] = []
+            if bridge_groups is not None:
+                group = bridge_groups.get(net_name.upper())
+                if group is not None:
+                    for alt_net in sorted(group):
+                        if alt_net.upper() == net_name.upper():
+                            continue
+                        alt_indices = _net_indices_by_name(proj, alt_net)
+                        if not alt_indices:
+                            continue
+                        if net_remap:
+                            alt_indices = [net_remap.get(ix, ix) for ix in alt_indices]
+                        alt_wanted = set(alt_indices)
+                        alt_pads = [p for p in component_pads
+                                    if p.net_index in alt_wanted
+                                    and p.designator not in seen_pad_designators]
+                        if alt_pads:
+                            matched = matched + alt_pads
+                            seen_pad_designators.update(
+                                p.designator for p in alt_pads
+                            )
+                            bridges_used.append(alt_net)
 
-        if bridges_used and warnings is not None:
-            bridge_list = ", ".join(repr(b) for b in bridges_used)
-            warnings.append(
-                f"{role_diagnostic}: no pad on {net_name!r}; resolved via "
-                f"SERIES bridge to pin(s) on {bridge_list}"
-            )
+            if bridges_used and warnings is not None:
+                bridge_list = ", ".join(repr(b) for b in bridges_used)
+                warnings.append(
+                    f"{role_diagnostic}: no pad on {net_name!r}; resolved via "
+                    f"SERIES bridge to pin(s) on {bridge_list}"
+                )
 
         if not matched:
             # List the nets that this component's pads actually sit on, so the
@@ -509,7 +653,7 @@ def _net_indices_by_name(proj: ExtractedProject, name: str) -> list[int]:
 
 
 def _collect_bridge_groups(
-    sch_components,
+    parameter_sources: list[PdnParameterSource],
     proj: ExtractedProject,
 ) -> dict[str, frozenset[str]]:
     """Build a mapping from each net name to its electrical-equivalence class
@@ -537,7 +681,7 @@ def _collect_bridge_groups(
         if ra != rb:
             parent[rb] = ra
 
-    for comp in sch_components:
+    for comp in parameter_sources:
         role_raw = _ci_get(comp.parameters, ROLE_KEY)
         if role_raw is None or role_raw.strip().upper() not in _RESISTOR_LIKE_ROLES:
             continue
@@ -550,7 +694,7 @@ def _collect_bridge_groups(
         if p_net is None and n_net is None and \
                 _ci_get(comp.parameters, "PDN_P_PINS") is None and \
                 _ci_get(comp.parameters, "PDN_N_PINS") is None:
-            for pcb_idx in _find_pcb_instances(proj, comp.designator):
+            for pcb_idx in _pcb_indices_for_source(comp, proj):
                 inferred = _autoinfer_2pin_nets(proj, pcb_idx)
                 if inferred is not None:
                     union(inferred[0].upper(), inferred[1].upper())
@@ -726,6 +870,8 @@ def _resolve_two_terminal(
     result: AnnotationResult,
     bridge_groups: dict[str, frozenset[str]] | None = None,
     net_remap: dict[int, int] | None = None,
+    sch_lookup_designator: str | None = None,
+    schdoc_name: str | None = None,
 ) -> tuple[TerminalSpec, TerminalSpec] | None:
     p_net = _ci_get(params, p_net_key)
     n_net = _ci_get(params, n_net_key)
@@ -744,12 +890,16 @@ def _resolve_two_terminal(
         f"{role_diag} P-terminal",
         bridge_groups=bridge_groups, warnings=result.warnings,
         net_remap=net_remap,
+        sch_lookup_designator=sch_lookup_designator,
+        schdoc_name=schdoc_name,
     )
     n_spec, n_err = _resolve_terminal(
         proj, pcb_index, n_net, n_pins, enabled_layers,
         f"{role_diag} N-terminal",
         bridge_groups=bridge_groups, warnings=result.warnings,
         net_remap=net_remap,
+        sch_lookup_designator=sch_lookup_designator,
+        schdoc_name=schdoc_name,
     )
     result.errors.extend(p_err)
     result.errors.extend(n_err)
@@ -806,6 +956,8 @@ def _resolve_single_terminal(
     result: AnnotationResult,
     bridge_groups: dict[str, frozenset[str]] | None = None,
     net_remap: dict[int, int] | None = None,
+    sch_lookup_designator: str | None = None,
+    schdoc_name: str | None = None,
 ) -> TerminalSpec | None:
     """Resolve the single PCB terminal of a single-net SOURCE/SINK directive.
 
@@ -820,6 +972,8 @@ def _resolve_single_terminal(
         proj, pcb_index, net, pins, enabled_layers,
         f"{role_diag} terminal", bridge_groups=bridge_groups,
         warnings=result.warnings, net_remap=net_remap,
+        sch_lookup_designator=sch_lookup_designator,
+        schdoc_name=schdoc_name,
     )
     result.errors.extend(errs)
     return spec
@@ -847,7 +1001,7 @@ def _parse_source(comp, proj, enabled_layers, result, bridge_groups=None,
             f"(or PDN<n>_V for an indexed channel)"
         )
         return []
-    pcb_indices = _find_pcb_instances(proj, comp.designator)
+    pcb_indices = _pcb_indices_for_source(comp, proj)
     if not pcb_indices:
         result.errors.append(
             f"SOURCE on {comp.designator}: component {comp.designator!r} "
@@ -881,6 +1035,8 @@ def _parse_source(comp, proj, enabled_layers, result, bridge_groups=None,
                     _channel_key("NET", idx), _channel_key("PINS", idx),
                     enabled_layers, inst_diag, result,
                     bridge_groups=bridge_groups, net_remap=net_remap,
+                    sch_lookup_designator=comp.lookup_designator,
+                    schdoc_name=comp.schdoc_name,
                 )
                 if p is None:
                     continue
@@ -895,6 +1051,8 @@ def _parse_source(comp, proj, enabled_layers, result, bridge_groups=None,
                 _channel_key("P_PINS", idx), _channel_key("N_PINS", idx),
                 enabled_layers, inst_diag, result, bridge_groups=bridge_groups,
                 net_remap=net_remap,
+                sch_lookup_designator=comp.lookup_designator,
+                schdoc_name=comp.schdoc_name,
             )
             if pair is None:
                 continue
@@ -914,7 +1072,7 @@ def _parse_sink(comp, proj, enabled_layers, result, bridge_groups=None,
             f"(or PDN<n>_I for an indexed channel)"
         )
         return []
-    pcb_indices = _find_pcb_instances(proj, comp.designator)
+    pcb_indices = _pcb_indices_for_source(comp, proj)
     if not pcb_indices:
         result.errors.append(
             f"SINK on {comp.designator}: component {comp.designator!r} "
@@ -951,6 +1109,8 @@ def _parse_sink(comp, proj, enabled_layers, result, bridge_groups=None,
                     _channel_key("NET", idx), _channel_key("PINS", idx),
                     enabled_layers, inst_diag, result,
                     bridge_groups=bridge_groups, net_remap=net_remap,
+                    sch_lookup_designator=comp.lookup_designator,
+                    schdoc_name=comp.schdoc_name,
                 )
                 if p is None:
                     continue
@@ -966,6 +1126,8 @@ def _parse_sink(comp, proj, enabled_layers, result, bridge_groups=None,
                 _channel_key("P_PINS", idx), _channel_key("N_PINS", idx),
                 enabled_layers, inst_diag, result, bridge_groups=bridge_groups,
                 net_remap=net_remap,
+                sch_lookup_designator=comp.lookup_designator,
+                schdoc_name=comp.schdoc_name,
             )
             if pair is None:
                 continue
@@ -994,7 +1156,7 @@ def _parse_resistance(comp, proj, enabled_layers, result, bridge_groups=None,
         result.errors.append(f"{role_diag_base}: PDN_R must be positive, got {r}")
         return []
 
-    pcb_indices = _find_pcb_instances(proj, comp.designator)
+    pcb_indices = _pcb_indices_for_source(comp, proj)
     if not pcb_indices:
         result.errors.append(
             f"{role_diag_base}: component {comp.designator!r} is not placed "
@@ -1039,6 +1201,9 @@ def _parse_resistance(comp, proj, enabled_layers, result, bridge_groups=None,
             "PDN_P_NET", "PDN_N_NET", "PDN_P_PINS", "PDN_N_PINS",
             enabled_layers, role_diag, result,
             net_remap=net_remap,
+            bridge_groups=bridge_groups,
+            sch_lookup_designator=comp.lookup_designator,
+            schdoc_name=comp.schdoc_name,
         )
         if pair is None:
             continue
@@ -1064,7 +1229,7 @@ def _parse_regulator(comp, proj, enabled_layers, result, bridge_groups=None,
     if v is None or g is None:
         return []
 
-    pcb_indices = _find_pcb_instances(proj, comp.designator)
+    pcb_indices = _pcb_indices_for_source(comp, proj)
     if not pcb_indices:
         result.errors.append(
             f"REGULATOR on {comp.designator}: component {comp.designator!r} "
@@ -1089,12 +1254,16 @@ def _parse_regulator(comp, proj, enabled_layers, result, bridge_groups=None,
             "PDN_OUT_P_NET", "PDN_OUT_N_NET", "PDN_OUT_P_PINS", "PDN_OUT_N_PINS",
             enabled_layers, f"{role_diag} OUT", result, bridge_groups=bridge_groups,
             net_remap=net_remap,
+            sch_lookup_designator=comp.lookup_designator,
+            schdoc_name=comp.schdoc_name,
         )
         in_ = _resolve_two_terminal(
             proj, pcb_idx, comp.parameters,
             "PDN_IN_P_NET", "PDN_IN_N_NET", "PDN_IN_P_PINS", "PDN_IN_N_PINS",
             enabled_layers, f"{role_diag} IN", result, bridge_groups=bridge_groups,
             net_remap=net_remap,
+            sch_lookup_designator=comp.lookup_designator,
+            schdoc_name=comp.schdoc_name,
         )
         if out is None or in_ is None:
             continue
@@ -1249,7 +1418,7 @@ def parse_annotations(proj: ExtractedProject,
                       skip_designators: set[str] | None = None,
                       net_remap: dict[int, int] | None = None,
                       ) -> AnnotationResult:
-    """Scan all schematic components for PDN_* parameters and build directives.
+    """Scan schematic and PCB components for PDN_* parameters and build directives.
 
     `enabled_layers` is the Top→Bottom-ordered list of copper layer ids
     (from :meth:`ExtractedProject.enabled_copper_layer_ids`). If omitted we
@@ -1279,24 +1448,34 @@ def parse_annotations(proj: ExtractedProject,
     seen_designators: set[str] = set()
     skip_set: set[str] = {d.upper() for d in (skip_designators or set())}
 
+    for comp in proj.sch_components:
+        stray = [k for k in comp.parameters if k.upper().startswith(PARAM_PREFIX)]
+        if stray and _ci_get(comp.parameters, ROLE_KEY) is None:
+            result.warnings.append(
+                f"{comp.designator} ({comp.schdoc_name}): has {len(stray)} "
+                f"PDN_* parameter(s) but no PDN_ROLE — directive ignored"
+            )
+    for pcb in proj.pcb_components:
+        stray = [k for k in pcb.parameters if k.upper().startswith(PARAM_PREFIX)]
+        if stray and _ci_get(pcb.parameters, ROLE_KEY) is None:
+            lookup = pcb.source_designator or pcb.designator
+            result.warnings.append(
+                f"{pcb.designator} (PCB, from {lookup}): has {len(stray)} "
+                f"PDN_* parameter(s) but no PDN_ROLE — directive ignored"
+            )
+
+    parameter_sources = _iter_pdn_parameter_sources(proj)
+
     # Build bridge groups from RESISTANCE directives so that, e.g., a SOURCE
     # naming PDN_P_NET=+5V can resolve to a U3 pin on 5V_SW when L1 bridges
     # them. Computed once; consulted as a fallback inside _resolve_terminal.
-    bridge_groups = _collect_bridge_groups(proj.sch_components, proj)
+    bridge_groups = _collect_bridge_groups(parameter_sources, proj)
 
-    for comp in proj.sch_components:
+    for comp in parameter_sources:
         if comp.designator.upper() in skip_set:
             continue  # Absorbed by net-merge pre-pass — see fypa.altium.loader.
         role_raw = _ci_get(comp.parameters, ROLE_KEY)
         if role_raw is None:
-            # Component carries no PDN_* role tag — skip silently. But warn if
-            # we see lone PDN_* params with no role to give the user a clue.
-            stray = [k for k in comp.parameters if k.upper().startswith(PARAM_PREFIX)]
-            if stray:
-                result.warnings.append(
-                    f"{comp.designator} ({comp.schdoc_name}): has {len(stray)} "
-                    f"PDN_* parameter(s) but no PDN_ROLE — directive ignored"
-                )
             continue
 
         role = role_raw.strip().upper()
@@ -1308,15 +1487,16 @@ def parse_annotations(proj: ExtractedProject,
             continue
 
         # A designator with a SOURCE in one schdoc and SINK in another would be
-        # ambiguous — flag duplicates.
-        key = comp.designator.upper()
-        if key in seen_designators:
+        # ambiguous — flag duplicates (schematic logical designators only).
+        key = comp.lookup_designator.upper()
+        if comp.pcb_index is None and key in seen_designators:
             result.warnings.append(
                 f"{comp.designator}: appears in multiple schdocs with PDN_ROLE — "
                 f"only the first occurrence is used"
             )
             continue
-        seen_designators.add(key)
+        if comp.pcb_index is None:
+            seen_designators.add(key)
 
         specs = _PARSER_BY_ROLE[role](comp, proj, enabled_layers, result,
                                       bridge_groups=bridge_groups,
