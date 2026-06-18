@@ -5699,10 +5699,11 @@ class PdnViewer(QMainWindow):
             self.rail_list.setItemWidget(item, row)
             self._rail_eye_buttons.append((rail, eye))
 
-        # Default: first rail visible, others hidden — matches the previous
-        # combo's behaviour of starting at index 0.
-        if self._rail_eye_buttons:
-            self._rail_eye_buttons[0][1].setVisibleState(True, emit=False)
+        # Default: every rail visible except generic ground names (GND,
+        # 0V, …) so a fresh import shows all power rails at once.
+        _ground_rails = {"0v", "gnd", "ground", "vss"}
+        for rail, eye in self._rail_eye_buttons:
+            eye.setVisibleState(rail.lower() not in _ground_rails, emit=False)
         self._sync_all_rails_eye()
 
         approx_rail_h = self.rail_list.sizeHintForRow(0) or 22
