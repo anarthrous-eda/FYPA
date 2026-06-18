@@ -34,6 +34,7 @@ from fypa.altium.annotations import (
     SourceSpec,
     TerminalPin,
     TerminalSpec,
+    _channel_label,
     parse_annotations,
 )
 from fypa.altium.extract import (
@@ -1427,10 +1428,9 @@ def build_solve_metadata(
         common = {
             "role": type(d).__name__.replace("Spec", "").upper(),
             "designator": d.designator,
-            # Indexed multi-channel SOURCE/SINK channels expose ``channel_index``
-            # (None for the legacy unindexed channel and for non-indexable roles
-            # like SERIES/REGULATOR). ``label`` is the human-friendly form
-            # ("U5" or "U5#1") that the viewer should prefer in tables/headers.
+            # Indexed multi-channel directives expose ``channel_index``
+            # (None for the legacy unindexed channel). ``label`` is the
+            # human-friendly form ("U5" or "U5#1") for tables/headers.
             "channel_index": ch_idx,
             "label": label,
             "schdoc": d.schdoc_name,
@@ -2505,21 +2505,22 @@ def build_problem(
         return ", ".join(sorted(names)) or "(none)"
 
     for d in loaded.annotations.directives:
+        label = _channel_label(d.designator, getattr(d, "channel_index", None))
         if isinstance(d, SourceSpec):
             log.info("  SOURCE  %s: %.4g V  P=%s  N=%s",
-                     d.designator, d.voltage,
+                     label, d.voltage,
                      _pin_net_names(d.p), _pin_net_names(d.n))
         elif isinstance(d, SinkSpec):
             log.info("  SINK    %s: %.4g A  P=%s  N=%s",
-                     d.designator, d.current,
+                     label, d.current,
                      _pin_net_names(d.p), _pin_net_names(d.n))
         elif isinstance(d, ResistorSpec):
             log.info("  SERIES  %s: %.4g Ω (%.4g mΩ)  P=%s  N=%s",
-                     d.designator, d.resistance, d.resistance * 1000,
+                     label, d.resistance, d.resistance * 1000,
                      _pin_net_names(d.p), _pin_net_names(d.n))
         elif isinstance(d, RegulatorSpec):
             log.info("  REGULATOR %s: %.4g V  OUT_P=%s  OUT_N=%s  IN_P=%s  IN_N=%s",
-                     d.designator, d.voltage,
+                     label, d.voltage,
                      _pin_net_names(d.out_p), _pin_net_names(d.out_n),
                      _pin_net_names(d.in_p), _pin_net_names(d.in_n))
 

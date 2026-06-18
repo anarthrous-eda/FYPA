@@ -13,10 +13,14 @@ from pathlib import Path
 
 from fypa.altium.annotations import (
     AnnotationResult,
+    PdnParameterSource,
+    RegulatorSpec,
+    ResistorSpec,
     SinkSpec,
     SourceSpec,
     TerminalPin,
     TerminalSpec,
+    _collect_bridge_groups,
     _iter_pdn_parameter_sources,
     _resolve_local_net_pins,
     _resolve_terminal,
@@ -354,3 +358,221 @@ def test_schematic_pdn_role_takes_priority_over_pcb_parameters():
     assert result.ok
     assert len(result.directives) == 1
     assert result.directives[0].current == 0.05
+
+
+def _pad(comp_idx: int, pin: str, net_index: int, x: float = 0.0) -> RawPad:
+    return RawPad(
+        center=Pt2D(x, 0), width_mm=1, height_mm=1, hole_mm=0,
+        shape=2, rotation_deg=0, layer_id=1, net_index=net_index,
+        designator=pin, component_index=comp_idx,
+        is_through_hole=False, is_smt=True,
+    )
+
+
+def test_regulator_two_indexed_channels():
+    # Nets: 0=GND, 1=+5V, 2=+3V3, 3=+1V8
+    proj = _minimal_proj(
+        nets=(
+            RawNet("GND"), RawNet("+5V"), RawNet("+3V3"), RawNet("+1V8"),
+        ),
+        sch_components=(
+            RawSchComponent(
+                designator="U4", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "REGULATOR",
+                    "PDN_V": "3.3", "PDN_GAIN": "0.9",
+                    "PDN_OUT_P_NET": "+3V3", "PDN_OUT_N_NET": "GND",
+                    "PDN_IN_P_NET": "+5V", "PDN_IN_N_NET": "GND",
+                    "PDN1_V": "1.8", "PDN1_GAIN": "0.85",
+                    "PDN1_OUT_P_NET": "+1V8", "PDN1_OUT_N_NET": "GND",
+                    "PDN1_IN_P_NET": "+5V", "PDN1_IN_N_NET": "GND",
+                },
+                pin_designators=("1", "2", "3", "4"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U4", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U4",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 2, 0),   # +3V3 out ch0
+            _pad(0, "2", 3, 1),   # +1V8 out ch1
+            _pad(0, "3", 1, 2),   # +5V in (shared)
+            _pad(0, "4", 0, 3),   # GND return (shared)
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok
+    regs = [d for d in result.directives if isinstance(d, RegulatorSpec)]
+    assert len(regs) == 2
+    by_ch = {d.channel_index: d for d in regs}
+    assert by_ch[None].voltage == 3.3
+    assert by_ch[1].voltage == 1.8
+
+
+def test_series_two_indexed_channels_with_pin_overrides():
+    proj = _minimal_proj(
+        nets=(
+            RawNet("NET_A"), RawNet("NET_B"),
+            RawNet("NET_C"), RawNet("NET_D"),
+        ),
+        sch_components=(
+            RawSchComponent(
+                designator="FB1", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SERIES",
+                    "PDN1_R": "0.1",
+                    "PDN1_P_PINS": "1",
+                    "PDN1_N_PINS": "2",
+                    "PDN2_R": "0.2",
+                    "PDN2_P_PINS": "3",
+                    "PDN2_N_PINS": "4",
+                },
+                pin_designators=("1", "2", "3", "4"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="FB1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="1206-4", source_designator="FB1",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 0, 0),
+            _pad(0, "2", 1, 1),
+            _pad(0, "3", 2, 2),
+            _pad(0, "4", 3, 3),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok
+    series = [d for d in result.directives if isinstance(d, ResistorSpec)]
+    assert len(series) == 2
+    by_ch = {d.channel_index: d for d in series}
+    assert by_ch[1].resistance == 0.1
+    assert by_ch[2].resistance == 0.2
+
+
+def test_series_auto_infer_single_channel_only():
+    proj = _minimal_proj(
+        nets=(RawNet("NET_A"), RawNet("NET_B")),
+        sch_components=(
+            RawSchComponent(
+                designator="R7", schdoc_name="Pwr.SchDoc",
+                parameters={"PDN_ROLE": "SERIES", "PDN_R": "0.01"},
+                pin_designators=("1", "2"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="R7", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="0402", source_designator="R7",
+            ),
+        ),
+        pads=(_pad(0, "1", 0), _pad(0, "2", 1, 1)),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok
+    assert len(result.directives) == 1
+    assert isinstance(result.directives[0], ResistorSpec)
+    assert result.directives[0].channel_index is None
+
+    proj_multi = _minimal_proj(
+        nets=(RawNet("A"), RawNet("B"), RawNet("C"), RawNet("D")),
+        sch_components=(
+            RawSchComponent(
+                designator="FB1", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SERIES",
+                    "PDN1_R": "0.1",
+                    "PDN2_R": "0.2",
+                },
+                pin_designators=("1", "2", "3", "4"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="FB1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="1206-4", source_designator="FB1",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 0), _pad(0, "2", 1, 1),
+            _pad(0, "3", 2, 2), _pad(0, "4", 3, 3),
+        ),
+    )
+    bad = parse_annotations(proj_multi, enabled_layers=[1])
+    assert not bad.ok
+    assert any("multi-channel SERIES requires explicit" in e for e in bad.errors)
+
+
+def test_series_nested_pcb_placement_and_indexed_channels():
+    proj = _minimal_proj(
+        nets=(RawNet("A"), RawNet("B"), RawNet("C"), RawNet("D")),
+        sch_components=(
+            RawSchComponent(
+                designator="FB1", schdoc_name="Child.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SERIES",
+                    "PDN_R": "0.05",
+                    "PDN_P_PINS": "1",
+                    "PDN_N_PINS": "2",
+                    "PDN1_R": "0.1",
+                    "PDN1_P_PINS": "1",
+                    "PDN1_N_PINS": "2",
+                },
+                pin_designators=("1", "2"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="FB1_CH1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="0402", source_designator="FB1",
+            ),
+            RawPcbComponent(
+                designator="FB1_CH2", center=Pt2D(5, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="0402", source_designator="FB1",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 0), _pad(0, "2", 1, 1),
+            _pad(1, "1", 2, 2), _pad(1, "2", 3, 3),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok
+    series = [d for d in result.directives if isinstance(d, ResistorSpec)]
+    assert len(series) == 4
+    labels = {
+        (d.designator, d.channel_index, d.p.pins[0].net_index)
+        for d in series
+    }
+    assert ("FB1_CH1", None, 0) in labels
+    assert ("FB1_CH1", 1, 0) in labels
+    assert ("FB1_CH2", None, 2) in labels
+    assert ("FB1_CH2", 1, 2) in labels
+
+
+def test_bridge_groups_indexed_series_nets():
+    source = PdnParameterSource(
+        designator="FB1",
+        schdoc_name="Pwr.SchDoc",
+        parameters={
+            "PDN_ROLE": "SERIES",
+            "PDN1_R": "0.1",
+            "PDN1_P_NET": "RAIL_A",
+            "PDN1_N_NET": "RAIL_B",
+            "PDN2_R": "0.1",
+            "PDN2_P_NET": "RAIL_C",
+            "PDN2_N_NET": "RAIL_D",
+        },
+    )
+    proj = _minimal_proj()
+    groups = _collect_bridge_groups([source], proj)
+    assert "RAIL_A" in groups
+    assert "RAIL_B" in groups["RAIL_A"]
+    assert "RAIL_C" in groups
+    assert "RAIL_D" in groups["RAIL_C"]
+    assert "RAIL_A" not in groups["RAIL_C"]

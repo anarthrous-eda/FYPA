@@ -73,6 +73,37 @@ the P terminal, every pad on `+12V_FUSED` as the N terminal. The
 remaining pins (e.g. an enable line on a power-switch IC) are
 ignored.
 
+## 3.3.1 Multi-channel SERIES
+
+A part with several independent series paths (e.g. a 4-channel ferrite
+bead array) uses indexed parameters, the same way multi-rail SINKs use
+`PDN1_I` / `PDN1_P_NET`:
+
+| Channel | Value | Net / pin params |
+|---------|-------|------------------|
+| legacy  | `PDN_R` | `PDN_P_NET`, `PDN_N_NET` (auto-infer OK on 2-pin) |
+| 1       | `PDN1_R` | `PDN1_P_NET`, `PDN1_N_NET` or `PDN1_P_PINS` / `PDN1_N_PINS` |
+| 2       | `PDN2_R` | … |
+
+Auto-inference from pad connectivity applies only when the part carries
+**one** SERIES channel. With two or more channels you must name each
+channel's nets or pin overrides explicitly.
+
+Example — a 4-pad ferrite array bridging two net pairs per channel:
+
+```text
+FB1:
+  PDN_ROLE    = SERIES
+  PDN1_R      = 0.1
+  PDN1_P_PINS = 1
+  PDN1_N_PINS = 2
+  PDN2_R      = 0.1
+  PDN2_P_PINS = 3
+  PDN2_N_PINS = 4
+```
+
+The viewer labels indexed channels `FB1#1`, `FB1#2`, and so on.
+
 ## 3.4 What changes in the viewer
 
 Once a SERIES directive is in place:
@@ -95,6 +126,7 @@ Once a SERIES directive is in place:
 |----------------------------------------------------------|------------------------------------------------------------------------------|------------------------------------------------------------------------------|
 | `PDN_R must be positive`                                  | `PDN_R = 0` or a negative value.                                            | Enter a small positive resistance (milliohms is fine).                       |
 | `SERIES on R7: ambiguous nets — please set PDN_P_NET / PDN_N_NET` | A 3+ pin part with auto-inference, or a 2-pin part with both pads on the same net. | Add `PDN_P_NET` and `PDN_N_NET` explicitly.                                  |
+| `multi-channel SERIES requires explicit PDNn_P_NET / …` | Two or more `PDNn_R` channels without per-channel nets or pin overrides. | Add `PDNn_P_NET` / `PDNn_N_NET` or `PDNn_P_PINS` / `PDNn_N_PINS` for each channel. |
 | The two nets are still not connected in the solve         | The SERIES part was placed on the schematic but does not actually bridge the two nets on the PCB. | Check the PCB netlist: each pad of the SERIES part must be on the corresponding net. |
 
 ## Next steps

@@ -61,9 +61,10 @@ Example — a SINK with three independent supply rails::
     PDN2_I     = 50mA      PDN2_P_NET = +5V    PDN2_N_NET = GND
 
 Indices are sparse (any positive integer; gaps allowed); a channel is
-"present" iff its value param (``PDNn_V`` for SOURCE, ``PDNn_I`` for SINK)
-is set. SERIES / REGULATOR roles ignore indices and behave
-as single-channel directives.
+"present" iff its value param (``PDNn_V`` for SOURCE / REGULATOR,
+``PDNn_I`` for SINK, ``PDNn_R`` for SERIES) is set. All four roles support
+the same indexed-prefix scheme; each channel produces its own directive
+spec with the part-wide ``PDN_ROLE``.
 
 Values support SI prefixes and units (``500mA``, ``3V3``, ``1.5k``, ``0.1``).
 
@@ -71,11 +72,11 @@ Auto-inference for 2-pin SERIES
 --------------------------------
 For a SERIES directive on a 2-pin component (inductor DCR, 0Ω jumper,
 ferrite bead, sense resistor, ...), if neither nets nor pin overrides are
-supplied, the parser fills in P_NET and N_NET automatically from the two nets
-the component sits on. Resistors are symmetric so the P/N assignment is
-arbitrary but unambiguous. Auto-inference is only attempted for SERIES
-(SOURCE/SINK/REGULATOR have polarity semantics that the connectivity alone
-cannot resolve).
+supplied for the **only** channel on that part, the parser fills in P_NET
+and N_NET automatically from the two nets the component sits on. When a
+part carries more than one SERIES channel (``PDN1_R`` + ``PDN2_R``, …),
+each channel must name its nets or pin overrides explicitly — auto-inference
+is not attempted.
 """
 from __future__ import annotations
 
@@ -103,9 +104,9 @@ PARAM_PREFIX: str = "PDN_"
 MULTI_LAYER_PAD_LAYER_ID: int = 74
 
 # Indexed-channel suffix on parameter names. Matches "PDN_X" (no index) and
-# "PDN<n>_X" (positive integer index) so SOURCE / SINK roles can carry
-# multiple independent channels on one part. Index `None` is the legacy
-# unindexed form; integer indices are additional channels.
+# "PDN<n>_X" (positive integer index) so roles can carry multiple
+# independent channels on one part. Index `None` is the legacy unindexed
+# form; integer indices are additional channels.
 _INDEXED_KEY_RE = re.compile(r"^PDN(\d+)?_(.+)$", re.IGNORECASE)
 
 # Roles that produce a Resistor lumped element (a series resistance between
@@ -685,21 +686,26 @@ def _collect_bridge_groups(
         role_raw = _ci_get(comp.parameters, ROLE_KEY)
         if role_raw is None or role_raw.strip().upper() not in _RESISTOR_LIKE_ROLES:
             continue
-        p_net = _ci_get(comp.parameters, "PDN_P_NET")
-        n_net = _ci_get(comp.parameters, "PDN_N_NET")
-        # Replicate auto-infer for 2-pin resistors so the bridge graph stays
-        # consistent with the per-directive parser. A multi-channel SERIES
-        # part bridges a different net pair in each channel, so union every
-        # instance — stopping at the first would strand the other channels.
-        if p_net is None and n_net is None and \
-                _ci_get(comp.parameters, "PDN_P_PINS") is None and \
-                _ci_get(comp.parameters, "PDN_N_PINS") is None:
-            for pcb_idx in _pcb_indices_for_source(comp, proj):
-                inferred = _autoinfer_2pin_nets(proj, pcb_idx)
-                if inferred is not None:
-                    union(inferred[0].upper(), inferred[1].upper())
-        if p_net and n_net:
-            union(p_net.upper(), n_net.upper())
+        indices = _discover_channel_indices(comp.parameters, "R")
+        if not indices:
+            continue
+        for idx in indices:
+            p_net = _ci_get(comp.parameters, _channel_key("P_NET", idx))
+            n_net = _ci_get(comp.parameters, _channel_key("N_NET", idx))
+            # Replicate auto-infer for 2-pin resistors so the bridge graph stays
+            # consistent with the per-directive parser. A multi-channel SERIES
+            # part bridges a different net pair in each channel, so union every
+            # instance — stopping at the first would strand the other channels.
+            if p_net is None and n_net is None and \
+                    _ci_get(comp.parameters, _channel_key("P_PINS", idx)) is None and \
+                    _ci_get(comp.parameters, _channel_key("N_PINS", idx)) is None:
+                if len(indices) == 1:
+                    for pcb_idx in _pcb_indices_for_source(comp, proj):
+                        inferred = _autoinfer_2pin_nets(proj, pcb_idx)
+                        if inferred is not None:
+                            union(inferred[0].upper(), inferred[1].upper())
+            if p_net and n_net:
+                union(p_net.upper(), n_net.upper())
 
     # Materialise each equivalence class as a frozenset and map every net to it.
     classes: dict[str, set[str]] = {}
@@ -783,6 +789,7 @@ class ResistorSpec(_BaseSpec):
     resistance: float
     p: TerminalSpec
     n: TerminalSpec
+    channel_index: int | None = None  # None = legacy unindexed; int = PDN<n>_*
 
 
 @dataclass(frozen=True)
@@ -793,6 +800,7 @@ class RegulatorSpec(_BaseSpec):
     out_n: TerminalSpec
     in_p: TerminalSpec
     in_n: TerminalSpec
+    channel_index: int | None = None  # None = legacy unindexed; int = PDN<n>_*
 
 
 DirectiveSpec = SourceSpec | SinkSpec | ResistorSpec | RegulatorSpec
@@ -1149,11 +1157,12 @@ def _parse_resistance(comp, proj, enabled_layers, result, bridge_groups=None,
             f"SERIES directive bridges two nets, use PDN_P_NET and PDN_N_NET"
         )
         return []
-    r = _require_value(comp.parameters, "PDN_R", role_diag_base, result)
-    if r is None:
-        return []
-    if r <= 0:
-        result.errors.append(f"{role_diag_base}: PDN_R must be positive, got {r}")
+    indices = _discover_channel_indices(comp.parameters, "R")
+    if not indices:
+        result.errors.append(
+            f"{role_diag_base}: missing PDN_R "
+            f"(or PDN<n>_R for an indexed channel)"
+        )
         return []
 
     pcb_indices = _pcb_indices_for_source(comp, proj)
@@ -1170,47 +1179,75 @@ def _parse_resistance(comp, proj, enabled_layers, result, bridge_groups=None,
             f"{len(pcb_indices)} multi-channel PCB instances ({names})"
         )
 
-    given = any(
-        _ci_get(comp.parameters, k) is not None
-        for k in ("PDN_P_NET", "PDN_N_NET", "PDN_P_PINS", "PDN_N_PINS")
-    )
     specs: list[ResistorSpec] = []
-    for pcb_idx in pcb_indices:
-        pcb_des = proj.pcb_components[pcb_idx].designator
-        role_diag = (
-            f"{role_raw} on {pcb_des}" if len(pcb_indices) > 1 else role_diag_base
+    for idx in indices:
+        role_diag = f"{role_raw} on {_channel_label(comp.designator, idx)}"
+        r = _require_value(
+            comp.parameters, _channel_key("R", idx), role_diag, result,
         )
-        params = dict(comp.parameters)
-        if not given:
-            inferred = _autoinfer_2pin_nets(proj, pcb_idx)
-            if inferred is None:
-                reason = _autoinfer_failure_reason(proj, pcb_idx)
-                result.errors.append(
-                    f"{role_diag}: PDN_P_NET and PDN_N_NET are required "
-                    f"({reason}, so the two nets cannot be auto-inferred) — "
-                    f"set them explicitly (or use PDN_P_PINS / PDN_N_PINS)"
-                )
-                continue
-            params["PDN_P_NET"], params["PDN_N_NET"] = inferred
-            result.warnings.append(
-                f"{role_diag}: auto-inferred PDN_P_NET={inferred[0]!r}, "
-                f"PDN_N_NET={inferred[1]!r} from 2-pin connectivity"
-            )
-        pair = _resolve_two_terminal(
-            proj, pcb_idx, params,
-            "PDN_P_NET", "PDN_N_NET", "PDN_P_PINS", "PDN_N_PINS",
-            enabled_layers, role_diag, result,
-            net_remap=net_remap,
-            bridge_groups=bridge_groups,
-            sch_lookup_designator=comp.lookup_designator,
-            schdoc_name=comp.schdoc_name,
-        )
-        if pair is None:
+        if r is None:
             continue
-        specs.append(ResistorSpec(
-            designator=pcb_des, schdoc_name=comp.schdoc_name,
-            resistance=r, p=pair[0], n=pair[1],
-        ))
+        if r <= 0:
+            result.errors.append(
+                f"{role_diag}: {_channel_key('R', idx)} must be positive, got {r}"
+            )
+            continue
+        for pcb_idx in pcb_indices:
+            pcb_des = proj.pcb_components[pcb_idx].designator
+            inst_diag = (
+                f"{role_raw} on {_channel_label(pcb_des, idx)}"
+                if len(pcb_indices) > 1 else role_diag
+            )
+            given = any(
+                _ci_get(comp.parameters, _channel_key(k, idx)) is not None
+                for k in ("P_NET", "N_NET", "P_PINS", "N_PINS")
+            )
+            params = dict(comp.parameters)
+            if not given:
+                if len(indices) > 1:
+                    result.errors.append(
+                        f"{inst_diag}: multi-channel SERIES requires explicit "
+                        f"{_channel_key('P_NET', idx)} / {_channel_key('N_NET', idx)} "
+                        f"or {_channel_key('P_PINS', idx)} / "
+                        f"{_channel_key('N_PINS', idx)} per channel"
+                    )
+                    continue
+                inferred = _autoinfer_2pin_nets(proj, pcb_idx)
+                if inferred is None:
+                    reason = _autoinfer_failure_reason(proj, pcb_idx)
+                    result.errors.append(
+                        f"{inst_diag}: {_channel_key('P_NET', idx)} and "
+                        f"{_channel_key('N_NET', idx)} are required "
+                        f"({reason}, so the two nets cannot be auto-inferred) — "
+                        f"set them explicitly (or use "
+                        f"{_channel_key('P_PINS', idx)} / "
+                        f"{_channel_key('N_PINS', idx)})"
+                    )
+                    continue
+                params[_channel_key("P_NET", idx)] = inferred[0]
+                params[_channel_key("N_NET", idx)] = inferred[1]
+                result.warnings.append(
+                    f"{inst_diag}: auto-inferred "
+                    f"{_channel_key('P_NET', idx)}={inferred[0]!r}, "
+                    f"{_channel_key('N_NET', idx)}={inferred[1]!r} "
+                    f"from 2-pin connectivity"
+                )
+            pair = _resolve_two_terminal(
+                proj, pcb_idx, params,
+                _channel_key("P_NET", idx), _channel_key("N_NET", idx),
+                _channel_key("P_PINS", idx), _channel_key("N_PINS", idx),
+                enabled_layers, inst_diag, result,
+                net_remap=net_remap,
+                bridge_groups=bridge_groups,
+                sch_lookup_designator=comp.lookup_designator,
+                schdoc_name=comp.schdoc_name,
+            )
+            if pair is None:
+                continue
+            specs.append(ResistorSpec(
+                designator=pcb_des, schdoc_name=comp.schdoc_name,
+                resistance=r, p=pair[0], n=pair[1], channel_index=idx,
+            ))
     return specs
 
 
@@ -1224,9 +1261,12 @@ def _parse_regulator(comp, proj, enabled_layers, result, bridge_groups=None,
             f"/ PDN_IN_P_NET / PDN_IN_N_NET"
         )
         return []
-    v = _require_value(comp.parameters, "PDN_V", role_diag_base, result)
-    g = _require_value(comp.parameters, "PDN_GAIN", role_diag_base, result)
-    if v is None or g is None:
+    indices = _discover_channel_indices(comp.parameters, "V")
+    if not indices:
+        result.errors.append(
+            f"REGULATOR on {comp.designator}: missing PDN_V "
+            f"(or PDN<n>_V for an indexed channel)"
+        )
         return []
 
     pcb_indices = _pcb_indices_for_source(comp, proj)
@@ -1244,35 +1284,51 @@ def _parse_regulator(comp, proj, enabled_layers, result, bridge_groups=None,
         )
 
     specs: list[RegulatorSpec] = []
-    for pcb_idx in pcb_indices:
-        pcb_des = proj.pcb_components[pcb_idx].designator
-        role_diag = (
-            f"REGULATOR on {pcb_des}" if len(pcb_indices) > 1 else role_diag_base
+    for idx in indices:
+        role_diag = f"REGULATOR on {_channel_label(comp.designator, idx)}"
+        v = _require_value(
+            comp.parameters, _channel_key("V", idx), role_diag, result,
         )
-        out = _resolve_two_terminal(
-            proj, pcb_idx, comp.parameters,
-            "PDN_OUT_P_NET", "PDN_OUT_N_NET", "PDN_OUT_P_PINS", "PDN_OUT_N_PINS",
-            enabled_layers, f"{role_diag} OUT", result, bridge_groups=bridge_groups,
-            net_remap=net_remap,
-            sch_lookup_designator=comp.lookup_designator,
-            schdoc_name=comp.schdoc_name,
+        g = _require_value(
+            comp.parameters, _channel_key("GAIN", idx), role_diag, result,
         )
-        in_ = _resolve_two_terminal(
-            proj, pcb_idx, comp.parameters,
-            "PDN_IN_P_NET", "PDN_IN_N_NET", "PDN_IN_P_PINS", "PDN_IN_N_PINS",
-            enabled_layers, f"{role_diag} IN", result, bridge_groups=bridge_groups,
-            net_remap=net_remap,
-            sch_lookup_designator=comp.lookup_designator,
-            schdoc_name=comp.schdoc_name,
-        )
-        if out is None or in_ is None:
+        if v is None or g is None:
             continue
-        specs.append(RegulatorSpec(
-            designator=pcb_des, schdoc_name=comp.schdoc_name,
-            voltage=v, gain=g,
-            out_p=out[0], out_n=out[1],
-            in_p=in_[0], in_n=in_[1],
-        ))
+        for pcb_idx in pcb_indices:
+            pcb_des = proj.pcb_components[pcb_idx].designator
+            inst_diag = (
+                f"REGULATOR on {_channel_label(pcb_des, idx)}"
+                if len(pcb_indices) > 1 else role_diag
+            )
+            out = _resolve_two_terminal(
+                proj, pcb_idx, comp.parameters,
+                _channel_key("OUT_P_NET", idx), _channel_key("OUT_N_NET", idx),
+                _channel_key("OUT_P_PINS", idx), _channel_key("OUT_N_PINS", idx),
+                enabled_layers, f"{inst_diag} OUT", result,
+                bridge_groups=bridge_groups,
+                net_remap=net_remap,
+                sch_lookup_designator=comp.lookup_designator,
+                schdoc_name=comp.schdoc_name,
+            )
+            in_ = _resolve_two_terminal(
+                proj, pcb_idx, comp.parameters,
+                _channel_key("IN_P_NET", idx), _channel_key("IN_N_NET", idx),
+                _channel_key("IN_P_PINS", idx), _channel_key("IN_N_PINS", idx),
+                enabled_layers, f"{inst_diag} IN", result,
+                bridge_groups=bridge_groups,
+                net_remap=net_remap,
+                sch_lookup_designator=comp.lookup_designator,
+                schdoc_name=comp.schdoc_name,
+            )
+            if out is None or in_ is None:
+                continue
+            specs.append(RegulatorSpec(
+                designator=pcb_des, schdoc_name=comp.schdoc_name,
+                voltage=v, gain=g,
+                out_p=out[0], out_n=out[1],
+                in_p=in_[0], in_n=in_[1],
+                channel_index=idx,
+            ))
     return specs
 
 
