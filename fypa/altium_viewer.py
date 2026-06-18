@@ -5438,6 +5438,7 @@ class PdnViewer(QMainWindow):
         bridge_named: set[str] = set()
         source_rails: set[str] = set()
         regulator_in_rails: set[str] = set()
+        regulator_out_rails: set[str] = set()
         canon_map: dict[str, str] = metadata.get("net_canonical") or {}
 
         def _canonical(net: str) -> str:
@@ -5470,12 +5471,7 @@ class PdnViewer(QMainWindow):
                     find(req)
                     for n in nets:
                         union(req, n)
-                # REGULATOR outputs are downstream domains — they only become
-                # a rail-list entry when a SOURCE/SINK also names that net.
-                marks_rail = role in ("SOURCE", "SINK", "REGULATOR")
-                if role == "REGULATOR" and tname.startswith("OUT"):
-                    marks_rail = False
-                if marks_rail:
+                if role in ("SOURCE", "SINK", "REGULATOR"):
                     if t.get("resolved_via_local") and nets:
                         # Local sheet label — show the PCB / top-level net.
                         for n in nets:
@@ -5504,6 +5500,13 @@ class PdnViewer(QMainWindow):
                         regulator_in_rails.add(_note_rail(req))
                     elif nets:
                         regulator_in_rails.update(_note_rail(n) for n in nets)
+                if role == "REGULATOR" and tname == "OUT_P":
+                    if t.get("resolved_via_local") and nets:
+                        regulator_out_rails.update(_note_rail(n) for n in nets)
+                    elif req:
+                        regulator_out_rails.add(_note_rail(req))
+                    elif nets:
+                        regulator_out_rails.update(_note_rail(n) for n in nets)
             if role == "RESISTOR" and len(nets_per_term) == 2:
                 # Bridge every net in one terminal with every net in the other.
                 for a in nets_per_term[0]:
@@ -5530,14 +5533,16 @@ class PdnViewer(QMainWindow):
                     return (1, n)
                 if n in regulator_in_rails:
                     return (2, n)
-                if n.startswith("+"):
+                if n in regulator_out_rails:
                     return (3, n)
+                if n.startswith("+"):
+                    return (4, n)
                 u = n.upper()
                 if u.startswith(("VDD", "VCC", "VPWR")):
-                    return (4, n)
+                    return (5, n)
                 if n.lower() in {"0v", "gnd", "ground", "vss"}:
-                    return (6, n)
-                return (5, n)
+                    return (7, n)
+                return (6, n)
 
             primary = sorted(canon_primaries, key=_primary_sort_key)[0]
             rail_to_members[primary] = sorted(members)
