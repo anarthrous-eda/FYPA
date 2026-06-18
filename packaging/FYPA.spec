@@ -44,6 +44,9 @@ a = Analysis(
         'scipy.sparse.csgraph',
         # matplotlib non-interactive backend used internally for colormap work
         'matplotlib.backends.backend_agg',
+        # 3Dconnexion SpaceMouse (optional extra: uv sync --extra spacemouse)
+        'pynavlib',
+        'pynavlib.pynavlib_interface',
     ] + _altium_monkey_submodules,
     hookspath=[],
     hooksconfig={},

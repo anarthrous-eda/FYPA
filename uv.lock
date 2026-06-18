@@ -327,6 +327,11 @@ dependencies = [
     { name = "triangle" },
 ]
 
+[package.optional-dependencies]
+spacemouse = [
+    { name = "pynavlib", marker = "sys_platform == 'darwin' or sys_platform == 'win32'" },
+]
+
 [package.dev-dependencies]
 build = [
     { name = "pyinstaller" },
@@ -343,6 +348,7 @@ requires-dist = [
     { name = "lxml", specifier = "==5.3.0" },
     { name = "matplotlib", specifier = "==3.10.9" },
     { name = "numpy", specifier = "==2.2.3" },
+    { name = "pynavlib", marker = "(sys_platform == 'darwin' and extra == 'spacemouse') or (sys_platform == 'win32' and extra == 'spacemouse')", specifier = "==0.9.4" },
     { name = "pyopengl", specifier = "==3.1.10" },
     { name = "pyopengl-accelerate", specifier = "==3.1.10" },
     { name = "pypardiso", specifier = "==0.4.7" },
@@ -351,6 +357,7 @@ requires-dist = [
     { name = "shapely", specifier = "==2.1.2" },
     { name = "triangle", specifier = "==20250106" },
 ]
+provides-extras = ["spacemouse"]
 
 [package.metadata.requires-dev]
 build = [{ name = "pyinstaller" }]
@@ -854,6 +861,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/1a/67/f4452d68793fb15beba4f19ef39a38a8822f0da7452b503c400d5a21f5c1/pyinstaller_hooks_contrib-2026.5.tar.gz", hash = "sha256:f066dfca8f7c45ff6336c9cf9fe25b4e48bfeb322a1aa24faaedfb8a8d1b0b08", size = 173689, upload-time = "2026-05-04T22:36:55.124Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f6/5c/fd465d11da4d12b50d7eb5d2ee2ceb780d8d049dbb489f3828d131e387af/pyinstaller_hooks_contrib-2026.5-py3-none-any.whl", hash = "sha256:ea1535783fbdac4626351709e83f3ea80b681d3a4745763ebb407b5e27342eb9", size = 457314, upload-time = "2026-05-04T22:36:53.598Z" },
+]
+
+[[package]]
+name = "pynavlib"
+version = "0.9.4"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b6/cc/a285d5c8c8dc17c21f7284da48832a9727982a6edf37c922b17e2cecab02/pynavlib-0.9.4-cp312-cp312-macosx_12_0_universal2.whl", hash = "sha256:33962a322033a78db05a8c2cc3d59e057fbea5b04879c3c54e2fe3041d691a12", size = 852776, upload-time = "2025-01-29T20:50:52.476Z" },
+    { url = "https://files.pythonhosted.org/packages/af/c8/0a56423f042d67217f3bfe84c1076ddf04e44a75d1011ad51ec300494bce/pynavlib-0.9.4-cp312-cp312-win_amd64.whl", hash = "sha256:332831553a70be05fe58c43a08109b42970cfedc6086ffb4306859142a0e9210", size = 4807613, upload-time = "2025-01-29T20:50:56.008Z" },
 ]
 
 [[package]]

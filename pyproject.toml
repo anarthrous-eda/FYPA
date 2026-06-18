@@ -56,6 +56,13 @@ dependencies = [
     "gerbonara==1.5.0",
 ]
 
+[project.optional-dependencies]
+# 3Dconnexion SpaceMouse — official NavLib on Windows/macOS (requires 3DxWare).
+# Linux uses system libspnav/spacenavd only; no pip package needed there.
+spacemouse = [
+    "pynavlib==0.9.4; sys_platform == 'win32' or sys_platform == 'darwin'",
+]
+
 [dependency-groups]
 # Installed by default with `uv sync`. Test + lint tooling.
 dev = [

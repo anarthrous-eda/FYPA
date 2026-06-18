@@ -503,6 +503,12 @@ matplotlib `LinearTriInterpolator` alongside for the hover-probe lookup and
 Voltage Drop reference computation, but never touches the GPU rendering
 path.
 
+**3Dconnexion SpaceMouse:** optional support via the official NavLib on
+Windows/macOS (`uv sync --extra spacemouse` plus [3DxWare](https://3dconnexion.com/service/drivers.html))
+or `spacenavd` on Linux (`sudo apt install spacenavd libspnav0`). Translation
+pans; push/pull zooms; rotation orbits in 3D mode. Active while the plot has
+focus.
+
 Marker overlays (SOURCE / SINK / SERIES / REGULATOR / VIA) and the title /
 legend chips are drawn via `QPainter` inside `paintGL` so they share the
 GL paint engine — no Qt raster-fallback compositor.

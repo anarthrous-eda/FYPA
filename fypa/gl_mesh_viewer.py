@@ -833,6 +833,178 @@ class GLMeshViewer(QOpenGLWidget):
     def vertical_exaggeration(self) -> float:
         return self._vertical_exaggeration
 
+    # --- 3Dconnexion NavLib camera bridge --------------------------------
+
+    def navlib_camera_matrix(self) -> list[list[float]]:
+        """4×4 row-major camera-to-world matrix for NavLib."""
+        from fypa.navlib_camera import camera_matrix_2d, camera_matrix_3d
+
+        w_px = max(1, self.width())
+        h_px = max(1, self.height())
+        if self._view_mode == "3d":
+            return camera_matrix_3d(
+                self._cam_target,
+                self._cam_yaw_deg,
+                self._cam_pitch_deg,
+                self._cam_distance,
+            )
+        return camera_matrix_2d(
+            self._view_center_x,
+            self._view_center_y,
+            self._mm_per_pixel,
+            w_px,
+            h_px,
+        )
+
+    def apply_navlib_camera_matrix(
+        self, matrix: list[list[float]],
+    ) -> None:
+        """Apply a NavLib camera-to-world matrix to the current view."""
+        from fypa.navlib_camera import (
+            parse_camera_matrix_2d,
+            parse_camera_matrix_3d,
+        )
+
+        w_px = max(1, self.width())
+        h_px = max(1, self.height())
+        if self._view_mode == "3d":
+            yaw, pitch, dist = parse_camera_matrix_3d(
+                matrix, self._cam_target,
+            )
+            self._cam_yaw_deg = max(-180.0, min(180.0, yaw))
+            self._cam_pitch_deg = max(-89.0, min(89.0, pitch))
+            self._cam_distance = max(min(dist, 1e7), 0.01)
+        else:
+            cx, cy, mpp = parse_camera_matrix_2d(matrix, w_px, h_px)
+            self._view_center_x = cx
+            self._view_center_y = cy
+            self._mm_per_pixel = max(min(mpp, 1e6), 1e-9)
+        self.viewChanged.emit()
+        self.update()
+
+    def navlib_model_extents(
+        self,
+    ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+        """NavLib model bounding box (min, max) in world mm."""
+        from fypa.navlib_camera import model_extents_from_bounds
+
+        return model_extents_from_bounds(
+            self._data_bounds, self._data_z_max,
+        )
+
+    def navlib_view_extents(
+        self,
+    ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+        """NavLib orthographic view extents (min, max) in world mm."""
+        from fypa.navlib_camera import view_extents_2d
+
+        return view_extents_2d(
+            self._view_center_x,
+            self._view_center_y,
+            self._mm_per_pixel,
+            max(1, self.width()),
+            max(1, self.height()),
+        )
+
+    def apply_navlib_view_extents(
+        self,
+        pmin: tuple[float, float, float],
+        pmax: tuple[float, float, float],
+    ) -> None:
+        """Apply NavLib orthographic zoom/pan via view extents (2D mode)."""
+        from fypa.navlib_camera import apply_view_extents_2d
+
+        cx, cy, mpp = apply_view_extents_2d(
+            pmin, pmax,
+            max(1, self.width()),
+            max(1, self.height()),
+        )
+        self.set_view_center_scale(cx, cy, mpp)
+
+    def navlib_pointer_world(self) -> tuple[float, float, float]:
+        """World-space point under the cursor for NavLib zoom pivot."""
+        hx, hy = self._last_hover_pixel
+        if self._view_mode == "3d":
+            wx, wy = self.screen_to_world_at_z(hx, hy, self._cam_target[2])
+            return wx, wy, self._cam_target[2]
+        wx, wy = self.screen_to_world(hx, hy)
+        return wx, wy, 0.0
+
+    # SpaceMouse axis motion (Linux spnav path) — normalized device axes
+    # in roughly [-1, 1], integrated per frame.
+    _SPACEMOUSE_PAN_SPEED_2D: float = 800.0
+    _SPACEMOUSE_ZOOM_SPEED: float = 1.8
+    _SPACEMOUSE_ORBIT_SPEED: float = 120.0
+    _SPACEMOUSE_DEADZONE: float = 0.05
+
+    def apply_spacemouse_motion(
+        self,
+        tx: float,
+        ty: float,
+        tz: float,
+        rx: float,
+        ry: float,
+        rz: float,
+        dt: float,
+    ) -> None:
+        """Apply a 6-DOF SpaceMouse sample (Linux spnav backend)."""
+        def _dz(v: float) -> float:
+            return 0.0 if abs(v) < self._SPACEMOUSE_DEADZONE else v
+
+        tx, ty, tz = _dz(tx), _dz(ty), _dz(tz)
+        rx, ry, rz = _dz(rx), _dz(ry), _dz(rz)
+        if not any((tx, ty, tz, rx, ry, rz)):
+            return
+        dt = max(dt, 1e-3)
+        if self._view_mode == "2d":
+            scale = self._SPACEMOUSE_PAN_SPEED_2D * self._mm_per_pixel * dt
+            self._view_center_x -= tx * scale
+            self._view_center_y += ty * scale
+            if tz:
+                factor = math.exp(-tz * self._SPACEMOUSE_ZOOM_SPEED * dt)
+                hx, hy = self._last_hover_pixel
+                wx, wy = self.screen_to_world(hx, hy)
+                new_mpp = max(min(self._mm_per_pixel * factor, 1e6), 1e-9)
+                new_cx = wx - (hx - self.width() * 0.5) * new_mpp
+                new_cy = wy + (hy - self.height() * 0.5) * new_mpp
+                self.set_view_center_scale(new_cx, new_cy, new_mpp)
+            else:
+                self.viewChanged.emit()
+                self.update()
+            return
+
+        # 3D: pan in view plane, dolly on tz, orbit on rx/ry.
+        h_px = max(1, self.height())
+        mm_per_px = (2.0 * self._cam_distance * math.tan(
+            math.radians(self._cam_fov_deg) * 0.5)) / h_px
+        pan_scale = mm_per_px * self._SPACEMOUSE_PAN_SPEED_2D * 0.15 * dt
+        yaw = math.radians(self._cam_yaw_deg)
+        pitch = math.radians(self._cam_pitch_deg)
+        right = (math.cos(yaw), math.sin(yaw), 0.0)
+        up = (-math.sin(pitch) * math.sin(yaw),
+              math.sin(pitch) * math.cos(yaw),
+              math.cos(pitch))
+        tx0, ty0, tz0 = self._cam_target
+        self._cam_target = (
+            tx0 + tx * pan_scale * right[0] - ty * pan_scale * up[0],
+            ty0 + tx * pan_scale * right[1] - ty * pan_scale * up[1],
+            tz0 + tx * pan_scale * right[2] - ty * pan_scale * up[2],
+        )
+        if tz:
+            factor = math.exp(-tz * self._SPACEMOUSE_ZOOM_SPEED * dt)
+            self._cam_distance = self._dolly_cam_distance(
+                self._cam_distance, factor,
+            )
+        if rx or ry:
+            self._cam_yaw_deg -= rx * self._SPACEMOUSE_ORBIT_SPEED * dt
+            self._cam_pitch_deg = max(
+                -89.0,
+                min(89.0,
+                    self._cam_pitch_deg + ry * self._SPACEMOUSE_ORBIT_SPEED * dt),
+            )
+        self.viewChanged.emit()
+        self.update()
+
     def set_values(self, values: np.ndarray) -> None:
         """Update the per-vertex scalar values that the fragment shader
         uses to look up colours. Must match the vertex count from the

@@ -51,6 +51,7 @@ from fypa.gl_mesh_viewer import (
     MarkerGroup,
     _install_default_surface_format,
 )
+from fypa.spacemouse_nav import SpaceMouseController
 
 
 # Application icon — shown in the title bar AND Windows taskbar.
@@ -5969,6 +5970,12 @@ class PdnViewer(QMainWindow):
         self._gl_viewer.editorDragMoved.connect(self._on_marker_drag_moved)
         self._gl_viewer.editorDragReleased.connect(
             self._on_marker_drag_released)
+
+        self._spacemouse = SpaceMouseController(
+            self._gl_viewer,
+            self._on_spacemouse_fit,
+            self,
+        )
 
         plot_layout.addWidget(self._gl_viewer, 1)
 
@@ -15878,10 +15885,19 @@ class PdnViewer(QMainWindow):
         panel.raise_()
         gl.set_legend_right_inset(float(w) if panel.isVisible() else 0.0)
 
+    def _on_spacemouse_fit(self) -> None:
+        """SpaceMouse menu / fit button — frame board or reset 3D view."""
+        if self.view_3d_box.isChecked():
+            self._gl_viewer.reset_3d_view()
+        else:
+            self._fit_board_to_canvas()
+
     def closeEvent(self, event) -> None:
         """Uninstall the application-wide Shift filter on window close
         so QApplication doesn't keep dispatching events at a dangling
         Python object."""
+        if getattr(self, "_spacemouse", None) is not None:
+            self._spacemouse.shutdown()
         app = QApplication.instance()
         if app is not None:
             app.removeEventFilter(self)
@@ -21137,6 +21153,18 @@ when one of those has focus.</p>
   <tr><th>Gesture</th><th>Action</th></tr>
   <tr><td><kbd>Shift</kbd> + right-button drag</td><td>Rotate (orbit the camera around the board centre)</td></tr>
 </table>
+
+<h3>3Dconnexion SpaceMouse</h3>
+<ul>
+  <li><b>Translation</b> &mdash; pan the view (2D and 3D)</li>
+  <li><b>Translation Z</b> &mdash; zoom in / out</li>
+  <li><b>Rotation</b> &mdash; orbit the camera (3D mode only)</li>
+  <li><b>Menu / fit button</b> &mdash; fit board (2D) or reset 3D view</li>
+  <li>Requires <b>3DxWare</b> on Windows/macOS
+    (<code>uv sync --extra spacemouse</code>) or <b>spacenavd</b> on Linux
+    (<code>sudo apt install spacenavd libspnav0</code>)</li>
+  <li>Navigation is active while the plot viewer has keyboard focus</li>
+</ul>
 
 <h3>Voltage / Voltage Drop mode only <span class='muted'>(2D only)</span></h3>
 <table>
