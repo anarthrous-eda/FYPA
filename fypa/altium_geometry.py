@@ -43,6 +43,8 @@ import shapely.affinity
 import shapely.geometry
 import shapely.ops
 
+from fypa import _clipper_fuse
+
 from fypa.altium.extract import (
     ExtractedProject,
     NO_NET,
@@ -1075,11 +1077,22 @@ def _parallel_union_buckets(
     total_pieces = sum(len(p) for p in buckets.values())
     big_buckets = sum(1 for v in buckets.values() if len(v) > 1)
     use_threads = big_buckets >= 4 and total_pieces >= 200
+    # The Clipper2 backend (pyclipr, the default) is GIL-bound — it does NOT
+    # release the GIL the way shapely 2's union does — so running it across the
+    # thread pool only thrashes the GIL and is slower than serial. Force serial
+    # whenever it's the active backend; serial Clipper2 still beats threaded
+    # shapely on large boards. "verify" runs both, so leave it threaded (the
+    # shapely half parallelises). shapely backend keeps the thread pool.
+    if _clipper_fuse.backend() == "clipper" and _clipper_fuse.clipper_available():
+        use_threads = False
     grid = _UNION_SNAP_GRID_MM if snap else None
 
     def _union_one(key, pieces):
+        # Fuse via the selected backend (shapely by default; opt-in Clipper2
+        # with shapely fallback — see fypa._clipper_fuse). Default path is
+        # identical to shapely.union_all(pieces, grid_size=grid).
         return _sanitise_unioned_shape(
-            shapely.union_all(pieces, grid_size=grid), key,
+            _clipper_fuse.fuse(pieces, grid, key=key), key,
         )
 
     if not use_threads:
