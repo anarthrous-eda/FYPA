@@ -89,16 +89,19 @@ def test_single_net_group_ok_and_shares_return_group():
     assert {d.return_group for d in result.directives} == {0}
 
 
-def test_single_net_open_loop_source_without_sink():
+def test_single_net_open_loop_source_without_sink_is_not_an_error():
+    # The open-loop check moved out of _validate_directive_groups into
+    # loader._flag_open_loop_rails (so the rail is skipped + warned, not a
+    # whole-board hard error). Validation must no longer error here.
     result = AnnotationResult(directives=[_single_source(0)])
     _validate_directive_groups(result, None, {})
-    assert any("no SINK" in e for e in result.errors)
+    assert not result.errors
 
 
-def test_single_net_open_loop_sink_without_source():
+def test_single_net_open_loop_sink_without_source_is_not_an_error():
     result = AnnotationResult(directives=[_single_sink(0)])
     _validate_directive_groups(result, None, {})
-    assert any("no SOURCE" in e for e in result.errors)
+    assert not result.errors
 
 
 def test_group_may_not_mix_single_net_and_two_terminal():
@@ -130,3 +133,67 @@ def test_two_terminal_only_board_is_unaffected():
     _validate_directive_groups(result, None, {})
     assert not result.errors
     assert all(d.return_group is None for d in result.directives)
+
+
+# --- _flag_open_loop_rails (loader) ------------------------------------------
+#
+# Single-type rails (only sources or only sinks) can't carry current. The
+# loader flags them: their directives are marked solve_excluded (and skipped
+# by build_problem's network loop) but kept in the directive list so the
+# viewer still draws the markers, with one warning per skipped rail.
+
+from types import SimpleNamespace  # noqa: E402
+
+from fypa.altium.loader import _flag_open_loop_rails  # noqa: E402
+
+
+def _fake_loaded(directives, net_names):
+    nets = [SimpleNamespace(name=n) for n in net_names]
+    return SimpleNamespace(
+        extracted=SimpleNamespace(nets=nets),
+        annotations=AnnotationResult(directives=list(directives)),
+    )
+
+
+def test_flag_open_loop_source_only_rail_excluded_and_warned():
+    loaded = _fake_loaded([_single_source(0, "J1")], ["+3V3"])
+    warnings = _flag_open_loop_rails(loaded)
+    assert len(warnings) == 1
+    assert "+3V3" in warnings[0] and "no SINK" in warnings[0]
+    # Directive kept (marker stays) but marked excluded from the FEM.
+    assert len(loaded.annotations.directives) == 1
+    assert loaded.annotations.directives[0].solve_excluded is True
+    assert loaded.annotations.open_loop_rails == warnings
+
+
+def test_flag_open_loop_sink_only_rail_excluded_and_warned():
+    loaded = _fake_loaded([_single_sink(0, "U1")], ["+5V"])
+    warnings = _flag_open_loop_rails(loaded)
+    assert len(warnings) == 1
+    assert "+5V" in warnings[0] and "no SOURCE" in warnings[0]
+    assert loaded.annotations.directives[0].solve_excluded is True
+
+
+def test_flag_open_loop_closed_rail_not_flagged():
+    # A normal source+sink rail carries current — nothing excluded or warned.
+    loaded = _fake_loaded(
+        [_single_source(0, "J1"), _single_sink(0, "U1")], ["+3V3"])
+    warnings = _flag_open_loop_rails(loaded)
+    assert warnings == []
+    assert all(not d.solve_excluded for d in loaded.annotations.directives)
+
+
+def test_flag_open_loop_skips_one_rail_keeps_other():
+    # Net 0 is a closed rail; net 5 is a sink-only rail — only the latter is
+    # flagged, the closed rail's directives stay solvable.
+    loaded = _fake_loaded([
+        _single_source(0, "J1"), _single_sink(0, "U1"),
+        _single_sink(5, "U2"),
+    ], ["+3V3", "x", "y", "z", "w", "+1V8"])
+    warnings = _flag_open_loop_rails(loaded)
+    assert len(warnings) == 1
+    assert "+1V8" in warnings[0]
+    by_des = {d.designator: d for d in loaded.annotations.directives}
+    assert by_des["J1"].solve_excluded is False
+    assert by_des["U1"].solve_excluded is False
+    assert by_des["U2"].solve_excluded is True

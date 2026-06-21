@@ -1906,6 +1906,16 @@ def build_solve_metadata(
                           for p in proj.board_outline],
         "annotation_warnings": list(loaded.annotations.warnings),
         "annotation_errors": list(loaded.annotations.errors),
+        # Per-rail "won't be solved" notices (single-type rails) — surfaced as
+        # an active popup by the viewer on load / after Resolve.
+        "open_loop_rails": list(
+            getattr(loaded.annotations, "open_loop_rails", [])
+        ),
+        # Per-net "source & sink on disconnected copper" notices — surfaced as
+        # an active popup by the viewer on load / after Resolve.
+        "connectivity_breaks": list(
+            getattr(loaded.annotations, "connectivity_breaks", [])
+        ),
         "fem_stats": {
             "padne_layer_count": len(problem.layers) if problem is not None else 0,
             "padne_network_count": (
@@ -2206,6 +2216,142 @@ def _drop_unreachable_layers(
     return kept_layers, kept_coupling
 
 
+def _rail_display_name(net_names: set[str]) -> str:
+    """Pick a friendly name for a rail group — prefer a ``+``-prefixed net,
+    then a non-ground net, alphabetical within each tier (mirrors the GUI's
+    ``PdnViewer._rail_name_for``)."""
+    def rank(n: str) -> tuple[int, str]:
+        if n.startswith("+"):
+            return (0, n)
+        if n.lower() in {"0v", "gnd", "ground", "vss"}:
+            return (2, n)
+        return (1, n)
+    ordered = sorted((n for n in net_names if n), key=rank)
+    return ordered[0] if ordered else "(rail)"
+
+
+def _flag_open_loop_rails(loaded: LoadedProject) -> list[str]:
+    """Find rails that can't carry current — an analysis group holding only
+    sources (``SourceSpec`` / ``RegulatorSpec``) or only sinks (``SinkSpec``)
+    — and mark their directives ``solve_excluded`` so ``build_problem`` leaves
+    them out of the FEM. The directives stay in
+    ``loaded.annotations.directives`` so the viewer still draws their markers.
+
+    Operates on the final merged directive list (schematic + editor
+    directives are appended before this runs), so a rail closed by a mix of
+    schematic and editor markers is correctly recognised as solvable.
+
+    Groups are formed by union-find over the net indices each directive's
+    terminals touch; a ``ResistorSpec`` (SERIES) carries both terminal nets so
+    its rails are bridged automatically. Returns one human-readable warning
+    per skipped rail and also appends them to ``loaded.annotations.warnings``.
+    """
+    directives = loaded.annotations.directives
+    nets = loaded.extracted.nets
+
+    # ``open_loop_rails`` was added to AnnotationResult after some design-info
+    # caches were written; an unpickled-from-old-cache annotations object can
+    # lack it. Seed it so the reconcile assignment below (and the connectivity
+    # guard in build_problem) never AttributeError on a stale cache.
+    if not hasattr(loaded.annotations, "open_loop_rails"):
+        loaded.annotations.open_loop_rails = []
+
+    def _net_name(idx: int) -> str:
+        return nets[idx].name if 0 <= idx < len(nets) else "?"
+
+    def dir_nets(d) -> set[int]:
+        out: set[int] = set()
+        for term in _directive_terminals(d):
+            for pin in term.pins:
+                if pin.net_index != NO_NET:
+                    out.add(pin.net_index)
+        return out
+
+    parent: dict[int, int] = {}
+
+    def find(x: int) -> int:
+        while parent.setdefault(x, x) != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    nets_by_dir: list[set[int]] = [dir_nets(d) for d in directives]
+    for ns in nets_by_dir:
+        ordered = sorted(ns)
+        for other in ordered[1:]:
+            union(ordered[0], other)
+
+    # Bucket directives (with their touched nets) by group root.
+    groups: dict[int, list[int]] = {}
+    for i, ns in enumerate(nets_by_dir):
+        if not ns:
+            continue  # unresolved directive — handled elsewhere
+        groups.setdefault(find(min(ns)), []).append(i)
+
+    warnings: list[str] = []
+    excluded_idx: set[int] = set()
+    for members in groups.values():
+        has_source = any(
+            isinstance(directives[i], (SourceSpec, RegulatorSpec))
+            for i in members
+        )
+        has_sink = any(isinstance(directives[i], SinkSpec) for i in members)
+        if has_source == has_sink:
+            continue  # both present (solvable) or neither (e.g. SERIES-only)
+        group_nets: set[str] = set()
+        for i in members:
+            group_nets |= {_net_name(n) for n in nets_by_dir[i]}
+        rail = _rail_display_name(group_nets)
+        if has_source and not has_sink:
+            warnings.append(
+                f"Rail {rail!r}: has a SOURCE but no SINK — no current can "
+                f"flow, so this rail will NOT be solved. Add a SINK (load) on "
+                f"this rail to solve it. The source marker is kept on the "
+                f"design."
+            )
+        else:
+            warnings.append(
+                f"Rail {rail!r}: has a SINK but no SOURCE — no current can "
+                f"flow, so this rail will NOT be solved. Add a SOURCE (supply) "
+                f"on this rail to solve it. The sink marker is kept on the "
+                f"design."
+            )
+        excluded_idx.update(members)
+
+    # Reconcile (don't accumulate). The GUI hands the worker its in-memory
+    # LoadedProject back for every Resolve, so this can run repeatedly on the
+    # same annotations object. Re-derive each directive's solve_excluded flag
+    # from scratch — clearing it on rails the user has since closed — and
+    # replace this run's open-loop warnings rather than appending, so cycling
+    # Edit -> Resolve doesn't stack duplicate flags / messages.
+    rebuilt = []
+    changed = False
+    for i, d in enumerate(directives):
+        want = i in excluded_idx
+        if getattr(d, "solve_excluded", False) != want:
+            d = dataclasses.replace(d, solve_excluded=want)
+            changed = True
+        rebuilt.append(d)
+    if changed:
+        loaded.annotations.directives = rebuilt
+
+    prev = set(loaded.annotations.open_loop_rails)
+    if prev:
+        loaded.annotations.warnings = [
+            w for w in loaded.annotations.warnings if w not in prev
+        ]
+    loaded.annotations.open_loop_rails = list(warnings)
+    loaded.annotations.warnings.extend(warnings)
+    for w in warnings:
+        log.warning("%s", w)
+    return warnings
+
+
 def build_problem(
     loaded: LoadedProject,
 ) -> tuple[_pp.Problem, list[dict], dict[tuple[int, int], list],
@@ -2238,6 +2384,13 @@ def build_problem(
       belonging to other rails / signal nets via the Overlays control.
       The FEM itself only uses the active subset.
     """
+    # Flag (and warn about) single-type rails — only sources or only sinks,
+    # which can't carry current. Their directives are marked solve_excluded
+    # and left out of the networks below, but kept in
+    # ``loaded.annotations.directives`` so the viewer still draws the markers.
+    # Their copper stays an "active" net so it's still visible in the result.
+    _flag_open_loop_rails(loaded)
+
     # Build padne Layers per (physical_layer, net) — so each net is its own
     # conductor in the FEM and cross-net unioning artefacts cannot bleed
     # voltage between rails. We restrict the set to "active" rails (nets that
@@ -2421,6 +2574,13 @@ def build_problem(
                 seen.add(k_xy)
                 via_xys_by_net[ni].append((x, y))
 
+    # User-facing connectivity warnings — a SOURCE and SINK that should drive
+    # current through this net but land on copper islands with no path between
+    # them. Surfaced through the same open_loop_rails pipeline as the
+    # net-name-based open-loop check so the GUI pops a dialog rather than the
+    # solve silently returning ~0 V at the sink (and a large ground-balancing
+    # current). See _maybe_warn_open_loop_rails in altium_viewer.
+    connectivity_warnings: list[str] = []
     for ni, pieces in pieces_by_net.items():
         # Union-Find over piece indices for this net.
         parent = list(range(len(pieces)))
@@ -2493,6 +2653,61 @@ def build_problem(
                     ci, len(comp_indices), layer_summary, total_area, pin_summary,
                 )
 
+            # Decide whether this split actually breaks a current loop (vs.
+            # being several self-contained loops that merely share a net name).
+            # A component is a "supply" if it holds a SOURCE/REGULATOR pin and a
+            # "draw" if it holds a SINK pin. The loop is broken when a draw
+            # component has no supply of its own while a supply lives in a
+            # different component (the sink is stranded from every source), or
+            # the mirror case. Independent {supply+draw} islands don't trip it.
+            supply_comps = {
+                root for root, pins in pins_per_component.items()
+                if any(role in ("Source", "Regulator")
+                       for (_, _, _, role) in pins)
+            }
+            draw_comps = {
+                root for root, pins in pins_per_component.items()
+                if any(role == "Sink" for (_, _, _, role) in pins)
+            }
+            stranded = (
+                (supply_comps and (draw_comps - supply_comps))
+                or (draw_comps and (supply_comps - draw_comps))
+            )
+            if stranded:
+                island_descs = []
+                for root, pins in pins_per_component.items():
+                    labels = sorted({f"{des}({role})"
+                                     for (_, _, des, role) in pins})
+                    if labels:
+                        island_descs.append(", ".join(labels))
+                connectivity_warnings.append(
+                    f"Net {net_name!r}: the source and sink markers sit on "
+                    f"copper that is not electrically connected — {net_name} "
+                    f"splits into {len(components)} disconnected island(s) and "
+                    f"the markers land on different ones, so no current can "
+                    f"flow between them. The sink will read ~0 V and the solve "
+                    f"shows a large ground-balancing current; the result for "
+                    f"this rail is unreliable. Connect the copper (a via or a "
+                    f"SERIES link) or move the markers onto the same island. "
+                    f"Markers per island: "
+                    + "; ".join(f"[{d}]" for d in island_descs)
+                )
+
+    # Surface connectivity breaks to the user (-> metadata ->
+    # _maybe_warn_connectivity_breaks dialog). Assigned, not appended: this
+    # block re-derives them from scratch from the current geometry on every
+    # build_problem call, so cycling Edit -> Resolve can never stack duplicates
+    # or leave a stale break behind after the user reconnects the copper. Also
+    # drop the previous run's break messages from ``warnings`` before re-adding
+    # this run's, for the same reason.
+    prev_breaks = set(getattr(loaded.annotations, "connectivity_breaks", []))
+    if prev_breaks:
+        loaded.annotations.warnings = [
+            w for w in loaded.annotations.warnings if w not in prev_breaks
+        ]
+    loaded.annotations.connectivity_breaks = list(connectivity_warnings)
+    loaded.annotations.warnings.extend(connectivity_warnings)
+
     # Log every resolved directive at INFO level so the solve log always
     # shows what's in the FEM — makes it easy to spot wrong resistance
     # values, unexpected net connections, or missing elements.
@@ -2534,6 +2749,8 @@ def build_problem(
     # every single-net SOURCE/SINK in that group to it.
     return_ref_nodes: dict[int, _pp.NodeID] = {}
     for d in loaded.annotations.directives:
+        if getattr(d, "solve_excluded", False):
+            continue
         rg = getattr(d, "return_group", None)
         if rg is not None and rg not in return_ref_nodes:
             return_ref_nodes[rg] = _pp.NodeID()
@@ -2543,6 +2760,10 @@ def build_problem(
 
     networks: list[_pp.Network] = []
     for d in loaded.annotations.directives:
+        if getattr(d, "solve_excluded", False):
+            # Single-type rail (only sources or only sinks) — kept for display
+            # but excluded from the FEM. See _flag_open_loop_rails.
+            continue
         net = _directive_to_network(d, layer_by_layer_and_net, return_ref_nodes)
         if net is None:
             log.warning("Directive %s on %s produced no connections — skipping.",

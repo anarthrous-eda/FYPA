@@ -407,6 +407,14 @@ _SSAA_QS_KEY = "ui/supersampling"
 
 _current_theme_mode: str = "dark"
 
+# The OS-level colour scheme as Qt reported it at first theme application,
+# captured BEFORE we override it via ``setColorScheme``. The native OS file
+# dialog always follows the OS scheme (it ignores our override), so we use it
+# only when the OS already matches our app theme; otherwise we fall back to
+# Qt's own dialog, which inherits our palette and stays on-theme. ``None`` until
+# the first :func:`apply_app_theme` call.
+_os_color_scheme = None
+
 
 def current_theme() -> dict[str, str]:
     """Return the active theme's colour-token dict."""
@@ -579,7 +587,7 @@ def apply_app_theme(app, mode: str | None = None) -> None:
     consistent effect across platforms), installs the matching palette
     and our base stylesheet. Inline-styled widgets pick up the theme
     when their owning window is rebuilt."""
-    global _current_theme_mode
+    global _current_theme_mode, _os_color_scheme
     if mode is not None and mode in _THEME_PRESETS:
         _current_theme_mode = mode
     try:
@@ -588,8 +596,61 @@ def apply_app_theme(app, mode: str | None = None) -> None:
         logging.getLogger(__name__).debug(
             "Could not set the Fusion style (%s); keeping the platform default.", e,
         )
+    # Capture the OS scheme ONCE, before the setColorScheme override below makes
+    # styleHints().colorScheme() report our forced value. Used by
+    # :func:`_file_dialog_options` to decide native vs. Qt-own file dialogs.
+    if _os_color_scheme is None:
+        try:
+            _os_color_scheme = app.styleHints().colorScheme()
+        except Exception:
+            _os_color_scheme = None
+    # Declare our chosen colour scheme to Qt's windowing integration BEFORE the
+    # palette is installed (setColorScheme regenerates the style palette, so do
+    # it first and let our explicit palette below win). Without this, Qt leaves
+    # the native window title bars and native file dialogs following the OS
+    # light/dark setting — so on a light-mode machine the app comes up with a
+    # light title bar / light file pickers even though our content palette is
+    # dark. Forcing the scheme keeps the app looking the same on every machine,
+    # matching the explicit palette. Guarded: setColorScheme is Qt 6.8+.
+    try:
+        scheme = (Qt.ColorScheme.Light if _current_theme_mode == "light"
+                  else Qt.ColorScheme.Dark)
+        app.styleHints().setColorScheme(scheme)
+    except (AttributeError, TypeError) as e:
+        logging.getLogger(__name__).debug(
+            "Could not set the application colour scheme (%s); native title "
+            "bars / dialogs will follow the OS theme.", e,
+        )
     app.setPalette(_build_app_palette(_current_theme_mode))
     app.setStyleSheet(_build_app_stylesheet(_current_theme_mode))
+
+
+def _native_file_dialog_on_theme() -> bool:
+    """True when the native OS file dialog will match our app theme.
+
+    The native (shell) file dialog follows the OS light/dark setting and
+    ignores the colour scheme we force in :func:`apply_app_theme`. So it only
+    looks on-theme when the OS scheme already matches our chosen theme. When it
+    doesn't (e.g. a dark app on a light-mode Windows), callers should use Qt's
+    own dialog instead so the picker inherits our palette. If the OS scheme is
+    unknown, trust the native dialog (the common, no-regression case)."""
+    want_light = (_current_theme_mode == "light")
+    if _os_color_scheme == Qt.ColorScheme.Light:
+        return want_light
+    if _os_color_scheme == Qt.ColorScheme.Dark:
+        return not want_light
+    return True
+
+
+def _file_dialog_options():
+    """Options for the QFileDialog static helpers: force Qt's own (on-theme)
+    dialog when the native one would clash with the app theme, else default to
+    the native dialog."""
+    opt = QFileDialog.Option(0)
+    if not _native_file_dialog_on_theme():
+        opt |= QFileDialog.Option.DontUseNativeDialog
+    return opt
+
 
 # Hover-probe throttle. Mouse-move callbacks fire up to ~125 Hz on a
 # high-DPI mouse; we don't need to recompute the probe more often than
@@ -1379,6 +1440,16 @@ _EDITOR_MARKER_SELECT_SCALE = 1.3
 # marker fill; the selected marker scales this by _EDITOR_MARKER_SELECT_
 # SCALE, and the yellow selection box reuses the selected width.
 _EDITOR_MARKER_EDGE_W = 2.8
+
+# ``schdoc`` value carried by solve-metadata directives that an editor
+# directive synthesised (see ``fypa.editor_directives._EDITOR_SCHDOC``).
+# Kept as a local copy so this module has no import dependency on the
+# editor-directive stack; used to tell an editor-originated solution
+# directive apart from a real Altium schematic one so the editor's own
+# markers / form don't draw it twice (once as the live editor marker,
+# once as a "schematic" directive bound to whatever component its anchor
+# happens to sit on).
+_EDITOR_SCHDOC = "(editor)"
 
 # Directive terminals carrying the return ("N-side") net. Their pin
 # markers are drawn with a green outline (vs black for the P side) and
@@ -2430,7 +2501,8 @@ class _ClickAbsorbingPanel(QWidget):
 
     _GRIP_W: int = 6  # width (px) of the left-edge resize hot zone
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, *args, enable_left_edge_resize: bool = True,
+                 **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.setAttribute(Qt.WA_StyledBackground, True)
         # Needed so the cursor can switch to the resize shape on hover over
@@ -2439,24 +2511,32 @@ class _ClickAbsorbingPanel(QWidget):
         self._resizing = False
         self._resize_start_global_x = 0.0
         self._resize_start_w = 0
+        # Left-edge drag-to-resize is only wanted on the editor side panel.
+        # Pure click-absorbers (e.g. the editor button backdrop) pass
+        # enable_left_edge_resize=False so they show no grip line and offer
+        # no resize cursor / behaviour.
+        self._left_edge_resizable = enable_left_edge_resize
         # Thin visual hint of the draggable edge. Transparent to the mouse
         # so press / move events still reach the panel's own handlers, and
         # parked inside the left content margin so it never overlaps the
         # form widgets. Geometry tracked in :meth:`resizeEvent`.
-        self._grip_line = QFrame(self)
-        self._grip_line.setStyleSheet(
-            f"background-color: {_T()['border']};"
-        )
-        self._grip_line.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._grip_line: QFrame | None = None
+        if self._left_edge_resizable:
+            self._grip_line = QFrame(self)
+            self._grip_line.setStyleSheet(
+                f"background-color: {_T()['border']};"
+            )
+            self._grip_line.setAttribute(Qt.WA_TransparentForMouseEvents, True)
 
     def _in_grip(self, x: float) -> bool:
-        return 0 <= x <= self._GRIP_W
+        return self._left_edge_resizable and 0 <= x <= self._GRIP_W
 
     def resizeEvent(self, ev) -> None:  # noqa: N802 (Qt naming)
         super().resizeEvent(ev)
         # Pin the visual grip line to the left edge, full height.
-        self._grip_line.setGeometry(2, 0, 2, self.height())
-        self._grip_line.raise_()
+        if self._grip_line is not None:
+            self._grip_line.setGeometry(2, 0, 2, self.height())
+            self._grip_line.raise_()
 
     def mousePressEvent(self, ev) -> None:
         if ev.button() == Qt.LeftButton and self._in_grip(ev.position().x()):
@@ -4059,7 +4139,19 @@ class _SolveWorker(QThread):
         import copy as _copy
         from fypa.altium.loader import LoadedProject
         new_annotations = _copy.copy(loaded.annotations)
+        # Fresh copies of every mutable list — a shallow copy.copy() would
+        # share them with the pristine project, so build_problem's per-resolve
+        # mutations (directive rewrites, open-loop warnings) would leak back
+        # and accumulate across Edit -> Resolve cycles.
         new_annotations.directives = list(loaded.annotations.directives)
+        new_annotations.warnings = list(loaded.annotations.warnings)
+        new_annotations.errors = list(loaded.annotations.errors)
+        new_annotations.open_loop_rails = list(
+            getattr(loaded.annotations, "open_loop_rails", [])
+        )
+        new_annotations.connectivity_breaks = list(
+            getattr(loaded.annotations, "connectivity_breaks", [])
+        )
         return LoadedProject(
             extracted=loaded.extracted,
             annotations=new_annotations,
@@ -4571,6 +4663,7 @@ class LauncherWindow(QMainWindow):
             "Import Altium project (clean)" if clean else "Import Altium project",
             "",
             "Altium project (*.PrjPcb);;All files (*)",
+            options=_file_dialog_options(),
         )
         if not path_str:
             return
@@ -4674,11 +4767,16 @@ class LauncherWindow(QMainWindow):
         # stub instead of failing — let the user know it's set up for manual
         # marker placement rather than a finished solve.
         _maybe_warn_needs_directives(new_win or self, new_solution)
+        # Rails with only sources or only sinks were skipped — tell the user.
+        _maybe_warn_open_loop_rails(new_win or self, metadata)
+        # Nets whose source & sink landed on disconnected copper — tell the user.
+        _maybe_warn_connectivity_breaks(new_win or self, metadata)
 
     def _on_menu_open_solution(self) -> None:
         path_str, _ = QFileDialog.getOpenFileName(
             self, "Open solution pickle", "",
             "Solution pickle (*.pkl);;All files (*)",
+            options=_file_dialog_options(),
         )
         if not path_str:
             return
@@ -4700,6 +4798,7 @@ class LauncherWindow(QMainWindow):
         path_str, _ = QFileDialog.getOpenFileName(
             self, "Open project file", "",
             "FYPA project (*.fypa);;All files (*)",
+            options=_file_dialog_options(),
         )
         if not path_str:
             return
@@ -4743,9 +4842,13 @@ class LauncherWindow(QMainWindow):
                 f"{type(e).__name__}: {e}",
             )
             return
-        self._open_viewer_and_close(
+        new_win = self._open_viewer_and_close(
             solution, metadata, project=proj, project_path=Path(path_str),
         )
+        # Surface any skipped single-type rails recorded in the cached metadata.
+        _maybe_warn_open_loop_rails(new_win or self, metadata)
+        # Nets whose source & sink landed on disconnected copper — tell the user.
+        _maybe_warn_connectivity_breaks(new_win or self, metadata)
 
     def _open_viewer_and_close(self, solution, metadata: dict | None,
                                *, initial_settings=None,
@@ -7079,6 +7182,17 @@ class PdnViewer(QMainWindow):
             fill_by_name = dict(getattr(self, "_layer_fill_buttons", []))
             transp_by_name = dict(
                 getattr(self, "_layer_transparency_buttons", []))
+            # Which nets the all-copper view skips because the heatmap mesh
+            # already draws them. Outside editor mode the selected rail IS
+            # the heatmap, so its copper is excluded to avoid double-drawing.
+            # In editor mode the user wants the second eye to show ALL of a
+            # layer's physical copper — including nets belonging to a
+            # previously-solved rail — so we drop the filter entirely. The
+            # solved-rail heatmap / geometry still paints on top: opaque
+            # all-copper rides in the ``under_*`` bucket (drawn before the
+            # mesh) in 2D, and depth ordering handles it in 3D.
+            ac_rail_members: set[str] = (
+                set() if self._editor_mode else rail_members)
             # Emit bottom-up: ``_layer_eye2_buttons`` is in panel order
             # (topmost first); sort by stackup rank descending so the
             # topmost layer is emitted last, mirroring the heatmap mesh's
@@ -7170,14 +7284,14 @@ class PdnViewer(QMainWindow):
                 if (solid and layer_alpha < 1.0
                         and not editor_dim_active):
                     merged = self._merged_solid_all_copper_tris(
-                        name, recs, rail_members)
+                        name, recs, ac_rail_members)
                     if merged is not None:
                         _emit(merged, z, lrgb, alpha=layer_alpha,
                               **ac_bucket)
                     continue
                 for rec in recs:
                     net = rec.get("net")
-                    if net in rail_members:
+                    if net in ac_rail_members:
                         continue
                     rec_layer_id = rec.get("layer_id")
                     # Per-rec pump — a single layer on Corvette can have
@@ -8229,12 +8343,24 @@ class PdnViewer(QMainWindow):
         if xs.size == 0 or tris.size == 0:
             self._gl_viewer.clear_mesh()
             self._gl_viewer.clear_outlines()
-            self._gl_viewer.clear_cylinders()
             self._gl_viewer.clear_arrows()
             self._gl_viewer.clear_series_bars()
             self._gl_viewer.clear_stub_triangles()
             self._gl_viewer.set_overlay_top_right("")
-            self._gl_viewer.clear_markers()
+            # No heatmap mesh on these rails — e.g. a rail carrying a SOURCE
+            # but no SINK (an unsolved / open current loop), which is exactly
+            # what the user is mid-way through wiring up in editor mode. Don't
+            # wipe the markers here: the editor-mode source / sink markers and
+            # the via overlays still belong on screen (they gate on the
+            # all-copper eye, on for the top layer by default, not on the
+            # absent heatmap), so re-push them instead of clearing — mirroring
+            # the no-rails early-out above. Clearing here is what made a just-
+            # placed source / sink vanish until a second eye was toggled.
+            self._update_markers_and_legend(phys_list, rails)
+            if self.view_3d_box.isChecked():
+                self._push_via_cylinders(phys_list, rails, mode=mode)
+            else:
+                self._gl_viewer.clear_cylinders()
             self._refresh_board_outline()
             if is_stub:
                 self.summary_label.setText(
@@ -10692,6 +10818,14 @@ class PdnViewer(QMainWindow):
                 role = d.get("role")
                 if role not in self._ROLE_MARKER_STYLE:
                     continue
+                # In editor mode the placed editor directives draw their own
+                # live markers (see _editor_marker_groups), so skip the solved
+                # copies of them here — otherwise each free source / sink shows
+                # twice (the editable marker plus a static solved one at the
+                # same anchor). Outside editor mode the solved marker is the
+                # only representation, so keep it.
+                if self._editor_mode and d.get("schdoc") == _EDITOR_SCHDOC:
+                    continue
                 directive_overridden = d.get("designator") in overridden
                 directive_current = self._directive_current_for_hover(d)
                 directive_label = str(d.get("label") or d.get("designator")
@@ -11558,12 +11692,10 @@ class PdnViewer(QMainWindow):
         """Create the editor-mode toggle, the source / sink free-marker
         buttons, and the resolve button as overlay children of the GL
         viewer, pinned top-left by :meth:`_position_editor_overlays`. The
-        source / sink buttons are shown only while editor mode is active."""
-        t = _T()
-        qss = self._EDITOR_OVERLAY_BTN_QSS % {
-            "border": t["border"], "bg": t["bg"],
-            "hover": t["bg_hover"], "accent": t["accent"],
-        }
+        source / sink buttons are shown only while editor mode is active.
+        Per-widget colours come from :meth:`_restyle_editor_overlay_buttons`
+        at the end so build-time and live-theme-toggle styling share one
+        source of truth."""
         # Click-absorbing backdrop behind the edit toggle + free-marker
         # buttons. Created first so it sits below them in the GL viewer's
         # child stacking order. It extends a few px past the buttons so a
@@ -11571,12 +11703,8 @@ class PdnViewer(QMainWindow):
         # here instead of falling through to the viewport and selecting /
         # deselecting copper. Shown only in editor mode (see
         # _position_editor_overlays).
-        bg = _ClickAbsorbingPanel(self._gl_viewer)
-        bg.setStyleSheet(
-            f"background-color: {t['bg']};"
-            f" border: 1px solid {t['border']};"
-            f" border-radius: 8px;"
-        )
+        bg = _ClickAbsorbingPanel(
+            self._gl_viewer, enable_left_edge_resize=False)
         bg.hide()
         self._editor_overlay_bg = bg
 
@@ -11591,7 +11719,6 @@ class PdnViewer(QMainWindow):
             btn.setText("Edit")
         btn.setToolTip("Toggle editor mode (E) — place PDN sources / sinks")
         btn.setFixedSize(34, 34)
-        btn.setStyleSheet(qss)
         btn.toggled.connect(self._on_editor_mode_toggled)
         self._editor_toggle_btn = btn
 
@@ -11615,7 +11742,6 @@ class PdnViewer(QMainWindow):
             mbtn.setIconSize(QSize(18, 18))
             mbtn.setFixedSize(34, 34)
             mbtn.setToolTip(tip)
-            mbtn.setStyleSheet(qss)
             mbtn.clicked.connect(
                 lambda _checked=False, r=role: self._on_editor_add_marker(r)
             )
@@ -11627,19 +11753,45 @@ class PdnViewer(QMainWindow):
         rbtn.setToolTip(
             "Re-run the solver with the current editor changes applied"
         )
-        # Border + text use a fixed "go" green (not a theme token) so the
-        # Resolve action reads as a positive call-to-action in both themes.
-        rbtn.setStyleSheet(
-            "QPushButton {{ border: 1px solid {green}; border-radius: 6px;"
-            "  padding: 6px 12px; font-weight: bold;"
-            "  background-color: {bg}; color: {green}; }}"
-            "QPushButton:hover {{ background-color: {hover}; }}"
-            .format(green="#2ca92c", bg=t["bg"], hover=t["bg_hover"])
-        )
         rbtn.clicked.connect(self._on_resolve_clicked)
         rbtn.hide()
         self._resolve_btn = rbtn
+        self._restyle_editor_overlay_buttons()
         self._position_editor_overlays()
+
+    def _restyle_editor_overlay_buttons(self) -> None:
+        """Re-apply the active theme to the editor overlay buttons. Shared
+        by :meth:`_build_editor_overlay_buttons` (build time) and
+        :meth:`_refresh_inline_theme` (live theme toggle); safe before the
+        widgets exist (each is guarded)."""
+        t = _T()
+        qss = self._EDITOR_OVERLAY_BTN_QSS % {
+            "border": t["border"], "bg": t["bg"],
+            "hover": t["bg_hover"], "accent": t["accent"],
+        }
+        bg = getattr(self, "_editor_overlay_bg", None)
+        if bg is not None:
+            bg.setStyleSheet(
+                f"background-color: {t['bg']};"
+                f" border: 1px solid {t['border']};"
+                f" border-radius: 8px;"
+            )
+        for attr in ("_editor_toggle_btn", "_editor_add_source_btn",
+                     "_editor_add_sink_btn"):
+            b = getattr(self, attr, None)
+            if b is not None:
+                b.setStyleSheet(qss)
+        rbtn = getattr(self, "_resolve_btn", None)
+        if rbtn is not None:
+            # Border + text use a fixed "go" green (not a theme token) so the
+            # Resolve action reads as a positive call-to-action in both themes.
+            rbtn.setStyleSheet(
+                "QPushButton {{ border: 1px solid {green}; border-radius: 6px;"
+                "  padding: 6px 12px; font-weight: bold;"
+                "  background-color: {bg}; color: {green}; }}"
+                "QPushButton:hover {{ background-color: {hover}; }}"
+                .format(green="#2ca92c", bg=t["bg"], hover=t["bg_hover"])
+            )
 
     def _position_editor_overlays(self) -> None:
         """Pin the editor toggle, source / sink, and resolve buttons in a
@@ -13871,10 +14023,12 @@ class PdnViewer(QMainWindow):
         one of those layers are returned — used to hide editor markers whose
         copper layer the user has turned off.
 
-        With ``with_layer_color`` each point becomes ``(x, y, colour)``,
+        With ``with_layer_color`` each point becomes ``(x, y, colour, z)``,
         where ``colour`` is the swatch colour of the pad's copper layer
         (preferring a visible one when filtering) — drives the layer-colour
-        ring on editor markers. ``None`` when the pad's layer is unknown.
+        ring on editor markers — and ``z`` is that layer's world-z (mm) so
+        the marker sits at the right depth in 3D. ``None`` / ``0.0`` when the
+        pad's layer is unknown.
 
         ``pin_filter`` is an optional set/list of pad designators (the
         directive's PDN_PINS restriction); when given, only those pads are
@@ -13921,7 +14075,8 @@ class PdnViewer(QMainWindow):
                            lids[0] if lids else None)
                 phys = id_to_phys.get(lid)
                 color = self._layer_color_for(phys) if phys else None
-                pts.append((cx, cy, color))
+                z = self._layer_z_for(phys) if phys else 0.0
+                pts.append((cx, cy, color, z))
             else:
                 pts.append((cx, cy))
         return pts
@@ -14000,6 +14155,13 @@ class PdnViewer(QMainWindow):
         bbox = sel.get("bbox")
         out: list[dict] = []
         for d in self.metadata.get("directives", []):
+            # Skip directives the editor itself synthesised: a free marker's
+            # solved directive carries a synthetic pin at the marker's anchor,
+            # which can land inside some component's bbox and would otherwise
+            # be reported (and Unlock-able) as that component's "schematic"
+            # directive — duplicating the free marker onto a component.
+            if d.get("schdoc") == _EDITOR_SCHDOC:
+                continue
             if des and d.get("designator") == des:
                 out.append(d)
                 continue
@@ -15338,24 +15500,27 @@ class PdnViewer(QMainWindow):
         # Keyed (role, is_selected, is_n_side): the selected marker lands
         # in its own group (larger / thicker), and the N-side pins land in
         # theirs so they can carry the green outline. Each point is an
-        # ``(x, y, layer_colour)`` triple — the colour drives the marker's
-        # outer layer ring (``None`` ⇒ no ring).
+        # ``(x, y, layer_colour, z)`` tuple — the colour drives the marker's
+        # outer layer ring (``None`` ⇒ no ring) and ``z`` is the copper
+        # layer's world-z (mm) so 3D markers sit at the right depth.
         by_key: dict[tuple[str, bool, bool],
-                     list[tuple[float, float, str | None]]] = {}
-        sel_pts: list[tuple[float, float, str | None]] = []
+                     list[tuple[float, float, str | None, float]]] = {}
+        sel_pts: list[tuple[float, float, str | None, float]] = []
         for d in self._project.editor_directives:
             if not self._directive_rail_visible(d):
                 continue   # marker's rail is hidden
             # Pin points split into P-side and N-side.
-            p_pts: list[tuple[float, float, str | None]] = []
-            n_pts: list[tuple[float, float, str | None]] = []
+            p_pts: list[tuple[float, float, str | None, float]] = []
+            n_pts: list[tuple[float, float, str | None, float]] = []
             if d.kind == "free" and d.anchor_xy is not None:
                 lid = self._free_marker_layer_id(d)
                 if lid not in visible_ids:
                     continue   # marker's layer is hidden
                 phys = id_to_phys.get(lid)
                 rc = self._layer_color_for(phys) if phys else None
-                p_pts = [(float(d.anchor_xy[0]), float(d.anchor_xy[1]), rc)]
+                rz = self._layer_z_for(phys) if phys else 0.0
+                p_pts = [(float(d.anchor_xy[0]), float(d.anchor_xy[1]),
+                          rc, rz)]
             elif d.kind == "component":
                 # One marker per component pin on the directive's net(s) that
                 # sits on a visible layer, mirroring the solved-directive pin
@@ -15380,7 +15545,7 @@ class PdnViewer(QMainWindow):
                     ctr = self._component_center(d.designator)
                     if ctr is None:
                         continue
-                    p_pts = [(float(ctr[0]), float(ctr[1]), None)]
+                    p_pts = [(float(ctr[0]), float(ctr[1]), None, 0.0)]
             else:
                 continue
             is_sel = d.id == sel_id
@@ -15405,7 +15570,7 @@ class PdnViewer(QMainWindow):
             groups.append(MarkerGroup(
                 xs=np.array([p[0] for p in pts], dtype=np.float64),
                 ys=np.array([p[1] for p in pts], dtype=np.float64),
-                zs=np.zeros(len(pts), dtype=np.float64),
+                zs=np.array([p[3] for p in pts], dtype=np.float64),
                 color=style["color"],
                 symbol=style["symbol"],
                 size=int(round((style["size"] + 4) * emph)),
@@ -15431,7 +15596,7 @@ class PdnViewer(QMainWindow):
             groups.append(MarkerGroup(
                 xs=np.array([p[0] for p in sel_pts], dtype=np.float64),
                 ys=np.array([p[1] for p in sel_pts], dtype=np.float64),
-                zs=np.zeros(len(sel_pts), dtype=np.float64),
+                zs=np.array([p[3] for p in sel_pts], dtype=np.float64),
                 color="transparent",   # unfilled — outline only
                 symbol=box_symbol,
                 size=box_px,
@@ -17699,15 +17864,26 @@ class PdnViewer(QMainWindow):
                         )
                     else:
                         lbl.setStyleSheet(f"QLabel {{ color: {t['fg']}; }}")
-                # Eye icons are cached by theme mode → reapply forces a
-                # cache miss and a fresh draw in the new colour.
-                for btn in row.findChildren(EyeButton):
-                    btn._apply_icon()
+                # Eye / split / transparency / colour-swatch icons are all
+                # cached by theme mode → reapply forces a cache miss and a
+                # fresh draw in the new colour. Every such button subclasses
+                # QToolButton and exposes ``_apply_icon``.
+                for btn in row.findChildren(QToolButton):
+                    apply = getattr(btn, "_apply_icon", None)
+                    if callable(apply):
+                        apply()
 
         if hasattr(self, "layer_list") and self.layer_list is not None:
             _restyle_eye_list(self.layer_list)
         if hasattr(self, "rail_list") and self.rail_list is not None:
             _restyle_eye_list(self.rail_list)
+        if getattr(self, "overlay_list", None) is not None:
+            _restyle_eye_list(self.overlay_list)
+
+        # Editor overlay buttons (edit toggle, free SOURCE/SINK, Resolve and
+        # their click-absorbing backdrop) pin their colours inline at build
+        # time, so re-apply the active theme to them here.
+        self._restyle_editor_overlay_buttons()
 
         if (getattr(self, "probe_label_widget", None) is not None):
             self.probe_label_widget.setStyleSheet(
@@ -18598,6 +18774,7 @@ class PdnViewer(QMainWindow):
             "Import Altium project (clean)" if clean else "Import Altium project",
             self._menu_start_dir(),
             "Altium project (*.PrjPcb);;All files (*)",
+            options=_file_dialog_options(),
         )
         if not path_str:
             return
@@ -18652,6 +18829,7 @@ class PdnViewer(QMainWindow):
             self, "Save solution",
             default_path,
             "Solution pickle (*.pkl);;All files (*)",
+            options=_file_dialog_options(),
         )
         if not path_str:
             return
@@ -18691,6 +18869,7 @@ class PdnViewer(QMainWindow):
         start_dir = self._project_cache_dir_str() or self._menu_start_dir()
         out_dir_str = QFileDialog.getExistingDirectory(
             self, "Export to ParaView — pick output directory", start_dir,
+            options=_file_dialog_options() | QFileDialog.Option.ShowDirsOnly,
         )
         if not out_dir_str:
             return
@@ -18752,6 +18931,7 @@ class PdnViewer(QMainWindow):
         path_str, _ = QFileDialog.getSaveFileName(
             self, "Save project as", default,
             "FYPA project (*.fypa);;All files (*)",
+            options=_file_dialog_options(),
         )
         if not path_str:
             return None
@@ -18926,6 +19106,7 @@ class PdnViewer(QMainWindow):
         path_str, _ = QFileDialog.getOpenFileName(
             self, "Open project file", start,
             "FYPA project (*.fypa);;All files (*)",
+            options=_file_dialog_options(),
         )
         if not path_str:
             return
@@ -19000,6 +19181,7 @@ class PdnViewer(QMainWindow):
             self, "Open solution pickle",
             start_dir,
             "Solution pickle (*.pkl);;All files (*)",
+            options=_file_dialog_options(),
         )
         if not path_str:
             return
@@ -19366,6 +19548,8 @@ class PdnViewer(QMainWindow):
             # back as an editor-mode stub — flag it the same way the initial
             # load does instead of silently showing an empty heatmap.
             _maybe_warn_needs_directives(new_win, new_solution)
+            _maybe_warn_open_loop_rails(new_win, metadata)
+            _maybe_warn_connectivity_breaks(new_win, metadata)
         except Exception as e:
             log.exception("Failed to open new viewer after re-solve")
             _t = _T()
@@ -19427,6 +19611,10 @@ class PdnViewer(QMainWindow):
             _set_window_aumid(new_win)
             heatmap_idx = getattr(new_win, "_heatmap_tab_index", 0)
             new_win.tabs.setCurrentIndex(heatmap_idx)
+            # Rails left out of the solve (only sources or only sinks) — same
+            # notice the initial load shows, now after leaving edit mode.
+            _maybe_warn_open_loop_rails(new_win, metadata)
+            _maybe_warn_connectivity_breaks(new_win, metadata)
         except Exception as e:
             log.exception("Failed to open viewer after resolve")
             QMessageBox.critical(
@@ -21472,6 +21660,62 @@ def _maybe_warn_needs_directives(parent_win, solution) -> None:
     )
 
 
+def _maybe_warn_open_loop_rails(parent_win, metadata) -> None:
+    """Pop a notice listing rails that were NOT solved because they hold only
+    sources or only sinks (no current can flow). Fired on load and after
+    Resolve. The directives' markers are kept on the design — the rail is
+    simply left out of the FEM. No-op when there are no such rails.
+
+    Reads ``metadata['open_loop_rails']`` (a list of human-readable per-rail
+    messages built by :func:`fypa.altium.loader._flag_open_loop_rails`), which
+    round-trips through the solve cache, so this also fires on a cache hit.
+    """
+    if not isinstance(metadata, dict):
+        return
+    rails = metadata.get("open_loop_rails") or []
+    if not rails:
+        return
+    QMessageBox.warning(
+        parent_win,
+        "Some rails won't be solved",
+        "These rails contain only one type of element (only sources or only "
+        "sinks), so no current can flow and they were left out of the "
+        "solve:\n\n"
+        + "\n".join(f"  • {r}" for r in rails)
+        + "\n\nThe markers are kept on the design. Add the missing element "
+        "(a sink for a source-only rail, or a source for a sink-only rail) "
+        "and press Resolve to solve the rail.",
+    )
+
+
+def _maybe_warn_connectivity_breaks(parent_win, metadata) -> None:
+    """Pop a notice listing nets whose SOURCE and SINK markers sit on copper
+    that isn't electrically connected. Unlike the open-loop-rail case the rail
+    IS solved, but the result is unreliable: no copper path closes the current
+    loop, so the sink reads ~0 V and the FEM injects a large ground-balancing
+    current. Fired on load and after Resolve. No-op when there are none.
+
+    Reads ``metadata['connectivity_breaks']`` (built by
+    :func:`fypa.altium.loader.build_problem`), which round-trips through the
+    solve cache, so this also fires on a cache hit.
+    """
+    if not isinstance(metadata, dict):
+        return
+    breaks = metadata.get("connectivity_breaks") or []
+    if not breaks:
+        return
+    QMessageBox.warning(
+        parent_win,
+        "Source and sink on disconnected copper",
+        "On these nets the source and sink markers are NOT on the same "
+        "connected copper, so no current can flow between them. The rail was "
+        "solved but the result is unreliable (the sink reads about 0 V):\n\n"
+        + "\n".join(f"  • {r}" for r in breaks)
+        + "\n\nMove the markers onto the same copper island, or connect the "
+        "islands (a via or a SERIES link), then press Resolve.",
+    )
+
+
 def _build_stub_lean_solution_from_loaded(loaded):
     """Create a minimal :class:`LeanSolution` from a Gerber-derived
     LoadedProject so the viewer can open BEFORE the user has added any
@@ -21605,6 +21849,7 @@ def _pick_gerber_inputs(parent_window):
         "*.gto *.GTO *.gbo *.GBO "
         "*.drl *.DRL *.xln *.XLN *.txt *.TXT *.tap *.TAP *.nc *.NC);;"
         "All files (*)",
+        options=_file_dialog_options(),
     )
     if not paths_str:
         return None
