@@ -335,6 +335,61 @@ def _schdoc_for_source_designator(proj: ExtractedProject, designator: str) -> st
     return "(pcb)"
 
 
+def _schdoc_for_pcb_instance(proj: ExtractedProject, pcb_index: int,
+                             lookup_des: str) -> str:
+    """Infer the schematic sheet for one PCB placement.
+
+    Uses compiled-netlist terminal ↔ pad connectivity so Blanket/ECO
+    directives on a specific ``pcb_index`` stay scoped to that instance's
+    sheet rather than the first ``sch_components`` row for ``lookup_des``.
+    """
+    if not lookup_des:
+        return ""
+    target_des = lookup_des.upper()
+    routed_pads: dict[str, RawPad] = {
+        p.designator.upper(): p
+        for p in proj.pads
+        if p.component_index == pcb_index and p.net_index != NO_NET
+    }
+
+    sheet_votes: dict[str, int] = {}
+    sheet_paths: dict[str, str] = {}
+
+    netlist = proj.compiled_netlist
+    if netlist is not None and routed_pads:
+        for net in netlist.nets:
+            names = [net.name, *getattr(net, "aliases", ())]
+            for term in net.terminals:
+                if term.designator.upper() != target_des:
+                    continue
+                pad = routed_pads.get(str(term.pin).upper())
+                if pad is None:
+                    continue
+                pcb_net_name = proj.nets[pad.net_index].name
+                if not any(
+                    n and n.upper() == pcb_net_name.upper() for n in names
+                ):
+                    continue
+                for sheet in getattr(net, "source_sheets", ()) or ():
+                    if not sheet:
+                        continue
+                    key = sheet.replace("\\", "/").lower()
+                    sheet_votes[key] = sheet_votes.get(key, 0) + 1
+                    sheet_paths.setdefault(key, sheet)
+
+    if sheet_votes:
+        best = max(sheet_votes, key=lambda k: sheet_votes[k])
+        return sheet_paths[best]
+
+    sch_matches = [
+        c.schdoc_name for c in proj.sch_components
+        if c.designator.upper() == target_des
+    ]
+    if len(sch_matches) == 1:
+        return sch_matches[0]
+    return ""
+
+
 def _iter_pdn_parameter_sources(proj: ExtractedProject) -> list[PdnParameterSource]:
     """Schematic PDN directives plus PCB-only directives (Blanket ECO path)."""
     sources: list[PdnParameterSource] = []
@@ -359,7 +414,7 @@ def _iter_pdn_parameter_sources(proj: ExtractedProject) -> list[PdnParameterSour
             continue
         sources.append(PdnParameterSource(
             designator=pcb.designator,
-            schdoc_name=_schdoc_for_source_designator(proj, lookup_des),
+            schdoc_name=_schdoc_for_pcb_instance(proj, idx, lookup_des),
             parameters=pcb.parameters,
             pcb_index=idx,
             sch_lookup_designator=lookup_des,
@@ -377,10 +432,18 @@ def _pcb_indices_for_source(comp: PdnParameterSource,
 def _sheet_name_matches(schdoc_name: str, source_sheets: list[str]) -> bool:
     if not source_sheets:
         return True
-    if schdoc_name == "(pcb)":
-        return True
-    target = Path(schdoc_name).name.lower()
-    return any(Path(sheet).name.lower() == target for sheet in source_sheets)
+    if not schdoc_name:
+        return False
+    target_full = schdoc_name.replace("\\", "/").lower()
+    target_base = Path(schdoc_name).name.lower()
+    has_dir = "/" in target_full
+    for sheet in source_sheets:
+        s = sheet.replace("\\", "/").lower()
+        if s == target_full:
+            return True
+        if not has_dir and Path(sheet).name.lower() == target_base:
+            return True
+    return False
 
 
 def _resolve_local_net_pins(
@@ -388,6 +451,8 @@ def _resolve_local_net_pins(
     sch_designator: str,
     schdoc_name: str,
     local_net_name: str,
+    *,
+    routed_pin_keys: set[str] | None = None,
 ) -> list[str]:
     """Return pin designators on ``sch_designator`` for a local sheet net name."""
     if netlist is None:
@@ -406,6 +471,8 @@ def _resolve_local_net_pins(
                 continue
             pin = str(term.pin)
             key = pin.upper()
+            if routed_pin_keys is not None and key not in routed_pin_keys:
+                continue
             if key not in seen:
                 seen.add(key)
                 pins.append(pin)
@@ -491,18 +558,25 @@ def _resolve_terminal(
             wanted_nets = set(net_indices)
             matched = [p for p in component_pads if p.net_index in wanted_nets]
 
-        if not matched and sch_lookup_designator and schdoc_name:
+        if not matched and sch_lookup_designator:
+            routed_pin_keys = {
+                p.designator.upper()
+                for p in component_pads
+                if p.net_index != NO_NET
+            }
             local_pins = _resolve_local_net_pins(
                 proj.compiled_netlist,
                 sch_lookup_designator,
-                schdoc_name,
+                schdoc_name or "",
                 net_name,
+                routed_pin_keys=routed_pin_keys or None,
             )
             if local_pins:
                 wanted_pins = {pin.upper() for pin in local_pins}
                 matched = [
                     p for p in component_pads
                     if p.designator.upper() in wanted_pins
+                    and p.net_index != NO_NET
                 ]
                 if matched:
                     resolved_via_local = True

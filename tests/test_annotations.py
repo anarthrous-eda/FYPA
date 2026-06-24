@@ -24,6 +24,8 @@ from fypa.altium.annotations import (
     _iter_pdn_parameter_sources,
     _resolve_local_net_pins,
     _resolve_terminal,
+    _schdoc_for_pcb_instance,
+    _sheet_name_matches,
     _terminal_mode,
     _validate_directive_groups,
     parse_annotations,
@@ -643,4 +645,133 @@ def test_bridge_groups_indexed_series_nets():
     assert "RAIL_C" in groups
     assert "RAIL_D" in groups["RAIL_C"]
     assert "RAIL_A" not in groups["RAIL_C"]
+
+
+def test_sheet_name_matches_full_path_not_basename_collision():
+    assert _sheet_name_matches(
+        "SubA/Power.SchDoc",
+        ["SubA/Power.SchDoc"],
+    )
+    assert not _sheet_name_matches(
+        "SubA/Power.SchDoc",
+        ["SubB/Power.SchDoc"],
+    )
+    assert _sheet_name_matches(
+        "Power.SchDoc",
+        ["SubB/Power.SchDoc"],
+    )
+
+
+def test_pcb_sourced_local_net_scoped_per_instance():
+    """Blanket/ECO PCB parameters resolve local net names per pcb_index."""
+    netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="CH1_+3V3",
+            aliases=["+3V3"],
+            source_sheets=["child1.schdoc"],
+            terminals=[_FakeTerminal("U1", "1")],
+        ),
+        _FakeNet(
+            name="CH2_+3V3",
+            aliases=["+3V3"],
+            source_sheets=["child2.schdoc"],
+            terminals=[_FakeTerminal("U1", "1")],
+        ),
+    ])
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("CH1_+3V3"), RawNet("CH2_+3V3")),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1_CH1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="SOIC", source_designator="U1",
+                parameters={
+                    "PDN_ROLE": "SINK",
+                    "PDN_I": "10mA",
+                    "PDN_P_NET": "+3V3",
+                    "PDN_N_NET": "GND",
+                },
+            ),
+            RawPcbComponent(
+                designator="U1_CH2", center=Pt2D(1, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="SOIC", source_designator="U1",
+                parameters={
+                    "PDN_ROLE": "SINK",
+                    "PDN_I": "20mA",
+                    "PDN_P_NET": "+3V3",
+                    "PDN_N_NET": "GND",
+                },
+            ),
+        ),
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="Child1.SchDoc",
+                parameters={"Comment": "IC"}, pin_designators=("1",),
+            ),
+            RawSchComponent(
+                designator="U1", schdoc_name="Child2.SchDoc",
+                parameters={"Comment": "IC"}, pin_designators=("1",),
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, 0),
+            _pad(0, "2", 0, 0.5),
+            _pad(1, "1", 2, 1),
+            _pad(1, "2", 0, 1.5),
+        ),
+        compiled_netlist=netlist,
+    )
+    sources = _iter_pdn_parameter_sources(proj)
+    assert len(sources) == 2
+    assert _schdoc_for_pcb_instance(proj, 0, "U1") == "child1.schdoc"
+    assert _schdoc_for_pcb_instance(proj, 1, "U1") == "child2.schdoc"
+
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok
+    sinks = [d for d in result.directives if isinstance(d, SinkSpec)]
+    assert len(sinks) == 2
+    by_des = {d.designator: d for d in sinks}
+    assert by_des["U1_CH1"].p.pins[0].net_index == 1
+    assert by_des["U1_CH2"].p.pins[0].net_index == 2
+
+
+def test_local_fallback_skips_no_net_pad():
+    netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="Sheet1_+3V3",
+            aliases=["+3V3"],
+            source_sheets=["power.schdoc"],
+            terminals=[
+                _FakeTerminal("U1", "1"),
+                _FakeTerminal("U1", "2"),
+            ],
+        ),
+    ])
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+3V3")),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+            ),
+        ),
+        pads=(
+            RawPad(
+                center=Pt2D(0, 0), width_mm=1, height_mm=1, hole_mm=0,
+                shape=2, rotation_deg=0, layer_id=1, net_index=-1,
+                designator="1", component_index=0,
+                is_through_hole=False, is_smt=True,
+            ),
+            _pad(0, "2", 1, 1),
+        ),
+        compiled_netlist=netlist,
+    )
+    spec, errors = _resolve_terminal(
+        proj, 0, "+3V3", None, [1], "SINK P",
+        sch_lookup_designator="U1", schdoc_name="Power.SchDoc",
+    )
+    assert not errors
+    assert spec is not None
+    assert len(spec.pins) == 1
+    assert spec.pins[0].pad_designator == "2"
+    assert spec.pins[0].net_index == 1
 
