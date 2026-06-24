@@ -7,7 +7,6 @@ visualization tools.
 """
 
 import logging
-import re
 from pathlib import Path
 from collections.abc import Iterable
 
@@ -15,47 +14,9 @@ import lxml.etree
 from lxml.etree import Element, SubElement
 
 from . import mesh, solver
+from .vtu_fields import sanitize_filename
 
 log = logging.getLogger(__name__)
-
-
-def _sanitize_filename(name: str, used_names: set[str], fallback_prefix: str = "layer") -> str:
-    """Sanitize a layer name for use as a filename.
-
-    Args:
-        name: Original layer name
-        used_names: Set of already used filenames to avoid duplicates
-        fallback_prefix: Prefix to use if name is empty or invalid
-
-    Returns:
-        Sanitized filename (without extension)
-    """
-    # Handle empty or whitespace-only names
-    if not name or not name.strip():
-        base = fallback_prefix
-    else:
-        # Replace spaces with underscores, keep only alphanumeric, underscore, hyphen, dots
-        base = re.sub(r'[^a-zA-Z0-9_.-]', '_', name.strip())
-        # Remove multiple consecutive underscores
-        base = re.sub(r'_+', '_', base)
-        # Remove leading/trailing underscores (but keep dots)
-        base = base.strip('_')
-        # If nothing left after sanitization, use fallback
-        if not base:
-            base = fallback_prefix
-
-    # Handle duplicates by appending counter
-    if base not in used_names:
-        used_names.add(base)
-        return base
-
-    counter = 2
-    while f"{base}_{counter}" in used_names:
-        counter += 1
-
-    result = f"{base}_{counter}"
-    used_names.add(result)
-    return result
 
 
 def create_data_array(
@@ -267,7 +228,7 @@ def export_solution(solution: solver.Solution, output_dir: Path) -> None:
             continue
 
         # Generate sanitized filename
-        filename = _sanitize_filename(layer_name, used_names)
+        filename = sanitize_filename(layer_name, used_names)
         output_file = output_dir / f"{filename}.vtu"
 
         # Create root structure for this layer

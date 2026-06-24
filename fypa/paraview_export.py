@@ -20,87 +20,21 @@ scalar at each via location.
 from __future__ import annotations
 
 import logging
-import re
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from pdnsolver.vtu_fields import (
+    global_voltage_max,
+    per_vertex_fields,
+    sanitize_filename,
+)
+
 log = logging.getLogger(__name__)
 
 # VTK cell type for a single vertex (used by vias.vtu).
 _VTK_VERTEX: int = 1
-
-
-def _sanitize_filename(name: str, used_names: set[str],
-                       fallback_prefix: str = "layer") -> str:
-    """Map a layer name to a safe, unique filename stem."""
-    if not name or not name.strip():
-        base = fallback_prefix
-    else:
-        base = re.sub(r"[^a-zA-Z0-9_.-]", "_", name.strip())
-        base = re.sub(r"_+", "_", base).strip("_")
-        if not base:
-            base = fallback_prefix
-    if base not in used_names:
-        used_names.add(base)
-        return base
-    counter = 2
-    while f"{base}_{counter}" in used_names:
-        counter += 1
-    result = f"{base}_{counter}"
-    used_names.add(result)
-    return result
-
-
-def _face_to_vertex_average(tris: np.ndarray, face_values: np.ndarray,
-                            n_verts: int) -> np.ndarray:
-    """Average face-defined values onto vertices."""
-    totals = np.zeros(n_verts, dtype=np.float64)
-    counts = np.zeros(n_verts, dtype=np.float64)
-    if tris.size == 0:
-        return totals
-    np.add.at(totals, tris[:, 0], face_values)
-    np.add.at(totals, tris[:, 1], face_values)
-    np.add.at(totals, tris[:, 2], face_values)
-    np.add.at(counts, tris[:, 0], 1.0)
-    np.add.at(counts, tris[:, 1], 1.0)
-    np.add.at(counts, tris[:, 2], 1.0)
-    counts[counts == 0] = 1.0
-    return totals / counts
-
-
-def _per_vertex_fields(
-    tris: np.ndarray,
-    pots: np.ndarray,
-    power_density: np.ndarray | None,
-    conductance: float,
-    *,
-    voltage_drop_reference: float | None = None,
-) -> dict[str, np.ndarray]:
-    """Compute the viewer heatmap quantities at mesh vertices."""
-    n_verts = int(pots.shape[0])
-    voltage = np.asarray(pots, dtype=np.float64)
-    if voltage_drop_reference is None:
-        ref = float(voltage.max()) if voltage.size else 0.0
-    else:
-        ref = float(voltage_drop_reference)
-    voltage_drop = voltage - ref
-
-    if power_density is None:
-        pd_at_verts = np.zeros(n_verts, dtype=np.float64)
-    else:
-        pd_at_verts = _face_to_vertex_average(
-            tris, np.asarray(power_density, dtype=np.float64), n_verts,
-        )
-    current_density = np.sqrt(np.maximum(pd_at_verts * conductance, 0.0))
-
-    return {
-        "voltage": voltage,
-        "voltage_drop": voltage_drop,
-        "current_density": current_density,
-        "power_density": pd_at_verts,
-    }
 
 
 def _write_scalar_arrays(parent, fields: dict[str, np.ndarray],
@@ -277,6 +211,14 @@ def export_lean_solution(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    if voltage_drop_reference is None:
+        all_pots = [
+            pots
+            for layer_solution in solution.layer_solutions
+            for pots in layer_solution.potentials
+        ]
+        voltage_drop_reference = global_voltage_max(all_pots)
+
     used_names: set[str] = set()
     total_files = 0
     total_pieces = 0
@@ -295,10 +237,10 @@ def export_lean_solution(
             log.warning("Skipping layer %r — no non-empty meshes", layer_name)
             continue
 
-        stem = _sanitize_filename(layer_name, used_names)
+        stem = sanitize_filename(layer_name, used_names)
         pieces = []
         for xys, tris, pots, pd in components:
-            fields = _per_vertex_fields(
+            fields = per_vertex_fields(
                 tris, pots, pd, conductance,
                 voltage_drop_reference=voltage_drop_reference,
             )

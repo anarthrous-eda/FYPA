@@ -18997,7 +18997,11 @@ class PdnViewer(QMainWindow):
                 log.warning(
                     "Via report unavailable for ParaView export", exc_info=True)
             n_files = export_lean_solution(
-                self.solution, Path(out_dir_str), via_rows=via_rows)
+                self.solution,
+                Path(out_dir_str),
+                via_rows=via_rows,
+                voltage_drop_reference=self._last_drop_reference,
+            )
         except Exception:
             log.exception(
                 "ParaView export to %s failed", out_dir_str)
