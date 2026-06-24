@@ -367,6 +367,10 @@ class RawStackupLayer:
     is_plane: bool
     plane_net_name: str | None
     mech_enabled: bool
+    # Distance an internal plane is pulled back from the board outline
+    # (Altium ``PLANE<n>PULLBACK``), in mm. 0.0 for signal layers and for
+    # planes that don't define a pullback.
+    plane_pullback_mm: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -409,6 +413,17 @@ class ExtractedProject:
     # Non-plated through holes (mounting / mechanical holes). Empty default
     # so older callers that build ExtractedProject without them keep working.
     npth_holes: tuple[RawHole, ...] = ()
+    # Internal-plane modelling rules, sourced from the Altium design rules.
+    # ``plane_clearance_mm`` is the anti-pad gap punched around a foreign-net
+    # through feature (PlaneClearance). The ``plane_relief_*`` fields describe
+    # the thermal relief that connects a same-net through feature to the plane
+    # (PlaneConnect): a ``plane_relief_air_gap_mm`` annular gap bridged by
+    # ``plane_relief_entries`` spokes of width ``plane_relief_conductor_width_mm``.
+    # All default to 0 / 4 so non-plane boards and the Gerber path are unaffected.
+    plane_clearance_mm: float = 0.0
+    plane_relief_air_gap_mm: float = 0.0
+    plane_relief_conductor_width_mm: float = 0.0
+    plane_relief_entries: int = 4
 
     def enabled_copper_layer_ids(self) -> list[int]:
         """Layer ids forming the actually-enabled copper stack, in Top→Bottom order.
@@ -962,7 +977,172 @@ def _extract_stackup(pcb) -> tuple[RawStackupLayer, ...]:
             plane_net_name=str(plane_name) if plane_name is not None else None,
             mech_enabled=bool(ls.mech_enabled),
         ))
+
+    # Internal-plane layers (legacy ids 39-54) are never present in the legacy
+    # ``LAYER1..32`` stackup above — they live only in the resolved physical
+    # stack. When the board assigns planes to nets, splice them in so the
+    # enabled-copper walk (which follows ``next_layer_id``, already pointing at
+    # the plane ids) traverses them and downstream geometry can model them.
+    # Boards with no plane assignments take the early return and are byte-for-
+    # byte unchanged.
+    if plane_map:
+        out = _splice_plane_layers(pcb, out, plane_map)
     return tuple(out)
+
+
+def _parse_mil_value(s) -> float:
+    """Parse an Altium dimension string like ``'20mil'`` to mm; 0.0 on blank
+    / unparseable input (rules legitimately carry empty strings)."""
+    if s is None:
+        return 0.0
+    txt = str(s).strip()
+    if not txt:
+        return 0.0
+    try:
+        return parse_mil_string(txt)
+    except ValueError:
+        try:
+            return mils_to_mm(float(txt))
+        except (TypeError, ValueError):
+            return 0.0
+
+
+def _extract_plane_rules(pcb) -> dict[str, float]:
+    """Read the PlaneClearance (anti-pad) and PlaneConnect (thermal relief)
+    design rules into a small dict of mm values.
+
+    Falls back to Altium's defaults (20 mil clearance, 10 mil relief air gap /
+    conductor width, 4 spokes) when a rule is absent, so a board that relies on
+    implicit defaults still gets sensible plane geometry.
+    """
+    clearance_mm = mils_to_mm(20.0)
+    air_gap_mm = mils_to_mm(10.0)
+    conductor_mm = mils_to_mm(10.0)
+    entries = 4
+    for r in getattr(pcb, "rules", ()) or ():
+        if not getattr(r, "enabled", True):
+            continue
+        kind = str(getattr(r, "rule_kind", "") or "")
+        if kind == "PlaneClearance":
+            v = _parse_mil_value(getattr(r, "clearance", ""))
+            if v > 0.0:
+                clearance_mm = v
+        elif kind == "PlaneConnect":
+            settings = getattr(r, "connect_settings", None) or {}
+            cs = settings.get("DEFAULT") or next(iter(settings.values()), None)
+            if cs is not None:
+                ag = _parse_mil_value(getattr(cs, "relief_air_gap", ""))
+                cw = _parse_mil_value(getattr(cs, "relief_conductor_width", ""))
+                if ag > 0.0:
+                    air_gap_mm = ag
+                if cw > 0.0:
+                    conductor_mm = cw
+                try:
+                    entries = int(str(getattr(cs, "relief_entries", "") or 4))
+                except (TypeError, ValueError):
+                    entries = 4
+    return {
+        "clearance_mm": clearance_mm,
+        "air_gap_mm": air_gap_mm,
+        "conductor_mm": conductor_mm,
+        "entries": float(entries),
+    }
+
+
+def _splice_plane_layers(
+    pcb,
+    legacy_rows: list[RawStackupLayer],
+    plane_net_by_id: dict[int, str],
+) -> list[RawStackupLayer]:
+    """Insert internal-plane :class:`RawStackupLayer` rows into the conductive
+    stack, ordered and dimensioned from the resolved physical layer stack.
+
+    The resolved stack is the only altium_monkey view that includes internal
+    planes (legacy ids 39-54) in physical order, with their copper thickness
+    and the sub-dielectric thicknesses between adjacent conductors. We use it
+    to rebuild the conductive chain (signal + plane) with correct
+    ``next_layer_id`` linkage and ``dielectric_thickness_mm`` (the gap to the
+    next conductor below). Per-layer copper thickness, display name and
+    mech flag are preserved from the legacy row when one exists, so signal
+    layers keep the exact values the legacy parser produced.
+    """
+    from altium_monkey.altium_record_types import PcbLayer
+    from altium_monkey.altium_resolved_layer_stack import (
+        resolved_layer_stack_from_pcbdoc,
+    )
+
+    ip1 = int(PcbLayer.INTERNAL_PLANE_1.value)
+    ip16 = int(PcbLayer.INTERNAL_PLANE_16.value)
+    board_record = getattr(pcb.board, "raw_record", {}) or {}
+
+    def _plane_pullback_mm(layer_id: int) -> float:
+        # PLANE<n>PULLBACK is keyed by the internal-plane index (1..16).
+        index = layer_id - ip1 + 1
+        return _parse_mil_value(board_record.get(f"PLANE{index}PULLBACK", ""))
+
+    def _is_conductor(rl) -> bool:
+        lid = rl.legacy_id
+        return lid is not None and (1 <= lid <= 32 or ip1 <= lid <= ip16)
+
+    resolved = list(resolved_layer_stack_from_pcbdoc(pcb).layers)
+
+    # Walk the resolved stack top→bottom, collecting each conductor with the
+    # summed dielectric thickness down to the next conductor.
+    conductors: list[tuple[int, float, float, str]] = []  # id, cu_mils, diel_mils, name
+    for i, rl in enumerate(resolved):
+        if not _is_conductor(rl):
+            continue
+        diel = 0.0
+        for nxt in resolved[i + 1:]:
+            if _is_conductor(nxt):
+                break
+            diel += float(nxt.thickness_mils or 0.0)
+        conductors.append(
+            (int(rl.legacy_id), float(rl.thickness_mils or 0.0), diel,
+             str(rl.display_name or "")))
+
+    legacy_by_id = {r.layer_id: r for r in legacy_rows}
+
+    rebuilt: list[RawStackupLayer] = []
+    for k, (lid, cu_mils, diel_mils, disp_name) in enumerate(conductors):
+        next_id = conductors[k + 1][0] if k + 1 < len(conductors) else 0
+        plane_net = plane_net_by_id.get(lid)
+        legacy = legacy_by_id.get(lid)
+        if legacy is not None:
+            # Signal layer already parsed: keep its copper/name/mech, only
+            # re-link next_layer_id and dielectric to the resolved neighbour
+            # (a no-op on plane-free boards, where the chain is unchanged).
+            rebuilt.append(RawStackupLayer(
+                layer_id=lid,
+                name=legacy.name,
+                copper_thickness_mm=legacy.copper_thickness_mm,
+                dielectric_thickness_mm=mils_to_mm(diel_mils),
+                next_layer_id=next_id,
+                is_plane=legacy.is_plane,
+                plane_net_name=legacy.plane_net_name,
+                mech_enabled=legacy.mech_enabled,
+            ))
+        else:
+            # Internal-plane layer, sourced wholly from the resolved stack.
+            rebuilt.append(RawStackupLayer(
+                layer_id=lid,
+                name=disp_name or f"Internal Plane {lid - ip1 + 1}",
+                copper_thickness_mm=mils_to_mm(cu_mils),
+                dielectric_thickness_mm=mils_to_mm(diel_mils),
+                next_layer_id=next_id,
+                is_plane=plane_net is not None,
+                plane_net_name=plane_net,
+                mech_enabled=False,
+                plane_pullback_mm=_plane_pullback_mm(lid),
+            ))
+
+    # Preserve any legacy rows the resolved conductive walk didn't cover
+    # (e.g. disabled / orphan layers) so nothing silently disappears.
+    covered = {r.layer_id for r in rebuilt}
+    for r in legacy_rows:
+        if r.layer_id not in covered:
+            rebuilt.append(r)
+    return rebuilt
 
 
 def _extract_sch_component(comp, schdoc_name: str) -> RawSchComponent | None:
@@ -1083,7 +1263,19 @@ def extract_project(prjpcb_path: str | Path,
         sch_components=_extract_sch_components(design),
         board_origin_mm=Pt2D(ox_mm, oy_mm),
         board_outline=_extract_board_outline(pcb, ox_mm, oy_mm),
+        **_plane_rule_kwargs(pcb),
     )
+
+
+def _plane_rule_kwargs(pcb) -> dict[str, float | int]:
+    """Plane modelling rules as ExtractedProject keyword args (empty-safe)."""
+    rules = _extract_plane_rules(pcb)
+    return {
+        "plane_clearance_mm": rules["clearance_mm"],
+        "plane_relief_air_gap_mm": rules["air_gap_mm"],
+        "plane_relief_conductor_width_mm": rules["conductor_mm"],
+        "plane_relief_entries": int(rules["entries"]),
+    }
 
 
 # --- self-check ---------------------------------------------------------------

@@ -25,9 +25,10 @@ Geometry rules
   Drill holes are subtracted from the pad shape.
 * **Vias** span the inclusive range ``[layer_start, layer_end]`` along the
   enabled copper stack; the barrel is the outer disc minus the drill hole.
-* **Plane layers** (``stackup.is_plane``) are currently emitted with a warning
-  and an empty geometry — the plane-as-negative-copper conversion needs a real
-  4-layer board with a plane to validate first.
+* **Plane layers** (``stackup.is_plane``) are flooded with their net's copper
+  over the board outline (see :func:`_plane_sheet_polygon`). Anti-pad and
+  thermal-relief detail around foreign-net through features is a deferred
+  fidelity refinement; it does not affect per-net connectivity.
 """
 from __future__ import annotations
 
@@ -625,24 +626,152 @@ def _net_index_by_name(proj: ExtractedProject, name: str | None) -> int:
     return NO_NET
 
 
+def _drop_holes(geom: shapely.geometry.base.BaseGeometry):
+    """Return ``geom`` with all interior rings removed (solid footprint)."""
+    if geom.is_empty:
+        return geom
+    if geom.geom_type == "Polygon":
+        return shapely.geometry.Polygon(geom.exterior)
+    if geom.geom_type == "MultiPolygon":
+        return shapely.ops.unary_union(
+            [shapely.geometry.Polygon(g.exterior) for g in geom.geoms])
+    return geom
+
+
+def _through_features_on_layer(
+    proj: ExtractedProject, layer_id: int, enabled_layers: list[int],
+) -> list[tuple[shapely.geometry.base.BaseGeometry, int]]:
+    """Solid copper footprints of every through feature (through-hole / multi
+    layer pad, and via barrel) crossing ``layer_id``, paired with their net."""
+    feats: list[tuple[shapely.geometry.base.BaseGeometry, int]] = []
+    for p in proj.pads:
+        if not (p.is_through_hole or p.layer_id == MULTI_LAYER_PAD_LAYER_ID):
+            continue
+        poly = _pad_polygon(p, layer_id)
+        if poly is not None and not poly.is_empty:
+            feats.append((_drop_holes(poly), p.net_index))
+    for v in proj.vias:
+        if not _via_on_layer(v, layer_id, enabled_layers):
+            continue
+        poly = _via_polygon(v)
+        if poly is not None and not poly.is_empty:
+            feats.append((_drop_holes(poly), v.net_index))
+    return feats
+
+
+def _thermal_spokes(
+    footprint: shapely.geometry.base.BaseGeometry,
+    air_gap_mm: float,
+    conductor_mm: float,
+    entries: int,
+) -> list[shapely.geometry.base.BaseGeometry]:
+    """Thermal-relief spokes bridging a same-net feature to the plane.
+
+    ``entries`` equal-width arms of width ``conductor_mm`` radiate from the
+    feature centre, long enough to cross the ``air_gap_mm`` clearance ring and
+    overlap into the surrounding plane copper, so the feature stays connected
+    through the relief instead of floating in its anti-pad."""
+    if entries <= 0 or conductor_mm <= 0.0:
+        return []
+    c = footprint.centroid
+    minx, miny, maxx, maxy = footprint.bounds
+    feat_radius = 0.5 * math.hypot(maxx - minx, maxy - miny)
+    reach = feat_radius + air_gap_mm + conductor_mm
+    spokes: list[shapely.geometry.base.BaseGeometry] = []
+    start = math.pi / 4.0  # 45° — Altium's default relief orientation
+    for i in range(entries):
+        ang = start + i * (2.0 * math.pi / entries)
+        tip = (c.x + reach * math.cos(ang), c.y + reach * math.sin(ang))
+        arm = shapely.geometry.LineString([(c.x, c.y), tip]).buffer(
+            conductor_mm / 2.0, cap_style="flat")
+        spokes.append(arm)
+    return spokes
+
+
+def _plane_sheet_polygon(
+    proj: ExtractedProject,
+    stackup,
+    enabled_layers: list[int],
+) -> shapely.geometry.base.BaseGeometry | None:
+    """Negative-copper sheet for one internal plane.
+
+    Built as: the board outline inset by the plane's pullback, minus an
+    anti-pad (footprint + ``plane_clearance``) around every foreign-net through
+    feature, minus a thermal air-gap around every same-net through feature,
+    with relief spokes added back so same-net features stay connected. Foreign
+    nets are isolated in their own (layer, net) buckets regardless, so the
+    anti-pads are a fidelity refinement; the pullback and reliefs are what make
+    the rendered/meshed plane match Altium.
+
+    Returns None when the project carries no usable board outline.
+    """
+    pts = proj.board_outline
+    if len(pts) < 3:
+        return None
+    try:
+        base: shapely.geometry.base.BaseGeometry = shapely.geometry.Polygon(
+            [(p.x, p.y) for p in pts])
+    except Exception as e:  # pragma: no cover — defensive
+        log.warning("Plane sheet skipped: board-outline Polygon ctor failed (%s)", e)
+        return None
+    if not base.is_empty and not base.is_valid:
+        base = shapely.make_valid(base)
+
+    pullback = float(getattr(stackup, "plane_pullback_mm", 0.0) or 0.0)
+    if pullback > 0.0:
+        base = base.buffer(-pullback, join_style="mitre")
+    if base.is_empty:
+        return None
+
+    net_index = _net_index_by_name(proj, stackup.plane_net_name)
+    clearance = float(proj.plane_clearance_mm)
+    air_gap = float(proj.plane_relief_air_gap_mm)
+    conductor = float(proj.plane_relief_conductor_width_mm)
+    entries = int(proj.plane_relief_entries)
+
+    holes: list[shapely.geometry.base.BaseGeometry] = []
+    spokes: list[shapely.geometry.base.BaseGeometry] = []
+    for footprint, fnet in _through_features_on_layer(
+            proj, stackup.layer_id, enabled_layers):
+        if net_index != NO_NET and fnet == net_index:
+            holes.append(footprint.buffer(air_gap))
+            spokes.extend(_thermal_spokes(footprint, air_gap, conductor, entries))
+        else:
+            holes.append(footprint.buffer(clearance))
+
+    sheet = base
+    if holes:
+        sheet = sheet.difference(shapely.ops.unary_union(holes))
+    if spokes:
+        sheet = sheet.union(shapely.ops.unary_union(spokes)).intersection(base)
+    if not sheet.is_empty and not sheet.is_valid:
+        sheet = shapely.make_valid(sheet)
+
+    mp = _ensure_multipolygon(sheet)
+    return mp if not mp.is_empty else None
+
+
 def build_layer_geometry(proj: ExtractedProject, layer_id: int,
                          enabled_layers: list[int]) -> GeometryLayer:
     stackup_by_id = {s.layer_id: s for s in proj.stackup}
     stackup = stackup_by_id[layer_id]
 
     if stackup.is_plane:
-        # Planes are negative copper: full layer minus clearances around
-        # non-plane-net features. We need the board outline to render this
-        # correctly and we have not exposed it yet, so emit a warning and
-        # return an empty layer. Stage 2.5 will fill this in once we have a
-        # 4-layer test board with a real plane.
-        log.warning("Layer %d (%s) is a plane (net=%s); plane geometry not yet"
-                    " implemented — emitting empty layer.",
-                    layer_id, stackup.name, stackup.plane_net_name)
+        # Planes are negative copper: the board outline (inset by the plane
+        # pullback) flooded on the plane's net, cleared around foreign features
+        # and thermal-relieved to same-net features (see _plane_sheet_polygon).
+        sheet = _plane_sheet_polygon(proj, stackup, enabled_layers)
+        if sheet is None:
+            log.warning("Layer %d (%s) is a plane (net=%s) but the board has no"
+                        " outline to flood — emitting empty layer.",
+                        layer_id, stackup.name, stackup.plane_net_name)
+            shape = shapely.geometry.MultiPolygon()
+        else:
+            shape = _ensure_multipolygon(sheet)
         return GeometryLayer(
             layer_id=layer_id,
             name=stackup.name,
-            shape=shapely.geometry.MultiPolygon(),
+            shape=shape,
             conductance=stackup.copper_thickness_mm * COPPER_CONDUCTIVITY_S_PER_MM,
             is_plane=True,
             plane_net_index=_net_index_by_name(proj, stackup.plane_net_name),
@@ -772,7 +901,8 @@ def build_per_net_geometry_layers(proj: ExtractedProject) -> list[GeometryLayer]
     impossible.
 
     Empty per-net shapes (a net having no copper on that layer) are dropped.
-    Plane layers are skipped pending the deferred plane-implementation work.
+    Internal-plane layers are flooded with their net's sheet over the board
+    outline and included as ordinary per-net conductors.
     """
     enabled = proj.enabled_copper_layer_ids()
     if not enabled:
@@ -787,26 +917,32 @@ def _shapes_to_geometry_layers(
     shapes: dict[tuple[int, int], shapely.geometry.base.BaseGeometry],
 ) -> list[GeometryLayer]:
     """Wrap a ``{(layer_id, net_index): unioned_shape}`` dict into
-    :class:`GeometryLayer` objects, dropping empty shapes and plane layers."""
+    :class:`GeometryLayer` objects, dropping empty shapes.
+
+    Internal-plane layers are included (their flooded sheet is bucketed under
+    the plane net by :func:`_build_net_layer_buckets`); the resulting layer is
+    tagged ``is_plane`` with ``plane_net_index`` set to its net."""
     stackup_by_id = {s.layer_id: s for s in proj.stackup}
     out: list[GeometryLayer] = []
     for (lid, net_index), raw_shape in shapes.items():
         if raw_shape.is_empty:
             continue
         stackup = stackup_by_id.get(lid)
-        if stackup is None or stackup.is_plane:
+        if stackup is None:
             continue
         mp = _ensure_multipolygon(raw_shape)
         if mp.is_empty:
             continue
         net_name = proj.nets[net_index].name if 0 <= net_index < len(proj.nets) else "?"
+        is_plane = stackup.is_plane and net_index == _net_index_by_name(
+            proj, stackup.plane_net_name)
         out.append(GeometryLayer(
             layer_id=lid,
             name=f"{stackup.name}|{net_name}",
             shape=mp,
             conductance=stackup.copper_thickness_mm * COPPER_CONDUCTIVITY_S_PER_MM,
-            is_plane=False,
-            plane_net_index=NO_NET,
+            is_plane=is_plane,
+            plane_net_index=net_index if is_plane else NO_NET,
             net_index=net_index,
         ))
     return out
@@ -937,6 +1073,12 @@ def _build_net_layer_buckets(
     """
     buckets: dict[tuple[int, int], list[shapely.geometry.base.BaseGeometry]] = {}
     enabled_set = set(enabled_layers)
+    # On a negative internal-plane layer, tracks / arcs / regions / fills are
+    # plane-defining artwork (the flood boundary and split lines), NOT copper —
+    # e.g. the boundary track is drawn centred on the board edge, so half its
+    # width sits outside the outline. The plane's copper is the synthesised
+    # sheet alone, so this artwork is excluded from the copper buckets.
+    plane_layer_ids = {s.layer_id for s in proj.stackup if s.is_plane}
     _t_buckets = time.monotonic()
 
     def _add(layer_id: int, net_index: int, geom):
@@ -955,14 +1097,16 @@ def _build_net_layer_buckets(
     valid_tracks = [t for t in proj.tracks
                     if not t.is_keepout
                     and not t.is_polygon_outline
-                    and t.width_mm > 0]
+                    and t.width_mm > 0
+                    and t.layer_id not in plane_layer_ids]
     track_polys = _batch_buffer_tracks(valid_tracks)
     for t, poly in zip(valid_tracks, track_polys):
         _add(t.layer_id, t.net_index, poly)
 
     # Arcs: same vectorised-buffer trick.
     valid_arcs = [a for a in proj.arcs
-                  if not a.is_keepout and a.width_mm > 0]
+                  if not a.is_keepout and a.width_mm > 0
+                  and a.layer_id not in plane_layer_ids]
     arc_polys = _batch_buffer_arcs(valid_arcs)
     for a, poly in zip(valid_arcs, arc_polys):
         _add(a.layer_id, a.net_index, poly)
@@ -971,7 +1115,7 @@ def _build_net_layer_buckets(
     for r in proj.regions:
         if r.is_keepout or r.is_polygon_outline or r.is_board_cutout or r.kind != 0:
             continue
-        if len(r.outline) < 3:
+        if len(r.outline) < 3 or r.layer_id in plane_layer_ids:
             continue
         if _skip_region_as_duplicate(r, sbr_poly_indices):
             continue
@@ -980,12 +1124,12 @@ def _build_net_layer_buckets(
     for r in proj.shape_based_regions:
         if r.is_keepout or r.is_polygon_outline or r.is_board_cutout or r.kind != 0:
             continue
-        if len(r.outline) < 3:
+        if len(r.outline) < 3 or r.layer_id in plane_layer_ids:
             continue
         _add(r.layer_id, r.net_index, _shape_based_region_polygon(r))
 
     for f in proj.fills:
-        if f.is_keepout:
+        if f.is_keepout or f.layer_id in plane_layer_ids:
             continue
         _add(f.layer_id, f.net_index, _fill_polygon(f))
 
@@ -1009,10 +1153,30 @@ def _build_net_layer_buckets(
             poly = _via_polygon(v)
             if poly is None:
                 continue
-            span = [lid for lid in enabled_layers
-                    if min(v.layer_start, v.layer_end) <= lid <= max(v.layer_start, v.layer_end)]
-            for lid in span:
-                _add(lid, v.net_index, poly)
+            # Span by physical stack position (not raw layer id): internal
+            # planes carry ids 39-54 that fall outside a Top..Bottom id range
+            # but sit physically between them, so a raw-id range would skip
+            # them. _via_on_layer walks the enabled order, so the via barrel
+            # correctly lands on (and stitches to) any plane it passes through.
+            for lid in enabled_layers:
+                if _via_on_layer(v, lid, enabled_layers):
+                    _add(lid, v.net_index, poly)
+
+    # Internal-plane layers carry no copper primitives of their own: flood each
+    # enabled plane layer with its net's solid sheet so the plane is a real
+    # conductor in the per-net FEM. It unions with the same-net via/pad discs
+    # already bucketed onto this layer above (the vias that stitch the plane to
+    # top/bottom copper), keeping the rail connected.
+    for s in proj.stackup:
+        if not s.is_plane or s.layer_id not in enabled_set:
+            continue
+        net_index = _net_index_by_name(proj, s.plane_net_name)
+        if net_index == NO_NET:
+            continue
+        # Per-plane: pullback and net differ, so the sheet is built per layer.
+        plane_sheet = _plane_sheet_polygon(proj, s, enabled_layers)
+        if plane_sheet is not None:
+            _add(s.layer_id, net_index, plane_sheet)
 
     log.info("build_net_layer_shapes: buffered primitives into %d (layer, net) "
              "bucket(s) in %.2fs", len(buckets), time.monotonic() - _t_buckets)

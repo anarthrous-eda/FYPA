@@ -1675,8 +1675,14 @@ def build_solve_metadata(
         "shape_based_regions": [],
         "fills": [],
     }
+    # Artwork on a negative internal-plane layer (boundary / split lines) is not
+    # copper — it's excluded from the rendered geometry (altium_geometry), so
+    # skip it here too, leaving only the selectable plane sheet emitted below.
+    _plane_layer_ids = {s.layer_id for s in proj.stackup if s.is_plane}
     for i, t in enumerate(proj.tracks):
         _gil_yield(i)
+        if int(t.layer_id) in _plane_layer_ids:
+            continue
         primitives["tracks"].append({
             "id": len(primitives["tracks"]),
             "kind": "track",
@@ -1690,6 +1696,8 @@ def build_solve_metadata(
         })
     for i, a in enumerate(proj.arcs):
         _gil_yield(i)
+        if int(a.layer_id) in _plane_layer_ids:
+            continue
         primitives["arcs"].append({
             "id": len(primitives["arcs"]),
             "kind": "arc",
@@ -1704,6 +1712,8 @@ def build_solve_metadata(
         })
     for i, rg in enumerate(proj.regions):
         _gil_yield(i)
+        if int(rg.layer_id) in _plane_layer_ids:
+            continue
         primitives["regions"].append({
             "id": len(primitives["regions"]),
             "kind": "region",
@@ -1724,6 +1734,8 @@ def build_solve_metadata(
     # the properties panel.
     for i, rg in enumerate(proj.shape_based_regions):
         _gil_yield(i)
+        if int(rg.layer_id) in _plane_layer_ids:
+            continue
         pts: list[list[float]] = []
         arc_count = 0
         n = len(rg.outline)
@@ -1761,6 +1773,8 @@ def build_solve_metadata(
         })
     for i, f in enumerate(proj.fills):
         _gil_yield(i)
+        if int(f.layer_id) in _plane_layer_ids:
+            continue
         primitives["fills"].append({
             "id": len(primitives["fills"]),
             "kind": "fill",
@@ -1771,6 +1785,37 @@ def build_solve_metadata(
             "rotation_deg": float(f.rotation_deg),
             "is_keepout": bool(f.is_keepout),
         })
+    # Internal-plane copper is a flooded negative sheet synthesised in
+    # altium_geometry — it has no Altium source primitive, so without this it
+    # would be unselectable in the viewer. Emit one selectable record per plane
+    # polygon (from the computed plane geometry) so a click hit-tests and
+    # selects the plane just like a polygon fill, with its anti-pad holes
+    # carried through for an accurate outline.
+    primitives["planes"] = []
+    for gl in (per_net_layers or []):
+        if not getattr(gl, "is_plane", False):
+            continue
+        shape = getattr(gl, "shape", None)
+        if shape is None or shape.is_empty:
+            continue
+        net = _net_name(gl.plane_net_index)
+        polys = (list(shape.geoms)
+                 if shape.geom_type == "MultiPolygon" else [shape])
+        for poly in polys:
+            ext = getattr(poly, "exterior", None)
+            if ext is None or ext.is_empty:
+                continue
+            primitives["planes"].append({
+                "id": len(primitives["planes"]),
+                "kind": "plane",
+                "layer_id": int(gl.layer_id),
+                "net": net,
+                "outline": [[float(x), float(y)] for x, y in ext.coords],
+                "holes": [[[float(x), float(y)] for x, y in h.coords]
+                          for h in getattr(poly, "interiors", [])
+                          if not h.is_empty],
+                "is_keepout": False,
+            })
 
     # ``problem`` is None on the editor-mode stub path (an Altium project
     # loaded without any SOURCE/REGULATOR directive, opened for manual setup

@@ -12964,7 +12964,7 @@ class PdnViewer(QMainWindow):
         md = self.metadata or {}
         prims = md.get("primitives") or {}
         for bucket in ("tracks", "arcs", "regions",
-                       "shape_based_regions", "fills"):
+                       "shape_based_regions", "fills", "planes"):
             for rec in prims.get(bucket, []):
                 key = (int(rec.get("layer_id", -1)),
                        str(rec.get("net", "")))
@@ -13030,7 +13030,7 @@ class PdnViewer(QMainWindow):
                 rot = float(prim.get("rotation_deg", 0.0) or 0.0)
                 shp = (_sa.rotate(box, rot, origin="center")
                        if rot else box)
-            elif kind in ("region", "shape_based_region"):
+            elif kind in ("region", "shape_based_region", "plane"):
                 outline = prim.get("outline") or []
                 if len(outline) >= 3:
                     holes = [h for h in (prim.get("holes") or [])
@@ -13288,6 +13288,7 @@ class PdnViewer(QMainWindow):
             "fill": "Fill",
             "region": "Region",
             "shape_based_region": "Region (shape-based)",
+            "plane": "Plane",
             "via": "Via",
             "pth": "Through-hole pad",
             "pad": "Pad",
@@ -13385,6 +13386,22 @@ class PdnViewer(QMainWindow):
                 add("Keepout", "yes")
             if rec.get("is_board_cutout"):
                 add("Board cutout", "yes")
+        elif kind == "plane":
+            shp = rec.get("_shape")
+            if shp is None:
+                self._primitive_prepared_shape(rec)
+                shp = rec.get("_shape")
+            add("Type", "Internal plane (negative)")
+            if shp is not None:
+                minx, miny, maxx, maxy = shp.bounds
+                add("Bounding box",
+                    f"x: {minx:.3f} → {maxx:.3f} mm\n"
+                    f"y: {miny:.3f} → {maxy:.3f} mm")
+                add("Area", f"{shp.area:.4f} mm²")
+                n_clear = len(getattr(shp, "interiors", [])) if (
+                    shp.geom_type == "Polygon") else sum(
+                    len(g.interiors) for g in getattr(shp, "geoms", []))
+                add("Clearances", f"{n_clear}")
         elif kind in ("via", "pth"):
             add("Center",
                 self._fmt_xy(rec.get("x_mm"), rec.get("y_mm")))
