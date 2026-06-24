@@ -14,8 +14,6 @@ from fypa.navlib_camera import (
     model_extents_from_bounds,
     orbital_from_camera_position,
     parse_camera_center_2d,
-    parse_camera_pose_3d,
-    parse_camera_matrix_2d,
     parse_camera_matrix_3d,
     NAVLIB_FIT_PADDING,
     perspective_fit_distance_mm,
@@ -23,7 +21,15 @@ from fypa.navlib_camera import (
     view_extents_2d,
     zoom_mpp_from_view_extents_2d,
 )
-from fypa.spacemouse_nav import SpaceMouseController
+from fypa.spacemouse_nav import FypaNavlibClient, SpaceMouseController
+
+# The NavLib client class only exists when the optional `pynavlib` backend is
+# installed (Windows/macOS + `uv sync --extra spacemouse`). CI syncs without
+# the extra, so guard the tests that poke the client directly.
+_needs_navlib = pytest.mark.skipif(
+    FypaNavlibClient is None,
+    reason="pynavlib backend not installed (uv sync --extra spacemouse)",
+)
 
 
 class TestNavlibCamera2D:
@@ -210,6 +216,7 @@ class TestNavlib3DPan:
 
         GLMeshViewer.apply_navlib_3d_pose(viewer, new_pivot, m)
         assert viewer._cam_target == new_pivot
+    @_needs_navlib
     def test_key_press_does_not_trigger_app_fit(self):
         client = MagicMock()
         client._gui = MagicMock()
@@ -218,6 +225,7 @@ class TestNavlib3DPan:
         FypaNavlibClient.set_key_press(client, _V3DK_FIT)
         client._gui.fit_requested.emit.assert_not_called()
 
+    @_needs_navlib
     def test_active_command_does_not_trigger_fit(self):
         client = MagicMock()
         client._gui = MagicMock()
