@@ -205,6 +205,13 @@ def export_lean_solution(
     ``current_density`` and ``power_density`` arrays. When ``via_rows`` is
     given, an extra ``vias.vtu`` point cloud is written.
 
+    ``voltage_drop`` is measured against ``voltage_drop_reference`` (pass the
+    viewer's drop reference so the export matches the interactive heatmap).
+    When unset it defaults to the global max potential across all layers — note
+    that on a multi-rail board this references every layer to the single
+    highest rail, so prefer passing the viewer reference when exporting a
+    specific rail.
+
     Returns the number of files written. Layers with no mesh components
     are skipped.
     """

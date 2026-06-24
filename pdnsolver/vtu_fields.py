@@ -85,10 +85,17 @@ def per_vertex_fields(
 
 
 def global_voltage_max(layer_potentials) -> float:
-    """Return the maximum vertex potential across all layer mesh components."""
-    peak = 0.0
+    """Return the maximum vertex potential across all layer mesh components.
+
+    The peak is seeded from the data, not floored at zero, so an all-negative
+    solution returns its true (negative) max — matching the per-island
+    fallback in :func:`per_vertex_fields`. Returns ``0.0`` only when there is
+    no data at all.
+    """
+    peak: float | None = None
     for pots in layer_potentials:
         arr = np.asarray(pots, dtype=np.float64)
         if arr.size:
-            peak = max(peak, float(arr.max()))
-    return peak
+            layer_peak = float(arr.max())
+            peak = layer_peak if peak is None else max(peak, layer_peak)
+    return 0.0 if peak is None else peak
