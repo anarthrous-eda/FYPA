@@ -36,6 +36,12 @@ dependencies = [
     "shapely==2.1.2",
     "triangle==20250106",
 
+    # In-process Clipper2 polygon engine — the default copper-fuse backend
+    # (fypa._clipper_fuse), ~2x faster than the threaded shapely union on large
+    # boards. shapely stays as the automatic fallback (on error or if this is
+    # ever absent), and FYPA_FUSE_BACKEND=shapely forces the legacy path.
+    "pyclipr==0.1.8",
+
     # Fast direct linear solver (MKL PARDISO). Optional but strongly
     # recommended — several times faster than scipy's SuperLU on large boards.
     # pdnsolver.solver falls back to SuperLU automatically if it is absent.

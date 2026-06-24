@@ -818,6 +818,7 @@ def _excellon_to_vias(
     become NPTH holes (drawn, not meshed) instead of being discarded.
     """
     from gerbonara import ExcellonFile
+    from gerbonara.utils import MM
 
     vias: list[RawVia] = []
     npth: list[RawHole] = []
@@ -837,15 +838,16 @@ def _excellon_to_vias(
             continue
         for d in ef.objects:
             try:
-                x = float(d.x)
-                y = float(d.y)
-                if str(d.unit) == "inch":
-                    x *= 25.4
-                    y *= 25.4
+                # Let gerbonara handle inch/mm conversion. Its LengthUnit
+                # ``__str__`` returns the shorthand ("in"), so the old
+                # ``str(d.unit) == "inch"`` check never matched and inch drill
+                # files came through 25.4x too small (all holes bunched at the
+                # origin). ``convert_from`` is unit-aware and a no-op for
+                # mm / unit-less files.
+                x = float(MM.convert_from(d.unit, d.x))
+                y = float(MM.convert_from(d.unit, d.y))
                 tool = d.tool        # ExcellonTool
-                diam_mm = float(tool.diameter)
-                if str(tool.unit) == "inch":
-                    diam_mm *= 25.4
+                diam_mm = float(tool.equivalent_width(MM))
             except Exception as e:
                 warnings.append(
                     f"Skipping malformed drill record in {path.name} "

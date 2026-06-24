@@ -39,9 +39,13 @@ directive — supplying both, or neither, is an error. Single-net mode is
 SOURCE/SINK only (SERIES bridges two nets; REGULATOR has four terminals).
 
 Current still has to flow in a closed loop: a single-net analysis needs at
-least one SOURCE *and* one SINK on the same net (a group with only one is an
-"open loop" error). Every SOURCE and SINK that shares a net must use the same
-mode — a group cannot mix single-net and two-terminal directives.
+least one SOURCE *and* one SINK on the same net. A rail with only one type
+(an "open loop") can't carry current, so it is skipped — not solved — with a
+per-rail warning, while the rest of the board still solves; the directives are
+kept so the viewer still draws their markers (see
+:func:`fypa.altium.loader._flag_open_loop_rails`). Every SOURCE and SINK that
+shares a net must use the same mode — a group cannot mix single-net and
+two-terminal directives (that *is* still an error).
 
 Multi-channel SOURCE / SINK
 ---------------------------
@@ -774,6 +778,12 @@ class SourceSpec(_BaseSpec):
     # Single-net directives sharing one analysis group share a return node so
     # their current loop closes; ``None`` for two-terminal directives.
     return_group: int | None = None
+    # True => this directive sits on a single-type rail (only sources or only
+    # sinks) that can't carry current, so ``build_problem`` excludes it from
+    # the FEM. The directive is still kept in ``AnnotationResult.directives``
+    # so the viewer keeps drawing its marker — see
+    # :func:`fypa.altium.loader._flag_open_loop_rails`.
+    solve_excluded: bool = False
 
 
 @dataclass(frozen=True)
@@ -787,6 +797,7 @@ class SinkSpec(_BaseSpec):
     # viewer's Nodes table compares the sink's actual P-terminal voltage
     # against this limit and flags pass / fail per pin.
     min_voltage: float | None = None
+    solve_excluded: bool = False  # see SourceSpec.solve_excluded
 
 
 @dataclass(frozen=True)
@@ -795,6 +806,7 @@ class ResistorSpec(_BaseSpec):
     p: TerminalSpec
     n: TerminalSpec
     channel_index: int | None = None  # None = legacy unindexed; int = PDN<n>_*
+    solve_excluded: bool = False  # see SourceSpec.solve_excluded
 
 
 @dataclass(frozen=True)
@@ -806,6 +818,7 @@ class RegulatorSpec(_BaseSpec):
     in_p: TerminalSpec
     in_n: TerminalSpec
     channel_index: int | None = None  # None = legacy unindexed; int = PDN<n>_*
+    solve_excluded: bool = False  # see SourceSpec.solve_excluded
 
 
 DirectiveSpec = SourceSpec | SinkSpec | ResistorSpec | RegulatorSpec
@@ -816,6 +829,18 @@ class AnnotationResult:
     directives: list[DirectiveSpec] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    # Per-rail "won't be solved" notices for single-type rails (only sources
+    # or only sinks). A subset of ``warnings`` (also shown in the Setup tab),
+    # kept separately so the GUI can pop them as an active dialog on load /
+    # after Resolve. Populated by
+    # :func:`fypa.altium.loader._flag_open_loop_rails`.
+    open_loop_rails: list[str] = field(default_factory=list)
+    # Per-net "source and sink are on disconnected copper" notices. Unlike
+    # open_loop_rails these rails ARE solved, but the result is unreliable (no
+    # copper path closes the current loop, so the sink reads ~0 V and the FEM
+    # injects a large ground-balancing current). Surfaced as an active dialog
+    # like open_loop_rails. Populated by :func:`fypa.altium.loader.build_problem`.
+    connectivity_breaks: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -1369,9 +1394,12 @@ def _validate_directive_groups(result: AnnotationResult,
 
     * single-net (``PDN_NET``) and two-terminal (``PDN_P_NET``/``PDN_N_NET``)
       SOURCE/SINK directives may not be mixed — they disagree on the return
-      path; and
-    * a single-net group needs at least one SOURCE *and* one SINK, else no
-      current flows (an open loop).
+      path (this is an error).
+
+    The open-loop check (a group with only sources or only sinks) is NOT done
+    here — it moved to :func:`fypa.altium.loader._flag_open_loop_rails`, which
+    runs over the final merged directive list at solve time so the rail is
+    skipped and warned about rather than blocking the whole board.
 
     Single-net directives in one group are stamped with a shared
     ``return_group`` id; the loader gives each group one ideal-return node so
@@ -1441,18 +1469,14 @@ def _validate_directive_groups(result: AnnotationResult,
             continue
         if not single:
             continue
-        if not any(isinstance(d, SourceSpec) for d in single):
-            result.errors.append(
-                f"single-net group ({labels}): has a SINK but no SOURCE — no "
-                f"current can flow (open loop). Add a single-net SOURCE on "
-                f"the same net."
-            )
-        if not any(isinstance(d, SinkSpec) for d in single):
-            result.errors.append(
-                f"single-net group ({labels}): has a SOURCE but no SINK — no "
-                f"current can flow (open loop). Add a single-net SINK on the "
-                f"same net."
-            )
+        # NOTE: the open-loop check (a single-net group with only sources or
+        # only sinks) used to be a hard error here, which blocked the whole
+        # board from solving. It now lives in
+        # :func:`fypa.altium.loader._flag_open_loop_rails`, which runs over the
+        # final merged directive list (schematic + editor) at solve time: it
+        # marks just that rail ``solve_excluded`` and warns, so the rest of
+        # the board still solves and the markers are kept. The ``return_group``
+        # stamping below stays so a closed single-net loop still works.
         return_group_by_root[root] = next_group_id
         next_group_id += 1
 

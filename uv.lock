@@ -318,6 +318,7 @@ dependencies = [
     { name = "lxml" },
     { name = "matplotlib" },
     { name = "numpy" },
+    { name = "pyclipr" },
     { name = "pyopengl" },
     { name = "pyopengl-accelerate" },
     { name = "pypardiso" },
@@ -349,6 +350,7 @@ requires-dist = [
     { name = "matplotlib", specifier = "==3.10.9" },
     { name = "numpy", specifier = "==2.2.3" },
     { name = "pynavlib", marker = "(sys_platform == 'darwin' and extra == 'spacemouse') or (sys_platform == 'win32' and extra == 'spacemouse')", specifier = "==0.9.4" },
+    { name = "pyclipr", specifier = "==0.1.8" },
     { name = "pyopengl", specifier = "==3.1.10" },
     { name = "pyopengl-accelerate", specifier = "==3.1.10" },
     { name = "pypardiso", specifier = "==0.4.7" },
@@ -811,6 +813,23 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/61/7c/5c0d34aa3024694d6dcb9271cdbdd08c4e47c1c0ad95ec7e7bc74cdea145/propcache-0.5.2-cp312-cp312-win_amd64.whl", hash = "sha256:d9ee8826a7d47863a08ac44e1a5f611a462eefc3a194b492da242128bec75b42", size = 42322, upload-time = "2026-05-08T21:00:32.918Z" },
     { url = "https://files.pythonhosted.org/packages/4d/91/875812f1a3feb20ceba818ef39fbe4d92f1081e04ac815c822496d0d038b/propcache-0.5.2-cp312-cp312-win_arm64.whl", hash = "sha256:2800a4a8ead6b28cccd1ec54b59346f0def7922ee1c7598e8499c733cfbb7c84", size = 38172, upload-time = "2026-05-08T21:00:35.124Z" },
     { url = "https://files.pythonhosted.org/packages/3a/ed/1cdcab6ba3d6ab7feca11fc14f0eeea80755bb53ef4e892079f31b10a25f/propcache-0.5.2-py3-none-any.whl", hash = "sha256:be1ddfcbb376e3de5d2e2db1d58d6d67463e6b4f9f040c000de8e300295465fe", size = 14036, upload-time = "2026-05-08T21:02:10.673Z" },
+]
+
+[[package]]
+name = "pyclipr"
+version = "0.1.8"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e3/96/c8049cfb9166c1f50d878535f2d1cdae1303e994dea7783a3f9075aa0679/pyclipr-0.1.8.tar.gz", hash = "sha256:ff8360330f827dc4801a57cd18d3bc925814b6a9a05f14be1e0f8f72cc27488f", size = 4553790, upload-time = "2026-02-01T16:04:55.479Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/63/9f/26b36527d36d6589fa2e6148eddda63cfb355e6a157080f7887ad5ade88c/pyclipr-0.1.8-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:d20f0e81671ad9e490036d68b475d65a54ad794f890b363ed4525004f4c9bedf", size = 196392, upload-time = "2026-02-01T16:04:36.813Z" },
+    { url = "https://files.pythonhosted.org/packages/f9/1c/6d6e660f015362636bf0b0ae7d2f9eba110b1080d89dec355cdc6c0b8222/pyclipr-0.1.8-cp311-cp311-macosx_15_0_arm64.whl", hash = "sha256:bcb37cee65c82229f34704c305b3ad174c3e91a108f5b9e95467b68036dd06dd", size = 192257, upload-time = "2026-02-01T16:04:38.276Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/e9/b38300f5d15f404a6f5aa9050d6e33f6dbca334d649e60364cc89a8df1d7/pyclipr-0.1.8-cp311-cp311-win_amd64.whl", hash = "sha256:c453c85664245beb94e1b2bf49f441faa640da73832a59cfa6a6fbd340e3d890", size = 192242, upload-time = "2026-02-01T16:04:39.667Z" },
+    { url = "https://files.pythonhosted.org/packages/82/d4/1758ae1390f02f7dccddec8186f04e1e982a59bd978918a381a10e7ccd67/pyclipr-0.1.8-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:3517ce2f86f201bb7be0894bfd368d9e446e2b0c74914b80bdeee551ccc6ee82", size = 197991, upload-time = "2026-02-01T16:04:40.771Z" },
+    { url = "https://files.pythonhosted.org/packages/bb/bf/e686ab34bf5f45a64548e590a6c794e6dcde56b8c08f1c60bec9ba620ec8/pyclipr-0.1.8-cp312-cp312-macosx_15_0_arm64.whl", hash = "sha256:f961a754b114f69f1638bafd98df60e2fba672ccd921ea5bf2173e271ede43f9", size = 192797, upload-time = "2026-02-01T16:04:41.726Z" },
+    { url = "https://files.pythonhosted.org/packages/a8/a7/756c10ddbf4f69eb37aeb3d895a29824d5285975db254570758eba57656a/pyclipr-0.1.8-cp312-cp312-win_amd64.whl", hash = "sha256:502e3404f72186a5571a0d9dddbc2c9b493cb3b56598d4800de3e67e5dc0a5fd", size = 193346, upload-time = "2026-02-01T16:04:42.669Z" },
 ]
 
 [[package]]

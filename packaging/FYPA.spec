@@ -47,6 +47,10 @@ a = Analysis(
         # 3Dconnexion SpaceMouse (optional extra: uv sync --extra spacemouse)
         'pynavlib',
         'pynavlib.pynavlib_interface',
+        # Clipper2 fuse backend (compiled pybind11 ext) is imported behind a
+        # try/except in fypa/_clipper_fuse.py, which PyInstaller's analysis can
+        # skip — name it explicitly so the default fuse backend ships.
+        'pyclipr',
     ] + _altium_monkey_submodules,
     hookspath=[],
     hooksconfig={},

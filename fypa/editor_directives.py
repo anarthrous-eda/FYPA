@@ -205,10 +205,6 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
                      "directive(s) overridden by the editor.", dropped)
 
     applied = 0
-    # Roles applied per return group + a representative rail net name, so an
-    # open-loop rail (sinks but no source, or vice versa) can be flagged.
-    group_roles: dict[int, set[str]] = {}
-    group_net: dict[int, str] = {}
     for ed in editor_directives:
         label = ed.designator or f"editor:{ed.id}"
         if ed.role not in ("SOURCE", "SINK", "SERIES"):
@@ -306,27 +302,13 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
             )
         loaded.annotations.directives.append(spec)
         applied += 1
-        if return_group is not None:
-            group_roles.setdefault(return_group, set()).add(ed.role)
-            group_net.setdefault(return_group, ed.p_net or "?")
 
-    # A single-net rail only carries current with at least one SOURCE AND
-    # one SINK sharing it. Warn (rather than abort) so the rest of the solve
-    # still runs — but an open-loop rail solves to an unreliable result.
-    for gid, roles in group_roles.items():
-        rail = group_net.get(gid, "?")
-        if "SOURCE" not in roles:
-            warnings.append(
-                f"Editor rail {rail!r}: single-net SINK(s) with no SOURCE — "
-                "no current can flow (open loop). Add a single-net SOURCE on "
-                "this rail, or switch the sink to two-net mode."
-            )
-        if "SINK" not in roles:
-            warnings.append(
-                f"Editor rail {rail!r}: single-net SOURCE(s) with no SINK — "
-                "no current can flow (open loop). Add a single-net SINK on "
-                "this rail, or switch the source to two-net mode."
-            )
+    # Open-loop rails (only sources or only sinks) are detected centrally in
+    # :func:`fypa.altium.loader._flag_open_loop_rails`, which runs over the
+    # merged schematic + editor directive list at solve time — so a rail
+    # closed by a mix of schematic and editor markers is recognised, and the
+    # offending rail is skipped (not solved as an unreliable open loop) while
+    # the rest of the board still solves.
 
     log.info("apply_editor_directives: applied %d, skipped %d.",
              applied, len(warnings))
