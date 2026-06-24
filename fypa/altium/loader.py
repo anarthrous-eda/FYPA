@@ -34,6 +34,7 @@ from fypa.altium.annotations import (
     SourceSpec,
     TerminalPin,
     TerminalSpec,
+    _channel_label,
     parse_annotations,
 )
 from fypa.altium.extract import (
@@ -1368,6 +1369,25 @@ def _gil_yield(i: int, every: int = 256) -> None:
         time.sleep(0.001)
 
 
+def build_net_canonical_map(netlist) -> dict[str, str]:
+    """Map every schematic net label (``Net.name`` or alias) to ``Net.name``.
+
+    Altium's compiled netlist stores the top-level / flattened name in
+    ``Net.name`` and local or cross-sheet labels in ``aliases``. The viewer
+    uses this map so rail lists show the canonical name rather than a local
+    sheet label from ``PDN_*_NET``.
+    """
+    if netlist is None:
+        return {}
+    out: dict[str, str] = {}
+    for net in getattr(netlist, "nets", ()) or ():
+        canonical = net.name
+        for label in (canonical, *getattr(net, "aliases", ())):
+            if label:
+                out[label.upper()] = canonical
+    return out
+
+
 def build_solve_metadata(
     loaded: LoadedProject,
     problem: _pp.Problem | None = None,
@@ -1427,10 +1447,9 @@ def build_solve_metadata(
         common = {
             "role": type(d).__name__.replace("Spec", "").upper(),
             "designator": d.designator,
-            # Indexed multi-channel SOURCE/SINK channels expose ``channel_index``
-            # (None for the legacy unindexed channel and for non-indexable roles
-            # like SERIES/REGULATOR). ``label`` is the human-friendly form
-            # ("U5" or "U5#1") that the viewer should prefer in tables/headers.
+            # Indexed multi-channel directives expose ``channel_index``
+            # (None for the legacy unindexed channel). ``label`` is the
+            # human-friendly form ("U5" or "U5#1") for tables/headers.
             "channel_index": ch_idx,
             "label": label,
             "schdoc": d.schdoc_name,
@@ -1931,6 +1950,7 @@ def build_solve_metadata(
             ),
         },
         "directives": directives,
+        "net_canonical": build_net_canonical_map(proj.compiled_netlist),
         "active_nets": active_nets,
         "vias": vias,
         "pths": pths,
@@ -2009,6 +2029,7 @@ def _terminal_summary(term, nets) -> dict:
         # the user sees what they asked for even when a SERIES bridge resolved
         # the terminal onto a different (bridged-equivalent) net's pads.
         "requested_net": getattr(term, "requested_net", None),
+        "resolved_via_local": getattr(term, "resolved_via_local", False),
     }
 
 
@@ -2765,21 +2786,22 @@ def build_problem(
         return ", ".join(sorted(names)) or "(none)"
 
     for d in loaded.annotations.directives:
+        label = _channel_label(d.designator, getattr(d, "channel_index", None))
         if isinstance(d, SourceSpec):
             log.info("  SOURCE  %s: %.4g V  P=%s  N=%s",
-                     d.designator, d.voltage,
+                     label, d.voltage,
                      _pin_net_names(d.p), _pin_net_names(d.n))
         elif isinstance(d, SinkSpec):
             log.info("  SINK    %s: %.4g A  P=%s  N=%s",
-                     d.designator, d.current,
+                     label, d.current,
                      _pin_net_names(d.p), _pin_net_names(d.n))
         elif isinstance(d, ResistorSpec):
             log.info("  SERIES  %s: %.4g Ω (%.4g mΩ)  P=%s  N=%s",
-                     d.designator, d.resistance, d.resistance * 1000,
+                     label, d.resistance, d.resistance * 1000,
                      _pin_net_names(d.p), _pin_net_names(d.n))
         elif isinstance(d, RegulatorSpec):
             log.info("  REGULATOR %s: %.4g V  OUT_P=%s  OUT_N=%s  IN_P=%s  IN_N=%s",
-                     d.designator, d.voltage,
+                     label, d.voltage,
                      _pin_net_names(d.out_p), _pin_net_names(d.out_n),
                      _pin_net_names(d.in_p), _pin_net_names(d.in_n))
 

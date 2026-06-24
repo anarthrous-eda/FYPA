@@ -17,8 +17,8 @@
 name = "fypa"
 version = "0.0.0"
 description = "FEM Y-parameter Power Analyser — PDN analysis for Altium and Gerber PCB designs."
-# altium_monkey pins `>=3.11,<3.13`; FYPA tracks the same window.
-requires-python = ">=3.11,<3.13"
+# altium_monkey pins `>=3.12,<3.13`; FYPA tracks the same window.
+requires-python = ">=3.12,<3.13"
 dependencies = [
     # --- Altium project parser (fetched from upstream git; see [tool.uv.sources]) ---
     "altium-monkey",

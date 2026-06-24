@@ -181,19 +181,21 @@ Rules:
   use different modes in the same solve.
 
 
-### Multi-channel SOURCE / SINK
+### Multi-channel directives
 
-`SOURCE` and `SINK` roles support multiple independent channels on a single
-part — useful for an IC with several supply pins, each on its own rail.
-Channels are addressed by appending a positive integer to `PDN` in the
-parameter prefix:
+`SOURCE`, `SINK`, `REGULATOR`, and `SERIES` roles support multiple
+independent channels on a single part. Channels are addressed by appending
+a positive integer to `PDN` in the parameter prefix:
 
-| Channel | Value param | Net params                            |
-|---------|-------------|---------------------------------------|
-| legacy  | `PDN_V`/`PDN_I`   | `PDN_P_NET`, `PDN_N_NET` (or `PDN_NET`)   |
-| 1       | `PDN1_V`/`PDN1_I` | `PDN1_P_NET`, `PDN1_N_NET` (or `PDN1_NET`) |
-| 2       | `PDN2_V`/`PDN2_I` | `PDN2_P_NET`, `PDN2_N_NET` (or `PDN2_NET`) |
-| …       | …                 | …                                     |
+| Channel | SOURCE / REGULATOR | SINK | SERIES | Net params (examples) |
+|---------|-------------------|------|--------|------------------------|
+| legacy  | `PDN_V` | `PDN_I` | `PDN_R` | `PDN_P_NET`, `PDN_OUT_P_NET`, … |
+| 1       | `PDN1_V` | `PDN1_I` | `PDN1_R` | `PDN1_P_NET`, `PDN1_OUT_P_NET`, … |
+| 2       | `PDN2_V` | `PDN2_I` | `PDN2_R` | `PDN2_P_NET`, … |
+| …       | … | … | … | … |
+
+REGULATOR channels also require `PDN<n>_GAIN` and the four `PDN<n>_OUT_*` /
+`PDN<n>_IN_*` net (or pin) parameters per channel.
 
 The legacy unindexed channel and any number of indexed channels coexist
 as independent directives. Indices are sparse — gaps are allowed (e.g.
@@ -211,11 +213,25 @@ U7 (multi-rail IC load):
   PDN2_I     = 50mA      PDN2_P_NET = +5V    PDN2_N_NET = GND
 ```
 
+Example — a PMIC with two regulator outputs on one symbol:
+
+```text
+U4:
+  PDN_ROLE       = REGULATOR
+  PDN_V          = 3.3       PDN_GAIN = 0.9
+  PDN_OUT_P_NET  = +3V3      PDN_OUT_N_NET = GND
+  PDN_IN_P_NET   = +5V       PDN_IN_N_NET  = GND
+  PDN1_V         = 1.8       PDN1_GAIN = 0.85
+  PDN1_OUT_P_NET = +1V8      PDN1_OUT_N_NET = GND
+  PDN1_IN_P_NET  = +5V       PDN1_IN_N_NET  = GND
+```
+
 The Setup tab and the Nodes-tab table label indexed channels as
 `U7#1`, `U7#2` so they're easy to tell apart from the legacy `U7` channel.
 
-`SERIES` and `REGULATOR` ignore the index suffix and behave as
-single-channel directives.
+For `SERIES`, auto-inferred P/N nets (2-pin parts) apply only when the
+part carries a single channel; multi-channel SERIES requires explicit
+`PDNn_P_NET` / `PDNn_N_NET` or `PDNn_P_PINS` / `PDNn_N_PINS` per channel.
 
 ### `SOURCE` vs `REGULATOR` — when to use which
 

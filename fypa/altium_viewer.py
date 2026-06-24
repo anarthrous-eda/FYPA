@@ -5435,12 +5435,29 @@ class PdnViewer(QMainWindow):
                 parent[rb] = ra
 
         primary_candidates: set[str] = set()
+        bridge_named: set[str] = set()
+        source_rails: set[str] = set()
+        regulator_in_rails: set[str] = set()
+        regulator_out_rails: set[str] = set()
+        canon_map: dict[str, str] = metadata.get("net_canonical") or {}
+
+        def _canonical(net: str) -> str:
+            if not net:
+                return net
+            return canon_map.get(net.upper(), net)
+
+        def _note_rail(net: str) -> str:
+            return _canonical(net)
+
+        def _add_primary(net: str) -> None:
+            if net:
+                primary_candidates.add(_note_rail(net))
 
         for d in metadata.get("directives", []):
             role = d.get("role", "")
             terms = d.get("terminals") or {}
             nets_per_term: list[set[str]] = []
-            for _tname, t in terms.items():
+            for tname, t in terms.items():
                 nets = {p.get("net") for p in t.get("pins", []) if p.get("net")}
                 req = t.get("requested_net")
                 for n in nets:
@@ -5454,12 +5471,42 @@ class PdnViewer(QMainWindow):
                     find(req)
                     for n in nets:
                         union(req, n)
-                # The rail's display name is what the directive ASKED for —
-                # the named net — not the bridged net its pins landed on.
-                # Fall back to the pin nets only for a *_PINS-override
-                # terminal, which has no named net.
                 if role in ("SOURCE", "SINK", "REGULATOR"):
-                    primary_candidates.update({req} if req else nets)
+                    if t.get("resolved_via_local") and nets:
+                        # Local sheet label — show the PCB / top-level net.
+                        for n in nets:
+                            _add_primary(n)
+                    elif req:
+                        canon_req = _note_rail(req)
+                        _add_primary(req)
+                        # User named a logical rail that resolved onto different
+                        # pad nets via a SERIES bridge — keep their name.
+                        if nets and req not in nets:
+                            bridge_named.add(canon_req)
+                    elif nets:
+                        for n in nets:
+                            _add_primary(n)
+                if role == "SOURCE" and tname == "P":
+                    if t.get("resolved_via_local") and nets:
+                        source_rails.update(_note_rail(n) for n in nets)
+                    elif req:
+                        source_rails.add(_note_rail(req))
+                    elif nets:
+                        source_rails.update(_note_rail(n) for n in nets)
+                if role == "REGULATOR" and tname == "IN_P":
+                    if t.get("resolved_via_local") and nets:
+                        regulator_in_rails.update(_note_rail(n) for n in nets)
+                    elif req:
+                        regulator_in_rails.add(_note_rail(req))
+                    elif nets:
+                        regulator_in_rails.update(_note_rail(n) for n in nets)
+                if role == "REGULATOR" and tname == "OUT_P":
+                    if t.get("resolved_via_local") and nets:
+                        regulator_out_rails.update(_note_rail(n) for n in nets)
+                    elif req:
+                        regulator_out_rails.add(_note_rail(req))
+                    elif nets:
+                        regulator_out_rails.update(_note_rail(n) for n in nets)
             if role == "RESISTOR" and len(nets_per_term) == 2:
                 # Bridge every net in one terminal with every net in the other.
                 for a in nets_per_term[0]:
@@ -5476,15 +5523,28 @@ class PdnViewer(QMainWindow):
             primaries = members & primary_candidates
             if not primaries:
                 continue
-            # Pick the "most rail-looking" primary name: prefer leading '+',
-            # then ground-ish names, then alphabetical.
-            def _primary_rank(n: str) -> tuple[int, str]:
-                if n.startswith("+"):
+            canon_primaries = {_canonical(p) for p in primaries}
+
+            def _primary_sort_key(n: str) -> tuple[int, str]:
+                # SOURCE rail beats SERIES-bridged signal names (LED_R, …).
+                if n in source_rails:
                     return (0, n)
-                if n.lower() in {"0v", "gnd", "ground", "vss"}:
+                if n in bridge_named:
                     return (1, n)
-                return (2, n)
-            primary = sorted(primaries, key=_primary_rank)[0]
+                if n in regulator_in_rails:
+                    return (2, n)
+                if n in regulator_out_rails:
+                    return (3, n)
+                if n.startswith("+"):
+                    return (4, n)
+                u = n.upper()
+                if u.startswith(("VDD", "VCC", "VPWR")):
+                    return (5, n)
+                if n.lower() in {"0v", "gnd", "ground", "vss"}:
+                    return (7, n)
+                return (6, n)
+
+            primary = sorted(canon_primaries, key=_primary_sort_key)[0]
             rail_to_members[primary] = sorted(members)
 
         def _rail_sort_key(rail: str) -> tuple[int, str]:

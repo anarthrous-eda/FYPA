@@ -162,10 +162,34 @@ Before launching FYPA:
 - **Save all files** (`File > Save All`). FYPA reads from disk, not
   from unsaved Altium buffers.
 
-> On projects with hierarchical sheets, the net name that ends up on
-> the PCB is the parent-sheet name, not the local sub-sheet name. Use
-> the PCB net list as the source of truth for `PDN_P_NET` /
-> `PDN_N_NET` values.
+### Blanket / Parameter Set workflow
+
+To attach the same `PDN_*` parameters to a group of components without
+placing them on every symbol:
+
+1. Draw a **Blanket** around the components on the schematic.
+2. Place a **Parameter Set** on the blanket edge and add `PDN_ROLE`,
+   `PDN_V` / `PDN_I`, and `PDN_P_NET` / `PDN_N_NET` (or `PDN_NET`).
+3. **Compile the project** and **synchronise with the PCB** so Altium
+   copies the parameters onto each component (`Project > Compile PCB
+   Project`, then apply the ECO).
+4. Launch FYPA — it reads the `PDN_*` values from the **PCB component
+   parameters** (not from the blanket graphic itself).
+
+### Local net names (hierarchical / reused sheets)
+
+`PDN_P_NET`, `PDN_N_NET`, and `PDN_NET` may use the **local net name
+as it appears on the schematic sheet** where the directive applies
+(for example `+3V3` on a child sheet). FYPA compiles the schematic
+netlist and resolves the name to the correct PCB pads per component
+instance. Physical PCB net names still work unchanged — FYPA tries a
+direct PCB match first, then falls back to local-name resolution.
+
+> On hierarchical designs you no longer need to look up the flattened
+> PCB net name manually when the local sheet name is unambiguous on
+> that sheet. If resolution fails, check that the project compiles
+> cleanly and that the component’s schematic designator matches the
+> PCB `source_designator`.
 
 ## 1.6 Importing into FYPA
 
@@ -180,7 +204,8 @@ python FYPA.py gui path\to\YourBoard.PrjPcb
 FYPA will:
 
 1. Read the `.PrjPcb` and every `.PcbDoc` / `.SchDoc` it references.
-2. Find every component carrying `PDN_*` parameters.
+2. Find every component carrying `PDN_*` parameters (on the schematic
+   symbol or on the PCB after a Blanket/Parameter-Set sync).
 3. Build a 2-D copper geometry per layer, per net.
 4. Run the FEM solve.
 5. Open the interactive viewer.

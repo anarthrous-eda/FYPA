@@ -50,6 +50,32 @@ output, two input):
 There is no auto-inference for REGULATOR — a regulator IC always has
 more than two pads, so all four net names must be set explicitly.
 
+### Multi-channel REGULATOR (PMIC)
+
+A multi-output PMIC on one symbol uses indexed channels the same way
+multi-rail SINKs use `PDN1_I`:
+
+| Channel | Value params | Net params |
+|---------|--------------|------------|
+| legacy  | `PDN_V`, `PDN_GAIN` | `PDN_OUT_P_NET`, `PDN_OUT_N_NET`, `PDN_IN_P_NET`, `PDN_IN_N_NET` |
+| 1       | `PDN1_V`, `PDN1_GAIN` | `PDN1_OUT_P_NET`, … |
+| 2       | `PDN2_V`, `PDN2_GAIN` | … |
+
+Example — 3.3 V and 1.8 V outputs from a shared 5 V input:
+
+```text
+U4:
+  PDN_ROLE       = REGULATOR
+  PDN_V          = 3.3       PDN_GAIN = 0.9
+  PDN_OUT_P_NET  = +3V3      PDN_OUT_N_NET = GND
+  PDN_IN_P_NET   = +5V       PDN_IN_N_NET  = GND
+  PDN1_V         = 1.8       PDN1_GAIN = 0.85
+  PDN1_OUT_P_NET = +1V8      PDN1_OUT_N_NET = GND
+  PDN1_IN_P_NET  = +5V       PDN1_IN_N_NET  = GND
+```
+
+Indexed channels appear as `U4#1`, `U4#2` in the viewer.
+
 ## 4.3 Picking `PDN_GAIN`
 
 `PDN_GAIN` is the ratio of input current to output current. It depends
