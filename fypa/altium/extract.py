@@ -933,7 +933,21 @@ def _extract_board_outline(pcb, ox_mm: float, oy_mm: float) -> tuple[Pt2D, ...]:
 
 
 def _extract_stackup(pcb) -> tuple[RawStackupLayer, ...]:
-    plane_map = getattr(pcb.board, "plane_net_names_by_index", {}) or {}
+    # ``plane_net_names_by_index`` is keyed by the *internal-plane index*
+    # (1..16, parsed from the ``PLANE<n>NETNAME`` board records), NOT by the
+    # stackup ``layer_id``. Looking it up directly with a stackup layer_id
+    # (Top=1, Mid=2..31, Bottom=32) mis-flags signal layers whose id happens
+    # to collide with a plane index as planes — see issue #4. Map each plane
+    # index into the legacy internal-plane layer-id space (Internal Plane 1 ==
+    # PcbLayer.INTERNAL_PLANE_1 == 39) so it only matches a stackup entry that
+    # is genuinely an internal plane.
+    from altium_monkey.altium_record_types import PcbLayer
+    plane_index_map = getattr(pcb.board, "plane_net_names_by_index", {}) or {}
+    internal_plane_1 = int(PcbLayer.INTERNAL_PLANE_1.value)
+    plane_map = {
+        internal_plane_1 + (int(idx) - 1): name
+        for idx, name in plane_index_map.items()
+    }
     out: list[RawStackupLayer] = []
     for ls in pcb.board.layer_stackup:
         layer_id = int(ls.layer_id)
