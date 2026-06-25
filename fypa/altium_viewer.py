@@ -619,6 +619,24 @@ def _wire_auto_solve_import_toggle(
     _apply(load_auto_solve_on_import())
 
 
+def _add_auto_solve_import_action(
+    parent: QWidget,
+    file_menu,
+    import_action: QAction,
+    *,
+    checkbox: QCheckBox | None = None,
+) -> QAction:
+    """Build, register and wire the "Solve automatically on Altium import"
+    checkable menu action. Shared by the launcher and viewer menu builders."""
+    action = QAction("Solve &automatically on Altium import", parent)
+    action.setCheckable(True)
+    file_menu.addAction(action)
+    _wire_auto_solve_import_toggle(
+        action, checkbox=checkbox, import_action=import_action,
+    )
+    return action
+
+
 def _build_app_palette(mode: str):
     """Build a QPalette matching the given theme. Used for native widgets
     (menubar, scrollbars, file dialogs, dropdowns) that read from the
@@ -4702,15 +4720,9 @@ class LauncherWindow(QMainWindow):
         )
         file_menu.addAction(open_proj_clean)
 
-        self._act_auto_solve_import = QAction(
-            "Solve &automatically on Altium import", self,
-        )
-        self._act_auto_solve_import.setCheckable(True)
-        file_menu.addAction(self._act_auto_solve_import)
-        _wire_auto_solve_import_toggle(
-            self._act_auto_solve_import,
+        self._act_auto_solve_import = _add_auto_solve_import_action(
+            self, file_menu, self._act_import_altium,
             checkbox=self._auto_solve_check,
-            import_action=self._act_import_altium,
         )
 
         open_gerber = QAction("Import &Gerber Files…", self)
@@ -5561,6 +5573,19 @@ class PdnViewer(QMainWindow):
             if hasattr(self, attr):
                 delattr(self, attr)
 
+    def _no_pdn_visibility(self) -> bool:
+        """Whether to use the 'blank board' layer / rail visibility defaults:
+        no rails shown, and the top physical layer's all-copper turned on.
+
+        True when the design has no PDN rails at all (a Gerber import, or a
+        project with no SOURCE/REGULATOR directives) OR while an unsolved
+        stub is loaded (Import Altium Design with auto-solve off). A stub's
+        rails carry no solved data yet, so auto-showing them is misleading —
+        mirror the no-PDN defaults until the user runs the solver."""
+        if not self._rail_names:
+            return True
+        return bool(getattr(self.solution, "solver_info", {}).get("stub"))
+
     def _rebuild_layer_rail_lists(self, *, preserve_visibility: bool = True) -> None:
         """Refresh the physical-layer and rail eye lists after a new solve.
 
@@ -5628,7 +5653,7 @@ class PdnViewer(QMainWindow):
             if preserve_visibility and phys in saved_layers2:
                 eye2.setVisibleState(saved_layers2[phys], emit=False)
 
-        if (not self._rail_names and self._layer_eye2_buttons
+        if (self._no_pdn_visibility() and self._layer_eye2_buttons
                 and not any(e.isVisibleState() for _, e in self._layer_eye2_buttons)):
             self._layer_eye2_buttons[0][1].setVisibleState(True, emit=False)
         self._sync_all_layers_eye()
@@ -5643,6 +5668,7 @@ class PdnViewer(QMainWindow):
         self._rail_eye_buttons.clear()
 
         _ground_rails = {"0v", "gnd", "ground", "vss"}
+        _no_pdn = self._no_pdn_visibility()
         for rail in self._rails:
             eye = EyeButton(visible=False)
             eye.toggled_visible.connect(self._on_rail_eye_toggled)
@@ -5656,7 +5682,10 @@ class PdnViewer(QMainWindow):
             item.setSizeHint(row.sizeHint())
             self.rail_list.setItemWidget(item, row)
             self._rail_eye_buttons.append((rail, eye))
-            if preserve_visibility and rail in saved_rails:
+            if _no_pdn:
+                # Unsolved stub / no-PDN board → show no rails.
+                eye.setVisibleState(False, emit=False)
+            elif preserve_visibility and rail in saved_rails:
                 eye.setVisibleState(saved_rails[rail], emit=False)
             else:
                 eye.setVisibleState(
@@ -5671,6 +5700,13 @@ class PdnViewer(QMainWindow):
         has_rails = bool(self._rails)
         self._mode_label.setVisible(has_rails)
         self.mode_combo.setVisible(has_rails)
+        # __init__ hides the colour-scale controls + bottom-left gradient
+        # strip for a rail-less stub; a stub → solved transition must bring
+        # them back so the user can read / adjust the heatmap scale.
+        self.scale_controller.setVisible(has_rails)
+        self._scale_overlay.setVisible(has_rails)
+        if has_rails:
+            self._position_scale_overlay()
 
     def _apply_solve_result(
         self,
@@ -5682,12 +5718,18 @@ class PdnViewer(QMainWindow):
         pct: float,
         *,
         mark_solved_since_save: bool = False,
+        is_import: bool = False,
     ) -> None:
         """Swap in a freshly-solved result without replacing the window.
 
         Rebuilds solution-derived indices, clears render caches, refreshes
         the layer / rail lists and Setup tab, then re-renders in place —
-        preserving the user's pan / zoom."""
+        preserving the user's pan / zoom.
+
+        ``is_import`` marks the File > Import Altium Design path, which can
+        load a *different* project into this window: it resets the previous
+        project's editor session, refreshes the title, and re-fits the view
+        instead of inheriting the old pan / zoom."""
         log = logging.getLogger(__name__)
         try:
             self.solution = new_solution
@@ -5702,17 +5744,46 @@ class PdnViewer(QMainWindow):
             self._via_current_warn_a = warn_a
             self._display_percentile_high = pct
 
-            self._awaiting_first_solve = False
-            self._initial_solve_stale = False
+            # A returned stub (load-only import, or a project still missing
+            # SOURCE/REGULATOR directives) hasn't been through the FEM yet —
+            # keep the ↻ Solve overlay up rather than clearing it. Derive the
+            # state from the solution so every caller stays consistent instead
+            # of each one having to remember _mark_awaiting_first_solve().
+            was_awaiting = self._awaiting_first_solve
+            is_stub = bool(
+                getattr(new_solution, "solver_info", {}).get("stub")
+            )
+            self._awaiting_first_solve = is_stub
+            self._initial_solve_stale = is_stub
             self._project_dirty = False
             self._settings_dirty = False
-            self._solve_stale = False
+            self._solve_stale = is_stub
             if mark_solved_since_save:
                 self._solved_since_save = True
 
+            if is_import:
+                # Importing a different project must not leave the previous
+                # design's editor session / path bound to the new solution,
+                # or its name in the title bar. _project is rebuilt lazily
+                # from the new metadata when the user next edits.
+                self._project = None
+                self._project_path = None
+                project_name = (
+                    getattr(new_solution.problem, "project_name", None)
+                    or "unknown"
+                )
+                self.setWindowTitle(f"FYPA -- {project_name}")
+                # New board → re-fit rather than inherit the old framing.
+                self._need_initial_fit = True
+
             self._init_solution_indices()
             self._clear_solution_derived_caches()
-            self._rebuild_layer_rail_lists(preserve_visibility=True)
+            # Preserve the user's layer / rail toggles on a same-project
+            # re-solve, but fall back to fresh defaults when importing a
+            # different project or when leaving the unsolved-stub state
+            # (whose rails were all hidden) so the solved rails actually show.
+            preserve = not is_import and not (was_awaiting and not is_stub)
+            self._rebuild_layer_rail_lists(preserve_visibility=preserve)
 
             if getattr(self, "setup_browser", None) is not None:
                 self._refresh_setup_html()
@@ -5734,7 +5805,9 @@ class PdnViewer(QMainWindow):
                 reload_btn.setEnabled(True)
 
             self._refresh_solve_stale_overlay()
-            # Keep _need_initial_fit False so pan / zoom survive the swap.
+            # For a re-solve / resolve _need_initial_fit stays False so pan /
+            # zoom survive the swap; the import path above flips it back on so
+            # a different board re-fits.
             self._render()
 
             _maybe_warn_needs_directives(self, new_solution)
@@ -6108,11 +6181,12 @@ class PdnViewer(QMainWindow):
 
         self._sync_all_layers_eye()
         # If the design has no PDN rails (Gerber import before the user has
-        # placed any directives, or any other "blank board" load), turn on
-        # the top physical layer's all-copper eye by default so the user
-        # actually sees their board on open. Without this every eye starts
-        # closed and the viewport is empty.
-        if not self._rail_names and self._layer_eye2_buttons:
+        # placed any directives, or any other "blank board" load) — or an
+        # unsolved stub is loaded (Import without auto-solve) — turn on the
+        # top physical layer's all-copper eye by default so the user actually
+        # sees their board on open. Without this every eye starts closed and
+        # the viewport is empty.
+        if self._no_pdn_visibility() and self._layer_eye2_buttons:
             self._layer_eye2_buttons[0][1].setVisibleState(True, emit=False)
         self._sync_all_layers_eye2()
 
@@ -6180,10 +6254,16 @@ class PdnViewer(QMainWindow):
             self._rail_eye_buttons.append((rail, eye))
 
         # Default: every rail visible except generic ground names (GND,
-        # 0V, …) so a fresh import shows all power rails at once.
+        # 0V, …) so a fresh import shows all power rails at once. An unsolved
+        # stub (Import without auto-solve) shows no rails — like a no-PDN
+        # board — until the user runs the solver.
         _ground_rails = {"0v", "gnd", "ground", "vss"}
+        _no_pdn = self._no_pdn_visibility()
         for rail, eye in self._rail_eye_buttons:
-            eye.setVisibleState(rail.lower() not in _ground_rails, emit=False)
+            eye.setVisibleState(
+                (not _no_pdn) and rail.lower() not in _ground_rails,
+                emit=False,
+            )
         self._sync_all_rails_eye()
 
         approx_rail_h = self.rail_list.sizeHintForRow(0) or 22
@@ -16355,6 +16435,9 @@ class PdnViewer(QMainWindow):
                 "Re-solving with your editor changes…\n"
                 "Reusing the cached design info (no re-extraction)."
             )
+            # ~3.20x Qt's auto-sized width: the standard solve dialog's 1.44x,
+            # widened for the longer editor-changes message and then another
+            # 15% on top of that (1.44 * 1.93 * 1.15 ≈ 3.199).
             dialog_width_scale = 3.199392
         self._start_solve_worker(
             Path(prjpcb), new_settings,
@@ -18994,14 +19077,8 @@ class PdnViewer(QMainWindow):
         )
         file_menu.addAction(open_proj_clean)
 
-        self._act_auto_solve_import = QAction(
-            "Solve &automatically on Altium import", self,
-        )
-        self._act_auto_solve_import.setCheckable(True)
-        file_menu.addAction(self._act_auto_solve_import)
-        _wire_auto_solve_import_toggle(
-            self._act_auto_solve_import,
-            import_action=self._act_import_altium,
+        self._act_auto_solve_import = _add_auto_solve_import_action(
+            self, file_menu, self._act_import_altium,
         )
 
         open_gerber = QAction("Import &Gerber Files…", self)
@@ -19339,6 +19416,7 @@ class PdnViewer(QMainWindow):
             use_design_cache=imp["use_design_cache"],
             try_solve_cache_first=imp["try_solve_cache_first"],
             load_only=imp["load_only"],
+            is_import=True,
             dialog_title=imp["dialog_title"],
             dialog_text=imp["dialog_text"],
         )
@@ -19903,6 +19981,7 @@ class PdnViewer(QMainWindow):
         copper_names: list | None = None,
         loaded_project: object | None = None,
         is_resolve: bool | None = None,
+        is_import: bool = False,
         load_only: bool = False,
         dialog_title: str = "Running solver",
         dialog_text: str | None = None,
@@ -19977,6 +20056,7 @@ class PdnViewer(QMainWindow):
             worker.finished_ok.connect(
                 lambda sol, meta, loaded: self._on_solve_finished(
                     sol, meta, loaded, warn_a, pct, settings,
+                    is_import=is_import,
                 )
             )
         worker.failed.connect(self._on_solve_failed)
@@ -20050,11 +20130,12 @@ class PdnViewer(QMainWindow):
     def _on_solve_finished(
         self, new_solution, metadata: dict, loaded_project,
         warn_a: float, pct: float, new_settings,
+        *, is_import: bool = False,
     ) -> None:
         """Worker emitted ``finished_ok`` — refresh this viewer in place."""
         self._apply_solve_result(
             new_solution, metadata, loaded_project, new_settings,
-            warn_a, pct,
+            warn_a, pct, is_import=is_import,
         )
 
     def _on_resolve_finished(
