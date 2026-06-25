@@ -405,6 +405,10 @@ _THEME_QS_KEY = "ui/theme"
 # High-quality-zoom (supersampling / SSAA) preference for the heatmap
 # canvas. Persisted so the choice survives a relaunch; defaults to on.
 _SSAA_QS_KEY = "ui/supersampling"
+# When enabled, File > Import Altium Design (non-clean) runs extract + FEM
+# solve (with solve-cache fast path). When disabled, only design info loads
+# and the user presses ↻ Solve in the viewer.
+_AUTO_SOLVE_IMPORT_QS_KEY = "import/auto_solve_on_altium"
 
 _current_theme_mode: str = "dark"
 
@@ -492,6 +496,145 @@ def save_supersampling_enabled(enabled: bool) -> None:
         logging.getLogger(__name__).debug(
             "Could not persist supersampling preference (%s); ignoring.", e,
         )
+
+
+def load_auto_solve_on_import() -> bool:
+    """Read whether Import Altium Design should run the solver automatically.
+
+    Defaults to ``True`` — classic extract + solve (with solve-cache fast path).
+    """
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        val = qs.value(_AUTO_SOLVE_IMPORT_QS_KEY, True)
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            return val.strip().lower() in ("1", "true", "yes", "on")
+        return bool(int(val))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not read auto-solve-on-import preference (%s); using "
+            "default.", e,
+        )
+    return True
+
+
+def save_auto_solve_on_import(enabled: bool) -> None:
+    """Persist the auto-solve-on-import preference for next launch."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        qs.setValue(_AUTO_SOLVE_IMPORT_QS_KEY, bool(enabled))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not persist auto-solve-on-import preference (%s); ignoring.",
+            e,
+        )
+
+
+def _altium_import_auto_solve_status_tip(auto_solve: bool) -> str:
+    if auto_solve:
+        return (
+            "Pick a .PrjPcb; reuse the cached solution if the project is "
+            "unchanged, otherwise extract + solve."
+        )
+    return (
+        "Pick a .PrjPcb; load the design info, then press ↻ Solve "
+        "in the viewer to run the simulation."
+    )
+
+
+def _altium_import_worker_options(
+    prjpcb_name: str, *, clean: bool,
+    auto_solve: bool | None = None,
+) -> dict:
+    """Worker flags + progress-dialog copy for Import Altium Design."""
+    if clean:
+        return {
+            "use_design_cache": False,
+            "try_solve_cache_first": False,
+            "load_only": False,
+            "dialog_title": "Loading project (clean)",
+            "dialog_text": (
+                f"Loading {prjpcb_name} and solving…\n"
+                "This can take 10–60 s depending on board size and mesh "
+                "density."
+            ),
+        }
+    if auto_solve is None:
+        auto_solve = load_auto_solve_on_import()
+    if auto_solve:
+        return {
+            "use_design_cache": True,
+            "try_solve_cache_first": True,
+            "load_only": False,
+            "dialog_title": "Loading project",
+            "dialog_text": (
+                f"Checking solve cache for {prjpcb_name}…\n"
+                "On a cache miss this falls through to a full extract + solve "
+                "(10–60 s depending on board size)."
+            ),
+        }
+    return {
+        "use_design_cache": True,
+        "try_solve_cache_first": False,
+        "load_only": True,
+        "dialog_title": "Loading project",
+        "dialog_text": (
+            f"Loading design info for {prjpcb_name}…\n"
+            "Press ↻ Solve in the viewer when you're ready to run the "
+            "simulation."
+        ),
+    }
+
+
+def _wire_auto_solve_import_toggle(
+    action: QAction,
+    *,
+    checkbox: QCheckBox | None = None,
+    import_action: QAction | None = None,
+) -> None:
+    """Keep a checkable menu action, optional launcher checkbox, and
+    Import-tip text in sync with :func:`save_auto_solve_on_import`."""
+
+    def _apply(checked: bool) -> None:
+        save_auto_solve_on_import(checked)
+        if checkbox is not None and checkbox.isChecked() != checked:
+            checkbox.blockSignals(True)
+            checkbox.setChecked(checked)
+            checkbox.blockSignals(False)
+        if action.isChecked() != checked:
+            action.blockSignals(True)
+            action.setChecked(checked)
+            action.blockSignals(False)
+        if import_action is not None:
+            import_action.setStatusTip(
+                _altium_import_auto_solve_status_tip(checked),
+            )
+
+    action.toggled.connect(_apply)
+    if checkbox is not None:
+        checkbox.toggled.connect(_apply)
+    _apply(load_auto_solve_on_import())
+
+
+def _add_auto_solve_import_action(
+    parent: QWidget,
+    file_menu,
+    import_action: QAction,
+    *,
+    checkbox: QCheckBox | None = None,
+) -> QAction:
+    """Build, register and wire the "Solve automatically on Altium import"
+    checkable menu action. Shared by the launcher and viewer menu builders."""
+    action = QAction("Solve &automatically on Altium import", parent)
+    action.setCheckable(True)
+    file_menu.addAction(action)
+    _wire_auto_solve_import_toggle(
+        action, checkbox=checkbox, import_action=import_action,
+    )
+    return action
 
 
 def _build_app_palette(mode: str):
@@ -3539,6 +3682,7 @@ class _SolveWorker(QThread):
                   editor_directives: list | None = None,
                   copper_names: list | None = None,
                   loaded_project: object | None = None,
+                  load_only: bool = False,
                   parent=None) -> None:
         super().__init__(parent)
         self._prjpcb_path = prjpcb_path
@@ -3585,6 +3729,33 @@ class _SolveWorker(QThread):
         # no project-file stat, no re-extract. None for every other flow
         # (normal load / Re-run / clean), which load design info as before.
         self._loaded_project = loaded_project
+        # True = extract / reuse design info only, emit a stub solution,
+        # and let the user press Solve in the viewer (Import Altium Design).
+        self._load_only = bool(load_only)
+
+    def _emit_stub_and_finish(
+        self, loaded, pristine_loaded, _timer,
+        *, needs_directives: bool = False,
+        stage_message: str | None = None,
+    ) -> None:
+        """Package a stub LeanSolution + metadata and finish the worker."""
+        from fypa.altium.loader import build_solve_metadata
+        from fypa.altium_geometry import build_per_net_geometry_layers
+
+        if stage_message is not None:
+            self.stage_changed.emit(stage_message)
+        stub_solution = _build_stub_lean_solution_from_loaded(loaded)
+        if needs_directives:
+            stub_solution.solver_info["needs_directives"] = True
+        with _timer.stage("Build stub metadata"):
+            per_net_layers = build_per_net_geometry_layers(loaded.extracted)
+            metadata = build_solve_metadata(
+                loaded, None,
+                settings=self._settings,
+                per_net_layers=per_net_layers,
+            )
+        _timer.log_breakdown()
+        self.finished_ok.emit(stub_solution, metadata, pristine_loaded)
 
     def _expected_stage_count(self) -> int:
         """Best-effort count of stage_changed emissions ``run()`` will fire,
@@ -3595,6 +3766,7 @@ class _SolveWorker(QThread):
         """
         # "Checking solve cache…" — only when the fast-path is eligible.
         fast_path_eligible = (self._try_solve_cache_first
+                              and not self._load_only
                               and not self._stackup_overrides
                               and not self._sink_overrides
                               and not self._editor_directives)
@@ -3611,6 +3783,10 @@ class _SolveWorker(QThread):
                     self._copper_names, self._editor_directives):
             if opt:
                 n += 1
+        if self._load_only:
+            # Build stub metadata + open viewer.
+            n += 1
+            return n
         # Assemble FEM + mesh+solve + package metadata + package convert
         # + opening viewer.
         n += 5
@@ -3662,6 +3838,7 @@ class _SolveWorker(QThread):
             # Skipped when overrides are active — the cached solve was
             # computed against the on-disk project and would be wrong.
             if (self._try_solve_cache_first
+                    and not self._load_only
                     and pcbdoc_resolved is not None
                     and not self._stackup_overrides
                     and not self._sink_overrides
@@ -3884,38 +4061,23 @@ class _SolveWorker(QThread):
                         "No SOURCE/REGULATOR directive — opening in editor "
                         "mode (stub solution) for manual setup."
                     )
-                    self.stage_changed.emit(
-                        "No PDN settings found — opening design…"
+                    self._emit_stub_and_finish(
+                        loaded, pristine_loaded, _timer,
+                        needs_directives=True,
+                        stage_message="No PDN settings found — opening design…",
                     )
-                    stub_solution = _build_stub_lean_solution_from_loaded(loaded)
-                    # Distinguish this Altium "needs setup" stub from a Gerber
-                    # stub so the GUI can pop the right one-time warning.
-                    stub_solution.solver_info["needs_directives"] = True
-                    # all_copper is built from per_net_layers. With no FEM
-                    # problem to supply them, build the full per-(layer, net)
-                    # geometry ourselves — the same set the solved path passes
-                    # — so every net's copper draws under its real net name.
-                    # (loaded.geometry would only give the per-layer merged
-                    # union, leaving every piece labelled "(none)".)
-                    from fypa.altium_geometry import (
-                        build_per_net_geometry_layers,
-                    )
-                    with _timer.stage("Build stub metadata"):
-                        per_net_layers = build_per_net_geometry_layers(
-                            loaded.extracted,
-                        )
-                        metadata = build_solve_metadata(
-                            loaded, None,
-                            settings=self._settings,
-                            per_net_layers=per_net_layers,
-                        )
-                    _timer.log_breakdown()
-                    self.finished_ok.emit(stub_solution, metadata, pristine_loaded)
                     return
 
                 self.failed.emit(
                     f"Project is not solveable.\n\n"
                     f"See the log file for details:\n{_log_file}"
+                )
+                return
+
+            if self._load_only:
+                self._emit_stub_and_finish(
+                    loaded, pristine_loaded, _timer,
+                    stage_message="Opening design…",
                 )
                 return
 
@@ -4490,6 +4652,25 @@ class LauncherWindow(QMainWindow):
             text_label.setAlignment(Qt.AlignCenter)
             layout.addWidget(text_label)
         layout.addWidget(label)
+        self._auto_solve_check = QCheckBox(
+            "Solve automatically on Altium import",
+            centre,
+        )
+        self._auto_solve_check.setToolTip(
+            "When checked, Import Altium Design runs the FEM solver "
+            "immediately (reusing the solve cache when possible). When "
+            "unchecked, only design info is loaded — press ↻ Solve in the "
+            "viewer."
+        )
+        _t = _T()
+        self._auto_solve_check.setStyleSheet(
+            f"QCheckBox {{ color: {t['fg_dim']}; }}"
+        )
+        chk_row = QHBoxLayout()
+        chk_row.addStretch(1)
+        chk_row.addWidget(self._auto_solve_check)
+        chk_row.addStretch(1)
+        layout.addLayout(chk_row)
         layout.addStretch(1)
         centre.setStyleSheet(f"background-color: {t['bg']};")
         self.setCentralWidget(centre)
@@ -4520,11 +4701,13 @@ class LauncherWindow(QMainWindow):
         open_proj = QAction("&Import Altium Design…", self)
         open_proj.setShortcut(QKeySequence.Open)  # Ctrl+O
         open_proj.setStatusTip(
-            "Pick a .PrjPcb; reuse the cached solution if the project is "
-            "unchanged, otherwise extract + solve."
+            _altium_import_auto_solve_status_tip(
+                load_auto_solve_on_import(),
+            )
         )
         open_proj.triggered.connect(self._on_menu_open_project)
         file_menu.addAction(open_proj)
+        self._act_import_altium = open_proj
 
         open_proj_clean = QAction("Import Altium Design (&Clean)…", self)
         open_proj_clean.setShortcut("Ctrl+Shift+L")
@@ -4536,6 +4719,11 @@ class LauncherWindow(QMainWindow):
             lambda: self._on_menu_open_project(clean=True)
         )
         file_menu.addAction(open_proj_clean)
+
+        self._act_auto_solve_import = _add_auto_solve_import_action(
+            self, file_menu, self._act_import_altium,
+            checkbox=self._auto_solve_check,
+        )
 
         open_gerber = QAction("Import &Gerber Files…", self)
         open_gerber.setShortcut("Ctrl+G")
@@ -4676,21 +4864,12 @@ class LauncherWindow(QMainWindow):
         settings = SolveSettings()
         settings.apply_to_modules()
 
-        # The solve-cache check (potentially 5–10 s of pickle.load on
-        # large boards) is delegated to the worker so the dialog below
-        # stays responsive instead of freezing the UI.
-        initial_text = (
-            f"Checking solve cache for {prjpcb_path.name}…\n"
-            "On a cache miss this falls through to a full extract + solve "
-            "(10–60 s depending on board size)."
-            if not clean else
-            f"Loading {prjpcb_path.name} and solving…\n"
-            "This can take 10–60 s depending on board size and mesh density."
+        imp = _altium_import_worker_options(
+            prjpcb_path.name, clean=clean,
+            auto_solve=self._auto_solve_check.isChecked(),
         )
-        dlg = QProgressDialog(initial_text, "Cancel", 0, 0, self)
-        dlg.setWindowTitle(
-            "Loading project (clean)" if clean else "Loading project"
-        )
+        dlg = QProgressDialog(imp["dialog_text"], "Cancel", 0, 0, self)
+        dlg.setWindowTitle(imp["dialog_title"])
         dlg.setWindowModality(Qt.ApplicationModal)
         dlg.setMinimumDuration(0)
         dlg.setAutoClose(False)
@@ -4708,8 +4887,9 @@ class LauncherWindow(QMainWindow):
         worker = _SolveWorker(
             prjpcb_path, settings,
             pcbdoc_selector=str(pcbdoc_path) if pcbdoc_path else None,
-            use_design_cache=not clean,
-            try_solve_cache_first=not clean,
+            use_design_cache=imp["use_design_cache"],
+            try_solve_cache_first=imp["try_solve_cache_first"],
+            load_only=imp["load_only"],
             parent=self,
         )
         self._solve_worker = worker
@@ -4881,6 +5061,9 @@ class LauncherWindow(QMainWindow):
             return None
         if project is not None and getattr(project, "editor_directives", None):
             new_win._set_solve_stale(True)
+        elif (loaded_project is not None
+              and bool(getattr(solution, "solver_info", {}).get("stub"))):
+            new_win._mark_awaiting_first_solve()
         _register_viewer(new_win)
         app = QApplication.instance()
         # The new viewer's GL widget show() is processed asynchronously,
@@ -5048,6 +5231,9 @@ class PdnViewer(QMainWindow):
         self._settings_dirty: bool = False
         self._initial_solve_stale: bool = False
         self._solve_stale: bool = False
+        # True while the viewer holds a stub and the user has not run the
+        # FEM yet — drives the overlay button label ("Solve" vs "Resolve").
+        self._awaiting_first_solve: bool = False
         # Whether a solver run has happened that isn't yet persisted to a
         # pickle — gates the "Save project + latest solver run" option in
         # the Ctrl+S popup. Set True by the resolve handler; a viewer
@@ -5145,101 +5331,7 @@ class PdnViewer(QMainWindow):
         # blowing up overhead. Reset to 0.0 when the popup opens.
         self._last_pump_time: float = 0.0
 
-        # Index every padne Layer by (physical, net). The net here is what we
-        # used to call "rail" in the naming convention — but now we group
-        # bridged nets into rails, so the underlying per-net layer index
-        # still keys on the literal net name.
-        self._index_by_pair: dict[tuple[str, str], int] = {}
-        physicals: set[str] = set()
-        for i, layer in enumerate(solution.problem.layers):
-            phys, net = _split_composite_name(layer.name)
-            self._index_by_pair[(phys, net)] = i
-            physicals.add(phys)
-        # Pull in any additional physical layers that exist on the board but
-        # carry no rail through the solved FEM (Gerber: the user named
-        # copper + placed a SOURCE/SINK on TOP only, so the post-solve
-        # Solution has no BOT layer — but BOT copper still exists on the
-        # board and the user wants to be able to toggle it on via the
-        # all-copper eye). Layer ids from metadata's stackup that aren't
-        # already represented in the solution get added here.
-        if metadata:
-            for row in metadata.get("stackup", []):
-                nm = row.get("name")
-                if nm and nm not in physicals:
-                    physicals.add(nm)
-
-        # Build rail groups from RESISTOR bridges + SOURCE/SINK/REGULATOR
-        # terminals (the metadata bundle). The Rail dropdown shows the
-        # PRIMARY net per group ("+3V3", not "3V3_SW"); the renderer combines
-        # every per-net layer in the group into one heatmap so the user sees
-        # both +3V3 and 3V3_SW copper when they pick "+3V3".
-        self._rail_names: list[str]
-        self._rail_to_members: dict[str, list[str]]
-        self._rail_names, self._rail_to_members = self._compute_rail_groups(metadata)
-
-        # Sort layers into physical stackup order (Top → inner → Bottom).
-        # The stackup metadata is the authority: its rows are already in
-        # physical order (top first), independent of layer name or id —
-        # which matters for boards like Corvette whose layers are named
-        # "L1".."L16" rather than "Top Layer"/"Bottom Layer". The name
-        # heuristic below is only a fallback for layers absent from the
-        # metadata (or when no metadata was bundled): inner-layer names
-        # start with "L" + a number, parsed so L10 sorts after L9.
-        _stackup_pos = {
-            row["name"]: i
-            for i, row in enumerate(
-                metadata.get("stackup", []) if metadata else []
-            )
-        }
-        _ln_re = re.compile(r"^L(\d+)", re.IGNORECASE)
-
-        def _layer_sort_key(name: str) -> tuple[int, int, str]:
-            pos = _stackup_pos.get(name)
-            if pos is not None:
-                return (0, pos, name)
-            lower = name.lower()
-            if "top" in lower:
-                return (1, 0, name)
-            if "bottom" in lower:
-                return (3, 0, name)
-            m = _ln_re.match(name.strip())
-            ln = int(m.group(1)) if m else (1 << 30)
-            return (2, ln, name)
-        self._physicals = sorted(physicals, key=_layer_sort_key)
-        # Rank in the physical stackup (0 = topmost). Used to decide draw
-        # order when multiple layers are visible — we want the topmost
-        # checked layer to render last so it sits visually on top.
-        self._phys_stackup_rank: dict[str, int] = {}
-        for rank, name in enumerate(self._physicals):
-            self._phys_stackup_rank[name] = rank
-
-        # Map physical-layer display name → Altium layer id. We need this so
-        # the directive-pin overlay can filter pins to the layer currently
-        # being viewed (pins carry a layer_id, the dropdown carries a name).
-        self._phys_name_to_layer_id: dict[str, int] = {}
-        for row in (metadata.get("stackup", []) if metadata else []):
-            self._phys_name_to_layer_id[row["name"]] = row["layer_id"]
-
-        # World-z (mm) at the centre of each physical copper layer, derived
-        # from the cumulative copper + dielectric thicknesses in the stackup
-        # metadata. z=0 is the topmost layer's centreline; lower layers are
-        # negative. Using real distances (instead of a uniform rank spacing)
-        # makes 3D via cylinders honour the actual stackup — adjacent inner
-        # planes look thin, top-to-bottom vias look long.
-        self._phys_z_mm: dict[str, float] = {}
-        z_accum = 0.0
-        rows = (metadata.get("stackup", []) if metadata else []) or []
-        for i, row in enumerate(rows):
-            name = row.get("name")
-            t_cu = float(row.get("copper_thickness_mm") or 0.0)
-            if name is not None:
-                self._phys_z_mm[name] = -(z_accum + 0.5 * t_cu)
-            if i + 1 < len(rows):
-                z_accum += t_cu + float(row.get("dielectric_thickness_mm") or 0.0)
-        # ``self._rails`` kept as an alias of the rail-group names so the
-        # rest of the UI code (rail combo population, mode helpers) doesn't
-        # need to know the rails came from group reduction.
-        self._rails = self._rail_names
+        self._init_solution_indices()
 
         # Designators of directives currently expanded in the Setup tab.
         # Empty by default → all directives collapsed; user click toggles.
@@ -5395,6 +5487,364 @@ class PdnViewer(QMainWindow):
         if self._project is not None:
             self._update_pending_rails()
         self._render()
+
+    def _init_solution_indices(self) -> None:
+        """(Re)build layer / rail indices from :attr:`solution` and
+        :attr:`metadata`. Called from ``__init__`` and after an in-place
+        solve reload."""
+        solution = self.solution
+        metadata = self.metadata
+        self._index_by_pair = {}
+        physicals: set[str] = set()
+        for i, layer in enumerate(solution.problem.layers):
+            phys, net = _split_composite_name(layer.name)
+            self._index_by_pair[(phys, net)] = i
+            physicals.add(phys)
+        if metadata:
+            for row in metadata.get("stackup", []):
+                nm = row.get("name")
+                if nm and nm not in physicals:
+                    physicals.add(nm)
+
+        self._rail_names, self._rail_to_members = self._compute_rail_groups(
+            metadata,
+        )
+
+        _stackup_pos = {
+            row["name"]: i
+            for i, row in enumerate(
+                metadata.get("stackup", []) if metadata else []
+            )
+        }
+        _ln_re = re.compile(r"^L(\d+)", re.IGNORECASE)
+
+        def _layer_sort_key(name: str) -> tuple[int, int, str]:
+            pos = _stackup_pos.get(name)
+            if pos is not None:
+                return (0, pos, name)
+            lower = name.lower()
+            if "top" in lower:
+                return (1, 0, name)
+            if "bottom" in lower:
+                return (3, 0, name)
+            m = _ln_re.match(name.strip())
+            ln = int(m.group(1)) if m else (1 << 30)
+            return (2, ln, name)
+
+        self._physicals = sorted(physicals, key=_layer_sort_key)
+        self._phys_stackup_rank = {
+            name: rank for rank, name in enumerate(self._physicals)
+        }
+        self._phys_name_to_layer_id = {}
+        for row in (metadata.get("stackup", []) if metadata else []):
+            self._phys_name_to_layer_id[row["name"]] = row["layer_id"]
+
+        self._phys_z_mm = {}
+        z_accum = 0.0
+        stack_rows = (metadata.get("stackup", []) if metadata else []) or []
+        for i, row in enumerate(stack_rows):
+            name = row.get("name")
+            t_cu = float(row.get("copper_thickness_mm") or 0.0)
+            if name is not None:
+                self._phys_z_mm[name] = -(z_accum + 0.5 * t_cu)
+            if i + 1 < len(stack_rows):
+                z_accum += t_cu + float(
+                    row.get("dielectric_thickness_mm") or 0.0,
+                )
+        self._rails = self._rail_names
+
+    def _clear_solution_derived_caches(self) -> None:
+        """Drop render / report caches tied to the previous solution."""
+        self._layer_cache.clear()
+        self._layer_vec_cache.clear()
+        self._no_current_meshes = None
+        self._marker_hover_index_cache = None
+        self._metadata_marker_hover_rows.clear()
+        self._via_current_lookup.clear()
+        self._via_voltage_kdtree_cache.clear()
+        self._stub_geom_cache = None
+        self._merged_all_copper_cache.clear()
+        self._primitives_by_layer_net = None
+        self._non_editor_marker_groups = None
+        self._last_scale_selection = None
+        self._layer_probes.clear()
+        self._data_bounds = None
+        for attr in ("_nodes_rows_cache", "_vias_rows_cache"):
+            if hasattr(self, attr):
+                delattr(self, attr)
+
+    def _no_pdn_visibility(self) -> bool:
+        """Whether to use the 'blank board' layer / rail visibility defaults:
+        no rails shown, and the top physical layer's all-copper turned on.
+
+        True when the design has no PDN rails at all (a Gerber import, or a
+        project with no SOURCE/REGULATOR directives) OR while an unsolved
+        stub is loaded (Import Altium Design with auto-solve off). A stub's
+        rails carry no solved data yet, so auto-showing them is misleading —
+        mirror the no-PDN defaults until the user runs the solver."""
+        if not self._rail_names:
+            return True
+        return bool(getattr(self.solution, "solver_info", {}).get("stub"))
+
+    def _rebuild_layer_rail_lists(self, *, preserve_visibility: bool = True) -> None:
+        """Refresh the physical-layer and rail eye lists after a new solve.
+
+        Preserves per-layer / per-rail visibility where the name still
+        exists so a re-solve doesn't reset the user's layer toggles."""
+        saved_layers: dict[str, bool] = {}
+        saved_layers2: dict[str, bool] = {}
+        saved_rails: dict[str, bool] = {}
+        if preserve_visibility:
+            saved_layers = {
+                p: e.isVisibleState() for p, e in self._layer_eye_buttons
+            }
+            saved_layers2 = {
+                p: e.isVisibleState() for p, e in self._layer_eye2_buttons
+            }
+            saved_rails = {
+                r: e.isVisibleState() for r, e in self._rail_eye_buttons
+            }
+
+        while self.layer_list.count() > 1:
+            self.layer_list.takeItem(self.layer_list.count() - 1)
+        self._layer_eye_buttons.clear()
+        self._layer_eye2_buttons.clear()
+        self._layer_fill_buttons.clear()
+        self._layer_transparency_buttons.clear()
+        self._layer_list_items.clear()
+        self._selected_layer = None
+
+        for phys in self._physicals:
+            eye = EyeButton(
+                visible=True,
+                tip_show="Show this layer's analysed rails (rail copper only)",
+                tip_hide="Hide this layer's analysed rails (rail copper only)",
+            )
+            eye.toggled_visible.connect(self._on_layer_eye_toggled)
+            eye2 = EyeButton(
+                visible=False,
+                tip_show="Show all copper on this layer",
+                tip_hide="Hide all copper on this layer",
+            )
+            eye2.toggled_visible.connect(self._on_layer_eye2_toggled)
+            fill = FillToggleButton(solid=True)
+            fill.toggled_fill.connect(self._on_layer_fill_toggled)
+            transp = TransparencyButton(step=0)
+            transp.toggled_transparency.connect(
+                self._on_layer_transparency_toggled,
+            )
+            row = self._build_layer_row_widget(
+                eye, swatch_color=self._layer_color_for(phys),
+                label_text=phys, bold=False,
+                second_eye=eye2, fill_btn=fill, transparency_btn=transp,
+            )
+            item = QListWidgetItem()
+            item.setFlags(Qt.ItemIsEnabled)
+            self.layer_list.addItem(item)
+            item.setSizeHint(row.sizeHint())
+            self.layer_list.setItemWidget(item, row)
+            self._layer_eye_buttons.append((phys, eye))
+            self._layer_eye2_buttons.append((phys, eye2))
+            self._layer_fill_buttons.append((phys, fill))
+            self._layer_transparency_buttons.append((phys, transp))
+            self._layer_list_items[phys] = item
+            if preserve_visibility and phys in saved_layers:
+                eye.setVisibleState(saved_layers[phys], emit=False)
+            if preserve_visibility and phys in saved_layers2:
+                eye2.setVisibleState(saved_layers2[phys], emit=False)
+
+        if (self._no_pdn_visibility() and self._layer_eye2_buttons
+                and not any(e.isVisibleState() for _, e in self._layer_eye2_buttons)):
+            self._layer_eye2_buttons[0][1].setVisibleState(True, emit=False)
+        self._sync_all_layers_eye()
+        self._sync_all_layers_eye2()
+        approx_row_h = self.layer_list.sizeHintForRow(0) or 22
+        self.layer_list.setFixedHeight(
+            (len(self._physicals) + 1) * approx_row_h + 6,
+        )
+
+        while self.rail_list.count() > 1:
+            self.rail_list.takeItem(self.rail_list.count() - 1)
+        self._rail_eye_buttons.clear()
+
+        _ground_rails = {"0v", "gnd", "ground", "vss"}
+        _no_pdn = self._no_pdn_visibility()
+        for rail in self._rails:
+            eye = EyeButton(visible=False)
+            eye.toggled_visible.connect(self._on_rail_eye_toggled)
+            row = self._build_layer_row_widget(
+                eye, swatch_color=None,
+                label_text=rail, bold=False,
+            )
+            item = QListWidgetItem()
+            item.setFlags(Qt.ItemIsEnabled)
+            self.rail_list.addItem(item)
+            item.setSizeHint(row.sizeHint())
+            self.rail_list.setItemWidget(item, row)
+            self._rail_eye_buttons.append((rail, eye))
+            if _no_pdn:
+                # Unsolved stub / no-PDN board → show no rails.
+                eye.setVisibleState(False, emit=False)
+            elif preserve_visibility and rail in saved_rails:
+                eye.setVisibleState(saved_rails[rail], emit=False)
+            else:
+                eye.setVisibleState(
+                    rail.lower() not in _ground_rails, emit=False,
+                )
+        self._sync_all_rails_eye()
+        approx_rail_h = self.rail_list.sizeHintForRow(0) or 22
+        self.rail_list.setFixedHeight(
+            (len(self._rails) + 1) * approx_rail_h + 6,
+        )
+
+        has_rails = bool(self._rails)
+        self._mode_label.setVisible(has_rails)
+        self.mode_combo.setVisible(has_rails)
+        # __init__ hides the colour-scale controls + bottom-left gradient
+        # strip for a rail-less stub; a stub → solved transition must bring
+        # them back so the user can read / adjust the heatmap scale.
+        self.scale_controller.setVisible(has_rails)
+        self._scale_overlay.setVisible(has_rails)
+        if has_rails:
+            self._position_scale_overlay()
+
+    def _apply_solve_result(
+        self,
+        new_solution,
+        metadata: dict,
+        loaded_project,
+        new_settings,
+        warn_a: float,
+        pct: float,
+        *,
+        mark_solved_since_save: bool = False,
+        is_import: bool = False,
+    ) -> None:
+        """Swap in a freshly-solved result without replacing the window.
+
+        Rebuilds solution-derived indices, clears render caches, refreshes
+        the layer / rail lists and Setup tab, then re-renders in place —
+        preserving the user's pan / zoom.
+
+        ``is_import`` marks the File > Import Altium Design path, which can
+        load a *different* project into this window: it resets the previous
+        project's editor session, refreshes the title, and re-fits the view
+        instead of inheriting the old pan / zoom."""
+        log = logging.getLogger(__name__)
+        try:
+            self.solution = new_solution
+            self.metadata = metadata
+            if isinstance(self.metadata, dict):
+                self.metadata.setdefault("primitives", {
+                    "tracks": [], "arcs": [], "regions": [],
+                    "shape_based_regions": [], "fills": [],
+                })
+            self._loaded_project = loaded_project
+            self._solve_settings = new_settings
+            self._via_current_warn_a = warn_a
+            self._display_percentile_high = pct
+
+            # A returned stub (load-only import, or a project still missing
+            # SOURCE/REGULATOR directives) hasn't been through the FEM yet —
+            # keep the ↻ Solve overlay up rather than clearing it. Derive the
+            # state from the solution so every caller stays consistent instead
+            # of each one having to remember _mark_awaiting_first_solve().
+            was_awaiting = self._awaiting_first_solve
+            is_stub = bool(
+                getattr(new_solution, "solver_info", {}).get("stub")
+            )
+            self._awaiting_first_solve = is_stub
+            self._initial_solve_stale = is_stub
+            self._project_dirty = False
+            self._settings_dirty = False
+            self._solve_stale = is_stub
+            if mark_solved_since_save:
+                self._solved_since_save = True
+
+            if is_import:
+                # Importing a different project must not leave the previous
+                # design's editor session / path bound to the new solution,
+                # or its name in the title bar. _project is rebuilt lazily
+                # from the new metadata when the user next edits.
+                self._project = None
+                self._project_path = None
+                project_name = (
+                    getattr(new_solution.problem, "project_name", None)
+                    or "unknown"
+                )
+                self.setWindowTitle(f"FYPA -- {project_name}")
+                # New board → re-fit rather than inherit the old framing.
+                self._need_initial_fit = True
+
+            self._init_solution_indices()
+            self._clear_solution_derived_caches()
+            # Preserve the user's layer / rail toggles on a same-project
+            # re-solve, but fall back to fresh defaults when importing a
+            # different project or when leaving the unsolved-stub state
+            # (whose rails were all hidden) so the solved rails actually show.
+            preserve = not is_import and not (was_awaiting and not is_stub)
+            self._rebuild_layer_rail_lists(preserve_visibility=preserve)
+
+            if getattr(self, "setup_browser", None) is not None:
+                self._refresh_setup_html()
+
+            self._nodes_table_populated = False
+            self._vias_table_populated = False
+            self._vias_warn_init_scheduled = False
+            self._nodes_warn_init_scheduled = False
+            if self._project is not None:
+                self._update_pending_rails()
+
+            cur_tab = self.tabs.currentIndex()
+            heatmap_idx = getattr(self, "_heatmap_tab_index", 0)
+            self.tabs.setCurrentIndex(heatmap_idx)
+
+            self._settings_rerun_btn.setEnabled(True)
+            reload_btn = getattr(self, "_settings_reload_design_btn", None)
+            if reload_btn is not None:
+                reload_btn.setEnabled(True)
+
+            self._refresh_solve_stale_overlay()
+            # For a re-solve / resolve _need_initial_fit stays False so pan /
+            # zoom survive the swap; the import path above flips it back on so
+            # a different board re-fits.
+            self._render()
+
+            _maybe_warn_needs_directives(self, new_solution)
+            _maybe_warn_open_loop_rails(self, metadata)
+            _maybe_warn_connectivity_breaks(self, metadata)
+
+            if not getattr(self, "_vias_warn_init_scheduled", False):
+                self._vias_warn_init_scheduled = True
+                QTimer.singleShot(0, self._init_vias_warn_count)
+            if not getattr(self, "_nodes_warn_init_scheduled", False):
+                self._nodes_warn_init_scheduled = True
+                QTimer.singleShot(0, self._init_nodes_warn_count)
+            if cur_tab in (
+                getattr(self, "_nodes_tab_index", -1),
+                getattr(self, "_vias_tab_index", -1),
+            ):
+                self._on_tabs_current_changed(cur_tab)
+
+            self._settings_status_label.setText(
+                f"<span style='color:{_T()['ok']};'>Solve complete.</span>"
+            )
+        except Exception as e:
+            log.exception("Failed to apply solve result in place")
+            _t = _T()
+            self._settings_status_label.setText(
+                f"<span style='color:{_t['err']};'>Solve succeeded but the "
+                f"viewer failed to refresh: {_esc(str(e))}</span>"
+            )
+            self._settings_rerun_btn.setEnabled(True)
+            reload_btn = getattr(self, "_settings_reload_design_btn", None)
+            if reload_btn is not None:
+                reload_btn.setEnabled(True)
+            QMessageBox.critical(
+                self, "Couldn't refresh viewer",
+                f"The solve finished but updating this window failed:\n\n"
+                f"{type(e).__name__}: {e}",
+            )
 
     # --- Rail-group computation ---------------------------------------------
 
@@ -5731,11 +6181,12 @@ class PdnViewer(QMainWindow):
 
         self._sync_all_layers_eye()
         # If the design has no PDN rails (Gerber import before the user has
-        # placed any directives, or any other "blank board" load), turn on
-        # the top physical layer's all-copper eye by default so the user
-        # actually sees their board on open. Without this every eye starts
-        # closed and the viewport is empty.
-        if not self._rail_names and self._layer_eye2_buttons:
+        # placed any directives, or any other "blank board" load) — or an
+        # unsolved stub is loaded (Import without auto-solve) — turn on the
+        # top physical layer's all-copper eye by default so the user actually
+        # sees their board on open. Without this every eye starts closed and
+        # the viewport is empty.
+        if self._no_pdn_visibility() and self._layer_eye2_buttons:
             self._layer_eye2_buttons[0][1].setVisibleState(True, emit=False)
         self._sync_all_layers_eye2()
 
@@ -5803,10 +6254,16 @@ class PdnViewer(QMainWindow):
             self._rail_eye_buttons.append((rail, eye))
 
         # Default: every rail visible except generic ground names (GND,
-        # 0V, …) so a fresh import shows all power rails at once.
+        # 0V, …) so a fresh import shows all power rails at once. An unsolved
+        # stub (Import without auto-solve) shows no rails — like a no-PDN
+        # board — until the user runs the solver.
         _ground_rails = {"0v", "gnd", "ground", "vss"}
+        _no_pdn = self._no_pdn_visibility()
         for rail, eye in self._rail_eye_buttons:
-            eye.setVisibleState(rail.lower() not in _ground_rails, emit=False)
+            eye.setVisibleState(
+                (not _no_pdn) and rail.lower() not in _ground_rails,
+                emit=False,
+            )
         self._sync_all_rails_eye()
 
         approx_rail_h = self.rail_list.sizeHintForRow(0) or 22
@@ -8391,9 +8848,10 @@ class PdnViewer(QMainWindow):
             if not phys_list:
                 self.summary_label.setText("(no layers selected)")
             elif is_stub:
+                action = self._stub_action_word()
                 self.summary_label.setText(
-                    "(import complete — add Source / Sink directives "
-                    "and press Resolve to compute voltage distribution)"
+                    f"(import complete — add Source / Sink directives "
+                    f"and press {action} to compute voltage distribution)"
                 )
             else:
                 self.summary_label.setText("(no rails selected)")
@@ -8431,8 +8889,9 @@ class PdnViewer(QMainWindow):
                 self._gl_viewer.clear_cylinders()
             self._refresh_board_outline()
             if is_stub:
+                action = self._stub_action_word()
                 self.summary_label.setText(
-                    "(import complete — press Resolve to compute "
+                    f"(import complete — press {action} to compute "
                     "voltage distribution for the placed directives)"
                 )
             else:
@@ -12298,15 +12757,36 @@ class PdnViewer(QMainWindow):
         self._initial_solve_stale = bool(stale)
         self._refresh_solve_stale_overlay()
 
+    def _mark_awaiting_first_solve(self) -> None:
+        """Stub loaded with design info but no FEM run yet — show ↻ Solve."""
+        self._awaiting_first_solve = True
+        self._set_solve_stale(True)
+
+    def _stub_action_word(self) -> str:
+        """Button / hint label for the next FEM run from a stub viewer."""
+        return "Solve" if self._awaiting_first_solve else "Resolve"
+
     def _refresh_solve_stale_overlay(self) -> None:
         """Recompute ``_solve_stale`` from the editor / settings / initial
-        dirty flags, then show or hide the Resolve overlay button."""
+        dirty flags, then show or hide the Solve / Resolve overlay button."""
         self._solve_stale = (bool(self._project_dirty)
                              or bool(self._settings_dirty)
                              or bool(self._initial_solve_stale))
         rbtn = getattr(self, "_resolve_btn", None)
         if rbtn is not None:
             rbtn.setVisible(self._solve_stale)
+            if self._solve_stale:
+                if self._awaiting_first_solve:
+                    rbtn.setText("↻  Solve")
+                    rbtn.setToolTip(
+                        "Run the FEM solver on the loaded design"
+                    )
+                else:
+                    rbtn.setText("↻  Resolve")
+                    rbtn.setToolTip(
+                        "Re-run the solver with the current editor "
+                        "changes applied"
+                    )
             self._position_editor_overlays()
 
     def _mark_project_dirty(self) -> None:
@@ -15936,26 +16416,43 @@ class PdnViewer(QMainWindow):
             )
             return
         new_settings.apply_to_modules()
+        try_solve_cache_first = (
+            self._awaiting_first_solve
+            and not self._project_dirty
+            and not self._settings_dirty
+        )
+        if self._awaiting_first_solve:
+            dialog_title = "Running solver"
+            dialog_text = (
+                f"Solving {Path(prjpcb).name}…\n"
+                "This can take 10–60 s depending on board size and "
+                "mesh density."
+            )
+            dialog_width_scale = 1.44
+        else:
+            dialog_title = "Resolving with editor changes"
+            dialog_text = (
+                "Re-solving with your editor changes…\n"
+                "Reusing the cached design info (no re-extraction)."
+            )
+            # ~3.20x Qt's auto-sized width: the standard solve dialog's 1.44x,
+            # widened for the longer editor-changes message and then another
+            # 15% on top of that (1.44 * 1.93 * 1.15 ≈ 3.199).
+            dialog_width_scale = 3.199392
         self._start_solve_worker(
             Path(prjpcb), new_settings,
             warn_a, pct,
             stackup_overrides=stackup_overrides,
             pcbdoc_selector=str(pcbdoc) if pcbdoc else None,
             use_design_cache=True,
-            try_solve_cache_first=False,
+            try_solve_cache_first=try_solve_cache_first,
             editor_directives=editor_directives,
             copper_names=copper_names,
             loaded_project=self._loaded_project,
             is_resolve=True,
-            dialog_title="Resolving with editor changes",
-            dialog_text=(
-                "Re-solving with your editor changes…\n"
-                "Reusing the cached design info (no re-extraction)."
-            ),
-            # ~3.20x Qt's auto-sized width — the standard solve dialog's
-            # 1.44x, widened further for the longer editor-changes message
-            # and then another 15% wider on top of that.
-            dialog_width_scale=3.199392,
+            dialog_title=dialog_title,
+            dialog_text=dialog_text,
+            dialog_width_scale=dialog_width_scale,
         )
 
     def _on_gl_clicked(self, _world_x: float, _world_y: float) -> None:
@@ -17436,7 +17933,7 @@ class PdnViewer(QMainWindow):
         self._settings_rerun_btn = QPushButton("Re-run Solver")
         self._settings_rerun_btn.setToolTip(
             "Re-solve the current project with the parameters above. "
-            "Opens a fresh viewer window with the new result."
+            "Updates the heatmap in this window when the solve finishes."
         )
         self._settings_rerun_btn.setStyleSheet(
             f"QPushButton {{ background-color: {t['accent_btn']}; color: {t['fg_strong']};"
@@ -18559,13 +19056,15 @@ class PdnViewer(QMainWindow):
         open_proj = QAction("&Import Altium Design…", self)
         open_proj.setShortcut(QKeySequence.Open)         # Ctrl+O
         open_proj.setStatusTip(
-            "Pick a .PrjPcb; reuse the cached solution if the project is "
-            "unchanged, otherwise extract + solve."
+            _altium_import_auto_solve_status_tip(
+                load_auto_solve_on_import(),
+            )
         )
         open_proj.triggered.connect(
             lambda: self._on_menu_open_project(clean=False)
         )
         file_menu.addAction(open_proj)
+        self._act_import_altium = open_proj
 
         open_proj_clean = QAction("Import Altium Design (&Clean)…", self)
         open_proj_clean.setShortcut("Ctrl+Shift+L")
@@ -18577,6 +19076,10 @@ class PdnViewer(QMainWindow):
             lambda: self._on_menu_open_project(clean=True)
         )
         file_menu.addAction(open_proj_clean)
+
+        self._act_auto_solve_import = _add_auto_solve_import_action(
+            self, file_menu, self._act_import_altium,
+        )
 
         open_gerber = QAction("Import &Gerber Files…", self)
         open_gerber.setShortcut("Ctrl+G")
@@ -18833,6 +19336,7 @@ class PdnViewer(QMainWindow):
                     loaded_project=loaded,
                     project=pf,
                 )
+                new_win._mark_awaiting_first_solve()
                 _register_viewer(new_win)
                 new_win.setGeometry(prev_geometry)
                 if prev_fullscreen:
@@ -18879,10 +19383,9 @@ class PdnViewer(QMainWindow):
         worker.start()
 
     def _on_menu_open_project(self, *, clean: bool = False) -> None:
-        """File > Import Altium Design[ (Clean)]  →  pick a .PrjPcb and open
-        it in a fresh viewer. Non-clean tries the solve cache first; clean
-        always re-extracts + re-solves. Uses the current viewer's
-        SolveSettings + display knobs as defaults for the new viewer."""
+        """File > Import Altium Design[ (Clean)]  →  pick a .PrjPcb and
+        load it into this viewer. Non-clean honours the auto-solve
+        preference; clean always re-extracts + re-solves."""
         path_str, _ = QFileDialog.getOpenFileName(
             self,
             "Import Altium project (clean)" if clean else "Import Altium project",
@@ -18899,25 +19402,23 @@ class PdnViewer(QMainWindow):
         # Apply the current physics settings to module globals before the
         # worker starts, mirroring the Re-run path's main-thread ordering.
         self._solve_settings.apply_to_modules()
-        # The solve-cache check now runs INSIDE the worker so the dialog
-        # below stays responsive during the (potentially 5–10 s)
-        # pickle.load on large boards. On hit, the worker emits
-        # finished_ok with the cached (sol, meta) and we skip extract +
-        # solve. On miss, it falls through to the normal flow.
-        initial_text = (
-            f"Checking solve cache for {prjpcb_path.name}…\n"
-            "On a cache miss this falls through to a full extract + solve "
-            "(10–60 s depending on board size)."
-            if not clean else None
+        imp = _altium_import_worker_options(
+            prjpcb_path.name, clean=clean,
+            auto_solve=(
+                None if clean
+                else self._act_auto_solve_import.isChecked()
+            ),
         )
         self._start_solve_worker(
             prjpcb_path, self._solve_settings,
             self._via_current_warn_a, self._display_percentile_high,
             pcbdoc_selector=str(pcbdoc_path) if pcbdoc_path else None,
-            use_design_cache=not clean,
-            try_solve_cache_first=not clean,
-            dialog_title="Loading project (clean)" if clean else "Loading project",
-            dialog_text=initial_text,
+            use_design_cache=imp["use_design_cache"],
+            try_solve_cache_first=imp["try_solve_cache_first"],
+            load_only=imp["load_only"],
+            is_import=True,
+            dialog_title=imp["dialog_title"],
+            dialog_text=imp["dialog_text"],
         )
 
     def _on_menu_save_solution(self) -> None:
@@ -19356,8 +19857,8 @@ class PdnViewer(QMainWindow):
         """Re-solve the current project with the values in the Settings
         tab. The actual solve runs on a :class:`_SolveWorker` QThread so
         the UI stays responsive and the progress dialog can spin; the
-        viewer swap happens in :meth:`_on_solve_finished` once the worker
-        emits its result."""
+        heatmap refreshes in place via :meth:`_apply_solve_result` once the
+        worker emits its result."""
         # 1. Validate the project path is still in metadata + on disk.
         prjpcb_str = ""
         if self.metadata:
@@ -19480,13 +19981,15 @@ class PdnViewer(QMainWindow):
         copper_names: list | None = None,
         loaded_project: object | None = None,
         is_resolve: bool | None = None,
+        is_import: bool = False,
+        load_only: bool = False,
         dialog_title: str = "Running solver",
         dialog_text: str | None = None,
         dialog_width_scale: float = 1.44,
     ) -> None:
         """Show an indeterminate progress dialog and run :class:`_SolveWorker`
-        off-thread; on success, open a fresh viewer via
-        :meth:`_on_solve_finished`. Called by the Re-run button (with the
+        off-thread; on success, refresh this viewer in place via
+        :meth:`_apply_solve_result`. Called by the Re-run button (with the
         Settings-tab form values) and by File > Import Altium Design (with
         defaults from the current viewer). Set ``use_design_cache=False`` for
         the "Clean" / Reload Design Info flows that must re-extract."""
@@ -19526,6 +20029,7 @@ class PdnViewer(QMainWindow):
             editor_directives=editor_directives,
             copper_names=copper_names,
             loaded_project=loaded_project,
+            load_only=load_only,
             parent=self,
         )
         self._solve_worker = worker
@@ -19552,6 +20056,7 @@ class PdnViewer(QMainWindow):
             worker.finished_ok.connect(
                 lambda sol, meta, loaded: self._on_solve_finished(
                     sol, meta, loaded, warn_a, pct, settings,
+                    is_import=is_import,
                 )
             )
         worker.failed.connect(self._on_solve_failed)
@@ -19625,130 +20130,23 @@ class PdnViewer(QMainWindow):
     def _on_solve_finished(
         self, new_solution, metadata: dict, loaded_project,
         warn_a: float, pct: float, new_settings,
+        *, is_import: bool = False,
     ) -> None:
-        """Worker emitted ``finished_ok``. Open a fresh viewer bound to
-        the new solution and close this one once Qt has fully shown the
-        replacement (so the QApplication doesn't quit on the transition)."""
-        log = logging.getLogger(__name__)
-        # Inherit the current window's placement so loading a different
-        # project doesn't snap the viewer back to the default size +
-        # position.
-        prev_geometry = self.geometry()
-        prev_maximized = self.isMaximized()
-        prev_fullscreen = self.isFullScreen()
-        try:
-            new_win = PdnViewer(
-                new_solution,
-                metadata=metadata,
-                initial_settings=new_settings,
-                via_current_warn_a=warn_a,
-                display_percentile_high=pct,
-                loaded_project=loaded_project,
-            )
-            # GC-pin the new window in a module-level list — PySide6's
-            # QApplication property bag doesn't reliably hold Python refs
-            # across signal boundaries, so the window would otherwise be
-            # garbage-collected the moment this slot returns.
-            _register_viewer(new_win)
-            new_win.setGeometry(prev_geometry)
-            if prev_fullscreen:
-                new_win.showFullScreen()
-            elif prev_maximized:
-                new_win.showMaximized()
-            else:
-                # PdnViewer.__init__ sets _pending_maximize=True so the
-                # first showEvent maximises the window. Inheriting the
-                # previous size means we want to keep that size, so cancel
-                # the deferred maximise before showing.
-                new_win._pending_maximize = False
-                new_win.show()
-            _force_native_window_icon(new_win)
-            _set_window_aumid(new_win)
-            # Land on the Heatmap tab so the user immediately sees the
-            # new result — they were on Settings to click Re-run, but
-            # the point of re-running is to inspect the updated heatmap.
-            heatmap_idx = getattr(new_win, "_heatmap_tab_index", 0)
-            new_win.tabs.setCurrentIndex(heatmap_idx)
-            # A re-run on a project still lacking a SOURCE/REGULATOR comes
-            # back as an editor-mode stub — flag it the same way the initial
-            # load does instead of silently showing an empty heatmap.
-            _maybe_warn_needs_directives(new_win, new_solution)
-            _maybe_warn_open_loop_rails(new_win, metadata)
-            _maybe_warn_connectivity_breaks(new_win, metadata)
-        except Exception as e:
-            log.exception("Failed to open new viewer after re-solve")
-            _t = _T()
-            self._settings_status_label.setText(
-                f"<span style='color:{_t['err']};'>Re-solve succeeded but the "
-                f"new viewer failed to open: {_esc(str(e))}</span>"
-            )
-            self._settings_rerun_btn.setEnabled(True)
-            reload_btn = getattr(self, "_settings_reload_design_btn", None)
-            if reload_btn is not None:
-                reload_btn.setEnabled(True)
-            return
-
-        # Brief success flash on the old window before it goes away.
-        self._settings_status_label.setText(
-            f"<span style='color:{_T()['ok']};'>Solve complete — reloading viewer…</span>"
+        """Worker emitted ``finished_ok`` — refresh this viewer in place."""
+        self._apply_solve_result(
+            new_solution, metadata, loaded_project, new_settings,
+            warn_a, pct, is_import=is_import,
         )
-        # Defer one tick so Qt has fully shown the new window before this
-        # one disappears. _retire_viewer (not a plain close) destroys the
-        # old window and drops its Solution — a plain close() only hides it,
-        # leaking a full solution into RAM on every reload.
-        QTimer.singleShot(0, lambda: _retire_viewer(self))
 
     def _on_resolve_finished(
         self, new_solution, metadata: dict, loaded_project,
         warn_a: float, pct: float, new_settings,
     ) -> None:
-        """Resolve worker finished — open a fresh viewer bound to the same
-        project file so the editor directives + project path carry over.
-        The freshly-solved editor rails are now normal viewable rails."""
-        log = logging.getLogger(__name__)
-        prev_geometry = self.geometry()
-        prev_maximized = self.isMaximized()
-        prev_fullscreen = self.isFullScreen()
-        try:
-            new_win = PdnViewer(
-                new_solution,
-                metadata=metadata,
-                initial_settings=new_settings,
-                via_current_warn_a=warn_a,
-                display_percentile_high=pct,
-                project=self._project,
-                project_path=self._project_path,
-                loaded_project=loaded_project,
-            )
-            _register_viewer(new_win)
-            new_win.setGeometry(prev_geometry)
-            if prev_fullscreen:
-                new_win.showFullScreen()
-            elif prev_maximized:
-                new_win.showMaximized()
-            else:
-                new_win._pending_maximize = False
-                new_win.show()
-            # The resolve produced a solution not yet written to any
-            # pickle — enable the Ctrl+S "save project + solver run" path.
-            new_win._solved_since_save = True
-            _force_native_window_icon(new_win)
-            _set_window_aumid(new_win)
-            heatmap_idx = getattr(new_win, "_heatmap_tab_index", 0)
-            new_win.tabs.setCurrentIndex(heatmap_idx)
-            # Rails left out of the solve (only sources or only sinks) — same
-            # notice the initial load shows, now after leaving edit mode.
-            _maybe_warn_open_loop_rails(new_win, metadata)
-            _maybe_warn_connectivity_breaks(new_win, metadata)
-        except Exception as e:
-            log.exception("Failed to open viewer after resolve")
-            QMessageBox.critical(
-                self, "Couldn't open viewer",
-                f"Re-solve succeeded but the viewer failed to open:\n\n"
-                f"{type(e).__name__}: {e}",
-            )
-            return
-        QTimer.singleShot(0, lambda: _retire_viewer(self))
+        """Resolve worker finished — refresh this viewer in place."""
+        self._apply_solve_result(
+            new_solution, metadata, loaded_project, new_settings,
+            warn_a, pct, mark_solved_since_save=True,
+        )
 
 
     # --- Setup tab ----------------------------------------------------------
