@@ -28,6 +28,7 @@ from fypa.altium.annotations import (
     _sheet_name_matches,
     _terminal_mode,
     _validate_directive_groups,
+    _warn_unknown_pdn_params,
     parse_annotations,
 )
 from fypa.altium.extract import (
@@ -62,7 +63,18 @@ def test_terminal_mode_rejects_mixing_pdn_net_with_p_net():
     mode = _terminal_mode({"PDN_NET": "VBATT", "PDN_P_NET": "+5V"}, None,
                           "SOURCE on J1", result)
     assert mode is None
-    assert any("cannot be combined" in e for e in result.errors)
+    assert any("conflicts with" in e for e in result.errors)
+
+
+def test_terminal_mode_pins_conflict_suggests_p_pins():
+    result = AnnotationResult()
+    mode = _terminal_mode(
+        {"PDN3_PINS": "A1", "PDN3_P_NET": "LED_R", "PDN3_N_NET": "GND"},
+        3, "SINK on U4#3", result,
+    )
+    assert mode is None
+    assert any("PDN3_PINS" in e for e in result.errors)
+    assert any("PDN3_P_PINS" in e for e in result.errors)
 
 
 def test_terminal_mode_rejects_no_terminal_net():
@@ -77,6 +89,23 @@ def test_terminal_mode_indexed_channel():
     assert _terminal_mode({"PDN2_NET": "VBATT"}, 2, "SINK on U1#2",
                           result) == "single"
     assert not result.errors
+
+
+def test_warn_unknown_pdn_pin_typo():
+    result = AnnotationResult()
+    comp = PdnParameterSource(
+        designator="U4", schdoc_name="Main.SchDoc", pcb_index=0,
+        parameters={
+            "PDN_ROLE": "SINK",
+            "PDN2_I": "100mA",
+            "PDN2_P_NET": "LED_R",
+            "PDN2_N_NET": "GND",
+            "PDN2_PIN": "B2",
+        },
+        sch_lookup_designator="U4",
+    )
+    _warn_unknown_pdn_params(comp, "SINK", result)
+    assert any("PDN2_PIN" in w and "PDN2_P_PINS" in w for w in result.warnings)
 
 
 # --- _validate_directive_groups ----------------------------------------------
@@ -775,3 +804,25 @@ def test_local_fallback_skips_no_net_pad():
     assert spec.pins[0].pad_designator == "2"
     assert spec.pins[0].net_index == 1
 
+
+def test_format_solve_blockers_lists_errors():
+    from types import SimpleNamespace
+
+    from fypa.altium.loader import format_solve_blockers
+
+    loaded = SimpleNamespace(
+        extracted=SimpleNamespace(
+            enabled_copper_layer_ids=lambda: [1],
+        ),
+        annotations=AnnotationResult(
+            errors=["SINK on U4#3: PDN3_PINS conflicts with PDN3_P_NET"],
+            warnings=["U4: unknown parameter 'PDN2_PIN'"],
+            directives=[],
+        ),
+    )
+    text = format_solve_blockers(loaded)
+    assert "Project is not solveable" in text
+    assert "PDN3_PINS" in text
+    assert "PDN2_PIN" in text
+    assert "no SOURCE or REGULATOR" in text
+    assert "fypa.log" in text
