@@ -619,6 +619,14 @@ def _directive_to_network(
             (d.in_p, node_sf, COUPLING_RESISTANCE_OHM),
             (d.in_n, node_st, COUPLING_RESISTANCE_OHM),
         )
+        network_elements: list[_pp.BaseLumped] = [element]
+        if d.quiescent_current > 0:
+            network_elements.append(_pp.CurrentSource(
+                f=node_sf, t=node_st, current=d.quiescent_current,
+            ))
+        if not conns:
+            return None
+        return _pp.Network(connections=conns, elements=[*network_elements, *aux])
     else:
         raise TypeError(f"Unknown directive type: {type(d).__name__}")
 
@@ -1388,6 +1396,199 @@ def build_net_canonical_map(netlist) -> dict[str, str]:
     return out
 
 
+# --- adaptive SMPS regulator gain (optional fixed-point iteration) ------------
+
+_ADAPTIVE_GAIN_MAX_ITERATIONS: int = 8
+_ADAPTIVE_GAIN_REL_TOL: float = 1e-3
+_ADAPTIVE_GAIN_VIN_FLOOR_V: float = 0.1
+
+
+def has_adaptive_smps_regulators(loaded: LoadedProject) -> bool:
+    """True when the design has SMPS regulators eligible for adaptive gain."""
+    return any(
+        isinstance(d, RegulatorSpec) and d.adaptive_gain_eligible
+        for d in loaded.annotations.directives
+    )
+
+
+def _problem_layer_index_for_pin(
+    loaded: LoadedProject,
+    problem: _pp.Problem,
+    pin: TerminalPin,
+) -> int | None:
+    """Map a :class:`TerminalPin` to an index in ``problem.layers``."""
+    nets = loaded.extracted.nets
+    if not (0 <= pin.net_index < len(nets)):
+        return None
+    net_name = nets[pin.net_index].name
+    stackup_by_id = {s.layer_id: s for s in loaded.extracted.stackup}
+    stack = stackup_by_id.get(pin.layer_id)
+    if stack is None:
+        return None
+    target = f"{stack.name}|{net_name}"
+    for i, layer in enumerate(problem.layers):
+        if layer.name == target:
+            return i
+    return None
+
+
+def _sample_voltage_at_pin(
+    solution,
+    loaded: LoadedProject,
+    pin: TerminalPin,
+) -> float | None:
+    """Nearest mesh-vertex potential at a directive pad location."""
+    from pdnsolver.ui import VertexSpatialIndex
+
+    layer_i = _problem_layer_index_for_pin(loaded, solution.problem, pin)
+    if layer_i is None:
+        return None
+    layer = solution.problem.layers[layer_i]
+    ls = solution.layer_solutions[layer_i]
+    index = VertexSpatialIndex.from_layer_data(layer, ls)
+    v = index.query_nearest(pin.point.x, pin.point.y)
+    if v is not None:
+        return float(v)
+    if index.tree is not None:
+        dist, idx = index.tree.query([pin.point.x, pin.point.y])
+        if dist < float("inf"):
+            return float(index.values[int(idx)])
+    return None
+
+
+def _measured_regulator_vin(
+    solution,
+    loaded: LoadedProject,
+    reg: RegulatorSpec,
+) -> float | None:
+    """Differential input voltage (IN_P − IN_N) averaged over resolved pads."""
+    vp: list[float] = []
+    vn: list[float] = []
+    for p in reg.in_p.pins:
+        v = _sample_voltage_at_pin(solution, loaded, p)
+        if v is not None:
+            vp.append(v)
+    for p in reg.in_n.pins:
+        v = _sample_voltage_at_pin(solution, loaded, p)
+        if v is not None:
+            vn.append(v)
+    if not vp or not vn:
+        return None
+    return sum(vp) / len(vp) - sum(vn) / len(vn)
+
+
+def _replace_regulator_gains(
+    loaded: LoadedProject,
+    new_gains: dict[tuple[str, int | None], float],
+) -> None:
+    updated: list[DirectiveSpec] = []
+    for d in loaded.annotations.directives:
+        if isinstance(d, RegulatorSpec):
+            key = (d.designator, d.channel_index)
+            if key in new_gains:
+                d = dataclasses.replace(d, gain=new_gains[key])
+        updated.append(d)
+    loaded.annotations.directives = updated
+
+
+def solve_problem_adaptive(
+    loaded: LoadedProject,
+    mesher_config,
+    *,
+    adaptive_regulator_gain: bool = False,
+    stage_callback=None,
+) -> tuple[object, _pp.Problem, list[dict],
+           dict[tuple[int, int], list], list[GeometryLayer], dict]:
+    """Build, solve, and optionally iterate SMPS regulator gains.
+
+    Returns ``(padne_solution, problem, via_segment_records,
+    stub_pieces_by_pair, per_net_layers, adaptive_info)``.
+    """
+    from pdnsolver import solver as _pdn_solver
+
+    adaptive_info: dict = {
+        "enabled": bool(adaptive_regulator_gain),
+        "iterations": 0,
+        "converged": True,
+        "gains": {},
+    }
+    use_adaptive = (
+        bool(adaptive_regulator_gain)
+        and has_adaptive_smps_regulators(loaded)
+    )
+
+    problem, via_segment_records, stub_pieces_by_pair, per_net_layers = (
+        build_problem(loaded)
+    )
+
+    def _solve_once(msg: str):
+        if stage_callback is not None:
+            stage_callback(msg)
+        return _pdn_solver.solve(problem, mesher_config=mesher_config)
+
+    if not use_adaptive:
+        solution = _solve_once(
+            f"Meshing + solving ({len(problem.layers)} (layer, net) "
+            f"slabs, {len(problem.networks)} networks)…"
+        )
+        adaptive_info["iterations"] = 1
+        return (solution, problem, via_segment_records,
+                stub_pieces_by_pair, per_net_layers, adaptive_info)
+
+    solution = None
+    for iteration in range(_ADAPTIVE_GAIN_MAX_ITERATIONS):
+        msg = (
+            f"Meshing + solving (adaptive SMPS gain, iteration "
+            f"{iteration + 1}/{_ADAPTIVE_GAIN_MAX_ITERATIONS}, "
+            f"{len(problem.layers)} slabs)…"
+        )
+        solution = _solve_once(msg)
+        adaptive_info["iterations"] = iteration + 1
+
+        new_gains: dict[tuple[str, int | None], float] = {}
+        max_rel_change = 0.0
+        for d in loaded.annotations.directives:
+            if not isinstance(d, RegulatorSpec) or not d.adaptive_gain_eligible:
+                continue
+            vin = _measured_regulator_vin(solution, loaded, d)
+            label = _channel_label(d.designator, d.channel_index)
+            if vin is None or vin < _ADAPTIVE_GAIN_VIN_FLOOR_V:
+                log.warning(
+                    "Adaptive gain: %s Vin=%s — keeping gain=%.4g",
+                    label, vin, d.gain,
+                )
+                new_gain = d.gain
+            else:
+                new_gain = d.voltage / (vin * d.efficiency)
+            adaptive_info["gains"][label] = new_gain
+            if d.gain != 0.0:
+                max_rel_change = max(
+                    max_rel_change,
+                    abs(new_gain - d.gain) / abs(d.gain),
+                )
+            new_gains[(d.designator, d.channel_index)] = new_gain
+
+        if max_rel_change < _ADAPTIVE_GAIN_REL_TOL:
+            _replace_regulator_gains(loaded, new_gains)
+            adaptive_info["converged"] = True
+            break
+
+        _replace_regulator_gains(loaded, new_gains)
+        if iteration + 1 < _ADAPTIVE_GAIN_MAX_ITERATIONS:
+            problem, via_segment_records, stub_pieces_by_pair, per_net_layers = (
+                build_problem(loaded)
+            )
+    else:
+        adaptive_info["converged"] = False
+        log.warning(
+            "Adaptive SMPS gain did not converge within %d iterations",
+            _ADAPTIVE_GAIN_MAX_ITERATIONS,
+        )
+
+    return (solution, problem, via_segment_records,
+            stub_pieces_by_pair, per_net_layers, adaptive_info)
+
+
 def build_solve_metadata(
     loaded: LoadedProject,
     problem: _pp.Problem | None = None,
@@ -1397,6 +1598,7 @@ def build_solve_metadata(
     settings: SolveSettings | None = None,
     stub_pieces_by_pair: dict[tuple[int, int], list] | None = None,
     per_net_layers: list[GeometryLayer] | None = None,
+    regulator_adaptive_gain: dict | None = None,
 ) -> dict:
     """Collect every input the solve depended on into a serialisable dict.
 
@@ -1486,8 +1688,16 @@ def build_solve_metadata(
         elif isinstance(d, RegulatorSpec):
             common["value"] = d.voltage
             common["unit"] = "V"
-            common["value_str"] = f"V={d.voltage:.4g} V, gain={d.gain:.3g}"
+            value_str = f"V={d.voltage:.4g} V, gain={d.gain:.3g}"
+            if d.quiescent_current > 0:
+                value_str += f", Iq={d.quiescent_current * 1000:.4g} mA"
+            common["value_str"] = value_str
             common["gain"] = d.gain
+            common["quiescent_current"] = d.quiescent_current
+            common["adaptive_gain_eligible"] = d.adaptive_gain_eligible
+            if d.regulator_type is not None:
+                common["regulator_type"] = d.regulator_type
+                common["efficiency"] = d.efficiency
             common["terminals"] = {
                 "OUT_P": _terminal_summary(d.out_p, nets),
                 "OUT_N": _terminal_summary(d.out_n, nets),
@@ -2001,6 +2211,7 @@ def build_solve_metadata(
                 "ground_node_current_A": float(solver_info.ground_node_current),
             } if solver_info is not None else None
         ),
+        "regulator_adaptive_gain": regulator_adaptive_gain,
     }
 
 

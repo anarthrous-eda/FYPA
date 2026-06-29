@@ -775,3 +775,214 @@ def test_local_fallback_skips_no_net_pad():
     assert spec.pins[0].pad_designator == "2"
     assert spec.pins[0].net_index == 1
 
+
+def _regulator_proj_with_source(**extra_regulator_params):
+  """SOURCE J1 @5V + REGULATOR U2 on +5V→+3V3 with two pads each side."""
+  reg_params = {
+      "PDN_ROLE": "REGULATOR",
+      "PDN_V": "3.3",
+      "PDN_OUT_P_NET": "+3V3",
+      "PDN_OUT_N_NET": "GND",
+      "PDN_IN_P_NET": "+5V",
+      "PDN_IN_N_NET": "GND",
+  }
+  reg_params.update(extra_regulator_params)
+  return _minimal_proj(
+      nets=(
+          RawNet("GND"), RawNet("+5V"), RawNet("+3V3"),
+      ),
+      sch_components=(
+          RawSchComponent(
+              designator="J1", schdoc_name="Pwr.SchDoc",
+              parameters={
+                  "PDN_ROLE": "SOURCE",
+                  "PDN_V": "5",
+                  "PDN_P_NET": "+5V",
+                  "PDN_N_NET": "GND",
+              },
+              pin_designators=("1", "2"),
+          ),
+          RawSchComponent(
+              designator="U2", schdoc_name="Pwr.SchDoc",
+              parameters=reg_params,
+              pin_designators=("1", "2", "3", "4"),
+          ),
+      ),
+      pcb_components=(
+          RawPcbComponent(
+              designator="J1", center=Pt2D(-5, 0), rotation_deg=0.0,
+              layer_name="TOP", footprint="CONN", source_designator="J1",
+          ),
+          RawPcbComponent(
+              designator="U2", center=Pt2D(0, 0), rotation_deg=0.0,
+              layer_name="TOP", footprint="SOT", source_designator="U2",
+          ),
+      ),
+      pads=(
+          _pad(0, "1", 1, -5),
+          _pad(0, "2", 0, -4),
+          _pad(1, "1", 2, 0),
+          _pad(1, "2", 0, 1),
+          _pad(1, "3", 1, 2),
+          _pad(1, "4", 0, 3),
+      ),
+  )
+
+
+def test_regulator_ldo_auto_gain():
+    proj = _regulator_proj_with_source(
+        PDN_REGULATOR_TYPE="LDO",
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok
+    reg = next(d for d in result.directives if isinstance(d, RegulatorSpec))
+    assert reg.gain == 1.0
+    assert reg.regulator_type == "LDO"
+    assert not reg.adaptive_gain_eligible
+
+
+def test_regulator_smps_auto_gain():
+    proj = _regulator_proj_with_source(
+        PDN_REGULATOR_TYPE="SMPS",
+        PDN_REGULATOR_EFFICIENCY="0.9",
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok
+    reg = next(d for d in result.directives if isinstance(d, RegulatorSpec))
+    assert reg.regulator_type == "SMPS"
+    assert reg.adaptive_gain_eligible
+    assert abs(reg.gain - (3.3 / (5.0 * 0.9))) < 1e-6
+
+
+def test_regulator_explicit_gain_overrides_type():
+    proj = _regulator_proj_with_source(
+        PDN_REGULATOR_TYPE="SMPS",
+        PDN_REGULATOR_EFFICIENCY="0.9",
+        PDN_GAIN="0.5",
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok
+    reg = next(d for d in result.directives if isinstance(d, RegulatorSpec))
+    assert reg.gain == 0.5
+    assert not reg.adaptive_gain_eligible
+    assert any("overrides" in w for w in result.warnings)
+
+
+def test_regulator_smps_missing_upstream_voltage():
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+5V"), RawNet("+3V3")),
+        sch_components=(
+            RawSchComponent(
+                designator="U2", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "REGULATOR",
+                    "PDN_REGULATOR_TYPE": "SMPS",
+                    "PDN_V": "3.3",
+                    "PDN_OUT_P_NET": "+3V3",
+                    "PDN_OUT_N_NET": "GND",
+                    "PDN_IN_P_NET": "+5V",
+                    "PDN_IN_N_NET": "GND",
+                },
+                pin_designators=("1", "2", "3", "4"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U2", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="SOT", source_designator="U2",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 2, 0),
+            _pad(0, "2", 0, 1),
+            _pad(0, "3", 1, 2),
+            _pad(0, "4", 0, 3),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert not result.ok
+    assert any("cannot infer input voltage" in e for e in result.errors)
+
+
+def test_regulator_quiescent_parsed():
+    proj = _regulator_proj_with_source(
+        PDN_REGULATOR_TYPE="LDO",
+        PDN_QUIESCENT="5mA",
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok
+    reg = next(d for d in result.directives if isinstance(d, RegulatorSpec))
+    assert reg.quiescent_current == 0.005
+
+
+def test_regulator_quiescent_defaults_to_zero():
+    proj = _regulator_proj_with_source(PDN_REGULATOR_TYPE="LDO")
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok
+    reg = next(d for d in result.directives if isinstance(d, RegulatorSpec))
+    assert reg.quiescent_current == 0.0
+
+
+def test_regulator_quiescent_rejects_negative():
+    proj = _regulator_proj_with_source(
+        PDN_REGULATOR_TYPE="LDO",
+        PDN_QUIESCENT="-1mA",
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert not result.ok
+    assert any("QUIESCENT" in e and ">= 0" in e for e in result.errors)
+
+
+def test_regulator_quiescent_indexed_channel():
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+5V"), RawNet("+1V8")),
+        sch_components=(
+            RawSchComponent(
+                designator="J1", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SOURCE",
+                    "PDN_V": "5",
+                    "PDN_P_NET": "+5V",
+                    "PDN_N_NET": "GND",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="U2", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "REGULATOR",
+                    "PDN1_V": "1.8",
+                    "PDN1_REGULATOR_TYPE": "LDO",
+                    "PDN1_QUIESCENT": "2mA",
+                    "PDN1_OUT_P_NET": "+1V8",
+                    "PDN1_OUT_N_NET": "GND",
+                    "PDN1_IN_P_NET": "+5V",
+                    "PDN1_IN_N_NET": "GND",
+                },
+                pin_designators=("1", "2", "3", "4"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="J1", center=Pt2D(-5, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="CONN", source_designator="J1",
+            ),
+            RawPcbComponent(
+                designator="U2", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="SOT", source_designator="U2",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, -5),
+            _pad(0, "2", 0, -4),
+            _pad(1, "1", 2, 0),
+            _pad(1, "2", 0, 1),
+            _pad(1, "3", 1, 2),
+            _pad(1, "4", 0, 3),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok
+    reg = next(d for d in result.directives if isinstance(d, RegulatorSpec))
+    assert reg.channel_index == 1
+    assert reg.quiescent_current == 0.002

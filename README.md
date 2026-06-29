@@ -119,7 +119,7 @@ define the power-delivery topology:
 | `SOURCE`     | `PDN_V`, `PDN_P_NET`, `PDN_N_NET` — *or* `PDN_V`, `PDN_NET`                                              | Voltage source (e.g. a connector pin or regulator)            |
 | `SINK`       | `PDN_I`, `PDN_P_NET`, `PDN_N_NET` — *or* `PDN_I`, `PDN_NET`                                              | Current sink  (e.g. an IC load)                   |
 | `SERIES`     | `PDN_R`, `PDN_P_NET`\*, `PDN_N_NET`\*                                                                   | Series resistance / fuse / ferrite / inductor DCR (rail bridge)       |
-| `REGULATOR`  | `PDN_V`, `PDN_GAIN`, `PDN_OUT_P_NET`, `PDN_OUT_N_NET`, `PDN_IN_P_NET`, `PDN_IN_N_NET`                   | On-board regulator (LDO / buck) — models BOTH input and output rails  |
+| `REGULATOR`  | `PDN_V`, `PDN_REGULATOR_TYPE`, `PDN_REGULATOR_EFFICIENCY`, optional `PDN_QUIESCENT` — *or* `PDN_GAIN`, plus `PDN_OUT_*` / `PDN_IN_*` nets | On-board regulator (LDO / buck) — models BOTH input and output rails  |
 
 \* `PDN_P_NET` and `PDN_N_NET` are optional for `SERIES` on a 2-pin part — the
 tool auto-infers them from the component's pad connectivity.
@@ -246,13 +246,16 @@ proportional to the output current. Use it when both the input AND the
 output rail are part of the PDN you're analyzing, so you can see the
 voltage drop the regulator causes on its input side too.
 
-`PDN_GAIN` is the input-current / output-current ratio:
+Set `PDN_REGULATOR_TYPE` (`LDO` or `SMPS`) and optionally
+`PDN_REGULATOR_EFFICIENCY` to auto-compute gain, or set `PDN_GAIN` manually.
+Use **Adaptive SMPS gain** in the viewer (or `--adaptive-regulator-gain` on
+the CLI) to refine SMPS gain from the solved input voltage.
 
-| Regulator type            | Suggested `PDN_GAIN`              |
-|---------------------------|-----------------------------------|
-| LDO                       | `1.0` (current passes straight through) |
-| 100%-efficient buck       | `Vout / Vin` (e.g. 3V3 from 5V → `0.66`) |
-| 90%-efficient buck        | `(Vout / Vin) / 0.9` (e.g. → `0.73`)    |
+| Regulator type            | Gain                                              |
+|---------------------------|---------------------------------------------------|
+| LDO                       | `1.0`                                             |
+| SMPS (initial)            | `Vout / (Vin_nom × efficiency)`                   |
+| SMPS (adaptive re-solve)  | `Vout / (Vin_solved × efficiency)`                |
 
 Worked example — a board with a 5V connector input feeding a 3V3 LDO:
 
@@ -264,9 +267,9 @@ J1 (input connector):
   PDN_N_NET  = 0V
 
 U2 (3V3 LDO):
-  PDN_ROLE      = REGULATOR
-  PDN_V         = 3.3
-  PDN_GAIN      = 1.0
+  PDN_ROLE           = REGULATOR
+  PDN_REGULATOR_TYPE = LDO
+  PDN_V              = 3.3
   PDN_OUT_P_NET = +3V3
   PDN_OUT_N_NET = 0V
   PDN_IN_P_NET  = +5V

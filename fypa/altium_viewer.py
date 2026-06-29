@@ -409,6 +409,7 @@ _SSAA_QS_KEY = "ui/supersampling"
 # solve (with solve-cache fast path). When disabled, only design info loads
 # and the user presses ↻ Solve in the viewer.
 _AUTO_SOLVE_IMPORT_QS_KEY = "import/auto_solve_on_altium"
+_ADAPTIVE_REGULATOR_GAIN_QS_KEY = "solve/adaptive_regulator_gain"
 
 _current_theme_mode: str = "dark"
 
@@ -531,6 +532,72 @@ def save_auto_solve_on_import(enabled: bool) -> None:
             "Could not persist auto-solve-on-import preference (%s); ignoring.",
             e,
         )
+
+
+def load_adaptive_regulator_gain() -> bool:
+    """Read whether manual solves should iterate SMPS regulator gain."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        val = qs.value(_ADAPTIVE_REGULATOR_GAIN_QS_KEY, False)
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            return val.strip().lower() in ("1", "true", "yes", "on")
+        return bool(int(val))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not read adaptive-regulator-gain preference (%s); "
+            "using default (off).", e,
+        )
+    return False
+
+
+def save_adaptive_regulator_gain(enabled: bool) -> None:
+    """Persist the adaptive SMPS gain checkbox for next launch."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        qs.setValue(_ADAPTIVE_REGULATOR_GAIN_QS_KEY, bool(enabled))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not persist adaptive-regulator-gain preference (%s); "
+            "ignoring.", e,
+        )
+
+
+def _metadata_has_adaptive_smps(metadata: dict | None) -> bool:
+    if not metadata:
+        return False
+    for d in metadata.get("directives", []):
+        if d.get("role") != "REGULATOR":
+            continue
+        eligible = d.get("adaptive_gain_eligible")
+        if eligible is True:
+            return True
+        if eligible is False:
+            continue
+        # Legacy solve pickles predating adaptive_gain_eligible: treat SMPS
+        # regulators as eligible (explicit PDN_GAIN was not recorded then).
+        if d.get("regulator_type") == "SMPS":
+            return True
+    return False
+
+
+def _viewer_has_adaptive_smps(
+    metadata: dict | None,
+    loaded_project: object | None,
+) -> bool:
+    """True when the open design has at least one adaptive-eligible SMPS."""
+    if _metadata_has_adaptive_smps(metadata):
+        return True
+    if loaded_project is not None:
+        try:
+            from fypa.altium.loader import has_adaptive_smps_regulators
+            return has_adaptive_smps_regulators(loaded_project)
+        except Exception:
+            pass
+    return False
 
 
 def _altium_import_auto_solve_status_tip(auto_solve: bool) -> str:
@@ -3683,6 +3750,7 @@ class _SolveWorker(QThread):
                   copper_names: list | None = None,
                   loaded_project: object | None = None,
                   load_only: bool = False,
+                  adaptive_regulator_gain: bool = False,
                   parent=None) -> None:
         super().__init__(parent)
         self._prjpcb_path = prjpcb_path
@@ -3732,6 +3800,7 @@ class _SolveWorker(QThread):
         # True = extract / reuse design info only, emit a stub solution,
         # and let the user press Solve in the viewer (Import Altium Design).
         self._load_only = bool(load_only)
+        self._adaptive_regulator_gain = bool(adaptive_regulator_gain)
 
     def _emit_stub_and_finish(
         self, loaded, pristine_loaded, _timer,
@@ -3807,9 +3876,9 @@ class _SolveWorker(QThread):
         self.total_stages.emit(self._expected_stage_count())
         try:
             from fypa.altium.loader import (
-                build_problem,
                 build_solve_metadata,
                 load_project,
+                solve_problem_adaptive,
             )
             from fypa.lean_solution import to_lean_solution
             from pdnsolver import mesh as _pdn_mesh
@@ -3839,6 +3908,7 @@ class _SolveWorker(QThread):
             # computed against the on-disk project and would be wrong.
             if (self._try_solve_cache_first
                     and not self._load_only
+                    and not self._adaptive_regulator_gain
                     and pcbdoc_resolved is not None
                     and not self._stackup_overrides
                     and not self._sink_overrides
@@ -4081,14 +4151,6 @@ class _SolveWorker(QThread):
                 )
                 return
 
-            self.stage_changed.emit("Assembling FEM problem…")
-            with _timer.stage("Build FEM problem"):
-                problem, via_segment_records, stub_pieces_by_pair, per_net_layers = (
-                    build_problem(loaded)
-                )
-
-            # variable_size_maximum_factor 1.0 == uniform mesh; > 1 enables
-            # adaptive variable-density meshing (coarse plane interiors).
             mesher_config = _pdn_mesh.Mesher.Config(
                 minimum_angle=self._settings.mesh_min_angle_deg,
                 maximum_size=self._settings.mesh_max_size_mm,
@@ -4098,10 +4160,6 @@ class _SolveWorker(QThread):
                 ),
             )
 
-            self.stage_changed.emit(
-                f"Meshing + solving ({len(problem.layers)} (layer, net) "
-                f"slabs, {len(problem.networks)} networks)…"
-            )
             # Capture Python warnings.warn() (e.g. padne's SolverWarning
             # about ground node current) into the log file. Without this,
             # warnings only go to stderr and are invisible from the GUI.
@@ -4127,8 +4185,13 @@ class _SolveWorker(QThread):
             _mesh_log.addHandler(_substage_handler)
             with _timer.stage("Mesh + solve"):
                 try:
-                    padne_solution = _pdn_solver.solve(
-                        problem, mesher_config=mesher_config,
+                    (padne_solution, problem, via_segment_records,
+                     stub_pieces_by_pair, per_net_layers,
+                     adaptive_info) = solve_problem_adaptive(
+                        loaded,
+                        mesher_config,
+                        adaptive_regulator_gain=self._adaptive_regulator_gain,
+                        stage_callback=self.stage_changed.emit,
                     )
                 finally:
                     _solver_log.removeHandler(_substage_handler)
@@ -4157,6 +4220,7 @@ class _SolveWorker(QThread):
                     settings=self._settings,
                     stub_pieces_by_pair=stub_pieces_by_pair,
                     per_net_layers=per_net_layers,
+                    regulator_adaptive_gain=adaptive_info,
                 )
             self.stage_changed.emit("Packaging solution: converting result…")
             with _timer.stage("Convert to lean solution"):
@@ -4175,11 +4239,12 @@ class _SolveWorker(QThread):
                     "(see earlier warning from _resolve_pcbdoc).",
                 )
             elif (self._stackup_overrides or self._sink_overrides
-                    or self._editor_directives):
+                    or self._editor_directives
+                    or self._adaptive_regulator_gain):
                 _cache_log.info(
-                    "Solve cache NOT written: stackup/sink overrides or "
-                    "editor directives are active; cached solve would "
-                    "diverge from the on-disk project.",
+                    "Solve cache NOT written: stackup/sink overrides, "
+                    "editor directives, or adaptive SMPS gain are active; "
+                    "cached solve would diverge from the on-disk project.",
                 )
             else:
                 try:
@@ -5234,6 +5299,10 @@ class PdnViewer(QMainWindow):
         # True while the viewer holds a stub and the user has not run the
         # FEM yet — drives the overlay button label ("Solve" vs "Resolve").
         self._awaiting_first_solve: bool = False
+        self._has_adaptive_smps: bool = _viewer_has_adaptive_smps(
+            getattr(self, "metadata", None),
+            getattr(self, "_loaded_project", None),
+        )
         # Whether a solver run has happened that isn't yet persisted to a
         # pickle — gates the "Save project + latest solver run" option in
         # the Ctrl+S popup. Set True by the resolve handler; a viewer
@@ -5743,6 +5812,9 @@ class PdnViewer(QMainWindow):
             self._solve_settings = new_settings
             self._via_current_warn_a = warn_a
             self._display_percentile_high = pct
+            self._has_adaptive_smps = _viewer_has_adaptive_smps(
+                metadata, loaded_project,
+            )
 
             # A returned stub (load-only import, or a project still missing
             # SOURCE/REGULATOR directives) hasn't been through the FEM yet —
@@ -6572,6 +6644,7 @@ class PdnViewer(QMainWindow):
         # there are unsolved editor edits. _position_editor_overlays
         # (wired to GL-viewer resize via eventFilter) keeps them pinned.
         self._build_editor_overlay_buttons()
+        self._refresh_solve_stale_overlay()
 
         plot_widget = QWidget()
         plot_widget.setLayout(plot_layout)
@@ -12298,6 +12371,18 @@ class PdnViewer(QMainWindow):
             mbtn.hide()
             setattr(self, attr, mbtn)
 
+        ag_chk = QCheckBox("Adaptive SMPS gain", self._gl_viewer)
+        ag_chk.setCursor(Qt.PointingHandCursor)
+        ag_chk.setChecked(load_adaptive_regulator_gain())
+        ag_chk.setToolTip(
+            "When checked, re-solve iterates SMPS regulator gain using the "
+            "solved input voltage (includes SERIES and copper IR drop). "
+            "LDO regulators are unaffected. Adds extra solve time."
+        )
+        ag_chk.toggled.connect(self._on_adaptive_gain_toggled)
+        ag_chk.hide()
+        self._adaptive_gain_check = ag_chk
+
         rbtn = QPushButton("↻  Resolve", self._gl_viewer)
         rbtn.setCursor(Qt.PointingHandCursor)
         rbtn.setToolTip(
@@ -12339,9 +12424,35 @@ class PdnViewer(QMainWindow):
                 "QPushButton {{ border: 1px solid {green}; border-radius: 6px;"
                 "  padding: 6px 12px; font-weight: bold;"
                 "  background-color: {bg}; color: {green}; }}"
-                "QPushButton:hover {{ background-color: {hover}; }}"
-                .format(green="#2ca92c", bg=t["bg"], hover=t["bg_hover"])
+                "QPushButton:hover:enabled {{ background-color: {hover}; }}"
+                "QPushButton:disabled {{ color: {dim}; border-color: {dim}; }}"
+                .format(green="#2ca92c", bg=t["bg"], hover=t["bg_hover"],
+                        dim=t["fg_dim"])
             )
+        ag_chk = getattr(self, "_adaptive_gain_check", None)
+        if ag_chk is not None:
+            ag_chk.setStyleSheet(f"QCheckBox {{ color: {t['fg']}; }}")
+
+    def _solve_overlay_visible(self) -> bool:
+        if isinstance(getattr(self, "metadata", None), dict):
+            if self.metadata.get("prjpcb_path"):
+                return True
+        if getattr(self, "_loaded_project", None) is not None:
+            return True
+        return False
+
+    def _resolve_button_enabled(self) -> bool:
+        chk = getattr(self, "_adaptive_gain_check", None)
+        adaptive_on = (
+            chk is not None and chk.isEnabled() and chk.isChecked()
+        )
+        return bool(
+            self._awaiting_first_solve or self._solve_stale or adaptive_on
+        )
+
+    def _on_adaptive_gain_toggled(self, checked: bool) -> None:
+        save_adaptive_regulator_gain(checked)
+        self._refresh_solve_stale_overlay()
 
     def _position_editor_overlays(self) -> None:
         """Pin the editor toggle, source / sink, and resolve buttons in a
@@ -12363,8 +12474,14 @@ class PdnViewer(QMainWindow):
                 b.move(x, margin)
                 b.raise_()
                 x += b.width() + gap
+        ag_chk = getattr(self, "_adaptive_gain_check", None)
+        if ag_chk is not None and ag_chk.isVisible():
+            ag_chk.adjustSize()
+            ag_chk.move(x, margin + 4)
+            ag_chk.raise_()
+            x += ag_chk.width() + gap
         rbtn = getattr(self, "_resolve_btn", None)
-        if rbtn is not None and not rbtn.isHidden():
+        if rbtn is not None and rbtn.isVisible():
             rbtn.adjustSize()
             rbtn.move(x + 2, margin)
             rbtn.raise_()
@@ -12767,26 +12884,53 @@ class PdnViewer(QMainWindow):
         return "Solve" if self._awaiting_first_solve else "Resolve"
 
     def _refresh_solve_stale_overlay(self) -> None:
-        """Recompute ``_solve_stale`` from the editor / settings / initial
-        dirty flags, then show or hide the Solve / Resolve overlay button."""
+        """Recompute ``_solve_stale`` and refresh the solve / adaptive overlay."""
         self._solve_stale = (bool(self._project_dirty)
                              or bool(self._settings_dirty)
                              or bool(self._initial_solve_stale))
+        visible = self._solve_overlay_visible()
+        has_smps = _viewer_has_adaptive_smps(
+            getattr(self, "metadata", None),
+            getattr(self, "_loaded_project", None),
+        )
+        self._has_adaptive_smps = has_smps
+        ag_chk = getattr(self, "_adaptive_gain_check", None)
+        if ag_chk is not None:
+            ag_chk.setVisible(visible)
+            ag_chk.setEnabled(has_smps)
+            if not has_smps:
+                ag_chk.setToolTip(
+                    "Requires a REGULATOR with PDN_REGULATOR_TYPE=SMPS and "
+                    "no PDN_GAIN (auto-gain). LDO regulators and manual "
+                    "PDN_GAIN are not iterated."
+                )
+            else:
+                ag_chk.setToolTip(
+                    "When checked, re-solve iterates SMPS regulator gain "
+                    "using the solved input voltage (includes SERIES and "
+                    "copper IR drop). LDO regulators are unaffected."
+                )
         rbtn = getattr(self, "_resolve_btn", None)
         if rbtn is not None:
-            rbtn.setVisible(self._solve_stale)
-            if self._solve_stale:
+            rbtn.setVisible(visible)
+            if visible:
+                enabled = self._resolve_button_enabled()
+                rbtn.setEnabled(enabled)
                 if self._awaiting_first_solve:
                     rbtn.setText("↻  Solve")
-                    rbtn.setToolTip(
-                        "Run the FEM solver on the loaded design"
-                    )
+                    rbtn.setToolTip("Run the FEM solver on the loaded design")
                 else:
                     rbtn.setText("↻  Resolve")
-                    rbtn.setToolTip(
-                        "Re-run the solver with the current editor "
-                        "changes applied"
-                    )
+                    if enabled:
+                        rbtn.setToolTip(
+                            "Re-run the solver with the current editor "
+                            "changes and settings applied"
+                        )
+                    else:
+                        rbtn.setToolTip(
+                            "Check Adaptive SMPS gain to re-solve, or edit "
+                            "directives / settings"
+                        )
             self._position_editor_overlays()
 
     def _mark_project_dirty(self) -> None:
@@ -16336,11 +16480,12 @@ class PdnViewer(QMainWindow):
         Resolve is also reachable when only the Settings tab is dirty (no
         editor directives) — in that case the editor-directive list is
         simply empty and the solve runs with the new parameters."""
-        if not self._solve_stale:
+        if not self._resolve_button_enabled():
             QMessageBox.information(
                 self, "Nothing to resolve",
-                "The current solve is already up to date with the editor "
-                "directives and Settings-tab values.",
+                "The current solve is up to date. Check "
+                "<b>Adaptive SMPS gain</b> to re-solve with iterative "
+                "regulator gain, or edit directives / settings first.",
             )
             return
         editor_directives = (
@@ -16439,6 +16584,11 @@ class PdnViewer(QMainWindow):
             # widened for the longer editor-changes message and then another
             # 15% on top of that (1.44 * 1.93 * 1.15 ≈ 3.199).
             dialog_width_scale = 3.199392
+        adaptive_gain = (
+            getattr(self, "_adaptive_gain_check", None) is not None
+            and self._adaptive_gain_check.isEnabled()
+            and self._adaptive_gain_check.isChecked()
+        )
         self._start_solve_worker(
             Path(prjpcb), new_settings,
             warn_a, pct,
@@ -16450,6 +16600,7 @@ class PdnViewer(QMainWindow):
             copper_names=copper_names,
             loaded_project=self._loaded_project,
             is_resolve=True,
+            adaptive_regulator_gain=adaptive_gain,
             dialog_title=dialog_title,
             dialog_text=dialog_text,
             dialog_width_scale=dialog_width_scale,
@@ -19906,6 +20057,11 @@ class PdnViewer(QMainWindow):
             pinned = self.metadata.get("pcbdoc_path")
             if pinned:
                 pcbdoc_selector = str(pinned)
+        adaptive_gain = (
+            getattr(self, "_adaptive_gain_check", None) is not None
+            and self._adaptive_gain_check.isEnabled()
+            and self._adaptive_gain_check.isChecked()
+        )
         self._start_solve_worker(
             prjpcb_path, new_settings, warn_a, pct,
             stackup_overrides=stackup_overrides,
@@ -19914,6 +20070,7 @@ class PdnViewer(QMainWindow):
             dialog_text=("Re-solving with new parameters…\n"
                          "This can take 10–60 s depending on board size "
                          "and mesh density."),
+            adaptive_regulator_gain=adaptive_gain,
         )
 
     def _on_reload_design_info(self) -> None:
@@ -19983,6 +20140,7 @@ class PdnViewer(QMainWindow):
         is_resolve: bool | None = None,
         is_import: bool = False,
         load_only: bool = False,
+        adaptive_regulator_gain: bool = False,
         dialog_title: str = "Running solver",
         dialog_text: str | None = None,
         dialog_width_scale: float = 1.44,
@@ -20030,6 +20188,7 @@ class PdnViewer(QMainWindow):
             copper_names=copper_names,
             loaded_project=loaded_project,
             load_only=load_only,
+            adaptive_regulator_gain=adaptive_regulator_gain,
             parent=self,
         )
         self._solve_worker = worker
