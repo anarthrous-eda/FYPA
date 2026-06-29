@@ -3882,7 +3882,6 @@ class _SolveWorker(QThread):
             )
             from fypa.lean_solution import to_lean_solution
             from pdnsolver import mesh as _pdn_mesh
-            from pdnsolver import solver as _pdn_solver
 
             # Resolve the PcbDoc up-front so the cache key is stable.
             pcbdoc_resolved: Path | None = None
