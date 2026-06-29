@@ -411,7 +411,7 @@ class LoadedProject:
 
 
 def format_solve_blockers(
-    loaded: "LoadedProject",
+    loaded: LoadedProject,
     *,
     max_errors: int = 15,
     max_warnings: int = 3,
