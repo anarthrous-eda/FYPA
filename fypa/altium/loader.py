@@ -410,6 +410,55 @@ class LoadedProject:
         return "\n".join(lines)
 
 
+def format_solve_blockers(
+    loaded: LoadedProject,
+    *,
+    max_errors: int = 15,
+    max_warnings: int = 3,
+) -> str:
+    """Compact, actionable summary for solve-failure dialogs.
+
+    Lists annotation errors (and a few warnings) without the full geometry
+    dump from :meth:`LoadedProject.diagnostic_summary`.
+    """
+    from fypa.cli import _LOG_FILE
+
+    lines = ["Project is not solveable.", ""]
+    errors = list(loaded.annotations.errors)
+    if errors:
+        lines.append("Annotation errors:")
+        for err in errors[:max_errors]:
+            lines.append(f"  • {err}")
+        if len(errors) > max_errors:
+            lines.append(f"  … and {len(errors) - max_errors} more")
+        lines.append("")
+
+    warnings = list(loaded.annotations.warnings)
+    if warnings:
+        lines.append("Warnings:")
+        for warn in warnings[:max_warnings]:
+            lines.append(f"  • {warn}")
+        if len(warnings) > max_warnings:
+            lines.append(f"  … and {len(warnings) - max_warnings} more")
+        lines.append("")
+
+    reasons: list[str] = []
+    if not loaded.extracted.enabled_copper_layer_ids():
+        reasons.append("no enabled copper layers")
+    has_source = any(
+        type(d).__name__ in {"SourceSpec", "RegulatorSpec"}
+        for d in loaded.annotations.directives
+    )
+    if not has_source:
+        reasons.append("no SOURCE or REGULATOR directive")
+    if reasons:
+        lines.append("Other blockers: " + "; ".join(reasons) + ".")
+        lines.append("")
+
+    lines.append(f"Full diagnostic log: {_LOG_FILE}")
+    return "\n".join(lines)
+
+
 def _directive_terminals(d: DirectiveSpec) -> list[TerminalSpec]:
     """Return all PCB-resolved terminals of a directive, regardless of kind.
 

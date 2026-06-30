@@ -119,6 +119,20 @@ _RESISTOR_LIKE_ROLES: frozenset[str] = frozenset({"SERIES"})
 
 VALID_ROLES: frozenset[str] = frozenset({"SOURCE", "SINK", "REGULATOR"}) | _RESISTOR_LIKE_ROLES
 
+_COMMON_TERMINAL_SUFFIXES: frozenset[str] = frozenset({
+    "NET", "PINS", "P_NET", "N_NET", "P_PINS", "N_PINS",
+})
+_KNOWN_SUFFIXES_BY_ROLE: dict[str, frozenset[str]] = {
+    "SOURCE": _COMMON_TERMINAL_SUFFIXES | frozenset({"V"}),
+    "SINK": _COMMON_TERMINAL_SUFFIXES | frozenset({"I", "MIN_V"}),
+    "REGULATOR": frozenset({
+        "V", "GAIN", "REGULATOR_TYPE", "REGULATOR_EFFICIENCY", "QUIESCENT",
+        "OUT_P_NET", "OUT_N_NET", "OUT_P_PINS", "OUT_N_PINS",
+        "IN_P_NET", "IN_N_NET", "IN_P_PINS", "IN_N_PINS",
+    }),
+    "SERIES": frozenset({"R", "P_NET", "N_NET", "P_PINS", "N_PINS"}),
+}
+
 
 # --- SI value parsing ---------------------------------------------------------
 
@@ -718,10 +732,17 @@ def _resolve_terminal(
 
             if bridges_used and warnings is not None:
                 bridge_list = ", ".join(repr(b) for b in bridges_used)
-                warnings.append(
+                msg = (
                     f"{role_diagnostic}: no pad on {net_name!r}; resolved via "
                     f"SERIES bridge to pin(s) on {bridge_list}"
                 )
+                if len(bridges_used) >= 2:
+                    msg += (
+                        ". All listed nets are in the same SERIES bridge "
+                        "group — check SERIES directives (e.g. a "
+                        "multi-channel part bridging VDD to several outputs)"
+                    )
+                warnings.append(msg)
 
         if not matched:
             # List the nets that this component's pads actually sit on, so the
@@ -1100,18 +1121,32 @@ def _terminal_mode(params: dict[str, str], idx: int | None,
     pins_key = _channel_key("PINS", idx)
     p_net_key = _channel_key("P_NET", idx)
     n_net_key = _channel_key("N_NET", idx)
-    has_single = (_ci_get(params, net_key) is not None
-                  or _ci_get(params, pins_key) is not None)
-    has_two = any(
-        _ci_get(params, _channel_key(k, idx)) is not None
-        for k in ("P_NET", "N_NET", "P_PINS", "N_PINS")
-    )
+    p_pins_key = _channel_key("P_PINS", idx)
+    single_set: list[str] = []
+    if _ci_get(params, net_key) is not None:
+        single_set.append(net_key)
+    if _ci_get(params, pins_key) is not None:
+        single_set.append(f"{pins_key} (single-net pin override)")
+    two_set: list[str] = []
+    for suffix in ("P_NET", "N_NET", "P_PINS", "N_PINS"):
+        key = _channel_key(suffix, idx)
+        if _ci_get(params, key) is not None:
+            two_set.append(key)
+    has_single = bool(single_set)
+    has_two = bool(two_set)
     if has_single and has_two:
-        result.errors.append(
-            f"{role_diag}: {net_key} cannot be combined with "
-            f"{p_net_key}/{n_net_key} — use {net_key} alone for a single-net "
-            f"check, or {p_net_key} + {n_net_key} for a two-terminal check"
+        single_text = " + ".join(single_set)
+        two_text = " + ".join(two_set)
+        msg = (
+            f"{role_diag}: {single_text} conflicts with {two_text} "
+            f"(two-terminal). Use either single-net ({net_key} or "
+            f"{pins_key} on a single-net check only) or two-terminal "
+            f"({p_net_key} + {n_net_key}, pins {p_pins_key} / "
+            f"{_channel_key('N_PINS', idx)}), not both."
         )
+        if _ci_get(params, pins_key) is not None:
+            msg += f" For a two-terminal check use {p_pins_key}, not {pins_key}."
+        result.errors.append(msg)
         return None
     if has_single:
         return "single"
@@ -1637,6 +1672,46 @@ def _validate_directive_groups(result: AnnotationResult,
     result.directives = stamped
 
 
+def _warn_unknown_pdn_params(
+    comp: PdnParameterSource,
+    role: str,
+    result: AnnotationResult,
+) -> None:
+    """Warn on PDN_* parameter names that are not recognized for ``role``."""
+    allowed = _KNOWN_SUFFIXES_BY_ROLE.get(role, frozenset())
+    diag = f"{comp.designator} ({comp.schdoc_name})"
+    for key, raw in comp.parameters.items():
+        if raw is None or not str(raw).strip():
+            continue
+        m = _INDEXED_KEY_RE.match(key.strip())
+        if m is None:
+            continue
+        idx_str, suffix = m.group(1), m.group(2)
+        suffix_u = suffix.upper()
+        if suffix_u == "ROLE":
+            continue
+        if suffix_u in allowed:
+            continue
+        idx = int(idx_str) if idx_str else None
+        ch = f"#{idx}" if idx is not None else ""
+        if suffix_u == "PIN":
+            suggest = _channel_key("P_PINS", idx)
+            result.warnings.append(
+                f"{diag}{ch}: unknown parameter {key!r} — did you mean "
+                f"{suggest}?"
+            )
+            continue
+        if suffix_u.startswith("OUT_") and role in ("SOURCE", "SINK"):
+            result.warnings.append(
+                f"{diag}{ch}: {key!r} is a REGULATOR parameter — "
+                f"did you mean to set PDN_ROLE=REGULATOR?"
+            )
+            continue
+        result.warnings.append(
+            f"{diag}{ch}: unknown PDN parameter {key!r} (ignored)"
+        )
+
+
 # --- public entry -------------------------------------------------------------
 
 def parse_annotations(proj: ExtractedProject,
@@ -1723,6 +1798,8 @@ def parse_annotations(proj: ExtractedProject,
             continue
         if comp.pcb_index is None:
             seen_designators.add(key)
+
+        _warn_unknown_pdn_params(comp, role, result)
 
         specs = _PARSER_BY_ROLE[role](comp, proj, enabled_layers, result,
                                       bridge_groups=bridge_groups,

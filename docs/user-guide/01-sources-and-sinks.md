@@ -44,6 +44,22 @@ Every source or sink uses the same four parameters on one component:
 
 Net names must match the schematic exactly — same case, same punctuation.
 
+### Pin overrides (single-net vs two-terminal)
+
+Sources and sinks can tie to copper either by **net name** or by **pin
+designator** on the annotated part. The parameter names depend on whether
+you use a single-net check (`PDN_NET`) or a two-terminal check
+(`PDN_P_NET` + `PDN_N_NET`):
+
+| Mode | Net parameters | Pin overrides |
+|------|----------------|---------------|
+| Single-net | `PDN_NET` / `PDNn_NET` | `PDN_PINS` / `PDNn_PINS` |
+| Two-terminal | `PDN_P_NET` + `PDN_N_NET` | **`PDN_P_PINS`** / **`PDNn_P_PINS`** and **`PDN_N_PINS`** / **`PDNn_N_PINS`** |
+
+`PDNn_PINS` is **not** the same as `PDNn_P_PINS` — the former is for
+single-net mode only; for a two-terminal sink or source use `PDNn_P_PINS`
+on the P side.
+
 > The walkthrough below adds the parameters to a placed instance, which
 > is the right starting point. For parts you expect to reuse across
 > designs (a regulator family, a recurring connector, an MCU), it is
