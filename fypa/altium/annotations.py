@@ -165,21 +165,70 @@ _VALUE_RE = re.compile(
     re.VERBOSE,
 )
 
+_SCI_VALUE_RE = re.compile(
+    r"""^\s*
+    (?P<mantissa>[+-]?(?:\d+\.?\d*|\.\d+)[eE][+-]?\d+)
+    (?P<rest>[a-zA-Zµ%Ω]*)
+    \s*$
+    """,
+    re.VERBOSE,
+)
+
+_SPACE_BEFORE_SUFFIX_RE = re.compile(
+    r"^([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)\s+(.+)$",
+)
+
+_PARSE_VALUE_HINT = "; use forms like 100mA, 3V3, 1.5E-9"
+
+
+def _normalize_si_text(text: str) -> str:
+    """Collapse whitespace between numeric part and unit suffix (``100 mA`` → ``100mA``).
+
+    Does not join a spaced exponent (``1.5 E-9`` stays as-is).
+    """
+    m = _SPACE_BEFORE_SUFFIX_RE.match(text)
+    if m is None:
+        return text
+    suffix = m.group(2)
+    if suffix and suffix[0] in "eE":
+        return text
+    return m.group(1) + suffix
+
+
+def _apply_si_suffix(magnitude: float, rest: str) -> float:
+    if not rest:
+        return magnitude
+    first = rest[0]
+    if first in _SI_PREFIXES and (
+        len(rest) == 1
+        or rest[1:] in _TRAILING_UNITS
+        or rest[1:].lower() in {u.lower() for u in _TRAILING_UNITS}
+    ):
+        return magnitude * _SI_PREFIXES[first]
+    return magnitude
+
 
 def parse_si_value(s: str) -> float:
     """Parse a value string with SI prefix and optional unit.
 
     Accepts:
-        ``"500mA"``, ``"1.5k"``, ``"0.1"``, ``"3V3"`` (engineering form → 3.3),
-        ``"1MΩ"``, ``"-2.7"``.
+        ``"500mA"``, ``"100 mA"``, ``"1.5k"``, ``"0.1"``, ``"3V3"`` (engineering form → 3.3),
+        ``"1MΩ"``, ``"-2.7"``, ``"1.5E-9"``, ``"2.2e+6"``.
 
     Raises :class:`ValueError` on unparseable input.
     """
     if s is None:
         raise ValueError("empty value")
-    text = str(s).strip()
+    text = _normalize_si_text(str(s).strip())
     if not text:
         raise ValueError("empty value")
+
+    if re.search(r"\d[eE]", text):
+        sci = _SCI_VALUE_RE.match(text)
+        if sci:
+            magnitude = float(sci.group("mantissa"))
+            rest = sci.group("rest") or ""
+            return _apply_si_suffix(magnitude, rest)
 
     m = _VALUE_RE.match(text)
     if not m:
@@ -205,13 +254,7 @@ def parse_si_value(s: str) -> float:
         else:
             dotfrac = m.group("dotfrac") or ""
             magnitude = float(f"{int_part}{dotfrac}")
-        # rest may start with an SI prefix letter, then optionally a unit.
-        if rest:
-            first = rest[0]
-            if first in _SI_PREFIXES and (len(rest) == 1 or rest[1:] in _TRAILING_UNITS
-                                          or rest[1:].lower() in {u.lower() for u in _TRAILING_UNITS}):
-                magnitude *= _SI_PREFIXES[first]
-            # else: rest is a bare unit (V, A, Ohm, %) — magnitude unchanged.
+        magnitude = _apply_si_suffix(magnitude, rest)
 
     return sign * magnitude
 
@@ -1038,7 +1081,7 @@ def _require_value(params: dict[str, str], key: str, role_diag: str, result: Ann
     try:
         return parse_si_value(raw)
     except ValueError as e:
-        result.errors.append(f"{role_diag}: {key}={raw!r} — {e}")
+        result.errors.append(f"{role_diag}: {key}={raw!r} — {e}{_PARSE_VALUE_HINT}")
         return None
 
 
@@ -1053,7 +1096,7 @@ def _optional_value(params: dict[str, str], key: str, role_diag: str,
     try:
         return parse_si_value(raw)
     except ValueError as e:
-        result.errors.append(f"{role_diag}: {key}={raw!r} — {e}")
+        result.errors.append(f"{role_diag}: {key}={raw!r} — {e}{_PARSE_VALUE_HINT}")
         return None
 
 

@@ -96,7 +96,9 @@ Click **Add** below the parameter list and fill in each row:
 
 > `PDN_V` accepts plain numbers (`5`, `3.3`) or numbers with a `V` suffix
 > (`5V`, `3.3V`). `PDN_I` accepts `0.5`, `500mA`, `0.5A`. Either form
-> works.
+> works. A space before the unit is tolerated (`100 mA` is the same as
+> `100mA`). Engineering shorthand (`3V3`, `4k7`) and scientific notation
+> (`1.5E-9`, `2.2e+6`) are also accepted.
 
 The parameters do not have to be visible, they will be hidden by default
 
