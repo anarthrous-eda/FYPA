@@ -60,6 +60,13 @@ dependencies = [
     # import path and are excluded from the PyInstaller bundle (see
     # packaging/FYPA.spec).
     "gerbonara==1.5.0",
+
+    # NOTE: KiCAD import (.kicad_pcb / .kicad_sch) needs no third-party parser.
+    # KiCAD's S-expression format is read by a small self-contained tokenizer in
+    # fypa/kicad/sexpr.py — pure stdlib, so it works in CI and in the PyInstaller
+    # bundle with no extra dependency. (kiutils was evaluated and rejected: its
+    # latest release, 1.1.4, fails to import on Python 3.12 due to a mutable
+    # dataclass default, and it is unmaintained.)
 ]
 
 [project.optional-dependencies]

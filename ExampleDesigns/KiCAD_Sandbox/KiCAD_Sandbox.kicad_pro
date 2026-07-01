@@ -1,0 +1,17 @@
+{
+  "board": {
+    "design_settings": {
+      "defaults": {}
+    }
+  },
+  "meta": {
+    "filename": "KiCAD_Sandbox.kicad_pro",
+    "version": 1
+  },
+  "sheets": [
+    [
+      "root",
+      "Sandbox"
+    ]
+  ]
+}

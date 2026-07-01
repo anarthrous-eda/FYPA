@@ -40,6 +40,14 @@ ExampleDesigns/Sandbox/*
 !ExampleDesigns/Sandbox/*.PrjPcbStructure
 # __Previews, History and Project Logs folders stay ignored via the Sandbox/* rule above
 
+# ...and the KiCAD_Sandbox example — ship the KiCAD source files (used by the
+# test_regression golden test and as a worked KiCAD import example).
+!ExampleDesigns/KiCAD_Sandbox/
+ExampleDesigns/KiCAD_Sandbox/*
+!ExampleDesigns/KiCAD_Sandbox/*.kicad_pcb
+!ExampleDesigns/KiCAD_Sandbox/*.kicad_sch
+!ExampleDesigns/KiCAD_Sandbox/*.kicad_pro
+
 # Editor metadata
 .vscode/
 .idea/

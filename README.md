@@ -1,10 +1,10 @@
 # FYPA - FEM Y-parameter Power Analyser
 
-Power-Delivery-Network (PDN) analysis for Altium and Gerber PCB designs.
-Extracts copper geometry directly from a `.PrjPcb` project or from a Gerber
-fabrication package, runs a 2-D FEM Laplace solver per copper layer to compute
-voltage drop and current density across power rails, and visualises the result
-in a custom OpenGL viewer with per-vertex shading.
+Power-Delivery-Network (PDN) analysis for Altium, KiCAD, and Gerber PCB designs.
+Extracts copper geometry directly from a `.PrjPcb` project, a KiCAD `.kicad_pcb`
+board, or a Gerber fabrication package, runs a 2-D FEM Laplace solver per copper
+layer to compute voltage drop and current density across power rails, and
+visualises the result in a custom OpenGL viewer with per-vertex shading.
 
 **Name:** *FYPA* stands for **F**EM **Y**-parameter **P**ower **A**nalyser —
 the tool extracts the admittance (Y-parameter) matrix of each copper layer
@@ -308,6 +308,25 @@ python FYPA.py paraview    out.pkl out_dir\           # export to ParaView VTK (
 python FYPA.py gerber-gui  path\to\gerber_folder      # import a board from Gerber + Excellon files
 ```
 
+Every project-input subcommand (`extract` / `annotations` / `geometry` / `load` /
+`solve` / `gui`) also accepts a KiCAD board — pass a `.kicad_pcb` in place of the
+`.PrjPcb` and FYPA dispatches to the KiCAD front-end automatically:
+
+```sh
+python FYPA.py gui   YourBoard.kicad_pcb              # solve + viewer on a KiCAD board
+python FYPA.py solve YourBoard.kicad_pcb out.pkl      # solve + pickle
+```
+
+KiCAD notes (targets the latest format, **KiCAD 9**): the single `.kicad_pcb`
+file already carries copper, the resolved netlist, the stackup, and footprint
+properties, so it is self-sufficient — a sibling `.kicad_sch` is read too when
+present. Author the `PDN_*` directives as custom **footprint fields**
+(`PDN_ROLE`, `PDN_V`, `PDN_P_NET`, …); KiCAD syncs schematic symbol fields down
+to footprint properties, so they can be entered on either. Run *Edit > Fill All
+Zones* before analysing so copper pours are present in the file. See the bundled
+[`ExampleDesigns/KiCAD_Sandbox/`](ExampleDesigns/KiCAD_Sandbox) for a minimal
+worked example.
+
 ### Editor mode — sources / sinks without touching the schematic
 
 You don't have to round-trip through the Altium schematic to set up an
@@ -486,6 +505,10 @@ fypa/                    Application package:
     extract.py             Gerber/drill parser → copper geometry
     loader.py              Assembles the padne Problem from Gerber input
     import_ui.py           Layer-mapping / stackup import dialogs
+  kicad/                 KiCAD (.kicad_pcb / .kicad_sch) front-end:
+    sexpr.py               Self-contained S-expression reader (no extra deps)
+    extract.py             KiCAD S-expr → the shared ExtractedProject
+    loader.py              Runs the shared annotation parse + LoadedProject
   altium_geometry.py     Builds per-(layer, net) Shapely MultiPolygons
   _clipper_fuse.py       Clipper2-based polygon fuse helper (fast union path)
   editor_directives.py   Editor-mode SOURCE / SINK / SERIES directives

@@ -3272,6 +3272,17 @@ def load_project(prjpcb_path: str | Path,
     _t = time.monotonic()
     extracted = extract_project(prjpcb_path, pcbdoc_selector=pcbdoc_selector)
     log.info("Stage 1/2: extract done in %.2fs", time.monotonic() - _t)
+    return _load_from_extracted(extracted)
+
+
+def _load_from_extracted(extracted: ExtractedProject) -> LoadedProject:
+    """Assemble a :class:`LoadedProject` from an already-extracted project.
+
+    Shared by every input format (Altium :func:`load_project`, and the Gerber /
+    KiCAD loaders): runs the PDN_* annotation parse, the low-Ω SERIES
+    net-merge pre-pass, and the final :class:`LoadedProject` construction. The
+    only thing that differs between formats is how ``extracted`` was built.
+    """
     enabled = extracted.enabled_copper_layer_ids()
     log.info("  enabled copper layers: %s", enabled)
 

@@ -130,7 +130,8 @@ def _build_parser() -> argparse.ArgumentParser:
         )
 
     sp = sub.add_parser("extract", help="Extract raw records from a project and summarise")
-    sp.add_argument("prjpcb", type=Path, help="Path to the .PrjPcb file")
+    sp.add_argument("prjpcb", type=Path,
+                    help="Path to the .PrjPcb (Altium) or .kicad_pcb (KiCAD) file")
     _add_pcbdoc_arg(sp)
 
     sp = sub.add_parser("geometry", help="Build per-layer geometry and summarise")
@@ -226,8 +227,29 @@ def _force_utf8_console() -> None:
             pass
 
 
+def _is_kicad_input(path: Path) -> bool:
+    """True when *path* is a KiCAD board (dispatched to the KiCAD adapter)."""
+    return path.suffix.lower() == ".kicad_pcb"
+
+
+def _extract_any(path: Path, pcbdoc_selector: str | None = None):
+    """Extract a project, dispatching on file type (KiCAD vs Altium)."""
+    if _is_kicad_input(path):
+        from fypa.kicad.extract import extract_kicad_project
+        return extract_kicad_project(path)
+    return extract_project(path, pcbdoc_selector=pcbdoc_selector)
+
+
+def _load_any(path: Path, pcbdoc_selector: str | None = None):
+    """Load a project into a LoadedProject, dispatching on file type."""
+    if _is_kicad_input(path):
+        from fypa.kicad.loader import load_kicad_project
+        return load_kicad_project(path)
+    return load_project(path, pcbdoc_selector=pcbdoc_selector)
+
+
 def do_extract(args: argparse.Namespace) -> int:
-    proj = extract_project(args.prjpcb, pcbdoc_selector=args.pcbdoc)
+    proj = _extract_any(args.prjpcb, args.pcbdoc)
     enabled = proj.enabled_copper_layer_ids()
     enabled_desc = ", ".join(
         f"{i}({proj.stackup[i-1].name})" if 1 <= i <= len(proj.stackup) else str(i)
@@ -250,7 +272,7 @@ def do_extract(args: argparse.Namespace) -> int:
 
 
 def do_geometry(args: argparse.Namespace) -> int:
-    proj = extract_project(args.prjpcb, pcbdoc_selector=args.pcbdoc)
+    proj = _extract_any(args.prjpcb, args.pcbdoc)
     layers = build_layer_geometries(proj)
     print(f"Built {len(layers)} copper layer(s):")
     for L in layers:
@@ -267,7 +289,7 @@ def do_geometry(args: argparse.Namespace) -> int:
 
 
 def do_annotations(args: argparse.Namespace) -> int:
-    proj = extract_project(args.prjpcb, pcbdoc_selector=args.pcbdoc)
+    proj = _extract_any(args.prjpcb, args.pcbdoc)
     result = parse_annotations(proj)
     print(result.summary())
     print()
@@ -277,7 +299,7 @@ def do_annotations(args: argparse.Namespace) -> int:
 
 
 def do_load(args: argparse.Namespace) -> int:
-    loaded = load_project(args.prjpcb, pcbdoc_selector=args.pcbdoc)
+    loaded = _load_any(args.prjpcb, args.pcbdoc)
     print(loaded.diagnostic_summary())
     if args.png:
         args.png.parent.mkdir(parents=True, exist_ok=True)
@@ -438,6 +460,9 @@ _DESIGN_TOOL_SOURCES: tuple[Path, ...] = (
     _PKG_DIR / "altium" / "loader.py",
     _PKG_DIR / "gerber" / "extract.py",
     _PKG_DIR / "gerber" / "loader.py",
+    _PKG_DIR / "kicad" / "extract.py",
+    _PKG_DIR / "kicad" / "loader.py",
+    _PKG_DIR / "kicad" / "sexpr.py",
 )
 
 # Additional tool-side source files whose CONTENT HASH feeds into the
@@ -1001,7 +1026,7 @@ def save_solution_file(path: Path, solution, metadata: dict | None) -> None:
 
 
 def do_solve(args: argparse.Namespace) -> int:
-    loaded = load_project(args.prjpcb, pcbdoc_selector=args.pcbdoc)
+    loaded = _load_any(args.prjpcb, args.pcbdoc)
     solution, metadata = _solve_loaded(loaded, args)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     # HIGHEST_PROTOCOL: pickle protocol 5 (Python 3.8+) gets out-of-band
@@ -1062,7 +1087,7 @@ def do_gui(args: argparse.Namespace) -> int:
                 _design_info_cache_path(args.prjpcb, pcbdoc_path),
             )
     if loaded is None:
-        loaded = load_project(args.prjpcb, pcbdoc_selector=str(pcbdoc_path))
+        loaded = _load_any(args.prjpcb, pcbdoc_selector=str(pcbdoc_path))
         _save_cached_design_info(args.prjpcb, design_fp, loaded,
                                   pcbdoc_path=pcbdoc_path)
     solution, metadata = _solve_loaded(loaded, args)

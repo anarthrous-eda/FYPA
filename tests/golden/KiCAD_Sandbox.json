@@ -1,0 +1,13 @@
+{
+  "ground_node_current": -8.133509368457086e-09,
+  "n_components": 4,
+  "n_layer_solutions": 3,
+  "potential_abs_l2": 270.9519672967163,
+  "potential_max": 4.999999999999998,
+  "potential_mean": 1.7383716386844257,
+  "potential_min": -4.429870367910285e-16,
+  "potential_std": 2.3771475689690114,
+  "residual_norm": 2.0433230519740747e-10,
+  "total_triangles": 15011,
+  "total_vertices": 8465
+}
