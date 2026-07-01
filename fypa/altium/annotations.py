@@ -119,6 +119,20 @@ _RESISTOR_LIKE_ROLES: frozenset[str] = frozenset({"SERIES"})
 
 VALID_ROLES: frozenset[str] = frozenset({"SOURCE", "SINK", "REGULATOR"}) | _RESISTOR_LIKE_ROLES
 
+_COMMON_TERMINAL_SUFFIXES: frozenset[str] = frozenset({
+    "NET", "PINS", "P_NET", "N_NET", "P_PINS", "N_PINS",
+})
+_KNOWN_SUFFIXES_BY_ROLE: dict[str, frozenset[str]] = {
+    "SOURCE": _COMMON_TERMINAL_SUFFIXES | frozenset({"V"}),
+    "SINK": _COMMON_TERMINAL_SUFFIXES | frozenset({"I", "MIN_V"}),
+    "REGULATOR": frozenset({
+        "V", "GAIN", "REGULATOR_TYPE", "REGULATOR_EFFICIENCY", "QUIESCENT",
+        "OUT_P_NET", "OUT_N_NET", "OUT_P_PINS", "OUT_N_PINS",
+        "IN_P_NET", "IN_N_NET", "IN_P_PINS", "IN_N_PINS",
+    }),
+    "SERIES": frozenset({"R", "P_NET", "N_NET", "P_PINS", "N_PINS"}),
+}
+
 
 # --- SI value parsing ---------------------------------------------------------
 
@@ -151,21 +165,70 @@ _VALUE_RE = re.compile(
     re.VERBOSE,
 )
 
+_SCI_VALUE_RE = re.compile(
+    r"""^\s*
+    (?P<mantissa>[+-]?(?:\d+\.?\d*|\.\d+)[eE][+-]?\d+)
+    (?P<rest>[a-zA-Zµ%Ω]*)
+    \s*$
+    """,
+    re.VERBOSE,
+)
+
+_SPACE_BEFORE_SUFFIX_RE = re.compile(
+    r"^([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)\s+(.+)$",
+)
+
+_PARSE_VALUE_HINT = "; use forms like 100mA, 3V3, 1.5E-9"
+
+
+def _normalize_si_text(text: str) -> str:
+    """Collapse whitespace between numeric part and unit suffix (``100 mA`` → ``100mA``).
+
+    Does not join a spaced exponent (``1.5 E-9`` stays as-is).
+    """
+    m = _SPACE_BEFORE_SUFFIX_RE.match(text)
+    if m is None:
+        return text
+    suffix = m.group(2)
+    if suffix and suffix[0] in "eE":
+        return text
+    return m.group(1) + suffix
+
+
+def _apply_si_suffix(magnitude: float, rest: str) -> float:
+    if not rest:
+        return magnitude
+    first = rest[0]
+    if first in _SI_PREFIXES and (
+        len(rest) == 1
+        or rest[1:] in _TRAILING_UNITS
+        or rest[1:].lower() in {u.lower() for u in _TRAILING_UNITS}
+    ):
+        return magnitude * _SI_PREFIXES[first]
+    return magnitude
+
 
 def parse_si_value(s: str) -> float:
     """Parse a value string with SI prefix and optional unit.
 
     Accepts:
-        ``"500mA"``, ``"1.5k"``, ``"0.1"``, ``"3V3"`` (engineering form → 3.3),
-        ``"1MΩ"``, ``"-2.7"``.
+        ``"500mA"``, ``"100 mA"``, ``"1.5k"``, ``"0.1"``, ``"3V3"`` (engineering form → 3.3),
+        ``"1MΩ"``, ``"-2.7"``, ``"1.5E-9"``, ``"2.2e+6"``.
 
     Raises :class:`ValueError` on unparseable input.
     """
     if s is None:
         raise ValueError("empty value")
-    text = str(s).strip()
+    text = _normalize_si_text(str(s).strip())
     if not text:
         raise ValueError("empty value")
+
+    if re.search(r"\d[eE]", text):
+        sci = _SCI_VALUE_RE.match(text)
+        if sci:
+            magnitude = float(sci.group("mantissa"))
+            rest = sci.group("rest") or ""
+            return _apply_si_suffix(magnitude, rest)
 
     m = _VALUE_RE.match(text)
     if not m:
@@ -191,13 +254,7 @@ def parse_si_value(s: str) -> float:
         else:
             dotfrac = m.group("dotfrac") or ""
             magnitude = float(f"{int_part}{dotfrac}")
-        # rest may start with an SI prefix letter, then optionally a unit.
-        if rest:
-            first = rest[0]
-            if first in _SI_PREFIXES and (len(rest) == 1 or rest[1:] in _TRAILING_UNITS
-                                          or rest[1:].lower() in {u.lower() for u in _TRAILING_UNITS}):
-                magnitude *= _SI_PREFIXES[first]
-            # else: rest is a bare unit (V, A, Ohm, %) — magnitude unchanged.
+        magnitude = _apply_si_suffix(magnitude, rest)
 
     return sign * magnitude
 
@@ -718,10 +775,17 @@ def _resolve_terminal(
 
             if bridges_used and warnings is not None:
                 bridge_list = ", ".join(repr(b) for b in bridges_used)
-                warnings.append(
+                msg = (
                     f"{role_diagnostic}: no pad on {net_name!r}; resolved via "
                     f"SERIES bridge to pin(s) on {bridge_list}"
                 )
+                if len(bridges_used) >= 2:
+                    msg += (
+                        ". All listed nets are in the same SERIES bridge "
+                        "group — check SERIES directives (e.g. a "
+                        "multi-channel part bridging VDD to several outputs)"
+                    )
+                warnings.append(msg)
 
         if not matched:
             # List the nets that this component's pads actually sit on, so the
@@ -1017,7 +1081,7 @@ def _require_value(params: dict[str, str], key: str, role_diag: str, result: Ann
     try:
         return parse_si_value(raw)
     except ValueError as e:
-        result.errors.append(f"{role_diag}: {key}={raw!r} — {e}")
+        result.errors.append(f"{role_diag}: {key}={raw!r} — {e}{_PARSE_VALUE_HINT}")
         return None
 
 
@@ -1032,7 +1096,7 @@ def _optional_value(params: dict[str, str], key: str, role_diag: str,
     try:
         return parse_si_value(raw)
     except ValueError as e:
-        result.errors.append(f"{role_diag}: {key}={raw!r} — {e}")
+        result.errors.append(f"{role_diag}: {key}={raw!r} — {e}{_PARSE_VALUE_HINT}")
         return None
 
 
@@ -1100,18 +1164,32 @@ def _terminal_mode(params: dict[str, str], idx: int | None,
     pins_key = _channel_key("PINS", idx)
     p_net_key = _channel_key("P_NET", idx)
     n_net_key = _channel_key("N_NET", idx)
-    has_single = (_ci_get(params, net_key) is not None
-                  or _ci_get(params, pins_key) is not None)
-    has_two = any(
-        _ci_get(params, _channel_key(k, idx)) is not None
-        for k in ("P_NET", "N_NET", "P_PINS", "N_PINS")
-    )
+    p_pins_key = _channel_key("P_PINS", idx)
+    single_set: list[str] = []
+    if _ci_get(params, net_key) is not None:
+        single_set.append(net_key)
+    if _ci_get(params, pins_key) is not None:
+        single_set.append(f"{pins_key} (single-net pin override)")
+    two_set: list[str] = []
+    for suffix in ("P_NET", "N_NET", "P_PINS", "N_PINS"):
+        key = _channel_key(suffix, idx)
+        if _ci_get(params, key) is not None:
+            two_set.append(key)
+    has_single = bool(single_set)
+    has_two = bool(two_set)
     if has_single and has_two:
-        result.errors.append(
-            f"{role_diag}: {net_key} cannot be combined with "
-            f"{p_net_key}/{n_net_key} — use {net_key} alone for a single-net "
-            f"check, or {p_net_key} + {n_net_key} for a two-terminal check"
+        single_text = " + ".join(single_set)
+        two_text = " + ".join(two_set)
+        msg = (
+            f"{role_diag}: {single_text} conflicts with {two_text} "
+            f"(two-terminal). Use either single-net ({net_key} or "
+            f"{pins_key} on a single-net check only) or two-terminal "
+            f"({p_net_key} + {n_net_key}, pins {p_pins_key} / "
+            f"{_channel_key('N_PINS', idx)}), not both."
         )
+        if _ci_get(params, pins_key) is not None:
+            msg += f" For a two-terminal check use {p_pins_key}, not {pins_key}."
+        result.errors.append(msg)
         return None
     if has_single:
         return "single"
@@ -1637,6 +1715,46 @@ def _validate_directive_groups(result: AnnotationResult,
     result.directives = stamped
 
 
+def _warn_unknown_pdn_params(
+    comp: PdnParameterSource,
+    role: str,
+    result: AnnotationResult,
+) -> None:
+    """Warn on PDN_* parameter names that are not recognized for ``role``."""
+    allowed = _KNOWN_SUFFIXES_BY_ROLE.get(role, frozenset())
+    diag = f"{comp.designator} ({comp.schdoc_name})"
+    for key, raw in comp.parameters.items():
+        if raw is None or not str(raw).strip():
+            continue
+        m = _INDEXED_KEY_RE.match(key.strip())
+        if m is None:
+            continue
+        idx_str, suffix = m.group(1), m.group(2)
+        suffix_u = suffix.upper()
+        if suffix_u == "ROLE":
+            continue
+        if suffix_u in allowed:
+            continue
+        idx = int(idx_str) if idx_str else None
+        ch = f"#{idx}" if idx is not None else ""
+        if suffix_u == "PIN":
+            suggest = _channel_key("P_PINS", idx)
+            result.warnings.append(
+                f"{diag}{ch}: unknown parameter {key!r} — did you mean "
+                f"{suggest}?"
+            )
+            continue
+        if suffix_u.startswith("OUT_") and role in ("SOURCE", "SINK"):
+            result.warnings.append(
+                f"{diag}{ch}: {key!r} is a REGULATOR parameter — "
+                f"did you mean to set PDN_ROLE=REGULATOR?"
+            )
+            continue
+        result.warnings.append(
+            f"{diag}{ch}: unknown PDN parameter {key!r} (ignored)"
+        )
+
+
 # --- public entry -------------------------------------------------------------
 
 def parse_annotations(proj: ExtractedProject,
@@ -1723,6 +1841,8 @@ def parse_annotations(proj: ExtractedProject,
             continue
         if comp.pcb_index is None:
             seen_designators.add(key)
+
+        _warn_unknown_pdn_params(comp, role, result)
 
         specs = _PARSER_BY_ROLE[role](comp, proj, enabled_layers, result,
                                       bridge_groups=bridge_groups,

@@ -8,6 +8,7 @@ assignment. See ``fypa.altium.annotations`` for the schema.
 """
 from __future__ import annotations
 
+import pytest
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -22,13 +23,16 @@ from fypa.altium.annotations import (
     TerminalSpec,
     _collect_bridge_groups,
     _iter_pdn_parameter_sources,
+    _require_value,
     _resolve_local_net_pins,
     _resolve_terminal,
     _schdoc_for_pcb_instance,
     _sheet_name_matches,
     _terminal_mode,
     _validate_directive_groups,
+    _warn_unknown_pdn_params,
     parse_annotations,
+    parse_si_value,
 )
 from fypa.altium.extract import (
     ExtractedProject,
@@ -39,6 +43,40 @@ from fypa.altium.extract import (
     RawSchComponent,
     RawStackupLayer,
 )
+
+
+# --- parse_si_value -----------------------------------------------------------
+
+class TestParseSiValue:
+    def test_whitespace_before_unit(self):
+        assert parse_si_value("100 mA") == 0.1
+        assert parse_si_value("3.3 V") == 3.3
+        assert parse_si_value("  -2.7 V ") == -2.7
+
+    def test_scientific_notation(self):
+        assert parse_si_value("1.5E-9") == 1.5e-9
+        assert parse_si_value("1.5e-9") == 1.5e-9
+        assert parse_si_value("2.2E+6") == 2.2e6
+        assert parse_si_value("5E-3") == 0.005
+        assert parse_si_value("1.5E-9F") == 1.5e-9
+
+    def test_regression_engineering_and_si(self):
+        assert parse_si_value("500mA") == 0.5
+        assert parse_si_value("3V3") == 3.3
+        assert parse_si_value("4k7") == 4700.0
+        assert parse_si_value("1MΩ") == 1e6
+        assert parse_si_value("-2.7") == -2.7
+        assert parse_si_value(".001") == 0.001
+
+    def test_spaced_exponent_not_joined(self):
+        with pytest.raises(ValueError):
+            parse_si_value("1.5 E-9")
+
+    def test_require_value_appends_syntax_hint(self):
+        result = AnnotationResult()
+        assert _require_value({"PDN_I": "foo"}, "PDN_I", "SINK on U1", result) is None
+        assert len(result.errors) == 1
+        assert "use forms like 100mA, 3V3, 1.5E-9" in result.errors[0]
 
 
 # --- _terminal_mode -----------------------------------------------------------
@@ -62,7 +100,18 @@ def test_terminal_mode_rejects_mixing_pdn_net_with_p_net():
     mode = _terminal_mode({"PDN_NET": "VBATT", "PDN_P_NET": "+5V"}, None,
                           "SOURCE on J1", result)
     assert mode is None
-    assert any("cannot be combined" in e for e in result.errors)
+    assert any("conflicts with" in e for e in result.errors)
+
+
+def test_terminal_mode_pins_conflict_suggests_p_pins():
+    result = AnnotationResult()
+    mode = _terminal_mode(
+        {"PDN3_PINS": "A1", "PDN3_P_NET": "LED_R", "PDN3_N_NET": "GND"},
+        3, "SINK on U4#3", result,
+    )
+    assert mode is None
+    assert any("PDN3_PINS" in e for e in result.errors)
+    assert any("PDN3_P_PINS" in e for e in result.errors)
 
 
 def test_terminal_mode_rejects_no_terminal_net():
@@ -77,6 +126,23 @@ def test_terminal_mode_indexed_channel():
     assert _terminal_mode({"PDN2_NET": "VBATT"}, 2, "SINK on U1#2",
                           result) == "single"
     assert not result.errors
+
+
+def test_warn_unknown_pdn_pin_typo():
+    result = AnnotationResult()
+    comp = PdnParameterSource(
+        designator="U4", schdoc_name="Main.SchDoc", pcb_index=0,
+        parameters={
+            "PDN_ROLE": "SINK",
+            "PDN2_I": "100mA",
+            "PDN2_P_NET": "LED_R",
+            "PDN2_N_NET": "GND",
+            "PDN2_PIN": "B2",
+        },
+        sch_lookup_designator="U4",
+    )
+    _warn_unknown_pdn_params(comp, "SINK", result)
+    assert any("PDN2_PIN" in w and "PDN2_P_PINS" in w for w in result.warnings)
 
 
 # --- _validate_directive_groups ----------------------------------------------
@@ -343,7 +409,7 @@ def test_pcb_parameters_create_sink_when_schematic_has_no_role():
                 source_designator="U1",
                 parameters={
                     "PDN_ROLE": "SINK",
-                    "PDN_I": "100mA",
+                    "PDN_I": "100 mA",
                     "PDN_P_NET": "+3V3",
                     "PDN_N_NET": "GND",
                 },
@@ -375,6 +441,7 @@ def test_pcb_parameters_create_sink_when_schematic_has_no_role():
     assert len(result.directives) == 1
     assert isinstance(result.directives[0], SinkSpec)
     assert result.directives[0].designator == "U1_PWR"
+    assert result.directives[0].current == 0.1
 
 
 def test_schematic_pdn_role_takes_priority_over_pcb_parameters():
@@ -775,3 +842,25 @@ def test_local_fallback_skips_no_net_pad():
     assert spec.pins[0].pad_designator == "2"
     assert spec.pins[0].net_index == 1
 
+
+def test_format_solve_blockers_lists_errors():
+    from types import SimpleNamespace
+
+    from fypa.altium.loader import format_solve_blockers
+
+    loaded = SimpleNamespace(
+        extracted=SimpleNamespace(
+            enabled_copper_layer_ids=lambda: [1],
+        ),
+        annotations=AnnotationResult(
+            errors=["SINK on U4#3: PDN3_PINS conflicts with PDN3_P_NET"],
+            warnings=["U4: unknown parameter 'PDN2_PIN'"],
+            directives=[],
+        ),
+    )
+    text = format_solve_blockers(loaded)
+    assert "Project is not solveable" in text
+    assert "PDN3_PINS" in text
+    assert "PDN2_PIN" in text
+    assert "no SOURCE or REGULATOR" in text
+    assert "fypa.log" in text
