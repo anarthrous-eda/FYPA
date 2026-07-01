@@ -14,6 +14,6 @@ def test_normalize_topology_svg_rounds_floats():
     assert 'y2="40"' in out or 'y2="40.0"' in out
 
 
-def test_normalize_topology_svg_strips_whitespace_between_tags():
+def test_normalize_topology_svg_puts_each_element_on_its_own_line():
     raw = '<svg>  <rect/>  </svg>'
-    assert normalize_topology_svg(raw) == '<svg><rect/></svg>\n'
+    assert normalize_topology_svg(raw) == '<svg>\n<rect/>\n</svg>\n'

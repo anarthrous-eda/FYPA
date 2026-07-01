@@ -105,30 +105,34 @@ def _obstacle_detour_y_direction(
     detour = detour_fn(y_nominal, lo, hi, obstacles, skip_node_ids)
     if detour is not None:
         y = detour
-    for _ in range(len(ctx.horizontal_bands) + 1):
-        blocked = False
-        for by, blo, bhi, bnet in ctx.horizontal_bands:
-            if net is not None and bnet == net:
-                continue
-            if hi <= blo + WIRE_EPS or lo >= bhi - WIRE_EPS:
-                continue
-            if downward:
-                if abs(by - y) < WIRE_EPS or abs(by - y) < MIN_PARALLEL_GAP - WIRE_EPS:
-                    y = by + MIN_PARALLEL_GAP
+
+    # Clearing an obstacle body can push the row back onto a foreign reserved
+    # band, and clearing a band can push it back onto an obstacle. Alternate the
+    # two until neither moves the row. Both nudges are monotonic in the detour
+    # direction, so this converges within a bounded number of passes.
+    for _ in range(len(ctx.horizontal_bands) + 2):
+        y_start = y
+        for _ in range(len(ctx.horizontal_bands) + 1):
+            blocked = False
+            for by, blo, bhi, bnet in ctx.horizontal_bands:
+                if net is not None and bnet == net:
+                    continue
+                if hi <= blo + WIRE_EPS or lo >= bhi - WIRE_EPS:
+                    continue
+                if abs(by - y) < MIN_PARALLEL_GAP - WIRE_EPS:
+                    y = by + MIN_PARALLEL_GAP if downward else by - MIN_PARALLEL_GAP
                     blocked = True
                     break
-            elif abs(by - y) < WIRE_EPS or abs(by - y) < MIN_PARALLEL_GAP - WIRE_EPS:
-                y = by - MIN_PARALLEL_GAP
-                blocked = True
+            if not blocked:
                 break
-        if not blocked:
+        detour2 = detour_fn(y, lo, hi, obstacles, skip_node_ids)
+        if detour2 is not None:
+            if downward and detour2 > y + WIRE_EPS:
+                y = detour2
+            elif not downward and detour2 < y - WIRE_EPS:
+                y = detour2
+        if abs(y - y_start) < WIRE_EPS:
             break
-    detour2 = detour_fn(y, lo, hi, obstacles, skip_node_ids)
-    if detour2 is not None:
-        if downward and detour2 > y + WIRE_EPS:
-            y = detour2
-        elif not downward and detour2 < y - WIRE_EPS:
-            y = detour2
     return y
 
 
@@ -232,10 +236,7 @@ def gnd_drop_x(
             else:
                 x = min(x, nx - OBSTACLE_CLEAR)
     h_lo, h_hi = min(port.x, x), max(port.x, x)
-    stub_y = port.y
-    detour = detour_y_for_horizontal(stub_y, h_lo, h_hi, obstacles, skip)
-    if detour is not None:
-        pass  # horizontal stub Y detour handled in tap path via obstacle_detour_y
+    # (Horizontal stub-Y detours are handled in the tap path via obstacle_detour_y.)
     for node in obstacles:
         if node.node_id in skip:
             continue

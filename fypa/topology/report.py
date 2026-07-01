@@ -201,8 +201,11 @@ def topology_wiring_report(model: TopologyModel) -> dict:
         issues = _analyze_wire_issues(w, i, points, segs, all_ports)
         wire_issues.extend(issues)
 
-        start_port, _ = _nearest_port(all_ports, points[0][0], points[0][1], net=w.net)
-        end_port, _ = _nearest_port(all_ports, points[-1][0], points[-1][1], net=w.net)
+        if points:
+            start_port, _ = _nearest_port(all_ports, points[0][0], points[0][1], net=w.net)
+            end_port, _ = _nearest_port(all_ports, points[-1][0], points[-1][1], net=w.net)
+        else:
+            start_port = end_port = None
 
         wire_reports.append(
             {

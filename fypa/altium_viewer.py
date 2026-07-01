@@ -5257,7 +5257,16 @@ class _TopologyView(QGraphicsView):
         if bounds.width() < 1 or bounds.height() < 1:
             bounds = self._svg_item.boundingRect()
         self._scene.setSceneRect(bounds)
-        QTimer.singleShot(0, self.fit_in_view)
+        QTimer.singleShot(0, self._deferred_fit_in_view)
+
+    def _deferred_fit_in_view(self) -> None:
+        # The view can be torn down (e.g. a tab rebuild on theme toggle) between
+        # scheduling this and the event loop firing it; touching the deleted
+        # C++ object then raises RuntimeError. Ignore it — nothing to fit.
+        try:
+            self.fit_in_view()
+        except RuntimeError:
+            pass
 
     def _current_scale(self) -> float:
         return float(self.transform().m11())
@@ -5356,7 +5365,7 @@ class _TopologyView(QGraphicsView):
             delta = delta_y if delta_y else delta_x
             if delta == 0:
                 return
-            factor = pow(1.0 / _TOPOLOGY_ZOOM_STEP, delta / 120.0)
+            factor = pow(_TOPOLOGY_ZOOM_STEP, delta / 120.0)
             self._zoom_by(factor, anchor=event.position())
             event.accept()
             return
@@ -20617,7 +20626,7 @@ class PdnViewer(QMainWindow):
         )
         out_dir_str = QFileDialog.getExistingDirectory(
             self,
-            "Dump topology debug files",
+            "Choose folder for topology dump",
             start_dir,
             options=_file_dialog_options() | QFileDialog.Option.ShowDirsOnly,
         )

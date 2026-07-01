@@ -177,32 +177,33 @@ def route_hub(
     row_plans, singletons = _plan_hub_rows(ordered, obstacles, ctx, net)
     nodes_by_id = {n.node_id: n for n in obstacles}
     row_wires: list[TopologyWire] = []
+    row_wire_by_plan: dict[int, TopologyWire] = {}
     tap_wires: list[TopologyWire] = []
     tap_ys: list[float] = []
     row_spans: list[tuple[float, float, float, set[float]]] = []
 
-    for plan in row_plans:
+    for plan_idx, plan in enumerate(row_plans):
         if plan.detoured:
             continue
         row_sorted = sorted(plan.group, key=lambda p: p.x)
         row_path = hub_row_path(plan.group, plan.y_row)
         ctx.reserve_horizontal(plan.y_row, plan.span_lo, plan.span_hi, net)
-        row_wires.append(
-            TopologyWire(
-                net=net,
-                path_d=row_path,
-                src_node=row_sorted[0].node_id,
-                src_terminal=row_sorted[0].terminal,
-                dst_node=row_sorted[-1].node_id,
-                dst_terminal=row_sorted[-1].terminal,
-                routing_kind="hub_row",
-                bus_x=bus_x,
-            )
+        row_wire = TopologyWire(
+            net=net,
+            path_d=row_path,
+            src_node=row_sorted[0].node_id,
+            src_terminal=row_sorted[0].terminal,
+            dst_node=row_sorted[-1].node_id,
+            dst_terminal=row_sorted[-1].terminal,
+            routing_kind="hub_row",
+            bus_x=bus_x,
         )
+        row_wires.append(row_wire)
+        row_wire_by_plan[plan_idx] = row_wire
         row_port_xs = {p.x for p in plan.group if abs(p.y - plan.y_row) < WIRE_EPS}
         row_spans.append((plan.y_row, plan.span_lo, plan.span_hi, row_port_xs))
 
-    for plan in row_plans:
+    for plan_idx, plan in enumerate(row_plans):
         if plan.detoured:
             for port in plan.group:
                 path_d, tap_y = _route_hub_tap(
@@ -248,16 +249,17 @@ def route_hub(
             port=attach,
         )
         extension = _horizontal_extension(path_d)
-        if extension is not None and row_wires:
+        row_wire = row_wire_by_plan.get(plan_idx)
+        if extension is not None and row_wire is not None:
             _x_lo, y_ext, x_hi = extension
-            row_wires[-1].path_d = _extend_row_to_bus(row_wires[-1].path_d, bus_x)
+            row_wire.path_d = _extend_row_to_bus(row_wire.path_d, bus_x)
             ctx.reserve_horizontal(
                 y_ext,
                 min(plan.span_lo, _x_lo),
                 max(plan.span_hi, bus_x),
                 net,
             )
-            trunk_y = _trunk_y_at_bus(row_wires[-1].path_d, bus_x)
+            trunk_y = _trunk_y_at_bus(row_wire.path_d, bus_x)
             if trunk_y is not None:
                 tap_ys.append(trunk_y)
             continue
@@ -299,9 +301,8 @@ def route_hub(
             )
         )
 
-    y_lo, y_hi = min(tap_ys), max(tap_ys)
     wires: list[TopologyWire] = []
-    if y_hi - y_lo > WIRE_EPS:
+    if tap_ys and (y_hi := max(tap_ys)) - (y_lo := min(tap_ys)) > WIRE_EPS:
         ctx.reserve_vertical(bus_x, y_lo, y_hi, net)
         wires.append(
             TopologyWire(

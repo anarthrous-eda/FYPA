@@ -26,6 +26,8 @@ def plan_gnd_trunks(
         trunk_x = gnd_column_trunk_x(group)
         top_y = min(p.y for p in group)
         y_lo, y_hi = min(gnd_bus_y, top_y), max(gnd_bus_y, top_y)
-        key = (round(trunk_x, 1), "left" if group[0].side == "left" else "right")
+        sides = {p.side for p in group}
+        side = "left" if sides == {"left"} else "right" if sides == {"right"} else "mixed"
+        key = (round(trunk_x, 1), side)
         plan.gnd_trunks[key] = trunk_x
         reserved.append((trunk_x, y_lo, y_hi, GND_NET))
