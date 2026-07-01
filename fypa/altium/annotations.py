@@ -195,14 +195,21 @@ def _normalize_si_text(text: str) -> str:
     return m.group(1) + suffix
 
 
+_TRAILING_UNITS_LOWER = frozenset(u.lower() for u in _TRAILING_UNITS)
+
+
 def _apply_si_suffix(magnitude: float, rest: str) -> float:
     if not rest:
+        return magnitude
+    # A trailing token that is itself a known unit (matched case-insensitively)
+    # is a unit, never an SI prefix — so "F"/"f" are Farad, not femto, and the
+    # two cases agree. Femto is still reachable when followed by a unit ("fF").
+    if rest.lower() in _TRAILING_UNITS_LOWER:
         return magnitude
     first = rest[0]
     if first in _SI_PREFIXES and (
         len(rest) == 1
-        or rest[1:] in _TRAILING_UNITS
-        or rest[1:].lower() in {u.lower() for u in _TRAILING_UNITS}
+        or rest[1:].lower() in _TRAILING_UNITS_LOWER
     ):
         return magnitude * _SI_PREFIXES[first]
     return magnitude

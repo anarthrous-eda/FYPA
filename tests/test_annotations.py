@@ -60,6 +60,16 @@ class TestParseSiValue:
         assert parse_si_value("5E-3") == 0.005
         assert parse_si_value("1.5E-9F") == 1.5e-9
 
+    def test_bare_unit_case_insensitive_not_treated_as_prefix(self):
+        # A bare trailing unit must not be reinterpreted as an SI prefix,
+        # regardless of case: "f"/"F" are Farad, not femto.
+        assert parse_si_value("1.5E-9f") == 1.5e-9
+        assert parse_si_value("1.5E-9F") == 1.5e-9
+        assert parse_si_value("100f") == 100.0
+        assert parse_si_value("100F") == 100.0
+        # femto remains reachable when a unit follows the prefix.
+        assert parse_si_value("2fF") == 2e-15
+
     def test_regression_engineering_and_si(self):
         assert parse_si_value("500mA") == 0.5
         assert parse_si_value("3V3") == 3.3
