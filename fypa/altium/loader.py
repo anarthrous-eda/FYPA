@@ -459,6 +459,31 @@ def format_solve_blockers(
     return "\n".join(lines)
 
 
+def clone_loaded_for_edit(loaded: LoadedProject) -> LoadedProject:
+    """Return a copy of ``loaded`` safe for editor-directive application.
+
+    Only ``annotations`` is copied; ``extracted`` / ``geometry`` are shared.
+    """
+    import copy as _copy
+
+    new_annotations = _copy.copy(loaded.annotations)
+    new_annotations.directives = list(loaded.annotations.directives)
+    new_annotations.warnings = list(loaded.annotations.warnings)
+    new_annotations.errors = list(loaded.annotations.errors)
+    new_annotations.open_loop_rails = list(
+        getattr(loaded.annotations, "open_loop_rails", [])
+    )
+    new_annotations.connectivity_breaks = list(
+        getattr(loaded.annotations, "connectivity_breaks", [])
+    )
+    return LoadedProject(
+        extracted=loaded.extracted,
+        annotations=new_annotations,
+        geometry=loaded.__dict__.get("geometry"),
+        absorbed_bridges=list(loaded.absorbed_bridges),
+    )
+
+
 def _directive_terminals(d: DirectiveSpec) -> list[TerminalSpec]:
     """Return all PCB-resolved terminals of a directive, regardless of kind.
 

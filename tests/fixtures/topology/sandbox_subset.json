@@ -1,0 +1,942 @@
+{
+  "directives": [
+    {
+      "role": "SINK",
+      "designator": "J2",
+      "channel_index": null,
+      "label": "J2",
+      "schdoc": "Main.SchDoc",
+      "value": 1.0,
+      "unit": "A",
+      "value_str": "1000 mA",
+      "terminals": {
+        "P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "P1V_1W100L",
+              "x_mm": 110.00000098,
+              "y_mm": 123.99999838
+            }
+          ],
+          "requested_net": "P1V_1W100L",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 110.00000098,
+              "y_mm": 115.99999914
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "SOURCE",
+      "designator": "J1",
+      "channel_index": null,
+      "label": "J1",
+      "schdoc": "Main.SchDoc",
+      "value": 1.0,
+      "unit": "V",
+      "value_str": "1 V",
+      "terminals": {
+        "P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "P1V_1W100L",
+              "x_mm": 10.00000032,
+              "y_mm": 123.99999838
+            }
+          ],
+          "requested_net": "P1V_1W100L",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 10.00000032,
+              "y_mm": 115.99999914
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "J4",
+      "channel_index": null,
+      "label": "J4",
+      "schdoc": "Main.SchDoc",
+      "value": 1.0,
+      "unit": "A",
+      "value_str": "1000 mA",
+      "terminals": {
+        "P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "P1V_1W50L",
+              "x_mm": 59.99999937999999,
+              "y_mm": 104.00000028
+            }
+          ],
+          "requested_net": "P1V_1W50L",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 59.99999937999999,
+              "y_mm": 96.00000103999999
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "SOURCE",
+      "designator": "J3",
+      "channel_index": null,
+      "label": "J3",
+      "schdoc": "Main.SchDoc",
+      "value": 1.0,
+      "unit": "V",
+      "value_str": "1 V",
+      "terminals": {
+        "P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "P1V_1W50L",
+              "x_mm": 10.00000032,
+              "y_mm": 104.00000028
+            }
+          ],
+          "requested_net": "P1V_1W50L",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 10.00000032,
+              "y_mm": 96.00000103999999
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "J6",
+      "channel_index": null,
+      "label": "J6",
+      "schdoc": "Main.SchDoc",
+      "value": 1.0,
+      "unit": "A",
+      "value_str": "1000 mA",
+      "terminals": {
+        "P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "P1V_1W10L",
+              "x_mm": 20.00000064,
+              "y_mm": 83.99999964
+            }
+          ],
+          "requested_net": "P1V_1W10L",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 20.00000064,
+              "y_mm": 76.0000004
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "SOURCE",
+      "designator": "J5",
+      "channel_index": null,
+      "label": "J5",
+      "schdoc": "Main.SchDoc",
+      "value": 1.0,
+      "unit": "V",
+      "value_str": "1 V",
+      "terminals": {
+        "P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "P1V_1W10L",
+              "x_mm": 10.00000032,
+              "y_mm": 83.99999964
+            }
+          ],
+          "requested_net": "P1V_1W10L",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 10.00000032,
+              "y_mm": 76.0000004
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "J8",
+      "channel_index": null,
+      "label": "J8",
+      "schdoc": "Main.SchDoc",
+      "value": 1.0,
+      "unit": "A",
+      "value_str": "1000 mA",
+      "terminals": {
+        "P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "P1V_10W100L",
+              "x_mm": 110.00000098,
+              "y_mm": 63.999998999999995
+            }
+          ],
+          "requested_net": "P1V_10W100L",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 110.00000098,
+              "y_mm": 55.99999976
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "SOURCE",
+      "designator": "J7",
+      "channel_index": null,
+      "label": "J7",
+      "schdoc": "Main.SchDoc",
+      "value": 1.0,
+      "unit": "V",
+      "value_str": "1 V",
+      "terminals": {
+        "P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "P1V_10W100L",
+              "x_mm": 10.00000032,
+              "y_mm": 63.999998999999995
+            }
+          ],
+          "requested_net": "P1V_10W100L",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 10.00000032,
+              "y_mm": 55.99999976
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "J10",
+      "channel_index": null,
+      "label": "J10",
+      "schdoc": "Main.SchDoc",
+      "value": 1.0,
+      "unit": "A",
+      "value_str": "1000 mA",
+      "terminals": {
+        "P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "P1V_ARC",
+              "x_mm": 39.99999874,
+              "y_mm": 43.99999836
+            }
+          ],
+          "requested_net": "P1V_ARC",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 39.99999874,
+              "y_mm": 35.99999912
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        }
+      },
+      "min_voltage": 0.95
+    },
+    {
+      "role": "SOURCE",
+      "designator": "J9",
+      "channel_index": null,
+      "label": "J9",
+      "schdoc": "Main.SchDoc",
+      "value": 1.0,
+      "unit": "V",
+      "value_str": "1 V",
+      "terminals": {
+        "P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "P1V_ARC",
+              "x_mm": 10.00000032,
+              "y_mm": 43.99999836
+            }
+          ],
+          "requested_net": "P1V_ARC",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 10.00000032,
+              "y_mm": 35.99999912
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "J12",
+      "channel_index": null,
+      "label": "J12",
+      "schdoc": "Main.SchDoc",
+      "value": 1.0,
+      "unit": "A",
+      "value_str": "1000 mA",
+      "terminals": {
+        "P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "P1V_TRACE",
+              "x_mm": 39.99999874,
+              "y_mm": 20.00000064
+            }
+          ],
+          "requested_net": "P1V_TRACE",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 39.99999874,
+              "y_mm": 12.000001399999999
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "SOURCE",
+      "designator": "J11",
+      "channel_index": null,
+      "label": "J11",
+      "schdoc": "Main.SchDoc",
+      "value": 1.0,
+      "unit": "V",
+      "value_str": "1 V",
+      "terminals": {
+        "P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "P1V_TRACE",
+              "x_mm": 10.00000032,
+              "y_mm": 20.00000064
+            }
+          ],
+          "requested_net": "P1V_TRACE",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 10.00000032,
+              "y_mm": 12.000001399999999
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "J14",
+      "channel_index": null,
+      "label": "J14",
+      "schdoc": "Main.SchDoc",
+      "value": 1.0,
+      "unit": "A",
+      "value_str": "1000 mA",
+      "terminals": {
+        "P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "P1V_REGION",
+              "x_mm": 129.99999908,
+              "y_mm": 20.00000064
+            }
+          ],
+          "requested_net": "P1V_REGION",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 129.99999908,
+              "y_mm": 12.000001399999999
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "SOURCE",
+      "designator": "J13",
+      "channel_index": null,
+      "label": "J13",
+      "schdoc": "Main.SchDoc",
+      "value": 1.0,
+      "unit": "V",
+      "value_str": "1 V",
+      "terminals": {
+        "P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "P1V_REGION",
+              "x_mm": 119.99999875999998,
+              "y_mm": 20.00000064
+            }
+          ],
+          "requested_net": "P1V_REGION",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 119.99999875999998,
+              "y_mm": 12.000001399999999
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "J18",
+      "channel_index": null,
+      "label": "J18",
+      "schdoc": "Main.SchDoc",
+      "value": 1.0,
+      "unit": "A",
+      "value_str": "1000 mA",
+      "terminals": {
+        "P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "P1V_FILL",
+              "x_mm": 180.00000068,
+              "y_mm": 24.000000259999997
+            }
+          ],
+          "requested_net": "P1V_FILL",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 180.00000068,
+              "y_mm": 16.00000102
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "SOURCE",
+      "designator": "J17",
+      "channel_index": null,
+      "label": "J17",
+      "schdoc": "Main.SchDoc",
+      "value": 1.0,
+      "unit": "V",
+      "value_str": "1 V",
+      "terminals": {
+        "P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "P1V_FILL",
+              "x_mm": 149.99999972,
+              "y_mm": 24.000000259999997
+            }
+          ],
+          "requested_net": "P1V_FILL",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 149.99999972,
+              "y_mm": 16.00000102
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "J20",
+      "channel_index": null,
+      "label": "J20",
+      "schdoc": "Main.SchDoc",
+      "value": 1.0,
+      "unit": "A",
+      "value_str": "1000 mA",
+      "terminals": {
+        "P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "P1V_VIA",
+              "x_mm": 180.00000068,
+              "y_mm": 53.99999868
+            }
+          ],
+          "requested_net": "P1V_VIA",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 180.00000068,
+              "y_mm": 45.999999439999996
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "SOURCE",
+      "designator": "J19",
+      "channel_index": null,
+      "label": "J19",
+      "schdoc": "Main.SchDoc",
+      "value": 1.0,
+      "unit": "V",
+      "value_str": "1 V",
+      "terminals": {
+        "P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "P1V_VIA",
+              "x_mm": 149.99999972,
+              "y_mm": 53.99999868
+            }
+          ],
+          "requested_net": "P1V_VIA",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 149.99999972,
+              "y_mm": 45.999999439999996
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "J22",
+      "channel_index": null,
+      "label": "J22",
+      "schdoc": "Main.SchDoc",
+      "value": 1.0,
+      "unit": "A",
+      "value_str": "1000 mA",
+      "terminals": {
+        "P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "P1V_SINGLE_NET",
+              "x_mm": 215.99999979999998,
+              "y_mm": 45.999999439999996
+            }
+          ],
+          "requested_net": "P1V_SINGLE_NET",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 0,
+          "pins": [],
+          "ideal_return": true
+        }
+      }
+    },
+    {
+      "role": "SOURCE",
+      "designator": "J21",
+      "channel_index": null,
+      "label": "J21",
+      "schdoc": "Main.SchDoc",
+      "value": 1.0,
+      "unit": "V",
+      "value_str": "1 V",
+      "terminals": {
+        "P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "P1V_SINGLE_NET",
+              "x_mm": 204.00013048,
+              "y_mm": 46.00000452
+            }
+          ],
+          "requested_net": "P1V_SINGLE_NET",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 0,
+          "pins": [],
+          "ideal_return": true
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "J24",
+      "channel_index": null,
+      "label": "J24",
+      "schdoc": "Main.SchDoc",
+      "value": 1.0,
+      "unit": "A",
+      "value_str": "1000 mA",
+      "terminals": {
+        "P": {
+          "pin_count": 2,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "P1V_VIAS",
+              "x_mm": 217.00000033999999,
+              "y_mm": 12.999999399999998
+            },
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "P1V_VIAS",
+              "x_mm": 217.00000033999999,
+              "y_mm": 20.99999864
+            }
+          ],
+          "requested_net": "P1V_VIAS",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 0,
+          "pins": [],
+          "ideal_return": true
+        }
+      }
+    },
+    {
+      "role": "SOURCE",
+      "designator": "J23",
+      "channel_index": null,
+      "label": "J23",
+      "schdoc": "Main.SchDoc",
+      "value": 1.0,
+      "unit": "V",
+      "value_str": "1 V",
+      "terminals": {
+        "P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "P1V_VIAS",
+              "x_mm": 204.00000094,
+              "y_mm": 20.99999864
+            }
+          ],
+          "requested_net": null,
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 0,
+          "pins": [],
+          "ideal_return": true
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "J26",
+      "channel_index": null,
+      "label": "J26",
+      "schdoc": "Main.SchDoc",
+      "value": 1.0,
+      "unit": "A",
+      "value_str": "1000 mA",
+      "terminals": {
+        "P": {
+          "pin_count": 2,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "P1V_PLANE_TEST",
+              "x_mm": 229.99999974,
+              "y_mm": 6.000000699999999
+            },
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "P1V_PLANE_TEST",
+              "x_mm": 237.99999898,
+              "y_mm": 6.000000699999999
+            }
+          ],
+          "requested_net": "P1V_PLANE_TEST",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 0,
+          "pins": [],
+          "ideal_return": true
+        }
+      }
+    },
+    {
+      "role": "SOURCE",
+      "designator": "J25",
+      "channel_index": null,
+      "label": "J25",
+      "schdoc": "Main.SchDoc",
+      "value": 1.0,
+      "unit": "V",
+      "value_str": "1 V",
+      "terminals": {
+        "P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "P1V_PLANE_TEST",
+              "x_mm": 236.99999843999998,
+              "y_mm": 64.99999954
+            }
+          ],
+          "requested_net": null,
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 0,
+          "pins": [],
+          "ideal_return": true
+        }
+      }
+    }
+  ],
+  "net_canonical": {
+    "P1V_VIAS": "P1V_VIAS",
+    "P1V_VIA": "P1V_VIA",
+    "P1V_TRACE": "P1V_TRACE",
+    "P1V_SINGLE_NET": "P1V_SINGLE_NET",
+    "P1V_REGION": "P1V_REGION",
+    "P1V_PLANE_TEST": "P1V_PLANE_TEST",
+    "P1V_MANUAL": "P1V_MANUAL",
+    "P1V_FILL": "P1V_FILL",
+    "P1V_ARC": "P1V_ARC",
+    "P1V_10W100L": "P1V_10W100L",
+    "P1V_1W100L": "P1V_1W100L",
+    "P1V_1W50L": "P1V_1W50L",
+    "P1V_1W10L": "P1V_1W10L",
+    "GND": "GND"
+  },
+  "annotation_errors": []
+}
