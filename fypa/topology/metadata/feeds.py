@@ -29,17 +29,17 @@ def external_feed_wires(
         if cnet in driven_nets:
             continue
         stub_x = p.x - PORT_WIRE_STUB - EXTERNAL_STUB_EXTEND
-        wires.append(TopologyWire(
-            net=p.net,
-            path_d=(
-                f"M {stub_x:.1f},{p.y:.1f} H {p.x - PORT_R - EXTERNAL_STUB_END_INSET:.1f}"
-            ),
-            label="extern",
-            label_x=stub_x + EXTERNAL_STUB_LABEL_X_OFFSET,
-            label_y=p.y + EXTERNAL_STUB_LABEL_Y_OFFSET,
-            dashed=True,
-            dst_node=p.node_id,
-            dst_terminal=p.terminal,
-            routing_kind="external_stub",
-        ))
+        wires.append(
+            TopologyWire(
+                net=p.net,
+                path_d=(f"M {stub_x:.1f},{p.y:.1f} H {p.x - PORT_R - EXTERNAL_STUB_END_INSET:.1f}"),
+                label="extern",
+                label_x=stub_x + EXTERNAL_STUB_LABEL_X_OFFSET,
+                label_y=p.y + EXTERNAL_STUB_LABEL_Y_OFFSET,
+                dashed=True,
+                dst_node=p.node_id,
+                dst_terminal=p.terminal,
+                routing_kind="external_stub",
+            )
+        )
     return wires

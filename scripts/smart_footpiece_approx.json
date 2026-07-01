@@ -1,0 +1,371 @@
+{
+  "directives": [
+    {
+      "role": "SOURCE",
+      "designator": "J3",
+      "label": "J3",
+      "terminals": {
+        "P": {
+          "requested_net": "VDD_5V0",
+          "pins": [
+            {
+              "net": "VDD_5V0",
+              "pad": "1"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "U1",
+      "label": "U1",
+      "terminals": {
+        "P": {
+          "requested_net": "VDD_5V0",
+          "pins": [
+            {
+              "net": "VDD_5V0",
+              "pad": "1"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "REGULATOR",
+      "designator": "U3",
+      "label": "U3",
+      "terminals": {
+        "IN_P": {
+          "requested_net": "VDD_5V0",
+          "pins": [
+            {
+              "net": "VDD_5V0",
+              "pad": "1"
+            }
+          ]
+        },
+        "OUT_P": {
+          "requested_net": "VDD_3V3",
+          "pins": [
+            {
+              "net": "VDD_3V3",
+              "pad": "1"
+            }
+          ]
+        },
+        "IN_N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "1"
+            }
+          ]
+        },
+        "OUT_N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "REGULATOR",
+      "designator": "U4",
+      "label": "U4",
+      "terminals": {
+        "IN_P1": {
+          "requested_net": "VDD_5V0",
+          "pins": [
+            {
+              "net": "VDD_5V0",
+              "pad": "1"
+            }
+          ]
+        },
+        "OUT_P1": {
+          "requested_net": "V+",
+          "pins": [
+            {
+              "net": "V+",
+              "pad": "1"
+            }
+          ]
+        },
+        "IN_P2": {
+          "requested_net": "VDD_5V0",
+          "pins": [
+            {
+              "net": "VDD_5V0",
+              "pad": "1"
+            }
+          ]
+        },
+        "OUT_P2": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "1"
+            }
+          ]
+        },
+        "OUT_N2": {
+          "requested_net": "V-",
+          "pins": [
+            {
+              "net": "V-",
+              "pad": "1"
+            }
+          ]
+        },
+        "IN_N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "1"
+            }
+          ]
+        },
+        "OUT_N1": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "J2",
+      "label": "J2.1",
+      "terminals": {
+        "P": {
+          "requested_net": "V+",
+          "pins": [
+            {
+              "net": "V+",
+              "pad": "1"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "V-",
+          "pins": [
+            {
+              "net": "V-",
+              "pad": "1"
+            }
+          ]
+        }
+      },
+      "channel_index": 1
+    },
+    {
+      "role": "SINK",
+      "designator": "J2",
+      "label": "J2.2",
+      "terminals": {
+        "P": {
+          "requested_net": "V+",
+          "pins": [
+            {
+              "net": "V+",
+              "pad": "1"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "V-",
+          "pins": [
+            {
+              "net": "V-",
+              "pad": "1"
+            }
+          ]
+        }
+      },
+      "channel_index": 2
+    },
+    {
+      "role": "RESISTOR",
+      "designator": "L4",
+      "label": "L4",
+      "terminals": {
+        "P": {
+          "requested_net": "VDD_3V3",
+          "pins": [
+            {
+              "net": "VDD_3V3",
+              "pad": "1"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "VDD_IMU",
+          "pins": [
+            {
+              "net": "VDD_IMU",
+              "pad": "1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "RESISTOR",
+      "designator": "L2",
+      "label": "L2",
+      "terminals": {
+        "P": {
+          "requested_net": "VDD_3V3",
+          "pins": [
+            {
+              "net": "VDD_3V3",
+              "pad": "1"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "VDD_MCU",
+          "pins": [
+            {
+              "net": "VDD_MCU",
+              "pad": "1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "RESISTOR",
+      "designator": "L3",
+      "label": "L3",
+      "terminals": {
+        "P": {
+          "requested_net": "VDD_3V3",
+          "pins": [
+            {
+              "net": "VDD_3V3",
+              "pad": "1"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "VDD_ADC",
+          "pins": [
+            {
+              "net": "VDD_ADC",
+              "pad": "1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "U2",
+      "label": "U2",
+      "terminals": {
+        "P": {
+          "requested_net": "VDD_MCU",
+          "pins": [
+            {
+              "net": "VDD_MCU",
+              "pad": "1"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "U5",
+      "label": "U5",
+      "terminals": {
+        "P": {
+          "requested_net": "VDD_ADC",
+          "pins": [
+            {
+              "net": "VDD_ADC",
+              "pad": "1"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "U6",
+      "label": "U6",
+      "terminals": {
+        "P": {
+          "requested_net": "VDD_IMU",
+          "pins": [
+            {
+              "net": "VDD_IMU",
+              "pad": "1"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "1"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "net_canonical": {},
+  "annotation_errors": []
+}

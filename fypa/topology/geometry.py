@@ -112,14 +112,30 @@ def _path_to_segments(
     for (x1, y1), (x2, y2) in zip(points, points[1:]):
         if abs(y1 - y2) < WIRE_EPS:
             y = (y1 + y2) / 2
-            segs.append(WireSeg(
-                net, "H", min(x1, x2), y, max(x1, x2), y, wire_index,
-            ))
+            segs.append(
+                WireSeg(
+                    net,
+                    "H",
+                    min(x1, x2),
+                    y,
+                    max(x1, x2),
+                    y,
+                    wire_index,
+                )
+            )
         elif abs(x1 - x2) < WIRE_EPS:
             x = (x1 + x2) / 2
-            segs.append(WireSeg(
-                net, "V", x, min(y1, y2), x, max(y1, y2), wire_index,
-            ))
+            segs.append(
+                WireSeg(
+                    net,
+                    "V",
+                    x,
+                    min(y1, y2),
+                    x,
+                    max(y1, y2),
+                    wire_index,
+                )
+            )
     return segs
 
 
@@ -172,8 +188,7 @@ def _hv_intersection(h: WireSeg, v: WireSeg) -> tuple[float, float] | None:
     y = h.y1
     h_lo, h_hi = min(h.x1, h.x2), max(h.x1, h.x2)
     v_lo, v_hi = min(v.y1, v.y2), max(v.y1, v.y2)
-    if (h_lo - WIRE_EPS <= x <= h_hi + WIRE_EPS
-            and v_lo - WIRE_EPS <= y <= v_hi + WIRE_EPS):
+    if h_lo - WIRE_EPS <= x <= h_hi + WIRE_EPS and v_lo - WIRE_EPS <= y <= v_hi + WIRE_EPS:
         return (x, y)
     return None
 
@@ -198,7 +213,10 @@ point_on_segment = _point_on_segment
 
 
 def _horizontal_crosses_node(
-    node: TopologyNode, y: float, x_lo: float, x_hi: float,
+    node: TopologyNode,
+    y: float,
+    x_lo: float,
+    x_hi: float,
 ) -> bool:
     """True when a horizontal run at ``y`` over ``[x_lo, x_hi]`` cuts a node body."""
     nx, ny, nw, nh = node.bounds
@@ -211,7 +229,10 @@ horizontal_crosses_node = _horizontal_crosses_node
 
 
 def _vertical_crosses_node(
-    node: TopologyNode, x: float, y_lo: float, y_hi: float,
+    node: TopologyNode,
+    x: float,
+    y_lo: float,
+    y_hi: float,
 ) -> bool:
     """True when a vertical run at ``x`` over ``[y_lo, y_hi]`` cuts a node body."""
     nx, ny, nw, nh = node.bounds
@@ -248,7 +269,10 @@ def _segment_directions(seg: WireSeg, x: float, y: float) -> set[str]:
 
 
 def _branch_directions(
-    segments: list[WireSeg], x: float, y: float, net: str,
+    segments: list[WireSeg],
+    x: float,
+    y: float,
+    net: str,
 ) -> set[str]:
     """Distinct wire directions of ``net`` leaving ``(x, y)`` (overlaps merged)."""
     dirs: set[str] = set()
@@ -259,7 +283,10 @@ def _branch_directions(
 
 
 def _same_net_branch_count(
-    segments: list[WireSeg], x: float, y: float, net: str,
+    segments: list[WireSeg],
+    x: float,
+    y: float,
+    net: str,
 ) -> int:
     """Distinct same-net wire directions (branches) leaving ``(x, y)`` (max four)."""
     return len(_branch_directions(segments, x, y, net))
@@ -269,7 +296,10 @@ same_net_branch_count = _same_net_branch_count
 
 
 def _same_net_needs_junction_dot(
-    segments: list[WireSeg], x: float, y: float, net: str,
+    segments: list[WireSeg],
+    x: float,
+    y: float,
+    net: str,
 ) -> bool:
     """Junction dot when three or more same-net directions meet (T or ``+``).
 
@@ -348,9 +378,13 @@ def _segments_from_wires(
     solid = [w for w in wires if not w.dashed]
     segments: list[WireSeg] = []
     for wi, w in enumerate(solid):
-        segments.extend(_path_to_segments(
-            w.net, _parse_wire_path(w.path_d), wire_index=wi,
-        ))
+        segments.extend(
+            _path_to_segments(
+                w.net,
+                _parse_wire_path(w.path_d),
+                wire_index=wi,
+            )
+        )
     horizontals = [s for s in segments if s.orient == "H"]
     verticals = [s for s in segments if s.orient == "V"]
     return segments, horizontals, verticals
@@ -378,13 +412,15 @@ def _bridge_records(
                 continue
             seen.add(ry)
             vert_crossings[vi].append(y)
-            bridges.append(BridgeCrossing(
-                x=round(x, 1),
-                y=ry,
-                vertical_net=v.net,
-                horizontal_net=h.net,
-                vertical_index=vi,
-            ))
+            bridges.append(
+                BridgeCrossing(
+                    x=round(x, 1),
+                    y=ry,
+                    vertical_net=v.net,
+                    horizontal_net=h.net,
+                    vertical_index=vi,
+                )
+            )
     return vert_crossings, bridges
 
 
@@ -424,8 +460,7 @@ def _filter_bridges_near_junctions(
     for bridge in bridges:
         suppress = False
         for jx, jy in junction_set:
-            if (abs(bridge.x - jx) < WIRE_EPS
-                    and abs(bridge.y - jy) <= clearance + WIRE_EPS):
+            if abs(bridge.x - jx) < WIRE_EPS and abs(bridge.y - jy) <= clearance + WIRE_EPS:
                 suppress = True
                 break
         if suppress:
@@ -464,11 +499,12 @@ def compute_schematic_geometry(
     segments, horizontals, verticals = _segments_from_wires(wires)
     vert_crossings, bridges = _bridge_records(horizontals, verticals)
     junctions = sorted(
-        set(find_junctions(segments))
-        | _gnd_symbol_junctions(segments, gnd_symbol_x, gnd_bus_y),
+        set(find_junctions(segments)) | _gnd_symbol_junctions(segments, gnd_symbol_x, gnd_bus_y),
     )
     vert_crossings, bridges = _filter_bridges_near_junctions(
-        vert_crossings, bridges, junctions,
+        vert_crossings,
+        bridges,
+        junctions,
     )
     return SchematicGeometry(
         segments=segments,
@@ -480,8 +516,7 @@ def compute_schematic_geometry(
     )
 
 
-def vertical_bridge_path(x: float, y_lo: float, y_hi: float,
-                         cross_ys: list[float]) -> str:
+def vertical_bridge_path(x: float, y_lo: float, y_hi: float, cross_ys: list[float]) -> str:
     """Vertical segment with semicircular hops (over horizontals) at each ``cross_ys``."""
     r = BRIDGE_R
     parts = [f"M {x:.1f},{y_lo:.1f}"]

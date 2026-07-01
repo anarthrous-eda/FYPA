@@ -9,8 +9,17 @@ _FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "topology"
 
 
 def list_topology_fixtures() -> list[str]:
-    """Basenames of JSON fixtures (without extension)."""
-    return sorted(p.stem for p in _FIXTURES_DIR.glob("*.json"))
+    """Basenames of JSON fixtures (without extension).
+
+    ``*_rails`` fixtures are regression-only (column placement) and may
+    have non-zero wiring-issue counts.
+    """
+    return sorted(
+        p.stem
+        for p in _FIXTURES_DIR.glob("*.json")
+        if not p.stem.endswith("_rails")
+        and not p.stem.endswith("_overlap")
+    )
 
 
 def load_topology_fixture(name: str) -> dict:

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import TYPE_CHECKING, NotRequired, TypedDict
+
+if TYPE_CHECKING:
+    from fypa.topology.metadata.layout_bridge import ResolvedPort
 
 
 class TerminalPinDict(TypedDict, total=False):
@@ -30,6 +33,49 @@ class DirectiveDict(TypedDict, total=False):
     regulator_type: str
     efficiency: float
     terminals: dict[str, TerminalDict]
+
+
+class JumpRowDict(TypedDict, total=False):
+    """Footprint pin row attached to a placed node (editor jump target)."""
+
+    designator: str
+    role: str
+    terminal: str
+    pad: str
+    net: str
+    layer_id: int
+    x_mm: float
+    y_mm: float
+
+
+class ResolvedPortDict(TypedDict):
+    """Canonical net label for a schematic port after rail resolution."""
+
+    wnet: str
+    plabel: str
+    tooltip: str
+
+
+# ``port_defs`` entries: (terminal name, left/right side, sort key).
+PortDef = tuple[str, str, int]
+
+
+class NodeSpec(TypedDict):
+    """One placed component derived from directive metadata."""
+
+    node_id: str
+    label: str
+    designator: str
+    role: str
+    config_label: str
+    has_error: bool
+    terms: dict[str, TerminalDict]
+    port_defs: list[PortDef]
+    port_directives: dict[str, DirectiveDict]
+    tooltip: str
+    directive: DirectiveDict
+    directives: list[DirectiveDict]
+    resolved_ports: NotRequired[dict[str, ResolvedPort]]
 
 
 class TopologyMetadata(TypedDict, total=False):

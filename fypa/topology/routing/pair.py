@@ -2,28 +2,19 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
-
 from fypa.topology.constants import MIN_PARALLEL_GAP, WIRE_EPS
 from fypa.topology.placement import (
     BusPlan,
-    bus_outward,
     column_bus_x,
+    group_two_port_pairs,
     gutter_bus_x_bounds,
-    port_column_x,
     port_stub_x,
     stacked_routing_order,
-    stacked_wire_bus_side,
-    wire_routing_key,
 )
 from fypa.topology.routing.context import RoutingContext
 from fypa.topology.routing.paths import stacked_wire_path, two_port_wire_path
 from fypa.topology.routing.util import wire_display_label
 from fypa.topology.types import TopologyNode, TopologyPort, TopologyWire
-
-_BUS_ROUTING_KINDS = frozenset({
-    "hub", "hub_tap", "hub_row", "gutter", "stack_column",
-})
 
 
 def _bus_x_for_pair(
@@ -44,7 +35,7 @@ def _bus_x_for_pair(
 ) -> float:
     if bus_plan is not None and a.net in bus_plan.pair_buses:
         return bus_plan.pair_buses[a.net]
-    y_lo, y_hi = min(a.y, b.y), max(a.y, b.y)
+    _y_lo, _y_hi = min(a.y, b.y), max(a.y, b.y)
     if n_slots > 1 and channel_lo != channel_hi:
         bus_lo, bus_hi = channel_lo, channel_hi
         span = bus_hi - bus_lo
@@ -71,18 +62,7 @@ def signal_wires_from_pairs(
     bus_plan: BusPlan | None = None,
 ) -> list[TopologyWire]:
     ctx = ctx or RoutingContext()
-    stacked_groups: dict[tuple[float, str], list[tuple[TopologyPort, TopologyPort]]] = (
-        defaultdict(list)
-    )
-    gap_groups: dict[tuple, list[tuple[TopologyPort, TopologyPort]]] = defaultdict(list)
-    for a, b in pairs:
-        key = wire_routing_key(a, b)
-        if key[0] == "stack":
-            col = round(port_column_x(a), 1)
-            side = stacked_wire_bus_side([a, b])
-            stacked_groups[(col, side)].append((a, b))
-        else:
-            gap_groups[key].append((a, b))
+    stacked_groups, gap_groups = group_two_port_pairs(pairs)
 
     wires: list[TopologyWire] = []
     for (col, side), group in stacked_groups.items():
@@ -90,53 +70,65 @@ def signal_wires_from_pairs(
         n_lanes = len(group)
         for lane, (a, b) in enumerate(group):
             net = a.net
-            if bus_plan and (col, side, net) in bus_plan.stack_buses:
+            if bus_plan and net in bus_plan.pair_buses:
+                bus_x = bus_plan.pair_buses[net]
+            elif bus_plan and (col, side, net) in bus_plan.stack_buses:
                 bus_x = bus_plan.stack_buses[(col, side, net)]
             else:
                 bus_x = column_bus_x(col, side, lane=lane, n_lanes=n_lanes)
             path_d = stacked_wire_path(a, b, bus_x=bus_x, obstacles=obstacles, ctx=ctx)
             start, end = stacked_routing_order(a, b)
-            wires.append(TopologyWire(
-                net=net,
-                path_d=path_d,
-                label=wire_display_label([a, b], net),
-                src_node=start.node_id,
-                src_terminal=start.terminal,
-                dst_node=end.node_id,
-                dst_terminal=end.terminal,
-                routing_kind="stack_column",
-                bus_x=bus_x,
-            ))
+            wires.append(
+                TopologyWire(
+                    net=net,
+                    path_d=path_d,
+                    label=wire_display_label([a, b], net),
+                    src_node=start.node_id,
+                    src_terminal=start.terminal,
+                    dst_node=end.node_id,
+                    dst_terminal=end.terminal,
+                    routing_kind="stack_column",
+                    bus_x=bus_x,
+                )
+            )
 
     for key, group in gap_groups.items():
         group.sort(key=lambda ab: (min(ab[0].y, ab[1].y), ab[0].net))
-        x_lo, x_hi = key[1], key[2]
+        _x_lo, _x_hi = key[1], key[2]
         n_slots = len(group)
-        all_stubs = [
-            stub for a, b in group for stub in (port_stub_x(a), port_stub_x(b))
-        ]
+        all_stubs = [stub for a, b in group for stub in (port_stub_x(a), port_stub_x(b))]
         channel_lo, channel_hi = gutter_bus_x_bounds(all_stubs)
         assigned_bus: list[float] = []
         for slot, (a, b) in enumerate(group):
             net = a.net
             bus_x = _bus_x_for_pair(
-                a, b, bus_plan=bus_plan, ctx=ctx,
-                col=0, side="", lane=0, n_lanes=0,
-                slot=slot, n_slots=n_slots,
-                channel_lo=channel_lo, channel_hi=channel_hi,
+                a,
+                b,
+                bus_plan=bus_plan,
+                ctx=ctx,
+                col=0,
+                side="",
+                lane=0,
+                n_lanes=0,
+                slot=slot,
+                n_slots=n_slots,
+                channel_lo=channel_lo,
+                channel_hi=channel_hi,
                 assigned_bus=assigned_bus,
             )
             assigned_bus.append(bus_x)
             path_d = two_port_wire_path(a, b, bus_x=bus_x, obstacles=obstacles, ctx=ctx)
-            wires.append(TopologyWire(
-                net=net,
-                path_d=path_d,
-                label=wire_display_label([a, b], net),
-                src_node=a.node_id,
-                src_terminal=a.terminal,
-                dst_node=b.node_id,
-                dst_terminal=b.terminal,
-                routing_kind="gutter",
-                bus_x=bus_x,
-            ))
+            wires.append(
+                TopologyWire(
+                    net=net,
+                    path_d=path_d,
+                    label=wire_display_label([a, b], net),
+                    src_node=a.node_id,
+                    src_terminal=a.terminal,
+                    dst_node=b.node_id,
+                    dst_terminal=b.terminal,
+                    routing_kind="gutter",
+                    bus_x=bus_x,
+                )
+            )
     return wires

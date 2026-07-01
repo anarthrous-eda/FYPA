@@ -57,6 +57,42 @@ def test_regulator_dedupes_shared_in_n():
     assert len(in_n) == 1
 
 
+def test_regulator_merges_shared_power_and_return_ports():
+    """Multi-channel regulators show one port per shared pad set (e.g. VDD_5V0, GND)."""
+    directives = [
+        {
+            "role": "REGULATOR",
+            "designator": "U4",
+            "channel_index": 1,
+            "terminals": {
+                "IN_P": {"pins": [{"net": "VDD_5V0", "pad": "8"}, {"net": "VDD_5V0", "pad": "3"}]},
+                "OUT_P": {"pins": [{"net": "V+", "pad": "11"}]},
+                "IN_N": {"pins": [{"net": "GND", "pad": "4"}]},
+                "OUT_N": {"pins": [{"net": "GND", "pad": "4"}]},
+            },
+        },
+        {
+            "role": "REGULATOR",
+            "designator": "U4",
+            "channel_index": 2,
+            "terminals": {
+                "IN_P": {"pins": [{"net": "VDD_5V0", "pad": "8"}, {"net": "VDD_5V0", "pad": "3"}]},
+                "OUT_P": {"pins": [{"net": "GND", "pad": "4"}]},
+                "IN_N": {"pins": [{"net": "GND", "pad": "4"}]},
+                "OUT_N": {"pins": [{"net": "V-", "pad": "6"}]},
+            },
+        },
+    ]
+    specs = directives_to_component_specs(directives, [], {})
+    pnames = [p[0] for p in specs[0]["port_defs"]]
+    assert pnames.count("IN_P") == 1
+    assert "IN_P1" not in pnames and "IN_P2" not in pnames
+    assert pnames.count("IN_N") == 1
+    assert "OUT_P1" in pnames or "OUT_P" in pnames
+    assert sum(1 for p in pnames if p.startswith("OUT_P")) == 1
+    assert pnames.count("OUT_N") == 1
+
+
 def test_passive_merge_p_when_shared_pad():
     directives = [
         {

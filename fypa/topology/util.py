@@ -91,7 +91,9 @@ def _reformat_legacy_value_str(text: str) -> str:
     """Best-effort cleanup when only ``value_str`` is available."""
     text = text.strip()
     m = re.match(
-        r"^([\d.eE+\-]+)\s*mOhm$", text, re.IGNORECASE,
+        r"^([\d.eE+\-]+)\s*mOhm$",
+        text,
+        re.IGNORECASE,
     )
     if m:
         return _format_resistance_ohm(float(m.group(1)) * 1e-3)

@@ -77,13 +77,16 @@ def _analyze_wire_issues(
     issues: list[dict] = []
 
     def _issue(code: str, message: str, **extra) -> None:
-        issues.append(make_issue(
-            code, message,
-            wire_id=wire_id,
-            net=wire.net,
-            routing_kind=wire.routing_kind,
-            **extra,
-        ))
+        issues.append(
+            make_issue(
+                code,
+                message,
+                wire_id=wire_id,
+                net=wire.net,
+                routing_kind=wire.routing_kind,
+                **extra,
+            )
+        )
 
     if len(points) < 2:
         _issue("empty_path", "Wire path has fewer than two vertices")
@@ -134,8 +137,7 @@ def _analyze_wire_issues(
         if seg.length < WIRE_EPS and wire.routing_kind != "gnd_rail":
             _issue(
                 "zero_length_segment",
-                f"Degenerate {seg.orient} segment at "
-                f"({seg.x1:.1f},{seg.y1:.1f})",
+                f"Degenerate {seg.orient} segment at ({seg.x1:.1f},{seg.y1:.1f})",
                 segment=segment_record(seg),
             )
 
@@ -143,7 +145,7 @@ def _analyze_wire_issues(
         x0, y0 = points[i]
         x1, y1 = points[i + 1]
         x2, y2 = points[i + 2]
-        if wire.routing_kind in ("hub", "hub_tap", "hub_row", "stack_column", "gnd_tap", "gnd_trunk"):
+        if wire.routing_kind in ("stack_column", "gnd_tap", "gnd_trunk"):
             continue
         if abs(y0 - y1) < WIRE_EPS and abs(y1 - y2) < WIRE_EPS:
             d1 = x1 - x0
@@ -151,11 +153,9 @@ def _analyze_wire_issues(
             if d1 * d2 < 0 and abs(d1) > WIRE_EPS and abs(d2) > WIRE_EPS:
                 _issue(
                     "horizontal_backtrack",
-                    f"Horizontal backtrack at y={y1:.1f} "
-                    f"({x0:.1f}→{x1:.1f}→{x2:.1f})",
+                    f"Horizontal backtrack at y={y1:.1f} ({x0:.1f}→{x1:.1f}→{x2:.1f})",
                     at=point_record(x1, y1),
-                    vertices=[point_record(x0, y0), point_record(x1, y1),
-                              point_record(x2, y2)],
+                    vertices=[point_record(x0, y0), point_record(x1, y1), point_record(x2, y2)],
                 )
 
     return issues
@@ -204,35 +204,33 @@ def topology_wiring_report(model: TopologyModel) -> dict:
         start_port, _ = _nearest_port(all_ports, points[0][0], points[0][1], net=w.net)
         end_port, _ = _nearest_port(all_ports, points[-1][0], points[-1][1], net=w.net)
 
-        wire_reports.append({
-            "id": i,
-            "net": w.net,
-            "dashed": w.dashed,
-            "routing_kind": w.routing_kind,
-            "bus_x": round(w.bus_x, 1) if w.bus_x is not None else None,
-            "expected": {
-                "start": _port_ref(w.src_node, w.src_terminal) if w.src_node else None,
-                "end": _port_ref(w.dst_node, w.dst_terminal) if w.dst_node else None,
-            },
-            "matched": {
-                "start": (
-                    _port_ref(start_port.node_id, start_port.terminal)
-                    if start_port else None
-                ),
-                "end": (
-                    _port_ref(end_port.node_id, end_port.terminal)
-                    if end_port else None
-                ),
-            },
-            "path_d": w.path_d,
-            "vertices": [point_record(x, y) for x, y in points],
-            "segments": [segment_record(s) for s in segs],
-            "label": w.label or None,
-            "label_x": round(w.label_x, 1) if w.label else None,
-            "label_y": round(w.label_y, 1) if w.label else None,
-            "label_vertical": w.label_vertical if w.label else None,
-            "issues": issues,
-        })
+        wire_reports.append(
+            {
+                "id": i,
+                "net": w.net,
+                "dashed": w.dashed,
+                "routing_kind": w.routing_kind,
+                "bus_x": round(w.bus_x, 1) if w.bus_x is not None else None,
+                "expected": {
+                    "start": _port_ref(w.src_node, w.src_terminal) if w.src_node else None,
+                    "end": _port_ref(w.dst_node, w.dst_terminal) if w.dst_node else None,
+                },
+                "matched": {
+                    "start": (
+                        _port_ref(start_port.node_id, start_port.terminal) if start_port else None
+                    ),
+                    "end": (_port_ref(end_port.node_id, end_port.terminal) if end_port else None),
+                },
+                "path_d": w.path_d,
+                "vertices": [point_record(x, y) for x, y in points],
+                "segments": [segment_record(s) for s in segs],
+                "label": w.label or None,
+                "label_x": round(w.label_x, 1) if w.label else None,
+                "label_y": round(w.label_y, 1) if w.label else None,
+                "label_vertical": w.label_vertical if w.label else None,
+                "issues": issues,
+            }
+        )
 
     all_issues = merge_validation_issues(model, wire_issues)
 
@@ -241,12 +239,9 @@ def topology_wiring_report(model: TopologyModel) -> dict:
         "canvas": {
             "width": round(model.width, 1),
             "height": round(model.height, 1),
-            "gnd_bus_y": (
-                round(model.gnd_bus_y, 1) if model.gnd_bus_y is not None else None
-            ),
+            "gnd_bus_y": (round(model.gnd_bus_y, 1) if model.gnd_bus_y is not None else None),
             "gnd_symbol_x": (
-                round(model.gnd_symbol_x, 1)
-                if model.gnd_symbol_x is not None else None
+                round(model.gnd_symbol_x, 1) if model.gnd_symbol_x is not None else None
             ),
         },
         "summary": {
@@ -256,9 +251,7 @@ def topology_wiring_report(model: TopologyModel) -> dict:
             "segments": len(geo.segments),
             "junctions": len(junctions),
             "bridge_crossings": len(crossings),
-            "issues": sum(
-                1 for i in all_issues if i.get("severity", "error") != "warning"
-            ),
+            "issues": sum(1 for i in all_issues if i.get("severity", "error") != "warning"),
         },
         "ports": [_port_record(p) for p in all_ports],
         "wires": wire_reports,

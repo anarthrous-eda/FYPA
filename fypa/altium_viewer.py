@@ -20471,6 +20471,7 @@ class PdnViewer(QMainWindow):
             ("+", "Zoom in (Ctrl++, +)", self._topology_zoom_in),
             ("−", "Zoom out (Ctrl+-, −)", self._topology_zoom_out),
             ("Fit", "Fit diagram (Ctrl+0)", self._topology_fit),
+            ("Dump", "Write topology.pkl, wiring.json, topology.svg", self._topology_dump_debug),
         ):
             btn = QToolButton()
             btn.setText(label)
@@ -20523,18 +20524,13 @@ class PdnViewer(QMainWindow):
         if view is not None:
             view.fit_in_view()
 
-    def _populate_topology(self) -> None:
-        """Render the topology SVG from setup metadata."""
-        from fypa.topology import build_topology_model, render_topology_svg
+    def _topology_preview_metadata(self) -> dict | None:
+        """Metadata dict shown on the Topology tab (incl. pending editor edits)."""
         from fypa.topology.preview import metadata_for_topology
 
         if self.metadata is None:
-            self._topology_view.set_empty_message("No setup metadata available.")
-            self._topology_hint.setText("")
-            self._topology_model = None
-            return
-
-        preview_md = metadata_for_topology(
+            return None
+        return metadata_for_topology(
             self.metadata,
             loaded=self._loaded_project,
             editor_directives=(
@@ -20547,6 +20543,18 @@ class PdnViewer(QMainWindow):
             ),
             live_preview=self._topology_live_preview_needed(),
         )
+
+    def _populate_topology(self) -> None:
+        """Render the topology SVG from setup metadata."""
+        from fypa.topology import build_topology_model, render_topology_svg
+
+        preview_md = self._topology_preview_metadata()
+        if preview_md is None:
+            self._topology_view.set_empty_message("No setup metadata available.")
+            self._topology_hint.setText("")
+            self._topology_model = None
+            return
+
         model = build_topology_model(preview_md)
         self._topology_model = model
         svg = render_topology_svg(model, theme=current_theme())
@@ -20591,6 +20599,71 @@ class PdnViewer(QMainWindow):
             return
         self._topology_populated = True
         self._populate_topology()
+
+    def _topology_dump_debug(self) -> None:
+        """Write topology.pkl, wiring.json, and topology.svg for offline debug."""
+        preview_md = self._topology_preview_metadata()
+        if preview_md is None:
+            QMessageBox.information(
+                self, "Nothing to dump",
+                "No setup metadata is loaded — solve or open a project first.",
+            )
+            return
+
+        start_dir = (
+            getattr(self, "_topology_last_dump_dir", None)
+            or self._project_cache_dir_str()
+            or self._menu_start_dir()
+        )
+        out_dir_str = QFileDialog.getExistingDirectory(
+            self,
+            "Dump topology debug files",
+            start_dir,
+            options=_file_dialog_options() | QFileDialog.Option.ShowDirsOnly,
+        )
+        if not out_dir_str:
+            return
+
+        from fypa.topology.dump import (
+            TOPOLOGY_PKL,
+            TOPOLOGY_SVG,
+            WIRING_JSON,
+            dump_topology_debug,
+        )
+
+        try:
+            model = getattr(self, "_topology_model", None)
+            paths = dump_topology_debug(
+                Path(out_dir_str),
+                preview_md,
+                model=model,
+                theme=current_theme(),
+            )
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Topology dump failed",
+                f"Failed to write debug files to {out_dir_str}:\n\n"
+                f"{type(e).__name__}: {e}",
+            )
+            return
+
+        self._topology_last_dump_dir = out_dir_str
+        names = ", ".join((TOPOLOGY_PKL, WIRING_JSON, TOPOLOGY_SVG))
+        self.statusBar().showMessage(
+            f"Wrote {names} to {out_dir_str}", 8000,
+        )
+        self._topology_hint.setText(
+            f"Dumped {names} → {_esc(out_dir_str)}"
+        )
+        QMessageBox.information(
+            self, "Topology dump",
+            "Wrote:\n\n"
+            f"  {paths[0]}\n"
+            f"  {paths[1]}\n"
+            f"  {paths[2]}\n\n"
+            f"Analyze with:\n"
+            f"  uv run python tools/dump_topology_wiring.py {paths[0]}",
+        )
 
     def _on_topology_view_clicked(self, event) -> None:
         """Jump to the pad under the clicked schematic symbol."""

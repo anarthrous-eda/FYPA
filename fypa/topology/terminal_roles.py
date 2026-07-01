@@ -7,7 +7,7 @@ def _terminal_matches(base: str, terminal: str) -> bool:
     """True for ``base`` or ``base`` + digits (e.g. P, P1, IN_P2)."""
     if terminal == base:
         return True
-    suffix = terminal[len(base):]
+    suffix = terminal[len(base) :]
     return terminal.startswith(base) and suffix.isdigit()
 
 

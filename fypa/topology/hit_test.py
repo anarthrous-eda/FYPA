@@ -5,7 +5,8 @@ from __future__ import annotations
 import math
 
 from fypa.topology.constants import GND_NET, PORT_R, WIRE_EPS, WIRE_HIT_RADIUS
-from fypa.topology.geometry import parse_wire_path, path_to_segments
+from fypa.topology.geometry import parse_wire_path
+from fypa.topology.labels import label_hit_bounds
 from fypa.topology.types import TopologyModel, TopologyNode, TopologyPort, TopologyWire
 
 
@@ -92,15 +93,36 @@ def _wire_tooltip(wire: TopologyWire) -> str:
     return wire.net
 
 
+def find_label_at(
+    model: TopologyModel,
+    x: float,
+    y: float,
+) -> TopologyWire | None:
+    """Return the labeled wire whose net label box contains ``(x, y)``."""
+    for wire in model.wires:
+        if not wire.label:
+            continue
+        bounds = label_hit_bounds(wire)
+        if bounds is None:
+            continue
+        x_lo, y_lo, x_hi, y_hi = bounds
+        if x_lo <= x <= x_hi and y_lo <= y <= y_hi:
+            return wire
+    return None
+
+
 def topology_net_at(
     model: TopologyModel,
     x: float,
     y: float,
 ) -> str | None:
-    """Net to highlight: port or wire hit; ``None`` on symbol body or empty space."""
+    """Net to highlight: port, net label, or wire hit; ``None`` on symbol body."""
     port = find_port_at(model, x, y)
     if port is not None and port.net:
         return port.net
+    label_wire = find_label_at(model, x, y)
+    if label_wire is not None:
+        return label_wire.net
     if find_component_at(model, x, y) is not None:
         return None
     wire = find_wire_at(model, x, y)
@@ -121,6 +143,9 @@ def topology_tooltip_at(
     node = find_component_at(model, x, y)
     if node is not None and node.tooltip:
         return node.tooltip
+    label_wire = find_label_at(model, x, y)
+    if label_wire is not None:
+        return _wire_tooltip(label_wire)
     wire = find_wire_at(model, x, y)
     if wire is not None:
         return _wire_tooltip(wire)

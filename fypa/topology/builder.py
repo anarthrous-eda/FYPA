@@ -36,7 +36,9 @@ def build_topology_model(metadata: TopologyMetadata | None) -> TopologyModel:
         external_feed_wires(layout.ports, layout.driven_nets, layout.net_to_rail),
     )
     geo = compute_schematic_geometry(
-        wires, gnd_symbol_x=gnd_symbol_x, gnd_bus_y=layout.gnd_bus_y,
+        wires,
+        gnd_symbol_x=gnd_symbol_x,
+        gnd_bus_y=layout.gnd_bus_y,
     )
     finalize_wire_labels(wires, nodes=layout.directive_nodes, geo=geo)
 
@@ -46,9 +48,7 @@ def build_topology_model(metadata: TopologyMetadata | None) -> TopologyModel:
         default=MARGIN,
     )
     if layout.needs_gnd and layout.gnd_bus_y is not None:
-        height = (
-            layout.gnd_bus_y + GND_SYMBOL_BELOW + LEGEND_BELOW_BUS + CANVAS_HEIGHT_PAD_GND
-        )
+        height = layout.gnd_bus_y + GND_SYMBOL_BELOW + LEGEND_BELOW_BUS + CANVAS_HEIGHT_PAD_GND
     else:
         height = directive_bottom + MARGIN + CANVAS_HEIGHT_PAD_NO_GND
 

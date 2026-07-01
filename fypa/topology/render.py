@@ -27,7 +27,7 @@ def _draw_wire(
     parts.append(
         f'<path d="{wire.path_d}" fill="none" stroke="{esc(fg_dim)}"'
         f' stroke-width="2" stroke-linecap="round" stroke-linejoin="round"'
-        f'{dash}/>'
+        f"{dash}/>"
     )
 
 
@@ -43,7 +43,9 @@ def _draw_wires_schematic(
     """Draw wires with schematic junction dots and vertical-over-horizontal bridges."""
     dashed = [w for w in wires if w.dashed]
     geo = compute_schematic_geometry(
-        wires, gnd_symbol_x=gnd_symbol_x, gnd_bus_y=gnd_bus_y,
+        wires,
+        gnd_symbol_x=gnd_symbol_x,
+        gnd_bus_y=gnd_bus_y,
     )
 
     sw = 2.0
@@ -63,10 +65,7 @@ def _draw_wires_schematic(
         )
 
     for jx, jy in geo.junctions:
-        parts.append(
-            f'<circle cx="{jx:.1f}" cy="{jy:.1f}" r="{JUNCTION_R:.1f}"'
-            f' fill="{stroke}"/>'
-        )
+        parts.append(f'<circle cx="{jx:.1f}" cy="{jy:.1f}" r="{JUNCTION_R:.1f}" fill="{stroke}"/>')
 
     for w in dashed:
         _draw_wire(parts, w, fg_dim=fg_dim)
@@ -115,7 +114,7 @@ def _net_highlight_fragment(
         parts.append(
             f'<path d="{wire.path_d}" fill="none" stroke="{stroke_esc}"'
             f' stroke-width="{sw}" stroke-linecap="round" stroke-linejoin="round"'
-            f'{dash}{op}/>'
+            f"{dash}{op}/>"
         )
 
     return "".join(parts)
@@ -159,9 +158,7 @@ def _draw_wire_label(
     tw = max(len(text) * 5.4, 18.0)
     th = 12.0
     if wire.label_vertical:
-        parts.append(
-            f'<g transform="translate({x:.1f},{y:.1f})">'
-        )
+        parts.append(f'<g transform="translate({x:.1f},{y:.1f})">')
         parts.append(
             f'<rect x="{-th / 2 - 2:.1f}" y="{-tw / 2:.1f}"'
             f' width="{th + 4:.1f}" height="{tw:.1f}" fill="{esc(bg)}"'
@@ -171,7 +168,7 @@ def _draw_wire_label(
             f'<text transform="rotate(-90)" text-anchor="middle"'
             f' dominant-baseline="middle" fill="{esc(fg)}"'
             f' font-family="Segoe UI,sans-serif" font-size="8">'
-            f'{esc(text)}</text>'
+            f"{esc(text)}</text>"
         )
         parts.append("</g>")
         return
@@ -363,8 +360,14 @@ def render_topology_svg(
 
     for node in model.nodes:
         _draw_node(
-            parts, node,
-            bg=bg, bg_alt=bg_alt, fg=fg, fg_dim=fg_dim, border=border, err=err,
+            parts,
+            node,
+            bg=bg,
+            bg_alt=bg_alt,
+            fg=fg,
+            fg_dim=fg_dim,
+            border=border,
+            err=err,
         )
 
     for wire in model.wires:

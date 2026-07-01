@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fypa.topology.constants import GND_NET, IDEAL_RETURN_RAIL
+from fypa.topology.metadata_schema import TerminalDict
 from fypa.topology.net_aliases import is_gnd_alias
 
 
@@ -14,7 +15,7 @@ def net_to_rail_map(rail_to_members: dict[str, list[str]]) -> dict[str, str]:
     return out
 
 
-def terminal_net(term: dict | None) -> str | None:
+def terminal_net(term: TerminalDict | None) -> str | None:
     if not term:
         return None
     if term.get("ideal_return"):
@@ -28,7 +29,7 @@ def terminal_net(term: dict | None) -> str | None:
     return req
 
 
-def is_ideal_return(term: dict | None) -> bool:
+def is_ideal_return(term: TerminalDict | None) -> bool:
     return bool(term and term.get("ideal_return"))
 
 
@@ -60,7 +61,7 @@ def canonical_net(
     return net_to_rail.get(net, net)
 
 
-def port_display_net(term: dict | None, canonical: str) -> str:
+def port_display_net(term: TerminalDict | None, canonical: str) -> str:
     if not term:
         return canonical
     req = term.get("requested_net")

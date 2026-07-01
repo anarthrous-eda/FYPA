@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from fypa.topology.net_aliases import GND_ALIASES
 
 ROLE_COLORS: dict[str, str] = {
     "SOURCE": "#ff3030",
@@ -87,8 +86,10 @@ ROLE_PORTS: dict[str, list[tuple[str, str, int]]] = {
     "SOURCE": [("N", "left", 1), ("P", "right", 0)],
     "SINK": [("N", "left", 1), ("P", "left", 0)],
     "REGULATOR": [
-        ("IN_N", "left", 3), ("IN_P", "left", 2),
-        ("OUT_N", "right", 1), ("OUT_P", "right", 0),
+        ("IN_N", "left", 3),
+        ("IN_P", "left", 2),
+        ("OUT_N", "right", 1),
+        ("OUT_P", "right", 0),
     ],
     "RESISTOR": [("P", "left", 0), ("N", "right", 1)],
 }

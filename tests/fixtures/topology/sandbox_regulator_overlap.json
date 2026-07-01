@@ -1,0 +1,966 @@
+{
+  "directives": [
+    {
+      "role": "SINK",
+      "designator": "U6",
+      "channel_index": null,
+      "label": "U6",
+      "schdoc": "imu.SchDoc",
+      "value": 0.00055,
+      "unit": "A",
+      "value_str": "0.55 mA",
+      "terminals": {
+        "P": {
+          "pin_count": 2,
+          "pins": [
+            {
+              "pad": "5",
+              "layer_id": 1,
+              "net": "VDD_IMU",
+              "x_mm": 17.99999956,
+              "y_mm": 19.912500179999995
+            },
+            {
+              "pad": "8",
+              "layer_id": 1,
+              "net": "VDD_IMU",
+              "x_mm": 16.337500979999994,
+              "y_mm": 19.750001139999995
+            }
+          ],
+          "requested_net": "VDD_IMU",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 4,
+          "pins": [
+            {
+              "pad": "7",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 17.00000156,
+              "y_mm": 19.912500179999995
+            },
+            {
+              "pad": "6",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 17.500000559999997,
+              "y_mm": 19.912500179999995
+            },
+            {
+              "pad": "3",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 18.66250014,
+              "y_mm": 19.249999600000002
+            },
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 18.66250014,
+              "y_mm": 18.7500006
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "U5",
+      "channel_index": null,
+      "label": "U5",
+      "schdoc": "adc.SchDoc",
+      "value": 0.003,
+      "unit": "A",
+      "value_str": "3 mA",
+      "terminals": {
+        "P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "18",
+              "layer_id": 1,
+              "net": "VDD_ADC",
+              "x_mm": 23.20000186,
+              "y_mm": 11.400000059999996
+            }
+          ],
+          "requested_net": "VDD_ADC",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 9,
+          "pins": [
+            {
+              "pad": "TP",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 21.800002120000002,
+              "y_mm": 11.400000059999996
+            },
+            {
+              "pad": "20",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 23.20000186,
+              "y_mm": 12.200001
+            },
+            {
+              "pad": "17",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 23.20000186,
+              "y_mm": 11.00000086
+            },
+            {
+              "pad": "8",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 20.39999984,
+              "y_mm": 11.400000059999996
+            },
+            {
+              "pad": "7",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 20.39999984,
+              "y_mm": 11.79999926
+            },
+            {
+              "pad": "6",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 20.39999984,
+              "y_mm": 12.200001
+            },
+            {
+              "pad": "5",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 21.000001179999998,
+              "y_mm": 12.799999799999995
+            },
+            {
+              "pad": "4",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 21.40000292,
+              "y_mm": 12.799999799999995
+            },
+            {
+              "pad": "3",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 21.800002120000002,
+              "y_mm": 12.799999799999995
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "REGULATOR",
+      "designator": "U4",
+      "channel_index": 1,
+      "label": "U4#1",
+      "schdoc": "power.SchDoc",
+      "value": 3.0,
+      "unit": "V",
+      "value_str": "V=3 V, gain=0.6",
+      "gain": 0.6,
+      "quiescent_current": 0.0,
+      "adaptive_gain_eligible": true,
+      "regulator_type": "SMPS",
+      "efficiency": 1.0,
+      "terminals": {
+        "OUT_P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "11",
+              "layer_id": 1,
+              "net": "V+",
+              "x_mm": 6.9700013,
+              "y_mm": 5.7500012
+            }
+          ],
+          "requested_net": "V+",
+          "resolved_via_local": false
+        },
+        "OUT_N": {
+          "pin_count": 2,
+          "pins": [
+            {
+              "pad": "4",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 5.030000100000002,
+              "y_mm": 4.750000660000001
+            },
+            {
+              "pad": "TP",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 6.0000006999999975,
+              "y_mm": 5.000000160000003
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        },
+        "IN_P": {
+          "pin_count": 3,
+          "pins": [
+            {
+              "pad": "8",
+              "layer_id": 1,
+              "net": "VDD_5V0",
+              "x_mm": 6.9700013,
+              "y_mm": 4.249999119999998
+            },
+            {
+              "pad": "12",
+              "layer_id": 1,
+              "net": "VDD_5V0",
+              "x_mm": 6.9700013,
+              "y_mm": 6.250000200000002
+            },
+            {
+              "pad": "3",
+              "layer_id": 1,
+              "net": "VDD_5V0",
+              "x_mm": 5.030000100000002,
+              "y_mm": 5.24999966
+            }
+          ],
+          "requested_net": "VDD_5V0",
+          "resolved_via_local": false
+        },
+        "IN_N": {
+          "pin_count": 2,
+          "pins": [
+            {
+              "pad": "4",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 5.030000100000002,
+              "y_mm": 4.750000660000001
+            },
+            {
+              "pad": "TP",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 6.0000006999999975,
+              "y_mm": 5.000000160000003
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "REGULATOR",
+      "designator": "U4",
+      "channel_index": 2,
+      "label": "U4#2",
+      "schdoc": "power.SchDoc",
+      "value": 3.0,
+      "unit": "V",
+      "value_str": "V=3 V, gain=0.6",
+      "gain": 0.6,
+      "quiescent_current": 0.0,
+      "adaptive_gain_eligible": true,
+      "regulator_type": "SMPS",
+      "efficiency": 1.0,
+      "terminals": {
+        "OUT_P": {
+          "pin_count": 2,
+          "pins": [
+            {
+              "pad": "4",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 5.030000100000002,
+              "y_mm": 4.750000660000001
+            },
+            {
+              "pad": "TP",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 6.0000006999999975,
+              "y_mm": 5.000000160000003
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        },
+        "OUT_N": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "6",
+              "layer_id": 1,
+              "net": "V-",
+              "x_mm": 5.030000100000002,
+              "y_mm": 3.7500001199999993
+            }
+          ],
+          "requested_net": "V-",
+          "resolved_via_local": false
+        },
+        "IN_P": {
+          "pin_count": 3,
+          "pins": [
+            {
+              "pad": "8",
+              "layer_id": 1,
+              "net": "VDD_5V0",
+              "x_mm": 6.9700013,
+              "y_mm": 4.249999119999998
+            },
+            {
+              "pad": "12",
+              "layer_id": 1,
+              "net": "VDD_5V0",
+              "x_mm": 6.9700013,
+              "y_mm": 6.250000200000002
+            },
+            {
+              "pad": "3",
+              "layer_id": 1,
+              "net": "VDD_5V0",
+              "x_mm": 5.030000100000002,
+              "y_mm": 5.24999966
+            }
+          ],
+          "requested_net": "VDD_5V0",
+          "resolved_via_local": false
+        },
+        "IN_N": {
+          "pin_count": 2,
+          "pins": [
+            {
+              "pad": "4",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 5.030000100000002,
+              "y_mm": 4.750000660000001
+            },
+            {
+              "pad": "TP",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 6.0000006999999975,
+              "y_mm": 5.000000160000003
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "REGULATOR",
+      "designator": "U3",
+      "channel_index": null,
+      "label": "U3",
+      "schdoc": "can.SchDoc",
+      "value": 3.3,
+      "unit": "V",
+      "value_str": "V=3.3 V, gain=1, Iq=0.05 mA",
+      "gain": 1.0,
+      "quiescent_current": 4.9999999999999996e-05,
+      "adaptive_gain_eligible": false,
+      "regulator_type": "LDO",
+      "efficiency": 1.0,
+      "terminals": {
+        "OUT_P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "VDD_3V3",
+              "x_mm": 27.100004219999995,
+              "y_mm": 10.24999982
+            }
+          ],
+          "requested_net": "VDD_3V3",
+          "resolved_via_local": false
+        },
+        "OUT_N": {
+          "pin_count": 2,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 27.10000168,
+              "y_mm": 9.600006200000003
+            },
+            {
+              "pad": "TP",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 27.60000068,
+              "y_mm": 9.925001739999999
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        },
+        "IN_P": {
+          "pin_count": 2,
+          "pins": [
+            {
+              "pad": "3",
+              "layer_id": 1,
+              "net": "VDD_5V0",
+              "x_mm": 28.099999679999996,
+              "y_mm": 9.600003659999999
+            },
+            {
+              "pad": "4",
+              "layer_id": 1,
+              "net": "VDD_5V0",
+              "x_mm": 28.099999679999996,
+              "y_mm": 10.249997280000002
+            }
+          ],
+          "requested_net": "VDD_5V0",
+          "resolved_via_local": false
+        },
+        "IN_N": {
+          "pin_count": 2,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 27.10000168,
+              "y_mm": 9.600006200000003
+            },
+            {
+              "pad": "TP",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 27.60000068,
+              "y_mm": 9.925001739999999
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "U2",
+      "channel_index": null,
+      "label": "U2",
+      "schdoc": "mcu.SchDoc",
+      "value": 0.05,
+      "unit": "A",
+      "value_str": "50 mA",
+      "terminals": {
+        "P": {
+          "pin_count": 3,
+          "pins": [
+            {
+              "pad": "17",
+              "layer_id": 1,
+              "net": "VDD_MCU",
+              "x_mm": 17.525006859999998,
+              "y_mm": 10.749996279999998
+            },
+            {
+              "pad": "15",
+              "layer_id": 1,
+              "net": "VDD_MCU",
+              "x_mm": 16.3500054,
+              "y_mm": 10.075001440000001
+            },
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "VDD_MCU",
+              "x_mm": 12.675003860000004,
+              "y_mm": 14.249999439999996
+            }
+          ],
+          "requested_net": "VDD_MCU",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 4,
+          "pins": [
+            {
+              "pad": "TP",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 15.10000282,
+              "y_mm": 12.500002940000002
+            },
+            {
+              "pad": "32",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 13.350003780000002,
+              "y_mm": 14.925001899999998
+            },
+            {
+              "pad": "16",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 16.850004399999996,
+              "y_mm": 10.074998899999997
+            },
+            {
+              "pad": "14",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 15.850003860000001,
+              "y_mm": 10.074998899999997
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "U1",
+      "channel_index": null,
+      "label": "U1",
+      "schdoc": "can.SchDoc",
+      "value": 0.055,
+      "unit": "A",
+      "value_str": "55 mA",
+      "terminals": {
+        "P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "3",
+              "layer_id": 1,
+              "net": "VDD_5V0",
+              "x_mm": 23.950000359999997,
+              "y_mm": 18.574999679999998
+            }
+          ],
+          "requested_net": "VDD_5V0",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 3,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 23.950000359999997,
+              "y_mm": 19.224998379999995
+            },
+            {
+              "pad": "8",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 27.04999924,
+              "y_mm": 19.874999619999997
+            },
+            {
+              "pad": "TP",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 25.499999799999998,
+              "y_mm": 18.900000299999995
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "RESISTOR",
+      "designator": "L4",
+      "channel_index": null,
+      "label": "L4",
+      "schdoc": "imu.SchDoc",
+      "value": 0.48,
+      "unit": "Ohm",
+      "value_str": "480 mOhm",
+      "terminals": {
+        "P": {
+          "pin_count": 2,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "VDD_3V3",
+              "x_mm": 13.13500294,
+              "y_mm": 19.750001139999995
+            },
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "VDD_IMU",
+              "x_mm": 14.065001080000002,
+              "y_mm": 19.750001139999995
+            }
+          ],
+          "requested_net": "VDD_3V3",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 2,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "VDD_IMU",
+              "x_mm": 14.065001080000002,
+              "y_mm": 19.750001139999995
+            },
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "VDD_3V3",
+              "x_mm": 13.13500294,
+              "y_mm": 19.750001139999995
+            }
+          ],
+          "requested_net": "VDD_IMU",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "RESISTOR",
+      "designator": "L3",
+      "channel_index": null,
+      "label": "L3",
+      "schdoc": "adc.SchDoc",
+      "value": 0.48,
+      "unit": "Ohm",
+      "value_str": "480 mOhm",
+      "terminals": {
+        "P": {
+          "pin_count": 2,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "VDD_3V3",
+              "x_mm": 25.3000002,
+              "y_mm": 9.66999844
+            },
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "VDD_ADC",
+              "x_mm": 25.3000002,
+              "y_mm": 10.59999912
+            }
+          ],
+          "requested_net": "VDD_3V3",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 2,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "VDD_ADC",
+              "x_mm": 25.3000002,
+              "y_mm": 10.59999912
+            },
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "VDD_3V3",
+              "x_mm": 25.3000002,
+              "y_mm": 9.66999844
+            }
+          ],
+          "requested_net": "VDD_ADC",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "RESISTOR",
+      "designator": "L2",
+      "channel_index": null,
+      "label": "L2",
+      "schdoc": "mcu.SchDoc",
+      "value": 0.48,
+      "unit": "Ohm",
+      "value_str": "480 mOhm",
+      "terminals": {
+        "P": {
+          "pin_count": 2,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "VDD_3V3",
+              "x_mm": 11.899999059999999,
+              "y_mm": 17.6300003
+            },
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "VDD_MCU",
+              "x_mm": 11.899999059999999,
+              "y_mm": 16.59999982
+            }
+          ],
+          "requested_net": "VDD_3V3",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 2,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "VDD_MCU",
+              "x_mm": 11.899999059999999,
+              "y_mm": 16.59999982
+            },
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "VDD_3V3",
+              "x_mm": 11.899999059999999,
+              "y_mm": 17.6300003
+            }
+          ],
+          "requested_net": "VDD_MCU",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "SOURCE",
+      "designator": "J3",
+      "channel_index": null,
+      "label": "J3",
+      "schdoc": "con-upstream.SchDoc",
+      "value": 5.0,
+      "unit": "V",
+      "value_str": "5 V",
+      "terminals": {
+        "P": {
+          "pin_count": 2,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "VDD_5V0",
+              "x_mm": 35.36750102,
+              "y_mm": 10.379997019999998
+            },
+            {
+              "pad": "3",
+              "layer_id": 1,
+              "net": "VDD_5V0",
+              "x_mm": 35.36750102,
+              "y_mm": 12.919997019999997
+            }
+          ],
+          "requested_net": "VDD_5V0",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 4,
+          "pins": [
+            {
+              "pad": "2",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 32.82750102,
+              "y_mm": 11.64999702
+            },
+            {
+              "pad": "6",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 32.82750102,
+              "y_mm": 16.729999559999996
+            },
+            {
+              "pad": "BEF",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 41.67249984000001,
+              "y_mm": 20.799999040000003
+            },
+            {
+              "pad": "BEF",
+              "layer_id": 1,
+              "net": "GND",
+              "x_mm": 41.67249984000001,
+              "y_mm": 9.199999380000001
+            }
+          ],
+          "requested_net": "GND",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "J2.2",
+      "channel_index": null,
+      "label": "J2.2",
+      "schdoc": "con-straingauge.SchDoc",
+      "value": 0.1,
+      "unit": "A",
+      "value_str": "100 mA",
+      "terminals": {
+        "P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "V+",
+              "x_mm": 27.750000379999996,
+              "y_mm": 25.000000799999995
+            }
+          ],
+          "requested_net": "V+",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "4",
+              "layer_id": 1,
+              "net": "V-",
+              "x_mm": 17.2500036,
+              "y_mm": 25.000000799999995
+            }
+          ],
+          "requested_net": "V-",
+          "resolved_via_local": false
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "J2.1",
+      "channel_index": null,
+      "label": "J2.1",
+      "schdoc": "con-straingauge.SchDoc",
+      "value": 0.1,
+      "unit": "A",
+      "value_str": "100 mA",
+      "terminals": {
+        "P": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "1",
+              "layer_id": 1,
+              "net": "V+",
+              "x_mm": 17.25000868,
+              "y_mm": 5.000000160000003
+            }
+          ],
+          "requested_net": "V+",
+          "resolved_via_local": false
+        },
+        "N": {
+          "pin_count": 1,
+          "pins": [
+            {
+              "pad": "4",
+              "layer_id": 1,
+              "net": "V-",
+              "x_mm": 27.750000379999996,
+              "y_mm": 5.000000160000003
+            }
+          ],
+          "requested_net": "V-",
+          "resolved_via_local": false
+        }
+      }
+    }
+  ],
+  "net_canonical": {
+    "VDD_MCU": "VDD_MCU",
+    "VDD_IMU": "VDD_IMU",
+    "VDD_CAN": "VDD_CAN",
+    "VDD_ADC": "VDD_ADC",
+    "VDD_5V0": "VDD_5V0",
+    "VDD_3V3": "VDD_3V3",
+    "V-": "V-",
+    "V-.1": "V-",
+    "V-.2": "V-",
+    "V+": "V+",
+    "V+.1": "V+",
+    "V+.2": "V+",
+    "SWCLK": "SWCLK",
+    "SG-": "SG-",
+    "SG-.1": "SG-",
+    "SG-.2": "SG-",
+    "SG+": "SG+",
+    "SG+.1": "SG+",
+    "SG+.2": "SG+",
+    "NRST": "nRST",
+    "NETU6_14": "NetU6_14",
+    "NETU6_13": "NetU6_13",
+    "NETU6_1": "NetU6_1",
+    "NETU5_11": "NetU5_11",
+    "NETU5_10": "NetU5_10",
+    "NETU5_9": "NetU5_9",
+    "NETU2_28": "NetU2_28",
+    "NETU2_27": "NetU2_27",
+    "NETU2_26": "NetU2_26",
+    "NETU2_22": "NetU2_22",
+    "NETU2_21": "NetU2_21",
+    "NETU2_18": "NetU2_18",
+    "NETU2_12": "NetU2_12",
+    "NETU2_11": "NetU2_11",
+    "NETU2_10": "NetU2_10",
+    "NETU2_9": "NetU2_9",
+    "NETU2_8": "NetU2_8",
+    "NETU1_4": "NetU1_4",
+    "NETU1_1": "NetU1_1",
+    "NETR2_2": "NetR2_2",
+    "NETR1_2": "NetR1_2",
+    "NETQ1_2": "NetQ1_2",
+    "NETQ1_1": "NetQ1_1",
+    "NETJ3_5": "NetJ3_5",
+    "NETJ3_4": "NetJ3_4",
+    "NETJ1_2": "NetJ1_2",
+    "NETC23_2": "NetC23_2",
+    "NETC19_2": "NetC19_2",
+    "NETC15_2": "NetC15_2",
+    "NETC15_1": "NetC15_1",
+    "NETC3_2": "NetC3_2",
+    "LEFT_NRIGHT": "LEFT_nRIGHT",
+    "IMU_NCS": "IMU_nCS",
+    "IMU_INT2": "IMU_INT2",
+    "IMU_INT1": "IMU_INT1",
+    "GND": "GND",
+    "FB-1V2": "FB-1V2",
+    "FB+1V2": "FB+1V2",
+    "BOOT0": "BOOT0",
+    "ADC_CLK": "ADC_CLK"
+  },
+  "annotation_errors": []
+}

@@ -60,7 +60,8 @@ def main() -> int:
         help="Read pickle bytes from stdin instead of a file",
     )
     parser.add_argument(
-        "-o", "--output",
+        "-o",
+        "--output",
         type=Path,
         help="Write JSON to this file (default: stdout)",
     )

@@ -23,47 +23,57 @@ def _editor_directive_to_metadata_dict(ed) -> dict | None:
     }
     if role == "SOURCE":
         voltage = float(ed.voltage or 0.0)
-        common.update({
-            "value": voltage,
-            "unit": "V",
-            "value_str": f"{voltage:.4g} V",
-        })
+        common.update(
+            {
+                "value": voltage,
+                "unit": "V",
+                "value_str": f"{voltage:.4g} V",
+            }
+        )
     elif role == "SINK":
         current = float(ed.current or 0.0)
-        common.update({
-            "value": current,
-            "unit": "A",
-            "value_str": f"{current * 1000:.4g} mA",
-        })
+        common.update(
+            {
+                "value": current,
+                "unit": "A",
+                "value_str": f"{current * 1000:.4g} mA",
+            }
+        )
         min_v = getattr(ed, "min_voltage", None)
         if min_v is not None:
             common["min_voltage"] = float(min_v)
     else:
         resistance = float(ed.resistance or 0.0)
-        common.update({
-            "value": resistance,
-            "unit": "Ohm",
-            "value_str": f"{resistance * 1000:.4g} mOhm",
-        })
+        common.update(
+            {
+                "value": resistance,
+                "unit": "Ohm",
+                "value_str": f"{resistance * 1000:.4g} mOhm",
+            }
+        )
 
     def _terminal(net: str | None, *, ideal: bool = False) -> dict:
         if ideal:
             return {"pin_count": 0, "pins": [], "ideal_return": True}
         pins: list[dict] = []
         if net and ed.kind == "free" and ed.anchor_xy and net == ed.p_net:
-            pins.append({
-                "pad": "(editor)",
-                "layer_id": ed.layer_id,
-                "net": net,
-                "x_mm": float(ed.anchor_xy[0]),
-                "y_mm": float(ed.anchor_xy[1]),
-            })
+            pins.append(
+                {
+                    "pad": "(editor)",
+                    "layer_id": ed.layer_id,
+                    "net": net,
+                    "x_mm": float(ed.anchor_xy[0]),
+                    "y_mm": float(ed.anchor_xy[1]),
+                }
+            )
         elif net:
-            pins.append({
-                "pad": "(editor)",
-                "layer_id": ed.layer_id,
-                "net": net,
-            })
+            pins.append(
+                {
+                    "pad": "(editor)",
+                    "layer_id": ed.layer_id,
+                    "net": net,
+                }
+            )
         return {
             "pin_count": len(pins),
             "pins": pins,
@@ -92,9 +102,9 @@ def _merge_editor_fallback(
         if getattr(ed, "overrides_designator", None)
     }
     kept = [
-        d for d in (base.get("directives") or [])
-        if d.get("designator") not in overridden
-        and d.get("schdoc") != _EDITOR_PREVIEW_SCHDOC
+        d
+        for d in (base.get("directives") or [])
+        if d.get("designator") not in overridden and d.get("schdoc") != _EDITOR_PREVIEW_SCHDOC
     ]
     synth = []
     for ed in editor_directives:

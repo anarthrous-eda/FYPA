@@ -1,5 +1,7 @@
 """Geometry, junction, and bridge tests."""
 
+import pytest
+
 from fypa.topology import (
     GND_NET,
     TopologyWire,
@@ -13,7 +15,52 @@ from fypa.topology import (
     topology_wiring_report,
     vertical_bridge_path,
 )
-from tests.topology_fixtures import front_like_metadata, load_topology_fixture
+from tests.topology_fixtures import front_like_metadata, list_topology_fixtures, load_topology_fixture
+
+_FOREIGN_OVERLAP_CODES = frozenset({
+    "duplicate_vertical_x",
+    "duplicate_horizontal_y",
+})
+
+
+def foreign_segment_overlap_issues(model) -> list[dict]:
+    """Errors when unlike nets share the same vertical x or horizontal y span."""
+    from fypa.topology.validate import check_segment_spacing
+
+    geo = compute_schematic_geometry(
+        model.wires,
+        gnd_symbol_x=model.gnd_symbol_x,
+        gnd_bus_y=model.gnd_bus_y,
+    )
+    return [
+        issue
+        for issue in check_segment_spacing(geo.segments, geo.junctions, geo.bridges)
+        if issue.get("code") in _FOREIGN_OVERLAP_CODES
+    ]
+
+
+@pytest.mark.parametrize("fixture_name", list_topology_fixtures())
+def test_no_foreign_net_segment_overlap(fixture_name: str) -> None:
+    """Unlike nets must not share collinear vertical or horizontal wire spans."""
+    model = build_topology_model(load_topology_fixture(fixture_name))
+    issues = foreign_segment_overlap_issues(model)
+    assert not issues, issues
+
+
+def test_sandbox_regulator_overlap_regression() -> None:
+    """Sandbox U3/U4 gutter: V+, V-, VDD_5V0 need distinct buses (issue #dump)."""
+    model = build_topology_model(load_topology_fixture("sandbox_regulator_overlap"))
+    bus_x_by_net: dict[str, float] = {}
+    for net in ("V+", "V-", "VDD_5V0"):
+        xs = {
+            round(w.bus_x, 1)
+            for w in model.wires
+            if w.net == net and w.bus_x is not None
+        }
+        assert xs, f"no gutter bus for {net}"
+        assert len(xs) == 1, f"{net} should use one bus column, got {xs}"
+        bus_x_by_net[net] = next(iter(xs))
+    assert len(set(bus_x_by_net.values())) == 3, bus_x_by_net
 
 
 def test_hv_junction_and_bridge_classified_by_net():

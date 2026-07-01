@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fypa.topology.constants import ROLE_PORTS
+from fypa.topology.metadata_schema import DirectiveDict
 from fypa.topology.metadata.nets import is_ideal_return
 from fypa.topology.util import (
     format_current_a,
@@ -12,7 +13,7 @@ from fypa.topology.util import (
 )
 
 
-def directive_tooltip_lines(directive: dict) -> list[str]:
+def directive_tooltip_lines(directive: DirectiveDict) -> list[str]:
     lines: list[str] = []
     role = str(directive.get("role", ""))
     fv = format_directive_value(directive)
@@ -45,7 +46,7 @@ def directive_tooltip_lines(directive: dict) -> list[str]:
 def component_tooltip(
     role: str,
     designator: str,
-    directives: list[dict],
+    directives: list[DirectiveDict],
 ) -> str:
     display_role = "SERIES" if role in ("RESISTOR", "SERIES") else role
     lines = [f"{display_role} {designator}"]
@@ -57,7 +58,7 @@ def component_tooltip(
     return "\n".join(lines)
 
 
-def port_tooltip(net_label: str, directive: dict | None, terminal: str) -> str:
+def port_tooltip(net_label: str, directive: DirectiveDict | None, terminal: str) -> str:
     parts = [net_label]
     if directive is None:
         return net_label

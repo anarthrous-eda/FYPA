@@ -13,15 +13,15 @@ from fypa.topology.types import TopologyPort
 
 
 def _port(**kwargs) -> TopologyPort:
-    defaults = dict(
-        terminal="P",
-        net="SIG",
-        label="SIG",
-        side="right",
-        x=100.0,
-        y=50.0,
-        node_id="U1",
-    )
+    defaults = {
+        "terminal": "P",
+        "net": "SIG",
+        "label": "SIG",
+        "side": "right",
+        "x": 100.0,
+        "y": 50.0,
+        "node_id": "U1",
+    }
     defaults.update(kwargs)
     return TopologyPort(**defaults)
 

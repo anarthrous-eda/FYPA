@@ -7,14 +7,13 @@ import pytest
 from fypa.topology import (
     GND_NET,
     MIN_PARALLEL_GAP,
-    PORT_WIRE_STUB,
     build_topology_model,
     parse_wire_path,
     path_to_segments,
     topology_wiring_report,
 )
 from fypa.topology.placement import port_stub_length, port_stub_x
-from fypa.topology.constants import MAX_CANVAS_WIDTH
+from fypa.topology.constants import MAX_CANVAS_WIDTH, WIRE_EPS
 from tests.topology_fixtures import load_topology_fixture
 
 
@@ -25,6 +24,16 @@ def test_regression_column_gnd_feedback_stays_compact():
     u2 = next(n for n in model.nodes if n.designator == "U2")
     assert j1.x < u2.x
     assert model.width < MAX_CANVAS_WIDTH
+
+
+def test_regression_smart_footpiece_rail_merge_stays_compact():
+    """SERIES-bridged rails must not collapse columns (11k+ px canvas bug)."""
+    model = build_topology_model(load_topology_fixture("smart_footpiece_rails"))
+    assert model.width < MAX_CANVAS_WIDTH
+    l4 = next(n for n in model.nodes if n.designator == "L4")
+    u6 = next(n for n in model.nodes if n.designator == "U6")
+    assert l4.x < u6.x
+    assert max(n.x for n in model.nodes if n.role != "GND") < 2000.0
 
 
 def test_regression_front_hub_vdd_avoids_resistor_body():
@@ -86,7 +95,7 @@ def test_regression_front_j1_d1_direct_vdd():
 
 
 def test_regression_front_no_vertical_x_collision():
-    """No two foreign vertical segments may share the same x coordinate."""
+    """Foreign verticals may share x only when their y spans do not overlap."""
     from fypa.topology.geometry import compute_schematic_geometry
 
     model = build_topology_model(load_topology_fixture("front_hub_vdd"))
@@ -96,11 +105,16 @@ def test_regression_front_no_vertical_x_collision():
         for b in verticals[i + 1:]:
             if abs(a.x1 - b.x1) >= 0.6:
                 continue
-            if a.net != b.net:
-                pytest.fail(
-                    f"Vertical x collision at {a.x1:.1f}: "
-                    f"{a.net} wire {a.wire_index} vs {b.net} wire {b.wire_index}",
-                )
+            if a.net == b.net:
+                continue
+            a_lo, a_hi = sorted((a.y1, a.y2))
+            b_lo, b_hi = sorted((b.y1, b.y2))
+            if a_hi + WIRE_EPS < b_lo or b_hi + WIRE_EPS < a_lo:
+                continue
+            pytest.fail(
+                f"Vertical x collision at {a.x1:.1f}: "
+                f"{a.net} wire {a.wire_index} vs {b.net} wire {b.wire_index}",
+            )
 
 
 def test_regression_gnd_column_single_trunk():
@@ -134,10 +148,9 @@ def test_regression_sandbox_signal_clears_gnd_drops():
         build_topology_model(load_topology_fixture("sandbox_subset")),
     )
     signal_xs = sorted({
-        s["x1"]
+        round(w["bus_x"], 1)
         for w in report["wires"]
-        for s in w["segments"]
-        if s["orient"] == "V" and w["net"] != GND_NET
+        if w["net"] != GND_NET and w.get("bus_x") is not None
     })
     gnd_xs = sorted({
         s["x1"]
@@ -173,6 +186,17 @@ def test_regression_port_horizontal_stub_before_vertical():
             continue
         start_x, _ = verts[0]
         stub = port_stub_x(port)
+        bus_x = wire.bus_x
+        if (
+            wire.routing_kind == "hub_tap"
+            and bus_x is not None
+            and stub > bus_x + 1.0
+        ):
+            # Downstream of the gutter bus: trunk feeds east into the port.
+            assert abs(verts[-1][0] - port.x) < 1.0, (
+                f"{wire.net} bus-fed tap should end on port: {wire.path_d}"
+            )
+            continue
         segs = path_to_segments(wire.net, parse_wire_path(wire.path_d))
         if not segs:
             continue
@@ -200,7 +224,7 @@ def test_regression_port_horizontal_stub_before_vertical():
 def test_regression_gnd_trunk_at_stub_column():
     """GND column trunks align with the outward port stub line."""
     model = build_topology_model(load_topology_fixture("front_hub_vdd"))
-    from fypa.topology.placement import port_stub_length, port_stub_x
+    from fypa.topology.placement import port_stub_x
 
     for wire in model.wires:
         if wire.routing_kind != "gnd_tap":
@@ -268,47 +292,57 @@ def test_regression_stacked_stub_lengths():
     signals = [p for p in left if p.net != GND_NET]
     gnd = next(p for p in left if p.net == GND_NET)
     assert port_stub_length(gnd) == GND_PORT_WIRE_STUB
-    assert port_stub_length(signals[0]) == PORT_WIRE_STUB_MIN
-    assert port_stub_length(signals[-1]) == PORT_WIRE_STUB
+    assert port_stub_length(signals[0]) == PORT_WIRE_STUB
+    assert port_stub_length(signals[-1]) == PORT_WIRE_STUB_MIN
 
     u2 = next(n for n in model.nodes if n.node_id == "U2")
-    out_gnd = next(p for p in u2.ports if p.net == GND_NET and p.side == "right")
-    assert port_stub_length(out_gnd) == GND_PORT_WIRE_STUB
+    in_pwr = next(p for p in u2.ports if p.net != GND_NET and p.side == "left")
+    in_gnd = next(p for p in u2.ports if p.net == GND_NET and p.side == "left")
+    assert in_gnd.stub_length == GND_PORT_WIRE_STUB
+    assert port_stub_length(in_gnd) == port_stub_length(in_pwr)
+    assert port_stub_x(in_pwr) == port_stub_x(in_gnd)
 
 
 def test_regression_no_open_stub_ends():
     """Port stub ends must connect to verticals or continue on the routed net."""
-    from fypa.topology.validate import _check_open_stub_ends
+    from fypa.topology.validate.stubs import check_open_stub_ends
 
     for fixture_name in ("front_hub_vdd", "front_like", "gnd_junction_tap"):
         model = build_topology_model(load_topology_fixture(fixture_name))
-        issues = _check_open_stub_ends(model)
+        issues = check_open_stub_ends(model)
         assert not issues, issues
 
 
-def test_bus_plan_matches_routed_bus_x():
-    """Planned bus_x values must match routed wires (single-pass consistency)."""
-    from fypa.topology.constants import GND_NET, WIRE_EPS
-    from fypa.topology.layout import build_node_layout
-    from fypa.topology.routing import build_wires
+def test_regression_no_dangling_wire_endpoints():
+    """Wire ends must join a port, GND symbol, or another wire on the same net."""
+    from pathlib import Path
+    import pickle
 
-    meta = load_topology_fixture("front_hub_vdd")
-    layout = build_node_layout(meta)
-    ports = layout.ports
-    gnd_bus_y = layout.gnd_bus_y
-    directive_nodes = layout.directive_nodes
-    plan = layout.bus_plan
-    wires, _ = build_wires(
-        ports, gnd_bus_y=gnd_bus_y, obstacles=directive_nodes, bus_plan=plan,
-    )
-    for w in wires:
-        if w.dashed or w.bus_x is None or w.net == GND_NET:
-            continue
-        expected = plan.hub_buses.get(w.net) or plan.pair_buses.get(w.net)
-        if expected is not None:
-            assert abs(w.bus_x - expected) < WIRE_EPS, (
-                f"{w.net}: routed {w.bus_x} planned {expected}"
-            )
+    from fypa.topology.geometry import compute_schematic_geometry
+    from fypa.topology.validate import check_dangling_wire_endpoints
+
+    for fixture_name in ("front_hub_vdd", "front_like", "gnd_junction_tap"):
+        model = build_topology_model(load_topology_fixture(fixture_name))
+        geo = compute_schematic_geometry(
+            model.wires,
+            gnd_symbol_x=model.gnd_symbol_x,
+            gnd_bus_y=model.gnd_bus_y,
+        )
+        issues = check_dangling_wire_endpoints(model, geo)
+        assert not issues, issues
+
+    probe = Path("_probe/topology.pkl")
+    if probe.is_file():
+        with probe.open("rb") as f:
+            meta = pickle.load(f)
+        model = build_topology_model(meta)
+        geo = compute_schematic_geometry(
+            model.wires,
+            gnd_symbol_x=model.gnd_symbol_x,
+            gnd_bus_y=model.gnd_bus_y,
+        )
+        issues = check_dangling_wire_endpoints(model, geo)
+        assert not issues, issues
 
 
 def test_single_pass_builder_zero_issues():

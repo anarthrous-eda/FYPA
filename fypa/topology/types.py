@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from fypa.topology.metadata_schema import JumpRowDict
+
 
 @dataclass
 class TopologyPort:
@@ -18,6 +20,7 @@ class TopologyPort:
     is_power_input: bool = False
     tooltip: str = ""
     stub_length: float = 0.0
+    wire_x: float | None = None
 
 
 @dataclass
@@ -35,7 +38,7 @@ class TopologyNode:
     tooltip: str = ""
     ports: list[TopologyPort] = field(default_factory=list)
     bounds: tuple[float, float, float, float] = (0, 0, 0, 0)
-    jump_row: dict | None = None
+    jump_row: JumpRowDict | None = None
 
 
 @dataclass

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from fypa.topology.constants import BRIDGE_R, GND_NET, JUNCTION_R, WIRE_EPS
+from fypa.topology.constants import GND_NET
 from fypa.topology.geometry import BridgeCrossing, WireSeg
 from fypa.topology.types import TopologyModel, TopologyNode, TopologyPort, TopologyWire
 from fypa.topology.validate import (
-    _check_segment_spacing,
+    check_segment_spacing,
     validate_topology,
     vertical_segment_overlaps_node_body,
 )
@@ -17,7 +17,7 @@ def test_duplicate_vertical_x_detected():
         WireSeg(GND_NET, "V", 50.0, 10.0, 50.0, 90.0, wire_index=0),
         WireSeg("VDD", "V", 50.0, 20.0, 50.0, 80.0, wire_index=1),
     ]
-    issues = _check_segment_spacing(segments, [], [])
+    issues = check_segment_spacing(segments, [], [])
     assert any(i["code"] == "duplicate_vertical_x" for i in issues)
 
 
@@ -26,7 +26,7 @@ def test_duplicate_horizontal_y_detected():
         WireSeg("VDD", "H", 10.0, 40.0, 90.0, 40.0, wire_index=0),
         WireSeg("GND", "H", 20.0, 40.0, 80.0, 40.0, wire_index=1),
     ]
-    issues = _check_segment_spacing(segments, [], [])
+    issues = check_segment_spacing(segments, [], [])
     assert any(i["code"] == "duplicate_horizontal_y" for i in issues)
 
 
@@ -45,7 +45,7 @@ def test_junction_near_bridge_detected():
             vertical_index=0,
         ),
     ]
-    issues = _check_segment_spacing(segments, junctions, bridges)
+    issues = check_segment_spacing(segments, junctions, bridges)
     assert any(i["code"] == "junction_near_bridge" for i in issues)
 
 

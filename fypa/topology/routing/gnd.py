@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from fypa.topology.constants import GND_NET, MIN_PARALLEL_GAP, PORT_WIRE_STUB, WIRE_EPS
+from fypa.topology.constants import GND_NET, MIN_PARALLEL_GAP, WIRE_EPS
 from fypa.topology.placement import gnd_column_trunk_x, port_stub_x
 from fypa.topology.routing.context import RoutingContext
 from fypa.topology.routing.obstacles import gnd_drop_x, obstacle_detour_y
@@ -29,7 +29,13 @@ def gnd_tap_path(
         return simplify_wire_path(start_leg)
     gutter_lo, gutter_hi = min(stub, trunk_x), max(stub, trunk_x)
     y_clear = obstacle_detour_y(
-        ctx, y, gutter_lo, gutter_hi, obstacles, {port.node_id}, GND_NET,
+        ctx,
+        y,
+        gutter_lo,
+        gutter_hi,
+        obstacles,
+        {port.node_id},
+        GND_NET,
     )
     if abs(y_clear - y) < WIRE_EPS:
         y_clear = y + MIN_PARALLEL_GAP
@@ -62,7 +68,10 @@ def reserve_gnd_column_trunks(
         for port in group:
             stub = port_stub_x(port)
             ctx.reserve_horizontal(
-                port.y, min(port.x, stub), max(port.x, stub), GND_NET,
+                port.y,
+                min(port.x, stub),
+                max(port.x, stub),
+                GND_NET,
             )
         ctx.reserve_vertical(trunk_x, y_lo, y_hi, GND_NET)
     return column_plan
@@ -101,30 +110,34 @@ def gnd_wire_paths(
         top_y = min(p.y for p in members)
         trunk_xs.append(trunk_x)
         if max(bus_y, top_y) - min(bus_y, top_y) > WIRE_EPS:
-            tap_wires.append(TopologyWire(
-                net=GND_NET,
-                path_d=f"M {trunk_x:.1f},{bus_y:.1f} V {top_y:.1f}",
-                routing_kind="gnd_trunk",
-            ))
+            tap_wires.append(
+                TopologyWire(
+                    net=GND_NET,
+                    path_d=f"M {trunk_x:.1f},{bus_y:.1f} V {top_y:.1f}",
+                    routing_kind="gnd_trunk",
+                )
+            )
         for port in sorted(members, key=lambda p: (p.y, p.x)):
-            tap_wires.append(TopologyWire(
-                net=GND_NET,
-                path_d=gnd_tap_path(port, trunk_x, obs, ctx, bus_y=bus_y),
-                src_node=port.node_id,
-                src_terminal=port.terminal,
-                routing_kind="gnd_tap",
-            ))
+            tap_wires.append(
+                TopologyWire(
+                    net=GND_NET,
+                    path_d=gnd_tap_path(port, trunk_x, obs, ctx, bus_y=bus_y),
+                    src_node=port.node_id,
+                    src_terminal=port.terminal,
+                    routing_kind="gnd_tap",
+                )
+            )
 
     bus_min = min(trunk_xs)
     bus_max = max(trunk_xs)
-    if bus_max - bus_min < WIRE_EPS:
-        bus_max = bus_min + PORT_WIRE_STUB
-    wires = [
-        TopologyWire(
-            net=GND_NET,
-            path_d=f"M {bus_min:.1f},{bus_y:.1f} H {bus_max:.1f}",
-            routing_kind="gnd_rail",
-        ),
-        *tap_wires,
-    ]
+    wires: list[TopologyWire] = []
+    if bus_max - bus_min > WIRE_EPS:
+        wires.append(
+            TopologyWire(
+                net=GND_NET,
+                path_d=f"M {bus_min:.1f},{bus_y:.1f} H {bus_max:.1f}",
+                routing_kind="gnd_rail",
+            )
+        )
+    wires.extend(tap_wires)
     return wires, bus_min

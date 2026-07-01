@@ -15,9 +15,16 @@ from fypa.topology.metadata.nets import (
     canonical_net,
     is_ideal_return,
     terminal_net,
+    wire_net,
 )
 from fypa.topology.metadata.tooltips import component_tooltip
-from fypa.topology.metadata_schema import DirectiveDict
+from fypa.topology.metadata_schema import (
+    DirectiveDict,
+    JumpRowDict,
+    NodeSpec,
+    PortDef,
+    TerminalDict,
+)
 from fypa.topology.terminal_roles import is_output_port
 
 
@@ -32,7 +39,7 @@ def natural_sort_key(label: str) -> tuple:
     return tuple(key)
 
 
-def jump_row_for_directive(directive: dict) -> dict | None:
+def jump_row_for_directive(directive: DirectiveDict) -> JumpRowDict | None:
     label = str(directive.get("label") or directive.get("designator", ""))
     terms = directive.get("terminals") or {}
     for term_name, term in terms.items():
@@ -51,7 +58,7 @@ def jump_row_for_directive(directive: dict) -> dict | None:
     return None
 
 
-def _directive_has_error(directive: dict, errors: list[str]) -> bool:
+def _directive_has_error(directive: DirectiveDict, errors: list[str]) -> bool:
     label = str(directive.get("label") or directive.get("designator", ""))
     desig = str(directive.get("designator", ""))
     for err in errors:
@@ -62,7 +69,7 @@ def _directive_has_error(directive: dict, errors: list[str]) -> bool:
     return False
 
 
-def _channel_sort_key(directive: dict) -> tuple:
+def _channel_sort_key(directive: DirectiveDict) -> tuple:
     idx = directive.get("channel_index")
     if idx is not None:
         return (0, int(idx))
@@ -79,23 +86,107 @@ def _suffix_for_channel(index: int, *, multi: bool, base: str) -> str:
     return f"{base}{index}"
 
 
-def _terminal_physical_key(term: dict | None, net_to_rail: dict[str, str]) -> str:
+def _terminal_physical_key(term: TerminalDict | None, net_to_rail: dict[str, str]) -> str:
+    """Pad set + wire net — rail merging must not fold distinct schematic ports."""
+    del net_to_rail
     if not term:
         return ""
-    cnet = canonical_net(terminal_net(term), net_to_rail) or ""
+    wnet = wire_net(terminal_net(term)) or ""
     pads = tuple(sorted(p.get("pad", "") for p in term.get("pins") or []))
     if pads:
-        return f"{cnet}|{','.join(pads)}"
-    return cnet
+        return f"{wnet}|{','.join(pads)}"
+    return wnet
+
+
+def _base_terminal_name(pname: str) -> str:
+    m = re.match(r"^(IN_P|OUT_P|IN_N|OUT_N|P|N)(\d+)?$", pname)
+    return m.group(1) if m else pname
+
+
+def _terminal_merge_rank(pname: str) -> tuple[int, int]:
+    """Lower rank wins when merging ports that share the same physical connection."""
+    base = _base_terminal_name(pname)
+    priority = {
+        "IN_P": 0,
+        "P": 1,
+        "IN_N": 2,
+        "N": 3,
+        "OUT_P": 4,
+        "OUT_N": 5,
+    }
+    suffix = 0
+    m = re.match(r"^(?:IN_P|OUT_P|IN_N|OUT_N|P|N)(\d+)$", pname)
+    if m:
+        suffix = int(m.group(1))
+    return priority.get(base, 50), suffix
+
+
+def _collapse_ports_by_physical_key(
+    port_defs: list[PortDef],
+    terms: dict[str, TerminalDict],
+    port_directives: dict[str, DirectiveDict],
+    net_to_rail: dict[str, str],
+    *,
+    role: str = "",
+) -> tuple[list[PortDef], dict[str, TerminalDict], dict[str, DirectiveDict]]:
+    """One schematic port per distinct pad set (same net + pads → single connector)."""
+    passthrough: list[PortDef] = []
+    groups: dict[str, list[PortDef]] = defaultdict(list)
+    for pd in port_defs:
+        pname = pd[0]
+        term = terms.get(pname)
+        if not term or is_ideal_return(term):
+            passthrough.append(pd)
+            continue
+        key = _terminal_physical_key(term, net_to_rail)
+        if not key:
+            passthrough.append(pd)
+            continue
+        groups[key].append(pd)
+
+    new_defs: list[PortDef] = list(passthrough)
+    new_terms: dict[str, TerminalDict] = {p[0]: terms[p[0]] for p in passthrough}
+    new_directives: dict[str, DirectiveDict] = {
+        p[0]: port_directives[p[0]] for p in passthrough if p[0] in port_directives
+    }
+
+    base_counts: dict[str, int] = defaultdict(int)
+    grouped: list[tuple[PortDef, list[PortDef]]] = []
+    for _key, pds in groups.items():
+        if role in ("RESISTOR", "SERIES"):
+            by_base: dict[str, list[PortDef]] = defaultdict(list)
+            for pd in pds:
+                by_base[_base_terminal_name(pd[0])].append(pd)
+            subgroups = list(by_base.values())
+        else:
+            subgroups = [pds]
+        for sg in subgroups:
+            winner = min(sg, key=lambda p: (_terminal_merge_rank(p[0]), p[2]))
+            base = _base_terminal_name(winner[0])
+            base_counts[base] += 1
+            grouped.append((winner, sg))
+
+    for winner, pds in grouped:
+        base = _base_terminal_name(winner[0])
+        pname = base if base_counts[base] == 1 else winner[0]
+        side = winner[1]
+        sort_key = min(p[2] for p in pds)
+        new_defs.append((pname, side, sort_key))
+        new_terms[pname] = terms[winner[0]]
+        if winner[0] in port_directives:
+            new_directives[pname] = port_directives[winner[0]]
+
+    new_defs.sort(key=lambda p: p[2])
+    return new_defs, new_terms, new_directives
 
 
 def _dedupe_return_terms(
-    channels: list[dict],
+    channels: list[DirectiveDict],
     terminal: str,
     net_to_rail: dict[str, str],
-) -> list[tuple[str, dict, int]]:
-    seen: dict[str, dict] = {}
-    order: list[tuple[str, dict, int]] = []
+) -> list[tuple[str, TerminalDict, int]]:
+    seen: dict[str, TerminalDict] = {}
+    order: list[tuple[str, TerminalDict, int]] = []
     for d in channels:
         term = (d.get("terminals") or {}).get(terminal)
         if not term or is_ideal_return(term):
@@ -119,26 +210,23 @@ def _dedupe_return_terms(
 
 
 def _visible_port_defs(
-    port_defs: list[tuple[str, str, int]],
-    terms: dict,
-) -> list[tuple[str, str, int]]:
-    return [
-        pd for pd in port_defs
-        if not is_ideal_return(terms.get(pd[0]))
-    ]
+    port_defs: list[PortDef],
+    terms: dict[str, TerminalDict],
+) -> list[PortDef]:
+    return [pd for pd in port_defs if not is_ideal_return(terms.get(pd[0]))]
 
 
 def _passive_channel_port_defs(
-    channels: list[dict],
+    channels: list[DirectiveDict],
     net_to_rail: dict[str, str],
     *,
     multi: bool,
-) -> tuple[list[tuple[str, str, int]], dict[str, dict], dict[str, dict]]:
-    port_defs: list[tuple[str, str, int]] = []
-    terms: dict[str, dict] = {}
-    port_directives: dict[str, dict] = {}
+) -> tuple[list[PortDef], dict[str, TerminalDict], dict[str, DirectiveDict]]:
+    port_defs: list[PortDef] = []
+    terms: dict[str, TerminalDict] = {}
+    port_directives: dict[str, DirectiveDict] = {}
 
-    rows: list[tuple[int, dict, dict | None, dict | None]] = []
+    rows: list[tuple[int, DirectiveDict, TerminalDict | None, TerminalDict | None]] = []
     for i, d in enumerate(channels):
         ch_idx = int(d.get("channel_index") or (i + 1))
         p_term = (d.get("terminals") or {}).get("P")
@@ -171,15 +259,15 @@ def _passive_channel_port_defs(
 def component_spec_from_directives(
     designator: str,
     role: str,
-    channels: list[dict],
+    channels: list[DirectiveDict],
     errors: list[str],
     net_to_rail: dict[str, str],
-) -> dict:
+) -> NodeSpec:
     channels = sorted(channels, key=_channel_sort_key)
     multi = len(channels) > 1
-    port_defs: list[tuple[str, str, int]] = []
-    terms: dict[str, dict] = {}
-    port_directives: dict[str, dict] = {}
+    port_defs: list[PortDef] = []
+    terms: dict[str, TerminalDict] = {}
+    port_directives: dict[str, DirectiveDict] = {}
     has_error = any(_directive_has_error(d, errors) for d in channels)
 
     if role == "SINK":
@@ -223,7 +311,9 @@ def component_spec_from_directives(
                         port_directives[pname] = d
     elif role in ("RESISTOR", "SERIES"):
         p_defs, p_terms, p_dirs = _passive_channel_port_defs(
-            channels, net_to_rail, multi=multi,
+            channels,
+            net_to_rail,
+            multi=multi,
         )
         port_defs.extend(p_defs)
         terms.update(p_terms)
@@ -243,6 +333,14 @@ def component_spec_from_directives(
         port_defs = _visible_port_defs(port_defs, terms)
         for pname, _, _ in port_defs:
             port_directives[pname] = d
+
+    port_defs, terms, port_directives = _collapse_ports_by_physical_key(
+        port_defs,
+        terms,
+        port_directives,
+        net_to_rail,
+        role=role,
+    )
 
     return {
         "node_id": designator,
@@ -264,23 +362,29 @@ def directives_to_component_specs(
     directives: list[DirectiveDict],
     errors: list[str],
     net_to_rail: dict[str, str],
-) -> list[dict]:
-    groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
+) -> list[NodeSpec]:
+    groups: dict[tuple[str, str], list[DirectiveDict]] = defaultdict(list)
     for d in directives:
         desig = str(d.get("designator") or d.get("label") or "?")
         role = str(d.get("role", ""))
         groups[(desig, role)].append(d)
 
-    specs: list[dict] = []
-    for (desig, role) in sorted(groups.keys(), key=lambda k: natural_sort_key(k[0])):
-        specs.append(component_spec_from_directives(
-            desig, role, groups[(desig, role)], errors, net_to_rail,
-        ))
+    specs: list[NodeSpec] = []
+    for desig, role in sorted(groups.keys(), key=lambda k: natural_sort_key(k[0])):
+        specs.append(
+            component_spec_from_directives(
+                desig,
+                role,
+                groups[(desig, role)],
+                errors,
+                net_to_rail,
+            )
+        )
     return specs
 
 
 def driven_power_nets(
-    node_specs: list[dict],
+    node_specs: list[NodeSpec],
     net_to_rail: dict[str, str],
 ) -> set[str]:
     driven: set[str] = set()

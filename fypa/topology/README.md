@@ -51,7 +51,20 @@ Typed shapes live in `metadata_schema.py`:
 | `TerminalPinDict` | Pin record inside a directive terminal |
 | `TerminalDict` | Terminal with optional `ideal_return`, `pins` |
 | `DirectiveDict` | One SOURCE/SINK/REGULATOR/… directive |
+| `NodeSpec` | One layout component: `port_defs`, `terms`, `directives`, … |
+| `PortDef` | Port layout tuple: `(terminal_name, side, sort_key)` |
+| `JumpRowDict` | Footprint pin row for editor jump targets on a node |
 | `TopologyMetadata` | Pipeline input: `directives`, `net_canonical`, `annotation_errors` |
+
+Placement and bus-plan keys live in `placement/types.py`:
+
+| Type | Purpose |
+|------|---------|
+| `ColumnSideKey` | `(column_x, "left" \| "right")` — stack hub lane |
+| `GutterSpanKey` | `(x_lo, x_hi)` — column gap shared by gutter nets |
+| `GapRoutingKey` | `("gap", x_lo, x_hi)` — 2-port gutter routing group |
+| `StackBusKey` | `(column_x, side, net)` — planned bus beside a stack column |
+| `GndTrunkKey` | `(trunk_x, side)` — planned GND column trunk |
 
 `build_topology_model()`, `build_node_layout()`, and `compute_rail_groups()` accept
 `TopologyMetadata | None`. Fields are optional (`total=False`) to match real pickles
@@ -75,19 +88,19 @@ json.dump(trim, open("tests/fixtures/topology/my_case.json", "w"), indent=2)
 |--------|----------------|
 | `types.py` | `TopologyNode`, `TopologyPort`, `TopologyWire`, `TopologyModel` |
 | `constants.py` | Layout/routing/label constants |
-| `placement.py` | Port stubs, gutter keys, `BusPlan`, `plan_signal_buses()` |
+| `placement/` | `ports.py`, `bus_grid.py`, `hub_planning.py`, `classify.py`, `types.py`, `plan_types.py`, `plan_lookup.py`, `plan_gnd.py`, `plan_pairs.py`, `plan_hubs.py`, `plan.py` |
 | `metadata/` | `layout_bridge`, `nets`, `specs`, `tooltips`, `feeds` — directive parsing |
-| `metadata_schema.py` | `TopologyMetadata` TypedDict contract for pipeline input |
+| `metadata_schema.py` | `TopologyMetadata`, `NodeSpec`, `DirectiveDict`, … TypedDict contract |
 | `terminal_roles.py` | `is_power_input_port`, `is_output_port` (shared role rules) |
 | `net_aliases.py` | `GND_ALIASES`, `is_gnd_alias()` (import-light, shared with `rail_groups`) |
-| `layout.py` | Column assignment, node placement (uses `parse_topology_directives`) |
+| `layout/` | `columns.py`, `vertical_align.py`, `stubs.py`; `build_node_layout()` in `__init__.py` |
 | `layout_result.py` | `LayoutResult` dataclass returned by `build_node_layout()` |
 | `routing/` | Wire routing: `context`, `paths`, `hub`, `pair`, `gnd`, `build` |
 | `geometry.py` | Path parser, segments, junctions, `solid_wire_index_maps()` |
 | `labels.py` | Label placement via documented candidate search |
 | `issues.py` | Shared `Issue` / `make_issue()` for validate + report |
 | `render.py` | SVG drawing (wires, nodes, GND symbol, legend) |
-| `validate.py` | Model invariants (see below) |
+| `validate/` | `segments.py`, `wires.py`, `labels.py`, `stubs.py`, `util.py`; `validate_topology()` in `__init__.py` |
 | `report.py` | `topology_wiring_report()` — JSON debug output |
 | `hit_test.py` | `find_component_at`, `find_port_at`, `find_wire_at`, `topology_net_at` |
 | `builder.py` | `build_topology_model()` — orchestrates the pipeline |
@@ -124,6 +137,12 @@ Reserves channels **during** path generation (bands only — bus x comes from `B
 
 Bus positions are planned in `placement.plan_signal_buses()` using
 `allocate_bus_x()` on a `MIN_PARALLEL_GAP` grid (deterministic, no iterative bumping).
+`placement/plan_lookup.py` mirrors the routing lookup order for CI parity tests
+(`pair_buses` → `hub_buses` → `stack_buses`; GND trunks via path geometry).
+
+Signal wires store the planned vertical at `TopologyWire.bus_x`. GND routes do
+**not** set `bus_x` — trunk positions come from `BusPlan.gnd_trunks` and
+`gnd_trunk` wire paths instead.
 
 ### GND (routing only)
 
@@ -179,8 +198,9 @@ render parity, always use `compute_schematic_geometry(...).junctions`.
 | `junction_near_bridge` | Junction dot within bridge arc clearance on same vertical |
 | `label_not_at_origin` | Label at (0, 0) |
 | `label_anchor_distance` | Label too far from anchor segment |
-| `open_gnd_stub` | GND port stub end not connected |
-| `open_signal_stub` | Signal port stub end not connected |
+| `open_gnd_stub` | GND port stub end not connected (`validate/stubs`) |
+| `open_signal_stub` | Signal port stub end not connected (`validate/stubs`) |
+| `dangling_wire_endpoint` | Wire path end not at port, GND symbol, or junction |
 | `canvas_width_reasonable` | Canvas wider than `MAX_CANVAS_WIDTH` (2400 px) |
 | `vertical_under_node` | Vertical segment runs under a node body (**warning** — does not increment `summary.issues`; no src/dst skip unlike `segment_through_foreign_node`) |
 
@@ -272,7 +292,7 @@ Test files:
 
 | File | Content |
 |------|---------|
-| `test_topology_invariants.py` | parametrized: all fixtures → `issues == 0` |
+| `test_topology_invariants.py` | parametrized: all fixtures → `issues == 0`, full bus-plan parity |
 | `test_topology_regressions.py` | named tests per historical bug |
 | `test_topology_layout.py` | columns, compactness, hit test |
 | `test_topology_geometry.py` | junction/bridge classification |
@@ -286,6 +306,7 @@ Test files:
 | `test_hit_test.py` | `find_port_at` |
 | `test_svg_testutil.py` | SVG normalizer |
 | `test_validate_merge.py` | `merge_validation_issues` |
+| `test_validate_stubs.py` | geometry-based stub end connectivity |
 | `test_pdn_topology.py` | routing scenarios, sandbox, report |
 
 Run:
@@ -298,7 +319,7 @@ uv run python -m pytest tests/test_topology_invariants.py \
   tests/test_topology_svg_snapshots.py tests/test_terminal_roles.py \
   tests/test_placement.py tests/test_metadata_specs.py tests/test_hit_test.py \
   tests/test_svg_testutil.py tests/test_validate_merge.py \
-  tests/test_pdn_topology.py -q
+  tests/test_validate_stubs.py tests/test_pdn_topology.py -q
 ```
 
 Or via `scripts/test-pdn-topology.ps1` (pytest before GUI start).
@@ -327,18 +348,19 @@ After updating, also verify `topology_wiring_report()` / wiring.json if routing 
 |----------|-------|---------|
 | `MIN_PARALLEL_GAP` | 16 px | Minimum spacing of parallel vertical buses |
 | `PORT_WIRE_STUB` | 20 px | Stub length at port |
-| `LABEL_WIRE_OFFSET` | 7 px | Label offset from wire |
+| `LABEL_WIRE_OFFSET` | 5 px | Label offset from wire |
 | `MAX_CANVAS_WIDTH` | 2400 px | Warning threshold for column feedback bugs |
 | `COL_GAP` | 100 px | Default column spacing (widened per-gap only where gutter buses need it) |
 
 ## Extension
 
-`layout.py` and `routing/` share gutter spans via `placement.plan_signal_buses()`
-and `placement.net_gutter_key` — layout never imports routing.
+`layout/` and `routing/` share net classification via `placement.classify_signal_nets()`
+and gutter spans via `placement.plan_signal_buses()` / `placement.net_gutter_key` —
+layout never imports routing.
 
 New routing rules → `routing/` (+ fixture + invariant + regression test).
 
-New invariant → `validate.py`, covered in `test_topology_invariants.py`.
+New invariant → appropriate module under `validate/`, covered in `test_topology_invariants.py`.
 
 New fixture from Altium project — see **Metadata contract** above for the trim keys.
 

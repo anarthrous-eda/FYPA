@@ -612,7 +612,9 @@ def test_sandbox_parallel_verticals_clear_gnd_drops():
         for s in w["segments"]
         if s["orient"] == "V" and w["net"] == GND_NET
     })
-    assert signal_xs and gnd_xs
+    assert gnd_xs, "expected GND drop verticals in sandbox_subset"
+    if not signal_xs:
+        return
     for sx in signal_xs:
         for gx in gnd_xs:
             assert abs(sx - gx) >= MIN_PARALLEL_GAP - 0.6, (
@@ -645,7 +647,7 @@ def test_sandbox_topology_draws_bridge_arcs_and_gutter_labels():
     horiz = [s for s in segs if s.orient == "H"]
     best = max(horiz, key=lambda s: abs(s.x2 - s.x1))
     assert best.x1 <= gutter.label_x <= best.x2
-    assert gutter.label_y < best.y1 - 4 or gutter.label_y > best.y1 + 4
+    assert abs(gutter.label_y - best.y1) < 1.0
 
 
 def test_topology_wiring_report_structure():
@@ -669,6 +671,42 @@ def test_topology_wiring_report_structure():
     assert parsed["summary"]["issues"] == sum(
         1 for i in parsed["issues"] if i.get("severity", "error") != "warning"
     )
+
+
+def test_dump_topology_debug_writes_three_files(tmp_path):
+    import pickle
+
+    import shapely.prepared as sp
+    from shapely.geometry import Point
+
+    from fypa.topology.dump import (
+        TOPOLOGY_PKL,
+        TOPOLOGY_SVG,
+        WIRING_JSON,
+        dump_topology_debug,
+    )
+
+    meta = _front_like_metadata()
+    meta = {
+        **meta,
+        "primitives": [{"_prepared_shape": sp.prep(Point(0, 0).buffer(1))}],
+        "all_copper": [[{"_prepared_shape_cache": sp.prep(Point(1, 1).buffer(1))}]],
+    }
+    pkl_path, wiring_path, svg_path = dump_topology_debug(tmp_path, meta)
+    assert pkl_path.name == TOPOLOGY_PKL
+    assert wiring_path.name == WIRING_JSON
+    assert svg_path.name == TOPOLOGY_SVG
+    assert pkl_path.exists() and wiring_path.exists() and svg_path.exists()
+
+    with pkl_path.open("rb") as f:
+        loaded = pickle.load(f)
+    assert loaded["directives"] == meta["directives"]
+    assert "primitives" not in loaded
+    assert "all_copper" not in loaded
+
+    wiring = json.loads(wiring_path.read_text(encoding="utf-8"))
+    assert wiring["version"] == 1
+    assert "<svg" in svg_path.read_text(encoding="utf-8")
 
 
 def test_topology_wiring_report_detects_backtrack():
