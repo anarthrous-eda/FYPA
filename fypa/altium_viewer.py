@@ -5193,10 +5193,19 @@ class _TopologyView(QGraphicsView):
         self._scene.addItem(self._svg_item)
         self._highlight_item = QGraphicsSvgItem()
         self._highlight_item.setZValue(0.5)
+        self._highlight_item.setOpacity(0.0)
         self._highlight_item.setVisible(False)
         self._scene.addItem(self._highlight_item)
         self._highlighted_net: str | None = None
         self._highlight_renderer = None
+        # Net hover highlight fades in/out (~0.3s) rather than snapping on/off,
+        # so sweeping the cursor across wires doesn't flash.
+        from PySide6.QtCore import QEasingCurve, QPropertyAnimation
+
+        self._highlight_anim = QPropertyAnimation(self._highlight_item, b"opacity", self)
+        self._highlight_anim.setDuration(300)
+        self._highlight_anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        self._highlight_anim.finished.connect(self._on_highlight_anim_finished)
         self._svg_renderer = None
         self._diagram_loaded = False
         self._empty_text = QGraphicsSimpleTextItem()
@@ -5327,34 +5336,60 @@ class _TopologyView(QGraphicsView):
         return float(scene_pos.x()), float(scene_pos.y())
 
     def _clear_net_highlight(self) -> None:
+        """Instant clear — used on diagram reload / theme rebuild."""
+        self._highlight_anim.stop()
         self._highlighted_net = None
+        self._highlight_item.setOpacity(0.0)
         self._highlight_item.setVisible(False)
+
+    def _fade_highlight_to(self, target: float) -> None:
+        """Animate the highlight overlay's opacity toward ``target`` (0..1)."""
+        self._highlight_anim.stop()
+        if target > 0.0:
+            self._highlight_item.setVisible(True)
+        self._highlight_anim.setStartValue(self._highlight_item.opacity())
+        self._highlight_anim.setEndValue(target)
+        self._highlight_anim.start()
+
+    def _on_highlight_anim_finished(self) -> None:
+        if self._highlight_item.opacity() <= 0.0:
+            self._highlight_item.setVisible(False)
 
     def _set_highlighted_net(self, net: str | None) -> None:
         if net == self._highlighted_net:
             return
         self._highlighted_net = net
         if net is None:
-            self._clear_net_highlight()
+            self._fade_highlight_to(0.0)
             return
         from PySide6.QtSvg import QSvgRenderer
 
         from fypa.topology.render import render_net_highlight_svg
 
         model = getattr(self._viewer, "_topology_model", None)
-        if model is None:
-            self._clear_net_highlight()
-            return
-        svg = render_net_highlight_svg(model, net, theme=current_theme())
+        svg = (
+            render_net_highlight_svg(model, net, theme=current_theme())
+            if model is not None
+            else ""
+        )
         if not svg:
-            self._clear_net_highlight()
+            self._highlighted_net = None
+            self._fade_highlight_to(0.0)
             return
-        self._highlight_renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
-        if not self._highlight_renderer.isValid():
-            self._clear_net_highlight()
+        renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
+        if not renderer.isValid():
+            self._highlighted_net = None
+            self._fade_highlight_to(0.0)
             return
-        self._highlight_item.setSharedRenderer(self._highlight_renderer)
-        self._highlight_item.setVisible(True)
+        self._highlight_renderer = renderer
+        self._highlight_item.setSharedRenderer(renderer)
+        # Restart the fade from fully transparent. Sweeping the cursor
+        # straight from one net to an adjacent net (without crossing empty
+        # space) leaves the overlay already opaque from the previous net, so
+        # animating "to 1.0" would be a no-op and the new net would snap on.
+        # Reset to 0 first so the new net always fades in.
+        self._highlight_item.setOpacity(0.0)
+        self._fade_highlight_to(1.0)
 
     def wheelEvent(self, event) -> None:
         delta_y = event.angleDelta().y()
@@ -5473,7 +5508,7 @@ class _TopologyView(QGraphicsView):
         from PySide6.QtWidgets import QToolTip
 
         QToolTip.hideText()
-        self._clear_net_highlight()
+        self._set_highlighted_net(None)
         super().leaveEvent(event)
 
     def mousePressEvent(self, event) -> None:

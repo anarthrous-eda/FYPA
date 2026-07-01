@@ -228,6 +228,47 @@ def assign_columns(
             if s["role"] == "SINK":
                 col[s["node_id"]] = sink_col
 
+    # Orient each SERIES/RESISTOR so the terminal carrying the downstream loads
+    # faces right. Peers are keyed by *resolved physical net* (not the canonical
+    # rail — 0-Ω bridges merge a resistor's two nets onto one rail, which would
+    # make both terminals look identical). Flip P→right / N→left only when P has
+    # downstream nodes and NO upstream driver (a mid-rail tap keeps its driver on
+    # the P side, so the default P-left is correct and must stay).
+    wnet_cols: dict[str, list[tuple[str, int]]] = defaultdict(list)
+    for s in node_specs:
+        for rp in (s.get("resolved_ports") or {}).values():
+            if rp.wnet and rp.wnet != GND_NET:
+                wnet_cols[rp.wnet].append((s["node_id"], col.get(s["node_id"], 0)))
+
+    for s in node_specs:
+        if s["role"] not in ("RESISTOR", "SERIES"):
+            continue
+        nid = s["node_id"]
+        rcol = col.get(nid, 0)
+        rports = s.get("resolved_ports") or {}
+
+        def _cols(prefix):
+            return [
+                c
+                for pname, rp in rports.items()
+                if pname.startswith(prefix)
+                for oid, c in wnet_cols.get(rp.wnet, [])
+                if oid != nid
+            ]
+
+        p_cols, n_cols = _cols("P"), _cols("N")
+        p_up, p_down = any(c < rcol for c in p_cols), any(c > rcol for c in p_cols)
+        n_down = any(c > rcol for c in n_cols)
+        if p_down and not p_up and not n_down:
+            s["port_defs"] = [
+                (
+                    pname,
+                    "right" if pname.startswith("P") else "left" if pname.startswith("N") else side,
+                    sort_key,
+                )
+                for pname, side, sort_key in s["port_defs"]
+            ]
+
     return col
 
 
