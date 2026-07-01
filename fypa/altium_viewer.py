@@ -4100,7 +4100,7 @@ class _SolveWorker(QThread):
             # reject both even though the user has placed a SOURCE marker.
             if not loaded.is_solveable:
                 _log = logging.getLogger(__name__)
-                from fypa.cli import _LOG_FILE as _log_file
+                from fypa.altium.loader import format_solve_blockers
                 try:
                     self.stage_changed.emit("Building diagnostic summary…")
                     with _timer.stage("Build diagnostic summary"):
@@ -4118,14 +4118,14 @@ class _SolveWorker(QThread):
                 # Restricted to a plain initial load: overrides / editor
                 # directives mean the user explicitly asked for a re-solve, so
                 # a missing source there is still a hard failure.
-                recoverable = (
+                recoverable_no_source = (
                     bool(loaded.extracted.enabled_copper_layer_ids())
                     and not loaded.annotations.errors
                     and not self._editor_directives
                     and not self._stackup_overrides
                     and not self._sink_overrides
                 )
-                if recoverable:
+                if recoverable_no_source:
                     _log.info(
                         "No SOURCE/REGULATOR directive — opening in editor "
                         "mode (stub solution) for manual setup."
@@ -4137,10 +4137,28 @@ class _SolveWorker(QThread):
                     )
                     return
 
-                self.failed.emit(
-                    f"Project is not solveable.\n\n"
-                    f"See the log file for details:\n{_log_file}"
+                # Annotation errors but copper present — open stub viewer so
+                # the user can inspect Setup → Annotation log and fix Altium
+                # parameters without hunting the log file.
+                recoverable_annotation_errors = (
+                    bool(loaded.extracted.enabled_copper_layer_ids())
+                    and loaded.annotations.errors
+                    and not self._editor_directives
+                    and not self._stackup_overrides
+                    and not self._sink_overrides
                 )
+                if recoverable_annotation_errors:
+                    _log.info(
+                        "Annotation errors — opening design with stub "
+                        "solution for review."
+                    )
+                    self._emit_stub_and_finish(
+                        loaded, pristine_loaded, _timer,
+                        stage_message="Annotation errors — opening design…",
+                    )
+                    return
+
+                self.failed.emit(format_solve_blockers(loaded))
                 return
 
             if self._load_only:
@@ -4999,7 +5017,16 @@ class LauncherWindow(QMainWindow):
 
     def _on_solve_failed(self, message: str) -> None:
         logging.getLogger(__name__).error("Solve failed: %s", message)
-        QMessageBox.critical(self, "Solve failed", message)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Critical)
+        box.setWindowTitle("Solve failed")
+        lines = message.splitlines()
+        if len(lines) > 10 or len(message) > 500:
+            box.setText(lines[0] if lines else "Solve failed")
+            box.setDetailedText(message)
+        else:
+            box.setText(message)
+        box.exec()
 
     def _on_solve_finished(self, new_solution, metadata: dict,
                            loaded_project, new_settings) -> None:
@@ -5012,6 +5039,7 @@ class LauncherWindow(QMainWindow):
         # stub instead of failing — let the user know it's set up for manual
         # marker placement rather than a finished solve.
         _maybe_warn_needs_directives(new_win or self, new_solution)
+        _maybe_show_annotation_errors(new_win or self, metadata)
         # Rails with only sources or only sinks were skipped — tell the user.
         _maybe_warn_open_loop_rails(new_win or self, metadata)
         # Nets whose source & sink landed on disconnected copper — tell the user.
@@ -5882,6 +5910,7 @@ class PdnViewer(QMainWindow):
             self._render()
 
             _maybe_warn_needs_directives(self, new_solution)
+            _maybe_show_annotation_errors(self, metadata)
             _maybe_warn_open_loop_rails(self, metadata)
             _maybe_warn_connectivity_breaks(self, metadata)
 
@@ -20283,7 +20312,16 @@ class PdnViewer(QMainWindow):
         reload_btn = getattr(self, "_settings_reload_design_btn", None)
         if reload_btn is not None:
             reload_btn.setEnabled(True)
-        QMessageBox.critical(self, "Solve failed", message)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Critical)
+        box.setWindowTitle("Solve failed")
+        lines = message.splitlines()
+        if len(lines) > 10 or len(message) > 500:
+            box.setText(lines[0] if lines else "Solve failed")
+            box.setDetailedText(message)
+        else:
+            box.setText(message)
+        box.exec()
 
     def _on_solve_finished(
         self, new_solution, metadata: dict, loaded_project,
@@ -22351,6 +22389,30 @@ def _maybe_warn_needs_directives(parent_win, solution) -> None:
         "this design, so there's nothing to solve yet.\n\n"
         "The design has loaded — switch on Edit to place sources / sinks "
         "manually, then press Resolve.",
+    )
+
+
+def _maybe_show_annotation_errors(parent_win, metadata) -> None:
+    """Pop a notice when annotation errors block solving.
+
+    Fired after a stub viewer opens with ``metadata['annotation_errors']``.
+    """
+    if not isinstance(metadata, dict):
+        return
+    errors = metadata.get("annotation_errors") or []
+    if not errors:
+        return
+    max_show = 12
+    body = "\n".join(f"  • {e}" for e in errors[:max_show])
+    if len(errors) > max_show:
+        body += f"\n  … and {len(errors) - max_show} more"
+    QMessageBox.warning(
+        parent_win,
+        "Annotation errors",
+        "These PDN annotation errors must be fixed before the board "
+        "can be solved:\n\n"
+        f"{body}\n\n"
+        "Details also in Setup → Annotation log.",
     )
 
 
