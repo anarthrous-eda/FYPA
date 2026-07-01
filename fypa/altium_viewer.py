@@ -245,7 +245,7 @@ def _load_fypa_text_pixmap(height: int) -> QPixmap | None:
 
 
 from PySide6.QtCore import (
-    QEvent, QObject, QPointF, QRectF, QSize, Qt, QThread, QTimer, QUrl, Signal,
+    QByteArray, QEvent, QObject, QPointF, QRectF, QSize, Qt, QThread, QTimer, QUrl, Signal,
 )
 from PySide6.QtGui import (
     QAction,
@@ -275,6 +275,9 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGraphicsScene,
+    QGraphicsSimpleTextItem,
+    QGraphicsView,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -3809,6 +3812,7 @@ class _SolveWorker(QThread):
             from fypa.altium.loader import (
                 build_problem,
                 build_solve_metadata,
+                clone_loaded_for_edit,
                 load_project,
             )
             from fypa.lean_solution import to_lean_solution
@@ -3987,7 +3991,7 @@ class _SolveWorker(QThread):
             if ((self._sink_overrides or self._editor_directives
                     or self._copper_names)
                     and loaded is pristine_loaded):
-                loaded = self._clone_loaded_for_edit(loaded)
+                loaded = clone_loaded_for_edit(loaded)
 
             if self._sink_overrides:
                 self.stage_changed.emit(
@@ -4031,7 +4035,7 @@ class _SolveWorker(QThread):
             # reject both even though the user has placed a SOURCE marker.
             if not loaded.is_solveable:
                 _log = logging.getLogger(__name__)
-                from fypa.altium.loader import format_solve_blockers
+                from fypa.cli import _LOG_FILE as _log_file
                 try:
                     self.stage_changed.emit("Building diagnostic summary…")
                     with _timer.stage("Build diagnostic summary"):
@@ -4049,14 +4053,14 @@ class _SolveWorker(QThread):
                 # Restricted to a plain initial load: overrides / editor
                 # directives mean the user explicitly asked for a re-solve, so
                 # a missing source there is still a hard failure.
-                recoverable_no_source = (
+                recoverable = (
                     bool(loaded.extracted.enabled_copper_layer_ids())
                     and not loaded.annotations.errors
                     and not self._editor_directives
                     and not self._stackup_overrides
                     and not self._sink_overrides
                 )
-                if recoverable_no_source:
+                if recoverable:
                     _log.info(
                         "No SOURCE/REGULATOR directive — opening in editor "
                         "mode (stub solution) for manual setup."
@@ -4068,28 +4072,10 @@ class _SolveWorker(QThread):
                     )
                     return
 
-                # Annotation errors but copper present — open stub viewer so
-                # the user can inspect Setup → Annotation log and fix Altium
-                # parameters without hunting the log file.
-                recoverable_annotation_errors = (
-                    bool(loaded.extracted.enabled_copper_layer_ids())
-                    and loaded.annotations.errors
-                    and not self._editor_directives
-                    and not self._stackup_overrides
-                    and not self._sink_overrides
+                self.failed.emit(
+                    f"Project is not solveable.\n\n"
+                    f"See the log file for details:\n{_log_file}"
                 )
-                if recoverable_annotation_errors:
-                    _log.info(
-                        "Annotation errors — opening design with stub "
-                        "solution for review."
-                    )
-                    self._emit_stub_and_finish(
-                        loaded, pristine_loaded, _timer,
-                        stage_message="Annotation errors — opening design…",
-                    )
-                    return
-
-                self.failed.emit(format_solve_blockers(loaded))
                 return
 
             if self._load_only:
@@ -4307,38 +4293,9 @@ class _SolveWorker(QThread):
                 )
 
     def _clone_loaded_for_edit(self, loaded):
-        """Return a copy of ``loaded`` that the sink-override / editor-
-        directive passes can mutate without touching the original.
-
-        Only ``annotations`` is copied (its ``directives`` list is what
-        those passes rewrite). The heavy ``extracted`` / ``geometry`` are
-        read-only from here on — :func:`build_problem` never mutates them —
-        so they're shared: the copy costs a few KB, not the tens of MB a
-        full clone would. This is what lets the viewer hand the worker its
-        own in-memory LoadedProject for a resolve without it being
-        corrupted for the next one."""
-        import copy as _copy
-        from fypa.altium.loader import LoadedProject
-        new_annotations = _copy.copy(loaded.annotations)
-        # Fresh copies of every mutable list — a shallow copy.copy() would
-        # share them with the pristine project, so build_problem's per-resolve
-        # mutations (directive rewrites, open-loop warnings) would leak back
-        # and accumulate across Edit -> Resolve cycles.
-        new_annotations.directives = list(loaded.annotations.directives)
-        new_annotations.warnings = list(loaded.annotations.warnings)
-        new_annotations.errors = list(loaded.annotations.errors)
-        new_annotations.open_loop_rails = list(
-            getattr(loaded.annotations, "open_loop_rails", [])
-        )
-        new_annotations.connectivity_breaks = list(
-            getattr(loaded.annotations, "connectivity_breaks", [])
-        )
-        return LoadedProject(
-            extracted=loaded.extracted,
-            annotations=new_annotations,
-            geometry=loaded.__dict__.get("geometry"),
-            absorbed_bridges=list(loaded.absorbed_bridges),
-        )
+        """Backward-compatible alias — see :func:`clone_loaded_for_edit`."""
+        from fypa.altium.loader import clone_loaded_for_edit
+        return clone_loaded_for_edit(loaded)
 
 
 def _try_solve_cache(prjpcb_path: Path,
@@ -4953,16 +4910,7 @@ class LauncherWindow(QMainWindow):
 
     def _on_solve_failed(self, message: str) -> None:
         logging.getLogger(__name__).error("Solve failed: %s", message)
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Critical)
-        box.setWindowTitle("Solve failed")
-        lines = message.splitlines()
-        if len(lines) > 10 or len(message) > 500:
-            box.setText(lines[0] if lines else "Solve failed")
-            box.setDetailedText(message)
-        else:
-            box.setText(message)
-        box.exec()
+        QMessageBox.critical(self, "Solve failed", message)
 
     def _on_solve_finished(self, new_solution, metadata: dict,
                            loaded_project, new_settings) -> None:
@@ -4975,7 +4923,6 @@ class LauncherWindow(QMainWindow):
         # stub instead of failing — let the user know it's set up for manual
         # marker placement rather than a finished solve.
         _maybe_warn_needs_directives(new_win or self, new_solution)
-        _maybe_show_annotation_errors(new_win or self, metadata)
         # Rails with only sources or only sinks were skipped — tell the user.
         _maybe_warn_open_loop_rails(new_win or self, metadata)
         # Nets whose source & sink landed on disconnected copper — tell the user.
@@ -5197,6 +5144,335 @@ class _MessagesSortItem(QTableWidgetItem):
 # than indexing a parallel list by visual row — keeps click / rename handlers
 # correct after the user re-sorts the table by clicking a column header.
 _NET_TABLE_ROW_ROLE = int(Qt.UserRole) + 1
+
+_TOPOLOGY_ZOOM_STEP = 1.2
+_TOPOLOGY_MIN_SCALE = 0.05
+_TOPOLOGY_MAX_SCALE = 32.0
+_TOPOLOGY_PAN_STEP = 48
+
+
+class _TopologyView(QGraphicsView):
+    """Zoomable/pannable topology diagram — SVG rendered as vector graphics."""
+
+    def __init__(self, viewer: PdnViewer, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._viewer = viewer
+        self._scene = QGraphicsScene(self)
+        self.setScene(self._scene)
+        from PySide6.QtSvgWidgets import QGraphicsSvgItem
+
+        self._svg_item = QGraphicsSvgItem()
+        self._scene.addItem(self._svg_item)
+        self._highlight_item = QGraphicsSvgItem()
+        self._highlight_item.setZValue(0.5)
+        self._highlight_item.setVisible(False)
+        self._scene.addItem(self._highlight_item)
+        self._highlighted_net: str | None = None
+        self._highlight_renderer = None
+        self._svg_renderer = None
+        self._diagram_loaded = False
+        self._empty_text = QGraphicsSimpleTextItem()
+        self._scene.addItem(self._empty_text)
+        self._empty_text.setZValue(1.0)
+
+        self.setRenderHint(QPainter.Antialiasing)
+        self.setRenderHint(QPainter.TextAntialiasing)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setDragMode(QGraphicsView.NoDrag)
+        self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+        self._space_pan = False
+        self._panning = False
+        self._pan_anchor: QPointF | None = None
+        self._pan_scroll = (0, 0)
+        self._click_anchor: QPointF | None = None
+
+    def set_background(self, color: str) -> None:
+        self.setStyleSheet(
+            f"QGraphicsView {{ background-color: {color}; border: none; }}"
+        )
+
+    def set_empty_message(self, message: str) -> None:
+        self.resetTransform()
+        self._diagram_loaded = False
+        self._svg_renderer = None
+        self._clear_net_highlight()
+        self._svg_item.setVisible(False)
+        self._empty_text.setText(message)
+        self._empty_text.setBrush(QColor(current_theme()["fg_muted"]))
+        self._empty_text.setVisible(bool(message))
+        if message:
+            self._scene.setSceneRect(self._empty_text.boundingRect().adjusted(
+                -16, -16, 16, 16,
+            ))
+        else:
+            self._scene.setSceneRect(QRectF(0, 0, 1, 1))
+
+    def set_diagram_svg(self, svg_data: QByteArray) -> None:
+        from PySide6.QtSvg import QSvgRenderer
+
+        self.resetTransform()
+        self._clear_net_highlight()
+        self._svg_renderer = QSvgRenderer(svg_data)
+        if not self._svg_renderer.isValid():
+            self.set_empty_message("Topology diagram could not be rendered.")
+            return
+        self._svg_item.setSharedRenderer(self._svg_renderer)
+        self._svg_item.setVisible(True)
+        self._diagram_loaded = True
+        self._empty_text.setVisible(False)
+        bounds = self._svg_renderer.viewBoxF()
+        if bounds.width() < 1 or bounds.height() < 1:
+            bounds = self._svg_item.boundingRect()
+        self._scene.setSceneRect(bounds)
+        QTimer.singleShot(0, self.fit_in_view)
+
+    def _current_scale(self) -> float:
+        return float(self.transform().m11())
+
+    def _clamp_zoom_factor(self, factor: float) -> float:
+        scale = self._current_scale()
+        target = scale * factor
+        if target < _TOPOLOGY_MIN_SCALE:
+            return _TOPOLOGY_MIN_SCALE / scale
+        if target > _TOPOLOGY_MAX_SCALE:
+            return _TOPOLOGY_MAX_SCALE / scale
+        return factor
+
+    def _map_view_to_scene(self, view_pos: QPointF) -> QPointF:
+        """Map a viewport position to scene coordinates (PySide6 needs QPoint)."""
+        pt = view_pos.toPoint()
+        return self.mapToScene(pt)
+
+    def _zoom_by(self, factor: float, *, anchor: QPointF | None = None) -> None:
+        factor = self._clamp_zoom_factor(factor)
+        if abs(factor - 1.0) < 1e-9:
+            return
+        if anchor is None:
+            anchor = QPointF(self.viewport().rect().center())
+        prev_anchor = self.transformationAnchor()
+        self.setTransformationAnchor(QGraphicsView.NoAnchor)
+        scene_before = self._map_view_to_scene(anchor)
+        self.scale(factor, factor)
+        scene_after = self._map_view_to_scene(anchor)
+        delta = scene_before - scene_after
+        self.translate(delta.x(), delta.y())
+        self.setTransformationAnchor(prev_anchor)
+
+    def zoom_in(self) -> None:
+        self._zoom_by(_TOPOLOGY_ZOOM_STEP)
+
+    def zoom_out(self) -> None:
+        self._zoom_by(1.0 / _TOPOLOGY_ZOOM_STEP)
+
+    def fit_in_view(self) -> None:
+        if not self._diagram_loaded:
+            return
+        self.resetTransform()
+        self.fitInView(self._svg_item, Qt.KeepAspectRatio)
+        if self._current_scale() > _TOPOLOGY_MAX_SCALE:
+            self._zoom_by(_TOPOLOGY_MAX_SCALE / self._current_scale())
+        if self._current_scale() < _TOPOLOGY_MIN_SCALE:
+            self._zoom_by(_TOPOLOGY_MIN_SCALE / self._current_scale())
+
+    def pan_by(self, dx: int, dy: int) -> None:
+        h = self.horizontalScrollBar()
+        v = self.verticalScrollBar()
+        h.setValue(h.value() - dx)
+        v.setValue(v.value() - dy)
+
+    def diagram_pos(self, view_pos: QPointF) -> tuple[float, float]:
+        scene_pos = self._map_view_to_scene(view_pos)
+        return float(scene_pos.x()), float(scene_pos.y())
+
+    def _clear_net_highlight(self) -> None:
+        self._highlighted_net = None
+        self._highlight_item.setVisible(False)
+
+    def _set_highlighted_net(self, net: str | None) -> None:
+        if net == self._highlighted_net:
+            return
+        self._highlighted_net = net
+        if net is None:
+            self._clear_net_highlight()
+            return
+        from PySide6.QtSvg import QSvgRenderer
+
+        from fypa.topology.render import render_net_highlight_svg
+
+        model = getattr(self._viewer, "_topology_model", None)
+        if model is None:
+            self._clear_net_highlight()
+            return
+        svg = render_net_highlight_svg(model, net, theme=current_theme())
+        if not svg:
+            self._clear_net_highlight()
+            return
+        self._highlight_renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
+        if not self._highlight_renderer.isValid():
+            self._clear_net_highlight()
+            return
+        self._highlight_item.setSharedRenderer(self._highlight_renderer)
+        self._highlight_item.setVisible(True)
+
+    def wheelEvent(self, event) -> None:
+        delta_y = event.angleDelta().y()
+        delta_x = event.angleDelta().x()
+        mods = event.modifiers()
+
+        if mods & Qt.ControlModifier:
+            delta = delta_y if delta_y else delta_x
+            if delta == 0:
+                return
+            factor = pow(1.0 / _TOPOLOGY_ZOOM_STEP, delta / 120.0)
+            self._zoom_by(factor, anchor=event.position())
+            event.accept()
+            return
+
+        if mods & Qt.ShiftModifier:
+            delta = delta_y if delta_y else delta_x
+            if delta == 0:
+                return
+            self.pan_by(int(-delta / 120.0 * _TOPOLOGY_PAN_STEP), 0)
+            event.accept()
+            return
+
+        if delta_y != 0:
+            super().wheelEvent(event)
+            return
+        if delta_x != 0:
+            self.pan_by(int(-delta_x / 120.0 * _TOPOLOGY_PAN_STEP), 0)
+            event.accept()
+
+    def keyPressEvent(self, event) -> None:
+        key = event.key()
+        if key == Qt.Key_Space and not event.isAutoRepeat():
+            self._space_pan = True
+            self.setDragMode(QGraphicsView.ScrollHandDrag)
+            self.setCursor(Qt.OpenHandCursor)
+            event.accept()
+            return
+        step = _TOPOLOGY_PAN_STEP
+        mods = event.modifiers()
+        if mods & Qt.ControlModifier:
+            step *= 3
+        elif mods & Qt.ShiftModifier:
+            step *= 2
+        if key == Qt.Key_Left:
+            self.pan_by(-step, 0)
+            event.accept()
+            return
+        if key == Qt.Key_Right:
+            self.pan_by(step, 0)
+            event.accept()
+            return
+        if key == Qt.Key_Up:
+            self.pan_by(0, -step)
+            event.accept()
+            return
+        if key == Qt.Key_Down:
+            self.pan_by(0, step)
+            event.accept()
+            return
+        if key in (Qt.Key_Plus, Qt.Key_Equal):
+            self.zoom_in()
+            event.accept()
+            return
+        if key == Qt.Key_Minus:
+            self.zoom_out()
+            event.accept()
+            return
+        if key == Qt.Key_0:
+            self.fit_in_view()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event) -> None:
+        if event.key() == Qt.Key_Space and not event.isAutoRepeat():
+            self._space_pan = False
+            self.setDragMode(QGraphicsView.NoDrag)
+            self.unsetCursor()
+            event.accept()
+            return
+        super().keyReleaseEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._panning and (
+            event.buttons() & Qt.MiddleButton
+            or (event.buttons() & Qt.LeftButton and self._space_pan)
+        ):
+            if self._pan_anchor is not None:
+                delta = event.position() - self._pan_anchor
+                h = self.horizontalScrollBar()
+                v = self.verticalScrollBar()
+                h.setValue(int(self._pan_scroll[0] - delta.x()))
+                v.setValue(int(self._pan_scroll[1] - delta.y()))
+            event.accept()
+            return
+        from PySide6.QtWidgets import QToolTip
+
+        from fypa.topology import topology_tooltip_at
+        from fypa.topology.hit_test import topology_net_at
+
+        model = getattr(self._viewer, "_topology_model", None)
+        if model is not None and self._diagram_loaded:
+            x, y = self.diagram_pos(event.position())
+            tip = topology_tooltip_at(model, x, y)
+            if tip:
+                QToolTip.showText(event.globalPosition().toPoint(), tip, self)
+            else:
+                QToolTip.hideText()
+            self._set_highlighted_net(topology_net_at(model, x, y))
+        else:
+            self._clear_net_highlight()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        from PySide6.QtWidgets import QToolTip
+
+        QToolTip.hideText()
+        self._clear_net_highlight()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MiddleButton or (
+            event.button() == Qt.LeftButton and self._space_pan
+        ):
+            self._panning = True
+            self._pan_anchor = event.position()
+            self._pan_scroll = (
+                self.horizontalScrollBar().value(),
+                self.verticalScrollBar().value(),
+            )
+            self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return
+        if event.button() == Qt.LeftButton:
+            self._click_anchor = event.position()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() in (Qt.MiddleButton, Qt.LeftButton):
+            self._panning = False
+            if self._space_pan:
+                self.setCursor(Qt.OpenHandCursor)
+            else:
+                self.unsetCursor()
+        if (
+            event.button() == Qt.LeftButton
+            and not self._space_pan
+            and self._click_anchor is not None
+        ):
+            moved = (event.position() - self._click_anchor).manhattanLength()
+            if moved < 6.0:
+                self._viewer._on_topology_view_clicked(event)
+        self._click_anchor = None
+        super().mouseReleaseEvent(event)
 
 
 class PdnViewer(QMainWindow):
@@ -5815,6 +6091,11 @@ class PdnViewer(QMainWindow):
 
             if getattr(self, "setup_browser", None) is not None:
                 self._refresh_setup_html()
+            if getattr(self, "_topology_view", None) is not None:
+                self._topology_populated = False
+                if self.tabs.currentIndex() == getattr(
+                        self, "_topology_tab_index", -1):
+                    self._populate_topology()
 
             self._nodes_table_populated = False
             self._vias_table_populated = False
@@ -5839,7 +6120,6 @@ class PdnViewer(QMainWindow):
             self._render()
 
             _maybe_warn_needs_directives(self, new_solution)
-            _maybe_show_annotation_errors(self, metadata)
             _maybe_warn_open_loop_rails(self, metadata)
             _maybe_warn_connectivity_breaks(self, metadata)
 
@@ -5898,143 +6178,8 @@ class PdnViewer(QMainWindow):
         ``GND``, not ``+DM_SW1``. Returns
         ``(rail_names_sorted, {primary_name: [all member nets]})``.
         """
-        if metadata is None:
-            return [], {}
-
-        parent: dict[str, str] = {}
-
-        def find(x: str) -> str:
-            while parent.setdefault(x, x) != x:
-                parent[x] = parent[parent[x]]  # path compression
-                x = parent[x]
-            return x
-
-        def union(a: str, b: str) -> None:
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[rb] = ra
-
-        primary_candidates: set[str] = set()
-        bridge_named: set[str] = set()
-        source_rails: set[str] = set()
-        regulator_in_rails: set[str] = set()
-        regulator_out_rails: set[str] = set()
-        canon_map: dict[str, str] = metadata.get("net_canonical") or {}
-
-        def _canonical(net: str) -> str:
-            if not net:
-                return net
-            return canon_map.get(net.upper(), net)
-
-        def _note_rail(net: str) -> str:
-            return _canonical(net)
-
-        def _add_primary(net: str) -> None:
-            if net:
-                primary_candidates.add(_note_rail(net))
-
-        for d in metadata.get("directives", []):
-            role = d.get("role", "")
-            terms = d.get("terminals") or {}
-            nets_per_term: list[set[str]] = []
-            for tname, t in terms.items():
-                nets = {p.get("net") for p in t.get("pins", []) if p.get("net")}
-                req = t.get("requested_net")
-                for n in nets:
-                    find(n)  # ensure presence in union-find
-                if nets:
-                    nets_per_term.append(nets)
-                # The directive names this terminal's net (PDN_*_NET). When
-                # its pins resolved onto a SERIES-bridged net instead, tie the
-                # named net into the group so the rail keeps the user's name.
-                if req:
-                    find(req)
-                    for n in nets:
-                        union(req, n)
-                if role in ("SOURCE", "SINK", "REGULATOR"):
-                    if t.get("resolved_via_local") and nets:
-                        # Local sheet label — show the PCB / top-level net.
-                        for n in nets:
-                            _add_primary(n)
-                    elif req:
-                        canon_req = _note_rail(req)
-                        _add_primary(req)
-                        # User named a logical rail that resolved onto different
-                        # pad nets via a SERIES bridge — keep their name.
-                        if nets and req not in nets:
-                            bridge_named.add(canon_req)
-                    elif nets:
-                        for n in nets:
-                            _add_primary(n)
-                if role == "SOURCE" and tname == "P":
-                    if t.get("resolved_via_local") and nets:
-                        source_rails.update(_note_rail(n) for n in nets)
-                    elif req:
-                        source_rails.add(_note_rail(req))
-                    elif nets:
-                        source_rails.update(_note_rail(n) for n in nets)
-                if role == "REGULATOR" and tname == "IN_P":
-                    if t.get("resolved_via_local") and nets:
-                        regulator_in_rails.update(_note_rail(n) for n in nets)
-                    elif req:
-                        regulator_in_rails.add(_note_rail(req))
-                    elif nets:
-                        regulator_in_rails.update(_note_rail(n) for n in nets)
-                if role == "REGULATOR" and tname == "OUT_P":
-                    if t.get("resolved_via_local") and nets:
-                        regulator_out_rails.update(_note_rail(n) for n in nets)
-                    elif req:
-                        regulator_out_rails.add(_note_rail(req))
-                    elif nets:
-                        regulator_out_rails.update(_note_rail(n) for n in nets)
-            if role == "RESISTOR" and len(nets_per_term) == 2:
-                # Bridge every net in one terminal with every net in the other.
-                for a in nets_per_term[0]:
-                    for b in nets_per_term[1]:
-                        union(a, b)
-
-        # Materialise groups and pick a primary for each.
-        groups: dict[str, set[str]] = {}
-        for net in list(parent.keys()):
-            groups.setdefault(find(net), set()).add(net)
-
-        rail_to_members: dict[str, list[str]] = {}
-        for root, members in groups.items():
-            primaries = members & primary_candidates
-            if not primaries:
-                continue
-            canon_primaries = {_canonical(p) for p in primaries}
-
-            def _primary_sort_key(n: str) -> tuple[int, str]:
-                # SOURCE rail beats SERIES-bridged signal names (LED_R, …).
-                if n in source_rails:
-                    return (0, n)
-                if n in bridge_named:
-                    return (1, n)
-                if n in regulator_in_rails:
-                    return (2, n)
-                if n in regulator_out_rails:
-                    return (3, n)
-                if n.startswith("+"):
-                    return (4, n)
-                u = n.upper()
-                if u.startswith(("VDD", "VCC", "VPWR")):
-                    return (5, n)
-                if n.lower() in {"0v", "gnd", "ground", "vss"}:
-                    return (7, n)
-                return (6, n)
-
-            primary = sorted(canon_primaries, key=_primary_sort_key)[0]
-            rail_to_members[primary] = sorted(members)
-
-        def _rail_sort_key(rail: str) -> tuple[int, str]:
-            if rail.lower() in {"0v", "gnd", "ground", "vss"}:
-                return (2, rail)
-            if rail.startswith("+"):
-                return (0, rail)
-            return (1, rail)
-        rail_names = sorted(rail_to_members.keys(), key=_rail_sort_key)
-        return rail_names, rail_to_members
+        from fypa.rail_groups import compute_rail_groups
+        return compute_rail_groups(metadata)
 
     def showEvent(self, event) -> None:
         """Apply the deferred ``showMaximized`` once Qt has actually shown the
@@ -6630,6 +6775,13 @@ class PdnViewer(QMainWindow):
         _t = time.monotonic()
         self.tabs.addTab(self._build_setup_tab(), "Setup")
         self._init_log.info("PdnViewer init: Setup tab (%.2fs)", time.monotonic() - _t)
+
+        _t = time.monotonic()
+        self._topology_populated = False
+        self._topology_tab_index = self.tabs.addTab(
+            self._build_topology_tab(), "Topology",
+        )
+        self._init_log.info("PdnViewer init: Topology tab (%.2fs)", time.monotonic() - _t)
 
         # Nodes tab — sortable, filterable table of every directive node's
         # voltage / drop / current density / power density. The empty
@@ -12823,6 +12975,12 @@ class PdnViewer(QMainWindow):
         out of date and a re-solve is needed."""
         self._project_dirty = True
         self._refresh_solve_stale_overlay()
+        if getattr(self, "_topology_view", None) is not None:
+            tab_idx = getattr(self, "_topology_tab_index", -1)
+            if self.tabs.currentIndex() == tab_idx:
+                self._schedule_topology_refresh()
+            else:
+                self._topology_populated = False
 
     # --- Editor mode: selection + connectivity highlight --------------------
 
@@ -15763,6 +15921,10 @@ class PdnViewer(QMainWindow):
         # nothing and keeps the on-copper check off the drag path.
         self._sync_free_marker_coord_fields(nx, ny)
         self._refresh_editor_markers()
+        if getattr(self, "_topology_view", None) is not None:
+            tab_idx = getattr(self, "_topology_tab_index", -1)
+            if self.tabs.currentIndex() == tab_idx:
+                self._schedule_topology_refresh()
 
     def _on_marker_drag_released(self, world_x: float,
                                  world_y: float) -> None:
@@ -18584,6 +18746,10 @@ class PdnViewer(QMainWindow):
         # Re-add in the original order. _nodes_tab_index / _vias_tab_index
         # need refreshing because both tabs are re-inserted after the others.
         self.tabs.addTab(self._build_setup_tab(), "Setup")
+        self._topology_tab_index = self.tabs.addTab(
+            self._build_topology_tab(), "Topology",
+        )
+        self._topology_populated = False
         self._nodes_tab_index = self.tabs.addTab(
             self._build_nodes_tab(), "Nodes",
         )
@@ -20154,16 +20320,7 @@ class PdnViewer(QMainWindow):
         reload_btn = getattr(self, "_settings_reload_design_btn", None)
         if reload_btn is not None:
             reload_btn.setEnabled(True)
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Critical)
-        box.setWindowTitle("Solve failed")
-        lines = message.splitlines()
-        if len(lines) > 10 or len(message) > 500:
-            box.setText(lines[0] if lines else "Solve failed")
-            box.setDetailedText(message)
-        else:
-            box.setText(message)
-        box.exec()
+        QMessageBox.critical(self, "Solve failed", message)
 
     def _on_solve_finished(
         self, new_solution, metadata: dict, loaded_project,
@@ -20244,6 +20401,171 @@ class PdnViewer(QMainWindow):
             phys_color_fn=self._layer_color_for,
         ))
         scroll_bar.setValue(scroll_pos)
+
+    # --- Topology tab -------------------------------------------------------
+
+    def _build_topology_tab(self) -> QWidget:
+        """Build the Topology tab — abstract PDN simulation schematic."""
+        widget = QWidget(self.tabs)
+        outer = QVBoxLayout(widget)
+        outer.setContentsMargins(8, 8, 8, 8)
+
+        intro = QLabel(
+            "Flow diagram of the PDN simulation model — each "
+            "directive is a box with input/output ports wired by net. "
+            "Click a box to jump to its pad on the Heatmap. "
+            "Ctrl+wheel to zoom; wheel to scroll; Shift+wheel horizontal; "
+            "middle-drag or Space+drag to pan; arrow keys to scroll."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet(f"QLabel {{ color: {_T()['fg_muted']}; }}")
+        outer.addWidget(intro)
+
+        _t = _T()
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(4)
+        btn_qss = (
+            f"QToolButton {{ border: 1px solid {_t['border']}; border-radius: 4px;"
+            f"  padding: 2px 10px; background-color: {_t['bg_alt']}; }}"
+            f"QToolButton:hover {{ background-color: {_t['bg_hover']}; }}"
+        )
+        for label, tip, slot in (
+            ("+", "Zoom in (Ctrl++, +)", self._topology_zoom_in),
+            ("−", "Zoom out (Ctrl+-, −)", self._topology_zoom_out),
+            ("Fit", "Fit diagram (Ctrl+0)", self._topology_fit),
+        ):
+            btn = QToolButton()
+            btn.setText(label)
+            btn.setToolTip(tip)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet(btn_qss)
+            btn.clicked.connect(slot)
+            toolbar.addWidget(btn)
+        toolbar.addStretch()
+        outer.addLayout(toolbar)
+
+        self._topology_view = _TopologyView(self, widget)
+        self._topology_view.set_background(_t["bg"])
+        outer.addWidget(self._topology_view, 1)
+
+        self._topology_hint = QLabel("")
+        self._topology_hint.setStyleSheet(
+            f"QLabel {{ color: {_t['fg_dim']}; font-size: 9pt; }}"
+        )
+        outer.addWidget(self._topology_hint)
+
+        self._topology_model = None
+        self._install_topology_shortcuts(widget)
+        return widget
+
+    def _install_topology_shortcuts(self, parent: QWidget) -> None:
+        """Keyboard zoom shortcuts active while the Topology tab is focused."""
+        for keys, slot in (
+            ("Ctrl++", self._topology_zoom_in),
+            ("Ctrl+=", self._topology_zoom_in),
+            ("Ctrl+-", self._topology_zoom_out),
+            ("Ctrl+0", self._topology_fit),
+        ):
+            sc = QShortcut(QKeySequence(keys), parent)
+            sc.setContext(Qt.WidgetWithChildrenShortcut)
+            sc.activated.connect(slot)
+
+    def _topology_zoom_in(self) -> None:
+        view = getattr(self, "_topology_view", None)
+        if view is not None:
+            view.zoom_in()
+
+    def _topology_zoom_out(self) -> None:
+        view = getattr(self, "_topology_view", None)
+        if view is not None:
+            view.zoom_out()
+
+    def _topology_fit(self) -> None:
+        view = getattr(self, "_topology_view", None)
+        if view is not None:
+            view.fit_in_view()
+
+    def _populate_topology(self) -> None:
+        """Render the topology SVG from setup metadata."""
+        from fypa.topology import build_topology_model, render_topology_svg
+        from fypa.topology.preview import metadata_for_topology
+
+        if self.metadata is None:
+            self._topology_view.set_empty_message("No setup metadata available.")
+            self._topology_hint.setText("")
+            self._topology_model = None
+            return
+
+        preview_md = metadata_for_topology(
+            self.metadata,
+            loaded=self._loaded_project,
+            editor_directives=(
+                list(self._project.editor_directives)
+                if self._project is not None else None
+            ),
+            copper_names=(
+                list(self._project.copper_names)
+                if self._project is not None else None
+            ),
+            live_preview=self._topology_live_preview_needed(),
+        )
+        model = build_topology_model(preview_md)
+        self._topology_model = model
+        svg = render_topology_svg(model, theme=current_theme())
+        self._topology_view.set_diagram_svg(QByteArray(svg.encode("utf-8")))
+        n_dir = len((preview_md or {}).get("directives") or [])
+        n_nodes = sum(1 for n in model.nodes if n.role != "GND")
+        n_wires = len(model.wires)
+        pending = self._topology_live_preview_needed()
+        suffix = " (pending edits)" if pending else ""
+        self._topology_hint.setText(
+            f"{n_dir} directive(s), {n_nodes} node(s), {n_wires} wire(s){suffix}"
+        )
+
+    def _topology_live_preview_needed(self) -> bool:
+        """True when unsaved editor state should override solve metadata."""
+        if not self._project_dirty:
+            return False
+        if self._project is None:
+            return False
+        return bool(
+            self._project.editor_directives
+            or self._project.copper_names
+            or self._loaded_project is not None
+        )
+
+    def _schedule_topology_refresh(self) -> None:
+        """Debounced live refresh while the Topology tab is visible."""
+        view = getattr(self, "_topology_view", None)
+        if view is None:
+            return
+        timer = getattr(self, "_topology_refresh_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._refresh_topology_live)
+            self._topology_refresh_timer = timer
+        timer.start(50)
+
+    def _refresh_topology_live(self) -> None:
+        """Rebuild the topology diagram from current editor + metadata state."""
+        if getattr(self, "_topology_view", None) is None:
+            return
+        self._topology_populated = True
+        self._populate_topology()
+
+    def _on_topology_view_clicked(self, event) -> None:
+        """Jump to the pad under the clicked schematic symbol."""
+        from fypa.topology import find_component_at
+
+        model = getattr(self, "_topology_model", None)
+        view = getattr(self, "_topology_view", None)
+        if model is None or view is None:
+            return
+        x, y = view.diagram_pos(event.position())
+        comp = find_component_at(model, x, y)
+        if comp is not None and comp.jump_row:
+            self._jump_to_node(comp.jump_row)
 
     def _on_setup_anchor_clicked(self, url) -> None:
         """Handle clicks on toggle-anchors in the Setup tab."""
@@ -20383,6 +20705,13 @@ class PdnViewer(QMainWindow):
                 self._populate_vias_table()
             finally:
                 QApplication.restoreOverrideCursor()
+        elif index == getattr(self, "_topology_tab_index", -1):
+            if not getattr(self, "_topology_populated", True):
+                self._topology_populated = True
+                self._populate_topology()
+            view = getattr(self, "_topology_view", None)
+            if view is not None:
+                view.setFocus()
 
     def _get_or_compute_node_rows(self) -> list[dict]:
         """Run :meth:`_compute_node_report` at most once per viewer and cache
@@ -21810,9 +22139,31 @@ _HELP_TAB_BODY = """
 window has focus but defer to text inputs (e.g. the Min/Max boxes)
 when one of those has focus.</p>
 
+<h2>Topology tab</h2>
+<p>The <b>Topology</b> tab shows an abstract Flow diagram of the PDN
+simulation model (not the PCB layout). Click a component box to jump
+to its pad on the Heatmap.</p>
+<table>
+  <tr><th>Gesture / key</th><th>Action</th></tr>
+  <tr><td>Mouse wheel</td><td>Scroll vertically</td></tr>
+  <tr><td><kbd>Shift</kbd> + mouse wheel</td><td>Scroll horizontally</td></tr>
+  <tr><td><kbd>Ctrl</kbd> + mouse wheel</td><td>Zoom in / out around the cursor</td></tr>
+  <tr><td><kbd>Ctrl</kbd>+<kbd>+</kbd> / <kbd>Ctrl</kbd>+<kbd>&minus;</kbd></td>
+      <td>Zoom in / out (viewport centre)</td></tr>
+  <tr><td><kbd>Ctrl</kbd>+<kbd>0</kbd></td><td>Fit the whole diagram in view</td></tr>
+  <tr><td><b>+</b> / <b>&minus;</b> / <b>Fit</b> toolbar buttons</td><td>Zoom in, zoom out, fit</td></tr>
+  <tr><td>Middle-button drag</td><td>Pan</td></tr>
+  <tr><td><kbd>Space</kbd> + left-button drag</td><td>Pan</td></tr>
+  <tr><td>Arrow keys</td><td>Pan; <kbd>Shift</kbd> or <kbd>Ctrl</kbd> for larger steps</td></tr>
+  <tr><td>Hover</td><td>Tooltip with port / component values</td></tr>
+  <tr><td>Left click on a box</td><td>Jump to that component on the Heatmap</td></tr>
+</table>
+<p class='muted'>Topology shortcuts require the Topology tab to be
+focused. The diagram is vector-rendered — zoom stays sharp.</p>
+
 <h2>Mouse controls</h2>
 
-<h3>Both modes</h3>
+<h3>Heatmap viewport (both modes)</h3>
 <table>
   <tr><th>Gesture</th><th>Action</th></tr>
   <tr><td>Right-button drag</td><td>Pan the view</td></tr>
@@ -22231,30 +22582,6 @@ def _maybe_warn_needs_directives(parent_win, solution) -> None:
         "this design, so there's nothing to solve yet.\n\n"
         "The design has loaded — switch on Edit to place sources / sinks "
         "manually, then press Resolve.",
-    )
-
-
-def _maybe_show_annotation_errors(parent_win, metadata) -> None:
-    """Pop a notice when annotation errors block solving.
-
-    Fired after a stub viewer opens with ``metadata['annotation_errors']``.
-    """
-    if not isinstance(metadata, dict):
-        return
-    errors = metadata.get("annotation_errors") or []
-    if not errors:
-        return
-    max_show = 12
-    body = "\n".join(f"  • {e}" for e in errors[:max_show])
-    if len(errors) > max_show:
-        body += f"\n  … and {len(errors) - max_show} more"
-    QMessageBox.warning(
-        parent_win,
-        "Annotation errors",
-        "These PDN annotation errors must be fixed before the board "
-        "can be solved:\n\n"
-        f"{body}\n\n"
-        "Details also in Setup → Annotation log.",
     )
 
 

@@ -1,0 +1,82 @@
+{
+  "directives": [
+    {
+      "role": "SOURCE",
+      "designator": "J1",
+      "label": "J1",
+      "value_str": "3.3 V",
+      "terminals": {
+        "P": {
+          "requested_net": "VDD",
+          "pins": [
+            {
+              "net": "VDD",
+              "pad": "1"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "2"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "U1",
+      "label": "U1",
+      "value_str": "10 mA",
+      "terminals": {
+        "P": {
+          "requested_net": "VDD",
+          "pins": [
+            {
+              "net": "VDD",
+              "pad": "1"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "2"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "U2",
+      "label": "U2",
+      "value_str": "20 mA",
+      "terminals": {
+        "P": {
+          "requested_net": "VDD",
+          "pins": [
+            {
+              "net": "VDD",
+              "pad": "1"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "2"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

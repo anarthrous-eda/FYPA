@@ -15,8 +15,8 @@ The viewer has three main areas:
 - **Viewport (centre / left)** — the OpenGL canvas. Shows the current
   layer's copper, shaded by the current display mode. Pan with the
   mouse, zoom with the wheel.
-- **Side panel (right)** — a tabbed panel with the Setup, Nodes,
-  Vias, Messages, Settings and Help tabs.
+- **Side panel (right)** — a tabbed panel with the Setup, Topology,
+  Nodes, Vias, Messages, Settings and Help tabs.
 - **Status bar (bottom)** — short hints, hover-probe readouts and
   recently-applied actions.
 
@@ -36,7 +36,7 @@ From top to bottom:
   `PDN_N_NET` pairs. Click to switch which rail's voltage / current is
   shown.
 - **Mode dropdown** — *Voltage*, *Voltage Drop*, *Current Density* or
-  *Power Density* (see 5.3).
+  *Power Density* (see 5.4).
 - **Colour-scheme picker** — the matplotlib colormap used to shade the
   mesh (default `viridis`).
 - **Min / Max boxes** — type a value to clamp the colour scale, or
@@ -49,7 +49,50 @@ From top to bottom:
 > you want to see one rail without the visual noise of all the
 > others.
 
-## 5.3 The four display modes
+## 5.3 The Topology tab
+
+The **Topology** tab shows a **Flow diagram** of the PDN
+simulation model — each `PDN_*` directive appears as a coloured box with
+labelled input/output ports; wires connect ports that share the same net.
+This is **not** the PCB layout; for spatial placement use the Heatmap tab.
+
+- **Nodes** — one box per directive (SOURCE, SINK, REGULATOR, SERIES);
+  the header shows the role colour and designator; the body shows the
+  configured value (`PDN_V`, `PDN_I`, `PDN_R`, regulator gain).
+- **Ports** — small connectors on the left (inputs) and right (outputs).
+- **Wires** — orthogonal links between ports on the same electrical net,
+  each labelled once above the link. Real return nets meet a horizontal
+  rail below the diagram, terminated by a schematic **GND** symbol
+  (three decreasing bars). Single-net directives (ideal return) show only
+  their power port and are marked *single-net* in the body.
+- **Annotation errors** — errored directives get a red border and ⚠ marker.
+- **Click a box** — jumps to that component's pad on the Heatmap
+  (same as **Go ▶** on the Nodes tab).
+- **Hover a box or port** — tooltip with the configured value.
+
+### Navigation and zoom
+
+The diagram is rendered as a **vector schematic** (SVG) and can be
+panned and zoomed independently of the Heatmap viewport:
+
+| Action | How |
+|--------|-----|
+| **Scroll vertically** | Mouse wheel (no modifier). |
+| **Scroll horizontally** | **Shift** + mouse wheel. |
+| **Zoom** | **Ctrl** + mouse wheel (around the cursor), or the **+** / **−** toolbar buttons. |
+| **Fit diagram** | **Fit** toolbar button, or **Ctrl+0** while the Topology tab is focused. |
+| **Pan** | Middle-button drag, or hold **Space** and drag with the left button. |
+| **Pan (keyboard)** | Arrow keys; hold **Shift** or **Ctrl** for larger steps. |
+
+Keyboard zoom shortcuts (**Ctrl++**, **Ctrl+=**, **Ctrl+-**) work while
+the Topology tab (or one of its controls) has focus.
+
+> **Note:** Heatmap gestures differ — there the mouse wheel zooms the
+> board view directly (see [Section 5.10](#510-interaction-reference)).
+> On the Topology tab, plain wheel scrolls and **Ctrl**+wheel zooms,
+> matching browser and document-viewer conventions.
+
+## 5.4 The four display modes
 
 Switching the mode dropdown (or pressing **M** to cycle, **Shift+M**
 to cycle back) changes what each mesh vertex's colour represents:
@@ -66,7 +109,7 @@ to cycle back) changes what each mesh vertex's colour represents:
 > these modes so a single 10× spike does not flatten the rest of the
 > board into one colour. Use the Min / Max boxes to override.
 
-## 5.4 The Nodes tab
+## 5.5 The Nodes tab
 
 One row per terminal pin (every pad on every SOURCE / SINK /
 REGULATOR / SERIES directive). Columns:
@@ -84,7 +127,7 @@ The table is sortable — click a column header to sort by it. Sorting
 by Margin ascending is the fastest way to find which pin is closest
 to falling below its limit.
 
-## 5.5 The Vias tab
+## 5.6 The Vias tab
 
 One row per via on the board, with the current flowing through it.
 Columns:
@@ -98,7 +141,7 @@ a 0.3 mm hole carrying 2 A is a future failure. The
 [via resistance model](../via_resistance_model.md) covers how those
 currents are computed.
 
-## 5.6 The Messages tab
+## 5.7 The Messages tab
 
 Warnings and diagnostics from the loader and solver — anything that
 did not abort the run but is worth knowing about. Examples:
@@ -113,19 +156,19 @@ did not abort the run but is worth knowing about. Examples:
 Worth a glance after every solve. If everything is healthy, the tab
 shows a short "no issues" message.
 
-## 5.7 The Settings and Help tabs
+## 5.8 The Settings and Help tabs
 
 - **Settings** — viewer-wide preferences (default colormap, marker
   visibility, hover-probe behaviour, theme).
 - **Help** — built-in cheatsheet of hotkeys and gestures.
 
-## 5.8 The Heatmap tab
+## 5.9 The Heatmap tab
 
 The viewport itself lives in a tab called *Heatmap*. You will rarely
 click away from it during normal use — the other tabs hold the setup
 controls, node / via tables, messages, and settings.
 
-## 5.9 Interaction reference
+## 5.10 Interaction reference
 
 | Action                          | How                                                                  |
 |---------------------------------|----------------------------------------------------------------------|
@@ -137,7 +180,7 @@ controls, node / via tables, messages, and settings.
 | Click a marker                  | Reports the directive value (source voltage, sink current, etc.) in the bottom bar. |
 | Resolve after editor edits      | Click the green **↻ Resolve** button at the top-left of the viewport (see [Section 2.6](02-sources-and-sinks-editor.md#26-re-solving-and-saving)). |
 
-## 5.10 Hotkeys worth remembering
+## 5.11 Hotkeys worth remembering
 
 | Key          | Action                                                                |
 |--------------|-----------------------------------------------------------------------|
