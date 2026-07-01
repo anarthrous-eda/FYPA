@@ -11,6 +11,19 @@ ROLE_COLORS: dict[str, str] = {
     "REGULATOR": "#ff66ff",
 }
 
+# Slightly darker variants for single-net (ideal-return) sources/sinks, so a
+# component that only connects to its power rail reads differently from one
+# that also has a modelled return.
+SINGLE_NET_ROLE_COLORS: dict[str, str] = {
+    "SOURCE": "#b43030",
+    "SINK": "#0073c4",
+}
+
+# Wire stroke colours. Every wire is a power net: ground draws green, every
+# non-ground power rail draws red.
+GND_WIRE_COLOR = "#088b00"
+NON_GND_WIRE_COLOR = "#ff3030"
+
 OMEGA = "\u03a9"
 
 IDEAL_RETURN_RAIL = "__IDEAL_RETURN__"

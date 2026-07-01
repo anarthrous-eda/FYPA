@@ -80,15 +80,24 @@ def _channel_sort_key(directive: DirectiveDict) -> tuple:
     return (1, natural_sort_key(label))
 
 
+def _channel_number(directive: DirectiveDict, position: int) -> int:
+    """Channel index for port naming; falls back to 1-based position.
+
+    Uses ``is not None`` (not truthiness) so a legitimate ``channel_index``
+    of ``0`` is honoured, matching :func:`_channel_sort_key`.
+    """
+    idx = directive.get("channel_index")
+    return int(idx) if idx is not None else position + 1
+
+
 def _suffix_for_channel(index: int, *, multi: bool, base: str) -> str:
     if not multi:
         return base
     return f"{base}{index}"
 
 
-def _terminal_physical_key(term: TerminalDict | None, net_to_rail: dict[str, str]) -> str:
+def _terminal_physical_key(term: TerminalDict | None) -> str:
     """Pad set + wire net — rail merging must not fold distinct schematic ports."""
-    del net_to_rail
     if not term:
         return ""
     wnet = wire_net(terminal_net(term)) or ""
@@ -138,7 +147,7 @@ def _collapse_ports_by_physical_key(
         if not term or is_ideal_return(term):
             passthrough.append(pd)
             continue
-        key = _terminal_physical_key(term, net_to_rail)
+        key = _terminal_physical_key(term)
         if not key:
             passthrough.append(pd)
             continue
@@ -191,7 +200,7 @@ def _dedupe_return_terms(
         term = (d.get("terminals") or {}).get(terminal)
         if not term or is_ideal_return(term):
             continue
-        key = _terminal_physical_key(term, net_to_rail)
+        key = _terminal_physical_key(term)
         if key in seen:
             continue
         seen[key] = term
@@ -228,13 +237,13 @@ def _passive_channel_port_defs(
 
     rows: list[tuple[int, DirectiveDict, TerminalDict | None, TerminalDict | None]] = []
     for i, d in enumerate(channels):
-        ch_idx = int(d.get("channel_index") or (i + 1))
+        ch_idx = _channel_number(d, i)
         p_term = (d.get("terminals") or {}).get("P")
         n_term = (d.get("terminals") or {}).get("N")
         rows.append((ch_idx, d, p_term, n_term))
 
     p_keys = [
-        _terminal_physical_key(p, net_to_rail)
+        _terminal_physical_key(p)
         for _, _, p, _ in rows
         if p and not is_ideal_return(p)
     ]
@@ -272,8 +281,8 @@ def component_spec_from_directives(
 
     if role == "SINK":
         for i, d in enumerate(channels):
-            ch_idx = d.get("channel_index") or (i + 1)
-            pname = _suffix_for_channel(int(ch_idx), multi=multi, base="P")
+            ch_idx = _channel_number(d, i)
+            pname = _suffix_for_channel(ch_idx, multi=multi, base="P")
             p_term = (d.get("terminals") or {}).get("P")
             if p_term and not is_ideal_return(p_term):
                 port_defs.append((pname, "left", i))
@@ -284,9 +293,9 @@ def component_spec_from_directives(
             terms[pname] = n_term
     elif role == "REGULATOR":
         for i, d in enumerate(channels):
-            ch_idx = d.get("channel_index") or (i + 1)
+            ch_idx = _channel_number(d, i)
             for base, side in (("IN_P", "left"), ("OUT_P", "right")):
-                pname = _suffix_for_channel(int(ch_idx), multi=multi, base=base)
+                pname = _suffix_for_channel(ch_idx, multi=multi, base=base)
                 term = (d.get("terminals") or {}).get(base)
                 if term and not is_ideal_return(term):
                     port_defs.append((pname, side, i))
@@ -300,9 +309,9 @@ def component_spec_from_directives(
             terms[pname] = term
     elif role == "SOURCE":
         for i, d in enumerate(channels):
-            ch_idx = d.get("channel_index") or (i + 1)
+            ch_idx = _channel_number(d, i)
             for base, side in (("P", "right"), ("N", "left")):
-                pname = _suffix_for_channel(int(ch_idx), multi=multi, base=base)
+                pname = _suffix_for_channel(ch_idx, multi=multi, base=base)
                 term = (d.get("terminals") or {}).get(base)
                 if term and not is_ideal_return(term):
                     port_defs.append((pname, side, i))

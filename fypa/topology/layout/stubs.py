@@ -76,8 +76,6 @@ def _may_share_power_gnd_column(
     max_y = max(p.y for p in net_ports)
     if power_top > min_y + WIRE_EPS and max_y > gnd_top + WIRE_EPS:
         return True
-    if max_y > gnd_top + WIRE_EPS:
-        return False
     return False
 
 

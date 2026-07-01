@@ -26,6 +26,7 @@ from fypa.topology.metadata.layout_bridge import (
     jump_row_for_directive,
 )
 from fypa.topology.metadata_schema import NodeSpec
+from fypa.topology.terminal_roles import is_single_net_node
 from fypa.topology.placement import (
     BusPlan,
     gutter_bus_span_from_plan,
@@ -144,6 +145,7 @@ def _place_columns(
                 config_label="",
                 has_error=s["has_error"],
                 tooltip=s.get("tooltip", ""),
+                single_net=is_single_net_node(role, visible_ports),
                 bounds=(nx, ny, NODE_W, nh),
                 jump_row=jump_row_for_directive(s["directive"]),
             )

@@ -36,6 +36,7 @@ class TopologyNode:
     config_label: str
     has_error: bool
     tooltip: str = ""
+    single_net: bool = False
     ports: list[TopologyPort] = field(default_factory=list)
     bounds: tuple[float, float, float, float] = (0, 0, 0, 0)
     jump_row: JumpRowDict | None = None

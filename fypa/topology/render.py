@@ -3,16 +3,38 @@
 from __future__ import annotations
 
 from fypa.topology.constants import (
+    GND_NET,
     GND_SYMBOL_OFFSET,
+    GND_WIRE_COLOR,
     HEADER_H,
     JUNCTION_R,
+    NON_GND_WIRE_COLOR,
     PORT_R,
     ROLE_COLORS,
+    SINGLE_NET_ROLE_COLORS,
+    WIRE_EPS,
 )
 from fypa.topology.geometry import (
     compute_schematic_geometry,
     vertical_bridge_path,
 )
+
+
+def _wire_stroke(net: str) -> str:
+    """All wires are power nets: ground draws green, non-ground rails draw red."""
+    return GND_WIRE_COLOR if net == GND_NET else NON_GND_WIRE_COLOR
+
+
+def _segment_net_at(segments, x: float, y: float) -> str:
+    """Net of a wire segment incident to ``(x, y)`` (for colouring junction dots)."""
+    for s in segments:
+        if s.orient == "H" and abs(s.y1 - y) < WIRE_EPS:
+            if min(s.x1, s.x2) - WIRE_EPS <= x <= max(s.x1, s.x2) + WIRE_EPS:
+                return s.net
+        elif s.orient == "V" and abs(s.x1 - x) < WIRE_EPS:
+            if min(s.y1, s.y2) - WIRE_EPS <= y <= max(s.y1, s.y2) + WIRE_EPS:
+                return s.net
+    return ""
 from fypa.topology.types import TopologyModel, TopologyNode, TopologyWire
 from fypa.topology.util import esc, truncate_label
 
@@ -20,12 +42,10 @@ from fypa.topology.util import esc, truncate_label
 def _draw_wire(
     parts: list[str],
     wire: TopologyWire,
-    *,
-    fg_dim: str,
 ) -> None:
     dash = ' stroke-dasharray="5 4"' if wire.dashed else ""
     parts.append(
-        f'<path d="{wire.path_d}" fill="none" stroke="{esc(fg_dim)}"'
+        f'<path d="{wire.path_d}" fill="none" stroke="{esc(_wire_stroke(wire.net))}"'
         f' stroke-width="2" stroke-linecap="round" stroke-linejoin="round"'
         f"{dash}/>"
     )
@@ -35,7 +55,6 @@ def _draw_wires_schematic(
     parts: list[str],
     wires: list[TopologyWire],
     *,
-    fg_dim: str,
     bg: str,
     gnd_symbol_x: float | None = None,
     gnd_bus_y: float | None = None,
@@ -49,8 +68,8 @@ def _draw_wires_schematic(
     )
 
     sw = 2.0
-    stroke = esc(fg_dim)
     for h in geo.horizontals:
+        stroke = esc(_wire_stroke(h.net))
         parts.append(
             f'<line x1="{h.x1:.1f}" y1="{h.y1:.1f}" x2="{h.x2:.1f}" y2="{h.y2:.1f}"'
             f' stroke="{stroke}" stroke-width="{sw}" stroke-linecap="round"/>'
@@ -59,16 +78,18 @@ def _draw_wires_schematic(
     for vi, v in enumerate(geo.verticals):
         crosses = sorted(set(geo.vert_crossings.get(vi, [])))
         d = vertical_bridge_path(v.x1, v.y1, v.y2, crosses)
+        stroke = esc(_wire_stroke(v.net))
         parts.append(
             f'<path d="{d}" fill="none" stroke="{stroke}"'
             f' stroke-width="{sw}" stroke-linecap="round" stroke-linejoin="round"/>'
         )
 
     for jx, jy in geo.junctions:
+        stroke = esc(_wire_stroke(_segment_net_at(geo.segments, jx, jy)))
         parts.append(f'<circle cx="{jx:.1f}" cy="{jy:.1f}" r="{JUNCTION_R:.1f}" fill="{stroke}"/>')
 
     for w in dashed:
-        _draw_wire(parts, w, fg_dim=fg_dim)
+        _draw_wire(parts, w)
 
 
 def _net_highlight_fragment(
@@ -236,6 +257,8 @@ def _draw_node(
     err: str,
 ) -> None:
     color = ROLE_COLORS.get(node.role, fg)
+    if node.single_net:
+        color = SINGLE_NET_ROLE_COLORS.get(node.role, color)
     title = "SERIES" if node.role in ("RESISTOR", "SERIES") else node.role
 
     x, y, w, h = node.x, node.y, node.width, node.height
@@ -343,7 +366,6 @@ def render_topology_svg(
     _draw_wires_schematic(
         parts,
         model.wires,
-        fg_dim=fg_dim,
         bg=bg,
         gnd_symbol_x=model.gnd_symbol_x,
         gnd_bus_y=model.gnd_bus_y,

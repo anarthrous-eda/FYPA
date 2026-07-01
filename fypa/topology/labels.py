@@ -99,7 +99,9 @@ def _min_span_for_label(
     th: float,
 ) -> float:
     """Minimum wire length needed to center the label on a segment."""
-    return (tw if vertical else tw) + 4.0
+    # Both orientations reserve the text width along the wire (the label is
+    # centered on the segment); ``vertical``/``th`` are kept for call-site clarity.
+    return tw + 4.0
 
 
 def _sorted_net_segments(

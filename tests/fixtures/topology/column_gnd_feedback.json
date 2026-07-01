@@ -3,9 +3,6 @@
     "VDD_3V3": "VDD_3V3_PWR",
     "VDD_3V3_PWR": "VDD_3V3_PWR"
   },
-  "annotation_errors": [
-    "REGULATOR on U2: missing required parameter PDN_GAIN"
-  ],
   "directives": [
     {
       "role": "SOURCE",
@@ -18,10 +15,7 @@
           "pins": [
             {
               "net": "VIN",
-              "pad": "1",
-              "x_mm": 1.0,
-              "y_mm": 2.0,
-              "layer_id": 1
+              "pad": "1"
             }
           ]
         },
@@ -47,10 +41,7 @@
           "pins": [
             {
               "net": "VIN",
-              "pad": "1",
-              "x_mm": 3.0,
-              "y_mm": 4.0,
-              "layer_id": 1
+              "pad": "1"
             }
           ]
         },
@@ -95,10 +86,7 @@
           "pins": [
             {
               "net": "VDD_3V3_PWR",
-              "pad": "1",
-              "x_mm": 5.0,
-              "y_mm": 6.0,
-              "layer_id": 1
+              "pad": "1"
             }
           ]
         },
@@ -114,10 +102,10 @@
       }
     },
     {
-      "role": "RESISTOR",
-      "designator": "R1",
-      "label": "R1",
-      "value_str": "0 mOhm",
+      "role": "SINK",
+      "designator": "U3",
+      "label": "U3",
+      "value_str": "30 mA",
       "terminals": {
         "P": {
           "requested_net": "VDD_3V3",
@@ -130,10 +118,37 @@
           ]
         },
         "N": {
-          "requested_net": "LED_R",
+          "requested_net": "GND",
           "pins": [
             {
-              "net": "LED_R",
+              "net": "GND",
+              "pad": "2"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "U4",
+      "label": "U4",
+      "value_str": "15 mA",
+      "terminals": {
+        "P": {
+          "requested_net": "VDD_3V3",
+          "resolved_via_local": true,
+          "pins": [
+            {
+              "net": "VDD_3V3_PWR",
+              "pad": "1"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
               "pad": "2"
             }
           ]

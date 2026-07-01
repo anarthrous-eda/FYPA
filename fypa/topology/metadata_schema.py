@@ -29,9 +29,6 @@ class DirectiveDict(TypedDict, total=False):
     value_str: str
     channel_index: int
     gain: float
-    quiescent_current: float
-    regulator_type: str
-    efficiency: float
     terminals: dict[str, TerminalDict]
 
 

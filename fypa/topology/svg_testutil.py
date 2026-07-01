@@ -23,9 +23,15 @@ def _round_float(match: re.Match[str]) -> str:
 
 
 def normalize_topology_svg(svg: str) -> str:
-    """Return a deterministic SVG string for snapshot comparison."""
+    """Return a deterministic SVG string for snapshot comparison.
+
+    Floats are rounded to 1 dp and each element is placed on its own line so
+    that golden diffs are reviewable (a layout change shows as line-level adds
+    /removes rather than one unreadable 14 KB line).
+    """
     normalized = re.sub(r"\d+\.\d+", _round_float, svg)
     normalized = re.sub(r">\s+<", "><", normalized)
+    normalized = normalized.replace("><", ">\n<")
     normalized = normalized.strip()
     if not normalized.endswith("\n"):
         normalized += "\n"

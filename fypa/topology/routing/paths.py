@@ -119,6 +119,11 @@ def two_port_path(
     skip = {start.node_id, end.node_id}
     ctx = ctx or RoutingContext()
 
+    if abs(start.x - end.x) < WIRE_EPS and abs(start.y - end.y) < WIRE_EPS:
+        # Degenerate: both ports occupy the same point. Emit a single stub rather
+        # than a self-overlapping stub-out/stub-back/stub-out double-back.
+        return simplify_wire_path(start_leg)
+
     if _opposite_column_gutter_pair(start, end) and abs(start.y - end.y) > WIRE_EPS:
         return _stub_column_gutter_path(
             start,
