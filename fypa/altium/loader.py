@@ -1621,6 +1621,7 @@ def solve_problem_adaptive(
 
         new_gains: dict[tuple[str, int | None], float] = {}
         max_rel_change = 0.0
+        any_vin_sampled = False
         for d in loaded.annotations.directives:
             if not isinstance(d, RegulatorSpec) or not d.adaptive_gain_eligible:
                 continue
@@ -1633,6 +1634,7 @@ def solve_problem_adaptive(
                 )
                 new_gain = d.gain
             else:
+                any_vin_sampled = True
                 new_gain = d.voltage / (vin * d.efficiency)
             adaptive_info["gains"][label] = new_gain
             if d.gain != 0.0:
@@ -1641,6 +1643,10 @@ def solve_problem_adaptive(
                     abs(new_gain - d.gain) / abs(d.gain),
                 )
             new_gains[(d.designator, d.channel_index)] = new_gain
+
+        if not any_vin_sampled:
+            adaptive_info["converged"] = False
+            break
 
         if max_rel_change < _ADAPTIVE_GAIN_REL_TOL:
             _replace_regulator_gains(loaded, new_gains)

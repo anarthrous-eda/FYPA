@@ -1516,20 +1516,6 @@ def _parse_resistance(comp, proj, enabled_layers, result, bridge_groups=None,
     return specs
 
 
-def _equivalent_net_names(
-    net_name: str,
-    bridge_groups: dict[str, frozenset[str]] | None,
-) -> set[str]:
-    """Return ``net_name`` plus every name in its SERIES bridge group."""
-    key = net_name.strip().upper()
-    out = {key}
-    if bridge_groups:
-        group = bridge_groups.get(key)
-        if group is not None:
-            out.update(group)
-    return out
-
-
 def _collect_supply_voltages_by_net(
     parameter_sources: list[PdnParameterSource],
 ) -> dict[str, float]:
@@ -1580,11 +1566,10 @@ def _collect_supply_voltages_by_net(
 def _lookup_inferred_vin(
     in_p_net: str | None,
     supply_map: dict[str, float],
-    bridge_groups: dict[str, frozenset[str]] | None,
 ) -> float | None:
     """Nominal Vin from an upstream SOURCE / REGULATOR on ``in_p_net``.
 
-    ``bridge_groups`` is intentionally unused: SERIES equivalence must not
+    Uses an exact net-name match only — SERIES bridge equivalence must not
     expand Vin lookup, because sense paths through GND can join unrelated
     rails (e.g. 48 V input and 12 V output) into one class. Pad resolution
     still uses bridge groups via :func:`_resolve_terminal`.
@@ -1603,7 +1588,6 @@ def _resolve_regulator_gain(
     v_out: float,
     in_p_net: str | None,
     supply_map: dict[str, float],
-    bridge_groups: dict[str, frozenset[str]] | None,
     role_diag: str,
     result: AnnotationResult,
 ) -> tuple[float, str | None, float, bool] | None:
@@ -1645,10 +1629,13 @@ def _resolve_regulator_gain(
         return 1.0, reg_type, 1.0, False
 
     # SMPS
-    eff = _optional_value(params, eff_key, role_diag, result)
-    if eff is None:
+    if _ci_get(params, eff_key) is None:
         eff = 1.0
-    elif not (0.0 < eff <= 1.0):
+    else:
+        eff = _optional_value(params, eff_key, role_diag, result)
+        if eff is None:
+            return None
+    if not (0.0 < eff <= 1.0):
         result.errors.append(
             f"{role_diag}: {eff_key} must be in (0, 1], got {eff}"
         )
@@ -1660,7 +1647,7 @@ def _resolve_regulator_gain(
         )
         return None
 
-    vin = _lookup_inferred_vin(in_p_net, supply_map, bridge_groups)
+    vin = _lookup_inferred_vin(in_p_net, supply_map)
     if vin is None or vin <= 0:
         in_key = _channel_key("IN_P_NET", idx)
         result.errors.append(
@@ -1718,7 +1705,7 @@ def _parse_regulator(comp, proj, enabled_layers, result, bridge_groups=None,
         in_p_net = _ci_get(comp.parameters, _channel_key("IN_P_NET", idx))
         resolved = _resolve_regulator_gain(
             comp.parameters, idx, v, in_p_net,
-            supply_map, bridge_groups, role_diag, result,
+            supply_map, role_diag, result,
         ) if v is not None else None
         if v is None or resolved is None:
             continue

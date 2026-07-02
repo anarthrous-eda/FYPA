@@ -948,11 +948,9 @@ def test_regulator_explicit_gain_overrides_type():
 
 def test_lookup_inferred_vin_ignores_series_bridge_groups():
     """Sense paths through GND must not make Vin ambiguous (rudder / PDN5_R)."""
-    bridge_groups = {
-        "VDD_48V": frozenset({"VDD_48V", "GND", "VDD_12V", "SNS_A"}),
-    }
     supply_map = {"VDD_48V": 48.0, "VDD_12V": 12.0}
-    assert _lookup_inferred_vin("VDD_48V", supply_map, bridge_groups) == 48.0
+    assert _lookup_inferred_vin("VDD_48V", supply_map) == 48.0
+    assert _lookup_inferred_vin("VDD_12V", supply_map) == 12.0
 
 
 def test_regulator_smps_vin_not_ambiguous_through_sense_bridges():
@@ -1048,6 +1046,92 @@ def test_regulator_smps_vin_not_ambiguous_through_sense_bridges():
     assert reg.regulator_type == "SMPS"
     assert abs(reg.gain - (12.0 / (48.0 * 0.85))) < 1e-6
     assert not any("cannot infer input voltage" in e for e in result.errors)
+
+
+def test_regulator_smps_invalid_efficiency_aborts_gain():
+    proj = _regulator_proj_with_source(
+        PDN_REGULATOR_TYPE="SMPS",
+        PDN_REGULATOR_EFFICIENCY="not_a_number",
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert not result.ok
+    assert not any(isinstance(d, RegulatorSpec) for d in result.directives)
+    assert any("PDN_REGULATOR_EFFICIENCY" in e for e in result.errors)
+
+
+def test_regulator_smps_vin_from_upstream_regulator_chain():
+    """Second-stage SMPS infers Vin_nom from an upstream REGULATOR output net."""
+    proj = _minimal_proj(
+        nets=(
+            RawNet("GND"), RawNet("VDD_48V"), RawNet("VDD_12V"), RawNet("VDD_3V3"),
+        ),
+        sch_components=(
+            RawSchComponent(
+                designator="J1", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SOURCE",
+                    "PDN_V": "48",
+                    "PDN_P_NET": "VDD_48V",
+                    "PDN_N_NET": "GND",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="U4", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "REGULATOR",
+                    "PDN_REGULATOR_TYPE": "SMPS",
+                    "PDN_REGULATOR_EFFICIENCY": "0.9",
+                    "PDN_V": "12",
+                    "PDN_OUT_P_NET": "VDD_12V",
+                    "PDN_OUT_N_NET": "GND",
+                    "PDN_IN_P_NET": "VDD_48V",
+                    "PDN_IN_N_NET": "GND",
+                },
+                pin_designators=("1", "2", "3", "4"),
+            ),
+            RawSchComponent(
+                designator="U5", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "REGULATOR",
+                    "PDN_REGULATOR_TYPE": "SMPS",
+                    "PDN_REGULATOR_EFFICIENCY": "0.85",
+                    "PDN_V": "3.3",
+                    "PDN_OUT_P_NET": "VDD_3V3",
+                    "PDN_OUT_N_NET": "GND",
+                    "PDN_IN_P_NET": "VDD_12V",
+                    "PDN_IN_N_NET": "GND",
+                },
+                pin_designators=("1", "2", "3", "4"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="J1", center=Pt2D(-10, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="CONN", source_designator="J1",
+            ),
+            RawPcbComponent(
+                designator="U4", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="SOT", source_designator="U4",
+            ),
+            RawPcbComponent(
+                designator="U5", center=Pt2D(10, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="SOT", source_designator="U5",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, -10), _pad(0, "2", 0, -9),
+            _pad(1, "1", 1, 0), _pad(1, "2", 0, 1),
+            _pad(1, "3", 2, 2), _pad(1, "4", 0, 3),
+            _pad(2, "1", 3, 10), _pad(2, "2", 0, 11),
+            _pad(2, "3", 2, 12), _pad(2, "4", 0, 13),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    regs = {d.designator: d for d in result.directives if isinstance(d, RegulatorSpec)}
+    assert abs(regs["U4"].gain - (12.0 / (48.0 * 0.9))) < 1e-6
+    assert abs(regs["U5"].gain - (3.3 / (12.0 * 0.85))) < 1e-6
 
 
 def test_regulator_smps_missing_upstream_voltage():
