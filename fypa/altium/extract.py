@@ -615,7 +615,9 @@ def _via_fill_material(v) -> str:
         return ""
     try:
         feature = structure.get_feature(_IPC4761_FEATURE_FILLING)
-    except Exception:
+    except Exception as exc:
+        log.debug("via_structure.get_feature(FILLING) failed, treating via "
+                  "as non-conductive-fill: %s", exc)
         return ""
     if feature is None:
         return ""
@@ -924,17 +926,27 @@ def _extract_pcb_components(pcb, ox_mm: float, oy_mm: float,
                             ) -> tuple[RawPcbComponent, ...]:
     out: list[RawPcbComponent] = []
     for c in pcb.components:
-        out.append(RawPcbComponent(
-            designator=str(c.designator),
-            center=Pt2D(parse_mil_string(c.x) - ox_mm,
-                        parse_mil_string(c.y) - oy_mm),
-            rotation_deg=parse_rotation_string(c.rotation),
-            layer_name=str(c.layer),
-            footprint=str(c.footprint),
-            source_designator=str(c.raw_record.get("SOURCEDESIGNATOR", "") or ""),
-            parameters=_normalise_pcb_parameters(getattr(c, "parameters", None)),
-            unique_id=str(getattr(c, "unique_id", "") or ""),
-        ))
+        # One corrupt/hand-edited component record (bad mil string, malformed
+        # rotation, etc.) must not abort the entire project load — warn and
+        # skip it. A dropped component only loses its designator overlay /
+        # any PDN annotations it carried; the copper geometry is unaffected.
+        try:
+            out.append(RawPcbComponent(
+                designator=str(c.designator),
+                center=Pt2D(parse_mil_string(c.x) - ox_mm,
+                            parse_mil_string(c.y) - oy_mm),
+                rotation_deg=parse_rotation_string(c.rotation),
+                layer_name=str(c.layer),
+                footprint=str(c.footprint),
+                source_designator=str(
+                    c.raw_record.get("SOURCEDESIGNATOR", "") or ""),
+                parameters=_normalise_pcb_parameters(
+                    getattr(c, "parameters", None)),
+                unique_id=str(getattr(c, "unique_id", "") or ""),
+            ))
+        except Exception as exc:
+            desig = getattr(c, "designator", "?")
+            log.warning("Skipping malformed PCB component %s: %s", desig, exc)
     return tuple(out)
 
 

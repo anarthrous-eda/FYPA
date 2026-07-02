@@ -1103,6 +1103,20 @@ def build_per_net_geometry_layers_split(
         lambda: _shapes_to_geometry_layers(
             proj, _parallel_union_buckets(rest_b, snap=False)))
     ex.shutdown(wait=False)   # task still completes; executor frees when done
+
+    # The caller awaits ``rest_future.result()`` at the end of a long
+    # ``build_problem`` — but if that raises first, the future is never
+    # awaited and a background-union failure would vanish silently. Log it
+    # from a done-callback so it is always observed regardless of the
+    # caller's control flow.
+    def _log_rest_union_exc(fut: concurrent.futures.Future) -> None:
+        if fut.cancelled():
+            return
+        exc = fut.exception()
+        if exc is not None:
+            log.warning("Background non-active-net union failed: %s", exc)
+
+    rest_future.add_done_callback(_log_rest_union_exc)
     return active_layers, rest_future
 
 

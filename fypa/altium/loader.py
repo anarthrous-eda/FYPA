@@ -1189,10 +1189,11 @@ def _build_stub_record(piece, layer_id: int, net_name: str) -> dict | None:
             try:
                 hp = shapely.geometry.Polygon(h_ring).representative_point()
                 hole_markers.append((float(hp.x), float(hp.y)))
-            except Exception:
+            except Exception as exc:
                 # Couldn't synthesise a hole marker — leave it; Triangle
                 # will mesh the hole as solid, the viewer renders it.
-                pass
+                log.debug("stub hole-marker synthesis failed (net %s, layer "
+                          "%s): %s", net_name, layer_id, exc)
         tri_input: dict = {"vertices": verts, "segments": segs}
         if hole_markers:
             tri_input["holes"] = hole_markers
@@ -1205,10 +1206,11 @@ def _build_stub_record(piece, layer_id: int, net_name: str) -> dict | None:
             record["triangles_xy"] = v_arr[t_arr.ravel()].astype(
                 np.float32, copy=False,
             )
-    except Exception:
+    except Exception as exc:
         # Triangle library unhappy with this polygon — viewer will retry
         # lazily and degrade to its own fallback.
-        pass
+        log.debug("stub pre-triangulation failed (net %s, layer %s): %s",
+                  net_name, layer_id, exc)
     return record
 
 
