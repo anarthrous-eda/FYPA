@@ -1582,16 +1582,18 @@ def _lookup_inferred_vin(
     supply_map: dict[str, float],
     bridge_groups: dict[str, frozenset[str]] | None,
 ) -> float | None:
-    """Nominal Vin from an upstream SOURCE / REGULATOR on ``in_p_net``."""
+    """Nominal Vin from an upstream SOURCE / REGULATOR on ``in_p_net``.
+
+    ``bridge_groups`` is intentionally unused: SERIES equivalence must not
+    expand Vin lookup, because sense paths through GND can join unrelated
+    rails (e.g. 48 V input and 12 V output) into one class. Pad resolution
+    still uses bridge groups via :func:`_resolve_terminal`.
+    """
     if in_p_net is None or not str(in_p_net).strip():
         return None
-    candidates: set[float] = set()
-    for name in _equivalent_net_names(in_p_net, bridge_groups):
-        v = supply_map.get(name)
-        if v is not None:
-            candidates.add(v)
-    if len(candidates) == 1:
-        return next(iter(candidates))
+    v = supply_map.get(in_p_net.strip().upper())
+    if v is not None and v > 0:
+        return v
     return None
 
 
