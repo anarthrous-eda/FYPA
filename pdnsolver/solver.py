@@ -343,6 +343,12 @@ class SolverWarning(Warning):
     """
 
 
+# A connection point farther than this many mesh cells (× the mesher's
+# maximum edge length) from the nearest copper vertex on its net is treated
+# as "off copper" and warned about — see NodeIndexer.create.
+_OFF_COPPER_WARN_FACTOR = 3.0
+
+
 @dataclass(frozen=True)
 class SolverInfo:
     """Diagnostic information from the solver."""
@@ -1113,7 +1119,8 @@ class NodeIndexer:
                mesh_index_to_layer_index: list[int],
                vindex: VertexIndexer,
                filtered_networks: list[problem.Network],
-               layer_to_index: dict[int, int] | None = None) -> "NodeIndexer":
+               layer_to_index: dict[int, int] | None = None,
+               off_copper_threshold_mm: float | None = None) -> "NodeIndexer":
 
         layer_to_kdtree, layer_to_globals = cls._construct_kdtrees(
             prob,
@@ -1147,8 +1154,27 @@ class NodeIndexer:
             conn for network in filtered_networks for conn in network.connections
         ]
         for conn in connections:
-            layer_i = layer_to_index[id(conn.layer)]
-            kdtree = layer_to_kdtree[layer_i]
+            # A connection's layer may have no meshed copper at all — e.g. a
+            # directive pin on a plane that has no copper reachable from a
+            # driven source. _construct_kdtrees only builds a tree for layers
+            # that produced connected meshes, so layer_to_kdtree[layer_i] is
+            # absent for those. Indexing it directly used to raise KeyError and
+            # abort the whole solve; instead, skip the connection with a warning
+            # (its node falls through to the internal-node allocation below and
+            # is simply left unattached to copper).
+            layer_i = (layer_to_index.get(id(conn.layer))
+                       if conn.layer is not None else None)
+            kdtree = layer_to_kdtree.get(layer_i) if layer_i is not None else None
+            if kdtree is None:
+                warnings.warn(
+                    f"Connection node {conn.node_id} is on a layer with no "
+                    f"meshed copper near ({conn.point.x:.4g}, "
+                    f"{conn.point.y:.4g}); its terminal is left unattached. "
+                    f"Check that this pin lands on copper reachable from a "
+                    f"source.",
+                    SolverWarning, stacklevel=2,
+                )
+                continue
             # layer_to_globals[layer_i] is a flat int64 array — direct numpy
             # indexing returns the global vertex index, no tuple unpack.
             globals_arr = layer_to_globals[layer_i]
@@ -1165,10 +1191,27 @@ class NodeIndexer:
                         vertex_groups.append(group)
 
             if vertex_global_idx is None:
-                _, vertex_idx_in_kdtree = kdtree.query(
+                dist, vertex_idx_in_kdtree = kdtree.query(
                     (conn.point.x, conn.point.y), k=1,
                 )
                 vertex_global_idx = int(globals_arr[vertex_idx_in_kdtree])
+                # If the nearest copper vertex is far from where the terminal
+                # was placed, the pin isn't really on this net's copper — its
+                # current then gets injected at a distant vertex, silently
+                # skewing IR-drop. Warn but still attach (preserving the
+                # long-standing behaviour); the threshold is a few mesh cells,
+                # so normal on-copper pins never trip it.
+                if (off_copper_threshold_mm is not None
+                        and dist > off_copper_threshold_mm):
+                    warnings.warn(
+                        f"Connection node {conn.node_id} at "
+                        f"({conn.point.x:.4g}, {conn.point.y:.4g}) is "
+                        f"{dist:.3g} mm from the nearest copper vertex on its "
+                        f"net (> {off_copper_threshold_mm:.3g} mm); its current "
+                        f"is being injected at a distant vertex, so IR-drop "
+                        f"near it may be wrong. Check the pin lands on copper.",
+                        SolverWarning, stacklevel=2,
+                    )
 
             node = conn.node_id
 
@@ -2186,6 +2229,9 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
     node_indexer = NodeIndexer.create(
         prob, meshes, mesh_index_to_layer_index, vindex, filtered_networks,
         layer_to_index=layer_to_index,
+        # A pin more than a few mesh cells from any copper vertex on its net
+        # isn't really on that copper — flag it rather than silently snapping.
+        off_copper_threshold_mm=_OFF_COPPER_WARN_FACTOR * mesher.config.maximum_size,
     )
     _record_stage(timings, "Node indexing", _t0)
 
