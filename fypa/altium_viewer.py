@@ -4458,6 +4458,17 @@ def _abort_solve_worker(owner) -> None:
             logging.getLogger(__name__).warning(
                 "cancel_active_mesh_pool raised %s; carrying on.", _exc,
             )
+        # Drop the cached PARDISO factorisation. If the worker is hard-killed
+        # mid-factorisation below, its persistent solver could otherwise be
+        # left inconsistent and reused (→ garbage or a crash) on the next
+        # re-solve; dropping it forces a clean re-factorisation instead.
+        try:
+            from pdnsolver.solver import free_pardiso_cache
+            free_pardiso_cache()
+        except Exception as _exc:
+            logging.getLogger(__name__).warning(
+                "free_pardiso_cache raised %s; carrying on.", _exc,
+            )
         worker.requestInterruption()
         # Give the worker a chance to stop cooperatively at its next stage
         # boundary first (see _SolveWorker._cancel_requested). This matters for

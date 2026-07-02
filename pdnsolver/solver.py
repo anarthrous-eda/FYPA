@@ -2,6 +2,7 @@
 
 import collections
 import ctypes
+import hashlib
 import itertools
 import logging
 import math
@@ -1894,10 +1895,52 @@ class _MinresProgress:
             raise _MinresTimeout()
 
 
+# Persistent symmetric-indefinite PARDISO solver + a fingerprint of the matrix
+# it currently holds factorised. Keeping the factorisation alive between
+# solve() calls lets a re-solve whose stiffness matrix is unchanged — e.g. the
+# GUI editor loop where only sink-current / source-voltage magnitudes change
+# (those touch only the RHS, never L) — skip the ~seconds-to-minutes
+# factorisation and run just the fast solve phase. The lock serialises access
+# (solves never overlap in practice, but a shared factorisation must not be
+# entered concurrently). ``free_pardiso_cache`` drops it; the GUI also calls
+# that on cancel so a solve hard-killed mid-factorisation can never leave a
+# corrupt factorisation to be reused.
+_sym_solver = None
+_sym_fingerprint: str | None = None
+_sym_solver_lock = threading.Lock()
+
+
+def _csr_fingerprint(m: "scipy.sparse.csr_matrix") -> str:
+    """Content hash of a CSR matrix — changes iff the matrix (structure or
+    values) changes, so an identical re-solve is detected and the cached
+    factorisation reused."""
+    return (hashlib.sha1(np.ascontiguousarray(m.indptr)).hexdigest()
+            + hashlib.sha1(np.ascontiguousarray(m.indices)).hexdigest()
+            + hashlib.sha1(np.ascontiguousarray(m.data)).hexdigest())
+
+
+def free_pardiso_cache() -> None:
+    """Release the cached symmetric factorisation and its solver.
+
+    Bounds resident memory (a large factorisation can be gigabytes) and, called
+    on solve-cancel, guarantees a solve that was hard-killed mid-factorisation
+    can't leave an inconsistent factorisation for the next solve to reuse. The
+    next solve simply re-factorises from scratch."""
+    global _sym_solver, _sym_fingerprint
+    with _sym_solver_lock:
+        solver, _sym_solver, _sym_fingerprint = _sym_solver, None, None
+    if solver is not None:
+        try:
+            solver.free_memory(everything=True)
+        except Exception:  # pragma: no cover - best effort
+            pass
+
+
 def _pardiso_solve_sym(
     L_csc: "scipy.sparse.csc_matrix", r: np.ndarray,
 ) -> np.ndarray:
-    """Symmetric-indefinite PARDISO solve (mtype -2).
+    """Symmetric-indefinite PARDISO solve (mtype -2), reusing the factorisation
+    across identical-matrix re-solves.
 
     PARDISO factorises only the upper triangle here — markedly faster than
     the unsymmetric factorisation. Two requirements: it must be given just
@@ -1905,18 +1948,44 @@ def _pardiso_solve_sym(
     structurally complete — the MNA Lagrange rows (ground node, voltage
     sources) carry no diagonal entry, which PARDISO rejects as "input
     inconsistent", so the diagonal is materialised (missing entries become
-    explicit zeros, numerically a no-op). A fresh solver instance is used so
-    its factorisation is freed straight after via ``free_memory()``.
-    """
+    explicit zeros, numerically a no-op).
+
+    A module-level solver is kept alive and re-factorised only when the matrix
+    fingerprint changes; when it hasn't (a value-only re-solve), pypardiso runs
+    the solve phase alone. On any error the cache is dropped and the exception
+    re-raised so :func:`_solve_robust` falls back — and a stale/garbage result
+    from a reused factorisation is caught anyway by that function's residual
+    check. ``size_limit_storage=0`` makes pypardiso store only a hash of the
+    factorised matrix (not a full copy), keeping resident memory down."""
     M = scipy.sparse.triu(L_csc, format="csr")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")  # scipy setdiag notice
         M.setdiag(M.diagonal())
-    solver = _pypardiso.PyPardisoSolver(mtype=-2)
-    try:
-        return solver.solve(M, r)
-    finally:
-        solver.free_memory()
+    M.sort_indices()  # canonical form: stable fingerprint, and PARDISO needs it
+
+    global _sym_solver, _sym_fingerprint
+    with _sym_solver_lock:
+        if _sym_solver is None:
+            _sym_solver = _pypardiso.PyPardisoSolver(
+                mtype=-2, size_limit_storage=0)
+            _sym_fingerprint = None
+        try:
+            fp = _csr_fingerprint(M)
+            if fp != _sym_fingerprint:
+                # First solve, or the matrix changed: analyse + factorise once.
+                _sym_solver.factorize(M)
+                _sym_fingerprint = fp
+            # solve() sees the stored factorisation and runs the solve phase
+            # only — the cheap path that makes an identical re-solve fast.
+            return _sym_solver.solve(M, r)
+        except BaseException:
+            try:
+                _sym_solver.free_memory(everything=True)
+            except Exception:
+                pass
+            _sym_solver = None
+            _sym_fingerprint = None
+            raise
 
 
 def _log_singular_diagnostic(
