@@ -1108,6 +1108,14 @@ def _via_through_holes(
     for p in extracted.pads:
         if not p.is_through_hole:
             continue
+        # A non-plated through-hole (NPTH mounting / mechanical hole) has no
+        # plated barrel, so it can't carry current between layers — adding a
+        # coupling resistor chain would be a phantom conductor. A netted NPTH
+        # (e.g. a chassis-GND mounting hole) keeps its per-layer copper annulus
+        # but must NOT stitch the layers together. (The metadata path already
+        # gates on is_plated.)
+        if not getattr(p, "is_plated", True):
+            continue
         # Through-hole pads carry no IPC-4761 fill metadata in Altium —
         # the IPC-4761 protection table is a via-only concept.
         sites.append(_ViaSite(
@@ -1537,12 +1545,20 @@ def build_solve_metadata(
         return "(none)"
 
     # Stackup — only the enabled copper layers (the ones the FEM actually uses).
+    # Use the *current* module-level conductivity so a Settings-tab temperature /
+    # resistivity override (which SolveSettings.apply_to_modules patches into
+    # fypa.altium_geometry, and which the FEM uses) is reflected on the Setup tab
+    # too — otherwise these rows show stale 20 °C values that contradict the solve.
+    _copper_conductivity = __import__(
+        "fypa.altium_geometry",
+        fromlist=["COPPER_CONDUCTIVITY_S_PER_MM"],
+    ).COPPER_CONDUCTIVITY_S_PER_MM
     stackup_rows = []
     for lid in enabled:
         s = stackup_by_id.get(lid)
         if s is None:
             continue
-        sheet_conductance = s.copper_thickness_mm * 5.95e4  # S = thickness_mm * conductivity_S_per_mm
+        sheet_conductance = s.copper_thickness_mm * _copper_conductivity  # S = thickness_mm * conductivity_S_per_mm
         stackup_rows.append({
             "layer_id": lid,
             "name": s.name,

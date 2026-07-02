@@ -307,7 +307,15 @@ def _shape_based_outline_points(
     bound the arc primitive uses, so the meshed geometry matches.
 
     Altium stores the arc's start/end angles in degrees, measured CCW from
-    +x about ``vertex.center``. A negative ``end - start`` sweeps CW.
+    +x about ``vertex.center``, and — like the standalone ``Arcs6`` primitive
+    (:func:`_arc_polyline_points`) — the sweep is always CCW: normalise
+    ``(end - start) % 360`` into ``[0, 360)``. The previous code took the raw
+    signed difference and treated a negative value as a CW sweep, which traced a
+    wrap-around corner the long way (e.g. a ``360° → 90°`` rounded corner became
+    a 270° arc instead of the intended 90°). Verified on the example corpus:
+    every negative raw sweep present was a ``-270°`` that is really a ``+90°``
+    CCW corner, and all non-wrapping arcs are already positive, so this only
+    corrects the wrap-around case.
     """
     n = len(vertices)
     if n < 3:
@@ -317,9 +325,12 @@ def _shape_based_outline_points(
         pts.append((cur.pos.x, cur.pos.y))
         if not cur.is_arc or cur.radius_mm <= 0.0:
             continue
-        sweep_deg = cur.end_angle_deg - cur.start_angle_deg
+        raw_sweep = cur.end_angle_deg - cur.start_angle_deg
+        if raw_sweep == 0.0:
+            continue  # start == end: degenerate zero-length arc edge
+        sweep_deg = raw_sweep % 360.0
         if sweep_deg == 0.0:
-            continue
+            sweep_deg = 360.0  # raw was a non-zero multiple of 360 → full circle
         cos_arg = max(-1.0, 1.0 - ARC_CHORD_TOLERANCE_MM / cur.radius_mm)
         max_step_rad = 2.0 * math.acos(cos_arg)
         sweep_rad = math.radians(sweep_deg)
@@ -786,11 +797,52 @@ def _plane_sheet_polygon(
     else:
         holes = []
 
+    # Physical cuts that remove plane copper regardless of net: board cutouts
+    # (a plane can't conduct across a milled slot / internal cutout) and the
+    # bores of non-plated through-holes (a drilled hole with no plated barrel).
+    # These are subtracted *after* the thermal-relief union so a spoke can never
+    # fill them back in.
+    plane_lid = stackup.layer_id
+    extra_cuts: list[shapely.geometry.base.BaseGeometry] = []
+    for r in proj.regions:
+        if getattr(r, "is_board_cutout", False) and len(r.outline) >= 3:
+            poly = _region_polygon(r)
+            if poly is not None and not poly.is_empty:
+                extra_cuts.append(poly)
+    for r in proj.shape_based_regions:
+        if getattr(r, "is_board_cutout", False) and len(r.outline) >= 3:
+            poly = _shape_based_region_polygon(r)
+            if poly is not None and not poly.is_empty:
+                extra_cuts.append(poly)
+    for p in proj.pads:
+        if (p.is_through_hole and not getattr(p, "is_plated", True)
+                and getattr(p, "hole_mm", 0.0) > 0.0):
+            extra_cuts.append(
+                shapely.geometry.Point(p.center.x, p.center.y).buffer(
+                    p.hole_mm / 2.0, resolution=CIRCLE_RESOLUTION // 4))
+
+    # Split-plane heuristic: a plane layer carrying *copper* regions on a net
+    # other than its own means the artwork splits the layer between multiple
+    # nets — which this single-net flood model can't represent (the other net's
+    # copper is missing). Warn loudly rather than silently mis-model it.
+    for r in proj.shape_based_regions:
+        if (r.layer_id == plane_lid and r.kind == 0 and not r.is_keepout
+                and r.net_index not in (NO_NET, net_index)):
+            log.warning(
+                "Plane layer %d (net %r) carries copper region(s) on a different "
+                "net — this looks like a SPLIT plane. FYPA models it as a single "
+                "%r flood, so the other net's copper on this layer is not "
+                "represented.", plane_lid, stackup.plane_net_name,
+                stackup.plane_net_name)
+            break
+
     sheet = base
     if holes:
         sheet = sheet.difference(shapely.ops.unary_union(holes))
     if spokes:
         sheet = sheet.union(shapely.ops.unary_union(spokes)).intersection(base)
+    if extra_cuts:
+        sheet = sheet.difference(shapely.ops.unary_union(extra_cuts))
     if not sheet.is_empty and not sheet.is_valid:
         sheet = shapely.make_valid(sheet)
 
@@ -839,6 +891,7 @@ def build_layer_geometry(proj: ExtractedProject, layer_id: int,
 
     valid_arcs = [a for a in proj.arcs
                   if a.layer_id == layer_id and not a.is_keepout
+                  and not a.is_polygon_outline
                   and a.width_mm > 0]
     pieces.extend(_batch_buffer_arcs(valid_arcs))
 
@@ -1155,9 +1208,11 @@ def _build_net_layer_buckets(
     for t, poly in zip(valid_tracks, track_polys):
         _add(t.layer_id, t.net_index, poly)
 
-    # Arcs: same vectorised-buffer trick.
+    # Arcs: same vectorised-buffer trick. Exclude polygon-pour *outline* arcs
+    # (boundary artwork, not copper) exactly as the track filter above does.
     valid_arcs = [a for a in proj.arcs
-                  if not a.is_keepout and a.width_mm > 0
+                  if not a.is_keepout and not a.is_polygon_outline
+                  and a.width_mm > 0
                   and a.layer_id not in plane_layer_ids]
     arc_polys = _batch_buffer_arcs(valid_arcs)
     for a, poly in zip(valid_arcs, arc_polys):

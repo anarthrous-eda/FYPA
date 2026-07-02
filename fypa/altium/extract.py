@@ -97,6 +97,12 @@ class RawArc:
     layer_id: int
     net_index: int
     is_keepout: bool
+    # An arc that forms part of a polygon-pour *outline* (flags1 & 0x02) is
+    # boundary artwork, not copper — the poured copper is the region/fill. Like
+    # is_polygon_outline tracks, these must be excluded from the copper geometry
+    # or a rounded-corner pour gains a spurious band of copper along its outline.
+    is_polygon_outline: bool = False
+    polygon_index: int = NO_POLYGON
 
 
 @dataclass(frozen=True, slots=True)
@@ -523,6 +529,8 @@ def _extract_arcs(pcb, ox_mm: float, oy_mm: float) -> tuple[RawArc, ...]:
             layer_id=int(a.layer),
             net_index=_net_index(a.net_index),
             is_keepout=bool(a.is_keepout),
+            is_polygon_outline=bool(getattr(a, "is_polygon_outline", False)),
+            polygon_index=int(getattr(a, "polygon_index", NO_POLYGON)),
         ))
     return tuple(out)
 
@@ -849,6 +857,12 @@ def _extract_shape_based_regions(pcb, ox_mm: float, oy_mm: float,
         # before reaching for the polygon's net.
         if (raw_net is None or raw_net == 0xFFFF) and poly_idx != NO_POLYGON:
             raw_net = _polygon_net(poly_idx)
+        # A standalone unassigned SBR (0xFFFF with no parent polygon, or a
+        # polygon that is itself unassigned) must become NO_NET, not the phantom
+        # net 65535 — otherwise the editor-mode path treats 0xFFFF as a real
+        # active net. Regions6 already maps its sentinel to None; do the same.
+        if raw_net == 0xFFFF:
+            raw_net = None
         # ShapeBasedRegion.kind is a ``PcbRegionKind`` enum (COPPER=0,
         # BOARD_CUTOUT=1, POLYGON_CUTOUT=2). Store the int so downstream
         # filters can do plain ``kind != 0`` to keep only copper.
