@@ -24,6 +24,7 @@ import numpy as np
 import scipy.spatial
 import shapely
 import shapely.geometry
+import shapely.strtree
 import triangle as _triangle
 
 from dataclasses import dataclass, field
@@ -1174,6 +1175,46 @@ def _triangulate_arrays(
     return out_vertices, out_triangles
 
 
+# Above this many boundary vertices, an unindexed ``shapely.distance`` (roughly
+# O(vertices) per centroid) costs more than building a one-off STRtree over the
+# boundary segments and querying nearest; below it the tree-build overhead isn't
+# worth it. The two paths give bit-identical distances.
+_ADAPTIVE_DIST_INDEX_MIN_BOUNDARY_PTS = 2000
+
+
+def _boundary_distance(boundary, centroids: np.ndarray) -> np.ndarray:
+    """Distance from each centroid to the polygon boundary.
+
+    For large boundaries, index the boundary *segments* in an STRtree and take
+    the nearest-segment distance — O(M log S) rather than the unindexed
+    ``shapely.distance``'s O(M·S), which on a big GND pour (tens of thousands of
+    boundary vertices × thousands of pass-1 triangles) is the dominant cost of
+    adaptive meshing (measured ~5× at 50 k boundary vertices). Bit-identical to
+    ``shapely.distance``: the nearest segment's distance *is* the boundary
+    distance. Small boundaries take the direct path (tree build not worth it)."""
+    cpts = shapely.points(centroids[:, 0], centroids[:, 1])
+    if shapely.get_num_coordinates(boundary) < _ADAPTIVE_DIST_INDEX_MIN_BOUNDARY_PTS:
+        return np.asarray(shapely.distance(boundary, cpts), dtype=np.float64)
+
+    lines = (list(boundary.geoms)
+             if boundary.geom_type.startswith("Multi") else [boundary])
+    seg_arrays = []
+    for line in lines:
+        c = shapely.get_coordinates(line)
+        if len(c) < 2:
+            continue
+        seg_arrays.append(shapely.linestrings(np.stack([c[:-1], c[1:]], axis=1)))
+    if not seg_arrays:
+        return np.asarray(shapely.distance(boundary, cpts), dtype=np.float64)
+
+    tree = shapely.strtree.STRtree(np.concatenate(seg_arrays))
+    res, dists = tree.query_nearest(
+        cpts, return_distance=True, all_matches=False)
+    out = np.empty(centroids.shape[0], dtype=np.float64)
+    out[res[0]] = dists
+    return out
+
+
 def _triangulate_adaptive(
     poly: shapely.geometry.Polygon,
     seed_xy: np.ndarray | None,
@@ -1220,11 +1261,7 @@ def _triangulate_adaptive(
 
     # Per-triangle target area from distance to the nearest feature.
     centroids = p1_v[p1_t].mean(axis=1)
-    dist = np.asarray(
-        shapely.distance(poly.boundary,
-                         shapely.points(centroids[:, 0], centroids[:, 1])),
-        dtype=np.float64,
-    )
+    dist = _boundary_distance(poly.boundary, centroids)
     if seed_xy is not None and len(seed_xy) > 0:
         kd = scipy.spatial.cKDTree(
             np.ascontiguousarray(seed_xy, dtype=np.float64).reshape(-1, 2))

@@ -390,6 +390,36 @@ def construct_strtrees_from_layers(layers: list[problem.Layer]
     return strtrees
 
 
+def resolve_connection_geoms(
+    problem: problem.Problem,
+    strtrees: list[shapely.strtree.STRtree],
+    layer_to_index: dict[int, int],
+) -> dict[int, list[int]]:
+    """Map each ``Connection`` to the ``layer.geoms`` indices its point lies in.
+
+    Returns ``{id(conn): [geom_i, ...]}``. Computed with ONE vectorised
+    ``STRtree.query(points, predicate="intersects")`` per layer — the predicate
+    runs the point-in-polygon test in C for every point at once — instead of a
+    per-connection ``query`` + Python ``intersects`` loop. The result is shared
+    by the connectivity graph and the dead-terminal filter, which both need
+    exactly this map (previously each recomputed it, point-at-a-time).
+    """
+    conns_by_layer: dict[int, list[problem.Connection]] = collections.defaultdict(list)
+    for network in problem.networks:
+        for conn in network.connections:
+            conns_by_layer[layer_to_index[id(conn.layer)]].append(conn)
+
+    out: dict[int, list[int]] = {}
+    for layer_i, conns in conns_by_layer.items():
+        pts = shapely.points(
+            np.array([(c.point.x, c.point.y) for c in conns], dtype=np.float64)
+        )
+        qi, gi = strtrees[layer_i].query(pts, predicate="intersects")
+        for k in range(qi.shape[0]):
+            out.setdefault(id(conns[int(qi[k])]), []).append(int(gi[k]))
+    return out
+
+
 @dataclass
 class ConnectivityGraph:
     nodes: list["Node"] = field(default_factory=list)
@@ -404,7 +434,9 @@ class ConnectivityGraph:
     @classmethod
     def create_from_problem(cls,
                             problem: problem.Problem,
-                            strtrees: list[shapely.strtree.STRtree]) -> "ConnectivityGraph":
+                            strtrees: list[shapely.strtree.STRtree],
+                            conn_geoms: dict[int, list[int]] | None = None,
+                            ) -> "ConnectivityGraph":
         # First, we construct Node objects for ever layer geometry in the layers
         # that is, a list nodes_by_layers[layer_i][geom_i] gives us the
         # Node that coresponds to the layer_i-th layers geom_i-th geometry
@@ -433,15 +465,18 @@ class ConnectivityGraph:
             for conn in network.connections:
                 # Find the layer index for this connection
                 layer_i = layer_to_index[id(conn.layer)]
-                kdtree = strtrees[layer_i]
-
-                # Find the closest vertex to this connection
-                candidates = kdtree.query(conn.point)
-
-                for geom_i in candidates:
-                    # Check if this connection is already in the index
-                    if not conn.layer.geoms[geom_i].intersects(conn.point):
-                        continue
+                # Geoms this connection's point lies in. The shared precomputed
+                # map (one vectorised query per layer) already applied the
+                # intersects predicate; without it, fall back to a per-point
+                # STRtree query + intersects filter.
+                if conn_geoms is not None:
+                    geom_indices = conn_geoms.get(id(conn), ())
+                else:
+                    geom_indices = [
+                        gi for gi in strtrees[layer_i].query(conn.point)
+                        if conn.layer.geoms[gi].intersects(conn.point)
+                    ]
+                for geom_i in geom_indices:
                     intersecting_node = nodes_by_layers[layer_i][geom_i]
                     nodes_in_this_network.append(intersecting_node)
 
@@ -857,6 +892,13 @@ def generate_meshes_for_problem(prob: problem.Problem,
         # repeated contains/intersects calls drop from O(boundary_vertices)
         # to O(log n) — the difference is dramatic on large GND copper
         # (the 8682 mm² piece has 1000s of boundary vertices).
+        #
+        # NB: this pass is left point-at-a-time on purpose. It already uses
+        # prepared geometries (unlike the connectivity / dead-terminal passes,
+        # which resolve_connection_geoms vectorises), and the per-seed order
+        # here feeds Triangle directly — batching it via STRtree.query changed
+        # the seed set/order enough to perturb the mesh, so it is not worth the
+        # small saving.
         prepared_by_geom_i: dict[int, shapely.prepared.PreparedGeometry] = {}
 
         for seed_point, add_ring in seed_points_in_layer:
@@ -1539,27 +1581,33 @@ def network_has_a_dead_terminal(network: problem.Network,
                                 connected_layer_mesh_pairs: set[tuple[int, int]],
                                 strtrees: list[shapely.strtree.STRtree],
                                 layer_to_index: dict[int, int] | None = None,
+                                conn_geoms: dict[int, list[int]] | None = None,
                                 ) -> bool:
     """
     Check if a network has any connection on a dead (disconnected) copper region.
 
     ``layer_to_index`` is an optional ``{id(layer): index}`` cache; pass it from
     the solve loop to avoid an O(L) ``prob.layers.index(...)`` per connection.
+    ``conn_geoms`` is the shared ``{id(conn): [geom_i, ...]}`` map from
+    :func:`resolve_connection_geoms` (already intersects-filtered); when given,
+    the per-connection ``query`` + ``intersects`` is skipped.
     """
     if layer_to_index is None:
         layer_to_index = {id(layer): i for i, layer in enumerate(prob.layers)}
     for conn in network.connections:
         layer_i = layer_to_index[id(conn.layer)]
-        strtree = strtrees[layer_i]
 
-        candidates = strtree.query(conn.point)
-        for geom_i in candidates:
+        if conn_geoms is not None:
+            geom_indices = conn_geoms.get(id(conn), ())
+        else:
+            geom_indices = strtrees[layer_i].query(conn.point)
+        for geom_i in geom_indices:
             if (layer_i, geom_i) in connected_layer_mesh_pairs:
                 # Would have no effect on whether the network
                 # has a dead terminal or not, do not even bother checking
                 continue
 
-            if not conn.layer.geoms[geom_i].intersects(conn.point):
+            if conn_geoms is None and not conn.layer.geoms[geom_i].intersects(conn.point):
                 continue
 
             # Okay, at this point:
@@ -1988,6 +2036,30 @@ def _pardiso_solve_sym(
             raise
 
 
+def _pardiso_solve_unsym(
+    L_csc: "scipy.sparse.csc_matrix", r: np.ndarray,
+) -> np.ndarray:
+    """Unsymmetric PARDISO solve (full pivoting), freeing the factorisation
+    immediately.
+
+    This is the fallback path — reached only when the matrix is asymmetric (a
+    `VoltageRegulator`) or the symmetric solve was rejected — so it's rarely hit
+    and not worth keeping resident (unlike the symmetric primary path, which is
+    cached). Replaces the convenience ``_pypardiso.spsolve``, whose module-global
+    solver held the multi-GB LU for the process lifetime."""
+    solver = _pypardiso.PyPardisoSolver()  # mtype 11: real unsymmetric
+    try:
+        # Feed CSR: pypardiso.spsolve does the same `A.tocsr()`, and passing a
+        # CSC directly takes pypardiso's transposed-solve path, which returns
+        # the wrong answer here.
+        return solver.solve(L_csc.tocsr(), r)
+    finally:
+        try:
+            solver.free_memory(everything=True)
+        except Exception:  # pragma: no cover - best effort
+            pass
+
+
 def _log_singular_diagnostic(
     L_csc: "scipy.sparse.csc_matrix",
     r: np.ndarray,
@@ -2096,7 +2168,7 @@ def _solve_robust(
         if symmetric:
             attempts.append(
                 ("pardiso-sym", lambda: _pardiso_solve_sym(L_csc, r)))
-        attempts.append(("pardiso", lambda: _pypardiso.spsolve(L_csc, r)))
+        attempts.append(("pardiso", lambda: _pardiso_solve_unsym(L_csc, r)))
     attempts.append(
         ("superlu", lambda: scipy.sparse.linalg.spsolve(L_csc, r)))
 
@@ -2310,7 +2382,12 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
     # (connectivity graph, dead-terminal filter, node indexer) all share
     # one O(1) dict lookup instead of doing a linear search per connection.
     layer_to_index = {id(layer): i for i, layer in enumerate(prob.layers)}
-    connectivity_graph = ConnectivityGraph.create_from_problem(prob, strtrees)
+    # Resolve every connection point → layer.geoms indices ONCE (one vectorised
+    # STRtree query per layer); the connectivity graph and the dead-terminal
+    # filter both consume this instead of each re-testing point-in-polygon.
+    conn_geoms = resolve_connection_geoms(prob, strtrees, layer_to_index)
+    connectivity_graph = ConnectivityGraph.create_from_problem(
+        prob, strtrees, conn_geoms)
     connected_layer_mesh_pairs = find_connected_layer_geom_indices(connectivity_graph)
     _record_stage(timings, "Connectivity graph", _t0)
 
@@ -2345,6 +2422,7 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
         for net in prob.networks
         if not network_has_a_dead_terminal(
             net, prob, connected_layer_mesh_pairs, strtrees, layer_to_index,
+            conn_geoms,
         )
     ]
     _record_stage(timings, "Network filtering", _t0,
