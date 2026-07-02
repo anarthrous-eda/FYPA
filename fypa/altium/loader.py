@@ -974,6 +974,23 @@ def _coupling_networks(
     skipped_unknown_net = 0
     skipped_missing_layer = 0
     skipped_xy_outside_copper = 0
+
+    # Prepare each (layer, net) copper shape once and reuse it. Every via/PTH on
+    # a net probes the same handful of (layer, net) MultiPolygons with `covers`;
+    # unprepared that is O(boundary_vertices) each (a GND sheet has 10⁴–10⁵), so
+    # on a stitched board (10⁴+ vias × several layers) it was ~10⁶ un-indexed
+    # point-in-polygon calls. A PreparedGeometry builds an edge RTree once, so
+    # each covers drops to O(log n). Same predicate → identical result.
+    import shapely.prepared
+    _prep_covers: dict[tuple[int, int], object] = {}
+
+    def _covers(key: tuple[int, int], layer, pt) -> bool:
+        prep = _prep_covers.get(key)
+        if prep is None:
+            prep = shapely.prepared.prep(layer.shape)
+            _prep_covers[key] = prep
+        return prep.covers(pt)
+
     for site in sites:
         if site.net_index == NO_NET:
             skipped_unknown_net += 1
@@ -995,7 +1012,7 @@ def _coupling_networks(
             lid for lid in site.span
             if (L := layer_by_layer_and_net.get((lid, site.net_index))) is not None
             and not L.shape.is_empty
-            and L.shape.covers(pt)
+            and _covers((lid, site.net_index), L, pt)
         ]
         if len(layers_for_net) < 2:
             # Either the net has copper on <2 layers in the span at
@@ -1449,7 +1466,7 @@ def _slot_record_fields(pad) -> dict:
     }
 
 
-def _gil_yield(i: int, every: int = 256) -> None:
+def _gil_yield(i: int, every: int = 4096) -> None:
     """Release the GIL briefly every ``every`` iterations.
 
     Why: ``build_solve_metadata`` walks every via / PTH / pad on the board,
@@ -1460,7 +1477,12 @@ def _gil_yield(i: int, every: int = 256) -> None:
     the GIL via ``Py_BEGIN_ALLOW_THREADS``; using a 1 ms (rather than 0 ms)
     sleep forces the Windows scheduler to actually deliver the timeslice to
     the higher-priority GUI thread (see ``_SolveWorker.run`` in
-    altium_viewer.py) instead of immediately rescheduling the worker."""
+    altium_viewer.py) instead of immediately rescheduling the worker.
+
+    ``every`` = 4096: on a 200 k-primitive board that's ~50 yields (once per
+    ~0.1 s of work — ample for the GUI's ~10 Hz repaint) instead of ~800 at the
+    old 256, so the deliberate 1 ms stalls no longer add up to ~1 s of pure
+    sleeping."""
     if i and (i % every) == 0:
         time.sleep(0.001)
 
@@ -1730,7 +1752,9 @@ def build_solve_metadata(
             if exterior is None or exterior.is_empty:
                 continue
             # exterior.coords includes the closing vertex (last == first).
-            ring = [[float(x), float(y)] for x, y in exterior.coords]
+            # get_coordinates copies the ring in C; the .tolist() gives the same
+            # [[x, y], ...] the per-vertex comprehension did.
+            ring = shapely.get_coordinates(exterior).tolist()
             if len(ring) < 3:
                 continue
             if p.is_through_hole or p.layer_id == 74:  # 74 = Multi-Layer
@@ -1751,7 +1775,7 @@ def build_solve_metadata(
                     lext = getattr(lshape, "exterior", None) if lshape else None
                     if lext is None or lext.is_empty:
                         continue
-                    lring = [[float(x), float(y)] for x, y in lext.coords]
+                    lring = shapely.get_coordinates(lext).tolist()
                     if len(lring) >= 3 and lring != ring:
                         outline_by_layer[str(lid)] = lring
             comp_des = comp_des_by_idx_p.get(p.component_index, "")
@@ -1925,8 +1949,8 @@ def build_solve_metadata(
                 "kind": "plane",
                 "layer_id": int(gl.layer_id),
                 "net": net,
-                "outline": [[float(x), float(y)] for x, y in ext.coords],
-                "holes": [[[float(x), float(y)] for x, y in h.coords]
+                "outline": shapely.get_coordinates(ext).tolist(),
+                "holes": [shapely.get_coordinates(h).tolist()
                           for h in getattr(poly, "interiors", [])
                           if not h.is_empty],
                 "is_keepout": False,
@@ -3295,20 +3319,24 @@ def _apply_net_remap(
         return proj
     dr = dataclasses.replace
 
-    def _r(net_idx: int) -> int:
-        return remap.get(net_idx, net_idx)
+    def _rebuild(items):
+        # Only the handful of primitives whose net is actually remapped are
+        # reallocated; the rest (the overwhelming majority) are kept as-is
+        # rather than paying a dataclasses.replace per primitive.
+        return tuple(
+            dr(it, net_index=remap[it.net_index]) if it.net_index in remap else it
+            for it in items
+        )
 
     return dr(
         proj,
-        tracks=tuple(dr(t, net_index=_r(t.net_index)) for t in proj.tracks),
-        arcs=tuple(dr(a, net_index=_r(a.net_index)) for a in proj.arcs),
-        vias=tuple(dr(v, net_index=_r(v.net_index)) for v in proj.vias),
-        pads=tuple(dr(p, net_index=_r(p.net_index)) for p in proj.pads),
-        regions=tuple(dr(rg, net_index=_r(rg.net_index)) for rg in proj.regions),
-        shape_based_regions=tuple(
-            dr(rg, net_index=_r(rg.net_index)) for rg in proj.shape_based_regions
-        ),
-        fills=tuple(dr(f, net_index=_r(f.net_index)) for f in proj.fills),
+        tracks=_rebuild(proj.tracks),
+        arcs=_rebuild(proj.arcs),
+        vias=_rebuild(proj.vias),
+        pads=_rebuild(proj.pads),
+        regions=_rebuild(proj.regions),
+        shape_based_regions=_rebuild(proj.shape_based_regions),
+        fills=_rebuild(proj.fills),
         # nets unchanged — both canonical and non-canonical names still
         # resolve, and parse_annotations applies the remap after lookup.
     )
