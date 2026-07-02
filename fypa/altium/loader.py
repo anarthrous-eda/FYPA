@@ -1211,14 +1211,19 @@ def _build_all_copper_records(
             ext = getattr(poly, "exterior", None)
             if ext is None or ext.is_empty:
                 continue
-            ext_arr = np.asarray(list(ext.coords), dtype=np.float32)
+            # shapely.get_coordinates copies the ring in C; np.asarray(list(
+            # ring.coords)) iterates the CoordinateSequence vertex-by-vertex in
+            # Python, which profiled as the dominant cost of building the copper
+            # overlay records on large boards.
+            ext_arr = shapely.get_coordinates(ext).astype(np.float32, copy=False)
             if ext_arr.shape[0] < 2:
                 continue
             holes_arr: list = []
             for hole in getattr(poly, "interiors", []):
                 if hole.is_empty:
                     continue
-                h_arr = np.asarray(list(hole.coords), dtype=np.float32)
+                h_arr = shapely.get_coordinates(hole).astype(
+                    np.float32, copy=False)
                 if h_arr.shape[0] >= 2:
                     holes_arr.append(h_arr)
             ring_polys.append({"exterior": ext_arr, "holes": holes_arr})
