@@ -560,34 +560,40 @@ def laplace_operator(mesh: mesh.Mesh) -> scipy.sparse.coo_matrix:
         e2b = p1 - p2
 
         def _half_cot(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-            # |a·b / (a×b)| / 2 — half-cotangent at one apex, matching the
-            # original per-side contribution of HalfEdge.cotan().
+            # cot(θ) / 2 — the half-cotangent at one apex, where θ is the
+            # angle between the apex's two outgoing edges a, b.
             #
-            # CLAMP at MAX_HALF_COT to prevent sliver triangles from blowing
-            # up the matrix. cot(θ) → ∞ as θ → 0, so a single triangle with
-            # a tiny apex angle can produce a single matrix entry on the
-            # order of 1e18, dwarfing every other conductance in the system.
-            # That single entry then dominates the LU factorisation: the
-            # solver effectively short-circuits two vertices together
-            # through a "wire" with conductance 1e18, leaving every other
-            # equation under-determined relative to it. The resulting
-            # solution has a huge residual and the Lagrange-multiplier
-            # outputs (ground_node_current, source currents) are nonsense.
+            # cot θ = cos θ / sin θ = (a·b) / |a×b|. The apex angle of a
+            # triangle is always in (0, π), so sin θ > 0 and the cross
+            # magnitude carries no sign — the SIGN of cot θ comes solely from
+            # the dot product: obtuse apices (θ > 90°) have a·b < 0 and so a
+            # NEGATIVE cotangent. That negative contribution is physically
+            # required: the standard linear-FEM stiffness weight on an edge is
+            # (cot α + cot β)/2, and dropping the sign (taking |cot|) makes the
+            # discretisation inconsistent — it over-conducts obtuse triangles,
+            # so the solved trace resistance comes out low and does NOT
+            # converge to the analytic value as the mesh is refined. Use the
+            # signed cotangent: dot / |cross|.
             #
-            # MAX_HALF_COT = 5e3 corresponds to allowing angles down to
-            # ~0.0057° — sliver enough to keep almost any real mesh's
-            # entries unaffected, while bounding the contribution of
-            # pathological slivers to a value the solver can handle.
-            # The Triangle library normally produces angles ≥ 20° (cot ≈
-            # 2.75), so the clamp is only hit on degenerate output (e.g.
-            # near-collinear points that Triangle couldn't resolve).
+            # CLAMP the magnitude at MAX_HALF_COT to keep sliver triangles from
+            # blowing up the matrix. cot(θ) → ±∞ as θ → 0 or π, so a single
+            # triangle with a tiny (or near-π) apex angle can produce a matrix
+            # entry on the order of 1e18, dwarfing every other conductance: the
+            # solver effectively short-circuits two vertices through a "wire"
+            # of conductance 1e18, leaving the rest of the system
+            # under-determined and the Lagrange-multiplier outputs
+            # (ground_node_current, source currents) nonsense. The clamp is
+            # symmetric so a large NEGATIVE cotangent (near-π apex) is bounded
+            # too. MAX_HALF_COT = 5e3 corresponds to angles down to ~0.0057°;
+            # Triangle normally produces angles ≥ 20° (|cot| ≈ 2.75), so the
+            # clamp is only hit on degenerate output.
             dot = a[:, 0] * b[:, 0] + a[:, 1] * b[:, 1]
             crs = a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]
             out = np.zeros_like(dot)
             mask = crs != 0
-            out[mask] = np.abs(dot[mask] / crs[mask])
+            out[mask] = dot[mask] / np.abs(crs[mask])
             MAX_HALF_COT = 5.0e3
-            np.minimum(out, MAX_HALF_COT, out=out)
+            np.clip(out, -MAX_HALF_COT, MAX_HALF_COT, out=out)
             return out * 0.5
 
         w_for_edge_v1_v2 = _half_cot(e0a, e0b)   # apex 0 ↔ edge (v1, v2)
