@@ -18,7 +18,7 @@ import shapely.wkb
 import warnings
 
 from collections.abc import Callable
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
 from . import problem, mesh
@@ -496,48 +496,82 @@ def collect_seed_points(problem: problem.Problem, layer: problem.Layer) -> list[
     return seed_points
 
 
-def laplace_operator(mesh: mesh.Mesh) -> scipy.sparse.coo_matrix:
-    """Cotangent Laplacian for a mesh as an (N, N) sparse COO matrix.
+# Clamp on |half-cotangent|. cot(θ) → ±∞ as θ → 0 or π, so a single sliver
+# triangle can otherwise produce a ~1e18 matrix entry that dwarfs every real
+# conductance and wrecks the factorisation. 5e3 corresponds to apex angles down
+# to ~0.0057°; Triangle normally emits angles ≥ 20° (|cot| ≈ 2.75), so the clamp
+# is only hit on degenerate output.
+_MAX_HALF_COT = 5.0e3
 
-    Vectorised: reads ``mesh._source_xys`` + ``mesh._source_tris`` (the flat
-    triangle-soup arrays retained by ``from_triangle_soup``) and computes
-    every half-cotangent weight in one numpy pass. The off-diagonal weight
-    on each directed edge (i, k) is ``sum_t |cot(opposite_apex_t)| / 2``
-    over the (one or two) triangles t sharing the edge — matching the
-    original ``HalfEdge.cotan()`` (which used ``abs()`` per side and
-    divided by 2). Boundary edges naturally end up with one half-cotangent
-    contribution because only one triangle touches them; interior edges
-    get the standard ``(cot α + cot β) / 2``.
 
-    Orphan vertices (vertices in the vertex list that don't appear in any
-    triangle — Triangle keeps input seed points even when they fall just
-    outside the polygon due to FP) are pinned to v=0 via a ``1.0`` diagonal
-    entry so the system stays non-singular. Same behaviour as the previous
-    half-edge-walking implementation.
+def _half_cotangent(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """cot(θ) / 2 for the apex angle θ between an apex's two outgoing edges
+    ``a`` and ``b``, computed for every triangle at once.
 
-    Falls back to a half-edge extraction if the mesh lacks source arrays
-    (very old pickled meshes, or hand-built ones).
-    """
-    N = len(mesh.vertices)
+    cot θ = cos θ / sin θ = (a·b) / |a×b|. The apex angle of a triangle is
+    always in (0, π), so sin θ > 0 and the cross magnitude carries no sign —
+    the SIGN of cot θ comes solely from the dot product, so obtuse apices
+    (θ > 90°, a·b < 0) correctly yield a NEGATIVE cotangent. Dropping that sign
+    (taking |cot|) makes the linear-FEM stiffness weight (cot α + cot β)/2
+    inconsistent: it over-conducts obtuse triangles, so solved trace resistance
+    comes out low and does not converge under mesh refinement. The magnitude is
+    clamped symmetrically at :data:`_MAX_HALF_COT` (see there)."""
+    dot = a[:, 0] * b[:, 0] + a[:, 1] * b[:, 1]
+    crs = a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]
+    out = np.zeros_like(dot)
+    mask = crs != 0
+    out[mask] = dot[mask] / np.abs(crs[mask])
+    np.clip(out, -_MAX_HALF_COT, _MAX_HALF_COT, out=out)
+    return out * 0.5
 
-    xys = getattr(mesh, "_source_xys", None)
-    tris = getattr(mesh, "_source_tris", None)
-    if xys is None or tris is None or (N > 0 and xys.size == 0):
-        # Legacy fallback — reconstruct flat arrays from the half-edge form.
+
+def _mesh_source_arrays(msh: mesh.Mesh) -> tuple[np.ndarray, np.ndarray]:
+    """Return ``(xys (N, 2) float, tris (T, 3) int64)`` for a mesh.
+
+    Prefers the flat triangle-soup arrays retained by ``from_triangle_soup``
+    (``_source_xys`` / ``_source_tris``); falls back to reconstructing them
+    from the half-edge form for very old pickled or hand-built meshes."""
+    N = len(msh.vertices)
+    xys = getattr(msh, "_source_xys", None)
+    tris = getattr(msh, "_source_tris", None)
+    if xys is None or tris is None or (N > 0 and np.asarray(xys).size == 0):
         xys = np.empty((N, 2), dtype=DTYPE)
-        for vt in mesh.vertices:
+        for vt in msh.vertices:
             xys[vt.i, 0] = vt.p.x
             xys[vt.i, 1] = vt.p.y
         tri_rows: list[tuple[int, int, int]] = []
-        for face in mesh.faces:
+        for face in msh.faces:
             verts = list(face.vertices)
             if len(verts) == 3:
                 tri_rows.append((verts[0].i, verts[1].i, verts[2].i))
         tris = (np.asarray(tri_rows, dtype=np.int64)
                 if tri_rows else np.empty((0, 3), dtype=np.int64))
+    return np.asarray(xys, dtype=DTYPE), np.asarray(tris, dtype=np.int64)
 
-    xys = np.asarray(xys, dtype=DTYPE)
-    tris = np.asarray(tris, dtype=np.int64)
+
+def laplace_operator(mesh: mesh.Mesh) -> scipy.sparse.coo_matrix:
+    """Cotangent Laplacian for a single mesh as an (N, N) sparse COO matrix.
+
+    Single-mesh reference implementation. The solve path builds every mesh's
+    Laplacian at once through :func:`process_mesh_laplace_operators` (which
+    shares the same :func:`_half_cotangent` kernel); this function is kept as
+    the readable per-mesh form and is cross-checked against the batched path in
+    the tests.
+
+    The off-diagonal weight on each directed edge (i, k) is
+    ``sum_t cot(opposite_apex_t) / 2`` over the (one or two) triangles t
+    sharing the edge — the standard cotangent-Laplacian stiffness. Boundary
+    edges get one half-cotangent (only one triangle touches them); interior
+    edges get ``(cot α + cot β) / 2``. See :func:`_half_cotangent` for why the
+    cotangent must be signed.
+
+    Orphan vertices (in the vertex list but in no triangle — Triangle keeps
+    input seed points even when FP drops them just outside the polygon) are
+    pinned to v=0 with a ``1.0`` diagonal entry so the system stays
+    non-singular.
+    """
+    N = len(mesh.vertices)
+    xys, tris = _mesh_source_arrays(mesh)
 
     row_chunks: list[np.ndarray] = []
     col_chunks: list[np.ndarray] = []
@@ -551,54 +585,9 @@ def laplace_operator(mesh: mesh.Mesh) -> scipy.sparse.coo_matrix:
         p1 = xys[v1]
         p2 = xys[v2]
 
-        # Per-apex edge vectors (each apex's two outgoing edges).
-        e0a = p1 - p0
-        e0b = p2 - p0
-        e1a = p2 - p1
-        e1b = p0 - p1
-        e2a = p0 - p2
-        e2b = p1 - p2
-
-        def _half_cot(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-            # cot(θ) / 2 — the half-cotangent at one apex, where θ is the
-            # angle between the apex's two outgoing edges a, b.
-            #
-            # cot θ = cos θ / sin θ = (a·b) / |a×b|. The apex angle of a
-            # triangle is always in (0, π), so sin θ > 0 and the cross
-            # magnitude carries no sign — the SIGN of cot θ comes solely from
-            # the dot product: obtuse apices (θ > 90°) have a·b < 0 and so a
-            # NEGATIVE cotangent. That negative contribution is physically
-            # required: the standard linear-FEM stiffness weight on an edge is
-            # (cot α + cot β)/2, and dropping the sign (taking |cot|) makes the
-            # discretisation inconsistent — it over-conducts obtuse triangles,
-            # so the solved trace resistance comes out low and does NOT
-            # converge to the analytic value as the mesh is refined. Use the
-            # signed cotangent: dot / |cross|.
-            #
-            # CLAMP the magnitude at MAX_HALF_COT to keep sliver triangles from
-            # blowing up the matrix. cot(θ) → ±∞ as θ → 0 or π, so a single
-            # triangle with a tiny (or near-π) apex angle can produce a matrix
-            # entry on the order of 1e18, dwarfing every other conductance: the
-            # solver effectively short-circuits two vertices through a "wire"
-            # of conductance 1e18, leaving the rest of the system
-            # under-determined and the Lagrange-multiplier outputs
-            # (ground_node_current, source currents) nonsense. The clamp is
-            # symmetric so a large NEGATIVE cotangent (near-π apex) is bounded
-            # too. MAX_HALF_COT = 5e3 corresponds to angles down to ~0.0057°;
-            # Triangle normally produces angles ≥ 20° (|cot| ≈ 2.75), so the
-            # clamp is only hit on degenerate output.
-            dot = a[:, 0] * b[:, 0] + a[:, 1] * b[:, 1]
-            crs = a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]
-            out = np.zeros_like(dot)
-            mask = crs != 0
-            out[mask] = dot[mask] / np.abs(crs[mask])
-            MAX_HALF_COT = 5.0e3
-            np.clip(out, -MAX_HALF_COT, MAX_HALF_COT, out=out)
-            return out * 0.5
-
-        w_for_edge_v1_v2 = _half_cot(e0a, e0b)   # apex 0 ↔ edge (v1, v2)
-        w_for_edge_v2_v0 = _half_cot(e1a, e1b)   # apex 1 ↔ edge (v2, v0)
-        w_for_edge_v0_v1 = _half_cot(e2a, e2b)   # apex 2 ↔ edge (v0, v1)
+        w_for_edge_v1_v2 = _half_cotangent(p1 - p0, p2 - p0)  # apex 0 ↔ (v1,v2)
+        w_for_edge_v2_v0 = _half_cotangent(p2 - p1, p0 - p1)  # apex 1 ↔ (v2,v0)
+        w_for_edge_v0_v1 = _half_cotangent(p0 - p2, p1 - p2)  # apex 2 ↔ (v0,v1)
 
         # Off-diagonal: L[i, k] += w on both directions of each edge.
         rows = np.concatenate([v1, v2, v2, v0, v0, v1])
@@ -1374,49 +1363,113 @@ def process_mesh_laplace_operators(
     conductances: list[float],
     vindex: VertexIndexer,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Compute every mesh's cotangent Laplacian and return one concatenated
-    triple of (rows, cols, vals) in GLOBAL vertex indices, ready to feed
-    into a single COO assembly along with the network and ground stamps.
+    """Assemble every mesh's cotangent Laplacian at once, returning one
+    concatenated ``(rows, cols, vals)`` triple in GLOBAL vertex indices, ready
+    for the single COO→CSC assembly alongside the network and ground stamps.
 
-    Replaces the prior ``lil_matrix.__setitem__`` loop, which was the
-    dominant Python-level cost during assembly for large boards.
+    Batched: all meshes' retained triangle-soup arrays are concatenated into
+    one global vertex array and one global triangle array (each mesh's
+    triangles offset into its ``vindex`` global-index range), then the whole
+    board's half-cotangent weights are computed in ONE vectorised
+    :func:`_half_cotangent` pass. This replaces the previous per-mesh
+    ``ThreadPoolExecutor.map(laplace_operator, meshes)`` — on a board with tens
+    of thousands of small meshes the per-mesh Python overhead (task dispatch, a
+    ``scipy.coo_matrix`` object built and torn down per mesh, GIL-bound small
+    numpy) dominated; one global pass removes all of it.
+
+    The result is **bit-identical** to the per-mesh path (cross-checked in
+    ``tests/test_laplace_batched.py``): triangles are concatenated in mesh
+    order, so each vertex lives in one contiguous triangle block and the
+    global ``np.add.at`` accumulates its diagonal in the same order the
+    per-mesh scatter did; the final CSC is identical because off-diagonal
+    duplicates (≤2 per edge) sum commutatively.
     """
     if not meshes:
         return (np.empty(0, dtype=np.int64),
                 np.empty(0, dtype=np.int64),
                 np.empty(0, dtype=DTYPE))
 
-    # Per-mesh global-index offset: vindex assigns global indices in the
-    # order vertices appear when iterating meshes, so the offset for mesh m
-    # is the cumulative vertex count of all earlier meshes — exactly the
-    # prefix that ``vindex.mesh_vertex_offsets`` already holds (its last entry
-    # is the grand total, which we don't need here).
-    offsets = vindex.mesh_vertex_offsets[:-1]
+    # vindex assigns global vertex indices in mesh-iteration order, so mesh m
+    # owns [offsets[m], offsets[m+1]). Gather each mesh's (xys, tris), offset
+    # its triangles into the global index range, and tag every triangle /
+    # vertex with its mesh's conductance. Gathering is cheap (no compute); the
+    # heavy cotangent math happens once, below.
+    offsets = vindex.mesh_vertex_offsets
+    n_total = int(offsets[-1])
+    xys_list: list[np.ndarray] = []
+    tris_list: list[np.ndarray] = []
+    tri_cond_list: list[np.ndarray] = []
+    vert_cond = np.empty(n_total, dtype=DTYPE)
+    for mesh_i, msh in enumerate(meshes):
+        base = int(offsets[mesh_i])
+        end = int(offsets[mesh_i + 1])
+        cond = conductances[mesh_i]
+        vert_cond[base:end] = cond
+        xys, tris = _mesh_source_arrays(msh)
+        xys_list.append(xys)
+        if tris.shape[0] > 0:
+            tris_list.append(tris + base)  # local → global vertex indices
+            tri_cond_list.append(np.full(tris.shape[0], cond, dtype=DTYPE))
 
-    rows_chunks: list[np.ndarray] = []
-    cols_chunks: list[np.ndarray] = []
-    vals_chunks: list[np.ndarray] = []
-    # laplace_operator is a pure function of one mesh, and its cotangent
-    # weights are computed in vectorised numpy that releases the GIL — so
-    # the per-mesh Laplacians genuinely compute in parallel across a thread
-    # pool. ThreadPoolExecutor.map preserves input order, so the offset
-    # bookkeeping below is unchanged and the assembled matrix is identical.
-    if len(meshes) > 1:
-        with ThreadPoolExecutor(max_workers=_MESH_MAX_WORKERS) as _ex:
-            laplacians = list(_ex.map(laplace_operator, meshes))
+    xys_all = (np.concatenate(xys_list, axis=0) if xys_list
+               else np.empty((0, 2), dtype=DTYPE))
+
+    row_chunks: list[np.ndarray] = []
+    col_chunks: list[np.ndarray] = []
+    val_chunks: list[np.ndarray] = []
+
+    if tris_list:
+        tris_all = np.concatenate(tris_list, axis=0)
+        tri_cond = np.concatenate(tri_cond_list)
+        v0 = tris_all[:, 0]
+        v1 = tris_all[:, 1]
+        v2 = tris_all[:, 2]
+        p0 = xys_all[v0]
+        p1 = xys_all[v1]
+        p2 = xys_all[v2]
+
+        w12 = _half_cotangent(p1 - p0, p2 - p0)  # apex 0 ↔ edge (v1, v2)
+        w20 = _half_cotangent(p2 - p1, p0 - p1)  # apex 1 ↔ edge (v2, v0)
+        w01 = _half_cotangent(p0 - p2, p1 - p2)  # apex 2 ↔ edge (v0, v1)
+
+        rows_off = np.concatenate([v1, v2, v2, v0, v0, v1])
+        cols_off = np.concatenate([v2, v1, v0, v2, v1, v0])
+        vals_off = np.concatenate([w12, w12, w20, w20, w01, w01])
+
+        # Diagonal (UNSCALED): L[i, i] = -Σ outgoing weights from i. Done before
+        # conductance scaling so a vertex's diagonal is (Σ weights)·cond, matching
+        # the per-mesh path exactly rather than Σ(weight·cond).
+        diag = np.zeros(n_total, dtype=DTYPE)
+        np.add.at(diag, rows_off, -vals_off)
+
+        # Scale: each off-diagonal entry by its triangle's conductance (the
+        # 6 edge sub-blocks all index the same triangle set), each diagonal by
+        # its vertex's conductance.
+        vals_off = vals_off * np.concatenate([tri_cond] * 6)
+        diag = diag * vert_cond
+
+        diag_idx = np.arange(n_total, dtype=np.int64)
+        row_chunks += [rows_off, diag_idx]
+        col_chunks += [cols_off, diag_idx]
+        val_chunks += [vals_off, diag]
+
+        used = np.zeros(n_total, dtype=bool)
+        used[tris_all.ravel()] = True
     else:
-        laplacians = [laplace_operator(meshes[0])]
-    for mesh_i, (L_msh, conductance) in enumerate(zip(laplacians, conductances)):
-        if L_msh.nnz == 0:
-            continue
-        off = int(offsets[mesh_i])
-        rows_chunks.append(L_msh.row.astype(np.int64, copy=False) + off)
-        cols_chunks.append(L_msh.col.astype(np.int64, copy=False) + off)
-        vals_chunks.append(L_msh.data.astype(DTYPE, copy=False) * conductance)
-    if rows_chunks:
-        return (np.concatenate(rows_chunks),
-                np.concatenate(cols_chunks),
-                np.concatenate(vals_chunks))
+        used = np.zeros(n_total, dtype=bool)
+
+    # Pin orphan vertices (in no triangle) to keep the matrix non-singular —
+    # value 1.0·conductance, matching the per-mesh path.
+    orphans = np.where(~used)[0].astype(np.int64)
+    if orphans.size > 0:
+        row_chunks.append(orphans)
+        col_chunks.append(orphans)
+        val_chunks.append(vert_cond[orphans])
+
+    if row_chunks:
+        return (np.concatenate(row_chunks),
+                np.concatenate(col_chunks),
+                np.concatenate(val_chunks))
     return (np.empty(0, dtype=np.int64),
             np.empty(0, dtype=np.int64),
             np.empty(0, dtype=DTYPE))
