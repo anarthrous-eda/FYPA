@@ -638,21 +638,43 @@ def laplace_operator(mesh: mesh.Mesh) -> scipy.sparse.coo_matrix:
 
 @dataclass
 class VertexIndexer:
-    global_index_to_vertex_index: list[tuple[int, int]] = field(default_factory=list)
-    mesh_vertex_index_to_global_index: dict[tuple[int, int], int] = field(default_factory=dict)
+    # Cumulative per-mesh vertex-count offsets, length ``len(meshes) + 1``:
+    # mesh ``m`` owns the global vertex indices
+    # ``[mesh_vertex_offsets[m], mesh_vertex_offsets[m + 1])``.
+    #
+    # This replaces the former per-vertex ``list[(mesh_idx, vertex_idx)]`` plus
+    # a reverse ``dict`` — the two together built ~2N Python objects (≈400 MB
+    # at 2M vertices) in an O(N) interpreter loop that showed up as the
+    # multi-second "Vertex indexing" stage. The reverse dict was never read
+    # anywhere. The forward map is only needed as (a) a total vertex count and
+    # (b) a handful of single-index lookups outside any hot loop, both of which
+    # the offsets array serves in O(1) / O(log meshes).
+    mesh_vertex_offsets: np.ndarray = field(
+        default_factory=lambda: np.zeros(1, dtype=np.int64)
+    )
+
+    @property
+    def n_vertices(self) -> int:
+        return int(self.mesh_vertex_offsets[-1])
 
     @classmethod
     def create(cls, meshes: list[mesh.Mesh]) -> "VertexIndexer":
-        vindex = cls()
-        # Iterate by index, not ``enumerate(msh.vertices)`` — only the vertex
-        # COUNT is needed here, and walking the store would materialise every
-        # (otherwise lazy) vertex stub object for no reason.
-        for mesh_idx, msh in enumerate(meshes):
-            for vertex_idx in range(len(msh.vertices)):
-                global_index = len(vindex.global_index_to_vertex_index)
-                vindex.global_index_to_vertex_index.append((mesh_idx, vertex_idx))
-                vindex.mesh_vertex_index_to_global_index[(mesh_idx, vertex_idx)] = global_index
-        return vindex
+        # Only the vertex COUNT per mesh is needed — never the stub objects —
+        # so this stays O(meshes), not O(vertices).
+        counts = np.fromiter(
+            (len(msh.vertices) for msh in meshes),
+            dtype=np.int64, count=len(meshes),
+        )
+        offsets = np.zeros(len(meshes) + 1, dtype=np.int64)
+        np.cumsum(counts, out=offsets[1:])
+        return cls(mesh_vertex_offsets=offsets)
+
+    def to_mesh_vertex(self, global_index: int) -> tuple[int, int]:
+        """Map a global vertex index back to ``(mesh_index, vertex_index)``."""
+        mesh_i = int(np.searchsorted(
+            self.mesh_vertex_offsets, global_index, side="right",
+        ) - 1)
+        return mesh_i, int(global_index - self.mesh_vertex_offsets[mesh_i])
 
 
 def find_connected_layer_geom_indices(connectivity_graph: ConnectivityGraph
@@ -1162,7 +1184,7 @@ class NodeIndexer:
             if node not in node_to_global_index
         ]
         internal_node_count = len(nodes)
-        i_at = len(vindex.global_index_to_vertex_index)
+        i_at = vindex.n_vertices
         for node in nodes:
             node_to_global_index[node] = i_at
             i_at += 1
@@ -1317,13 +1339,10 @@ def process_mesh_laplace_operators(
 
     # Per-mesh global-index offset: vindex assigns global indices in the
     # order vertices appear when iterating meshes, so the offset for mesh m
-    # is the cumulative vertex count of all earlier meshes. Faster than
-    # looking up vindex.mesh_vertex_index_to_global_index[(m, i)] per entry.
-    sizes = np.fromiter(
-        (len(m.vertices) for m in meshes), dtype=np.int64, count=len(meshes),
-    )
-    offsets = np.concatenate(([0], np.cumsum(sizes[:-1]))) if sizes.size else \
-              np.empty(0, dtype=np.int64)
+    # is the cumulative vertex count of all earlier meshes — exactly the
+    # prefix that ``vindex.mesh_vertex_offsets`` already holds (its last entry
+    # is the grand total, which we don't need here).
+    offsets = vindex.mesh_vertex_offsets[:-1]
 
     rows_chunks: list[np.ndarray] = []
     cols_chunks: list[np.ndarray] = []
@@ -1547,8 +1566,7 @@ def find_ground_node_indices(
     A component with no ``VoltageSource`` falls back to its lowest-indexed
     mesh vertex.
     """
-    n_vert = len(vindex.global_index_to_vertex_index)
-    g2v = vindex.global_index_to_vertex_index
+    n_vert = vindex.n_vertices
     n2g = node_indexer.node_to_global_index
 
     # Union-find over "units": one per mesh (every vertex of a mesh is
@@ -1572,7 +1590,7 @@ def find_ground_node_indices(
 
     def unit(gi: int):
         if gi < n_vert:
-            return ("mesh", g2v[gi][0])
+            return ("mesh", vindex.to_mesh_vertex(gi)[0])
         return ("node", gi)
 
     # Each element ties all of its terminals (and its extra current variable,
@@ -2145,7 +2163,7 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
     log.info("Indexing vertices and connections")
     vindex = VertexIndexer.create(meshes)
     _record_stage(timings, "Vertex indexing", _t0,
-                  f" ({len(vindex.global_index_to_vertex_index)} vertices)")
+                  f" ({vindex.n_vertices} vertices)")
 
     _t0 = time.monotonic()
     log.info("Processing lumped element networks")
@@ -2184,7 +2202,7 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
     # where L is the "laplace operator",
     # v is the voltage vector and
     # r is the right-hand side "source" vector
-    N = len(vindex.global_index_to_vertex_index) + \
+    N = vindex.n_vertices + \
         node_indexer.internal_node_count + \
         len(node_indexer.extra_source_to_global_index) + \
         n_ground  # one implicit ground node per isolated subsystem
@@ -2233,8 +2251,8 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
 
     log.info(f"Grounding {n_ground} isolated subsystem(s)")
     for i_gnd in ground_indices:
-        if i_gnd < len(vindex.global_index_to_vertex_index):
-            _mesh_i, _v_i = vindex.global_index_to_vertex_index[i_gnd]
+        if i_gnd < vindex.n_vertices:
+            _mesh_i, _v_i = vindex.to_mesh_vertex(i_gnd)
             _pt = meshes[_mesh_i].vertices.to_object(_v_i).p
             log.debug(f"  ground reference at vertex ({_pt.x:.4g}, {_pt.y:.4g})")
         else:
@@ -2340,7 +2358,7 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
     # — so the near-floating region that drove the matrix singular can be
     # pinpointed. The reduced→full index map is materialised lazily, only
     # if a failure actually occurs.
-    _n_vert = len(vindex.global_index_to_vertex_index)
+    _n_vert = vindex.n_vertices
     _n_internal = node_indexer.internal_node_count
     _n_extra = len(node_indexer.extra_source_to_global_index)
     _reduced_to_full: list = []
@@ -2355,7 +2373,7 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
                 _reduced_to_full.append(r2f)
             full = int(_reduced_to_full[0][reduced_idx])
         if full < _n_vert:
-            mesh_i, vtx_i = vindex.global_index_to_vertex_index[full]
+            mesh_i, vtx_i = vindex.to_mesh_vertex(full)
             layer_name = prob.layers[mesh_index_to_layer_index[mesh_i]].name
             try:
                 pt = meshes[mesh_i].vertices.to_object(vtx_i).p

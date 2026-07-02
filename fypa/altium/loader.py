@@ -703,10 +703,27 @@ def _directive_to_network(
 
 def _via_pad_layer_span(start: int, end: int, enabled_layers: list[int]) -> list[int]:
     """Return enabled copper layers that a via/through-hole pad bridges,
-    in Top->Bottom order."""
-    if start > end:
-        start, end = end, start
-    return [lid for lid in enabled_layers if start <= lid <= end]
+    in Top->Bottom order.
+
+    ``enabled_layers`` is in Top->Bottom *positional* order but internal plane
+    layers carry raw ids 39-54 (INTERNAL_PLANE_1..16) that are numerically
+    ABOVE the Bottom-layer id (32) even though they sit physically between Top
+    and Bottom. A raw-id range test (``start <= lid <= end``) therefore silently
+    drops every internal plane from a normal Top(1)->Bottom(32) through-via
+    span, so vias never couple current into via-stitched planes. Slice by
+    position instead — exactly what the geometry side's ``_via_on_layer`` does.
+    """
+    try:
+        i_a = enabled_layers.index(start)
+        i_b = enabled_layers.index(end)
+    except ValueError:
+        # An endpoint isn't in the enabled chain (e.g. a via referencing a
+        # disabled layer) — fall back to the raw-id range rather than crash.
+        if start > end:
+            start, end = end, start
+        return [lid for lid in enabled_layers if start <= lid <= end]
+    lo, hi = (i_a, i_b) if i_a <= i_b else (i_b, i_a)
+    return enabled_layers[lo:hi + 1]
 
 
 def _layer_z_centers_mm(
@@ -2524,6 +2541,8 @@ def build_problem(
       belonging to other rails / signal nets via the Overlays control.
       The FEM itself only uses the active subset.
     """
+    import numpy as np
+
     # Flag (and warn about) single-type rails — only sources or only sinks,
     # which can't carry current. Their directives are marked solve_excluded
     # and left out of the networks below, but kept in
@@ -2734,14 +2753,32 @@ def build_problem(
             if ra != rb:
                 parent[rb] = ra
         # For each via XY on this net, union all pieces containing it.
-        for vx, vy in via_xys_by_net.get(ni, []):
-            pt = shapely.geometry.Point(vx, vy)
-            indices_touched = [
-                idx for idx, (_, _, piece) in enumerate(pieces)
-                if piece.intersects(pt)
-            ]
-            for a, b in zip(indices_touched, indices_touched[1:]):
-                _union(a, b)
+        # The naive form tested every via against every piece —
+        # O(vias x pieces) Python-level shapely calls, which on a ground net
+        # with tens of thousands of vias and dozens of fragmented pieces was
+        # the dominant cost of build_problem. One STRtree over the net's
+        # pieces plus a single vectorised point query does the whole net's
+        # containment test in C; the (input, piece) pairs come back sorted by
+        # input index, so consecutive equal-input rows are exactly the pieces
+        # one via touches.
+        via_list = via_xys_by_net.get(ni, [])
+        if via_list and len(pieces) > 1:
+            piece_geoms = [piece for (_, _, piece) in pieces]
+            tree = shapely.strtree.STRtree(piece_geoms)
+            via_points = shapely.points(
+                np.asarray(via_list, dtype=np.float64)
+            )
+            qi, ti = tree.query(via_points, predicate="intersects")
+            start = 0
+            n_hits = qi.shape[0]
+            while start < n_hits:
+                end = start + 1
+                while end < n_hits and qi[end] == qi[start]:
+                    end += 1
+                base = int(ti[start])
+                for k in range(start + 1, end):
+                    _union(base, int(ti[k]))
+                start = end
 
         # Group into components.
         components: dict[int, list[int]] = {}

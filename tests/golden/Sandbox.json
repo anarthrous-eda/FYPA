@@ -1,13 +1,13 @@
 {
-  "ground_node_current": 1.3136033002673522e-08,
-  "n_components": 74,
-  "n_layer_solutions": 23,
-  "potential_abs_l2": 438.8787485395925,
-  "potential_max": 1.0005679984387719,
-  "potential_mean": 0.37248352127498513,
-  "potential_min": -1.1047182282507426e-16,
-  "potential_std": 0.4769058796582367,
-  "residual_norm": 4.186101892475967e-10,
-  "total_triangles": 1030326,
-  "total_vertices": 526006
+  "ground_node_current": 1.3275705317664256e-08,
+  "n_components": 83,
+  "n_layer_solutions": 25,
+  "potential_abs_l2": 440.3217614145065,
+  "potential_max": 1.000568689498514,
+  "potential_mean": 0.3736977287752349,
+  "potential_min": -1.1073608617678623e-16,
+  "potential_std": 0.4772382278350124,
+  "residual_norm": 4.192746285839461e-10,
+  "total_triangles": 1033223,
+  "total_vertices": 527708
 }

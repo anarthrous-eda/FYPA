@@ -3800,6 +3800,20 @@ class _SolveWorker(QThread):
             n += 1
         return n
 
+    def _cancel_requested(self) -> bool:
+        """True once the GUI has asked this worker to stop.
+
+        Checked at stage boundaries so a cancel during a pure-Python phase
+        (the "Packaging solution…" metadata / lean-convert / cache-pickle
+        stages, 10+ s on large boards) unwinds the thread cooperatively. Those
+        phases hold the GIL continuously; a ``terminate()`` fired there kills
+        the thread while it owns the GIL, which never gets released and hangs
+        the whole app — the opposite of what the user asked for by cancelling.
+        Returning early from ``run`` avoids that: no ``finished_ok`` is emitted,
+        so the GUI won't open a stale viewer either.
+        """
+        return self.isInterruptionRequested()
+
     def run(self) -> None:  # type: ignore[override]
         # Bias the OS scheduler toward the GUI thread. The packaging phase
         # (build_solve_metadata + to_lean_solution + cache pickle) is pure
@@ -4103,6 +4117,8 @@ class _SolveWorker(QThread):
                 )
                 return
 
+            if self._cancel_requested():
+                return
             self.stage_changed.emit("Assembling FEM problem…")
             with _timer.stage("Build FEM problem"):
                 problem, via_segment_records, stub_pieces_by_pair, per_net_layers = (
@@ -4169,6 +4185,8 @@ class _SolveWorker(QThread):
                     si.ground_node_current,
                 )
 
+            if self._cancel_requested():
+                return
             self.stage_changed.emit("Packaging solution: building metadata…")
             with _timer.stage("Build solve metadata"):
                 metadata = build_solve_metadata(
@@ -4180,6 +4198,8 @@ class _SolveWorker(QThread):
                     stub_pieces_by_pair=stub_pieces_by_pair,
                     per_net_layers=per_net_layers,
                 )
+            if self._cancel_requested():
+                return
             self.stage_changed.emit("Packaging solution: converting result…")
             with _timer.stage("Convert to lean solution"):
                 new_solution = to_lean_solution(padne_solution)
@@ -4242,6 +4262,8 @@ class _SolveWorker(QThread):
             # components) and blocks the dialog from repainting until it
             # finishes. Update the label so the user sees what's actually
             # happening instead of a stale "saving cache" message.
+            if self._cancel_requested():
+                return
             self.stage_changed.emit("Opening viewer…")
             _timer.log_breakdown()
             self.finished_ok.emit(new_solution, metadata, pristine_loaded)
@@ -4437,10 +4459,17 @@ def _abort_solve_worker(owner) -> None:
                 "cancel_active_mesh_pool raised %s; carrying on.", _exc,
             )
         worker.requestInterruption()
-        worker.terminate()
-        # 2 s is plenty for the OS to reap the thread; we don't want to
-        # block the GUI indefinitely if something pathological happens.
-        worker.wait(2000)
+        # Give the worker a chance to stop cooperatively at its next stage
+        # boundary first (see _SolveWorker._cancel_requested). This matters for
+        # the pure-Python packaging phase: terminate() fired while the worker
+        # holds the GIL would deadlock the GUI. Only force-kill if it doesn't
+        # unwind on its own — that's the native mesh/solve section, where
+        # terminate() is safe because the GIL is released.
+        if not worker.wait(1500):
+            worker.terminate()
+            # 2 s is plenty for the OS to reap the thread; we don't want to
+            # block the GUI indefinitely if something pathological happens.
+            worker.wait(2000)
     updater = getattr(owner, "_solve_progress_updater", None)
     if updater is not None:
         updater.stop()
@@ -4448,6 +4477,15 @@ def _abort_solve_worker(owner) -> None:
         owner._solve_progress_updater = None
     dlg = getattr(owner, "_solve_progress_dlg", None)
     if dlg is not None:
+        # QProgressDialog.closeEvent re-emits ``canceled``, so closing a dialog
+        # whose ``canceled`` is still wired to the cancel handler re-enters it
+        # synchronously — terminating/​waiting the worker a second time and
+        # opening a duplicate launcher window. Disconnect first (guarded, same
+        # as the worker signals above).
+        try:
+            dlg.canceled.disconnect()
+        except (RuntimeError, TypeError):
+            pass
         dlg.close()
         owner._solve_progress_dlg = None
     if worker is not None:
@@ -5935,6 +5973,12 @@ class PdnViewer(QMainWindow):
         self._layer_vec_cache.clear()
         self._no_current_meshes = None
         self._marker_hover_index_cache = None
+        # Both of these hold values sampled from the previous solution
+        # (per-vertex return offsets; per-via current/voltage rows). They must
+        # be dropped on re-solve or Voltage-mode readouts and via hovers report
+        # the old solve's numbers against the new field.
+        self._src_return_offset_cache = None
+        self._via_hover_index_cache = None
         self._metadata_marker_hover_rows.clear()
         self._via_current_lookup.clear()
         self._via_voltage_kdtree_cache.clear()
