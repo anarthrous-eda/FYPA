@@ -1,0 +1,159 @@
+{
+  "net_canonical": {
+    "VDD_3V3": "VDD_3V3_PWR",
+    "VDD_3V3_PWR": "VDD_3V3_PWR"
+  },
+  "directives": [
+    {
+      "role": "SOURCE",
+      "designator": "J1",
+      "label": "J1",
+      "value_str": "5 V",
+      "terminals": {
+        "P": {
+          "requested_net": "VIN",
+          "pins": [
+            {
+              "net": "VIN",
+              "pad": "1"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "2"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "REGULATOR",
+      "designator": "U2",
+      "label": "U2",
+      "value_str": "V=3.3 V, gain=0.8",
+      "terminals": {
+        "IN_P": {
+          "requested_net": "VIN",
+          "pins": [
+            {
+              "net": "VIN",
+              "pad": "1"
+            }
+          ]
+        },
+        "IN_N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "2"
+            }
+          ]
+        },
+        "OUT_P": {
+          "requested_net": "VDD_3V3_PWR",
+          "pins": [
+            {
+              "net": "VDD_3V3_PWR",
+              "pad": "3"
+            }
+          ]
+        },
+        "OUT_N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "4"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "U1",
+      "label": "U1",
+      "value_str": "50 mA",
+      "terminals": {
+        "P": {
+          "requested_net": "VDD_3V3",
+          "resolved_via_local": true,
+          "pins": [
+            {
+              "net": "VDD_3V3_PWR",
+              "pad": "1"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "2"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "U3",
+      "label": "U3",
+      "value_str": "30 mA",
+      "terminals": {
+        "P": {
+          "requested_net": "VDD_3V3",
+          "resolved_via_local": true,
+          "pins": [
+            {
+              "net": "VDD_3V3_PWR",
+              "pad": "1"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "2"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "U4",
+      "label": "U4",
+      "value_str": "15 mA",
+      "terminals": {
+        "P": {
+          "requested_net": "VDD_3V3",
+          "resolved_via_local": true,
+          "pins": [
+            {
+              "net": "VDD_3V3_PWR",
+              "pad": "1"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "2"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

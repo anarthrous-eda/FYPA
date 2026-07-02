@@ -1,7 +1,7 @@
 """Rail list naming — canonical top-level net names in hierarchical designs."""
 
 from fypa.altium.loader import build_net_canonical_map
-from fypa.altium_viewer import PdnViewer
+from fypa.rail_groups import compute_rail_groups
 
 
 def test_build_net_canonical_map_maps_aliases_to_name():
@@ -46,7 +46,7 @@ def test_rail_groups_use_canonical_name_for_local_net_label():
             },
         ],
     }
-    names, members = PdnViewer._compute_rail_groups(None, metadata)
+    names, members = compute_rail_groups(metadata)
     assert "+5V" in names
     assert "5V_LOCAL" not in names
     assert "+5V" in members["+5V"]
@@ -78,7 +78,7 @@ def test_rail_groups_keep_named_net_for_series_bridge():
             },
         ],
     }
-    names, members = PdnViewer._compute_rail_groups(None, metadata)
+    names, members = compute_rail_groups(metadata)
     assert "GND" in names
     assert "+DM_SW1" in members["GND"]
 
@@ -123,7 +123,7 @@ def test_rail_groups_prefer_source_rail_over_bridged_led_nets():
             },
         ],
     }
-    names, members = PdnViewer._compute_rail_groups(None, metadata)
+    names, members = compute_rail_groups(metadata)
     assert "VDD_3V3_PWR" in names
     assert "VDD_1V8" in names
     assert "LED_B" not in names

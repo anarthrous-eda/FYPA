@@ -1,0 +1,172 @@
+{
+  "directives": [
+    {
+      "role": "RESISTOR",
+      "designator": "D1",
+      "label": "D1#1",
+      "channel_index": 1,
+      "value": 10.0,
+      "unit": "Ohm",
+      "terminals": {
+        "P": {
+          "requested_net": "VDD",
+          "pins": [
+            {
+              "net": "VDD",
+              "pad": "1"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "LED_R",
+          "pins": [
+            {
+              "net": "LED_R",
+              "pad": "2"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "RESISTOR",
+      "designator": "D1",
+      "label": "D1#2",
+      "channel_index": 2,
+      "value": 10.0,
+      "unit": "Ohm",
+      "terminals": {
+        "P": {
+          "requested_net": "VDD",
+          "pins": [
+            {
+              "net": "VDD",
+              "pad": "1"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "LED_G",
+          "pins": [
+            {
+              "net": "LED_G",
+              "pad": "3"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "RESISTOR",
+      "designator": "D1",
+      "label": "D1#3",
+      "channel_index": 3,
+      "value": 10.0,
+      "unit": "Ohm",
+      "terminals": {
+        "P": {
+          "requested_net": "VDD",
+          "pins": [
+            {
+              "net": "VDD",
+              "pad": "1"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "LED_B",
+          "pins": [
+            {
+              "net": "LED_B",
+              "pad": "4"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "U4",
+      "label": "U4#1",
+      "channel_index": 1,
+      "value": 0.1,
+      "unit": "A",
+      "terminals": {
+        "P": {
+          "requested_net": "LED_R",
+          "pins": [
+            {
+              "net": "LED_R",
+              "pad": "B2"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "D1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "U4",
+      "label": "U4#2",
+      "channel_index": 2,
+      "value": 0.1,
+      "unit": "A",
+      "terminals": {
+        "P": {
+          "requested_net": "LED_G",
+          "pins": [
+            {
+              "net": "LED_G",
+              "pad": "C2"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "D1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "U4",
+      "label": "U4#3",
+      "channel_index": 3,
+      "value": 0.1,
+      "unit": "A",
+      "terminals": {
+        "P": {
+          "requested_net": "LED_B",
+          "pins": [
+            {
+              "net": "LED_B",
+              "pad": "D2"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "D1"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

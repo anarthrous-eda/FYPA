@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="656" height="416" viewBox="0 0 656 416">
+<rect width="100%" height="100%" fill="#2b2b2b"/>
+<line x1="164" y1="75" x2="184" y2="75" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="184" y1="75" x2="214" y2="75" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="214" y1="75" x2="244" y2="75" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="244" y1="75" x2="264" y2="75" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="392" y1="75" x2="412" y2="75" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="412" y1="75" x2="464" y2="75" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="464" y1="75" x2="472" y2="75" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="472" y1="75" x2="492" y2="75" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="472" y1="177" x2="492" y2="177" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="472" y1="279" x2="492" y2="279" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="24" y1="336" x2="480" y2="336" stroke="#088b00" stroke-width="2" stroke-linecap="round"/>
+<line x1="24" y1="75" x2="36" y2="75" stroke="#088b00" stroke-width="2" stroke-linecap="round"/>
+<line x1="252" y1="111" x2="264" y2="111" stroke="#088b00" stroke-width="2" stroke-linecap="round"/>
+<line x1="392" y1="111" x2="404" y2="111" stroke="#088b00" stroke-width="2" stroke-linecap="round"/>
+<line x1="480" y1="93" x2="492" y2="93" stroke="#088b00" stroke-width="2" stroke-linecap="round"/>
+<line x1="480" y1="195" x2="492" y2="195" stroke="#088b00" stroke-width="2" stroke-linecap="round"/>
+<line x1="480" y1="297" x2="492" y2="297" stroke="#088b00" stroke-width="2" stroke-linecap="round"/>
+<path d="M 472,75 V 177" fill="none" stroke="#ff3030" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 472,75 V 279" fill="none" stroke="#ff3030" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 24,75 V 336" fill="none" stroke="#088b00" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 252,111 V 336" fill="none" stroke="#088b00" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 404,111 V 336" fill="none" stroke="#088b00" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 480,93 V 171.5 A 5.5,5.5 0 0 1 480,182.5 V 273.5 A 5.5,5.5 0 0 1 480,284.5 V 336" fill="none" stroke="#088b00" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="24" cy="336" r="3" fill="#088b00"/>
+<circle cx="252" cy="336" r="3" fill="#088b00"/>
+<circle cx="404" cy="336" r="3" fill="#088b00"/>
+<circle cx="472" cy="75" r="3" fill="#ff3030"/>
+<circle cx="472" cy="177" r="3" fill="#ff3030"/>
+<circle cx="480" cy="195" r="3" fill="#088b00"/>
+<circle cx="480" cy="297" r="3" fill="#088b00"/>
+<line x1="24" y1="336" x2="24" y2="346" stroke="#909090" stroke-width="2" stroke-linecap="round"/>
+<line x1="10" y1="350" x2="38" y2="350" stroke="#909090" stroke-width="2" stroke-linecap="round"/>
+<line x1="15" y1="355" x2="33" y2="355" stroke="#909090" stroke-width="2" stroke-linecap="round"/>
+<line x1="18.5" y1="360" x2="29.5" y2="360" stroke="#909090" stroke-width="2" stroke-linecap="round"/>
+<text x="24" y="374" text-anchor="middle" fill="#e6e6e6" font-family="Segoe UI,sans-serif" font-size="9" font-weight="600">GND</text>
+<rect class="topo-hit" data-label="J1" x="36" y="36" width="128" height="56" rx="6" fill="#333333" stroke="#555555" stroke-width="1"/>
+<rect x="36" y="36" width="128" height="22" rx="6" fill="#ff3030"/>
+<rect x="36" y="52" width="128" height="6" fill="#ff3030"/>
+<text x="44" y="51" fill="#ffffff" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">SOURCE</text>
+<text x="156" y="51" fill="#ffffff" text-anchor="end" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">J1</text>
+<circle cx="164" cy="75" r="5" fill="#ff3030" stroke="#555555" stroke-width="1"/>
+<text x="156" y="78" text-anchor="end" fill="#909090" font-family="Consolas,monospace" font-size="8">VIN</text>
+<circle cx="36" cy="75" r="5" fill="#ff3030" stroke="#555555" stroke-width="1"/>
+<text x="44" y="78" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">GND</text>
+<rect class="topo-hit" data-label="U2" x="264" y="36" width="128" height="92" rx="6" fill="#333333" stroke="#555555" stroke-width="1"/>
+<rect x="264" y="36" width="128" height="22" rx="6" fill="#ff66ff"/>
+<rect x="264" y="52" width="128" height="6" fill="#ff66ff"/>
+<text x="272" y="51" fill="#ffffff" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">REGULATOR</text>
+<text x="384" y="51" fill="#ffffff" text-anchor="end" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">U2</text>
+<circle cx="264" cy="75" r="5" fill="#ff66ff" stroke="#555555" stroke-width="1"/>
+<text x="272" y="78" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VIN</text>
+<circle cx="392" cy="75" r="5" fill="#ff66ff" stroke="#555555" stroke-width="1"/>
+<text x="384" y="78" text-anchor="end" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3_PWR</text>
+<circle cx="264" cy="111" r="5" fill="#ff66ff" stroke="#555555" stroke-width="1"/>
+<text x="272" y="114" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">GND</text>
+<circle cx="392" cy="111" r="5" fill="#ff66ff" stroke="#555555" stroke-width="1"/>
+<text x="384" y="114" text-anchor="end" fill="#909090" font-family="Consolas,monospace" font-size="8">GND</text>
+<rect class="topo-hit" data-label="U1" x="492" y="36" width="128" height="74" rx="6" fill="#333333" stroke="#555555" stroke-width="1"/>
+<rect x="492" y="36" width="128" height="22" rx="6" fill="#3aa8ff"/>
+<rect x="492" y="52" width="128" height="6" fill="#3aa8ff"/>
+<text x="500" y="51" fill="#ffffff" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">SINK</text>
+<text x="612" y="51" fill="#ffffff" text-anchor="end" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">U1</text>
+<circle cx="492" cy="75" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
+<text x="500" y="78" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3</text>
+<circle cx="492" cy="93" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
+<text x="500" y="96" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">GND</text>
+<rect class="topo-hit" data-label="U3" x="492" y="138" width="128" height="74" rx="6" fill="#333333" stroke="#555555" stroke-width="1"/>
+<rect x="492" y="138" width="128" height="22" rx="6" fill="#3aa8ff"/>
+<rect x="492" y="154" width="128" height="6" fill="#3aa8ff"/>
+<text x="500" y="153" fill="#ffffff" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">SINK</text>
+<text x="612" y="153" fill="#ffffff" text-anchor="end" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">U3</text>
+<circle cx="492" cy="177" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
+<text x="500" y="180" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3</text>
+<circle cx="492" cy="195" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
+<text x="500" y="198" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">GND</text>
+<rect class="topo-hit" data-label="U4" x="492" y="240" width="128" height="74" rx="6" fill="#333333" stroke="#555555" stroke-width="1"/>
+<rect x="492" y="240" width="128" height="22" rx="6" fill="#3aa8ff"/>
+<rect x="492" y="256" width="128" height="6" fill="#3aa8ff"/>
+<text x="500" y="255" fill="#ffffff" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">SINK</text>
+<text x="612" y="255" fill="#ffffff" text-anchor="end" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">U4</text>
+<circle cx="492" cy="279" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
+<text x="500" y="282" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3</text>
+<circle cx="492" cy="297" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
+<text x="500" y="300" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">GND</text>
+<rect x="188" y="69" width="22" height="12" fill="#2b2b2b" fill-opacity="0.5" stroke="none" rx="2"/>
+<text x="199" y="75" text-anchor="middle" dominant-baseline="middle" fill="#e6e6e6" font-family="Segoe UI,sans-serif" font-size="8">VIN</text>
+<g transform="translate(472,146.4)">
+<rect x="-8" y="-29.7" width="16" height="59.4" fill="#2b2b2b" fill-opacity="0.5" stroke="none" rx="2"/>
+<text transform="rotate(-90)" text-anchor="middle" dominant-baseline="middle" fill="#e6e6e6" font-family="Segoe UI,sans-serif" font-size="8">VDD_3V3_PWR</text>
+</g>
+<rect x="12" y="390" width="10" height="10" rx="2" fill="#ff3030"/>
+<text x="26" y="400" fill="#909090" font-family="Segoe UI,sans-serif" font-size="10">SOURCE</text>
+<rect x="90" y="390" width="10" height="10" rx="2" fill="#3aa8ff"/>
+<text x="104" y="400" fill="#909090" font-family="Segoe UI,sans-serif" font-size="10">SINK</text>
+<rect x="168" y="390" width="10" height="10" rx="2" fill="#1a7a3c"/>
+<text x="182" y="400" fill="#909090" font-family="Segoe UI,sans-serif" font-size="10">SERIES</text>
+<rect x="246" y="390" width="10" height="10" rx="2" fill="#ff66ff"/>
+<text x="260" y="400" fill="#909090" font-family="Segoe UI,sans-serif" font-size="10">REGULATOR</text>
+<line x1="324" y1="396" x2="342" y2="396" stroke="#909090" stroke-width="2" stroke-dasharray="5 4"/>
+<text x="348" y="400" fill="#909090" font-family="Segoe UI,sans-serif" font-size="10">extern</text>
+</svg>

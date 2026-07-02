@@ -1,0 +1,108 @@
+"""Layout and routing constants for the PDN topology schematic."""
+
+from __future__ import annotations
+
+
+ROLE_COLORS: dict[str, str] = {
+    "SOURCE": "#ff3030",
+    "SINK": "#3aa8ff",
+    "RESISTOR": "#1a7a3c",
+    "SERIES": "#1a7a3c",
+    "REGULATOR": "#ff66ff",
+}
+
+# Slightly darker variants for single-net (ideal-return) sources/sinks, so a
+# component that only connects to its power rail reads differently from one
+# that also has a modelled return.
+SINGLE_NET_ROLE_COLORS: dict[str, str] = {
+    "SOURCE": "#b43030",
+    "SINK": "#0073c4",
+}
+
+# Wire stroke colours. Every wire is a power net: ground draws green, every
+# non-ground power rail draws red.
+GND_WIRE_COLOR = "#088b00"
+NON_GND_WIRE_COLOR = "#ff3030"
+
+OMEGA = "\u03a9"
+
+IDEAL_RETURN_RAIL = "__IDEAL_RETURN__"
+GND_NET = "__GND__"
+
+MARGIN = 36.0
+NODE_W = 128.0
+HEADER_H = 22.0
+BODY_PAD = 8.0
+PORT_ROW_H = 18.0
+PORT_R = 5.0
+COL_GAP = 100.0
+ROW_GAP = 28.0
+PORT_WIRE_STUB = 20.0
+PORT_WIRE_STUB_MIN = 12.0
+GND_PORT_WIRE_STUB = 12.0
+WIRE_GUTTER_INSET = 20.0
+WIRE_STAGGER = 18.0
+MIN_PARALLEL_GAP = 16.0
+WIRE_GUTTER_PAD = 8.0
+COLUMN_BUS_PAD = 12.0
+GND_BUS_BELOW = 22.0
+GND_SYMBOL_BELOW = 38.0
+GND_SYMBOL_OFFSET = 10.0
+LEGEND_BELOW_BUS = 26.0
+BRIDGE_R = 5.5
+JUNCTION_R = 3.0
+WIRE_EPS = 0.6
+MIN_LABEL_HORIZONTAL = 28.0
+GUTTER_LABEL_MIN_H = 22.0
+LABEL_JUNCTION_CLEAR = 12.0
+LABEL_NODE_MARGIN = 8.0
+LABEL_WIRE_OFFSET = 5.0
+LABEL_MIN_SPACING = 18.0
+LABEL_BESIDE_VERTICAL = 7.0
+OBSTACLE_CLEAR = 10.0
+MAX_CANVAS_WIDTH = 2400.0
+MAX_LABEL_DISTANCE = LABEL_WIRE_OFFSET + 36.0
+CANVAS_HEIGHT_PAD_GND = 16.0
+CANVAS_HEIGHT_PAD_NO_GND = 28.0
+
+RETURN_PORT_SORT_BASE = 900
+RETURN_PORT_GND_SORT_BASE = 950
+EXTERNAL_STUB_EXTEND = MARGIN
+EXTERNAL_STUB_LABEL_X_OFFSET = 4.0
+EXTERNAL_STUB_LABEL_Y_OFFSET = -6.0
+EXTERNAL_STUB_END_INSET = 1.0
+STUB_SEGMENT_TOLERANCE = 6.0
+WIRE_HIT_RADIUS = 6.0
+LABEL_CHAR_WIDTH = 5.4
+LABEL_TEXT_MIN_WIDTH = 18.0
+LABEL_TEXT_HEIGHT = 12.0
+LABEL_MAX_LEN = 22
+DANGLING_END_TOLERANCE = WIRE_EPS * 4
+
+LABEL_ANCHOR_FRACTIONS = (0.35, 0.5, 0.65)
+LABEL_FALLBACK_ANCHOR_FRACTIONS = (0.25, 0.4, 0.55, 0.7, 0.85)
+LABEL_SEARCH_OFFSETS = (
+    LABEL_WIRE_OFFSET,
+    LABEL_WIRE_OFFSET + 2.0,
+    LABEL_WIRE_OFFSET + 4.0,
+    8.0,
+    12.0,
+    16.0,
+    20.0,
+)
+LABEL_FALLBACK_OFFSETS = (10.0, 14.0, 18.0, 22.0, 26.0)
+LABEL_SHORT_VERTICAL_THRESHOLD = 24.0
+LABEL_VERTICAL_ANCHOR_FRACTIONS = (0.3, 0.45, 0.55, 0.7)
+
+# (terminal_name, side, sort_key) — left = input, right = output
+ROLE_PORTS: dict[str, list[tuple[str, str, int]]] = {
+    "SOURCE": [("N", "left", 1), ("P", "right", 0)],
+    "SINK": [("N", "left", 1), ("P", "left", 0)],
+    "REGULATOR": [
+        ("IN_N", "left", 3),
+        ("IN_P", "left", 2),
+        ("OUT_N", "right", 1),
+        ("OUT_P", "right", 0),
+    ],
+    "RESISTOR": [("P", "left", 0), ("N", "right", 1)],
+}

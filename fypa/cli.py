@@ -999,6 +999,38 @@ def _save_cached_design_info(
         )
 
 
+def sanitize_metadata_for_pickle(metadata: dict | None) -> dict | None:
+    """Return a metadata tree safe for :mod:`pickle`.
+
+    The viewer attaches non-picklable ``shapely.prepared`` caches to
+    polygon / primitive dicts during a session; strip those before save.
+    """
+    if metadata is None:
+        return None
+
+    def _scrub(obj):
+        if isinstance(obj, dict):
+            return {
+                k: _scrub(v)
+                for k, v in obj.items()
+                if k not in _PREPARED_GEOM_KEYS
+            }
+        if isinstance(obj, list):
+            return [_scrub(v) for v in obj]
+        if isinstance(obj, tuple):
+            return tuple(_scrub(v) for v in obj)
+        return obj
+
+    return _scrub(metadata)
+
+
+_PREPARED_GEOM_KEYS = frozenset({
+    "_prepared_shape_cache",
+    "_prepared_shape",
+    "prepared_shape",
+})
+
+
 def save_solution_file(path: Path, solution, metadata: dict | None) -> None:
     """Write a user-saved solution snapshot to ``path``.
 
@@ -1009,8 +1041,9 @@ def save_solution_file(path: Path, solution, metadata: dict | None) -> None:
     the file later re-attaches the solution to the right project +
     board for Re-run / Reload Design Info."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    safe_metadata = sanitize_metadata_for_pickle(metadata)
     with open(path, "wb") as f:
-        pickle.dump({"solution": solution, "metadata": metadata}, f,
+        pickle.dump({"solution": solution, "metadata": safe_metadata}, f,
                     protocol=pickle.HIGHEST_PROTOCOL)
 
 
