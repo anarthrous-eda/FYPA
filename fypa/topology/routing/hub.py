@@ -237,7 +237,28 @@ def _connect_row_to_bus(
         if path_d is not None:
             trunk_y = plan.y_row if abs(y_feed - plan.y_row) <= WIRE_EPS else y_feed
             return trunk_y, path_d
-    return None, None
+
+    # Every clear candidate was blocked by foreign wiring. Leaving the row
+    # detached from the trunk is electrically wrong, so force a connection that
+    # still detours physical symbol bodies. It may cross a foreign wire (a
+    # validation warning), but connectivity must never be silently dropped.
+    y_forced = obstacle_detour_y(ctx, plan.y_row, lo, hi, obstacles, set(), net)
+    if abs(y_forced - plan.y_row) > WIRE_EPS:
+        y_lo, y_hi = min(plan.y_row, y_forced), max(plan.y_row, y_forced)
+        ctx.reserve_vertical(edge_x, y_lo, y_hi, net)
+        ctx.reserve_horizontal(y_forced, lo, hi, net)
+        return y_forced, simplify_wire_path(
+            f"M {edge_x:.1f},{plan.y_row:.1f} V {y_forced:.1f} H {bus_x:.1f}",
+        )
+    ctx.reserve_horizontal(
+        plan.y_row,
+        min(plan.span_lo, bus_x),
+        max(plan.span_hi, bus_x),
+        net,
+    )
+    return plan.y_row, simplify_wire_path(
+        f"M {edge_x:.1f},{plan.y_row:.1f} H {bus_x:.1f}",
+    )
 
 
 def _route_hub_tap(

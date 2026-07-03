@@ -7,9 +7,8 @@ from fypa.topology.geometry import (
     horizontal_crosses_node,
     vertical_crosses_node,
 )
-from fypa.topology.placement import port_stub_x
 from fypa.topology.routing.context import RoutingContext
-from fypa.topology.types import TopologyNode, TopologyPort
+from fypa.topology.types import TopologyNode
 
 
 def detour_y_for_horizontal(
@@ -262,37 +261,36 @@ def trunk_vertical_clear(
     return True
 
 
-def gnd_drop_x(
-    port: TopologyPort,
-    bus_y: float,
+def shift_x_clear_of_vertical_obstacles(
+    x: float,
+    y_lo: float,
+    y_hi: float,
     obstacles: list[TopologyNode],
+    skip: set[str],
+    outward: float,
 ) -> float:
-    """X for a GND drop whose vertical run to ``bus_y`` clears foreign nodes."""
-    x = port_stub_x(port)
-    outward = 1.0 if port.side == "right" else -1.0
-    y_lo, y_hi = min(port.y, bus_y), max(port.y, bus_y)
-    skip = {port.node_id}
+    """Shift ``x`` outward so a vertical run over ``[y_lo, y_hi]`` clears foreign nodes.
 
-    for node in obstacles:
-        if node.node_id in skip:
-            continue
-        if vertical_crosses_node(node, x, y_lo, y_hi):
+    Moving past one body can bring the column onto another further out, so
+    re-scan until nothing crosses. Each shift is monotonic in ``outward``, so
+    this converges within one pass per obstacle.
+    """
+    lo, hi = min(y_lo, y_hi), max(y_lo, y_hi)
+    relevant = [n for n in obstacles if n.node_id not in skip]
+    for _ in range(len(relevant) + 1):
+        moved = False
+        for node in relevant:
+            if not vertical_crosses_node(node, x, lo, hi):
+                continue
             nx, _ny, nw, _nh = node.bounds
-            if outward > 0:
-                x = max(x, nx + nw + OBSTACLE_CLEAR)
-            else:
-                x = min(x, nx - OBSTACLE_CLEAR)
-    h_lo, h_hi = min(port.x, x), max(port.x, x)
-    # (Horizontal stub-Y detours are handled in the tap path via obstacle_detour_y.)
-    for node in obstacles:
-        if node.node_id in skip:
-            continue
-        if horizontal_crosses_node(node, port.y, h_lo, h_hi):
-            nx, _ny, nw, _nh = node.bounds
-            if outward > 0:
-                x = max(x, nx + nw + OBSTACLE_CLEAR)
-            else:
-                x = min(x, nx - OBSTACLE_CLEAR)
+            new_x = nx + nw + OBSTACLE_CLEAR if outward > 0 else nx - OBSTACLE_CLEAR
+            if (outward > 0 and new_x > x + WIRE_EPS) or (
+                outward < 0 and new_x < x - WIRE_EPS
+            ):
+                x = new_x
+                moved = True
+        if not moved:
+            break
     return x
 
 

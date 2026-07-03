@@ -169,9 +169,10 @@ GND uses the same junction rules as every other net. Routing is a **tree** per c
 - Horizontal return rail below all nodes (`gnd_rail`)
 - One vertical **trunk** per column (`gnd_trunk`) from the rail up to the highest port
 - One horizontal **tap** per port (`gnd_tap`) from the port to the trunk
-- Column x comes from `gnd_drop_x` (node obstacles) then trunk placement at the
-  GND stub column. Interior taps where trunk meets the rail (3 directions) get a
-  junction dot; rail endpoints stay corners (2 directions).
+- Column x starts at the GND stub column and is shifted outward off any crossed
+  node body by `shift_x_clear_of_vertical_obstacles`. Interior taps where trunk
+  meets the rail (3 directions) get a junction dot; rail endpoints stay corners
+  (2 directions).
 
 ### Spacing rules (enforced in routing + validation)
 
@@ -184,8 +185,8 @@ GND uses the same junction rules as every other net. Routing is a **tree** per c
 ### Obstacle avoidance (orthogonal detours)
 
 Signal and hub routes push **horizontally** around node bodies via
-`obstacle_detour_y` (Y shifted downward). GND drops use the same idea on the
-**outward X axis** in `gnd_drop_x`.
+`obstacle_detour_y` (Y shifted downward). GND trunks use the same idea on the
+**outward X axis** in `shift_x_clear_of_vertical_obstacles`.
 
 ## Geometry
 

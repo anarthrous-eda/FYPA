@@ -285,6 +285,36 @@ def test_two_port_same_row_detour_returns_to_destination_port():
     assert pts[-1] == (end.x, end.y), f"path does not reach the port: {path!r}"
 
 
+def test_hub_row_feed_forces_connection_when_all_candidates_blocked():
+    """Regression: a hub row whose every clear feed is blocked by foreign wiring
+    must still be connected to the trunk (forced detour), not left detached."""
+    from fypa.topology.routing.hub import _HubRowPlan, _connect_row_to_bus
+
+    port = _port("U1", y=100.0, wire_x=100.0)
+    plan = _HubRowPlan(
+        group=[port],
+        y_row=100.0,
+        span_lo=100.0,
+        span_hi=200.0,
+        row_lo=100.0,
+        row_hi=200.0,
+        detoured=False,
+    )
+    bus_x = 400.0
+    ctx = RoutingContext()
+    # Block the on-row horizontal feed and every off-row vertical drop at the
+    # row edge column with foreign-net reservations.
+    ctx.reserve_horizontal(100.0, 150.0, 450.0, "OTHER")
+    ctx.reserve_vertical(200.0, -1000.0, 1000.0, "OTHER")
+
+    trunk_y, bus_leg = _connect_row_to_bus(plan, bus_x, ctx, "VDD", [])
+
+    assert trunk_y is not None, "row was left with no trunk attachment"
+    assert bus_leg is not None, "no feed wire emitted -> row detached from trunk"
+    xs = [x for x, _y in parse_wire_path(bus_leg)]
+    assert max(xs) >= bus_x - 1e-6, f"feed does not reach the trunk: {bus_leg!r}"
+
+
 def test_hub_eastward_tap_uses_upstream_vertical_before_bus():
     """Downstream singletons branch from an existing tap vertical when possible."""
     from fypa.topology.constants import NODE_W

@@ -7,14 +7,33 @@ from collections import defaultdict
 from fypa.topology.constants import GND_NET, WIRE_EPS
 from fypa.topology.placement import gnd_column_trunk_x, port_column_x, port_stub_x
 from fypa.topology.routing.context import RoutingContext
-from fypa.topology.routing.obstacles import obstacle_detour_y
+from fypa.topology.routing.obstacles import (
+    obstacle_detour_y,
+    shift_x_clear_of_vertical_obstacles,
+)
 from fypa.topology.geometry import simplify_wire_path
 from fypa.topology.types import TopologyNode, TopologyPort, TopologyWire
 
 
-def _apply_gnd_column_trunk_attach(group: list[TopologyPort]) -> float:
-    """Pin every GND port in a column to the shared trunk wire column."""
+def _apply_gnd_column_trunk_attach(
+    group: list[TopologyPort],
+    bus_y: float,
+    obstacles: list[TopologyNode],
+) -> float:
+    """Pin every GND port in a column to the shared trunk wire column.
+
+    The trunk runs vertically from ``bus_y`` up to the topmost port; shift its
+    column outward so that vertical does not cut through a foreign symbol body
+    (the group's own nodes are exempt). Both the reservation and drawing passes
+    call this, so they agree on the shifted column.
+    """
     trunk_x = gnd_column_trunk_x(group)
+    top_y = min(p.y for p in group)
+    outward = 1.0 if group[0].side == "right" else -1.0
+    skip = {p.node_id for p in group}
+    trunk_x = shift_x_clear_of_vertical_obstacles(
+        trunk_x, min(bus_y, top_y), max(bus_y, top_y), obstacles, skip, outward
+    )
     for port in group:
         port.wire_x = trunk_x
     return trunk_x
@@ -72,7 +91,7 @@ def reserve_gnd_column_trunks(
         return {}
     column_plan: dict[float, list[TopologyPort]] = defaultdict(list)
     for group in _gnd_port_groups(ports):
-        trunk_x = _apply_gnd_column_trunk_attach(group)
+        trunk_x = _apply_gnd_column_trunk_attach(group, bus_y, obstacles)
         top_y = min(p.y for p in group)
         y_lo, y_hi = min(bus_y, top_y), max(bus_y, top_y)
         column_plan[round(trunk_x, 1)].extend(group)
@@ -102,7 +121,7 @@ def gnd_wire_paths(
 
     column_plan: dict[float, list[TopologyPort]] = defaultdict(list)
     for group in _gnd_port_groups(ports):
-        trunk_x = _apply_gnd_column_trunk_attach(group)
+        trunk_x = _apply_gnd_column_trunk_attach(group, bus_y, obs)
         column_plan[round(trunk_x, 1)].extend(group)
 
     trunk_xs: list[float] = []

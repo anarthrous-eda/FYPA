@@ -30,11 +30,16 @@ def gutter_vertical_corridors(
     lo, hi = min(channel_lo, channel_hi), max(channel_lo, channel_hi)
     corridors: list[ColumnGap] = []
     for gap_lo, gap_hi in column_gaps:
-        if gap_hi <= lo + WIRE_EPS or gap_lo >= hi - WIRE_EPS:
-            continue
         inner_lo, inner_hi = gutter_bus_x_bounds([gap_lo, gap_hi])
-        if inner_hi - inner_lo >= MIN_PARALLEL_GAP - WIRE_EPS:
-            corridors.append((inner_lo, inner_hi))
+        if inner_hi - inner_lo < MIN_PARALLEL_GAP - WIRE_EPS:
+            continue
+        # Test channel overlap against the inner (placeable) corridor, not the raw
+        # gap: a gap that only grazes the channel within MIN_PARALLEL_GAP of its
+        # edge has an inner corridor entirely outside the channel, and clamping
+        # bus_x into it would push the bus that far off the stubs it serves.
+        if inner_hi <= lo + WIRE_EPS or inner_lo >= hi - WIRE_EPS:
+            continue
+        corridors.append((inner_lo, inner_hi))
     return corridors
 
 
