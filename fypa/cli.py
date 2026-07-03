@@ -62,7 +62,11 @@ class _GilYieldingWriter:
 from fypa.altium.annotations import _describe_directive, parse_annotations
 from fypa.altium.extract import extract_project
 from fypa.altium_geometry import _save_quicklook, build_layer_geometries
-from fypa.altium.loader import build_problem, build_solve_metadata, load_project
+from fypa.altium.loader import (
+    build_solve_metadata,
+    load_project,
+    solve_problem_adaptive,
+)
 from fypa.lean_solution import LeanSolution, to_lean_solution
 from pdnsolver import mesh as _pdn_mesh
 from pdnsolver import solver as _pdn_solver
@@ -155,6 +159,10 @@ def _build_parser() -> argparse.ArgumentParser:
                          help="Minimum-angle constraint (degrees) for mesh triangles")
         sp_.add_argument("--mesh-size", type=float, default=default.maximum_size,
                          help="Maximum edge size for mesh triangles (mm)")
+        sp_.add_argument(
+            "--adaptive-regulator-gain", action="store_true",
+            help="Iterate SMPS regulator gain from solved input voltage",
+        )
 
     sp = sub.add_parser("solve", help="Solve the FEM problem and pickle the solution")
     sp.add_argument("prjpcb", type=Path)
@@ -311,14 +319,19 @@ def _solve_loaded(loaded, args) -> tuple[LeanSolution, dict]:
     if not loaded.is_solveable:
         print(loaded.diagnostic_summary(), file=sys.stderr)
         raise SystemExit(1)
-    problem, via_segment_records, stub_pieces_by_pair, per_net_layers = (
-        build_problem(loaded)
-    )
     mesher_config = _pdn_mesh.Mesher.Config(
         minimum_angle=args.mesh_angle,
         maximum_size=args.mesh_size,
     )
-    padne_solution = _pdn_solver.solve(problem, mesher_config=mesher_config)
+    adaptive = bool(getattr(args, "adaptive_regulator_gain", False))
+    (padne_solution, problem, via_segment_records,
+     stub_pieces_by_pair, per_net_layers, adaptive_info) = (
+        solve_problem_adaptive(
+            loaded,
+            mesher_config,
+            adaptive_regulator_gain=adaptive,
+        )
+    )
     # Always log the solver diagnostic stats. ground_node_current should be
     # ~0 for a well-posed problem; a large value indicates either an isolated
     # GND copper region (no via path to the chosen reference vertex) or a
@@ -347,6 +360,7 @@ def _solve_loaded(loaded, args) -> tuple[LeanSolution, dict]:
         via_segment_records=via_segment_records,
         stub_pieces_by_pair=stub_pieces_by_pair,
         per_net_layers=per_net_layers,
+        regulator_adaptive_gain=adaptive_info,
     )
     return to_lean_solution(padne_solution), metadata
 

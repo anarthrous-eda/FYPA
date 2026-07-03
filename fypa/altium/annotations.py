@@ -21,8 +21,10 @@ SOURCE         PDN_V                           PDN_P_NET, PDN_N_NET           (o
 SINK           PDN_I                           PDN_P_NET, PDN_N_NET           (overrides: *_PINS)
                                                *or* PDN_NET                  (overrides: PDN_PINS)
 SERIES         PDN_R                           PDN_P_NET, PDN_N_NET (optional) (overrides: *_PINS)
-REGULATOR      PDN_V, PDN_GAIN                 PDN_OUT_P_NET, PDN_OUT_N_NET,
-                                               PDN_IN_P_NET,  PDN_IN_N_NET    (overrides: *_PINS)
+REGULATOR      PDN_V                           PDN_OUT_P_NET, PDN_OUT_N_NET,
+               PDN_REGULATOR_TYPE              PDN_IN_P_NET,  PDN_IN_N_NET    (overrides: *_PINS)
+               PDN_REGULATOR_EFFICIENCY        *or* PDN_GAIN (fixed override)
+               PDN_QUIESCENT (optional)
 ============   =============================   ==================================================
 
 Single-net (point-to-point) SOURCE / SINK
@@ -1055,6 +1057,9 @@ class ResistorSpec(_BaseSpec):
     solve_excluded: bool = False  # see SourceSpec.solve_excluded
 
 
+_REGULATOR_TYPES: frozenset[str] = frozenset({"LDO", "SMPS"})
+
+
 @dataclass(frozen=True)
 class RegulatorSpec(_BaseSpec):
     voltage: float
@@ -1065,6 +1070,10 @@ class RegulatorSpec(_BaseSpec):
     in_n: TerminalSpec
     channel_index: int | None = None  # None = legacy unindexed; int = PDN<n>_*
     solve_excluded: bool = False  # see SourceSpec.solve_excluded
+    regulator_type: str | None = None  # "LDO" | "SMPS"
+    efficiency: float = 1.0
+    adaptive_gain_eligible: bool = False  # SMPS without explicit PDN_GAIN
+    quiescent_current: float = 0.0  # constant input current (A), optional PDN_QUIESCENT
 
 
 DirectiveSpec = SourceSpec | SinkSpec | ResistorSpec | RegulatorSpec
@@ -1291,7 +1300,7 @@ def _has_single_net_params(params: dict[str, str]) -> bool:
 
 
 def _parse_source(comp, proj, enabled_layers, result, bridge_groups=None,
-                  net_remap=None):
+                  net_remap=None, supply_map=None):
     indices = _discover_channel_indices(comp.parameters, "V")
     if not indices:
         result.errors.append(
@@ -1362,7 +1371,7 @@ def _parse_source(comp, proj, enabled_layers, result, bridge_groups=None,
 
 
 def _parse_sink(comp, proj, enabled_layers, result, bridge_groups=None,
-                net_remap=None):
+                net_remap=None, supply_map=None):
     indices = _discover_channel_indices(comp.parameters, "I")
     if not indices:
         result.errors.append(
@@ -1438,7 +1447,7 @@ def _parse_sink(comp, proj, enabled_layers, result, bridge_groups=None,
 
 
 def _parse_resistance(comp, proj, enabled_layers, result, bridge_groups=None,
-                      net_remap=None):
+                      net_remap=None, supply_map=None):
     role_raw = (_ci_get(comp.parameters, ROLE_KEY) or "SERIES").strip().upper()
     role_diag_base = f"{role_raw} on {comp.designator}"
     if _has_single_net_params(comp.parameters):
@@ -1541,8 +1550,153 @@ def _parse_resistance(comp, proj, enabled_layers, result, bridge_groups=None,
     return specs
 
 
+def _collect_supply_voltages_by_net(
+    parameter_sources: list[PdnParameterSource],
+) -> dict[str, float]:
+    """Map upper-cased supply net names to nominal voltages from SOURCE /
+    REGULATOR schematic parameters (before pad resolution)."""
+    raw: dict[str, set[float]] = {}
+
+    def _register(net: str | None, voltage: float) -> None:
+        if net is None or not str(net).strip():
+            return
+        raw.setdefault(net.strip().upper(), set()).add(float(voltage))
+
+    for comp in parameter_sources:
+        role_raw = _ci_get(comp.parameters, ROLE_KEY)
+        if role_raw is None:
+            continue
+        role = role_raw.strip().upper()
+        if role == "SOURCE":
+            for idx in _discover_channel_indices(comp.parameters, "V"):
+                v_raw = _ci_get(comp.parameters, _channel_key("V", idx))
+                if v_raw is None or not str(v_raw).strip():
+                    continue
+                try:
+                    v = parse_si_value(v_raw)
+                except ValueError:
+                    continue
+                p_net = _ci_get(comp.parameters, _channel_key("P_NET", idx))
+                single_net = _ci_get(comp.parameters, _channel_key("NET", idx))
+                _register(p_net or single_net, v)
+        elif role == "REGULATOR":
+            for idx in _discover_channel_indices(comp.parameters, "V"):
+                v_raw = _ci_get(comp.parameters, _channel_key("V", idx))
+                if v_raw is None or not str(v_raw).strip():
+                    continue
+                try:
+                    v = parse_si_value(v_raw)
+                except ValueError:
+                    continue
+                out_net = _ci_get(comp.parameters, _channel_key("OUT_P_NET", idx))
+                _register(out_net, v)
+    out: dict[str, float] = {}
+    for net, voltages in raw.items():
+        if len(voltages) == 1:
+            out[net] = next(iter(voltages))
+    return out
+
+
+def _lookup_inferred_vin(
+    in_p_net: str | None,
+    supply_map: dict[str, float],
+) -> float | None:
+    """Nominal Vin from an upstream SOURCE / REGULATOR on ``in_p_net``.
+
+    Uses an exact net-name match only — SERIES bridge equivalence must not
+    expand Vin lookup, because sense paths through GND can join unrelated
+    rails (e.g. 48 V input and 12 V output) into one class. Pad resolution
+    still uses bridge groups via :func:`_resolve_terminal`.
+    """
+    if in_p_net is None or not str(in_p_net).strip():
+        return None
+    v = supply_map.get(in_p_net.strip().upper())
+    if v is not None and v > 0:
+        return v
+    return None
+
+
+def _resolve_regulator_gain(
+    params: dict[str, str],
+    idx: int | None,
+    v_out: float,
+    in_p_net: str | None,
+    supply_map: dict[str, float],
+    role_diag: str,
+    result: AnnotationResult,
+) -> tuple[float, str | None, float, bool] | None:
+    """Return ``(gain, regulator_type, efficiency, adaptive_gain_eligible)``."""
+    gain_key = _channel_key("GAIN", idx)
+    type_key = _channel_key("REGULATOR_TYPE", idx)
+    eff_key = _channel_key("REGULATOR_EFFICIENCY", idx)
+
+    explicit_gain = _optional_value(params, gain_key, role_diag, result)
+    type_raw = _ci_get(params, type_key)
+    reg_type = type_raw.strip().upper() if type_raw else None
+
+    if explicit_gain is not None:
+        if reg_type is not None:
+            result.warnings.append(
+                f"{role_diag}: {gain_key} overrides "
+                f"{type_key} / {eff_key}"
+            )
+        return explicit_gain, reg_type, 1.0, False
+
+    if reg_type is None:
+        result.errors.append(
+            f"{role_diag}: missing {gain_key} or {type_key}"
+        )
+        return None
+
+    if reg_type not in _REGULATOR_TYPES:
+        result.errors.append(
+            f"{role_diag}: {type_key}={type_raw!r} — "
+            f"must be one of {sorted(_REGULATOR_TYPES)}"
+        )
+        return None
+
+    if reg_type == "LDO":
+        if _ci_get(params, eff_key) is not None:
+            result.warnings.append(
+                f"{role_diag}: {eff_key} is ignored for LDO"
+            )
+        return 1.0, reg_type, 1.0, False
+
+    # SMPS
+    if _ci_get(params, eff_key) is None:
+        eff = 1.0
+    else:
+        eff = _optional_value(params, eff_key, role_diag, result)
+        if eff is None:
+            return None
+    if not (0.0 < eff <= 1.0):
+        result.errors.append(
+            f"{role_diag}: {eff_key} must be in (0, 1], got {eff}"
+        )
+        return None
+
+    if v_out <= 0:
+        result.errors.append(
+            f"{role_diag}: PDN_V must be positive, got {v_out}"
+        )
+        return None
+
+    vin = _lookup_inferred_vin(in_p_net, supply_map)
+    if vin is None or vin <= 0:
+        in_key = _channel_key("IN_P_NET", idx)
+        result.errors.append(
+            f"{role_diag}: cannot infer input voltage for SMPS gain — "
+            f"no unique upstream SOURCE/REGULATOR voltage found for "
+            f"{in_key}={in_p_net!r}"
+        )
+        return None
+
+    gain = v_out / (vin * eff)
+    return gain, reg_type, eff, True
+
+
 def _parse_regulator(comp, proj, enabled_layers, result, bridge_groups=None,
-                     net_remap=None):
+                     net_remap=None, supply_map=None):
     role_diag_base = f"REGULATOR on {comp.designator}"
     if _has_single_net_params(comp.parameters):
         result.errors.append(
@@ -1573,17 +1727,32 @@ def _parse_regulator(comp, proj, enabled_layers, result, bridge_groups=None,
             f"{len(pcb_indices)} multi-channel PCB instances ({names})"
         )
 
+    if supply_map is None:
+        supply_map = {}
+
     specs: list[RegulatorSpec] = []
     for idx in indices:
         role_diag = f"REGULATOR on {_channel_label(comp.designator, idx)}"
         v = _require_value(
             comp.parameters, _channel_key("V", idx), role_diag, result,
         )
-        g = _require_value(
-            comp.parameters, _channel_key("GAIN", idx), role_diag, result,
-        )
-        if v is None or g is None:
+        in_p_net = _ci_get(comp.parameters, _channel_key("IN_P_NET", idx))
+        resolved = _resolve_regulator_gain(
+            comp.parameters, idx, v, in_p_net,
+            supply_map, role_diag, result,
+        ) if v is not None else None
+        if v is None or resolved is None:
             continue
+        g, reg_type, eff, adaptive = resolved
+        iq_raw = _optional_value(
+            comp.parameters, _channel_key("QUIESCENT", idx), role_diag, result,
+        )
+        if iq_raw is not None and iq_raw < 0:
+            result.errors.append(
+                f"{role_diag}: {_channel_key('QUIESCENT', idx)} must be >= 0"
+            )
+            continue
+        quiescent = iq_raw if iq_raw is not None else 0.0
         for pcb_idx in pcb_indices:
             pcb_des = proj.pcb_components[pcb_idx].designator
             inst_diag = (
@@ -1618,6 +1787,10 @@ def _parse_regulator(comp, proj, enabled_layers, result, bridge_groups=None,
                 out_p=out[0], out_n=out[1],
                 in_p=in_[0], in_n=in_[1],
                 channel_index=idx,
+                regulator_type=reg_type,
+                efficiency=eff,
+                adaptive_gain_eligible=adaptive,
+                quiescent_current=quiescent,
             ))
     return specs
 
@@ -1855,6 +2028,7 @@ def parse_annotations(proj: ExtractedProject,
     # naming PDN_P_NET=+5V can resolve to a U3 pin on 5V_SW when L1 bridges
     # them. Computed once; consulted as a fallback inside _resolve_terminal.
     bridge_groups = _collect_bridge_groups(parameter_sources, proj)
+    supply_map = _collect_supply_voltages_by_net(parameter_sources)
 
     for comp in parameter_sources:
         if comp.designator.upper() in skip_set:
@@ -1887,7 +2061,8 @@ def parse_annotations(proj: ExtractedProject,
 
         specs = _PARSER_BY_ROLE[role](comp, proj, enabled_layers, result,
                                       bridge_groups=bridge_groups,
-                                      net_remap=net_remap)
+                                      net_remap=net_remap,
+                                      supply_map=supply_map)
         # Every parser now returns a list — empty if the directive failed
         # to resolve, single-element for single-channel roles, multi-element
         # for multi-channel SOURCE/SINK.
@@ -1928,7 +2103,14 @@ def _describe_directive(d: DirectiveSpec) -> str:
         return head + f"  R={d.resistance:g} Ω\n" + \
             _describe_terminal("P", d.p) + "\n" + _describe_terminal("N", d.n)
     if isinstance(d, RegulatorSpec):
-        return head + f"  V={d.voltage:g} V, gain={d.gain:g}\n" + \
+        extra = ""
+        if d.regulator_type:
+            extra = f", type={d.regulator_type}"
+            if d.regulator_type == "SMPS":
+                extra += f", eff={d.efficiency:g}"
+            if d.adaptive_gain_eligible:
+                extra += ", adaptive"
+        return head + f"  V={d.voltage:g} V, gain={d.gain:g}{extra}\n" + \
             _describe_terminal("OUT_P", d.out_p) + "\n" + _describe_terminal("OUT_N", d.out_n) + "\n" + \
             _describe_terminal("IN_P", d.in_p) + "\n" + _describe_terminal("IN_N", d.in_n)
     return head
