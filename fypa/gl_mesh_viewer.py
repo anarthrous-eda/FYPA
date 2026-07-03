@@ -1993,6 +1993,41 @@ class GLMeshViewer(QOpenGLWidget):
         y_px = self.height() * 0.5 - (wy - cy) / mpp
         return x_px, y_px
 
+    def _project_points_screen(
+        self, xs: np.ndarray, ys: np.ndarray,
+        zs: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Vectorised :meth:`world_to_screen` for a whole point array.
+
+        Same formula per point — 2D affine, or one MVP matmul + perspective
+        divide in 3D — so results match ``world_to_screen`` element-for-element.
+        Behind-camera points (3D) get the ``-1e9`` sentinel so viewport culling
+        drops them. Used by ``_draw_markers`` to project + cull thousands of
+        via/PTH markers in numpy instead of a per-marker Python call (and to
+        build the 3D MVP once per group rather than once per marker)."""
+        xs = np.asarray(xs, dtype=np.float64)
+        ys = np.asarray(ys, dtype=np.float64)
+        w = float(self.width())
+        h = float(self.height())
+        if self._view_mode == "3d":
+            zs = (np.zeros_like(xs) if zs is None
+                  else np.asarray(zs, dtype=np.float64))
+            mvp = self._current_mvp()
+            r0, r1, r3 = mvp.row(0), mvp.row(1), mvp.row(3)
+            cx = r0.x() * xs + r0.y() * ys + r0.z() * zs + r0.w()
+            cy = r1.x() * xs + r1.y() * ys + r1.z() * zs + r1.w()
+            cw = r3.x() * xs + r3.y() * ys + r3.z() * zs + r3.w()
+            behind = cw <= 1e-6
+            cw_safe = np.where(behind, 1.0, cw)
+            x_px = (cx / cw_safe + 1.0) * 0.5 * w
+            y_px = (1.0 - cy / cw_safe) * 0.5 * h
+            return (np.where(behind, -1e9, x_px),
+                    np.where(behind, -1e9, y_px))
+        cx0, cy0 = self._view_center_x, self._view_center_y
+        mpp = self._mm_per_pixel
+        return (w * 0.5 + (xs - cx0) / mpp,
+                h * 0.5 - (ys - cy0) / mpp)
+
     # ------------------------------------------------------------------
     # QOpenGLWidget lifecycle
     # ------------------------------------------------------------------
@@ -3149,25 +3184,29 @@ class GLMeshViewer(QOpenGLWidget):
             ring_colors = group.ring_colors
             ring_w = float(group.ring_width)
             rings_on = ring_w > 0.0 and ring_colors is not None
-            for i in range(group.xs.size):
+            # Project + size + viewport-cull the whole group in numpy — one MVP
+            # matmul (3D) or affine (2D) instead of a per-marker world_to_screen
+            # Python call, and the QPainter loop below runs only over the
+            # on-screen survivors. World-space sizing scales each marker with
+            # zoom but never below ``min_pixel_diameter``.
+            px_arr, py_arr = self._project_points_screen(group.xs, group.ys, zs)
+            if wdiams is not None:
+                sizes = np.maximum(
+                    np.asarray(wdiams, dtype=np.float64) / mpp, min_px)
+            else:
+                sizes = np.full(group.xs.size, default_size, dtype=np.float64)
+            w_px = float(self.width())
+            h_px = float(self.height())
+            visible = ((px_arr >= -sizes) & (px_arr <= w_px + sizes)
+                       & (py_arr >= -sizes) & (py_arr <= h_px + sizes))
+            for i in np.nonzero(visible)[0]:
+                i = int(i)
+                px = float(px_arr[i])
+                py = float(py_arr[i])
+                size = float(sizes[i])
                 wx = float(group.xs[i])
                 wy = float(group.ys[i])
                 wz = float(zs[i]) if zs is not None else 0.0
-                # World-space sizing: each marker scales with zoom, but
-                # never shrinks below ``min_pixel_diameter`` — keeps
-                # vias visible (with intentional overlap) when zoomed
-                # out beyond the via's physical footprint.
-                if wdiams is not None:
-                    size = max(float(wdiams[i]) / mpp, min_px)
-                else:
-                    size = default_size
-                # Skip points outside the viewport — saves QPainter calls
-                # in deep zoom and silently drops behind-camera points
-                # in 3D (world_to_screen returns the sentinel -1e9).
-                px, py = self.world_to_screen(wx, wy, wz)
-                if (px < -size or px > self.width() + size
-                        or py < -size or py > self.height() + size):
-                    continue
                 # Slotted-drill marker: draw a capsule sized + oriented to the
                 # slot. The long-axis endpoints are projected through the same
                 # world→screen transform as the centre, so the on-screen length
@@ -3319,16 +3358,29 @@ class GLMeshViewer(QOpenGLWidget):
                            anchor_right: bool) -> None:
         if not html:
             return
-        # Build a QTextDocument so we can measure + render HTML cleanly.
-        doc = QTextDocument()
-        doc.setDefaultFont(QFont("Segoe UI", 9))
-        doc.setHtml(html)
-        # Force light text — the dark chip background otherwise eats the
-        # default near-black foreground.
-        doc.setDefaultStyleSheet("body, p, table, td, span { color: #e6e6e6; }")
-        doc.setHtml(html)  # re-set so style sheet applies
-        doc.adjustSize()
-        size = doc.size()
+        # Cache the parsed + laid-out QTextDocument keyed on the HTML. The chip
+        # content is static while panning/zooming (only its position moves), so
+        # this skips the setHtml + adjustSize reparse every frame; only
+        # drawContents (the actual paint) runs per frame. The cache is capped —
+        # the HTML changes when the probe readout does, but only a couple of
+        # chips are ever live.
+        cache = getattr(self, "_overlay_chip_doc_cache", None)
+        if cache is None:
+            cache = self._overlay_chip_doc_cache = {}
+        entry = cache.get(html)
+        if entry is None:
+            doc = QTextDocument()
+            doc.setDefaultFont(QFont("Segoe UI", 9))
+            # Force light text — the dark chip background otherwise eats the
+            # default near-black foreground.
+            doc.setDefaultStyleSheet(
+                "body, p, table, td, span { color: #e6e6e6; }")
+            doc.setHtml(html)  # set after the style sheet so it applies
+            doc.adjustSize()
+            if len(cache) > 8:
+                cache.clear()
+            entry = cache[html] = (doc, doc.size())
+        doc, size = entry
         margin = 8
         chip_w = size.width() + 12
         chip_h = size.height() + 6

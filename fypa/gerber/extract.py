@@ -306,48 +306,85 @@ def _arc_to_polygon(x1: float, y1: float, x2: float, y2: float,
     )
 
 
-def _arcpoly_to_polygon(outline, arc_centers) -> shapely.geometry.Polygon:
-    """Region (filled polygon) — straight + arc segments.
+def _tessellate_arcpoly_ring(outline, arc_centers) -> list[tuple[float, float]]:
+    """Discretise a gerbonara ``ArcPoly`` (straight + arc segments) to a flat
+    ring of ``(x, y)`` points.
 
-    ``outline`` is a list of ``(x, y)`` vertices defining the closed ring.
-    ``arc_centers`` parallels it: each entry is either ``None`` (straight
-    segment to next vertex) or ``(cx, cy)`` for an arc whose centre is at
-    those coordinates, sweeping the short way (Gerber spec is sign-based
-    in the file but gerbonara normalises to ``None`` / centre coordinates).
-    Today we discretise arc segments to chords with the same tolerance as
-    line arcs above.
+    ``outline`` is the list of ring vertices (first and last implicitly
+    connected). ``arc_centers`` parallels it: ``None`` for a straight segment,
+    or a ``(clockwise, (cx, cy))`` tuple for an arc segment — that is
+    gerbonara's own format (see ``gerbonara.graphic_primitives.ArcPoly``:
+    "Arc segments have ``(clockwise, (cx, cy))`` tuple with cx, cy being
+    absolute coords").
+
+    Two things this gets right that the previous inline code did not:
+
+    * **Unpacking.** Each entry is ``(clockwise, (cx, cy))``, not a bare
+      ``(cx, cy)``; the old ``cx, cy = ac`` bound ``cx`` to the bool and
+      ``cy`` to the centre tuple, so ``math.hypot`` raised ``TypeError`` on the
+      first real arc. That exception propagated up to the per-layer guard in
+      :func:`extract_gerber_project`, which dropped the *entire copper layer*
+      with only a warning — any region with a rounded (arc) corner lost all
+      its copper.
+    * **Sweep direction.** Region arcs may sweep up to a full turn and the
+      direction is significant (a 270° CW arc and a 90° CCW arc share
+      endpoints but bound different areas), so we honour the ``clockwise``
+      flag instead of always taking the short way around — the same convention
+      :func:`_arc_to_polygon` uses for stroked arcs.
     """
     import math
-    if len(outline) < 3:
-        return shapely.geometry.Polygon()
     pts: list[tuple[float, float]] = []
     n = len(outline)
     for i in range(n):
         x0, y0 = outline[i]
         x1, y1 = outline[(i + 1) % n]
-        pts.append((x0, y0))
+        pts.append((float(x0), float(y0)))
         ac = arc_centers[i] if arc_centers and i < len(arc_centers) else None
-        if ac is None or ac[0] is None or ac[1] is None:
-            continue
-        cx, cy = ac
+        if ac is None:
+            continue  # straight segment
+        clockwise, center = ac
+        if (clockwise is None or center is None
+                or center[0] is None or center[1] is None):
+            continue  # gerbonara's straight-segment sentinel form
+        cx, cy = center
         r = math.hypot(x0 - cx, y0 - cy)
         if r <= 0:
             continue
         a0 = math.atan2(y0 - cy, x0 - cx)
-        a1 = math.atan2(y1 - cy, x1 - cx)
-        # Gerber region arc: short way around (sweep < pi). Normalise so the
-        # smaller absolute sweep is taken.
+        epsilon = max(1e-6, r * 1e-9)
+        if abs(x1 - x0) < epsilon and abs(y1 - y0) < epsilon:
+            # Full-circle segment (start == end): force a whole turn in the
+            # flagged direction rather than collapsing to a zero sweep.
+            a1 = a0 - 2.0 * math.pi if clockwise else a0 + 2.0 * math.pi
+        else:
+            a1 = math.atan2(y1 - cy, x1 - cx)
+            # clockwise=True is a negative-direction (CW) sweep in math coords.
+            if clockwise:
+                if a1 > a0:
+                    a1 -= 2 * math.pi
+            else:
+                if a1 < a0:
+                    a1 += 2 * math.pi
         delta = a1 - a0
-        while delta > math.pi:
-            delta -= 2 * math.pi
-        while delta < -math.pi:
-            delta += 2 * math.pi
         err_ratio = max(min(ARC_CHORD_TOLERANCE_MM / r, 0.99), 1e-6)
         dtheta_max = 2.0 * math.acos(1.0 - err_ratio)
         steps = max(2, int(math.ceil(abs(delta) / dtheta_max)))
         for k in range(1, steps):
             t = a0 + delta * (k / steps)
             pts.append((cx + r * math.cos(t), cy + r * math.sin(t)))
+    return pts
+
+
+def _arcpoly_to_polygon(outline, arc_centers) -> shapely.geometry.Polygon:
+    """Region (filled polygon) — straight + arc segments.
+
+    Discretises via :func:`_tessellate_arcpoly_ring` (which handles gerbonara's
+    ``(clockwise, (cx, cy))`` arc format and arc direction) and lets shapely
+    repair any self-intersection.
+    """
+    if len(outline) < 3:
+        return shapely.geometry.Polygon()
+    pts = _tessellate_arcpoly_ring(outline, arc_centers)
     # Close ring implicitly; let shapely figure out validity.
     poly = shapely.geometry.Polygon(pts)
     if not poly.is_valid:
@@ -500,39 +537,11 @@ def render_outline_to_polyline(gerber_path: Path) -> tuple[Pt2D, ...]:
             elif isinstance(prim, gp.ArcPoly):
                 # Already a closed region — discretise its arc segments
                 # and return immediately (most outline files use either
-                # ArcPoly OR Line/Arc strokes, not a mix).
-                import math
-                outline_pts: list[tuple[float, float]] = []
-                n = len(prim.outline)
-                for i in range(n):
-                    x0, y0 = prim.outline[i]
-                    x1, y1 = prim.outline[(i + 1) % n]
-                    outline_pts.append((x0, y0))
-                    ac = (prim.arc_centers[i]
-                          if prim.arc_centers and i < len(prim.arc_centers)
-                          else None)
-                    if ac is None or ac[0] is None or ac[1] is None:
-                        continue
-                    cx, cy = ac
-                    r = math.hypot(x0 - cx, y0 - cy)
-                    if r <= 0:
-                        continue
-                    a0 = math.atan2(y0 - cy, x0 - cx)
-                    a1 = math.atan2(y1 - cy, x1 - cx)
-                    delta = a1 - a0
-                    while delta > math.pi:
-                        delta -= 2 * math.pi
-                    while delta < -math.pi:
-                        delta += 2 * math.pi
-                    err_ratio = max(min(ARC_CHORD_TOLERANCE_MM / r, 0.99), 1e-6)
-                    dtheta_max = 2.0 * math.acos(1.0 - err_ratio)
-                    steps = max(2, int(math.ceil(abs(delta) / dtheta_max)))
-                    for k in range(1, steps):
-                        t = a0 + delta * (k / steps)
-                        outline_pts.append(
-                            (cx + r * math.cos(t), cy + r * math.sin(t))
-                        )
-                arcpoly_ring = outline_pts
+                # ArcPoly OR Line/Arc strokes, not a mix). Shares the same
+                # correct arc handling as the copper-region path.
+                arcpoly_ring = _tessellate_arcpoly_ring(
+                    prim.outline, prim.arc_centers,
+                )
                 break
             # Circles / rectangles on an outline layer are typically pad
             # flashes for fiducials etc; not part of the board boundary.

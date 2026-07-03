@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QTimer
 
 import shapely.geometry
+import shapely.prepared
 from scipy.spatial import cKDTree
 
 from . import mesh, solver, units, colormaps
@@ -195,34 +196,40 @@ class DeferedDict(Generic[_DD_K, _DD_V]):
 @dataclass
 class BaseSpatialIndex:
     tree: cKDTree | None
-    values: list[float]
+    values: np.ndarray
     shape: shapely.geometry.MultiPolygon
+    # Prepared copy of ``shape`` — its edge RTree makes the per-hover
+    # point-in-polygon test O(log n) instead of O(boundary_vertices), which on a
+    # big GND plane (thousands of boundary vertices) was milliseconds per mouse
+    # move on the UI thread.
+    prepared: shapely.prepared.PreparedGeometry | None = None
 
     @classmethod
-    def _extract_points_and_values(cls, layer_solution: solver.LayerSolution) -> tuple[list[list[float]], list[float]]:
+    def _extract_points_and_values(
+        cls, layer_solution: solver.LayerSolution,
+    ) -> tuple[np.ndarray, np.ndarray]:
         raise NotImplementedError("This method should be implemented in subclasses")
 
     @classmethod
     def from_layer_data(cls, layer: solver.problem.Layer, layer_solution: solver.LayerSolution) -> "BaseSpatialIndex":
-        vertices, values = cls._extract_points_and_values(layer_solution)
+        points, values = cls._extract_points_and_values(layer_solution)
+        prepared = shapely.prepared.prep(layer.shape)
 
         # cKDTree is not happy with empty arrays, so we just return an empty index
-        if not vertices:
-            return cls(None, [], layer.shape)
+        if points.shape[0] == 0:
+            return cls(None, values, layer.shape, prepared)
 
-        vertex_array = np.array(vertices)
-        tree = cKDTree(vertex_array)
-
-        return cls(tree, values, layer.shape)
+        tree = cKDTree(points)
+        return cls(tree, values, layer.shape, prepared)
 
     def query_nearest(self, x: float, y: float) -> float | None:
         """Find nearest value to given coordinates."""
-        if not self.tree:
+        if self.tree is None:
             return None
 
-        # Check if point is within layer geometry
+        # Check if point is within layer geometry (prepared → O(log n)).
         point = shapely.geometry.Point(x, y)
-        if not self.shape.contains(point):
+        if not self.prepared.contains(point):
             return None
 
         # Query nearest vertex
@@ -230,45 +237,68 @@ class BaseSpatialIndex:
 
         # Return value if distance is reasonable
         if distance < float('inf'):
-            return self.values[index]
+            return float(self.values[index])
 
         return None
+
+
+def _mesh_vertex_xys(msh) -> np.ndarray:
+    """(N, 2) vertex coordinates for a mesh — from the retained triangle-soup
+    array when present (no per-vertex Python loop), else the half-edge form."""
+    xys = getattr(msh, "_source_xys", None)
+    n = len(msh.vertices)
+    if xys is not None and np.asarray(xys).shape[0] == n:
+        return np.asarray(xys, dtype=np.float64)
+    return (np.array([[v.p.x, v.p.y] for v in msh.vertices], dtype=np.float64)
+            .reshape(-1, 2))
 
 
 class VertexSpatialIndex(BaseSpatialIndex):
     """Spatial index for fast vertex value lookups within a layer."""
 
     @classmethod
-    def _extract_points_and_values(cls, layer_solution: solver.LayerSolution) -> tuple[list[list[float]], list[float]]:
-        """Extract vertex coordinates and their values from the layer solution."""
-        all_vertices = []
-        all_values = []
-
+    def _extract_points_and_values(
+        cls, layer_solution: solver.LayerSolution,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Vertex coordinates + potential values, straight from the meshes'
+        flat arrays (``_source_xys`` / ``ZeroForm.values``) — no per-vertex
+        Python loop or stub materialisation."""
+        pts_chunks: list[np.ndarray] = []
+        val_chunks: list[np.ndarray] = []
         for msh, values in zip(layer_solution.meshes, layer_solution.potentials):
-            for vertex in msh.vertices:
-                all_vertices.append([vertex.p.x, vertex.p.y])
-                all_values.append(values[vertex])
-
-        return all_vertices, all_values
+            pts_chunks.append(_mesh_vertex_xys(msh))
+            val_chunks.append(np.asarray(values.values, dtype=np.float64))
+        if not pts_chunks:
+            return np.empty((0, 2), dtype=np.float64), np.empty(0, dtype=np.float64)
+        return np.concatenate(pts_chunks, axis=0), np.concatenate(val_chunks)
 
 
 class FaceSpatialIndex(BaseSpatialIndex):
     """Spatial index for fast face value lookups within a layer."""
 
     @classmethod
-    def _extract_points_and_values(cls, layer_solution: solver.LayerSolution) -> tuple[list[list[float]], list[float]]:
-        """Extract face coordinates and their values from the layer solution."""
-        all_faces = []
-        all_values = []
-
+    def _extract_points_and_values(
+        cls, layer_solution: solver.LayerSolution,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Face centroids + power-density values from the flat triangle-soup
+        arrays (centroid = mean of the triangle's 3 vertices) — no per-face
+        centroid walk."""
+        pts_chunks: list[np.ndarray] = []
+        val_chunks: list[np.ndarray] = []
         for msh, values in zip(layer_solution.meshes, layer_solution.power_densities):
-            for face in msh.faces:
-                # Use the centroid of the face as the representative point
-                centroid = face.centroid
-                all_faces.append([centroid.x, centroid.y])
-                all_values.append(values[face])
-
-        return all_faces, all_values
+            tris = getattr(msh, "_source_tris", None)
+            xys = getattr(msh, "_source_xys", None)
+            if (tris is not None and xys is not None
+                    and np.asarray(tris).shape[0] == len(msh.faces)):
+                cents = np.asarray(xys, dtype=np.float64)[np.asarray(tris)].mean(axis=1)
+            else:
+                cents = np.array([[f.centroid.x, f.centroid.y] for f in msh.faces],
+                                 dtype=np.float64).reshape(-1, 2)
+            pts_chunks.append(cents)
+            val_chunks.append(np.asarray(values.values, dtype=np.float64))
+        if not pts_chunks:
+            return np.empty((0, 2), dtype=np.float64), np.empty(0, dtype=np.float64)
+        return np.concatenate(pts_chunks, axis=0), np.concatenate(val_chunks)
 
 
 class BaseTool(abc.ABC):
@@ -1302,17 +1332,21 @@ class MeshViewer(QOpenGLWidget):
         if not self.solution or not self.solution.layer_solutions:
             return None
 
+        # Reduce each mesh's flat vertex array with numpy instead of a
+        # per-vertex Python min/max loop (this runs on resize / the F key).
         min_x, min_y = float('inf'), float('inf')
         max_x, max_y = float('-inf'), float('-inf')
-
         for layer_solution in self.solution.layer_solutions:
             for msh in layer_solution.meshes:
-                for vertex in msh.vertices:
-                    x, y = vertex.p.x, vertex.p.y
-                    min_x = min(min_x, x)
-                    min_y = min(min_y, y)
-                    max_x = max(max_x, x)
-                    max_y = max(max_y, y)
+                xys = _mesh_vertex_xys(msh)
+                if xys.shape[0] == 0:
+                    continue
+                mn = xys.min(axis=0)
+                mx = xys.max(axis=0)
+                min_x = min(min_x, float(mn[0]))
+                min_y = min(min_y, float(mn[1]))
+                max_x = max(max_x, float(mx[0]))
+                max_y = max(max_y, float(mx[1]))
 
         # Check if we found any vertices
         if min_x == float('inf'):

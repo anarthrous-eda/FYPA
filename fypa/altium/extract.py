@@ -97,6 +97,12 @@ class RawArc:
     layer_id: int
     net_index: int
     is_keepout: bool
+    # An arc that forms part of a polygon-pour *outline* (flags1 & 0x02) is
+    # boundary artwork, not copper — the poured copper is the region/fill. Like
+    # is_polygon_outline tracks, these must be excluded from the copper geometry
+    # or a rounded-corner pour gains a spurious band of copper along its outline.
+    is_polygon_outline: bool = False
+    polygon_index: int = NO_POLYGON
 
 
 @dataclass(frozen=True, slots=True)
@@ -523,6 +529,8 @@ def _extract_arcs(pcb, ox_mm: float, oy_mm: float) -> tuple[RawArc, ...]:
             layer_id=int(a.layer),
             net_index=_net_index(a.net_index),
             is_keepout=bool(a.is_keepout),
+            is_polygon_outline=bool(getattr(a, "is_polygon_outline", False)),
+            polygon_index=int(getattr(a, "polygon_index", NO_POLYGON)),
         ))
     return tuple(out)
 
@@ -607,7 +615,9 @@ def _via_fill_material(v) -> str:
         return ""
     try:
         feature = structure.get_feature(_IPC4761_FEATURE_FILLING)
-    except Exception:
+    except Exception as exc:
+        log.debug("via_structure.get_feature(FILLING) failed, treating via "
+                  "as non-conductive-fill: %s", exc)
         return ""
     if feature is None:
         return ""
@@ -849,6 +859,12 @@ def _extract_shape_based_regions(pcb, ox_mm: float, oy_mm: float,
         # before reaching for the polygon's net.
         if (raw_net is None or raw_net == 0xFFFF) and poly_idx != NO_POLYGON:
             raw_net = _polygon_net(poly_idx)
+        # A standalone unassigned SBR (0xFFFF with no parent polygon, or a
+        # polygon that is itself unassigned) must become NO_NET, not the phantom
+        # net 65535 — otherwise the editor-mode path treats 0xFFFF as a real
+        # active net. Regions6 already maps its sentinel to None; do the same.
+        if raw_net == 0xFFFF:
+            raw_net = None
         # ShapeBasedRegion.kind is a ``PcbRegionKind`` enum (COPPER=0,
         # BOARD_CUTOUT=1, POLYGON_CUTOUT=2). Store the int so downstream
         # filters can do plain ``kind != 0`` to keep only copper.
@@ -910,17 +926,27 @@ def _extract_pcb_components(pcb, ox_mm: float, oy_mm: float,
                             ) -> tuple[RawPcbComponent, ...]:
     out: list[RawPcbComponent] = []
     for c in pcb.components:
-        out.append(RawPcbComponent(
-            designator=str(c.designator),
-            center=Pt2D(parse_mil_string(c.x) - ox_mm,
-                        parse_mil_string(c.y) - oy_mm),
-            rotation_deg=parse_rotation_string(c.rotation),
-            layer_name=str(c.layer),
-            footprint=str(c.footprint),
-            source_designator=str(c.raw_record.get("SOURCEDESIGNATOR", "") or ""),
-            parameters=_normalise_pcb_parameters(getattr(c, "parameters", None)),
-            unique_id=str(getattr(c, "unique_id", "") or ""),
-        ))
+        # One corrupt/hand-edited component record (bad mil string, malformed
+        # rotation, etc.) must not abort the entire project load — warn and
+        # skip it. A dropped component only loses its designator overlay /
+        # any PDN annotations it carried; the copper geometry is unaffected.
+        try:
+            out.append(RawPcbComponent(
+                designator=str(c.designator),
+                center=Pt2D(parse_mil_string(c.x) - ox_mm,
+                            parse_mil_string(c.y) - oy_mm),
+                rotation_deg=parse_rotation_string(c.rotation),
+                layer_name=str(c.layer),
+                footprint=str(c.footprint),
+                source_designator=str(
+                    c.raw_record.get("SOURCEDESIGNATOR", "") or ""),
+                parameters=_normalise_pcb_parameters(
+                    getattr(c, "parameters", None)),
+                unique_id=str(getattr(c, "unique_id", "") or ""),
+            ))
+        except Exception as exc:
+            desig = getattr(c, "designator", "?")
+            log.warning("Skipping malformed PCB component %s: %s", desig, exc)
     return tuple(out)
 
 

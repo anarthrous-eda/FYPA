@@ -703,10 +703,27 @@ def _directive_to_network(
 
 def _via_pad_layer_span(start: int, end: int, enabled_layers: list[int]) -> list[int]:
     """Return enabled copper layers that a via/through-hole pad bridges,
-    in Top->Bottom order."""
-    if start > end:
-        start, end = end, start
-    return [lid for lid in enabled_layers if start <= lid <= end]
+    in Top->Bottom order.
+
+    ``enabled_layers`` is in Top->Bottom *positional* order but internal plane
+    layers carry raw ids 39-54 (INTERNAL_PLANE_1..16) that are numerically
+    ABOVE the Bottom-layer id (32) even though they sit physically between Top
+    and Bottom. A raw-id range test (``start <= lid <= end``) therefore silently
+    drops every internal plane from a normal Top(1)->Bottom(32) through-via
+    span, so vias never couple current into via-stitched planes. Slice by
+    position instead — exactly what the geometry side's ``_via_on_layer`` does.
+    """
+    try:
+        i_a = enabled_layers.index(start)
+        i_b = enabled_layers.index(end)
+    except ValueError:
+        # An endpoint isn't in the enabled chain (e.g. a via referencing a
+        # disabled layer) — fall back to the raw-id range rather than crash.
+        if start > end:
+            start, end = end, start
+        return [lid for lid in enabled_layers if start <= lid <= end]
+    lo, hi = (i_a, i_b) if i_a <= i_b else (i_b, i_a)
+    return enabled_layers[lo:hi + 1]
 
 
 def _layer_z_centers_mm(
@@ -957,6 +974,23 @@ def _coupling_networks(
     skipped_unknown_net = 0
     skipped_missing_layer = 0
     skipped_xy_outside_copper = 0
+
+    # Prepare each (layer, net) copper shape once and reuse it. Every via/PTH on
+    # a net probes the same handful of (layer, net) MultiPolygons with `covers`;
+    # unprepared that is O(boundary_vertices) each (a GND sheet has 10⁴–10⁵), so
+    # on a stitched board (10⁴+ vias × several layers) it was ~10⁶ un-indexed
+    # point-in-polygon calls. A PreparedGeometry builds an edge RTree once, so
+    # each covers drops to O(log n). Same predicate → identical result.
+    import shapely.prepared
+    _prep_covers: dict[tuple[int, int], object] = {}
+
+    def _covers(key: tuple[int, int], layer, pt) -> bool:
+        prep = _prep_covers.get(key)
+        if prep is None:
+            prep = shapely.prepared.prep(layer.shape)
+            _prep_covers[key] = prep
+        return prep.covers(pt)
+
     for site in sites:
         if site.net_index == NO_NET:
             skipped_unknown_net += 1
@@ -978,7 +1012,7 @@ def _coupling_networks(
             lid for lid in site.span
             if (L := layer_by_layer_and_net.get((lid, site.net_index))) is not None
             and not L.shape.is_empty
-            and L.shape.covers(pt)
+            and _covers((lid, site.net_index), L, pt)
         ]
         if len(layers_for_net) < 2:
             # Either the net has copper on <2 layers in the span at
@@ -1074,6 +1108,14 @@ def _via_through_holes(
     for p in extracted.pads:
         if not p.is_through_hole:
             continue
+        # A non-plated through-hole (NPTH mounting / mechanical hole) has no
+        # plated barrel, so it can't carry current between layers — adding a
+        # coupling resistor chain would be a phantom conductor. A netted NPTH
+        # (e.g. a chassis-GND mounting hole) keeps its per-layer copper annulus
+        # but must NOT stitch the layers together. (The metadata path already
+        # gates on is_plated.)
+        if not getattr(p, "is_plated", True):
+            continue
         # Through-hole pads carry no IPC-4761 fill metadata in Altium —
         # the IPC-4761 protection table is a via-only concept.
         sites.append(_ViaSite(
@@ -1147,10 +1189,11 @@ def _build_stub_record(piece, layer_id: int, net_name: str) -> dict | None:
             try:
                 hp = shapely.geometry.Polygon(h_ring).representative_point()
                 hole_markers.append((float(hp.x), float(hp.y)))
-            except Exception:
+            except Exception as exc:
                 # Couldn't synthesise a hole marker — leave it; Triangle
                 # will mesh the hole as solid, the viewer renders it.
-                pass
+                log.debug("stub hole-marker synthesis failed (net %s, layer "
+                          "%s): %s", net_name, layer_id, exc)
         tri_input: dict = {"vertices": verts, "segments": segs}
         if hole_markers:
             tri_input["holes"] = hole_markers
@@ -1163,10 +1206,11 @@ def _build_stub_record(piece, layer_id: int, net_name: str) -> dict | None:
             record["triangles_xy"] = v_arr[t_arr.ravel()].astype(
                 np.float32, copy=False,
             )
-    except Exception:
+    except Exception as exc:
         # Triangle library unhappy with this polygon — viewer will retry
         # lazily and degrade to its own fallback.
-        pass
+        log.debug("stub pre-triangulation failed (net %s, layer %s): %s",
+                  net_name, layer_id, exc)
     return record
 
 
@@ -1194,14 +1238,19 @@ def _build_all_copper_records(
             ext = getattr(poly, "exterior", None)
             if ext is None or ext.is_empty:
                 continue
-            ext_arr = np.asarray(list(ext.coords), dtype=np.float32)
+            # shapely.get_coordinates copies the ring in C; np.asarray(list(
+            # ring.coords)) iterates the CoordinateSequence vertex-by-vertex in
+            # Python, which profiled as the dominant cost of building the copper
+            # overlay records on large boards.
+            ext_arr = shapely.get_coordinates(ext).astype(np.float32, copy=False)
             if ext_arr.shape[0] < 2:
                 continue
             holes_arr: list = []
             for hole in getattr(poly, "interiors", []):
                 if hole.is_empty:
                     continue
-                h_arr = np.asarray(list(hole.coords), dtype=np.float32)
+                h_arr = shapely.get_coordinates(hole).astype(
+                    np.float32, copy=False)
                 if h_arr.shape[0] >= 2:
                     holes_arr.append(h_arr)
             ring_polys.append({"exterior": ext_arr, "holes": holes_arr})
@@ -1427,7 +1476,7 @@ def _slot_record_fields(pad) -> dict:
     }
 
 
-def _gil_yield(i: int, every: int = 256) -> None:
+def _gil_yield(i: int, every: int = 4096) -> None:
     """Release the GIL briefly every ``every`` iterations.
 
     Why: ``build_solve_metadata`` walks every via / PTH / pad on the board,
@@ -1438,7 +1487,12 @@ def _gil_yield(i: int, every: int = 256) -> None:
     the GIL via ``Py_BEGIN_ALLOW_THREADS``; using a 1 ms (rather than 0 ms)
     sleep forces the Windows scheduler to actually deliver the timeslice to
     the higher-priority GUI thread (see ``_SolveWorker.run`` in
-    altium_viewer.py) instead of immediately rescheduling the worker."""
+    altium_viewer.py) instead of immediately rescheduling the worker.
+
+    ``every`` = 4096: on a 200 k-primitive board that's ~50 yields (once per
+    ~0.1 s of work — ample for the GUI's ~10 Hz repaint) instead of ~800 at the
+    old 256, so the deliberate 1 ms stalls no longer add up to ~1 s of pure
+    sleeping."""
     if i and (i % every) == 0:
         time.sleep(0.001)
 
@@ -1493,12 +1547,20 @@ def build_solve_metadata(
         return "(none)"
 
     # Stackup — only the enabled copper layers (the ones the FEM actually uses).
+    # Use the *current* module-level conductivity so a Settings-tab temperature /
+    # resistivity override (which SolveSettings.apply_to_modules patches into
+    # fypa.altium_geometry, and which the FEM uses) is reflected on the Setup tab
+    # too — otherwise these rows show stale 20 °C values that contradict the solve.
+    _copper_conductivity = __import__(
+        "fypa.altium_geometry",
+        fromlist=["COPPER_CONDUCTIVITY_S_PER_MM"],
+    ).COPPER_CONDUCTIVITY_S_PER_MM
     stackup_rows = []
     for lid in enabled:
         s = stackup_by_id.get(lid)
         if s is None:
             continue
-        sheet_conductance = s.copper_thickness_mm * 5.95e4  # S = thickness_mm * conductivity_S_per_mm
+        sheet_conductance = s.copper_thickness_mm * _copper_conductivity  # S = thickness_mm * conductivity_S_per_mm
         stackup_rows.append({
             "layer_id": lid,
             "name": s.name,
@@ -1708,7 +1770,9 @@ def build_solve_metadata(
             if exterior is None or exterior.is_empty:
                 continue
             # exterior.coords includes the closing vertex (last == first).
-            ring = [[float(x), float(y)] for x, y in exterior.coords]
+            # get_coordinates copies the ring in C; the .tolist() gives the same
+            # [[x, y], ...] the per-vertex comprehension did.
+            ring = shapely.get_coordinates(exterior).tolist()
             if len(ring) < 3:
                 continue
             if p.is_through_hole or p.layer_id == 74:  # 74 = Multi-Layer
@@ -1729,7 +1793,7 @@ def build_solve_metadata(
                     lext = getattr(lshape, "exterior", None) if lshape else None
                     if lext is None or lext.is_empty:
                         continue
-                    lring = [[float(x), float(y)] for x, y in lext.coords]
+                    lring = shapely.get_coordinates(lext).tolist()
                     if len(lring) >= 3 and lring != ring:
                         outline_by_layer[str(lid)] = lring
             comp_des = comp_des_by_idx_p.get(p.component_index, "")
@@ -1903,8 +1967,8 @@ def build_solve_metadata(
                 "kind": "plane",
                 "layer_id": int(gl.layer_id),
                 "net": net,
-                "outline": [[float(x), float(y)] for x, y in ext.coords],
-                "holes": [[[float(x), float(y)] for x, y in h.coords]
+                "outline": shapely.get_coordinates(ext).tolist(),
+                "holes": [shapely.get_coordinates(h).tolist()
                           for h in getattr(poly, "interiors", [])
                           if not h.is_empty],
                 "is_keepout": False,
@@ -2524,6 +2588,8 @@ def build_problem(
       belonging to other rails / signal nets via the Overlays control.
       The FEM itself only uses the active subset.
     """
+    import numpy as np
+
     # Flag (and warn about) single-type rails — only sources or only sinks,
     # which can't carry current. Their directives are marked solve_excluded
     # and left out of the networks below, but kept in
@@ -2734,14 +2800,32 @@ def build_problem(
             if ra != rb:
                 parent[rb] = ra
         # For each via XY on this net, union all pieces containing it.
-        for vx, vy in via_xys_by_net.get(ni, []):
-            pt = shapely.geometry.Point(vx, vy)
-            indices_touched = [
-                idx for idx, (_, _, piece) in enumerate(pieces)
-                if piece.intersects(pt)
-            ]
-            for a, b in zip(indices_touched, indices_touched[1:]):
-                _union(a, b)
+        # The naive form tested every via against every piece —
+        # O(vias x pieces) Python-level shapely calls, which on a ground net
+        # with tens of thousands of vias and dozens of fragmented pieces was
+        # the dominant cost of build_problem. One STRtree over the net's
+        # pieces plus a single vectorised point query does the whole net's
+        # containment test in C; the (input, piece) pairs come back sorted by
+        # input index, so consecutive equal-input rows are exactly the pieces
+        # one via touches.
+        via_list = via_xys_by_net.get(ni, [])
+        if via_list and len(pieces) > 1:
+            piece_geoms = [piece for (_, _, piece) in pieces]
+            tree = shapely.strtree.STRtree(piece_geoms)
+            via_points = shapely.points(
+                np.asarray(via_list, dtype=np.float64)
+            )
+            qi, ti = tree.query(via_points, predicate="intersects")
+            start = 0
+            n_hits = qi.shape[0]
+            while start < n_hits:
+                end = start + 1
+                while end < n_hits and qi[end] == qi[start]:
+                    end += 1
+                base = int(ti[start])
+                for k in range(start + 1, end):
+                    _union(base, int(ti[k]))
+                start = end
 
         # Group into components.
         components: dict[int, list[int]] = {}
@@ -3253,20 +3337,24 @@ def _apply_net_remap(
         return proj
     dr = dataclasses.replace
 
-    def _r(net_idx: int) -> int:
-        return remap.get(net_idx, net_idx)
+    def _rebuild(items):
+        # Only the handful of primitives whose net is actually remapped are
+        # reallocated; the rest (the overwhelming majority) are kept as-is
+        # rather than paying a dataclasses.replace per primitive.
+        return tuple(
+            dr(it, net_index=remap[it.net_index]) if it.net_index in remap else it
+            for it in items
+        )
 
     return dr(
         proj,
-        tracks=tuple(dr(t, net_index=_r(t.net_index)) for t in proj.tracks),
-        arcs=tuple(dr(a, net_index=_r(a.net_index)) for a in proj.arcs),
-        vias=tuple(dr(v, net_index=_r(v.net_index)) for v in proj.vias),
-        pads=tuple(dr(p, net_index=_r(p.net_index)) for p in proj.pads),
-        regions=tuple(dr(rg, net_index=_r(rg.net_index)) for rg in proj.regions),
-        shape_based_regions=tuple(
-            dr(rg, net_index=_r(rg.net_index)) for rg in proj.shape_based_regions
-        ),
-        fills=tuple(dr(f, net_index=_r(f.net_index)) for f in proj.fills),
+        tracks=_rebuild(proj.tracks),
+        arcs=_rebuild(proj.arcs),
+        vias=_rebuild(proj.vias),
+        pads=_rebuild(proj.pads),
+        regions=_rebuild(proj.regions),
+        shape_based_regions=_rebuild(proj.shape_based_regions),
+        fills=_rebuild(proj.fills),
         # nets unchanged — both canonical and non-canonical names still
         # resolve, and parse_annotations applies the remap after lookup.
     )
