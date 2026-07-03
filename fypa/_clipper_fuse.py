@@ -79,10 +79,15 @@ def backend() -> str:
 
 def _signed_area(pts: np.ndarray) -> float:
     """Shoelace signed area; >0 is CCW. Vectorised so we never pay shapely's
-    geometry-rebuilding ``orient`` cost on the hot path."""
+    geometry-rebuilding ``orient`` cost on the hot path.
+
+    Shapely rings are closed (last vertex == first), so the wrap-around term
+    of the shoelace sum is identically zero and a plain slice-and-dot gives
+    the full sum without ``np.roll`` — which allocates two temporary copies
+    per call and dominated this function in profiling (~5x slower)."""
     x = pts[:, 0]
     y = pts[:, 1]
-    return 0.5 * float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
+    return 0.5 * float(np.dot(x[:-1], y[1:]) - np.dot(x[1:], y[:-1]))
 
 
 def _iter_polygons(geom: BaseGeometry):
@@ -101,12 +106,14 @@ def _rings_of(geom: BaseGeometry) -> list[np.ndarray]:
     for poly in _iter_polygons(geom):
         if poly.is_empty:
             continue
-        ext = np.asarray(poly.exterior.coords, dtype=np.float64)
+        # shapely.get_coordinates runs the coordinate copy in C; np.asarray
+        # on the CoordinateSequence goes through a slower per-vertex path.
+        ext = shapely.get_coordinates(poly.exterior)
         if _signed_area(ext) < 0.0:
             ext = ext[::-1]
         rings.append(ext)
         for interior in poly.interiors:
-            h = np.asarray(interior.coords, dtype=np.float64)
+            h = shapely.get_coordinates(interior)
             if _signed_area(h) > 0.0:  # holes must wind opposite the exterior
                 h = h[::-1]
             rings.append(h)

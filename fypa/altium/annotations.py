@@ -651,7 +651,7 @@ def _resolve_terminal(
     errors: list[str] = []
     resolved_via_local = False
     designator = proj.pcb_components[pcb_index].designator
-    component_pads = [p for p in proj.pads if p.component_index == pcb_index]
+    component_pads = _pads_by_component_all(proj).get(pcb_index, [])
     if not component_pads:
         errors.append(
             f"{role_diagnostic}: component {designator!r} has no pads on the PCB"
@@ -862,6 +862,14 @@ def _find_pcb_instances(proj: ExtractedProject, sch_designator: str) -> list[int
     ]
 
 
+# Per-project caches (id-keyed, bounded to the current project by an identity
+# re-check + clear; ExtractedProject is frozen+slots so the maps can't live on
+# it). These replace O(nets)/O(pads) linear scans that ran once per directive
+# terminal — O(directives × nets/pads) overall.
+_net_indices_cache: dict[int, tuple["ExtractedProject", dict[str, list[int]]]] = {}
+_pads_by_comp_cache: dict[int, tuple["ExtractedProject", dict[int, list["RawPad"]]]] = {}
+
+
 def _net_indices_by_name(proj: ExtractedProject, name: str) -> list[int]:
     """Every net index whose name matches ``name`` (case-insensitive).
 
@@ -871,9 +879,35 @@ def _net_indices_by_name(proj: ExtractedProject, name: str) -> list[int]:
     nets. Connectivity stays unambiguous (pads carry net *indices*); only the
     name is ambiguous, so callers must consider every index for a name and
     let the specific component's own pads pick out its channel.
+
+    Name → indices is built once per project and cached, so this is O(1) per
+    lookup instead of an O(nets) scan.
     """
-    target = name.upper()
-    return [i for i, n in enumerate(proj.nets) if n.name.upper() == target]
+    entry = _net_indices_cache.get(id(proj))
+    if entry is None or entry[0] is not proj:
+        by_name: dict[str, list[int]] = {}
+        for i, n in enumerate(proj.nets):
+            by_name.setdefault(n.name.upper(), []).append(i)
+        _net_indices_cache.clear()
+        _net_indices_cache[id(proj)] = (proj, by_name)
+        entry = _net_indices_cache[id(proj)]
+    return list(entry[1].get(name.upper(), ()))  # fresh list — callers may keep it
+
+
+def _pads_by_component_all(proj: ExtractedProject) -> dict[int, list["RawPad"]]:
+    """All pads grouped by ``component_index`` (unlike
+    :func:`_build_pads_by_component`, this keeps NO_NET pads and returns lists,
+    matching the ``[p for p in proj.pads if p.component_index == …]`` scans it
+    replaces). Built once per project and cached."""
+    entry = _pads_by_comp_cache.get(id(proj))
+    if entry is None or entry[0] is not proj:
+        by_comp: dict[int, list["RawPad"]] = {}
+        for p in proj.pads:
+            by_comp.setdefault(p.component_index, []).append(p)
+        _pads_by_comp_cache.clear()
+        _pads_by_comp_cache[id(proj)] = (proj, by_comp)
+        entry = _pads_by_comp_cache[id(proj)]
+    return entry[1]
 
 
 def _collect_bridge_groups(
@@ -946,7 +980,7 @@ def _autoinfer_2pin_nets(proj: ExtractedProject, pcb_index: int) -> tuple[str, s
     both pads on the same net (e.g. a closed solder jumper) — i.e. any case
     where the assignment is ambiguous or doesn't make physical sense.
     """
-    pads = [p for p in proj.pads if p.component_index == pcb_index]
+    pads = _pads_by_component_all(proj).get(pcb_index, [])
     if len(pads) != 2:
         return None
     if pads[0].net_index == NO_NET or pads[1].net_index == NO_NET:
@@ -963,7 +997,7 @@ def _autoinfer_failure_reason(proj: ExtractedProject, pcb_index: int) -> str:
     user exactly why the P/N nets couldn't be inferred (and must be set
     explicitly).
     """
-    pads = [p for p in proj.pads if p.component_index == pcb_index]
+    pads = _pads_by_component_all(proj).get(pcb_index, [])
     if len(pads) != 2:
         return f"the footprint has {len(pads)} pads, not 2"
     if pads[0].net_index == NO_NET or pads[1].net_index == NO_NET:

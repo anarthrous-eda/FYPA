@@ -81,6 +81,11 @@ PAD_SHAPE_CUSTOM: int = 10
 # Discretisation tolerances (mm).
 ARC_CHORD_TOLERANCE_MM: float = 0.025  # ≈ 1 mil — keeps mesh-quality artifacts below copper width
 CIRCLE_RESOLUTION: int = 32             # segments per full circle for round buffers
+# ``Geometry.buffer(d)`` defaults to quad_segs=16 (per quarter circle), whereas
+# the top-level ``shapely.buffer(array, d)`` defaults to 8. Pin 16 when batching
+# so array-buffered rings are byte-for-byte identical to the per-geometry
+# ``.buffer()`` calls they replace.
+_DEFAULT_BUFFER_QUAD_SEGS: int = 16
 
 
 @dataclass(frozen=True)
@@ -302,7 +307,15 @@ def _shape_based_outline_points(
     bound the arc primitive uses, so the meshed geometry matches.
 
     Altium stores the arc's start/end angles in degrees, measured CCW from
-    +x about ``vertex.center``. A negative ``end - start`` sweeps CW.
+    +x about ``vertex.center``, and — like the standalone ``Arcs6`` primitive
+    (:func:`_arc_polyline_points`) — the sweep is always CCW: normalise
+    ``(end - start) % 360`` into ``[0, 360)``. The previous code took the raw
+    signed difference and treated a negative value as a CW sweep, which traced a
+    wrap-around corner the long way (e.g. a ``360° → 90°`` rounded corner became
+    a 270° arc instead of the intended 90°). Verified on the example corpus:
+    every negative raw sweep present was a ``-270°`` that is really a ``+90°``
+    CCW corner, and all non-wrapping arcs are already positive, so this only
+    corrects the wrap-around case.
     """
     n = len(vertices)
     if n < 3:
@@ -312,9 +325,12 @@ def _shape_based_outline_points(
         pts.append((cur.pos.x, cur.pos.y))
         if not cur.is_arc or cur.radius_mm <= 0.0:
             continue
-        sweep_deg = cur.end_angle_deg - cur.start_angle_deg
+        raw_sweep = cur.end_angle_deg - cur.start_angle_deg
+        if raw_sweep == 0.0:
+            continue  # start == end: degenerate zero-length arc edge
+        sweep_deg = raw_sweep % 360.0
         if sweep_deg == 0.0:
-            continue
+            sweep_deg = 360.0  # raw was a non-zero multiple of 360 → full circle
         cos_arg = max(-1.0, 1.0 - ARC_CHORD_TOLERANCE_MM / cur.radius_mm)
         max_step_rad = 2.0 * math.acos(cos_arg)
         sweep_rad = math.radians(sweep_deg)
@@ -595,13 +611,21 @@ def _pad_on_layer(p: RawPad, layer_id: int) -> bool:
     return p.layer_id == layer_id
 
 
-def _via_on_layer(v: RawVia, layer_id: int, enabled: list[int]) -> bool:
-    if layer_id not in enabled or v.layer_start not in enabled or v.layer_end not in enabled:
+def _via_on_layer(v: RawVia, layer_id: int, enabled: list[int],
+                  pos: dict[int, int] | None = None) -> bool:
+    """Whether via ``v``'s barrel spans ``layer_id`` in the enabled stack.
+
+    ``pos`` is an optional ``{layer_id: position}`` map; pass it (built once by
+    the caller) to avoid three O(L) ``enabled.index(...)`` scans per via — this
+    function is called per via × per layer, so the scans were O(vias × L²)."""
+    if pos is None:
+        pos = {lid: i for i, lid in enumerate(enabled)}
+    i_layer = pos.get(layer_id)
+    i_a = pos.get(v.layer_start)
+    i_b = pos.get(v.layer_end)
+    if i_layer is None or i_a is None or i_b is None:
         return False
-    i_layer = enabled.index(layer_id)
-    i_a = enabled.index(v.layer_start)
-    i_b = enabled.index(v.layer_end)
-    lo, hi = min(i_a, i_b), max(i_a, i_b)
+    lo, hi = (i_a, i_b) if i_a <= i_b else (i_b, i_a)
     return lo <= i_layer <= hi
 
 
@@ -617,13 +641,28 @@ def _ensure_multipolygon(geom) -> shapely.geometry.MultiPolygon:
     return shapely.geometry.MultiPolygon(polys)
 
 
+# Cache of {net_name: first_index} for the most recent project. Bounded to one
+# entry (cleared on a new project), keyed by id() with an identity re-check so a
+# recycled id can never return a stale map. ExtractedProject is frozen+slots so
+# the cache can't live on the object itself.
+_net_name_index_cache: dict[int, tuple["ExtractedProject", dict[str, int]]] = {}
+
+
 def _net_index_by_name(proj: ExtractedProject, name: str | None) -> int:
+    """Index of the first net named ``name`` (case-sensitive, matching the old
+    linear scan), or ``NO_NET``. Cached per project so repeated lookups across
+    plane / sheet builds are O(1) instead of O(nets) each."""
     if not name:
         return NO_NET
-    for i, net in enumerate(proj.nets):
-        if net.name == name:
-            return i
-    return NO_NET
+    entry = _net_name_index_cache.get(id(proj))
+    if entry is None or entry[0] is not proj:
+        name_to_index: dict[str, int] = {}
+        for i, net in enumerate(proj.nets):
+            name_to_index.setdefault(net.name, i)  # first index wins, as before
+        _net_name_index_cache.clear()  # keep only the current project
+        _net_name_index_cache[id(proj)] = (proj, name_to_index)
+        entry = _net_name_index_cache[id(proj)]
+    return entry[1].get(name, NO_NET)
 
 
 def _drop_holes(geom: shapely.geometry.base.BaseGeometry):
@@ -650,8 +689,9 @@ def _through_features_on_layer(
         poly = _pad_polygon(p, layer_id)
         if poly is not None and not poly.is_empty:
             feats.append((_drop_holes(poly), p.net_index))
+    enabled_pos = {lid: i for i, lid in enumerate(enabled_layers)}
     for v in proj.vias:
-        if not _via_on_layer(v, layer_id, enabled_layers):
+        if not _via_on_layer(v, layer_id, enabled_layers, enabled_pos):
             continue
         poly = _via_polygon(v)
         if poly is not None and not poly.is_empty:
@@ -729,21 +769,80 @@ def _plane_sheet_polygon(
     conductor = float(proj.plane_relief_conductor_width_mm)
     entries = int(proj.plane_relief_entries)
 
-    holes: list[shapely.geometry.base.BaseGeometry] = []
+    # Buffer every anti-pad in ONE array-form shapely.buffer with a per-feature
+    # distance (air-gap for same-net, clearance for foreign) — far fewer
+    # Python↔C round trips than a per-feature .buffer(). Feature ORDER is
+    # preserved (the anti-pad union below is order-sensitive), and quad_segs is
+    # pinned to the value Geometry.buffer() uses by default so the buffered
+    # rings are byte-for-byte the same as the old per-feature buffers; only
+    # same-net features get thermal-relief spokes, added in the same order.
+    footprints: list[shapely.geometry.base.BaseGeometry] = []
+    distances: list[float] = []
     spokes: list[shapely.geometry.base.BaseGeometry] = []
     for footprint, fnet in _through_features_on_layer(
             proj, stackup.layer_id, enabled_layers):
+        footprints.append(footprint)
         if net_index != NO_NET and fnet == net_index:
-            holes.append(footprint.buffer(air_gap))
+            distances.append(air_gap)
             spokes.extend(_thermal_spokes(footprint, air_gap, conductor, entries))
         else:
-            holes.append(footprint.buffer(clearance))
+            distances.append(clearance)
+
+    if footprints:
+        holes = shapely.buffer(
+            np.array(footprints, dtype=object),
+            np.array(distances, dtype=np.float64),
+            quad_segs=_DEFAULT_BUFFER_QUAD_SEGS,
+        ).tolist()
+    else:
+        holes = []
+
+    # Physical cuts that remove plane copper regardless of net: board cutouts
+    # (a plane can't conduct across a milled slot / internal cutout) and the
+    # bores of non-plated through-holes (a drilled hole with no plated barrel).
+    # These are subtracted *after* the thermal-relief union so a spoke can never
+    # fill them back in.
+    plane_lid = stackup.layer_id
+    extra_cuts: list[shapely.geometry.base.BaseGeometry] = []
+    for r in proj.regions:
+        if getattr(r, "is_board_cutout", False) and len(r.outline) >= 3:
+            poly = _region_polygon(r)
+            if poly is not None and not poly.is_empty:
+                extra_cuts.append(poly)
+    for r in proj.shape_based_regions:
+        if getattr(r, "is_board_cutout", False) and len(r.outline) >= 3:
+            poly = _shape_based_region_polygon(r)
+            if poly is not None and not poly.is_empty:
+                extra_cuts.append(poly)
+    for p in proj.pads:
+        if (p.is_through_hole and not getattr(p, "is_plated", True)
+                and getattr(p, "hole_mm", 0.0) > 0.0):
+            extra_cuts.append(
+                shapely.geometry.Point(p.center.x, p.center.y).buffer(
+                    p.hole_mm / 2.0, resolution=CIRCLE_RESOLUTION // 4))
+
+    # Split-plane heuristic: a plane layer carrying *copper* regions on a net
+    # other than its own means the artwork splits the layer between multiple
+    # nets — which this single-net flood model can't represent (the other net's
+    # copper is missing). Warn loudly rather than silently mis-model it.
+    for r in proj.shape_based_regions:
+        if (r.layer_id == plane_lid and r.kind == 0 and not r.is_keepout
+                and r.net_index not in (NO_NET, net_index)):
+            log.warning(
+                "Plane layer %d (net %r) carries copper region(s) on a different "
+                "net — this looks like a SPLIT plane. FYPA models it as a single "
+                "%r flood, so the other net's copper on this layer is not "
+                "represented.", plane_lid, stackup.plane_net_name,
+                stackup.plane_net_name)
+            break
 
     sheet = base
     if holes:
         sheet = sheet.difference(shapely.ops.unary_union(holes))
     if spokes:
         sheet = sheet.union(shapely.ops.unary_union(spokes)).intersection(base)
+    if extra_cuts:
+        sheet = sheet.difference(shapely.ops.unary_union(extra_cuts))
     if not sheet.is_empty and not sheet.is_valid:
         sheet = shapely.make_valid(sheet)
 
@@ -779,17 +878,22 @@ def build_layer_geometry(proj: ExtractedProject, layer_id: int,
 
     pieces: list[shapely.geometry.base.BaseGeometry] = []
 
-    for t in proj.tracks:
-        if t.layer_id != layer_id or t.is_keepout or t.is_polygon_outline:
-            continue
-        if t.width_mm <= 0:
-            continue
-        pieces.append(_track_polygon(t))
+    # Batch the track / arc buffers through one shapely C dispatch each (the
+    # same helpers the per-net path uses) instead of a per-primitive
+    # LineString.buffer() Python call — bit-identical output (verified
+    # WKB-for-WKB), far fewer Python↔C round trips on track-heavy layers.
+    # (The GEOS unary_union below is kept as-is: routing it through Clipper2
+    # would be faster but would shift the display geometry at the µm snap.)
+    valid_tracks = [t for t in proj.tracks
+                    if t.layer_id == layer_id and not t.is_keepout
+                    and not t.is_polygon_outline and t.width_mm > 0]
+    pieces.extend(_batch_buffer_tracks(valid_tracks))
 
-    for a in proj.arcs:
-        if a.layer_id != layer_id or a.is_keepout or a.width_mm <= 0:
-            continue
-        pieces.append(_arc_polygon(a))
+    valid_arcs = [a for a in proj.arcs
+                  if a.layer_id == layer_id and not a.is_keepout
+                  and not a.is_polygon_outline
+                  and a.width_mm > 0]
+    pieces.extend(_batch_buffer_arcs(valid_arcs))
 
     sbr_poly_indices = _shape_based_polygon_indices(proj)
     for r in proj.regions:
@@ -832,8 +936,9 @@ def build_layer_geometry(proj: ExtractedProject, layer_id: int,
         if poly is not None:
             pieces.append(poly)
 
+    enabled_pos = {lid: i for i, lid in enumerate(enabled_layers)}
     for v in proj.vias:
-        if not _via_on_layer(v, layer_id, enabled_layers):
+        if not _via_on_layer(v, layer_id, enabled_layers, enabled_pos):
             continue
         poly = _via_polygon(v)
         if poly is not None:
@@ -998,6 +1103,20 @@ def build_per_net_geometry_layers_split(
         lambda: _shapes_to_geometry_layers(
             proj, _parallel_union_buckets(rest_b, snap=False)))
     ex.shutdown(wait=False)   # task still completes; executor frees when done
+
+    # The caller awaits ``rest_future.result()`` at the end of a long
+    # ``build_problem`` — but if that raises first, the future is never
+    # awaited and a background-union failure would vanish silently. Log it
+    # from a done-callback so it is always observed regardless of the
+    # caller's control flow.
+    def _log_rest_union_exc(fut: concurrent.futures.Future) -> None:
+        if fut.cancelled():
+            return
+        exc = fut.exception()
+        if exc is not None:
+            log.warning("Background non-active-net union failed: %s", exc)
+
+    rest_future.add_done_callback(_log_rest_union_exc)
     return active_layers, rest_future
 
 
@@ -1103,9 +1222,11 @@ def _build_net_layer_buckets(
     for t, poly in zip(valid_tracks, track_polys):
         _add(t.layer_id, t.net_index, poly)
 
-    # Arcs: same vectorised-buffer trick.
+    # Arcs: same vectorised-buffer trick. Exclude polygon-pour *outline* arcs
+    # (boundary artwork, not copper) exactly as the track filter above does.
     valid_arcs = [a for a in proj.arcs
-                  if not a.is_keepout and a.width_mm > 0
+                  if not a.is_keepout and not a.is_polygon_outline
+                  and a.width_mm > 0
                   and a.layer_id not in plane_layer_ids]
     arc_polys = _batch_buffer_arcs(valid_arcs)
     for a, poly in zip(valid_arcs, arc_polys):
@@ -1135,20 +1256,30 @@ def _build_net_layer_buckets(
 
     for p in proj.pads:
         if p.is_through_hole or p.layer_id == MULTI_LAYER_PAD_LAYER_ID:
-            # Through-hole / multi-layer pads sit on every enabled copper
-            # layer. Build the polygon per layer so a per-layer pad stack
-            # (different shape / size on different layers) contributes the
-            # right shape to each layer's net bucket.
-            for lid in enabled_layers:
-                poly = _pad_polygon(p, lid)
+            # Through-hole / multi-layer pads sit on every enabled copper layer.
+            if getattr(p, "layer_variations", ()):
+                # Per-layer pad stack (different shape / size per layer): build
+                # the layer-specific shape for each layer.
+                for lid in enabled_layers:
+                    poly = _pad_polygon(p, lid)
+                    if poly is not None:
+                        _add(lid, p.net_index, poly)
+            else:
+                # Same shape on every layer (the overwhelming majority): build
+                # the polygon ONCE and share the immutable object across layers
+                # instead of rebuilding an identical box/buffer per enabled
+                # layer.
+                poly = _pad_polygon(p, None)
                 if poly is not None:
-                    _add(lid, p.net_index, poly)
+                    for lid in enabled_layers:
+                        _add(lid, p.net_index, poly)
         else:
             poly = _pad_polygon(p, p.layer_id)
             if poly is not None:
                 _add(p.layer_id, p.net_index, poly)
 
     if include_vias:
+        enabled_pos = {lid: i for i, lid in enumerate(enabled_layers)}
         for v in proj.vias:
             poly = _via_polygon(v)
             if poly is None:
@@ -1159,7 +1290,7 @@ def _build_net_layer_buckets(
             # them. _via_on_layer walks the enabled order, so the via barrel
             # correctly lands on (and stitches to) any plane it passes through.
             for lid in enabled_layers:
-                if _via_on_layer(v, lid, enabled_layers):
+                if _via_on_layer(v, lid, enabled_layers, enabled_pos):
                     _add(lid, v.net_index, poly)
 
     # Internal-plane layers carry no copper primitives of their own: flood each

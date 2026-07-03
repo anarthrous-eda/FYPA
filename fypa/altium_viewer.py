@@ -3869,6 +3869,20 @@ class _SolveWorker(QThread):
             n += 1
         return n
 
+    def _cancel_requested(self) -> bool:
+        """True once the GUI has asked this worker to stop.
+
+        Checked at stage boundaries so a cancel during a pure-Python phase
+        (the "Packaging solution…" metadata / lean-convert / cache-pickle
+        stages, 10+ s on large boards) unwinds the thread cooperatively. Those
+        phases hold the GIL continuously; a ``terminate()`` fired there kills
+        the thread while it owns the GIL, which never gets released and hangs
+        the whole app — the opposite of what the user asked for by cancelling.
+        Returning early from ``run`` avoids that: no ``finished_ok`` is emitted,
+        so the GUI won't open a stale viewer either.
+        """
+        return self.isInterruptionRequested()
+
     def run(self) -> None:  # type: ignore[override]
         # Bias the OS scheduler toward the GUI thread. The packaging phase
         # (build_solve_metadata + to_lean_solution + cache pickle) is pure
@@ -4172,6 +4186,8 @@ class _SolveWorker(QThread):
                 )
                 return
 
+            if self._cancel_requested():
+                return
             mesher_config = _pdn_mesh.Mesher.Config(
                 minimum_angle=self._settings.mesh_min_angle_deg,
                 maximum_size=self._settings.mesh_max_size_mm,
@@ -4231,6 +4247,8 @@ class _SolveWorker(QThread):
                     si.ground_node_current,
                 )
 
+            if self._cancel_requested():
+                return
             self.stage_changed.emit("Packaging solution: building metadata…")
             with _timer.stage("Build solve metadata"):
                 metadata = build_solve_metadata(
@@ -4243,6 +4261,8 @@ class _SolveWorker(QThread):
                     per_net_layers=per_net_layers,
                     regulator_adaptive_gain=adaptive_info,
                 )
+            if self._cancel_requested():
+                return
             self.stage_changed.emit("Packaging solution: converting result…")
             with _timer.stage("Convert to lean solution"):
                 new_solution = to_lean_solution(padne_solution)
@@ -4306,6 +4326,8 @@ class _SolveWorker(QThread):
             # components) and blocks the dialog from repainting until it
             # finishes. Update the label so the user sees what's actually
             # happening instead of a stale "saving cache" message.
+            if self._cancel_requested():
+                return
             self.stage_changed.emit("Opening viewer…")
             _timer.log_breakdown()
             self.finished_ok.emit(new_solution, metadata, pristine_loaded)
@@ -4500,11 +4522,29 @@ def _abort_solve_worker(owner) -> None:
             logging.getLogger(__name__).warning(
                 "cancel_active_mesh_pool raised %s; carrying on.", _exc,
             )
+        # Drop the cached PARDISO factorisation. If the worker is hard-killed
+        # mid-factorisation below, its persistent solver could otherwise be
+        # left inconsistent and reused (→ garbage or a crash) on the next
+        # re-solve; dropping it forces a clean re-factorisation instead.
+        try:
+            from pdnsolver.solver import free_pardiso_cache
+            free_pardiso_cache()
+        except Exception as _exc:
+            logging.getLogger(__name__).warning(
+                "free_pardiso_cache raised %s; carrying on.", _exc,
+            )
         worker.requestInterruption()
-        worker.terminate()
-        # 2 s is plenty for the OS to reap the thread; we don't want to
-        # block the GUI indefinitely if something pathological happens.
-        worker.wait(2000)
+        # Give the worker a chance to stop cooperatively at its next stage
+        # boundary first (see _SolveWorker._cancel_requested). This matters for
+        # the pure-Python packaging phase: terminate() fired while the worker
+        # holds the GIL would deadlock the GUI. Only force-kill if it doesn't
+        # unwind on its own — that's the native mesh/solve section, where
+        # terminate() is safe because the GIL is released.
+        if not worker.wait(1500):
+            worker.terminate()
+            # 2 s is plenty for the OS to reap the thread; we don't want to
+            # block the GUI indefinitely if something pathological happens.
+            worker.wait(2000)
     updater = getattr(owner, "_solve_progress_updater", None)
     if updater is not None:
         updater.stop()
@@ -4512,6 +4552,15 @@ def _abort_solve_worker(owner) -> None:
         owner._solve_progress_updater = None
     dlg = getattr(owner, "_solve_progress_dlg", None)
     if dlg is not None:
+        # QProgressDialog.closeEvent re-emits ``canceled``, so closing a dialog
+        # whose ``canceled`` is still wired to the cancel handler re-enters it
+        # synchronously — terminating/​waiting the worker a second time and
+        # opening a duplicate launcher window. Disconnect first (guarded, same
+        # as the worker signals above).
+        try:
+            dlg.canceled.disconnect()
+        except (RuntimeError, TypeError):
+            pass
         dlg.close()
         owner._solve_progress_dlg = None
     if worker is not None:
@@ -5797,6 +5846,14 @@ class PdnViewer(QMainWindow):
         # — this makes layer-toggle (re-render) re-use the already-built
         # voltage sampler instead of rebuilding it.
         self._layer_cache: dict[tuple[int, int], dict] = {}
+        # Per-layer GEOMETRY cache, keyed by layer_index alone — the
+        # coordinates / triangulation / prepared shape / outline are identical
+        # across heatmap modes (only the per-vertex values differ). Splitting it
+        # out of ``_layer_cache`` (which is keyed by (layer, derive_fn)) means a
+        # mode switch reuses the layer's Triangulation and arrays instead of
+        # rebuilding them, and stores one copy of xs/ys/tris per layer rather
+        # than one per (layer, mode).
+        self._layer_geom_cache: dict[int, dict] = {}
         # Lazily-computed set of (layer_index, mesh_index) whose solved mesh
         # carries no current — i.e. a dead-end copper island whose only tie
         # to the rest of the net is a single via, so KCL forces zero current
@@ -6000,9 +6057,17 @@ class PdnViewer(QMainWindow):
     def _clear_solution_derived_caches(self) -> None:
         """Drop render / report caches tied to the previous solution."""
         self._layer_cache.clear()
+        self._layer_geom_cache.clear()
         self._layer_vec_cache.clear()
+        self._last_mesh_upload = None  # release retained GPU-upload arrays
         self._no_current_meshes = None
         self._marker_hover_index_cache = None
+        # Both of these hold values sampled from the previous solution
+        # (per-vertex return offsets; per-via current/voltage rows). They must
+        # be dropped on re-solve or Voltage-mode readouts and via hovers report
+        # the old solve's numbers against the new field.
+        self._src_return_offset_cache = None
+        self._via_hover_index_cache = None
         self._metadata_marker_hover_rows.clear()
         self._via_current_lookup.clear()
         self._via_voltage_kdtree_cache.clear()
@@ -8621,6 +8686,39 @@ class PdnViewer(QMainWindow):
         if cached is not None:
             return cached
 
+        # Mode-independent geometry (coords / triangulation / shape / masks),
+        # built and cached once per layer. This holds the per-kept-mesh
+        # ``(tris_local, pot, pd, n)`` tuples so the values below are computed
+        # over the EXACT same kept-mesh set and order — vs stays aligned to xs.
+        geom = self._layer_geometry(layer_index)
+        conductance = geom["_conductance"]
+        vs_parts = [
+            np.asarray(derive_fn(tris_local, pot, pd, conductance, n),
+                       dtype=np.float64)
+            for (tris_local, pot, pd, n) in geom["_kept"]
+        ]
+        vs = (np.concatenate(vs_parts) if vs_parts
+              else np.empty(0, dtype=np.float64))
+
+        entry = {k: v for k, v in geom.items() if not k.startswith("_")}
+        entry["vs"] = vs
+        # The voltage sampler (_FastTriSampler) is built lazily on first cursor
+        # hover via _ensure_interpolator() and written back to THIS (layer,
+        # mode) entry — it interpolates the mode's values, so it's per-mode.
+        entry["interpolator"] = None
+        self._layer_cache[key] = entry
+        return entry
+
+    def _layer_geometry(self, layer_index: int) -> dict:
+        """Assemble (and cache by ``layer_index``) the mode-independent
+        geometry for one layer: concatenated vertex coords, re-based triangle
+        indices, the Triangulation, prepared shape, outline segments, the
+        no-current mask, and the per-kept-mesh data needed to recompute
+        per-mode values in step. Shared across all heatmap modes."""
+        cached = self._layer_geom_cache.get(layer_index)
+        if cached is not None:
+            return cached
+
         ls = self.solution.layer_solutions[layer_index]
         layer = self.solution.problem.layers[layer_index]
         # Lean format: per-mesh-component numpy arrays — no half-edge
@@ -8632,12 +8730,12 @@ class PdnViewer(QMainWindow):
 
         mxs_parts: list[np.ndarray] = []
         mys_parts: list[np.ndarray] = []
-        mvs_parts: list[np.ndarray] = []
         mtris_parts: list[np.ndarray] = []
-        # Per-vertex no-current mask (0/1), parallel to xs. Each mesh is
-        # wholly current-carrying or not, so every vertex of a flagged mesh
-        # gets 1.0. Independent of the heatmap mode, so cached on the entry.
+        # Per-vertex no-current mask (0/1), parallel to xs.
         mnc_parts: list[np.ndarray] = []
+        # Per-kept-mesh (tris_local, pot, pd, n) for the mode-specific value
+        # pass — keeps vs aligned to xs with the identical skip logic.
+        kept: list[tuple[np.ndarray, np.ndarray, np.ndarray, int]] = []
         nc_set = self._no_current_mesh_set()
         offset = 0
         for mesh_i, (xys, tris_local, pot, pd) in enumerate(zip(
@@ -8646,14 +8744,13 @@ class PdnViewer(QMainWindow):
             n = xys.shape[0]
             if n < 3 or tris_local.size == 0:
                 continue
-            values = derive_fn(tris_local, pot, pd, layer.conductance, n)
             mxs_parts.append(xys[:, 0])
             mys_parts.append(xys[:, 1])
-            mvs_parts.append(np.asarray(values, dtype=np.float64))
             mnc_parts.append(np.full(
                 n, 1.0 if (layer_index, mesh_i) in nc_set else 0.0,
                 dtype=np.float32,
             ))
+            kept.append((tris_local, pot, pd, n))
             # Re-base local indices into the per-layer combined batch.
             mtris_parts.append(tris_local + offset)
             offset += n
@@ -8661,29 +8758,18 @@ class PdnViewer(QMainWindow):
         if mxs_parts:
             xs = np.concatenate(mxs_parts)
             ys = np.concatenate(mys_parts)
-            vs = np.concatenate(mvs_parts)
             no_current_mask = np.concatenate(mnc_parts)
         else:
             xs = np.empty(0, dtype=np.float64)
             ys = np.empty(0, dtype=np.float64)
-            vs = np.empty(0, dtype=np.float64)
             no_current_mask = np.empty(0, dtype=np.float32)
         if mtris_parts:
             tris = np.concatenate(mtris_parts, axis=0)
         else:
             tris = np.empty((0, 3), dtype=np.int32)
 
-        if xs.size >= 3 and tris.size > 0:
-            triangulation = Triangulation(xs, ys, tris)
-            # The voltage sampler (_FastTriSampler) is built lazily on
-            # first cursor hover via _ensure_interpolator() — there's no
-            # point building it for a layer the user never probes. The
-            # cache entry is updated at hover time so re-renders of the
-            # same (layer, mode) always reuse a previously-built sampler.
-            interpolator = None
-        else:
-            triangulation = None
-            interpolator = None
+        triangulation = (Triangulation(xs, ys, tris)
+                         if xs.size >= 3 and tris.size > 0 else None)
 
         shape = layer.shape
         prepared_shape = (_sp.prep(shape)
@@ -8693,34 +8779,30 @@ class PdnViewer(QMainWindow):
         # Vertex indices that actually appear in a triangle. The padne
         # solver's orphan-vertex guards pin "no-triangle" vertices to
         # V=0 to keep the linear system non-singular; they're invisible
-        # in the heatmap (no triangle = no painted pixel) but they
-        # otherwise dominate vs.min()/max() and skew the scale-controller
-        # range — especially after the Voltage Drop subtract shifts them
-        # by the source voltage. Callers compute stats via vs[used_indices].
+        # in the heatmap but otherwise skew vs.min()/max(). Callers compute
+        # stats via vs[used_indices].
         if tris.size > 0:
             used_indices = np.unique(tris.ravel().astype(np.int64))
         else:
             used_indices = np.empty(0, dtype=np.int64)
 
-        entry = {
+        geom = {
             "xs": xs,
             "ys": ys,
-            "vs": vs,
             "tris": tris,
             "triangulation": triangulation,
-            "interpolator": interpolator,
             "prepared_shape": prepared_shape,
-            # Outline segments: (N, 2) float32 with vertices in GL_LINES
-            # pairs (consecutive entries are one segment). Pre-built here
-            # so toggling the outline overlay is just a buffer upload.
+            # Outline segments: (N, 2) float32 in GL_LINES pairs, pre-built so
+            # toggling the outline overlay is just a buffer upload.
             "outline_segments": outline_segments,
             "used_indices": used_indices,
-            # Per-vertex 0/1 mask (parallel to xs) flagging dead-end,
-            # no-current copper for the "Grey no current copper" toggle.
+            # Per-vertex 0/1 mask (parallel to xs) for "Grey no current copper".
             "no_current_mask": no_current_mask,
+            "_kept": kept,
+            "_conductance": layer.conductance,
         }
-        self._layer_cache[key] = entry
-        return entry
+        self._layer_geom_cache[layer_index] = geom
+        return geom
 
     def _layer_vectors(self, layer_index: int) -> dict | None:
         """Build (and cache) the per-triangle current-density vector
@@ -9468,15 +9550,25 @@ class PdnViewer(QMainWindow):
             self._vmin, self._vmax = display_min, display_max
             levels_min, levels_max = display_min, display_max
 
-        # Push everything to the GPU. set_mesh is the heavy upload; on
-        # mode-only switches it's a no-op (xs/ys/tris unchanged) — TODO
-        # could detect and skip, but the upload is cheap (<5ms typical).
+        # Push everything to the GPU. set_mesh is the heavy upload. Skip it when
+        # the geometry arrays are the exact same objects as the last push — a
+        # re-render that reuses the cached geometry without rebuilding the rail
+        # arrays. set_mesh resets the per-vertex alpha / neutral / values, but
+        # the host re-pushes those unconditionally below, so a skip is safe.
         # ``zs`` is per-vertex z (mm, pre-exaggeration); only used by the
         # 3D mode's perspective MVP — ignored by the 2D ortho path.
         _mark("prep")
-        self._gl_viewer.set_mesh(xs_arr, ys_arr, tris_arr,
-                                  data_bounds=self._data_bounds,
-                                  zs=zs.astype(np.float32))
+        # Compare by object identity against the *retained* last-pushed arrays
+        # (holding the references so a garbage-collected array's id can't be
+        # reused and cause a false match).
+        _last = getattr(self, "_last_mesh_upload", None)
+        if not (_last is not None
+                and xs_arr is _last[0] and ys_arr is _last[1]
+                and tris_arr is _last[2] and zs is _last[3]):
+            self._gl_viewer.set_mesh(xs_arr, ys_arr, tris_arr,
+                                      data_bounds=self._data_bounds,
+                                      zs=zs.astype(np.float32))
+            self._last_mesh_upload = (xs_arr, ys_arr, tris_arr, zs)
         # Values + levels are pushed through _gl_scale: identity on a
         # linear scale, log10 (floored) on a log scale. Pushing both in
         # the same space means the GL viewer's linear normalisation

@@ -2,6 +2,7 @@
 
 import collections
 import ctypes
+import hashlib
 import itertools
 import logging
 import math
@@ -18,7 +19,7 @@ import shapely.wkb
 import warnings
 
 from collections.abc import Callable
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
 from . import problem, mesh
@@ -76,6 +77,10 @@ def _configure_mkl_threads() -> None:
 
 
 DTYPE = np.float64
+# Below this many rows a matrix's COO indices fit in int32 (halving the
+# transient index memory); a FEM system never approaches 2³¹ variables, so this
+# is effectively always taken. The index dtype doesn't change the matrix.
+_MATRIX_INDEX_MAX = int(np.iinfo(np.int32).max)
 
 # Below this work-item count, parallel meshing's pool-spawn overhead
 # (~500 ms total for an 8-worker pool on Windows) exceeds the saving, so
@@ -291,9 +296,12 @@ def _build_contraction(
     groups = [g for g in vertex_groups if len(g) >= 2]
     if not groups:
         return None
+    # int32 remap (matches the COO index dtype so ``inverse[all_rows]`` in the
+    # caller stays int32); bit-identical, matrices never reach 2³¹ rows.
+    idx_dtype = np.int32 if N <= _MATRIX_INDEX_MAX else np.int64
     # parent[i] = the representative of i's group, or i itself.
     # removed[i] = True for a non-representative group member (dropped).
-    parent = np.arange(N, dtype=np.int64)
+    parent = np.arange(N, dtype=idx_dtype)
     removed = np.zeros(N, dtype=bool)
     for group in groups:
         g = np.asarray(group, dtype=np.int64)
@@ -302,7 +310,7 @@ def _build_contraction(
     # Reduced index of a kept original index = its rank among kept indices.
     # parent only ever points at kept indices, so new_index[parent] gives
     # the reduced index of every original variable.
-    new_index = np.cumsum(~removed, dtype=np.int64) - 1
+    new_index = (np.cumsum(~removed, dtype=idx_dtype) - 1)
     inverse = new_index[parent]
     return inverse, int(new_index[-1]) + 1
 
@@ -313,6 +321,36 @@ def _build_contraction(
 # their Triangle call to completion in the background.
 _active_mesh_pool: ProcessPoolExecutor | None = None
 _active_mesh_pool_lock = threading.Lock()
+
+
+class _SharedMeshPool:
+    """A meshing pool created lazily on first parallel use and reused across the
+    connected AND disconnected meshing passes, so one solve spawns the worker
+    processes (and re-imports numpy/shapely/triangle into them) at most once
+    instead of once per pass. Registered as the active pool for the GUI cancel
+    path for its whole lifetime; the owner (``solve``) closes it once."""
+
+    __slots__ = ("pool",)
+
+    def __init__(self) -> None:
+        self.pool: ProcessPoolExecutor | None = None
+
+    def get(self, max_workers: int) -> ProcessPoolExecutor:
+        global _active_mesh_pool
+        if self.pool is None:
+            self.pool = ProcessPoolExecutor(max_workers=max_workers)
+            with _active_mesh_pool_lock:
+                _active_mesh_pool = self.pool
+        return self.pool
+
+    def close(self) -> None:
+        global _active_mesh_pool
+        pool, self.pool = self.pool, None
+        if pool is not None:
+            with _active_mesh_pool_lock:
+                if _active_mesh_pool is pool:
+                    _active_mesh_pool = None
+            pool.shutdown(cancel_futures=True, wait=True)
 
 
 def cancel_active_mesh_pool() -> None:
@@ -341,6 +379,12 @@ class SolverWarning(Warning):
     that does not prevent it from solving the problem, but may indicate
     a potential issue with the problem definition.
     """
+
+
+# A connection point farther than this many mesh cells (× the mesher's
+# maximum edge length) from the nearest copper vertex on its net is treated
+# as "off copper" and warned about — see NodeIndexer.create.
+_OFF_COPPER_WARN_FACTOR = 3.0
 
 
 @dataclass(frozen=True)
@@ -383,6 +427,36 @@ def construct_strtrees_from_layers(layers: list[problem.Layer]
     return strtrees
 
 
+def resolve_connection_geoms(
+    problem: problem.Problem,
+    strtrees: list[shapely.strtree.STRtree],
+    layer_to_index: dict[int, int],
+) -> dict[int, list[int]]:
+    """Map each ``Connection`` to the ``layer.geoms`` indices its point lies in.
+
+    Returns ``{id(conn): [geom_i, ...]}``. Computed with ONE vectorised
+    ``STRtree.query(points, predicate="intersects")`` per layer — the predicate
+    runs the point-in-polygon test in C for every point at once — instead of a
+    per-connection ``query`` + Python ``intersects`` loop. The result is shared
+    by the connectivity graph and the dead-terminal filter, which both need
+    exactly this map (previously each recomputed it, point-at-a-time).
+    """
+    conns_by_layer: dict[int, list[problem.Connection]] = collections.defaultdict(list)
+    for network in problem.networks:
+        for conn in network.connections:
+            conns_by_layer[layer_to_index[id(conn.layer)]].append(conn)
+
+    out: dict[int, list[int]] = {}
+    for layer_i, conns in conns_by_layer.items():
+        pts = shapely.points(
+            np.array([(c.point.x, c.point.y) for c in conns], dtype=np.float64)
+        )
+        qi, gi = strtrees[layer_i].query(pts, predicate="intersects")
+        for k in range(qi.shape[0]):
+            out.setdefault(id(conns[int(qi[k])]), []).append(int(gi[k]))
+    return out
+
+
 @dataclass
 class ConnectivityGraph:
     nodes: list["Node"] = field(default_factory=list)
@@ -397,7 +471,9 @@ class ConnectivityGraph:
     @classmethod
     def create_from_problem(cls,
                             problem: problem.Problem,
-                            strtrees: list[shapely.strtree.STRtree]) -> "ConnectivityGraph":
+                            strtrees: list[shapely.strtree.STRtree],
+                            conn_geoms: dict[int, list[int]] | None = None,
+                            ) -> "ConnectivityGraph":
         # First, we construct Node objects for ever layer geometry in the layers
         # that is, a list nodes_by_layers[layer_i][geom_i] gives us the
         # Node that coresponds to the layer_i-th layers geom_i-th geometry
@@ -426,15 +502,18 @@ class ConnectivityGraph:
             for conn in network.connections:
                 # Find the layer index for this connection
                 layer_i = layer_to_index[id(conn.layer)]
-                kdtree = strtrees[layer_i]
-
-                # Find the closest vertex to this connection
-                candidates = kdtree.query(conn.point)
-
-                for geom_i in candidates:
-                    # Check if this connection is already in the index
-                    if not conn.layer.geoms[geom_i].intersects(conn.point):
-                        continue
+                # Geoms this connection's point lies in. The shared precomputed
+                # map (one vectorised query per layer) already applied the
+                # intersects predicate; without it, fall back to a per-point
+                # STRtree query + intersects filter.
+                if conn_geoms is not None:
+                    geom_indices = conn_geoms.get(id(conn), ())
+                else:
+                    geom_indices = [
+                        gi for gi in strtrees[layer_i].query(conn.point)
+                        if conn.layer.geoms[gi].intersects(conn.point)
+                    ]
+                for geom_i in geom_indices:
                     intersecting_node = nodes_by_layers[layer_i][geom_i]
                     nodes_in_this_network.append(intersecting_node)
 
@@ -470,68 +549,82 @@ class ConnectivityGraph:
         return list(closed_set)
 
 
-def collect_seed_points(problem: problem.Problem, layer: problem.Layer) -> list[mesh.Point]:
-    """
-    Collect all seed points (component pads) that are on this layer.
-
-    Args:
-        problem: The entire problem containing all lumped elements
-        layer: The specific layer to collect seed points for
-
-    Returns:
-        List of Points to be used as mesh seed points
-    """
-    seed_points = []
-    for network in problem.networks:
-        for conn in network.connections:
-            # Check if this connection is on our layer
-            if conn.layer == layer:
-                seed_points.append(mesh.Point(conn.point.x, conn.point.y))
-    return seed_points
+# Clamp on |half-cotangent|. cot(θ) → ±∞ as θ → 0 or π, so a single sliver
+# triangle can otherwise produce a ~1e18 matrix entry that dwarfs every real
+# conductance and wrecks the factorisation. 5e3 corresponds to apex angles down
+# to ~0.0057°; Triangle normally emits angles ≥ 20° (|cot| ≈ 2.75), so the clamp
+# is only hit on degenerate output.
+_MAX_HALF_COT = 5.0e3
 
 
-def laplace_operator(mesh: mesh.Mesh) -> scipy.sparse.coo_matrix:
-    """Cotangent Laplacian for a mesh as an (N, N) sparse COO matrix.
+def _half_cotangent(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """cot(θ) / 2 for the apex angle θ between an apex's two outgoing edges
+    ``a`` and ``b``, computed for every triangle at once.
 
-    Vectorised: reads ``mesh._source_xys`` + ``mesh._source_tris`` (the flat
-    triangle-soup arrays retained by ``from_triangle_soup``) and computes
-    every half-cotangent weight in one numpy pass. The off-diagonal weight
-    on each directed edge (i, k) is ``sum_t |cot(opposite_apex_t)| / 2``
-    over the (one or two) triangles t sharing the edge — matching the
-    original ``HalfEdge.cotan()`` (which used ``abs()`` per side and
-    divided by 2). Boundary edges naturally end up with one half-cotangent
-    contribution because only one triangle touches them; interior edges
-    get the standard ``(cot α + cot β) / 2``.
+    cot θ = cos θ / sin θ = (a·b) / |a×b|. The apex angle of a triangle is
+    always in (0, π), so sin θ > 0 and the cross magnitude carries no sign —
+    the SIGN of cot θ comes solely from the dot product, so obtuse apices
+    (θ > 90°, a·b < 0) correctly yield a NEGATIVE cotangent. Dropping that sign
+    (taking |cot|) makes the linear-FEM stiffness weight (cot α + cot β)/2
+    inconsistent: it over-conducts obtuse triangles, so solved trace resistance
+    comes out low and does not converge under mesh refinement. The magnitude is
+    clamped symmetrically at :data:`_MAX_HALF_COT` (see there)."""
+    dot = a[:, 0] * b[:, 0] + a[:, 1] * b[:, 1]
+    crs = a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]
+    out = np.zeros_like(dot)
+    mask = crs != 0
+    out[mask] = dot[mask] / np.abs(crs[mask])
+    np.clip(out, -_MAX_HALF_COT, _MAX_HALF_COT, out=out)
+    return out * 0.5
 
-    Orphan vertices (vertices in the vertex list that don't appear in any
-    triangle — Triangle keeps input seed points even when they fall just
-    outside the polygon due to FP) are pinned to v=0 via a ``1.0`` diagonal
-    entry so the system stays non-singular. Same behaviour as the previous
-    half-edge-walking implementation.
 
-    Falls back to a half-edge extraction if the mesh lacks source arrays
-    (very old pickled meshes, or hand-built ones).
-    """
-    N = len(mesh.vertices)
+def _mesh_source_arrays(msh: mesh.Mesh) -> tuple[np.ndarray, np.ndarray]:
+    """Return ``(xys (N, 2) float, tris (T, 3) int64)`` for a mesh.
 
-    xys = getattr(mesh, "_source_xys", None)
-    tris = getattr(mesh, "_source_tris", None)
-    if xys is None or tris is None or (N > 0 and xys.size == 0):
-        # Legacy fallback — reconstruct flat arrays from the half-edge form.
+    Prefers the flat triangle-soup arrays retained by ``from_triangle_soup``
+    (``_source_xys`` / ``_source_tris``); falls back to reconstructing them
+    from the half-edge form for very old pickled or hand-built meshes."""
+    N = len(msh.vertices)
+    xys = getattr(msh, "_source_xys", None)
+    tris = getattr(msh, "_source_tris", None)
+    if xys is None or tris is None or (N > 0 and np.asarray(xys).size == 0):
         xys = np.empty((N, 2), dtype=DTYPE)
-        for vt in mesh.vertices:
+        for vt in msh.vertices:
             xys[vt.i, 0] = vt.p.x
             xys[vt.i, 1] = vt.p.y
         tri_rows: list[tuple[int, int, int]] = []
-        for face in mesh.faces:
+        for face in msh.faces:
             verts = list(face.vertices)
             if len(verts) == 3:
                 tri_rows.append((verts[0].i, verts[1].i, verts[2].i))
         tris = (np.asarray(tri_rows, dtype=np.int64)
                 if tri_rows else np.empty((0, 3), dtype=np.int64))
+    return np.asarray(xys, dtype=DTYPE), np.asarray(tris, dtype=np.int64)
 
-    xys = np.asarray(xys, dtype=DTYPE)
-    tris = np.asarray(tris, dtype=np.int64)
+
+def laplace_operator(mesh: mesh.Mesh) -> scipy.sparse.coo_matrix:
+    """Cotangent Laplacian for a single mesh as an (N, N) sparse COO matrix.
+
+    Single-mesh reference implementation. The solve path builds every mesh's
+    Laplacian at once through :func:`process_mesh_laplace_operators` (which
+    shares the same :func:`_half_cotangent` kernel); this function is kept as
+    the readable per-mesh form and is cross-checked against the batched path in
+    the tests.
+
+    The off-diagonal weight on each directed edge (i, k) is
+    ``sum_t cot(opposite_apex_t) / 2`` over the (one or two) triangles t
+    sharing the edge — the standard cotangent-Laplacian stiffness. Boundary
+    edges get one half-cotangent (only one triangle touches them); interior
+    edges get ``(cot α + cot β) / 2``. See :func:`_half_cotangent` for why the
+    cotangent must be signed.
+
+    Orphan vertices (in the vertex list but in no triangle — Triangle keeps
+    input seed points even when FP drops them just outside the polygon) are
+    pinned to v=0 with a ``1.0`` diagonal entry so the system stays
+    non-singular.
+    """
+    N = len(mesh.vertices)
+    xys, tris = _mesh_source_arrays(mesh)
 
     row_chunks: list[np.ndarray] = []
     col_chunks: list[np.ndarray] = []
@@ -545,48 +638,9 @@ def laplace_operator(mesh: mesh.Mesh) -> scipy.sparse.coo_matrix:
         p1 = xys[v1]
         p2 = xys[v2]
 
-        # Per-apex edge vectors (each apex's two outgoing edges).
-        e0a = p1 - p0
-        e0b = p2 - p0
-        e1a = p2 - p1
-        e1b = p0 - p1
-        e2a = p0 - p2
-        e2b = p1 - p2
-
-        def _half_cot(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-            # |a·b / (a×b)| / 2 — half-cotangent at one apex, matching the
-            # original per-side contribution of HalfEdge.cotan().
-            #
-            # CLAMP at MAX_HALF_COT to prevent sliver triangles from blowing
-            # up the matrix. cot(θ) → ∞ as θ → 0, so a single triangle with
-            # a tiny apex angle can produce a single matrix entry on the
-            # order of 1e18, dwarfing every other conductance in the system.
-            # That single entry then dominates the LU factorisation: the
-            # solver effectively short-circuits two vertices together
-            # through a "wire" with conductance 1e18, leaving every other
-            # equation under-determined relative to it. The resulting
-            # solution has a huge residual and the Lagrange-multiplier
-            # outputs (ground_node_current, source currents) are nonsense.
-            #
-            # MAX_HALF_COT = 5e3 corresponds to allowing angles down to
-            # ~0.0057° — sliver enough to keep almost any real mesh's
-            # entries unaffected, while bounding the contribution of
-            # pathological slivers to a value the solver can handle.
-            # The Triangle library normally produces angles ≥ 20° (cot ≈
-            # 2.75), so the clamp is only hit on degenerate output (e.g.
-            # near-collinear points that Triangle couldn't resolve).
-            dot = a[:, 0] * b[:, 0] + a[:, 1] * b[:, 1]
-            crs = a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]
-            out = np.zeros_like(dot)
-            mask = crs != 0
-            out[mask] = np.abs(dot[mask] / crs[mask])
-            MAX_HALF_COT = 5.0e3
-            np.minimum(out, MAX_HALF_COT, out=out)
-            return out * 0.5
-
-        w_for_edge_v1_v2 = _half_cot(e0a, e0b)   # apex 0 ↔ edge (v1, v2)
-        w_for_edge_v2_v0 = _half_cot(e1a, e1b)   # apex 1 ↔ edge (v2, v0)
-        w_for_edge_v0_v1 = _half_cot(e2a, e2b)   # apex 2 ↔ edge (v0, v1)
+        w_for_edge_v1_v2 = _half_cotangent(p1 - p0, p2 - p0)  # apex 0 ↔ (v1,v2)
+        w_for_edge_v2_v0 = _half_cotangent(p2 - p1, p0 - p1)  # apex 1 ↔ (v2,v0)
+        w_for_edge_v0_v1 = _half_cotangent(p0 - p2, p1 - p2)  # apex 2 ↔ (v0,v1)
 
         # Off-diagonal: L[i, k] += w on both directions of each edge.
         rows = np.concatenate([v1, v2, v2, v0, v0, v1])
@@ -638,21 +692,43 @@ def laplace_operator(mesh: mesh.Mesh) -> scipy.sparse.coo_matrix:
 
 @dataclass
 class VertexIndexer:
-    global_index_to_vertex_index: list[tuple[int, int]] = field(default_factory=list)
-    mesh_vertex_index_to_global_index: dict[tuple[int, int], int] = field(default_factory=dict)
+    # Cumulative per-mesh vertex-count offsets, length ``len(meshes) + 1``:
+    # mesh ``m`` owns the global vertex indices
+    # ``[mesh_vertex_offsets[m], mesh_vertex_offsets[m + 1])``.
+    #
+    # This replaces the former per-vertex ``list[(mesh_idx, vertex_idx)]`` plus
+    # a reverse ``dict`` — the two together built ~2N Python objects (≈400 MB
+    # at 2M vertices) in an O(N) interpreter loop that showed up as the
+    # multi-second "Vertex indexing" stage. The reverse dict was never read
+    # anywhere. The forward map is only needed as (a) a total vertex count and
+    # (b) a handful of single-index lookups outside any hot loop, both of which
+    # the offsets array serves in O(1) / O(log meshes).
+    mesh_vertex_offsets: np.ndarray = field(
+        default_factory=lambda: np.zeros(1, dtype=np.int64)
+    )
+
+    @property
+    def n_vertices(self) -> int:
+        return int(self.mesh_vertex_offsets[-1])
 
     @classmethod
     def create(cls, meshes: list[mesh.Mesh]) -> "VertexIndexer":
-        vindex = cls()
-        # Iterate by index, not ``enumerate(msh.vertices)`` — only the vertex
-        # COUNT is needed here, and walking the store would materialise every
-        # (otherwise lazy) vertex stub object for no reason.
-        for mesh_idx, msh in enumerate(meshes):
-            for vertex_idx in range(len(msh.vertices)):
-                global_index = len(vindex.global_index_to_vertex_index)
-                vindex.global_index_to_vertex_index.append((mesh_idx, vertex_idx))
-                vindex.mesh_vertex_index_to_global_index[(mesh_idx, vertex_idx)] = global_index
-        return vindex
+        # Only the vertex COUNT per mesh is needed — never the stub objects —
+        # so this stays O(meshes), not O(vertices).
+        counts = np.fromiter(
+            (len(msh.vertices) for msh in meshes),
+            dtype=np.int64, count=len(meshes),
+        )
+        offsets = np.zeros(len(meshes) + 1, dtype=np.int64)
+        np.cumsum(counts, out=offsets[1:])
+        return cls(mesh_vertex_offsets=offsets)
+
+    def to_mesh_vertex(self, global_index: int) -> tuple[int, int]:
+        """Map a global vertex index back to ``(mesh_index, vertex_index)``."""
+        mesh_i = int(np.searchsorted(
+            self.mesh_vertex_offsets, global_index, side="right",
+        ) - 1)
+        return mesh_i, int(global_index - self.mesh_vertex_offsets[mesh_i])
 
 
 def find_connected_layer_geom_indices(connectivity_graph: ConnectivityGraph
@@ -674,6 +750,7 @@ def _mesh_polygons_in_parallel(
     switches: list[str],
     log_label: str,
     adaptive: tuple | None = None,
+    shared_pool: "_SharedMeshPool | None" = None,
 ) -> list[tuple[np.ndarray, np.ndarray]]:
     """Mesh a batch of polygons concurrently via a ProcessPoolExecutor.
 
@@ -727,12 +804,20 @@ def _mesh_polygons_in_parallel(
     log.info(f"{log_label}: meshing {n} pieces across {workers} worker(s)")
     payloads = [shapely.wkb.dumps(p) for p in polys]
     results = [None] * n
-    # spawn-mode pool on Windows; workers re-import pdnsolver.mesh and
-    # pick up the top-level triangulate_worker by name.
+    # spawn-mode pool on Windows; workers re-import pdnsolver.mesh and pick up
+    # the top-level triangulate_worker by name. When a shared pool is supplied
+    # (solve's connected + disconnected passes reuse one), don't create or shut
+    # it down here — the owner does — so the workers spawn at most once per
+    # solve. Otherwise create/register/tear-down our own (the standalone path).
     global _active_mesh_pool
-    pool = ProcessPoolExecutor(max_workers=workers)
-    with _active_mesh_pool_lock:
-        _active_mesh_pool = pool
+    if shared_pool is not None:
+        pool = shared_pool.get(_MESH_MAX_WORKERS)
+        own_pool = False
+    else:
+        pool = ProcessPoolExecutor(max_workers=workers)
+        with _active_mesh_pool_lock:
+            _active_mesh_pool = pool
+        own_pool = True
     try:
         future_to_idx = {
             pool.submit(
@@ -759,19 +844,21 @@ def _mesh_polygons_in_parallel(
                 log.info(f"{log_label}: {done}/{n} pieces meshed")
                 next_log *= 2
     finally:
-        with _active_mesh_pool_lock:
-            _active_mesh_pool = None
-        # cancel_futures=False on the success path: by here all futures
-        # are already done. On the exception/abort path, futures may be
-        # in flight; cancel_futures=True drains the input queue.
-        pool.shutdown(cancel_futures=True, wait=True)
+        if own_pool:
+            with _active_mesh_pool_lock:
+                _active_mesh_pool = None
+            # cancel_futures=False on the success path: by here all futures
+            # are already done. On the exception/abort path, futures may be
+            # in flight; cancel_futures=True drains the input queue.
+            pool.shutdown(cancel_futures=True, wait=True)
     return results  # type: ignore[return-value]
 
 
 def generate_meshes_for_problem(prob: problem.Problem,
                                 mesher: mesh.Mesher,
                                 connected_layer_mesh_pairs: set[tuple[int, int]],
-                                strtrees: list[shapely.strtree.STRtree]
+                                strtrees: list[shapely.strtree.STRtree],
+                                shared_pool: "_SharedMeshPool | None" = None,
                                 ) -> tuple[list[mesh.Mesh], list[int]]:
     # Phase 1: assign seed points to geometries (per-layer, in-process).
     # Phase 2: collect every (layer, geom) to be meshed and the polygons /
@@ -793,10 +880,10 @@ def generate_meshes_for_problem(prob: problem.Problem,
     )
 
     # Pre-build a layer-id → seed-points map in ONE pass over all networks.
-    # The previous code called ``collect_seed_points(prob, layer)`` inside
-    # the per-layer loop, which made the total cost O(networks × layers).
-    # On a board with 10k networks × 21 layers that loop alone took
-    # ~60 s. Now we walk the network list exactly once.
+    # An earlier version collected seed points per (network, layer) inside the
+    # per-layer loop, which made the total cost O(networks × layers). On a board
+    # with 10k networks × 21 layers that loop alone took ~60 s. Now we walk the
+    # network list exactly once.
     import shapely.prepared
     # Each entry is (seed_point, add_steiner_ring). A point Connection gets
     # an 8-point Steiner ring to refine the log singularity at its single
@@ -833,6 +920,13 @@ def generate_meshes_for_problem(prob: problem.Problem,
         # repeated contains/intersects calls drop from O(boundary_vertices)
         # to O(log n) — the difference is dramatic on large GND copper
         # (the 8682 mm² piece has 1000s of boundary vertices).
+        #
+        # NB: this pass is left point-at-a-time on purpose. It already uses
+        # prepared geometries (unlike the connectivity / dead-terminal passes,
+        # which resolve_connection_geoms vectorises), and the per-seed order
+        # here feeds Triangle directly — batching it via STRtree.query changed
+        # the seed set/order enough to perturb the mesh, so it is not worth the
+        # small saving.
         prepared_by_geom_i: dict[int, shapely.prepared.PreparedGeometry] = {}
 
         for seed_point, add_ring in seed_points_in_layer:
@@ -917,6 +1011,7 @@ def generate_meshes_for_problem(prob: problem.Problem,
     arrays = _mesh_polygons_in_parallel(
         polys_to_mesh, seed_xys_to_mesh, switches,
         log_label="connected meshes", adaptive=_adaptive,
+        shared_pool=shared_pool,
     )
 
     meshes: list[mesh.Mesh] = []
@@ -929,6 +1024,7 @@ def generate_meshes_for_problem(prob: problem.Problem,
 
 def generate_disconnected_meshes(prob: problem.Problem,
                                  connected_layer_mesh_pairs: set[tuple[int, int]],
+                                 shared_pool: "_SharedMeshPool | None" = None,
                                  ) -> list[list[mesh.Mesh]]:
     """
     Generate simple triangulations for disconnected copper regions.
@@ -968,6 +1064,7 @@ def generate_disconnected_meshes(prob: problem.Problem,
     arrays = _mesh_polygons_in_parallel(
         polys_to_mesh, seed_xys_to_mesh, switches,
         log_label="disconnected meshes",
+        shared_pool=shared_pool,
     )
 
     for layer_i, (out_vertices, out_triangles) in zip(layer_indices, arrays):
@@ -1091,7 +1188,8 @@ class NodeIndexer:
                mesh_index_to_layer_index: list[int],
                vindex: VertexIndexer,
                filtered_networks: list[problem.Network],
-               layer_to_index: dict[int, int] | None = None) -> "NodeIndexer":
+               layer_to_index: dict[int, int] | None = None,
+               off_copper_threshold_mm: float | None = None) -> "NodeIndexer":
 
         layer_to_kdtree, layer_to_globals = cls._construct_kdtrees(
             prob,
@@ -1124,45 +1222,121 @@ class NodeIndexer:
         connections = [
             conn for network in filtered_networks for conn in network.connections
         ]
+
+        def _assign(node, vertex_global_idx: int) -> None:
+            # Guard against overwriting a node with a different vertex — should
+            # never happen in practice.
+            if (node in node_to_global_index
+                    and node_to_global_index[node] != vertex_global_idx):
+                raise ValueError(
+                    "Duplicate connection vertices found, this should not happen.")
+            node_to_global_index[node] = vertex_global_idx
+
+        # Most connections are plain points that just attach to their nearest
+        # mesh vertex (only pad-region directives become equipotential patches).
+        # Doing one cKDTree.query per connection was tens of thousands of Python
+        # calls; instead handle the (order-sensitive) equipotential-patch path
+        # here and DEFER the point lookups, then batch them per layer below.
+        # Same result as the per-connection loop: identical nearest vertices,
+        # ``claimed`` set, and ``vertex_groups``.
+        deferred: list = []  # (conn, globals_arr, kdtree)
         for conn in connections:
-            layer_i = layer_to_index[id(conn.layer)]
-            kdtree = layer_to_kdtree[layer_i]
+            # A connection's layer may have no meshed copper at all — e.g. a
+            # directive pin on a plane with no copper reachable from a driven
+            # source. _construct_kdtrees only builds a tree for layers that
+            # produced connected meshes, so layer_to_kdtree[layer_i] is absent
+            # for those. Indexing it directly used to raise KeyError and abort
+            # the whole solve; instead, skip with a warning (the node falls
+            # through to the internal-node allocation below, unattached).
+            layer_i = (layer_to_index.get(id(conn.layer))
+                       if conn.layer is not None else None)
+            kdtree = layer_to_kdtree.get(layer_i) if layer_i is not None else None
+            if kdtree is None:
+                warnings.warn(
+                    f"Connection node {conn.node_id} is on a layer with no "
+                    f"meshed copper near ({conn.point.x:.4g}, "
+                    f"{conn.point.y:.4g}); its terminal is left unattached. "
+                    f"Check that this pin lands on copper reachable from a "
+                    f"source.",
+                    SolverWarning, stacklevel=2,
+                )
+                continue
             # layer_to_globals[layer_i] is a flat int64 array — direct numpy
             # indexing returns the global vertex index, no tuple unpack.
             globals_arr = layer_to_globals[layer_i]
 
-            vertex_global_idx: int | None = None
             if conn.region is not None:
                 group = _vertices_under_pad(
                     kdtree, globals_arr, conn.region, conn.point, claimed,
                 )
                 if group.size:
-                    vertex_global_idx = int(group[0])
                     claimed.update(int(g) for g in group)
                     if group.size >= 2:
                         vertex_groups.append(group)
+                    _assign(conn.node_id, int(group[0]))
+                    continue
+            # Point fallback (region-less, or a pad that caught no vertices):
+            # defer the nearest-vertex query for batching.
+            deferred.append((conn, globals_arr, kdtree))
 
-            if vertex_global_idx is None:
-                _, vertex_idx_in_kdtree = kdtree.query(
-                    (conn.point.x, conn.point.y), k=1,
+        # Batch the deferred point lookups, one cKDTree.query per layer (grouped
+        # by tree identity — one tree per layer). Results indexed by position in
+        # ``deferred``.
+        by_tree: dict[int, tuple] = {}
+        for di, (conn, _ga, kdtree) in enumerate(deferred):
+            entry = by_tree.get(id(kdtree))
+            if entry is None:
+                entry = by_tree[id(kdtree)] = (kdtree, [])
+            entry[1].append(di)
+        q_dist = [0.0] * len(deferred)
+        q_idx = [0] * len(deferred)
+        for kdtree, idxs in by_tree.values():
+            pts = np.array(
+                [(deferred[di][0].point.x, deferred[di][0].point.y) for di in idxs],
+                dtype=np.float64,
+            )
+            dists, vidxs = kdtree.query(pts, k=1)
+            dists = np.atleast_1d(dists)
+            vidxs = np.atleast_1d(vidxs)
+            for j, di in enumerate(idxs):
+                q_dist[di] = float(dists[j])
+                q_idx[di] = int(vidxs[j])
+
+        # Assign the deferred point connections in their original order.
+        for di, (conn, globals_arr, _kdtree) in enumerate(deferred):
+            vertex_global_idx = int(globals_arr[q_idx[di]])
+            # If the nearest copper vertex is far from where the terminal was
+            # placed, the pin isn't really on this net's copper — its current
+            # then gets injected at a distant vertex, silently skewing IR-drop.
+            # Warn but still attach (preserving the long-standing behaviour);
+            # the threshold is a few mesh cells, so normal pins never trip it.
+            if (off_copper_threshold_mm is not None
+                    and q_dist[di] > off_copper_threshold_mm):
+                warnings.warn(
+                    f"Connection node {conn.node_id} at "
+                    f"({conn.point.x:.4g}, {conn.point.y:.4g}) is "
+                    f"{q_dist[di]:.3g} mm from the nearest copper vertex on its "
+                    f"net (> {off_copper_threshold_mm:.3g} mm); its current "
+                    f"is being injected at a distant vertex, so IR-drop "
+                    f"near it may be wrong. Check the pin lands on copper.",
+                    SolverWarning, stacklevel=2,
                 )
-                vertex_global_idx = int(globals_arr[vertex_idx_in_kdtree])
+            _assign(conn.node_id, vertex_global_idx)
 
-            node = conn.node_id
-
-            # Check that we are not overwriting an existing node with different
-            # vertex index. This should never happen in practice
-            if node in node_to_global_index and node_to_global_index[node] != vertex_global_idx:
-                raise ValueError("Duplicate connection vertices found, this should not happen.")
-            node_to_global_index[node] = vertex_global_idx
-
-        # Next, we allocate new indices for all the yet to be allocated nodes
-        nodes = [
-            node for network in filtered_networks for node in network.nodes
-            if node not in node_to_global_index
-        ]
+        # Next, we allocate new indices for all the yet-to-be-allocated nodes.
+        # Dedupe across networks: a NodeID shared by two filtered networks would
+        # otherwise be listed twice and get two indices, the first structurally
+        # empty (an all-zero row/column → singular matrix). FYPA's loader makes
+        # unique NodeIDs today, but nothing in problem.py forbids sharing.
+        _seen: set = set()
+        nodes = []
+        for network in filtered_networks:
+            for node in network.nodes:
+                if node not in node_to_global_index and node not in _seen:
+                    _seen.add(node)
+                    nodes.append(node)
         internal_node_count = len(nodes)
-        i_at = len(vindex.global_index_to_vertex_index)
+        i_at = vindex.n_vertices
         for node in nodes:
             node_to_global_index[node] = i_at
             i_at += 1
@@ -1303,54 +1477,121 @@ def process_mesh_laplace_operators(
     conductances: list[float],
     vindex: VertexIndexer,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Compute every mesh's cotangent Laplacian and return one concatenated
-    triple of (rows, cols, vals) in GLOBAL vertex indices, ready to feed
-    into a single COO assembly along with the network and ground stamps.
+    """Assemble every mesh's cotangent Laplacian at once, returning one
+    concatenated ``(rows, cols, vals)`` triple in GLOBAL vertex indices, ready
+    for the single COO→CSC assembly alongside the network and ground stamps.
 
-    Replaces the prior ``lil_matrix.__setitem__`` loop, which was the
-    dominant Python-level cost during assembly for large boards.
+    Batched: all meshes' retained triangle-soup arrays are concatenated into
+    one global vertex array and one global triangle array (each mesh's
+    triangles offset into its ``vindex`` global-index range), then the whole
+    board's half-cotangent weights are computed in ONE vectorised
+    :func:`_half_cotangent` pass. This replaces the previous per-mesh
+    ``ThreadPoolExecutor.map(laplace_operator, meshes)`` — on a board with tens
+    of thousands of small meshes the per-mesh Python overhead (task dispatch, a
+    ``scipy.coo_matrix`` object built and torn down per mesh, GIL-bound small
+    numpy) dominated; one global pass removes all of it.
+
+    The result is **bit-identical** to the per-mesh path (cross-checked in
+    ``tests/test_laplace_batched.py``): triangles are concatenated in mesh
+    order, so each vertex lives in one contiguous triangle block and the
+    global ``np.add.at`` accumulates its diagonal in the same order the
+    per-mesh scatter did; the final CSC is identical because off-diagonal
+    duplicates (≤2 per edge) sum commutatively.
     """
+    # int32 indices halve the transient COO row/col memory (there are 6·T of
+    # them). Safe because a FEM matrix never has anywhere near 2³¹ rows; the
+    # index dtype doesn't affect the assembled matrix, so this is bit-identical.
+    idx_dtype = (np.int32 if len(vindex.mesh_vertex_offsets)
+                 and int(vindex.mesh_vertex_offsets[-1]) <= _MATRIX_INDEX_MAX
+                 else np.int64)
     if not meshes:
-        return (np.empty(0, dtype=np.int64),
-                np.empty(0, dtype=np.int64),
+        return (np.empty(0, dtype=idx_dtype),
+                np.empty(0, dtype=idx_dtype),
                 np.empty(0, dtype=DTYPE))
 
-    # Per-mesh global-index offset: vindex assigns global indices in the
-    # order vertices appear when iterating meshes, so the offset for mesh m
-    # is the cumulative vertex count of all earlier meshes. Faster than
-    # looking up vindex.mesh_vertex_index_to_global_index[(m, i)] per entry.
-    sizes = np.fromiter(
-        (len(m.vertices) for m in meshes), dtype=np.int64, count=len(meshes),
-    )
-    offsets = np.concatenate(([0], np.cumsum(sizes[:-1]))) if sizes.size else \
-              np.empty(0, dtype=np.int64)
+    # vindex assigns global vertex indices in mesh-iteration order, so mesh m
+    # owns [offsets[m], offsets[m+1]). Gather each mesh's (xys, tris), offset
+    # its triangles into the global index range, and tag every triangle /
+    # vertex with its mesh's conductance. Gathering is cheap (no compute); the
+    # heavy cotangent math happens once, below.
+    offsets = vindex.mesh_vertex_offsets
+    n_total = int(offsets[-1])
+    xys_list: list[np.ndarray] = []
+    tris_list: list[np.ndarray] = []
+    tri_cond_list: list[np.ndarray] = []
+    vert_cond = np.empty(n_total, dtype=DTYPE)
+    for mesh_i, msh in enumerate(meshes):
+        base = int(offsets[mesh_i])
+        end = int(offsets[mesh_i + 1])
+        cond = conductances[mesh_i]
+        vert_cond[base:end] = cond
+        xys, tris = _mesh_source_arrays(msh)
+        xys_list.append(xys)
+        if tris.shape[0] > 0:
+            tris_list.append(tris + base)  # local → global vertex indices
+            tri_cond_list.append(np.full(tris.shape[0], cond, dtype=DTYPE))
 
-    rows_chunks: list[np.ndarray] = []
-    cols_chunks: list[np.ndarray] = []
-    vals_chunks: list[np.ndarray] = []
-    # laplace_operator is a pure function of one mesh, and its cotangent
-    # weights are computed in vectorised numpy that releases the GIL — so
-    # the per-mesh Laplacians genuinely compute in parallel across a thread
-    # pool. ThreadPoolExecutor.map preserves input order, so the offset
-    # bookkeeping below is unchanged and the assembled matrix is identical.
-    if len(meshes) > 1:
-        with ThreadPoolExecutor(max_workers=_MESH_MAX_WORKERS) as _ex:
-            laplacians = list(_ex.map(laplace_operator, meshes))
+    xys_all = (np.concatenate(xys_list, axis=0) if xys_list
+               else np.empty((0, 2), dtype=DTYPE))
+
+    row_chunks: list[np.ndarray] = []
+    col_chunks: list[np.ndarray] = []
+    val_chunks: list[np.ndarray] = []
+
+    if tris_list:
+        tris_all = np.concatenate(tris_list, axis=0).astype(idx_dtype, copy=False)
+        tri_cond = np.concatenate(tri_cond_list)
+        v0 = tris_all[:, 0]
+        v1 = tris_all[:, 1]
+        v2 = tris_all[:, 2]
+        p0 = xys_all[v0]
+        p1 = xys_all[v1]
+        p2 = xys_all[v2]
+
+        w12 = _half_cotangent(p1 - p0, p2 - p0)  # apex 0 ↔ edge (v1, v2)
+        w20 = _half_cotangent(p2 - p1, p0 - p1)  # apex 1 ↔ edge (v2, v0)
+        w01 = _half_cotangent(p0 - p2, p1 - p2)  # apex 2 ↔ edge (v0, v1)
+
+        rows_off = np.concatenate([v1, v2, v2, v0, v0, v1])
+        cols_off = np.concatenate([v2, v1, v0, v2, v1, v0])
+        vals_off = np.concatenate([w12, w12, w20, w20, w01, w01])
+
+        # Diagonal (UNSCALED): L[i, i] = -Σ outgoing weights from i. Done before
+        # conductance scaling so a vertex's diagonal is (Σ weights)·cond, matching
+        # the per-mesh path exactly rather than Σ(weight·cond).
+        diag = np.zeros(n_total, dtype=DTYPE)
+        np.add.at(diag, rows_off, -vals_off)
+
+        # Scale: each off-diagonal entry by its triangle's conductance (the
+        # 6 edge sub-blocks all index the same triangle set), each diagonal by
+        # its vertex's conductance.
+        vals_off = vals_off * np.concatenate([tri_cond] * 6)
+        diag = diag * vert_cond
+
+        diag_idx = np.arange(n_total, dtype=idx_dtype)
+        row_chunks += [rows_off, diag_idx]
+        col_chunks += [cols_off, diag_idx]
+        val_chunks += [vals_off, diag]
+
+        used = np.zeros(n_total, dtype=bool)
+        used[tris_all.ravel()] = True
     else:
-        laplacians = [laplace_operator(meshes[0])]
-    for mesh_i, (L_msh, conductance) in enumerate(zip(laplacians, conductances)):
-        if L_msh.nnz == 0:
-            continue
-        off = int(offsets[mesh_i])
-        rows_chunks.append(L_msh.row.astype(np.int64, copy=False) + off)
-        cols_chunks.append(L_msh.col.astype(np.int64, copy=False) + off)
-        vals_chunks.append(L_msh.data.astype(DTYPE, copy=False) * conductance)
-    if rows_chunks:
-        return (np.concatenate(rows_chunks),
-                np.concatenate(cols_chunks),
-                np.concatenate(vals_chunks))
-    return (np.empty(0, dtype=np.int64),
-            np.empty(0, dtype=np.int64),
+        used = np.zeros(n_total, dtype=bool)
+
+    # Pin orphan vertices (in no triangle) to keep the matrix non-singular —
+    # value 1.0·conductance, matching the per-mesh path.
+    orphans = np.where(~used)[0].astype(idx_dtype)
+    if orphans.size > 0:
+        row_chunks.append(orphans)
+        col_chunks.append(orphans)
+        val_chunks.append(vert_cond[orphans])
+
+    if row_chunks:
+        return (np.concatenate(row_chunks),
+                np.concatenate(col_chunks),
+                np.concatenate(val_chunks))
+    return (np.empty(0, dtype=idx_dtype),
+            np.empty(0, dtype=idx_dtype),
             np.empty(0, dtype=DTYPE))
 
 
@@ -1417,27 +1658,33 @@ def network_has_a_dead_terminal(network: problem.Network,
                                 connected_layer_mesh_pairs: set[tuple[int, int]],
                                 strtrees: list[shapely.strtree.STRtree],
                                 layer_to_index: dict[int, int] | None = None,
+                                conn_geoms: dict[int, list[int]] | None = None,
                                 ) -> bool:
     """
     Check if a network has any connection on a dead (disconnected) copper region.
 
     ``layer_to_index`` is an optional ``{id(layer): index}`` cache; pass it from
     the solve loop to avoid an O(L) ``prob.layers.index(...)`` per connection.
+    ``conn_geoms`` is the shared ``{id(conn): [geom_i, ...]}`` map from
+    :func:`resolve_connection_geoms` (already intersects-filtered); when given,
+    the per-connection ``query`` + ``intersects`` is skipped.
     """
     if layer_to_index is None:
         layer_to_index = {id(layer): i for i, layer in enumerate(prob.layers)}
     for conn in network.connections:
         layer_i = layer_to_index[id(conn.layer)]
-        strtree = strtrees[layer_i]
 
-        candidates = strtree.query(conn.point)
-        for geom_i in candidates:
+        if conn_geoms is not None:
+            geom_indices = conn_geoms.get(id(conn), ())
+        else:
+            geom_indices = strtrees[layer_i].query(conn.point)
+        for geom_i in geom_indices:
             if (layer_i, geom_i) in connected_layer_mesh_pairs:
                 # Would have no effect on whether the network
                 # has a dead terminal or not, do not even bother checking
                 continue
 
-            if not conn.layer.geoms[geom_i].intersects(conn.point):
+            if conn_geoms is None and not conn.layer.geoms[geom_i].intersects(conn.point):
                 continue
 
             # Okay, at this point:
@@ -1481,52 +1728,6 @@ def _log_network_breakdown(
         )
 
 
-def find_best_ground_node_index(
-    networks: list[problem.Network],
-    node_indexer: NodeIndexer,
-) -> int:
-    """Pick the GND reference mesh vertex.
-
-    Votes each VoltageSource's n-terminal (GND pin) and selects the vertex
-    shared by the most VoltageSources — the common power-supply GND bus.
-    Ties are broken by the highest source voltage.  Only considers
-    ``networks`` (the already-filtered list), so all returned indices are
-    guaranteed to exist in ``node_indexer``.
-    """
-    vote_count: collections.Counter[int] = collections.Counter()
-    max_voltage_by_vertex: dict[int, float] = {}
-
-    for network in networks:
-        for element in network.elements:
-            if not isinstance(element, problem.VoltageSource):
-                continue
-            gnd_idx = node_indexer.node_to_global_index.get(element.n)
-            if gnd_idx is None:
-                continue
-            vote_count[gnd_idx] += 1
-            if element.voltage > max_voltage_by_vertex.get(gnd_idx, float('-inf')):
-                max_voltage_by_vertex[gnd_idx] = element.voltage
-
-    if not vote_count:
-        log.warning(
-            "No VoltageSource found in active networks — defaulting ground "
-            "reference to vertex 0.  Solver results will be unreliable."
-        )
-        return 0
-
-    # Most-shared GND vertex first; highest voltage breaks ties.
-    best_idx = max(
-        vote_count,
-        key=lambda idx: (vote_count[idx], max_voltage_by_vertex[idx]),
-    )
-    log.debug(
-        f"Ground node: global index {best_idx}, "
-        f"shared by {vote_count[best_idx]} VoltageSource(s), "
-        f"highest voltage {max_voltage_by_vertex[best_idx]:.3f} V"
-    )
-    return best_idx
-
-
 def find_ground_node_indices(
     filtered_networks: list[problem.Network],
     node_indexer: NodeIndexer,
@@ -1541,14 +1742,12 @@ def find_ground_node_indices(
     single-ground behaviour. A single-net (PDN_NET) analysis forms its own
     component with no GND copper, so it gets its own reference here.
 
-    Within each component the reference is voted exactly as
-    :func:`find_best_ground_node_index` does globally — the node shared by the
-    most ``VoltageSource`` N-terminals, highest source voltage breaking ties.
-    A component with no ``VoltageSource`` falls back to its lowest-indexed
-    mesh vertex.
+    Within each component the reference is voted the node shared by the most
+    ``VoltageSource`` N-terminals, highest source voltage breaking ties. A
+    component with no ``VoltageSource`` falls back to its lowest-indexed
+    node (see below).
     """
-    n_vert = len(vindex.global_index_to_vertex_index)
-    g2v = vindex.global_index_to_vertex_index
+    n_vert = vindex.n_vertices
     n2g = node_indexer.node_to_global_index
 
     # Union-find over "units": one per mesh (every vertex of a mesh is
@@ -1572,7 +1771,7 @@ def find_ground_node_indices(
 
     def unit(gi: int):
         if gi < n_vert:
-            return ("mesh", g2v[gi][0])
+            return ("mesh", vindex.to_mesh_vertex(gi)[0])
         return ("node", gi)
 
     # Each element ties all of its terminals (and its extra current variable,
@@ -1586,15 +1785,28 @@ def find_ground_node_indices(
             for u in units[1:]:
                 union(units[0], u)
 
-    # Per component: VoltageSource N-terminal votes + a fallback mesh vertex.
+    # Per component: VoltageSource N-terminal votes + fallbacks. ``fallback_vertex``
+    # is the lowest-indexed MESH vertex (preferred reference); ``any_fallback`` is
+    # the lowest-indexed variable of ANY kind (mesh vertex OR network-internal
+    # node / extra-source variable) — needed so a *lumped-only* component (e.g. a
+    # resistor chain among internal nodes with no VoltageSource and no copper)
+    # still gets a reference instead of leaving the matrix singular and degrading
+    # into the expensive MINRES budget path.
     vote: dict[object, collections.Counter] = {}
     max_voltage: dict[tuple[object, int], float] = {}
     fallback_vertex: dict[object, int] = {}
+    any_fallback: dict[object, int] = {}
     for net in filtered_networks:
         for elem in net.elements:
             comp = find(unit(n2g[elem.terminals[0]]))
-            for t in elem.terminals:
-                gi = n2g[t]
+            gis = [n2g[t] for t in elem.terminals]
+            ev = node_indexer.extra_source_to_global_index.get(elem)
+            if ev is not None:
+                gis.append(ev)
+            for gi in gis:
+                cur_any = any_fallback.get(comp)
+                if cur_any is None or gi < cur_any:
+                    any_fallback[comp] = gi
                 if gi < n_vert:
                     cur = fallback_vertex.get(comp)
                     if cur is None or gi < cur:
@@ -1607,15 +1819,21 @@ def find_ground_node_indices(
                     max_voltage[key] = elem.voltage
 
     ground_indices: list[int] = []
-    for comp in set(fallback_vertex) | set(vote):
+    # any_fallback has an entry for every component with an element, so it's the
+    # full component set. Normal components resolve via vote / mesh-vertex
+    # fallback exactly as before (any_fallback is only reached for the
+    # lumped-only case), so this is bit-identical on well-posed boards.
+    for comp in set(any_fallback) | set(vote):
         counter = vote.get(comp)
         if counter:
             ground_indices.append(max(
                 counter,
                 key=lambda gi: (counter[gi], max_voltage[(comp, gi)]),
             ))
-        else:
+        elif comp in fallback_vertex:
             ground_indices.append(fallback_vertex[comp])
+        else:
+            ground_indices.append(any_fallback[comp])
 
     if not ground_indices:
         # No networks at all — keep the system pinnable (matches the legacy
@@ -1774,10 +1992,52 @@ class _MinresProgress:
             raise _MinresTimeout()
 
 
+# Persistent symmetric-indefinite PARDISO solver + a fingerprint of the matrix
+# it currently holds factorised. Keeping the factorisation alive between
+# solve() calls lets a re-solve whose stiffness matrix is unchanged — e.g. the
+# GUI editor loop where only sink-current / source-voltage magnitudes change
+# (those touch only the RHS, never L) — skip the ~seconds-to-minutes
+# factorisation and run just the fast solve phase. The lock serialises access
+# (solves never overlap in practice, but a shared factorisation must not be
+# entered concurrently). ``free_pardiso_cache`` drops it; the GUI also calls
+# that on cancel so a solve hard-killed mid-factorisation can never leave a
+# corrupt factorisation to be reused.
+_sym_solver = None
+_sym_fingerprint: str | None = None
+_sym_solver_lock = threading.Lock()
+
+
+def _csr_fingerprint(m: "scipy.sparse.csr_matrix") -> str:
+    """Content hash of a CSR matrix — changes iff the matrix (structure or
+    values) changes, so an identical re-solve is detected and the cached
+    factorisation reused."""
+    return (hashlib.sha1(np.ascontiguousarray(m.indptr)).hexdigest()
+            + hashlib.sha1(np.ascontiguousarray(m.indices)).hexdigest()
+            + hashlib.sha1(np.ascontiguousarray(m.data)).hexdigest())
+
+
+def free_pardiso_cache() -> None:
+    """Release the cached symmetric factorisation and its solver.
+
+    Bounds resident memory (a large factorisation can be gigabytes) and, called
+    on solve-cancel, guarantees a solve that was hard-killed mid-factorisation
+    can't leave an inconsistent factorisation for the next solve to reuse. The
+    next solve simply re-factorises from scratch."""
+    global _sym_solver, _sym_fingerprint
+    with _sym_solver_lock:
+        solver, _sym_solver, _sym_fingerprint = _sym_solver, None, None
+    if solver is not None:
+        try:
+            solver.free_memory(everything=True)
+        except Exception:  # pragma: no cover - best effort
+            pass
+
+
 def _pardiso_solve_sym(
     L_csc: "scipy.sparse.csc_matrix", r: np.ndarray,
 ) -> np.ndarray:
-    """Symmetric-indefinite PARDISO solve (mtype -2).
+    """Symmetric-indefinite PARDISO solve (mtype -2), reusing the factorisation
+    across identical-matrix re-solves.
 
     PARDISO factorises only the upper triangle here — markedly faster than
     the unsymmetric factorisation. Two requirements: it must be given just
@@ -1785,18 +2045,68 @@ def _pardiso_solve_sym(
     structurally complete — the MNA Lagrange rows (ground node, voltage
     sources) carry no diagonal entry, which PARDISO rejects as "input
     inconsistent", so the diagonal is materialised (missing entries become
-    explicit zeros, numerically a no-op). A fresh solver instance is used so
-    its factorisation is freed straight after via ``free_memory()``.
-    """
+    explicit zeros, numerically a no-op).
+
+    A module-level solver is kept alive and re-factorised only when the matrix
+    fingerprint changes; when it hasn't (a value-only re-solve), pypardiso runs
+    the solve phase alone. On any error the cache is dropped and the exception
+    re-raised so :func:`_solve_robust` falls back — and a stale/garbage result
+    from a reused factorisation is caught anyway by that function's residual
+    check. ``size_limit_storage=0`` makes pypardiso store only a hash of the
+    factorised matrix (not a full copy), keeping resident memory down."""
     M = scipy.sparse.triu(L_csc, format="csr")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")  # scipy setdiag notice
         M.setdiag(M.diagonal())
-    solver = _pypardiso.PyPardisoSolver(mtype=-2)
+    M.sort_indices()  # canonical form: stable fingerprint, and PARDISO needs it
+
+    global _sym_solver, _sym_fingerprint
+    with _sym_solver_lock:
+        if _sym_solver is None:
+            _sym_solver = _pypardiso.PyPardisoSolver(
+                mtype=-2, size_limit_storage=0)
+            _sym_fingerprint = None
+        try:
+            fp = _csr_fingerprint(M)
+            if fp != _sym_fingerprint:
+                # First solve, or the matrix changed: analyse + factorise once.
+                _sym_solver.factorize(M)
+                _sym_fingerprint = fp
+            # solve() sees the stored factorisation and runs the solve phase
+            # only — the cheap path that makes an identical re-solve fast.
+            return _sym_solver.solve(M, r)
+        except BaseException:
+            try:
+                _sym_solver.free_memory(everything=True)
+            except Exception:
+                pass
+            _sym_solver = None
+            _sym_fingerprint = None
+            raise
+
+
+def _pardiso_solve_unsym(
+    L_csc: "scipy.sparse.csc_matrix", r: np.ndarray,
+) -> np.ndarray:
+    """Unsymmetric PARDISO solve (full pivoting), freeing the factorisation
+    immediately.
+
+    This is the fallback path — reached only when the matrix is asymmetric (a
+    `VoltageRegulator`) or the symmetric solve was rejected — so it's rarely hit
+    and not worth keeping resident (unlike the symmetric primary path, which is
+    cached). Replaces the convenience ``_pypardiso.spsolve``, whose module-global
+    solver held the multi-GB LU for the process lifetime."""
+    solver = _pypardiso.PyPardisoSolver()  # mtype 11: real unsymmetric
     try:
-        return solver.solve(M, r)
+        # Feed CSR: pypardiso.spsolve does the same `A.tocsr()`, and passing a
+        # CSC directly takes pypardiso's transposed-solve path, which returns
+        # the wrong answer here.
+        return solver.solve(L_csc.tocsr(), r)
     finally:
-        solver.free_memory()
+        try:
+            solver.free_memory(everything=True)
+        except Exception:  # pragma: no cover - best effort
+            pass
 
 
 def _log_singular_diagnostic(
@@ -1907,7 +2217,7 @@ def _solve_robust(
         if symmetric:
             attempts.append(
                 ("pardiso-sym", lambda: _pardiso_solve_sym(L_csc, r)))
-        attempts.append(("pardiso", lambda: _pypardiso.spsolve(L_csc, r)))
+        attempts.append(("pardiso", lambda: _pardiso_solve_unsym(L_csc, r)))
     attempts.append(
         ("superlu", lambda: scipy.sparse.linalg.spsolve(L_csc, r)))
 
@@ -1993,12 +2303,16 @@ def _solve_robust(
             _MINRES_TIME_BUDGET_S, progress.iterations,
         )
     residual_norm = _residual(v)
+    # Capture the plain-MINRES iteration count before the ridge pass below
+    # reuses ``progress`` — so the final return reports the WINNING candidate's
+    # own iteration count, not the ridge's.
+    minres_iters = progress.iterations
     if info == 0 and residual_norm <= abs_tol:
         log.info(
             "MINRES converged: residual=%.4g (<= tol=%.4g) in %d iterations.",
-            residual_norm, abs_tol, progress.iterations,
+            residual_norm, abs_tol, minres_iters,
         )
-        return v, "minres", progress.iterations, residual_norm
+        return v, "minres", minres_iters, residual_norm
 
     log.warning(
         "MINRES did not converge cleanly: info=%d, residual=%.4g "
@@ -2035,11 +2349,13 @@ def _solve_robust(
     # original system — plain MINRES, MINRES+ridge, or the best direct
     # solve. A fallback must never hand back a worse answer than it started
     # with. NaN residuals (a singular direct solve) sort last.
-    candidates = [("minres", v, residual_norm),
-                  ("minres+ridge", v_ridge, ridge_res)]
+    # Each candidate carries its OWN iteration count (a direct solve isn't
+    # iterative → 1), so the returned count matches whichever method wins.
+    candidates = [("minres", v, residual_norm, minres_iters),
+                  ("minres+ridge", v_ridge, ridge_res, progress.iterations)]
     if best_v is not None:
-        candidates.append(("direct-best-effort", best_v, best_res))
-    method, v_final, res_final = min(
+        candidates.append(("direct-best-effort", best_v, best_res, 1))
+    method, v_final, res_final, iters_final = min(
         candidates,
         key=lambda c: c[2] if math.isfinite(c[2]) else math.inf,
     )
@@ -2050,7 +2366,7 @@ def _solve_robust(
         "" if res_final <= abs_tol else " — STILL ABOVE TOLERANCE; results "
         "for the near-floating region are unreliable",
     )
-    return v_final, method, progress.iterations, res_final
+    return v_final, method, iters_final, res_final
 
 
 def _record_stage(timings: list, label: str, t0: float, extra: str = "") -> None:
@@ -2121,22 +2437,34 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
     # (connectivity graph, dead-terminal filter, node indexer) all share
     # one O(1) dict lookup instead of doing a linear search per connection.
     layer_to_index = {id(layer): i for i, layer in enumerate(prob.layers)}
-    connectivity_graph = ConnectivityGraph.create_from_problem(prob, strtrees)
+    # Resolve every connection point → layer.geoms indices ONCE (one vectorised
+    # STRtree query per layer); the connectivity graph and the dead-terminal
+    # filter both consume this instead of each re-testing point-in-polygon.
+    conn_geoms = resolve_connection_geoms(prob, strtrees, layer_to_index)
+    connectivity_graph = ConnectivityGraph.create_from_problem(
+        prob, strtrees, conn_geoms)
     connected_layer_mesh_pairs = find_connected_layer_geom_indices(connectivity_graph)
     _record_stage(timings, "Connectivity graph", _t0)
 
-    _t0 = time.monotonic()
-    log.info("Meshing the connected components")
-    meshes, mesh_index_to_layer_index = \
-        generate_meshes_for_problem(prob, mesher, connected_layer_mesh_pairs, strtrees)
-    _record_stage(timings, "Connected meshing", _t0, f" ({len(meshes)} mesh(es))")
+    # One worker pool for BOTH meshing passes — spawns/re-imports at most once.
+    _mesh_pool = _SharedMeshPool()
+    try:
+        _t0 = time.monotonic()
+        log.info("Meshing the connected components")
+        meshes, mesh_index_to_layer_index = \
+            generate_meshes_for_problem(prob, mesher, connected_layer_mesh_pairs,
+                                        strtrees, shared_pool=_mesh_pool)
+        _record_stage(timings, "Connected meshing", _t0, f" ({len(meshes)} mesh(es))")
 
-    _t0 = time.monotonic()
-    log.info("Meshing the disconnected components")
-    disconnected_meshes_by_layer = \
-        generate_disconnected_meshes(prob, connected_layer_mesh_pairs)
-    _n_disc = sum(len(m) for m in disconnected_meshes_by_layer)
-    _record_stage(timings, "Disconnected meshing", _t0, f" ({_n_disc} mesh(es))")
+        _t0 = time.monotonic()
+        log.info("Meshing the disconnected components")
+        disconnected_meshes_by_layer = \
+            generate_disconnected_meshes(prob, connected_layer_mesh_pairs,
+                                         shared_pool=_mesh_pool)
+        _n_disc = sum(len(m) for m in disconnected_meshes_by_layer)
+        _record_stage(timings, "Disconnected meshing", _t0, f" ({_n_disc} mesh(es))")
+    finally:
+        _mesh_pool.close()
 
     # In the next step, we assign a global index to each vertex in every mesh.
     # This is needed since we need to somehow map the vertex indices to the
@@ -2145,7 +2473,7 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
     log.info("Indexing vertices and connections")
     vindex = VertexIndexer.create(meshes)
     _record_stage(timings, "Vertex indexing", _t0,
-                  f" ({len(vindex.global_index_to_vertex_index)} vertices)")
+                  f" ({vindex.n_vertices} vertices)")
 
     _t0 = time.monotonic()
     log.info("Processing lumped element networks")
@@ -2156,6 +2484,7 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
         for net in prob.networks
         if not network_has_a_dead_terminal(
             net, prob, connected_layer_mesh_pairs, strtrees, layer_to_index,
+            conn_geoms,
         )
     ]
     _record_stage(timings, "Network filtering", _t0,
@@ -2168,6 +2497,9 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
     node_indexer = NodeIndexer.create(
         prob, meshes, mesh_index_to_layer_index, vindex, filtered_networks,
         layer_to_index=layer_to_index,
+        # A pin more than a few mesh cells from any copper vertex on its net
+        # isn't really on that copper — flag it rather than silently snapping.
+        off_copper_threshold_mm=_OFF_COPPER_WARN_FACTOR * mesher.config.maximum_size,
     )
     _record_stage(timings, "Node indexing", _t0)
 
@@ -2184,7 +2516,7 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
     # where L is the "laplace operator",
     # v is the voltage vector and
     # r is the right-hand side "source" vector
-    N = len(vindex.global_index_to_vertex_index) + \
+    N = vindex.n_vertices + \
         node_indexer.internal_node_count + \
         len(node_indexer.extra_source_to_global_index) + \
         n_ground  # one implicit ground node per isolated subsystem
@@ -2233,8 +2565,8 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
 
     log.info(f"Grounding {n_ground} isolated subsystem(s)")
     for i_gnd in ground_indices:
-        if i_gnd < len(vindex.global_index_to_vertex_index):
-            _mesh_i, _v_i = vindex.global_index_to_vertex_index[i_gnd]
+        if i_gnd < vindex.n_vertices:
+            _mesh_i, _v_i = vindex.to_mesh_vertex(i_gnd)
             _pt = meshes[_mesh_i].vertices.to_object(_v_i).p
             log.debug(f"  ground reference at vertex ({_pt.x:.4g}, {_pt.y:.4g})")
         else:
@@ -2244,13 +2576,16 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
     # --- COO assembly: stitch mesh + network stamps into one triple -------
     _t0 = time.monotonic()
     log.info("Assembling COO triples")
+    # Match the network stamps to the mesh triples' index dtype (int32 for any
+    # real board) so the concatenation doesn't promote everything back to int64.
+    _idx_dtype = mesh_rows.dtype
     all_rows = np.concatenate([
         mesh_rows,
-        np.asarray(net_rows, dtype=np.int64),
+        np.asarray(net_rows, dtype=_idx_dtype),
     ])
     all_cols = np.concatenate([
         mesh_cols,
-        np.asarray(net_cols, dtype=np.int64),
+        np.asarray(net_cols, dtype=_idx_dtype),
     ])
     all_vals = np.concatenate([
         mesh_vals,
@@ -2340,7 +2675,7 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
     # — so the near-floating region that drove the matrix singular can be
     # pinpointed. The reduced→full index map is materialised lazily, only
     # if a failure actually occurs.
-    _n_vert = len(vindex.global_index_to_vertex_index)
+    _n_vert = vindex.n_vertices
     _n_internal = node_indexer.internal_node_count
     _n_extra = len(node_indexer.extra_source_to_global_index)
     _reduced_to_full: list = []
@@ -2355,7 +2690,7 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
                 _reduced_to_full.append(r2f)
             full = int(_reduced_to_full[0][reduced_idx])
         if full < _n_vert:
-            mesh_i, vtx_i = vindex.global_index_to_vertex_index[full]
+            mesh_i, vtx_i = vindex.to_mesh_vertex(full)
             layer_name = prob.layers[mesh_index_to_layer_index[mesh_i]].name
             try:
                 pt = meshes[mesh_i].vertices.to_object(vtx_i).p
