@@ -21,13 +21,16 @@ from fypa.topology.geometry import (
 )
 from fypa.topology.issues import make_issue
 from fypa.topology.placement import (
-    group_ports_by_net,
+    bus_x_in_column_gaps,
+    column_gaps_from_nodes,
     gutter_groups,
-    net_gutter_key,
+    port_stub_x,
 )
-from fypa.topology.types import TopologyModel, TopologyNode
+from fypa.topology.types import TopologyModel, TopologyNode, TopologyWire
 from fypa.topology.validate.util import (
+    foreign_segments_cross,
     intervals_overlap,
+    parallel_corridors_too_close,
     segment_span,
     vertical_segment_overlaps_node_body,
 )
@@ -46,20 +49,26 @@ def check_segment_spacing(
     for i, a in enumerate(verticals):
         a_lo, a_hi = segment_span(a)
         for b in verticals[i + 1 :]:
-            if abs(a.x1 - b.x1) >= WIRE_EPS:
+            if not parallel_corridors_too_close(a.x1, b.x1):
                 continue
             b_lo, b_hi = segment_span(b)
             if not intervals_overlap(a_lo, a_hi, b_lo, b_hi):
                 continue
             if a.net != b.net:
+                if GND_NET in (a.net, b.net):
+                    continue
+                gap = abs(a.x1 - b.x1)
                 issues.append(
                     make_issue(
                         "duplicate_vertical_x",
                         (
-                            f"Vertical segments at x={a.x1:.1f} overlap "
+                            f"Vertical segments at x={a.x1:.1f} and x={b.x1:.1f} "
+                            f"are only {gap:.1f}px apart "
                             f"({a.net} wire {a.wire_index}, {b.net} wire {b.wire_index})"
                         ),
                         x=round(a.x1, 1),
+                        x2=round(b.x1, 1),
+                        gap=round(gap, 1),
                         net_a=a.net,
                         net_b=b.net,
                     )
@@ -68,18 +77,24 @@ def check_segment_spacing(
     for i, a in enumerate(horizontals):
         a_lo, a_hi = segment_span(a)
         for b in horizontals[i + 1 :]:
-            if abs(a.y1 - b.y1) >= WIRE_EPS:
-                continue
             if a.net == b.net:
+                continue
+            if not parallel_corridors_too_close(a.y1, b.y1):
                 continue
             b_lo, b_hi = segment_span(b)
             if not intervals_overlap(a_lo, a_hi, b_lo, b_hi):
                 continue
+            gap = abs(a.y1 - b.y1)
             issues.append(
                 make_issue(
                     "duplicate_horizontal_y",
-                    (f"Horizontal segments at y={a.y1:.1f} overlap ({a.net} and {b.net})"),
+                    (
+                        f"Horizontal segments at y={a.y1:.1f} and y={b.y1:.1f} "
+                        f"are only {gap:.1f}px apart ({a.net} and {b.net})"
+                    ),
                     y=round(a.y1, 1),
+                    y2=round(b.y1, 1),
+                    gap=round(gap, 1),
                     net_a=a.net,
                     net_b=b.net,
                 )
@@ -116,8 +131,6 @@ def check_wires_through_foreign_nodes(model: TopologyModel) -> list[dict]:
         if wire.dashed:
             continue
         skip_nodes = {wire.src_node, wire.dst_node} - {""}
-        if wire.routing_kind in ("hub", "hub_tap", "hub_row"):
-            skip_nodes |= {p.node_id for n in model.nodes for p in n.ports if p.net == wire.net}
         points = parse_wire_path(wire.path_d)
         for seg in path_to_segments(wire.net, points):
             for node in directive_nodes:
@@ -163,7 +176,6 @@ def check_wires_through_foreign_nodes(model: TopologyModel) -> list[dict]:
 def check_parallel_vertical_gap(model: TopologyModel) -> list[dict]:
     """Flag foreign vertical buses closer than MIN_PARALLEL_GAP within one gutter."""
     all_ports = [p for n in model.nodes for p in n.ports]
-    by_net = group_ports_by_net(all_ports)
     bus_x_by_net: dict[str, float] = {}
     for w in model.wires:
         if w.dashed or w.bus_x is None:
@@ -175,12 +187,6 @@ def check_parallel_vertical_gap(model: TopologyModel) -> list[dict]:
         for net in nets_in_gutter:
             if net in bus_x_by_net:
                 gutter_bus_xs[gkey].append(bus_x_by_net[net])
-    for net, ports in by_net.items():
-        if net == GND_NET or len(ports) < 2:
-            continue
-        gkey = net_gutter_key(ports)
-        if gkey is not None and net in bus_x_by_net:
-            gutter_bus_xs[gkey].append(bus_x_by_net[net])
 
     issues: list[dict] = []
     for xs in gutter_bus_xs.values():
@@ -255,6 +261,140 @@ def check_signal_vs_gnd_drop_gap(model: TopologyModel) -> list[dict]:
                         gap=round(gap, 1),
                     )
                 )
+    return issues
+
+
+def _signal_net_port_columns(
+    model: TopologyModel,
+    net: str,
+) -> tuple[set[float], set[float]]:
+    """Return ``(port_x, stub_x)`` sets for every port on ``net``."""
+    port_xs: set[float] = set()
+    stub_xs: set[float] = set()
+    for node in model.nodes:
+        for port in node.ports:
+            if port.net != net:
+                continue
+            port_xs.add(round(port.x, 1))
+            stub_xs.add(round(port_stub_x(port), 1))
+    return port_xs, stub_xs
+
+
+def _allowed_signal_vertical_x(
+    x: float,
+    net: str,
+    wire: TopologyWire,
+    column_gaps: list[tuple[float, float]],
+    port_xs: set[float],
+    stub_xs: set[float],
+    model: TopologyModel,
+) -> bool:
+    """Column-gap bus columns, plus short port stub / source-port drops."""
+    if bus_x_in_column_gaps(x, column_gaps):
+        return True
+    rx = round(x, 1)
+    if rx in stub_xs:
+        return True
+    if not wire.src_node or not wire.src_terminal:
+        return False
+    for node in model.nodes:
+        if node.node_id != wire.src_node:
+            continue
+        for port in node.ports:
+            if port.terminal != wire.src_terminal or port.net != net:
+                continue
+            if abs(rx - round(port.x, 1)) <= WIRE_EPS:
+                return True
+    return False
+
+
+def check_vertical_bus_column_gaps(model: TopologyModel) -> list[dict]:
+    """Signal vertical segments must sit in layout column gaps, not on symbol columns."""
+    column_gaps = column_gaps_from_nodes(model.nodes)
+    if not column_gaps:
+        return []
+    issues: list[dict] = []
+    port_columns: dict[str, tuple[set[float], set[float]]] = {}
+    for wi, wire in enumerate(model.wires):
+        if wire.dashed or wire.net == GND_NET:
+            continue
+        if wire.net not in port_columns:
+            port_columns[wire.net] = _signal_net_port_columns(model, wire.net)
+        port_xs, stub_xs = port_columns[wire.net]
+        for seg in path_to_segments(wire.net, parse_wire_path(wire.path_d)):
+            if seg.orient != "V":
+                continue
+            x = seg.x1
+            if _allowed_signal_vertical_x(
+                x,
+                wire.net,
+                wire,
+                column_gaps,
+                port_xs,
+                stub_xs,
+                model,
+            ):
+                continue
+            issues.append(
+                make_issue(
+                    "vertical_bus_outside_column_gap",
+                    (f"Wire {wi} ({wire.net}) vertical at x={x:.1f} is not in a column gap"),
+                    wire_id=wi,
+                    net=wire.net,
+                    x=round(x, 1),
+                )
+            )
+    return issues
+
+
+def _gutter_crossing_segments(wire: TopologyWire) -> list[WireSeg]:
+    """Segments that participate in gutter bus geometry (trunk verticals + horizontals)."""
+    segs = path_to_segments(wire.net, parse_wire_path(wire.path_d))
+    if wire.bus_x is None:
+        return segs
+    bus_x = wire.bus_x
+    return [
+        seg
+        for seg in segs
+        if seg.orient == "H" or (seg.orient == "V" and abs(seg.x1 - bus_x) < WIRE_EPS)
+    ]
+
+
+def check_gutter_wire_crossings(model: TopologyModel) -> list[dict]:
+    """Flag foreign H/V crossings between nets sharing a column gutter."""
+    from collections import defaultdict
+
+    all_ports = [p for n in model.nodes for p in n.ports]
+    wires_by_net: dict[str, list[TopologyWire]] = defaultdict(list)
+    for wire in model.wires:
+        if wire.dashed or not wire.net:
+            continue
+        wires_by_net[wire.net].append(wire)
+    hub_nets = {
+        w.net for w in model.wires if w.net and not w.dashed and w.routing_kind.startswith("hub")
+    }
+    issues: list[dict] = []
+    for _gkey, nets in gutter_groups(all_ports).items():
+        active = sorted(net for net in nets if net in wires_by_net)
+        if len(active) < 2:
+            continue
+        segs_by_net = {
+            net: [seg for wire in wires_by_net[net] for seg in _gutter_crossing_segments(wire)]
+            for net in active
+        }
+        for i, net_a in enumerate(active):
+            for net_b in active[i + 1 :]:
+                if net_a in hub_nets and net_b in hub_nets:
+                    continue
+                if foreign_segments_cross(segs_by_net[net_a], segs_by_net[net_b]):
+                    issues.append(
+                        make_issue(
+                            "foreign_wire_crossing",
+                            f"{net_a} and {net_b} cross in a shared gutter",
+                            net_a=net_a,
+                            net_b=net_b,
+                        )
+                    )
     return issues
 
 

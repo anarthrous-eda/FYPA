@@ -4,13 +4,20 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from fypa.topology.constants import GND_NET, MIN_PARALLEL_GAP, WIRE_EPS
-from fypa.topology.placement import gnd_column_trunk_x, port_stub_x
+from fypa.topology.constants import GND_NET, WIRE_EPS
+from fypa.topology.placement import gnd_column_trunk_x, port_column_x, port_stub_x
 from fypa.topology.routing.context import RoutingContext
-from fypa.topology.routing.obstacles import gnd_drop_x, obstacle_detour_y
-from fypa.topology.routing.paths import path_from_port_stub
+from fypa.topology.routing.obstacles import obstacle_detour_y
 from fypa.topology.geometry import simplify_wire_path
 from fypa.topology.types import TopologyNode, TopologyPort, TopologyWire
+
+
+def _apply_gnd_column_trunk_attach(group: list[TopologyPort]) -> float:
+    """Pin every GND port in a column to the shared trunk wire column."""
+    trunk_x = gnd_column_trunk_x(group)
+    for port in group:
+        port.wire_x = trunk_x
+    return trunk_x
 
 
 def gnd_tap_path(
@@ -21,29 +28,38 @@ def gnd_tap_path(
     *,
     bus_y: float | None = None,
 ) -> str:
-    stub = port_stub_x(port)
+    """Horizontal tap from the port stub onto the column trunk at ``trunk_x``."""
+    del bus_y  # trunk height is fixed; taps meet the trunk at ``port.y``
     y = port.y
-    start_leg, _, _ = path_from_port_stub(port)
-    if abs(trunk_x - stub) < WIRE_EPS:
-        ctx.reserve_horizontal(y, min(port.x, stub), max(port.x, stub), GND_NET)
-        return simplify_wire_path(start_leg)
-    gutter_lo, gutter_hi = min(stub, trunk_x), max(stub, trunk_x)
+    stub_x = port_stub_x(port)
+    x_lo, x_hi = min(port.x, stub_x, trunk_x), max(port.x, stub_x, trunk_x)
     y_clear = obstacle_detour_y(
         ctx,
         y,
-        gutter_lo,
-        gutter_hi,
+        x_lo,
+        x_hi,
         obstacles,
         {port.node_id},
         GND_NET,
     )
-    if abs(y_clear - y) < WIRE_EPS:
-        y_clear = y + MIN_PARALLEL_GAP
-        if bus_y is not None and y_clear > bus_y - WIRE_EPS:
-            y_clear = y - MIN_PARALLEL_GAP
-    ctx.reserve_vertical(stub, min(y, y_clear), max(y, y_clear), GND_NET)
-    ctx.reserve_horizontal(y_clear, gutter_lo, gutter_hi, GND_NET)
-    return simplify_wire_path(f"{start_leg} V {y_clear:.1f} H {trunk_x:.1f}")
+    if abs(y_clear - y) > WIRE_EPS:
+        ctx.reserve_vertical(stub_x, min(y, y_clear), max(y, y_clear), GND_NET)
+        ctx.reserve_horizontal(y_clear, x_lo, x_hi, GND_NET)
+        return simplify_wire_path(
+            f"M {port.x:.1f},{y:.1f} H {stub_x:.1f} V {y_clear:.1f} H {trunk_x:.1f}"
+        )
+    ctx.reserve_horizontal(y, x_lo, x_hi, GND_NET)
+    if abs(stub_x - trunk_x) < WIRE_EPS:
+        return simplify_wire_path(f"M {port.x:.1f},{y:.1f} H {stub_x:.1f}")
+    return simplify_wire_path(f"M {port.x:.1f},{y:.1f} H {stub_x:.1f} H {trunk_x:.1f}")
+
+
+def _gnd_port_groups(ports: list[TopologyPort]) -> list[list[TopologyPort]]:
+    """Group GND ports by layout column and port side (never mix left/right)."""
+    groups: dict[tuple[float, str], list[TopologyPort]] = defaultdict(list)
+    for port in ports:
+        groups[(round(port_column_x(port), 1), port.side)].append(port)
+    return list(groups.values())
 
 
 def reserve_gnd_column_trunks(
@@ -54,23 +70,18 @@ def reserve_gnd_column_trunks(
 ) -> dict[float, list[TopologyPort]]:
     if not ports:
         return {}
-    groups: dict[float, list[TopologyPort]] = defaultdict(list)
-    for port in ports:
-        nominal = gnd_drop_x(port, bus_y, obstacles)
-        groups[round(nominal, 1)].append(port)
-
     column_plan: dict[float, list[TopologyPort]] = defaultdict(list)
-    for group in groups.values():
-        trunk_x = gnd_column_trunk_x(group)
+    for group in _gnd_port_groups(ports):
+        trunk_x = _apply_gnd_column_trunk_attach(group)
         top_y = min(p.y for p in group)
         y_lo, y_hi = min(bus_y, top_y), max(bus_y, top_y)
         column_plan[round(trunk_x, 1)].extend(group)
         for port in group:
-            stub = port_stub_x(port)
+            stub_x = port_stub_x(port)
             ctx.reserve_horizontal(
                 port.y,
-                min(port.x, stub),
-                max(port.x, stub),
+                min(port.x, stub_x, trunk_x),
+                max(port.x, stub_x, trunk_x),
                 GND_NET,
             )
         ctx.reserve_vertical(trunk_x, y_lo, y_hi, GND_NET)
@@ -89,17 +100,9 @@ def gnd_wire_paths(
     obs = obstacles or []
     ctx = ctx or RoutingContext()
 
-    port_nominals: list[tuple[TopologyPort, float]] = [
-        (p, gnd_drop_x(p, bus_y, obs)) for p in ports
-    ]
-    groups: dict[float, list[TopologyPort]] = defaultdict(list)
-    for port, nominal_x in port_nominals:
-        groups[round(nominal_x, 1)].append(port)
-
     column_plan: dict[float, list[TopologyPort]] = defaultdict(list)
-    for col_key in sorted(groups.keys()):
-        group = groups[col_key]
-        trunk_x = gnd_column_trunk_x(group)
+    for group in _gnd_port_groups(ports):
+        trunk_x = _apply_gnd_column_trunk_attach(group)
         column_plan[round(trunk_x, 1)].extend(group)
 
     trunk_xs: list[float] = []

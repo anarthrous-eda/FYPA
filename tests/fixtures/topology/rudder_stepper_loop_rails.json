@@ -1,0 +1,522 @@
+{
+  "directives": [
+    {
+      "role": "REGULATOR",
+      "designator": "U6",
+      "channel_index": null,
+      "label": "U6",
+      "value_str": "V=3.3 V, gain=0.0687, Iq=0.02 mA",
+      "terminals": {
+        "OUT_P": {
+          "requested_net": "VDD_3V3",
+          "pins": [
+            {
+              "net": "VDD_3V3",
+              "pad": "4"
+            }
+          ]
+        },
+        "OUT_N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "10"
+            },
+            {
+              "net": "VDD_48V",
+              "pad": "2"
+            },
+            {
+              "net": "VDD_48V",
+              "pad": "3"
+            }
+          ]
+        },
+        "IN_P": {
+          "requested_net": "VDD_48V",
+          "pins": [
+            {
+              "net": "VDD_48V",
+              "pad": "2"
+            },
+            {
+              "net": "VDD_48V",
+              "pad": "3"
+            },
+            {
+              "net": "GND",
+              "pad": "10"
+            }
+          ]
+        },
+        "IN_N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "10"
+            },
+            {
+              "net": "VDD_48V",
+              "pad": "2"
+            },
+            {
+              "net": "VDD_48V",
+              "pad": "3"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "SINK",
+      "designator": "U2",
+      "channel_index": null,
+      "label": "U2",
+      "value_str": "350 mA",
+      "terminals": {
+        "P": {
+          "requested_net": "VDD_MCU",
+          "pins": [
+            {
+              "net": "VDD_MCU",
+              "pad": "68"
+            },
+            {
+              "net": "VDD_MCU",
+              "pad": "51"
+            },
+            {
+              "net": "VDD_MCU",
+              "pad": "33"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "TP"
+            },
+            {
+              "net": "GND",
+              "pad": "67"
+            },
+            {
+              "net": "GND",
+              "pad": "50"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "RESISTOR",
+      "designator": "U1",
+      "channel_index": 1,
+      "label": "U1#1",
+      "value_str": "16 mOhm",
+      "terminals": {
+        "P": {
+          "requested_net": "VDD_48V",
+          "pins": [
+            {
+              "net": "VDD_48V",
+              "pad": "E6"
+            },
+            {
+              "net": "VDD_48V",
+              "pad": "E1"
+            },
+            {
+              "net": "VDD_48V",
+              "pad": "E5"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "AX",
+          "pins": [
+            {
+              "net": "AX",
+              "pad": "E4"
+            },
+            {
+              "net": "AX",
+              "pad": "E4"
+            },
+            {
+              "net": "AX",
+              "pad": "E4"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "RESISTOR",
+      "designator": "U1",
+      "channel_index": 2,
+      "label": "U1#2",
+      "value_str": "16 mOhm",
+      "terminals": {
+        "P": {
+          "requested_net": "AY",
+          "pins": [
+            {
+              "net": "AY",
+              "pad": "E3"
+            },
+            {
+              "net": "AY",
+              "pad": "E3"
+            },
+            {
+              "net": "AY",
+              "pad": "E3"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "SNS_A",
+          "pins": [
+            {
+              "net": "SNS_A",
+              "pad": "E10"
+            },
+            {
+              "net": "SNS_A",
+              "pad": "E11"
+            },
+            {
+              "net": "AX",
+              "pad": "E4"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "RESISTOR",
+      "designator": "U1",
+      "channel_index": 3,
+      "label": "U1#3",
+      "value_str": "16 mOhm",
+      "terminals": {
+        "P": {
+          "requested_net": "VDD_48V",
+          "pins": [
+            {
+              "net": "VDD_48V",
+              "pad": "E6"
+            },
+            {
+              "net": "VDD_48V",
+              "pad": "E1"
+            },
+            {
+              "net": "VDD_48V",
+              "pad": "E5"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "BX",
+          "pins": [
+            {
+              "net": "BX",
+              "pad": "E7"
+            },
+            {
+              "net": "BX",
+              "pad": "E7"
+            },
+            {
+              "net": "BX",
+              "pad": "E7"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "RESISTOR",
+      "designator": "U1",
+      "channel_index": 4,
+      "label": "U1#4",
+      "value_str": "16 mOhm",
+      "terminals": {
+        "P": {
+          "requested_net": "BY",
+          "pins": [
+            {
+              "net": "BY",
+              "pad": "E8"
+            },
+            {
+              "net": "BY",
+              "pad": "E8"
+            },
+            {
+              "net": "BY",
+              "pad": "E8"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "SNS_B",
+          "pins": [
+            {
+              "net": "SNS_B",
+              "pad": "E13"
+            },
+            {
+              "net": "SNS_B",
+              "pad": "E12"
+            },
+            {
+              "net": "AX",
+              "pad": "E4"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "RESISTOR",
+      "designator": "R4",
+      "channel_index": null,
+      "label": "R4",
+      "value_str": "50 mOhm",
+      "terminals": {
+        "P": {
+          "requested_net": "SNS_B",
+          "pins": [
+            {
+              "net": "SNS_B",
+              "pad": "1"
+            },
+            {
+              "net": "GND",
+              "pad": "2a"
+            },
+            {
+              "net": "GND",
+              "pad": "2"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "2"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "RESISTOR",
+      "designator": "R3",
+      "channel_index": null,
+      "label": "R3",
+      "value_str": "50 mOhm",
+      "terminals": {
+        "P": {
+          "requested_net": "SNS_A",
+          "pins": [
+            {
+              "net": "SNS_A",
+              "pad": "1"
+            },
+            {
+              "net": "GND",
+              "pad": "2a"
+            },
+            {
+              "net": "GND",
+              "pad": "2"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "2"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "RESISTOR",
+      "designator": "L1",
+      "channel_index": null,
+      "label": "L1",
+      "value_str": "480 mOhm",
+      "terminals": {
+        "P": {
+          "requested_net": "VDD_3V3",
+          "pins": [
+            {
+              "net": "VDD_3V3",
+              "pad": "1"
+            },
+            {
+              "net": "VDD_MCU",
+              "pad": "2"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "VDD_MCU",
+          "pins": [
+            {
+              "net": "VDD_MCU",
+              "pad": "2"
+            },
+            {
+              "net": "VDD_3V3",
+              "pad": "1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "RESISTOR",
+      "designator": "J7",
+      "channel_index": 1,
+      "label": "J7#1",
+      "value_str": "16 mOhm",
+      "terminals": {
+        "P": {
+          "requested_net": "AX",
+          "pins": [
+            {
+              "net": "AX",
+              "pad": "2"
+            },
+            {
+              "net": "AY",
+              "pad": "1"
+            },
+            {
+              "net": "BX",
+              "pad": "3"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "AY",
+          "pins": [
+            {
+              "net": "AY",
+              "pad": "1"
+            },
+            {
+              "net": "AX",
+              "pad": "2"
+            },
+            {
+              "net": "BX",
+              "pad": "3"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "RESISTOR",
+      "designator": "J7",
+      "channel_index": 2,
+      "label": "J7#2",
+      "value_str": "16 mOhm",
+      "terminals": {
+        "P": {
+          "requested_net": "BX",
+          "pins": [
+            {
+              "net": "BX",
+              "pad": "3"
+            },
+            {
+              "net": "AX",
+              "pad": "2"
+            },
+            {
+              "net": "AY",
+              "pad": "1"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "BY",
+          "pins": [
+            {
+              "net": "BY",
+              "pad": "4"
+            },
+            {
+              "net": "AX",
+              "pad": "2"
+            },
+            {
+              "net": "AY",
+              "pad": "1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "role": "SOURCE",
+      "designator": "J3",
+      "channel_index": null,
+      "label": "J3",
+      "value_str": "48 V",
+      "terminals": {
+        "P": {
+          "requested_net": "VDD_48V",
+          "pins": [
+            {
+              "net": "VDD_48V",
+              "pad": "6"
+            },
+            {
+              "net": "VDD_48V",
+              "pad": "5"
+            },
+            {
+              "net": "GND",
+              "pad": "7"
+            }
+          ]
+        },
+        "N": {
+          "requested_net": "GND",
+          "pins": [
+            {
+              "net": "GND",
+              "pad": "7"
+            },
+            {
+              "net": "GND",
+              "pad": "8"
+            },
+            {
+              "net": "GND",
+              "pad": "BEF"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

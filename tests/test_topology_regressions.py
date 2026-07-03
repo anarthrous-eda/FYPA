@@ -36,6 +36,24 @@ def test_regression_smart_footpiece_rail_merge_stays_compact():
     assert max(n.x for n in model.nodes if n.role != "GND") < 2000.0
 
 
+def test_regression_rudder_stepper_loop_stays_compact():
+    """U1↔J7 loop must not inflate empty columns (8892px canvas bug)."""
+    from fypa.topology.metadata.layout_bridge import parse_topology_directives
+
+    meta = load_topology_fixture("rudder_stepper_loop_rails")
+    parsed = parse_topology_directives(meta)
+    model = build_topology_model(meta)
+    j3 = next(n for n in model.nodes if n.designator == "J3")
+    u1 = next(n for n in model.nodes if n.designator == "U1")
+    j7 = next(n for n in model.nodes if n.designator == "J7")
+
+    assert model.width < MAX_CANVAS_WIDTH
+    assert j3.x < u1.x < j7.x
+    assert u1.x - j3.x < 500.0
+    assert parsed.columns["J7"] == parsed.columns["U1"] + 1
+    assert parsed.columns["U1"] == parsed.columns["J3"] + 1
+
+
 def test_regression_front_hub_vdd_avoids_resistor_body():
     """VDD_3V3_PWR must not run horizontally through the D1 block."""
     model = build_topology_model(load_topology_fixture("front_hub_vdd"))
@@ -117,6 +135,99 @@ def test_regression_front_no_vertical_x_collision():
             )
 
 
+def test_regression_rudder_inline_passives_before_sinks():
+    """Inline passives feeding sinks sit at or before the sink column."""
+    from pathlib import Path
+    import pickle
+
+    from fypa.topology.metadata.layout_bridge import parse_topology_directives
+
+    probe = Path("_probe/rudder/topology.pkl")
+    if not probe.is_file():
+        import pytest
+
+        pytest.skip("rudder probe missing")
+    with probe.open("rb") as f:
+        meta = pickle.load(f)
+    parsed = parse_topology_directives(meta.get("metadata", meta))
+    cols = parsed.columns
+    sink_cols = {
+        cols[s["node_id"]]
+        for s in parsed.node_specs
+        if s["role"] == "SINK"
+    }
+    assert len(sink_cols) == 1
+    sink_col = next(iter(sink_cols))
+    # L2 bridges VDD_3V3 → VDD_PHY before the U3 sink (not in the sink column).
+    assert cols["L2"] < cols["U3"]
+    assert cols["L2"] < sink_col
+    # L1 may share the sink column when it is the immediate feed to U2 on VDD_MCU.
+    assert cols["L1"] <= sink_col
+    assert cols["U2"] == sink_col
+
+
+def test_regression_rudder_regulator_column_single_gnd_trunk():
+    """Stacked loads in one column share one GND trunk (not one per stub lane)."""
+    from pathlib import Path
+    import pickle
+
+    probe = Path("_probe/rudder/topology.pkl")
+    if not probe.is_file():
+        import pytest
+
+        pytest.skip("rudder probe missing")
+    with probe.open("rb") as f:
+        meta = pickle.load(f)
+    model = build_topology_model(meta.get("metadata", meta))
+    col_x = next(n.x for n in model.nodes if n.designator == "U2")
+    trunk_xs: set[float] = set()
+    for w in model.wires:
+        if w.routing_kind != "gnd_trunk":
+            continue
+        for seg in path_to_segments(w.net, parse_wire_path(w.path_d)):
+            if seg.orient != "V":
+                continue
+            if seg.x1 > col_x - 40 and seg.x1 < col_x + 10:
+                trunk_xs.add(round(seg.x1, 1))
+    assert len(trunk_xs) == 1, f"expected one GND trunk beside sink column, got {trunk_xs}"
+
+
+def test_regression_probe_boards_no_foreign_gutter_wire_crossings():
+    """Gutter signal pairs must not cross each other on probe boards.
+
+    Hub tap/trunk geometry in a shared gutter is validated separately (hub
+    fixtures filter ``foreign_wire_crossing``; rudder AX×VDD_3V3 is a known
+    open routing item, not a pair-vs-pair regression).
+    """
+    from pathlib import Path
+    import pickle
+
+    from fypa.topology.validate import validate_topology
+
+    for board in ("front", "rudder", "smart footpiece"):
+        probe = Path(f"_probe/{board}/topology.pkl")
+        if not probe.is_file():
+            import pytest
+
+            pytest.skip(f"{board} probe missing")
+        with probe.open("rb") as f:
+            meta = pickle.load(f)
+        model = build_topology_model(meta.get("metadata", meta))
+        hub_nets = {
+            w.net
+            for w in model.wires
+            if w.net and not w.dashed and w.routing_kind.startswith("hub")
+        }
+        crossings = [
+            i
+            for i in validate_topology(model)
+            if i["code"] == "foreign_wire_crossing"
+            and i.get("net_a") not in hub_nets
+            and i.get("net_b") not in hub_nets
+        ]
+        assert not crossings, f"{board}: {crossings}"
+
+
 def test_regression_gnd_column_single_trunk():
     """Each GND column has at most one vertical trunk wire."""
     model = build_topology_model(load_topology_fixture("front_hub_vdd"))
@@ -132,6 +243,22 @@ def test_regression_gnd_column_single_trunk():
         assert count == 1, f"GND column x={x} has {count} trunks"
 
 
+def test_regression_gutter_vertical_avoids_symbol_columns():
+    """Vertical signal segments must lie strictly in layout column gaps."""
+    from fypa.topology.validate.segments import check_vertical_bus_column_gaps
+    from fypa.topology.validate.util import foreign_segments_cross
+    from fypa.topology.geometry import parse_wire_path, path_to_segments
+
+    model = build_topology_model(load_topology_fixture("rudder_stepper_loop_rails"))
+    gap_issues = check_vertical_bus_column_gaps(model)
+    assert not gap_issues, gap_issues
+    sns = [w for w in model.wires if w.net in ("SNS_A", "SNS_B")]
+    if len(sns) == 2:
+        a = path_to_segments(sns[0].net, parse_wire_path(sns[0].path_d))
+        b = path_to_segments(sns[1].net, parse_wire_path(sns[1].path_d))
+        assert not foreign_segments_cross(a, b)
+
+
 def test_regression_gutter_parallel_min_bus_gap():
     """Parallel stacked-column buses stay at least MIN_PARALLEL_GAP apart."""
     model = build_topology_model(load_topology_fixture("gutter_parallel_four_nets"))
@@ -140,6 +267,39 @@ def test_regression_gutter_parallel_min_bus_gap():
     })
     gaps = [bus_xs[i] - bus_xs[i - 1] for i in range(1, len(bus_xs))]
     assert min(gaps) >= MIN_PARALLEL_GAP - 0.6
+
+
+def test_regression_stacked_column_buses_use_column_edge():
+    """Stack-column pair buses use column_bus_x and still pass gap validation."""
+    from fypa.topology.validate.segments import check_vertical_bus_column_gaps
+
+    model = build_topology_model(load_topology_fixture("gutter_parallel_four_nets"))
+    stack_wires = [w for w in model.wires if w.routing_kind == "stack_column"]
+    assert stack_wires, "fixture should include stack_column pair wires"
+    assert not check_vertical_bus_column_gaps(model)
+
+
+def test_pick_gutter_bus_x_prefers_layout_gap_over_stub_channel():
+    """When resolve finds no corridor, still place in a column gap if gaps exist."""
+    from fypa.topology.placement.gutter_corridors import pick_gutter_bus_x
+
+    column_gaps = [(400.0, 528.0)]
+    channel_lo, channel_hi = 50.0, 70.0
+    bus_x = pick_gutter_bus_x(
+        0,
+        1,
+        channel_lo,
+        channel_hi,
+        column_gaps,
+        "NET",
+        y_lo=0.0,
+        y_hi=100.0,
+        anchor_x=420.0,
+        outward=1.0,
+        reserved=[],
+    )
+    assert column_gaps[0][0] < bus_x < column_gaps[0][1]
+    assert not (channel_lo - 5.0 <= bus_x <= channel_hi + 5.0)
 
 
 def test_regression_sandbox_signal_clears_gnd_drops():
@@ -205,9 +365,13 @@ def test_regression_port_horizontal_stub_before_vertical():
                 f"{wire.net} ({wire.routing_kind}) must start with horizontal stub: "
                 f"{wire.path_d}"
             )
-            assert abs(segs[0].length - port_stub_length(port)) < 4.0, (
-                f"{wire.net} stub length {segs[0].length:.1f}px, "
-                f"expected ~{port_stub_length(port):.1f}: "
+            if wire.routing_kind in ("gutter", "stack_column") and bus_x is not None:
+                expected = abs(bus_x - port.x)
+            else:
+                expected = port_stub_length(port)
+            assert abs(segs[0].length - expected) < 4.0, (
+                f"{wire.net} first horizontal {segs[0].length:.1f}px, "
+                f"expected ~{expected:.1f}: "
                 f"{wire.path_d}"
             )
         elif abs(start_x - stub) > 1.0:

@@ -10,6 +10,11 @@ from fypa.topology.types import TopologyPort
 def gnd_column_trunk_x(group: list[TopologyPort]) -> float:
     gnd_ports = [p for p in group if p.net == GND_NET]
     if gnd_ports:
+        stubs = [port_stub_x(p) for p in gnd_ports]
+        if all(p.side == "left" for p in gnd_ports):
+            return min(stubs)
+        if all(p.side == "right" for p in gnd_ports):
+            return max(stubs)
         return port_stub_x(gnd_ports[0])
     stubs = [port_stub_x(p) for p in group]
     if all(p.side == "left" for p in group):

@@ -48,6 +48,19 @@ def test_net_gutter_key_stack_returns_none():
     assert net_gutter_key([a, b]) is None
 
 
+def test_gutter_groups_includes_multi_port_hub_nets():
+    from fypa.topology.placement import gutter_groups
+
+    a = _port(node_id="A", net="HUB", x=100.0, side="right")
+    b = _port(node_id="B", net="HUB", x=200.0, side="left")
+    c = _port(node_id="C", net="HUB", x=300.0, side="left")
+    pair_a = _port(node_id="P1", net="PAIR", x=110.0, side="right")
+    pair_b = _port(node_id="P2", net="PAIR", x=290.0, side="left")
+    groups = gutter_groups([a, b, c, pair_a, pair_b])
+    assert groups[(100.0, 300.0)] == {"HUB"}
+    assert groups[(110.0, 290.0)] == {"PAIR"}
+
+
 def test_gnd_column_trunk_x_prefers_gnd_stub():
     gnd = _port(node_id="U1", net=GND_NET, side="left", x=120.0, stub_length=12.0)
     sig = _port(node_id="U1", net="VDD", side="left", x=120.0, y=70.0)

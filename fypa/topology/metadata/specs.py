@@ -242,11 +242,7 @@ def _passive_channel_port_defs(
         n_term = (d.get("terminals") or {}).get("N")
         rows.append((ch_idx, d, p_term, n_term))
 
-    p_keys = [
-        _terminal_physical_key(p)
-        for _, _, p, _ in rows
-        if p and not is_ideal_return(p)
-    ]
+    p_keys = [_terminal_physical_key(p) for _, _, p, _ in rows if p and not is_ideal_return(p)]
     merge_p = len(p_keys) > 1 and len({k for k in p_keys if k}) == 1
 
     for row_i, (ch_idx, d, p_term, n_term) in enumerate(rows):

@@ -8,6 +8,7 @@ from fypa.topology.placement.classify import (
     classify_signal_nets,
     group_two_port_pairs,
 )
+from fypa.topology.placement.gutter_corridors import column_gaps_from_nodes
 from fypa.topology.placement.plan_gnd import plan_gnd_trunks
 from fypa.topology.placement.plan_hubs import plan_gutter_hub_buses, plan_stack_hub_buses
 from fypa.topology.placement.plan_pairs import plan_gutter_pair_buses, plan_stacked_pair_buses
@@ -18,7 +19,7 @@ from fypa.topology.placement.ports import (
     net_gutter_key,
 )
 from fypa.topology.placement.types import GutterSpanKey
-from fypa.topology.types import TopologyPort
+from fypa.topology.types import TopologyNode, TopologyPort
 
 
 def plan_signal_buses(
@@ -26,6 +27,7 @@ def plan_signal_buses(
     *,
     gnd_ports: list[TopologyPort] | None = None,
     gnd_bus_y: float | None = None,
+    obstacles: list[TopologyNode] | None = None,
 ) -> BusPlan:
     """Deterministic bus-x plan mirroring ``build_signal_wires`` slot order."""
     plan = BusPlan()
@@ -36,10 +38,11 @@ def plan_signal_buses(
     groups = classify_signal_nets(by_net)
     plan_stack_hub_buses(plan, groups.stack_hub_nets)
 
+    column_gaps = column_gaps_from_nodes(obstacles) if obstacles else []
     stacked_groups, gap_groups = group_two_port_pairs(groups.two_port_pairs)
     plan_stacked_pair_buses(plan, stacked_groups)
-    plan_gutter_pair_buses(plan, gap_groups)
-    plan_gutter_hub_buses(plan, groups.gutter_hub_nets)
+    plan_gutter_pair_buses(plan, gap_groups, column_gaps=column_gaps)
+    plan_gutter_hub_buses(plan, groups.gutter_hub_nets, column_gaps=column_gaps)
 
     return plan
 

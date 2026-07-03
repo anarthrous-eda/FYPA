@@ -35,6 +35,8 @@ def _segment_net_at(segments, x: float, y: float) -> str:
             if min(s.y1, s.y2) - WIRE_EPS <= y <= max(s.y1, s.y2) + WIRE_EPS:
                 return s.net
     return ""
+
+
 from fypa.topology.types import TopologyModel, TopologyNode, TopologyWire
 from fypa.topology.util import esc, truncate_label
 

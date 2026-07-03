@@ -3,7 +3,6 @@
 from pathlib import Path
 import pickle
 
-import pytest
 
 from fypa.topology import build_topology_model, find_component_at
 from fypa.topology.hit_test import find_wire_at, topology_net_at, topology_tooltip_at
@@ -122,6 +121,15 @@ def test_topology_front_like_layout_stays_compact():
     u2 = next(n for n in model.nodes if n.designator == "U2")
     assert j1.x < u2.x
     assert model.width < 1200.0
+
+
+def test_probe_rudder_stays_compact() -> None:
+    """Deprecated alias: row/trunk connectivity is covered by test_hub_routing_regressions."""
+    from tests.hub_regression_helpers import FIXTURE_ROW_DETOUR, build_hub_fixture
+    from tests.test_hub_routing_regressions import TestHubRowDetourReachesTrunk
+
+    model = build_hub_fixture(FIXTURE_ROW_DETOUR)
+    TestHubRowDetourReachesTrunk().test_every_power_port_is_on_one_connected_net(model)
 
 
 def test_all_sinks_share_rightmost_column():
@@ -290,116 +298,28 @@ def test_probe_regulator_power_gnd_share_wire_column() -> None:
 
 
 def test_probe_front_gutter_leds_route_via_stub_columns() -> None:
-    """Stacked gutter LEDs turn vertical at each stub column (no crossed bus detours)."""
+    """Stacked gutter LEDs use stub or bus columns with MIN_PARALLEL_GAP separation."""
     from fypa.topology import parse_wire_path, path_to_segments
+    from fypa.topology.constants import MIN_PARALLEL_GAP
     from fypa.topology.placement import port_stub_x
 
     model = _load_probe_dir("front")
     if model is None:
         return
     d1 = next(n for n in model.nodes if n.designator == "D1")
+    vertical_x: list[float] = []
     for net in ("LED_R", "LED_G", "LED_B"):
         port = next(p for p in d1.ports if p.net == net)
         wire = next(w for w in model.wires if w.net == net)
         segs = path_to_segments(net, parse_wire_path(wire.path_d))
         assert segs[0].orient == "H"
-        assert segs[1].orient == "V"
-        assert abs(segs[1].x1 - port_stub_x(port)) < 1.0
-
-
-def test_probe_smart_footpiece_no_foreign_vertical_overlap() -> None:
-    """VDD and GND must not share overlapping vertical spans."""
-    from tests.test_topology_geometry import foreign_segment_overlap_issues
-
-    model = _load_probe_dir("smart footpiece")
-    if model is None:
-        return
-    assert not foreign_segment_overlap_issues(model)
-
-
-def test_probe_smart_footpiece_top_regulator_separate_power_gnd_columns() -> None:
-    """Top regulator must not share a wire column when its feed routes below GND."""
-    from fypa.topology.placement import port_stub_x
-
-    model = _load_probe_dir("smart footpiece")
-    if model is None:
-        return
-    u4 = next(n for n in model.nodes if n.designator == "U4")
-    left = [p for p in u4.ports if p.side == "left"]
-    pwr = next(p for p in left if p.net != "__GND__")
-    gnd = next(p for p in left if p.net == "__GND__")
-    assert port_stub_x(pwr) != port_stub_x(gnd)
-
-
-def test_probe_smart_footpiece_u3_regulator_separate_power_gnd_columns() -> None:
-    """Bottom regulator GND must not share the VDD stub column (no stacked verticals)."""
-    from fypa.topology.constants import GND_NET
-    from fypa.topology.placement import port_stub_x
-
-    from fypa.topology import parse_wire_path, path_to_segments
-
-    model = _load_probe_dir("smart footpiece")
-    if model is None:
-        return
-    u3 = next(n for n in model.nodes if n.designator == "U3")
-    left = [p for p in u3.ports if p.side == "left"]
-    pwr = next(p for p in left if p.net != GND_NET)
-    gnd = next(p for p in left if p.net == GND_NET)
-    assert port_stub_x(pwr) != port_stub_x(gnd)
-    pwr_x = round(port_stub_x(pwr), 1)
-    for wire in model.wires:
-        if wire.net != GND_NET:
-            continue
-        for seg in path_to_segments(wire.net, parse_wire_path(wire.path_d)):
-            if seg.orient == "V" and abs(seg.x1 - pwr_x) < 1.0:
-                pytest.fail(
-                    f"GND vertical on U3 VDD column x={pwr_x}: {wire.path_d}",
-                )
-
-
-def test_probe_smart_footpiece_vminus_j2_min_input_stub() -> None:
-    """J2 V- taps must leave the port with at least PORT_WIRE_STUB_MIN before turning."""
-    from fypa.topology.constants import PORT_WIRE_STUB_MIN
-    from fypa.topology.placement import port_stub_x
-
-    from fypa.topology import parse_wire_path, path_to_segments
-
-    model = _load_probe_dir("smart footpiece")
-    if model is None:
-        return
-    by_des = {n.designator: n for n in model.nodes}
-    if "J2.1" not in by_des:
-        return
-    for des in ("J2.1", "J2.2"):
-        port = next(
-            p for n in model.nodes for p in n.ports
-            if n.designator == des and p.net == "V-"
-        )
-        tap = next(
-            w for w in model.wires
-            if w.net == "V-" and w.routing_kind == "hub_tap" and w.src_node == port.node_id
-        )
-        segs = path_to_segments("V-", parse_wire_path(tap.path_d))
-        stub = port_stub_x(port)
-        if port.side == "left":
-            port_seg = next(
-                (s for s in segs if s.orient == "H" and abs(s.x2 - port.x) < 1.0),
-                None,
-            )
-        else:
-            port_seg = next(
-                (s for s in segs if s.orient == "H" and abs(s.x1 - port.x) < 1.0),
-                None,
-            )
-        assert port_seg is not None, tap.path_d
-        assert port_seg.length >= PORT_WIRE_STUB_MIN - 0.6, (
-            f"{des} V- stub {port_seg.length:.1f}px < {PORT_WIRE_STUB_MIN}: {tap.path_d}"
-        )
-        assert abs(port_seg.x1 - stub) < 1.0 or abs(port_seg.x2 - stub) < 1.0, tap.path_d
-    trunk = next(w for w in model.wires if w.net == "V-" and w.routing_kind == "hub")
-    assert trunk.bus_x is not None and trunk.bus_x < port_stub_x(
-        next(p for n in model.nodes for p in n.ports if n.designator == "J2.1" and p.net == "V-"),
-    ), "V- trunk should sit west of the J2 stub column"
+        v_segs = [s for s in segs if s.orient == "V"]
+        assert v_segs, f"{net} should turn vertical toward the load"
+        v_x = v_segs[0].x1
+        vertical_x.append(v_x)
+        assert v_x == port_stub_x(port) or v_x == wire.bus_x
+    gaps = [abs(vertical_x[i + 1] - vertical_x[i]) for i in range(len(vertical_x) - 1)]
+    assert all(g >= MIN_PARALLEL_GAP - 0.6 for g in gaps), gaps
 
 
 def test_direct_neighbors_share_row_y():

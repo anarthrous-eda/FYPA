@@ -95,12 +95,12 @@ json.dump(trim, open("tests/fixtures/topology/my_case.json", "w"), indent=2)
 | `net_aliases.py` | `GND_ALIASES`, `is_gnd_alias()` (import-light, shared with `rail_groups`) |
 | `layout/` | `columns.py`, `vertical_align.py`, `stubs.py`; `build_node_layout()` in `__init__.py` |
 | `layout_result.py` | `LayoutResult` dataclass returned by `build_node_layout()` |
-| `routing/` | Wire routing: `context`, `paths`, `hub`, `pair`, `gnd`, `build` |
+| `routing/` | Wire routing: `context`, `paths`, `obstacles`, `hub`, `pair`, `gnd`, `build` |
 | `geometry.py` | Path parser, segments, junctions, `solid_wire_index_maps()` |
 | `labels.py` | Label placement via documented candidate search |
 | `issues.py` | Shared `Issue` / `make_issue()` for validate + report |
 | `render.py` | SVG drawing (wires, nodes, GND symbol, legend) |
-| `validate/` | `segments.py`, `wires.py`, `labels.py`, `stubs.py`, `util.py`; `validate_topology()` in `__init__.py` |
+| `validate/` | `segments.py`, `wires.py`, `labels.py`, `stubs.py`, `hub.py`, `util.py`; `validate_topology()` in `__init__.py` |
 | `report.py` | `topology_wiring_report()` — JSON debug output |
 | `hit_test.py` | `find_component_at`, `find_port_at`, `find_wire_at`, `topology_net_at` |
 | `builder.py` | `build_topology_model()` — orchestrates the pipeline |
@@ -115,16 +115,32 @@ json.dump(trim, open("tests/fixtures/topology/my_case.json", "w"), indent=2)
 | Ports per net | Strategy | `routing_kind` |
 |---------------|----------|----------------|
 | 2 | Gutter (column gap) or stack (stacked nodes) | `gutter`, `stack_column` |
-| ≥ 3, same column | Hub bus beside the column | `hub` + `hub_tap` |
-| ≥ 3, across columns | Hub with vertical trunk in the gutter | `hub` + `hub_tap` |
+| ≥ 3, same column | Hub bus beside the column | `hub`, `hub_row`, `hub_tap` |
+| ≥ 3, across columns | Hub with vertical trunk in the gutter | `hub`, `hub_row`, `hub_tap` |
 
-**Hub routing** (`route_hub`) models a net as a **tree**: one vertical trunk wire
-(`hub`) at `bus_x` plus one clean horizontal tap wire (`hub_tap`) per port. The
-same function serves gutter and beside-column buses — only `bus_x` differs.
+**Hub routing** (`routing/hub.py::route_hub`) models a net as a **tree**:
+
+1. **Row buses** — collinear groups of two or more ports on the same Y become a
+   horizontal `hub_row` wire (`paths.hub_row_path`, stub span from
+   `paths.hub_row_stub_columns`). Obstacles may push the row downward via
+   `obstacle_detour_y` (a *detoured* row keeps its nominal port Y for vertical
+   drops onto the bus).
+2. **Trunk** — when taps meet the hub column at different Y values, one vertical
+   `hub` wire at `bus_x` spans `min(tap_y)…max(tap_y)`.
+3. **Taps** — each port reaches a row or the trunk via `hub_tap` wires: straight
+   vertical onto a row, horizontal feed from a row edge to `bus_x`, escape-column
+   detour when a foreign vertical blocks the stub column, or a direct trunk tap for
+   singletons.
+
+Row-to-trunk attachment (`_connect_row_to_bus`) retries horizontal feed Y values from
+`obstacle_detour_y_candidates`, reserving vertical/horizontal bands and checking
+`trunk_vertical_clear` plus foreign-segment blocking before emitting a feed wire.
+
+The same function serves gutter and beside-column buses — only `bus_x` differs.
 Keeping each segment minimal and non-overlapping (instead of a single retracing
 polyline) is exactly what junction detection relies on: interior taps meeting the
-trunk give a dot, the top/bottom taps are corners. A single-row hub has no trunk —
-the collinear taps form one bus.
+trunk give a dot, the top/bottom taps are corners. A single-row hub with no trunk
+feed may have no `hub` wire — collinear row/tap geometry forms the bus.
 
 ### RoutingContext
 
@@ -132,8 +148,10 @@ Reserves channels **during** path generation (bands only — bus x comes from `B
 
 - **Horizontal bands** — occupied y ranges for collision avoidance
 - **Vertical bands** — occupied x ranges (`reserve_vertical`)
-- **`obstacle_detour_y()`** — detour below obstacles and reserved bands (net-aware:
-  same-net bands may share a row; foreign bands force a push downward)
+- **`obstacle_detour_y()`** — first feasible Y below obstacles and reserved bands
+  (net-aware: same-net bands may share a row; foreign bands force a push downward)
+- **`obstacle_detour_y_candidates()`** — ordered Y list for retry loops (row feeds,
+  detoured hub rows); deduplicates within `WIRE_EPS`
 
 Bus positions are planned in `placement.plan_signal_buses()` using
 `allocate_bus_x()` on a `MIN_PARALLEL_GAP` grid (deterministic, no iterative bumping).
@@ -201,6 +219,8 @@ render parity, always use `compute_schematic_geometry(...).junctions`.
 | `open_gnd_stub` | GND port stub end not connected (`validate/stubs`) |
 | `open_signal_stub` | Signal port stub end not connected (`validate/stubs`) |
 | `dangling_wire_endpoint` | Wire path end not at port, GND symbol, or junction |
+| `hub_net_disconnected` | A hub-routed net (`hub` / `hub_row` / `hub_tap`) with 2+ ports has them in more than one wire-graph component (`validate/hub.py`) |
+| `foreign_wire_crossing` | Foreign horizontal/vertical bus segments cross in a shared gutter (`validate/segments`; hub vs pair nets; trunk verticals + horizontals only) |
 | `canvas_width_reasonable` | Canvas wider than `MAX_CANVAS_WIDTH` (2400 px) |
 | `vertical_under_node` | Vertical segment runs under a node body (**warning** — does not increment `summary.issues`; no src/dst skip unlike `segment_through_foreign_node`) |
 
@@ -227,9 +247,9 @@ bridge hops are checked separately via `_clear_of_bridges` (same-net horizontal
 labels may sit beside a crossing on the wire row).
 
 Additionally, `report._analyze_wire_issues()` checks per wire: dangling ends,
-port mismatch, backtrack. Trunk/rail/tap kinds (`hub`, `hub_tap`, `gnd_rail`,
-`gnd_trunk`, `gnd_tap`) terminate on a bus rather than a port, so their non-port
-ends are expected and not flagged.
+port mismatch, backtrack. Trunk/rail/tap kinds (`hub`, `hub_row`, `hub_tap`,
+`gnd_rail`, `gnd_trunk`, `gnd_tap`) terminate on a bus rather than a port, so
+their non-port ends are expected and not flagged.
 
 `topology_wiring_report()` returns `summary.issues == 0` when everything is OK.
 
@@ -274,6 +294,8 @@ tests/fixtures/topology/
   column_gnd_feedback.json     REGULATOR OUT_N / GND column bug
   gutter_parallel_four_nets.json  parallel LED buses (D1/U4)
   gnd_junction_tap.json        two sinks on return rail (junction regression)
+  hub_gutter_row_detour.json   hub row pushed below obstacle + row-to-trunk feed
+  hub_escape_vertical_branch.json  escape-column tap when stub vertical blocked
   sandbox_subset.json          trimmed sandbox metadata
   svg/                         golden SVG snapshots (visual regression)
     front_hub_vdd.svg
@@ -308,6 +330,9 @@ Test files:
 | `test_validate_merge.py` | `merge_validation_issues` |
 | `test_validate_stubs.py` | geometry-based stub end connectivity |
 | `test_pdn_topology.py` | routing scenarios, sandbox, report |
+| `test_routing_hub.py` | hub row/trunk/tap unit tests (`route_hub`, stub columns) |
+| `test_hub_routing_regressions.py` | `hub_gutter_row_detour`, `hub_escape_vertical_branch` fixtures |
+| `test_validate_codes.py` | validation issue codes including `hub_net_disconnected` |
 
 Run:
 
@@ -319,7 +344,9 @@ uv run python -m pytest tests/test_topology_invariants.py \
   tests/test_topology_svg_snapshots.py tests/test_terminal_roles.py \
   tests/test_placement.py tests/test_metadata_specs.py tests/test_hit_test.py \
   tests/test_svg_testutil.py tests/test_validate_merge.py \
-  tests/test_validate_stubs.py tests/test_pdn_topology.py -q
+  tests/test_validate_stubs.py tests/test_validate_codes.py \
+  tests/test_routing_hub.py tests/test_hub_routing_regressions.py \
+  tests/test_pdn_topology.py -q
 ```
 
 Or via `scripts/test-pdn-topology.ps1` (pytest before GUI start).

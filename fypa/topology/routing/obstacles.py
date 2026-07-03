@@ -184,6 +184,53 @@ def obstacle_detour_y(
     return y_down
 
 
+def obstacle_detour_y_candidates(
+    ctx: RoutingContext,
+    y_nominal: float,
+    x_lo: float,
+    x_hi: float,
+    obstacles: list[TopologyNode],
+    skip_node_ids: set[str],
+    net: str | None = None,
+) -> list[float]:
+    """Distinct Y values to try for a horizontal feed, best-first."""
+    lo, hi = min(x_lo, x_hi), max(x_lo, x_hi)
+    order: list[float] = []
+
+    def add(y: float) -> None:
+        if any(abs(y - existing) < WIRE_EPS for existing in order):
+            return
+        order.append(y)
+
+    add(y_nominal)
+    add(obstacle_detour_y(ctx, y_nominal, lo, hi, obstacles, skip_node_ids, net))
+    add(
+        _obstacle_detour_y_direction(
+            ctx,
+            y_nominal,
+            lo,
+            hi,
+            obstacles,
+            skip_node_ids,
+            net,
+            downward=True,
+        )
+    )
+    add(
+        _obstacle_detour_y_direction(
+            ctx,
+            y_nominal,
+            lo,
+            hi,
+            obstacles,
+            skip_node_ids,
+            net,
+            downward=False,
+        )
+    )
+    return order
+
+
 def horizontal_segment_clear(
     y: float,
     x_lo: float,

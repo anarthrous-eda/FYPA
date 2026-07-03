@@ -1,19 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="428" height="314" viewBox="0 0 428 314">
 <rect width="100%" height="100%" fill="#2b2b2b"/>
 <line x1="164" y1="75" x2="184" y2="75" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
-<line x1="184" y1="75" x2="236" y2="75" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
-<line x1="236" y1="75" x2="244" y2="75" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="184" y1="75" x2="244" y2="75" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
 <line x1="244" y1="75" x2="264" y2="75" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
 <line x1="244" y1="177" x2="264" y2="177" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="228" y1="177" x2="244" y2="177" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
 <line x1="24" y1="234" x2="252" y2="234" stroke="#088b00" stroke-width="2" stroke-linecap="round"/>
 <line x1="24" y1="75" x2="36" y2="75" stroke="#088b00" stroke-width="2" stroke-linecap="round"/>
 <line x1="252" y1="93" x2="264" y2="93" stroke="#088b00" stroke-width="2" stroke-linecap="round"/>
 <line x1="252" y1="195" x2="264" y2="195" stroke="#088b00" stroke-width="2" stroke-linecap="round"/>
-<path d="M 244,75 V 177" fill="none" stroke="#ff3030" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 228,75 V 177" fill="none" stroke="#ff3030" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
 <path d="M 24,75 V 234" fill="none" stroke="#088b00" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
 <path d="M 252,93 V 171.5 A 5.5,5.5 0 0 1 252,182.5 V 234" fill="none" stroke="#088b00" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
 <circle cx="24" cy="234" r="3" fill="#088b00"/>
-<circle cx="244" cy="75" r="3" fill="#ff3030"/>
+<circle cx="228" cy="75" r="3" fill="#ff3030"/>
 <circle cx="252" cy="195" r="3" fill="#088b00"/>
 <line x1="24" y1="234" x2="24" y2="244" stroke="#909090" stroke-width="2" stroke-linecap="round"/>
 <line x1="10" y1="248" x2="38" y2="248" stroke="#909090" stroke-width="2" stroke-linecap="round"/>
@@ -47,8 +47,8 @@
 <text x="272" y="180" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD</text>
 <circle cx="264" cy="195" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
 <text x="272" y="198" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">GND</text>
-<rect x="199" y="69" width="22" height="12" fill="#2b2b2b" fill-opacity="0.5" stroke="none" rx="2"/>
-<text x="210" y="75" text-anchor="middle" dominant-baseline="middle" fill="#e6e6e6" font-family="Segoe UI,sans-serif" font-size="8">VDD</text>
+<rect x="203" y="69" width="22" height="12" fill="#2b2b2b" fill-opacity="0.5" stroke="none" rx="2"/>
+<text x="214" y="75" text-anchor="middle" dominant-baseline="middle" fill="#e6e6e6" font-family="Segoe UI,sans-serif" font-size="8">VDD</text>
 <rect x="12" y="288" width="10" height="10" rx="2" fill="#ff3030"/>
 <text x="26" y="298" fill="#909090" font-family="Segoe UI,sans-serif" font-size="10">SOURCE</text>
 <rect x="90" y="288" width="10" height="10" rx="2" fill="#3aa8ff"/>

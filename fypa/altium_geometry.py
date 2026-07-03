@@ -645,7 +645,7 @@ def _ensure_multipolygon(geom) -> shapely.geometry.MultiPolygon:
 # entry (cleared on a new project), keyed by id() with an identity re-check so a
 # recycled id can never return a stale map. ExtractedProject is frozen+slots so
 # the cache can't live on the object itself.
-_net_name_index_cache: dict[int, tuple["ExtractedProject", dict[str, int]]] = {}
+_net_name_index_cache: dict[int, tuple[ExtractedProject, dict[str, int]]] = {}
 
 
 def _net_index_by_name(proj: ExtractedProject, name: str | None) -> int:

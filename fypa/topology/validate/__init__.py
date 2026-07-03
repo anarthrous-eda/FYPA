@@ -8,12 +8,15 @@ from fypa.topology.issues import make_issue
 from fypa.topology.types import TopologyModel
 from fypa.topology.validate.labels import check_wire_labels
 from fypa.topology.validate.segments import (
+    check_gutter_wire_crossings,
     check_parallel_vertical_gap,
     check_segment_spacing,
     check_signal_vs_gnd_drop_gap,
+    check_vertical_bus_column_gaps,
     check_vertical_under_node,
     check_wires_through_foreign_nodes,
 )
+from fypa.topology.validate.hub import check_hub_net_disconnected
 from fypa.topology.validate.stubs import check_open_stub_ends
 from fypa.topology.validate.util import vertical_segment_overlaps_node_body
 from fypa.topology.validate.wires import check_dangling_wire_endpoints
@@ -35,6 +38,8 @@ def validate_topology(model: TopologyModel) -> list[dict]:
 
     issues.extend(check_wires_through_foreign_nodes(model))
     issues.extend(check_parallel_vertical_gap(model))
+    issues.extend(check_vertical_bus_column_gaps(model))
+    issues.extend(check_gutter_wire_crossings(model))
     issues.extend(check_signal_vs_gnd_drop_gap(model))
 
     geo = compute_schematic_geometry(
@@ -47,6 +52,7 @@ def validate_topology(model: TopologyModel) -> list[dict]:
     issues.extend(check_segment_spacing(geo.segments, geo.junctions, geo.bridges))
     issues.extend(check_open_stub_ends(model, geo=geo))
     issues.extend(check_dangling_wire_endpoints(model, geo))
+    issues.extend(check_hub_net_disconnected(model, geo))
     issues.extend(
         check_vertical_under_node(model, geo, directive_nodes=directive_nodes),
     )
