@@ -241,6 +241,50 @@ def test_two_port_path_reserves_actual_vertical_column():
     )
     assert 180.0 in vertical_xs or 180.0 in reserved_xs
 
+
+def test_two_port_same_row_detour_returns_to_destination_port():
+    """Regression: when both ports share a row but an obstacle forces a detour,
+    the wire must drop back to the port row and end on the destination port
+    (previously it terminated on the detour row, leaving the port open)."""
+    from fypa.topology.constants import NODE_W
+    from fypa.topology.types import TopologyNode
+
+    # Obstacle body straddles the shared row (y=100) between the two stub columns.
+    blocker = TopologyNode(
+        node_id="OBS",
+        label="OBS",
+        designator="OBS",
+        role="SINK",
+        x=200.0,
+        y=80.0,
+        width=NODE_W,
+        height=40.0,
+        config_label="",
+        has_error=False,
+        bounds=(200.0, 80.0, NODE_W, 40.0),
+        ports=[],
+    )
+    start = TopologyPort(
+        terminal="P", net="SIG", label="SIG", side="right",
+        x=100.0, y=100.0, node_id="U1",
+    )
+    end = TopologyPort(
+        terminal="P", net="SIG", label="SIG", side="left",
+        x=400.0, y=100.0, node_id="U3",
+    )
+    path = two_port_path(
+        start, end, bus_x=250.0, net="SIG", obstacles=[blocker], ctx=RoutingContext()
+    )
+    pts = parse_wire_path(path)
+    assert pts[0] == (start.x, start.y)
+    # The branch under test only guards the bug if a detour actually happened.
+    assert any(abs(y - start.y) > 1.0 for _x, y in pts), (
+        f"expected an off-row detour, got {path!r}"
+    )
+    # The wire must terminate exactly on the destination port.
+    assert pts[-1] == (end.x, end.y), f"path does not reach the port: {path!r}"
+
+
 def test_hub_eastward_tap_uses_upstream_vertical_before_bus():
     """Downstream singletons branch from an existing tap vertical when possible."""
     from fypa.topology.constants import NODE_W

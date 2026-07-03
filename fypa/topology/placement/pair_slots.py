@@ -16,13 +16,19 @@ def sort_pairs_by_approach_y(group: list[Pair]) -> list[Pair]:
 
 
 def gutter_approach_side(group: list[Pair]) -> str:
-    """Port side shared by every pair's approach port (``a`` from classify)."""
+    """Dominant port side among the pairs' approach ports (``a`` from classify).
+
+    Pairs sharing a gutter gap key normally approach from a single node side,
+    but a gap key carries no side component (``ports.wire_routing_key``), so two
+    nets whose approach ports sit at the same column on opposite sides can land
+    in one group. Rather than abort the whole layout, fall back to the majority
+    side (deterministic tie-break by side name) so bus-slot ordering stays
+    stable and consistent across the group.
+    """
     if not group:
         raise ValueError("empty gutter group")
-    sides = {ab[0].side for ab in group}
-    if len(sides) != 1:
-        raise ValueError(f"mixed gutter approach sides: {sorted(sides)}")
-    return next(iter(sides))
+    sides = [ab[0].side for ab in group]
+    return max(set(sides), key=lambda s: (sides.count(s), s))
 
 
 def bus_slot_assignment_order(n_slots: int, approach_side: str) -> list[int]:

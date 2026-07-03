@@ -97,14 +97,19 @@ def _resolve_mutual_loop_parents(
         parent_spec = spec_by_id[parent]
         child_src = _has_source_rail_p_input(child_spec, source_ids, outputs_by_net)
         parent_src = _has_source_rail_p_input(parent_spec, source_ids, outputs_by_net)
+        # Pick the loop root (the node that keeps no parent link) symmetrically,
+        # so both (child, parent) and (parent, child) iterations agree on it: the
+        # source-rail bridge wins, else the lexicographically smaller node id as
+        # an arbitrary-but-deterministic tie-break. ``pop`` is idempotent, so the
+        # second direction of the mutual pair is a harmless no-op rather than a
+        # KeyError on an already-removed key.
         if child_src and not parent_src:
-            del resolved[child]
+            root = child
         elif parent_src and not child_src:
-            continue
-        elif child < parent:
-            del resolved[child]
+            root = parent
         else:
-            del resolved[parent]
+            root = min(child, parent)
+        resolved.pop(root, None)
     return resolved
 
 

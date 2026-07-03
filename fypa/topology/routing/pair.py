@@ -131,7 +131,7 @@ def _bus_x_for_pair(
             y_hi=y_hi,
             anchor_x=anchor_x,
             outward=outward,
-            reserved=[],
+            reserved=reserved,
             assigned_in_group=assigned_bus,
         )
     if n_slots > 1 and channel_lo != channel_hi:

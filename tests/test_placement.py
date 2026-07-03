@@ -66,3 +66,41 @@ def test_gnd_column_trunk_x_prefers_gnd_stub():
     sig = _port(node_id="U1", net="VDD", side="left", x=120.0, y=70.0)
     trunk = gnd_column_trunk_x([gnd, sig])
     assert trunk == port_stub_x(gnd)
+
+
+def test_gutter_approach_side_mixed_falls_back_to_majority():
+    """Regression: a gap group with approach ports on opposite sides must not
+    raise (which aborted the whole layout) — it now picks the majority side."""
+    from fypa.topology.placement.pair_slots import gutter_approach_side
+
+    left = _port(side="left")
+    right = _port(side="right")
+    # Two left approach ports, one right -> majority "left".
+    group = [(left, right), (left, right), (right, left)]
+    assert gutter_approach_side(group) == "left"
+
+
+def test_gutter_approach_side_tie_is_deterministic_and_order_independent():
+    from fypa.topology.placement.pair_slots import gutter_approach_side
+
+    left = _port(side="left")
+    right = _port(side="right")
+    # A 1:1 tie resolves deterministically regardless of group order.
+    assert gutter_approach_side([(left, right), (right, left)]) == "right"
+    assert gutter_approach_side([(right, left), (left, right)]) == "right"
+
+
+def test_gutter_approach_side_single_side_unchanged():
+    from fypa.topology.placement.pair_slots import gutter_approach_side
+
+    left = _port(side="left")
+    assert gutter_approach_side([(left, left), (left, left)]) == "left"
+
+
+def test_gutter_approach_side_empty_group_raises():
+    import pytest
+
+    from fypa.topology.placement.pair_slots import gutter_approach_side
+
+    with pytest.raises(ValueError):
+        gutter_approach_side([])

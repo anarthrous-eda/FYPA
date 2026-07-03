@@ -176,11 +176,15 @@ def two_port_path(
                 detour, col_x, start, bus_x, y_clear, obs, skip
             )
             detour, col_at = _horizontal_chain_at_row(detour, col_at, [e_stub], y_clear, obs, skip)
-            path = f"{detour}{end_leg}"
+            # The detour row (y_clear) differs from the shared port row (y == end.y);
+            # drop back down/up to the destination port's row before the final leg,
+            # otherwise the wire terminates on the detour row and leaves the port open.
+            path = f"{detour} V {end.y:.1f}{end_leg}"
             ctx.reserve_vertical(col_x, min(y, y_clear), max(y, y_clear), net)
             if abs(col_at - col_x) > WIRE_EPS:
                 ctx.reserve_horizontal(y_clear, min(col_x, col_at), max(col_x, col_at), net)
             ctx.reserve_horizontal(y_clear, x_lo, x_hi, net)
+            ctx.reserve_vertical(col_at, min(y_clear, end.y), max(y_clear, end.y), net)
             return simplify_wire_path(path)
         detour, col_at = _horizontal_chain_at_row(start_prefix, col_x, [e_stub], y, obs, skip)
         path = f"{detour}{end_leg}"
