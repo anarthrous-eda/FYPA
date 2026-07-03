@@ -356,8 +356,7 @@ def _gutter_crossing_segments(wire: TopologyWire) -> list[WireSeg]:
     return [
         seg
         for seg in segs
-        if seg.orient == "H"
-        or (seg.orient == "V" and abs(seg.x1 - bus_x) < WIRE_EPS)
+        if seg.orient == "H" or (seg.orient == "V" and abs(seg.x1 - bus_x) < WIRE_EPS)
     ]
 
 
@@ -372,9 +371,7 @@ def check_gutter_wire_crossings(model: TopologyModel) -> list[dict]:
             continue
         wires_by_net[wire.net].append(wire)
     hub_nets = {
-        w.net
-        for w in model.wires
-        if w.net and not w.dashed and w.routing_kind.startswith("hub")
+        w.net for w in model.wires if w.net and not w.dashed and w.routing_kind.startswith("hub")
     }
     issues: list[dict] = []
     for _gkey, nets in gutter_groups(all_ports).items():
@@ -382,11 +379,7 @@ def check_gutter_wire_crossings(model: TopologyModel) -> list[dict]:
         if len(active) < 2:
             continue
         segs_by_net = {
-            net: [
-                seg
-                for wire in wires_by_net[net]
-                for seg in _gutter_crossing_segments(wire)
-            ]
+            net: [seg for wire in wires_by_net[net] for seg in _gutter_crossing_segments(wire)]
             for net in active
         }
         for i, net_a in enumerate(active):

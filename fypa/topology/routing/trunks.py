@@ -8,7 +8,6 @@ from fypa.topology.routing.obstacles import horizontal_segment_clear
 from fypa.topology.types import TopologyNode, TopologyPort
 
 
-
 def hub_trunks_blocking_horizontal(
     ctx: RoutingContext,
     y: float,
@@ -67,7 +66,6 @@ def _vertical_crosses_foreign_horizontals(
     return False
 
 
-
 def _too_close_to_foreign_vertical(
     ctx: RoutingContext,
     x: float,
@@ -94,9 +92,7 @@ def _pick_vertical_column(
     west = min(col_x, s_stub)
     ordered = (west, col_x, e_stub)
     clear = [
-        x
-        for x in ordered
-        if not _vertical_crosses_foreign_horizontals(ctx, x, y_lo, y_hi, net)
+        x for x in ordered if not _vertical_crosses_foreign_horizontals(ctx, x, y_lo, y_hi, net)
     ]
     if not clear:
         return west

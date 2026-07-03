@@ -864,8 +864,8 @@ def _find_pcb_instances(proj: ExtractedProject, sch_designator: str) -> list[int
 # re-check + clear; ExtractedProject is frozen+slots so the maps can't live on
 # it). These replace O(nets)/O(pads) linear scans that ran once per directive
 # terminal — O(directives × nets/pads) overall.
-_net_indices_cache: dict[int, tuple["ExtractedProject", dict[str, list[int]]]] = {}
-_pads_by_comp_cache: dict[int, tuple["ExtractedProject", dict[int, list["RawPad"]]]] = {}
+_net_indices_cache: dict[int, tuple[ExtractedProject, dict[str, list[int]]]] = {}
+_pads_by_comp_cache: dict[int, tuple[ExtractedProject, dict[int, list[RawPad]]]] = {}
 
 
 def _net_indices_by_name(proj: ExtractedProject, name: str) -> list[int]:
@@ -892,14 +892,14 @@ def _net_indices_by_name(proj: ExtractedProject, name: str) -> list[int]:
     return list(entry[1].get(name.upper(), ()))  # fresh list — callers may keep it
 
 
-def _pads_by_component_all(proj: ExtractedProject) -> dict[int, list["RawPad"]]:
+def _pads_by_component_all(proj: ExtractedProject) -> dict[int, list[RawPad]]:
     """All pads grouped by ``component_index`` (unlike
     :func:`_build_pads_by_component`, this keeps NO_NET pads and returns lists,
     matching the ``[p for p in proj.pads if p.component_index == …]`` scans it
     replaces). Built once per project and cached."""
     entry = _pads_by_comp_cache.get(id(proj))
     if entry is None or entry[0] is not proj:
-        by_comp: dict[int, list["RawPad"]] = {}
+        by_comp: dict[int, list[RawPad]] = {}
         for p in proj.pads:
             by_comp.setdefault(p.component_index, []).append(p)
         _pads_by_comp_cache.clear()

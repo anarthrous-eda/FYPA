@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import numpy as np
 import scipy.sparse
-import shapely
 from shapely.geometry import MultiPolygon, Point, box
 
 from pdnsolver import mesh as M

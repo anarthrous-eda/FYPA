@@ -253,10 +253,7 @@ def _route_hub_tap(
     stub = port_stub_x(port)
     for row_y, row_lo, row_hi, row_port_xs in row_spans:
         if abs(port.y - row_y) <= WIRE_EPS:
-            if (
-                row_lo - WIRE_EPS <= stub <= row_hi + WIRE_EPS
-                and port.x in row_port_xs
-            ):
+            if row_lo - WIRE_EPS <= stub <= row_hi + WIRE_EPS and port.x in row_port_xs:
                 return "", row_y
             continue
         if _merge_vertical_at_port(port, row_y, row_port_xs, nodes_by_id, obstacles, ctx, net):
@@ -378,9 +375,7 @@ def _emit_hub_row_wires(state: _HubRouteState, row_plans: list[_HubRowPlan]) -> 
         )
         state.row_wires.append(row_wire)
         state.row_wire_by_plan[plan_idx] = row_wire
-        state.row_spans.append(
-            (plan.y_row, plan.row_lo, plan.row_hi, _row_port_xs(plan))
-        )
+        state.row_spans.append((plan.y_row, plan.row_lo, plan.row_hi, _row_port_xs(plan)))
 
 
 def _route_detoured_port_to_row(
