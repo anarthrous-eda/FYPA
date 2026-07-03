@@ -4066,13 +4066,15 @@ class _SolveWorker(QThread):
                 loaded = self._apply_stackup_overrides(loaded)
 
             # Sink overrides and editor directives mutate ``loaded`` in
-            # place. When ``loaded`` is still the pristine object — in
-            # particular the in-memory LoadedProject the viewer also holds —
-            # clone it first so that shared copy (reused by the next
-            # resolve) is never touched. A stackup override above already
-            # returned a fresh private object, so no clone is needed then.
+            # place. Adaptive SMPS gain likewise rewrites regulator gains on
+            # ``loaded.annotations`` during the solve. When ``loaded`` is
+            # still the pristine object — in particular the in-memory
+            # LoadedProject the viewer also holds — clone it first so that
+            # shared copy (reused by the next resolve) is never touched. A
+            # stackup override above already returned a fresh private object,
+            # so no clone is needed then.
             if ((self._sink_overrides or self._editor_directives
-                    or self._copper_names)
+                    or self._copper_names or self._adaptive_regulator_gain)
                     and loaded is pristine_loaded):
                 loaded = clone_loaded_for_edit(loaded)
 

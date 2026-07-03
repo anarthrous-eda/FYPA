@@ -1199,6 +1199,46 @@ def test_regulator_quiescent_rejects_negative():
     assert any("QUIESCENT" in e and ">= 0" in e for e in result.errors)
 
 
+def test_regulator_quiescent_unparseable_aborts_spec():
+    """A set-but-garbage PDN_QUIESCENT must not silently build with Iq=0."""
+    proj = _regulator_proj_with_source(
+        PDN_REGULATOR_TYPE="LDO",
+        PDN_QUIESCENT="not_a_current",
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert not result.ok
+    assert not any(isinstance(d, RegulatorSpec) for d in result.directives)
+    assert any("PDN_QUIESCENT" in e for e in result.errors)
+
+
+def test_regulator_unparseable_gain_aborts_not_auto():
+    """A set-but-garbage PDN_GAIN must abort, not fall through to auto-gain."""
+    proj = _regulator_proj_with_source(
+        PDN_REGULATOR_TYPE="SMPS",
+        PDN_REGULATOR_EFFICIENCY="0.9",
+        PDN_GAIN="oops",
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert not result.ok
+    assert not any(isinstance(d, RegulatorSpec) for d in result.directives)
+    assert any("PDN_GAIN" in e for e in result.errors)
+
+
+def test_regulator_efficiency_ignored_warns_with_manual_gain():
+    """PDN_REGULATOR_EFFICIENCY alongside a manual PDN_GAIN (no type) warns."""
+    proj = _regulator_proj_with_source(
+        PDN_GAIN="0.6",
+        PDN_REGULATOR_EFFICIENCY="0.9",
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok
+    reg = next(d for d in result.directives if isinstance(d, RegulatorSpec))
+    assert reg.gain == 0.6
+    assert any(
+        "REGULATOR_EFFICIENCY" in w and "ignored" in w for w in result.warnings
+    )
+
+
 def test_regulator_quiescent_indexed_channel():
     proj = _minimal_proj(
         nets=(RawNet("GND"), RawNet("+5V"), RawNet("+1V8")),

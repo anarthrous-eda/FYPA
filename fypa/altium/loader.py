@@ -1565,23 +1565,37 @@ def _sample_voltage_at_pin(
     loaded: LoadedProject,
     pin: TerminalPin,
 ) -> float | None:
-    """Nearest mesh-vertex potential at a directive pad location."""
-    from pdnsolver.ui import VertexSpatialIndex
+    """Nearest mesh-vertex potential at a directive pad location.
 
-    layer_i = _problem_layer_index_for_pin(loaded, solution.problem, pin)
-    if layer_i is None:
+    Any failure to sample (missing/optional ``pdnsolver.ui`` dependency,
+    unexpected solution shape, spatial-index error) returns ``None`` rather
+    than propagating: adaptive gain is an optional refinement layered on top
+    of an already-valid solve, so a failed sample must degrade to "keep the
+    current gain", never abort the whole solve.
+    """
+    try:
+        from pdnsolver.ui import VertexSpatialIndex
+
+        layer_i = _problem_layer_index_for_pin(loaded, solution.problem, pin)
+        if layer_i is None:
+            return None
+        layer = solution.problem.layers[layer_i]
+        ls = solution.layer_solutions[layer_i]
+        index = VertexSpatialIndex.from_layer_data(layer, ls)
+        v = index.query_nearest(pin.point.x, pin.point.y)
+        if v is not None:
+            return float(v)
+        if index.tree is not None:
+            dist, idx = index.tree.query([pin.point.x, pin.point.y])
+            if dist < float("inf"):
+                return float(index.values[int(idx)])
         return None
-    layer = solution.problem.layers[layer_i]
-    ls = solution.layer_solutions[layer_i]
-    index = VertexSpatialIndex.from_layer_data(layer, ls)
-    v = index.query_nearest(pin.point.x, pin.point.y)
-    if v is not None:
-        return float(v)
-    if index.tree is not None:
-        dist, idx = index.tree.query([pin.point.x, pin.point.y])
-        if dist < float("inf"):
-            return float(index.values[int(idx)])
-    return None
+    except Exception as e:
+        log.debug(
+            "Adaptive gain: could not sample voltage at pad %s (%s); "
+            "treating as unmeasured.", pin.pad_designator, e,
+        )
+        return None
 
 
 def _measured_regulator_vin(
@@ -1664,12 +1678,15 @@ def solve_problem_adaptive(
                 stub_pieces_by_pair, per_net_layers, adaptive_info)
 
     solution = None
+    converged = False
     for iteration in range(_ADAPTIVE_GAIN_MAX_ITERATIONS):
         msg = (
             f"Meshing + solving (adaptive SMPS gain, iteration "
             f"{iteration + 1}/{_ADAPTIVE_GAIN_MAX_ITERATIONS}, "
             f"{len(problem.layers)} slabs)…"
         )
+        # ``problem`` was built from the gains currently in ``loaded``, so
+        # this solution is consistent with those gains.
         solution = _solve_once(msg)
         adaptive_info["iterations"] = iteration + 1
 
@@ -1690,7 +1707,6 @@ def solve_problem_adaptive(
             else:
                 any_vin_sampled = True
                 new_gain = d.voltage / (vin * d.efficiency)
-            adaptive_info["gains"][label] = new_gain
             if d.gain != 0.0:
                 max_rel_change = max(
                     max_rel_change,
@@ -1699,25 +1715,44 @@ def solve_problem_adaptive(
             new_gains[(d.designator, d.channel_index)] = new_gain
 
         if not any_vin_sampled:
-            adaptive_info["converged"] = False
+            # Nothing could be measured — leave ``loaded`` at the gains the
+            # returned solution actually used.
+            converged = False
             break
 
         if max_rel_change < _ADAPTIVE_GAIN_REL_TOL:
+            # Converged: adopt the refined gains (within tolerance of what the
+            # returned solution used, so metadata stays consistent with it).
             _replace_regulator_gains(loaded, new_gains)
-            adaptive_info["converged"] = True
+            converged = True
             break
 
-        _replace_regulator_gains(loaded, new_gains)
-        if iteration + 1 < _ADAPTIVE_GAIN_MAX_ITERATIONS:
-            problem, via_segment_records, stub_pieces_by_pair, per_net_layers = (
-                build_problem(loaded)
+        if iteration + 1 >= _ADAPTIVE_GAIN_MAX_ITERATIONS:
+            # Out of iterations without converging. Do NOT advance ``loaded``
+            # to ``new_gains``: we will not resolve with them, and the reported
+            # gains must match the returned solution's gains.
+            converged = False
+            log.warning(
+                "Adaptive SMPS gain did not converge within %d iterations",
+                _ADAPTIVE_GAIN_MAX_ITERATIONS,
             )
-    else:
-        adaptive_info["converged"] = False
-        log.warning(
-            "Adaptive SMPS gain did not converge within %d iterations",
-            _ADAPTIVE_GAIN_MAX_ITERATIONS,
+            break
+
+        # Advance the gains and rebuild so the next iteration solves with them.
+        _replace_regulator_gains(loaded, new_gains)
+        problem, via_segment_records, stub_pieces_by_pair, per_net_layers = (
+            build_problem(loaded)
         )
+
+    adaptive_info["converged"] = converged
+    # Report the gains the returned solution was actually solved with — i.e.
+    # the gains now held in ``loaded`` (advanced only alongside a resolve, or
+    # on convergence to the refined-but-within-tolerance values).
+    adaptive_info["gains"] = {
+        _channel_label(d.designator, d.channel_index): d.gain
+        for d in loaded.annotations.directives
+        if isinstance(d, RegulatorSpec) and d.adaptive_gain_eligible
+    }
 
     return (solution, problem, via_segment_records,
             stub_pieces_by_pair, per_net_layers, adaptive_info)

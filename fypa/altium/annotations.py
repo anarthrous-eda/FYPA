@@ -1630,7 +1630,13 @@ def _resolve_regulator_gain(
     type_key = _channel_key("REGULATOR_TYPE", idx)
     eff_key = _channel_key("REGULATOR_EFFICIENCY", idx)
 
+    gain_present = _ci_get(params, gain_key) is not None
     explicit_gain = _optional_value(params, gain_key, role_diag, result)
+    if gain_present and explicit_gain is None:
+        # PDN_GAIN was set but did not parse — ``_optional_value`` already
+        # recorded the error. Abort rather than silently falling through to
+        # auto-gain, which would mask the user's typo'd manual value.
+        return None
     type_raw = _ci_get(params, type_key)
     reg_type = type_raw.strip().upper() if type_raw else None
 
@@ -1639,6 +1645,10 @@ def _resolve_regulator_gain(
             result.warnings.append(
                 f"{role_diag}: {gain_key} overrides "
                 f"{type_key} / {eff_key}"
+            )
+        elif _ci_get(params, eff_key) is not None:
+            result.warnings.append(
+                f"{role_diag}: {eff_key} is ignored when {gain_key} is set"
             )
         return explicit_gain, reg_type, 1.0, False
 
@@ -1744,15 +1754,19 @@ def _parse_regulator(comp, proj, enabled_layers, result, bridge_groups=None,
         if v is None or resolved is None:
             continue
         g, reg_type, eff, adaptive = resolved
-        iq_raw = _optional_value(
-            comp.parameters, _channel_key("QUIESCENT", idx), role_diag, result,
-        )
-        if iq_raw is not None and iq_raw < 0:
-            result.errors.append(
-                f"{role_diag}: {_channel_key('QUIESCENT', idx)} must be >= 0"
-            )
-            continue
-        quiescent = iq_raw if iq_raw is not None else 0.0
+        q_key = _channel_key("QUIESCENT", idx)
+        if _ci_get(comp.parameters, q_key) is None:
+            quiescent = 0.0
+        else:
+            iq_raw = _optional_value(comp.parameters, q_key, role_diag, result)
+            if iq_raw is None:
+                # Present but unparseable — error already recorded; skip the
+                # spec rather than building it with a silent quiescent=0.
+                continue
+            if iq_raw < 0:
+                result.errors.append(f"{role_diag}: {q_key} must be >= 0")
+                continue
+            quiescent = iq_raw
         for pcb_idx in pcb_indices:
             pcb_des = proj.pcb_components[pcb_idx].designator
             inst_diag = (
