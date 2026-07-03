@@ -737,6 +737,136 @@ def test_gutter_wire_same_row_has_no_vertical_segment():
     assert topology_wiring_report(model)["summary"]["issues"] == 0
 
 
+def test_bus_x_for_pair_uses_planned_gutter_bus_x():
+    """Routing with a ``BusPlan`` uses the planned bus column verbatim."""
+    from fypa.topology.placement.plan_types import BusPlan
+    from fypa.topology.routing.context import RoutingContext
+    from fypa.topology.routing.pair import _bus_x_for_pair
+    from fypa.topology.types import TopologyPort
+
+    a = TopologyPort(
+        terminal="P",
+        net="NET",
+        label="NET",
+        side="right",
+        x=100.0,
+        y=100.0,
+        node_id="A",
+        wire_x=120.0,
+    )
+    b = TopologyPort(
+        terminal="P",
+        net="NET",
+        label="NET",
+        side="left",
+        x=200.0,
+        y=200.0,
+        node_id="B",
+        wire_x=180.0,
+    )
+    bus_x = _bus_x_for_pair(
+        a,
+        b,
+        bus_plan=BusPlan(pair_buses={"NET": 165.0}),
+        ctx=RoutingContext(),
+        col=0,
+        side="",
+        lane=0,
+        n_lanes=0,
+        slot=0,
+        n_slots=1,
+        channel_lo=130.0,
+        channel_hi=170.0,
+        assigned_bus=[160.0],
+    )
+    assert bus_x == 165.0
+
+
+def test_bus_x_for_pair_without_plan_stays_in_column_gap_corridor():
+    """Ad-hoc gutter routing snaps into layout column gaps when no bus plan is set."""
+    from fypa.topology.constants import NODE_W
+    from fypa.topology.placement.gutter_corridors import bus_x_in_column_gaps
+    from fypa.topology.routing.context import RoutingContext
+    from fypa.topology.routing.pair import _bus_x_for_pair
+    from fypa.topology.types import TopologyNode, TopologyPort
+
+    def _node(node_id: str, x: float) -> TopologyNode:
+        return TopologyNode(
+            node_id=node_id,
+            label=node_id,
+            designator=node_id,
+            role="SINK",
+            x=x,
+            y=0.0,
+            width=NODE_W,
+            height=40.0,
+            config_label="",
+            has_error=False,
+            bounds=(x, 0.0, NODE_W, 40.0),
+            ports=[],
+        )
+
+    obstacles = [_node("U1", 0.0), _node("U2", 200.0)]
+    a = TopologyPort(
+        terminal="P",
+        net="NET",
+        label="NET",
+        side="right",
+        x=100.0,
+        y=100.0,
+        node_id="A",
+        wire_x=120.0,
+    )
+    b = TopologyPort(
+        terminal="P",
+        net="NET",
+        label="NET",
+        side="left",
+        x=180.0,
+        y=200.0,
+        node_id="B",
+        wire_x=160.0,
+    )
+    channel_lo, channel_hi = 110.0, 210.0
+    bus_x = _bus_x_for_pair(
+        a,
+        b,
+        bus_plan=None,
+        ctx=RoutingContext(),
+        col=0,
+        side="",
+        lane=0,
+        n_lanes=0,
+        slot=0,
+        n_slots=1,
+        channel_lo=channel_lo,
+        channel_hi=channel_hi,
+        assigned_bus=[],
+        obstacles=obstacles,
+    )
+    gaps = [(128.0, 200.0)]
+    assert bus_x_in_column_gaps(bus_x, gaps)
+    assert 128.0 < bus_x < 200.0
+
+
+def test_separate_from_assigned_buses_uses_allocate_in_narrow_corridor():
+    from fypa.topology.routing.pair import _separate_from_assigned_buses
+
+    lo, hi = 140.0, 152.0
+    bus_x = _separate_from_assigned_buses(
+        145.0,
+        [140.0],
+        1.0,
+        lo,
+        hi,
+        y_lo=100.0,
+        y_hi=200.0,
+        net="NET",
+    )
+    assert lo <= bus_x <= hi
+    assert bus_x != 176.0
+
+
 def test_sanitize_metadata_strips_prepared_shapes():
     import pickle
 

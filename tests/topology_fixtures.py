@@ -13,12 +13,15 @@ def list_topology_fixtures() -> list[str]:
 
     ``*_rails`` fixtures are regression-only (column placement) and may
     have non-zero wiring-issue counts.
+
+    ``hub_*`` fixtures are full-board hub routing regressions.
     """
     return sorted(
         p.stem
         for p in _FIXTURES_DIR.glob("*.json")
         if not p.stem.endswith("_rails")
         and not p.stem.endswith("_overlap")
+        and not p.stem.startswith("hub_")
     )
 
 

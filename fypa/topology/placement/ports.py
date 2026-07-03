@@ -88,7 +88,7 @@ def gutter_groups(all_ports: list[TopologyPort]) -> dict[GutterSpanKey, set[str]
             by_net[p.net].append(p)
     gutter_nets: dict[GutterSpanKey, set[str]] = defaultdict(set)
     for net, group in by_net.items():
-        if net == GND_NET or len(group) != 2:
+        if net == GND_NET or len(group) < 2:
             continue
         gkey = net_gutter_key(group)
         if gkey is not None:
@@ -134,6 +134,23 @@ def column_bus_x(
     if side == "right":
         return col_x + NODE_W + PORT_WIRE_STUB + COLUMN_BUS_PAD + stagger
     return col_x - PORT_WIRE_STUB - COLUMN_BUS_PAD - stagger
+
+
+def gutter_bus_slot_for_source_y(
+    slot: int,
+    n_slots: int,
+    *,
+    approach_side: str,
+) -> int:
+    """Map y-sorted gutter pairs to bus columns without H/V crossings.
+
+    Pairs are processed in ascending approach-port y (top first). Right-side
+    approaches need the topmost wire on the outermost bus so its horizontal leg
+    does not sweep across a lower wire's vertical corridor.
+    """
+    if approach_side == "right":
+        return n_slots - 1 - slot
+    return slot
 
 
 def gutter_bus_x_bounds(stubs: list[float]) -> tuple[float, float]:

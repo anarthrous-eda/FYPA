@@ -1,29 +1,28 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="908" height="488" viewBox="0 0 908 488">
 <rect width="100%" height="100%" fill="#2b2b2b"/>
-<line x1="392" y1="177" x2="412" y2="177" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
-<line x1="412" y1="297" x2="724" y2="297" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
-<line x1="724" y1="297" x2="744" y2="297" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
-<line x1="392" y1="195" x2="408" y2="195" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
-<line x1="408" y1="315" x2="726.7" y2="315" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
-<line x1="726.7" y1="315" x2="744" y2="315" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
-<line x1="392" y1="213" x2="404" y2="213" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
-<line x1="404" y1="333" x2="729.3" y2="333" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="392" y1="213" x2="420" y2="213" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="420" y1="333" x2="729.3" y2="333" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
 <line x1="729.3" y1="333" x2="744" y2="333" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
-<line x1="632" y1="177" x2="652" y2="177" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
-<line x1="652" y1="177" x2="688" y2="177" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
-<line x1="688" y1="177" x2="724" y2="177" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="392" y1="195" x2="440" y2="195" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="440" y1="315" x2="726.7" y2="315" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="726.7" y1="315" x2="744" y2="315" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="392" y1="177" x2="460" y2="177" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="460" y1="297" x2="724" y2="297" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="724" y1="297" x2="744" y2="297" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="632" y1="177" x2="668" y2="177" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="668" y1="177" x2="724" y2="177" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
 <line x1="724" y1="177" x2="744" y2="177" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
 <line x1="164" y1="177" x2="184" y2="177" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
 <line x1="184" y1="177" x2="244" y2="177" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
 <line x1="244" y1="177" x2="264" y2="177" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
-<line x1="244" y1="128" x2="716" y2="128" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
-<line x1="716" y1="75" x2="724" y2="75" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="708" y1="75" x2="724" y2="75" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
 <line x1="724" y1="75" x2="744" y2="75" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="244" y1="128" x2="708" y2="128" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
 <line x1="484" y1="177" x2="504" y2="177" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
-<line x1="484" y1="128" x2="716" y2="128" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
-<line x1="716" y1="195" x2="732" y2="195" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="484" y1="128" x2="708" y2="128" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="708" y1="195" x2="732" y2="195" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
 <line x1="732" y1="195" x2="744" y2="195" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
-<line x1="716" y1="351" x2="732" y2="351" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
+<line x1="708" y1="351" x2="732" y2="351" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
 <line x1="732" y1="351" x2="744" y2="351" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
 <line x1="24" y1="408" x2="732" y2="408" stroke="#088b00" stroke-width="2" stroke-linecap="round"/>
 <line x1="24" y1="177" x2="36" y2="177" stroke="#088b00" stroke-width="2" stroke-linecap="round"/>
@@ -31,10 +30,10 @@
 <line x1="732" y1="93" x2="744" y2="93" stroke="#088b00" stroke-width="2" stroke-linecap="round"/>
 <line x1="732" y1="213" x2="744" y2="213" stroke="#088b00" stroke-width="2" stroke-linecap="round"/>
 <line x1="732" y1="369" x2="744" y2="369" stroke="#088b00" stroke-width="2" stroke-linecap="round"/>
-<path d="M 412,177 V 297" fill="none" stroke="#ff3030" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-<path d="M 408,195 V 315" fill="none" stroke="#ff3030" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-<path d="M 404,213 V 333" fill="none" stroke="#ff3030" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-<path d="M 716,75 V 171.5 A 5.5,5.5 0 0 1 716,182.5 V 291.5 A 5.5,5.5 0 0 1 716,302.5 V 309.5 A 5.5,5.5 0 0 1 716,320.5 V 327.5 A 5.5,5.5 0 0 1 716,338.5 V 351" fill="none" stroke="#ff3030" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 420,213 V 333" fill="none" stroke="#ff3030" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 440,195 V 315" fill="none" stroke="#ff3030" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 460,177 V 297" fill="none" stroke="#ff3030" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 708,75 V 171.5 A 5.5,5.5 0 0 1 708,182.5 V 291.5 A 5.5,5.5 0 0 1 708,302.5 V 309.5 A 5.5,5.5 0 0 1 708,320.5 V 327.5 A 5.5,5.5 0 0 1 708,338.5 V 351" fill="none" stroke="#ff3030" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
 <path d="M 244,128 V 177" fill="none" stroke="#ff3030" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
 <path d="M 484,128 V 177" fill="none" stroke="#ff3030" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
 <path d="M 24,177 V 408" fill="none" stroke="#088b00" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -44,8 +43,8 @@
 <circle cx="244" cy="177" r="3" fill="#ff3030"/>
 <circle cx="484" cy="128" r="3" fill="#ff3030"/>
 <circle cx="484" cy="408" r="3" fill="#088b00"/>
-<circle cx="716" cy="128" r="3" fill="#ff3030"/>
-<circle cx="716" cy="195" r="3" fill="#ff3030"/>
+<circle cx="708" cy="128" r="3" fill="#ff3030"/>
+<circle cx="708" cy="195" r="3" fill="#ff3030"/>
 <circle cx="732" cy="213" r="3" fill="#088b00"/>
 <circle cx="732" cy="369" r="3" fill="#088b00"/>
 <line x1="24" y1="408" x2="24" y2="418" stroke="#909090" stroke-width="2" stroke-linecap="round"/>
@@ -121,16 +120,16 @@
 <text x="752" y="354" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3</text>
 <circle cx="744" cy="369" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
 <text x="752" y="372" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">GND</text>
-<rect x="552.5" y="291" width="31" height="12" fill="#2b2b2b" fill-opacity="0.5" stroke="none" rx="2"/>
-<text x="568" y="297" text-anchor="middle" dominant-baseline="middle" fill="#e6e6e6" font-family="Segoe UI,sans-serif" font-size="8">LED_R</text>
-<rect x="551.9" y="309" width="31" height="12" fill="#2b2b2b" fill-opacity="0.5" stroke="none" rx="2"/>
-<text x="567.4" y="315" text-anchor="middle" dominant-baseline="middle" fill="#e6e6e6" font-family="Segoe UI,sans-serif" font-size="8">LED_G</text>
-<rect x="551.1" y="327" width="31" height="12" fill="#2b2b2b" fill-opacity="0.5" stroke="none" rx="2"/>
-<text x="566.6" y="333" text-anchor="middle" dominant-baseline="middle" fill="#e6e6e6" font-family="Segoe UI,sans-serif" font-size="8">LED_B</text>
-<rect x="649.1" y="171" width="41.8" height="12" fill="#2b2b2b" fill-opacity="0.5" stroke="none" rx="2"/>
-<text x="670" y="177" text-anchor="middle" dominant-baseline="middle" fill="#e6e6e6" font-family="Segoe UI,sans-serif" font-size="8">VDD_1V8</text>
-<rect x="411.9" y="122" width="41.8" height="12" fill="#2b2b2b" fill-opacity="0.5" stroke="none" rx="2"/>
-<text x="432.8" y="128" text-anchor="middle" dominant-baseline="middle" fill="#e6e6e6" font-family="Segoe UI,sans-serif" font-size="8">VDD_3V3</text>
+<rect x="559.1" y="327" width="31" height="12" fill="#2b2b2b" fill-opacity="0.5" stroke="none" rx="2"/>
+<text x="574.6" y="333" text-anchor="middle" dominant-baseline="middle" fill="#e6e6e6" font-family="Segoe UI,sans-serif" font-size="8">LED_B</text>
+<rect x="567.9" y="309" width="31" height="12" fill="#2b2b2b" fill-opacity="0.5" stroke="none" rx="2"/>
+<text x="583.4" y="315" text-anchor="middle" dominant-baseline="middle" fill="#e6e6e6" font-family="Segoe UI,sans-serif" font-size="8">LED_G</text>
+<rect x="576.5" y="291" width="31" height="12" fill="#2b2b2b" fill-opacity="0.5" stroke="none" rx="2"/>
+<text x="592" y="297" text-anchor="middle" dominant-baseline="middle" fill="#e6e6e6" font-family="Segoe UI,sans-serif" font-size="8">LED_R</text>
+<rect x="666.7" y="171" width="41.8" height="12" fill="#2b2b2b" fill-opacity="0.5" stroke="none" rx="2"/>
+<text x="687.6" y="177" text-anchor="middle" dominant-baseline="middle" fill="#e6e6e6" font-family="Segoe UI,sans-serif" font-size="8">VDD_1V8</text>
+<rect x="408.7" y="122" width="41.8" height="12" fill="#2b2b2b" fill-opacity="0.5" stroke="none" rx="2"/>
+<text x="429.6" y="128" text-anchor="middle" dominant-baseline="middle" fill="#e6e6e6" font-family="Segoe UI,sans-serif" font-size="8">VDD_3V3</text>
 <rect x="12" y="462" width="10" height="10" rx="2" fill="#ff3030"/>
 <text x="26" y="472" fill="#909090" font-family="Segoe UI,sans-serif" font-size="10">SOURCE</text>
 <rect x="90" y="462" width="10" height="10" rx="2" fill="#3aa8ff"/>

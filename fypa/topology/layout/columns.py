@@ -89,15 +89,19 @@ def _required_gaps(
     gaps = [base_gap] * max_col
     spans = gutter_bus_span_from_plan(bus_plan, all_ports)
     for (x_lo, x_hi), nets_in_gutter in gutter_groups(all_ports).items():
-        req = _col_gap_for_gutter_slots(_gutter_channel_count(nets_in_gutter, all_ports))
+        n_channels = _gutter_channel_count(nets_in_gutter, all_ports)
+        req = base_gap
+        if n_channels > 1:
+            req = max(req, _col_gap_for_gutter_slots(n_channels))
         measured = spans.get((x_lo, x_hi))
         if measured is not None:
             x_min, x_max, n_buses = measured
-            req = max(
-                req,
-                _col_gap_for_bus_span(x_min, x_max),
-                _col_gap_for_gutter_slots(n_buses),
-            )
+            if n_buses > 1:
+                req = max(
+                    req,
+                    _col_gap_for_bus_span(x_min, x_max),
+                    _col_gap_for_gutter_slots(n_buses),
+                )
         if req <= base_gap + WIRE_EPS:
             continue
         for g in range(max_col):
@@ -225,6 +229,7 @@ def place_nodes(
         by_net,
         gnd_ports=gnd_ports if gnd_bus_y is not None else None,
         gnd_bus_y=gnd_bus_y,
+        obstacles=nodes,
     )
     refined_gaps = _required_gaps(
         all_ports,
@@ -250,6 +255,7 @@ def place_nodes(
             by_net,
             gnd_ports=gnd_ports if gnd_bus_y is not None else None,
             gnd_bus_y=gnd_bus_y,
+            obstacles=nodes,
         )
 
     content_right = max((n.x + n.width for n in nodes), default=x_offset)
@@ -282,6 +288,7 @@ def refine_place_nodes_for_gnd(
         by_net,
         gnd_ports=gnd_ports,
         gnd_bus_y=gnd_bus_y,
+        obstacles=nodes,
     )
     refined_gaps = _required_gaps(
         all_ports,
@@ -307,6 +314,7 @@ def refine_place_nodes_for_gnd(
             by_net,
             gnd_ports=gnd_ports,
             gnd_bus_y=gnd_bus_y,
+            obstacles=nodes,
         )
     content_right = max((n.x + n.width for n in nodes), default=x_offset)
     return nodes, all_ports, content_right, bus_plan, gaps

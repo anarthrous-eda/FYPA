@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from fypa.topology.constants import MIN_PARALLEL_GAP, WIRE_EPS
 from fypa.topology.placement.bus_grid import allocate_bus_x, nudge_bus_from_gnd_columns
+from fypa.topology.placement.gutter_corridors import (
+    ColumnGap,
+    pick_gutter_bus_x,
+    resolve_gutter_corridor,
+)
 from fypa.topology.placement.hub_planning import (
     hub_bus_channel_bounds,
     hub_bus_nominal_x,
@@ -50,6 +55,8 @@ def plan_stack_hub_buses(
 def plan_gutter_hub_buses(
     plan: BusPlan,
     gutter_hub_nets: dict[GutterSpanKey, list[tuple[str, list[TopologyPort]]]],
+    *,
+    column_gaps: list[ColumnGap] | None = None,
 ) -> None:
     """Assign bus x for 3+ port nets spanning a column gutter."""
     reserved = plan.reserved_verticals
@@ -66,6 +73,7 @@ def plan_gutter_hub_buses(
         for gkey in gutter_hub_nets
     }
 
+    gaps = column_gaps or []
     for gkey, net, ports in gutter_hub_items:
         plan.gutter_spans.setdefault(gkey, [])
         assigned_bus = gutter_assigned.setdefault(gkey, [])
@@ -92,24 +100,59 @@ def plan_gutter_hub_buses(
         )
         bus_hi = max(bus_hi, bus_x)
         bus_x = min(bus_hi, max(bus_lo, bus_x))
-        bus_x = allocate_bus_x(
-            bus_x,
-            y_lo,
-            y_hi,
-            bus_lo,
-            bus_hi,
-            reserved,
-            net,
-            outward=outward,
-            assigned_in_group=assigned_bus,
-        )
-        bus_x = separate_from_assigned_buses(
-            bus_x,
-            assigned_bus,
-            outward=outward,
-            bus_lo=bus_lo,
-            bus_hi=bus_hi,
-        )
+        n_hub_slots = max(len(gutter_hub_nets.get(gkey, [])), 1)
+        if gaps:
+            bus_x = pick_gutter_bus_x(
+                len(assigned_bus),
+                n_hub_slots,
+                bus_lo,
+                bus_hi,
+                gaps,
+                net,
+                y_lo=y_lo,
+                y_hi=y_hi,
+                anchor_x=anchor_stub,
+                outward=outward,
+                reserved=reserved,
+                assigned_in_group=assigned_bus,
+            )
+            corridor = resolve_gutter_corridor(
+                bus_lo,
+                bus_hi,
+                gaps,
+                anchor_x=anchor_stub,
+                n_slots=n_hub_slots,
+            )
+            if corridor is not None:
+                corridor_lo, corridor_hi = corridor
+                bus_x = separate_from_assigned_buses(
+                    bus_x,
+                    assigned_bus,
+                    outward=outward,
+                    bus_lo=corridor_lo,
+                    bus_hi=corridor_hi,
+                )
+                bus_x = max(corridor_lo, min(corridor_hi, bus_x))
+        else:
+            bus_x = allocate_bus_x(
+                bus_x,
+                y_lo,
+                y_hi,
+                bus_lo,
+                bus_hi,
+                reserved,
+                net,
+                outward=outward,
+                assigned_in_group=assigned_bus,
+            )
+        if not gaps:
+            bus_x = separate_from_assigned_buses(
+                bus_x,
+                assigned_bus,
+                outward=outward,
+                bus_lo=bus_lo,
+                bus_hi=bus_hi,
+            )
         assigned_bus.append(bus_x)
         plan.hub_buses[net] = bus_x
         plan.gutter_spans[gkey].append(bus_x)
