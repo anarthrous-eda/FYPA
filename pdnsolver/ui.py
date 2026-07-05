@@ -761,6 +761,27 @@ class RenderedMesh:
     edge_count: int
     vao_boundary: int
     boundary_count: int
+    # VBO ids backing the three VAOs (vertices + colors each). Retained so
+    # release() can free them: deleting a VAO does not delete the buffers
+    # bound into it, so without these ids the buffer memory would leak on a
+    # re-solve. Default to an empty tuple for backward compatibility.
+    vbos: tuple[int, ...] = ()
+
+    def release(self) -> None:
+        """Delete this mesh's GL objects. Must be called with the owning
+        GL context current (QOpenGLWidget.makeCurrent()). Safe to call more
+        than once — ids are zeroed after deletion."""
+        vaos = [v for v in (self.vao_triangles, self.vao_edges,
+                            self.vao_boundary) if v]
+        if vaos:
+            gl.glDeleteVertexArrays(len(vaos), vaos)
+        bufs = [b for b in self.vbos if b]
+        if bufs:
+            gl.glDeleteBuffers(len(bufs), bufs)
+        self.vao_triangles = 0
+        self.vao_edges = 0
+        self.vao_boundary = 0
+        self.vbos = ()
 
     @dataclass(frozen=True)
     class PreparedData:
@@ -793,6 +814,8 @@ class RenderedMesh:
                      boundary_vertices: np.ndarray[np.float32],
                      boundary_colors: np.ndarray[np.float32]) -> 'RenderedMesh':
 
+        vbo_ids: list[int] = []
+
         def create_vao(vertices: np.ndarray[np.float32], colors: np.ndarray[np.float32], color_components: int) -> int:
             """Create a VAO with vertex and color VBOs."""
             vao = gl.glGenVertexArrays(1)
@@ -820,6 +843,8 @@ class RenderedMesh:
             gl.glVertexAttribPointer(1, color_components, gl.GL_FLOAT, gl.GL_FALSE, 0, None)
             gl.glEnableVertexAttribArray(1)
 
+            vbo_ids.append(int(vbo_vertices))
+            vbo_ids.append(int(vbo_colors))
             return vao
 
         # Create VAOs for each mesh component
@@ -834,7 +859,8 @@ class RenderedMesh:
                    vao_edges,
                    len(edge_vertices) // 2,
                    vao_boundary,
-                   len(boundary_vertices) // 2)
+                   len(boundary_vertices) // 2,
+                   tuple(vbo_ids))
 
     @classmethod
     def prepare_zero_form(cls, msh: mesh.Mesh, values: mesh.ZeroForm) -> 'RenderedMesh.PreparedData':
@@ -1082,8 +1108,15 @@ class MeshViewer(QOpenGLWidget):
             raise NotImplementedError("This method should be implemented in subclasses")
 
         @abc.abstractmethod
-        def set_solution(self, solution: solver.Solution):
-            """Initialize this mode with solution data (build indices + meshes)."""
+        def set_solution(self, solution: solver.Solution, on_ready=None):
+            """Initialize this mode with solution data (build indices + meshes).
+
+            ``on_ready`` is an optional zero-arg callback invoked (on the
+            executor thread) whenever a background mesh-prep future finishes.
+            The viewer passes a thread-safe repainter so the canvas is
+            redrawn once prep completes, rather than sitting blank until the
+            next user interaction.
+            """
             self.solution = solution
             self.spatial_indices.clear()
 
@@ -1093,27 +1126,54 @@ class MeshViewer(QOpenGLWidget):
             self._prepared_rendered_meshes.clear()
             self._prepared_disconnected_rendered_meshes.clear()
 
+            def _notify(_future):
+                # Runs on the executor thread; on_ready must marshal to the
+                # GUI thread itself (a queued Qt signal). Never let a
+                # callback error escape into the executor.
+                if on_ready is None:
+                    return
+                try:
+                    on_ready()
+                except Exception:
+                    log.exception("mesh-prep ready callback failed")
+
             # Next, we do the OpenGL-independent preparation in background
             # threads as to not block the UI thread
             for layer in self.solution.problem.layers:
+                rendered_future = self._executor.submit(
+                    self._prepare_rendered_meshes_for_layer,
+                    layer.name
+                )
+                disconnected_future = self._executor.submit(
+                    self._prepare_disconnected_rendered_meshes_for_layer,
+                    layer.name
+                )
+                rendered_future.add_done_callback(_notify)
+                disconnected_future.add_done_callback(_notify)
                 self._prepared_rendered_meshes.set_future(
-                    layer.name,
-                    self._executor.submit(
-                        self._prepare_rendered_meshes_for_layer,
-                        layer.name
-                    )
+                    layer.name, rendered_future
                 )
                 self._prepared_disconnected_rendered_meshes.set_future(
-                    layer.name,
-                    self._executor.submit(
-                        self._prepare_disconnected_rendered_meshes_for_layer,
-                        layer.name
-                    )
+                    layer.name, disconnected_future
                 )
 
             # Do this _after_ starting the background tasks
             # TODO: Eventually, we might want to do this in the background as well
             self._build_spatial_indices()
+
+        def release_gl_resources(self) -> None:
+            """Delete the GL objects held by this mode's RenderedMeshes and
+            drop the references. Must be called with the owning GL context
+            current; the viewer does this before a re-solve so a second
+            setSolution() doesn't leak the previous solution's VAOs/VBOs."""
+            for meshes in self.rendered_meshes.values():
+                for m in meshes:
+                    m.release()
+            for meshes in self.disconnected_rendered_meshes.values():
+                for m in meshes:
+                    m.release()
+            self.rendered_meshes.clear()
+            self.disconnected_rendered_meshes.clear()
 
         def _prepare_rendered_meshes_for_layer(self, layer_name) -> list[RenderedMesh.PreparedData]:
             """Create RenderedMesh objects for a specific layer."""
@@ -1147,7 +1207,20 @@ class MeshViewer(QOpenGLWidget):
             # If this changes, it is necessary to figure something out
             # with mesh_viewer.makeCurrent() and doneCurrent().
 
-            prepared_meshes = self._prepared_rendered_meshes[layer_name]
+            try:
+                prepared_meshes = self._prepared_rendered_meshes[layer_name]
+            except Exception:
+                # The prep future raised. is_ready() is True (it's done), so
+                # without this guard result() would re-raise inside paintGL
+                # every frame. Log once and cache an empty result so the top
+                # check short-circuits on subsequent frames.
+                log.exception(
+                    "mesh prep failed for layer %r; skipping its meshes",
+                    layer_name,
+                )
+                self.rendered_meshes[layer_name] = []
+                return self.rendered_meshes[layer_name]
+
             self.rendered_meshes[layer_name] = [
                 RenderedMesh.from_prepared_data(data)
                 for data in prepared_meshes
@@ -1186,7 +1259,18 @@ class MeshViewer(QOpenGLWidget):
             # inserted into the OpenGL context. Which is something we have to
             # do in our main thread, meaning here.
 
-            prepared_meshes = self._prepared_disconnected_rendered_meshes[layer_name]
+            try:
+                prepared_meshes = self._prepared_disconnected_rendered_meshes[layer_name]
+            except Exception:
+                # See get_rendered_meshes_for_layer: a raised prep future
+                # would otherwise re-raise inside paintGL every frame.
+                log.exception(
+                    "disconnected mesh prep failed for layer %r; skipping",
+                    layer_name,
+                )
+                self.disconnected_rendered_meshes[layer_name] = []
+                return self.disconnected_rendered_meshes[layer_name]
+
             self.disconnected_rendered_meshes[layer_name] = [
                 RenderedMesh.from_prepared_data(data)
                 for data in prepared_meshes
@@ -1268,6 +1352,10 @@ class MeshViewer(QOpenGLWidget):
     mousePositionChanged = Signal(mesh.Point, object)  # object can be float or None
     # Signal for visibility changes
     visibilityChanged = Signal()
+    # Fired (from a background mesh-prep thread) when a layer's prepared
+    # meshes become available. Connected queued to update() so the repaint
+    # happens on the GUI thread even when the emit originates off-thread.
+    meshPrepReady = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1306,6 +1394,12 @@ class MeshViewer(QOpenGLWidget):
 
         self.edges_visible = True
         self.outline_visible = True
+
+        # Repaint when background mesh prep finishes. The emit comes from an
+        # executor thread; a queued connection marshals update() onto the
+        # GUI thread. Without this the canvas can stay blank after the last
+        # resize/expose until the user next interacts.
+        self.meshPrepReady.connect(self.update, Qt.QueuedConnection)
 
     @property
     def current_rendering_mode(self) -> BaseRenderingMode:
@@ -1431,6 +1525,18 @@ class MeshViewer(QOpenGLWidget):
     @Slot(solver.Solution)
     def setSolution(self, solution: solver.Solution):
         """Set the solution for the mesh viewer."""
+        # Free the previous solution's GL objects before rebuilding. Deleting
+        # VAOs/VBOs needs this widget's context current; guard on mesh_shader
+        # (set in initializeGL) so we skip it on the first solution, when the
+        # context isn't up yet and there's nothing to free.
+        if self.mesh_shader is not None:
+            self.makeCurrent()
+            try:
+                for mode in self.modes:
+                    mode.release_gl_resources()
+            finally:
+                self.doneCurrent()
+
         self.solution = solution
 
         # Initialize the list of layers from the solution
@@ -1450,7 +1556,7 @@ class MeshViewer(QOpenGLWidget):
 
         # Initialize all modes with solution data (spatial indices + rendered meshes)
         for mode in self.modes:
-            mode.set_solution(solution)
+            mode.set_solution(solution, on_ready=self.meshPrepReady.emit)
             mode.autoscale_values(solution)
 
         # Emit mode-related signals

@@ -4199,10 +4199,10 @@ class _SolveWorker(QThread):
                 ),
             )
 
-            # Capture Python warnings.warn() (e.g. padne's SolverWarning
-            # about ground node current) into the log file. Without this,
-            # warnings only go to stderr and are invisible from the GUI.
-            logging.captureWarnings(True)
+            # Python warnings.warn() (e.g. padne's SolverWarning about ground
+            # node current) are routed into the logging system once at app
+            # startup (see main()), so they reach the log file / Messages tab
+            # from here without touching that global state per solve.
             # Forward pdnsolver's per-step INFO log records to the GUI as
             # substage updates so the user can see what the solver is
             # currently doing during the ~20 s opaque "Meshing + solving"
@@ -4937,11 +4937,14 @@ class LauncherWindow(QMainWindow):
             )
 
         def _on_cancel() -> None:
-            # The heavy work uses a ProcessPoolExecutor and shapely calls
-            # that don't honour cooperative cancellation, so we let the
-            # worker run to completion in the background and just drop
-            # its result. The dialog is closed immediately for the user.
+            # Ask the worker to unwind at its next stage boundary (the
+            # pure-Python packaging phase honours isInterruptionRequested()).
+            # The ProcessPoolExecutor render phase can't be interrupted
+            # cooperatively, so also drop the worker's signals: whether it
+            # stops early or runs to completion, its result is discarded and
+            # the dialog closes immediately for the user.
             if self._gerber_worker is not None:
+                self._gerber_worker.requestInterruption()
                 try:
                     self._gerber_worker.finished_ok.disconnect(_on_ok)
                     self._gerber_worker.failed.disconnect(_on_fail)
@@ -5820,6 +5823,16 @@ class PdnViewer(QMainWindow):
         # processEvents() during the popup-paint can't stack a second
         # dialog on top of the first.
         self._render_busy_active: bool = False
+        # Re-entrancy guard for _render itself. Some signals (the outline
+        # toggle, the value-scale range change) connect directly to
+        # _render, bypassing _run_with_busy_popup's guard. _render pumps
+        # QApplication.processEvents() at every stage boundary, so such a
+        # signal can re-enter mid-render (in the window before the modal
+        # busy dialog appears) and push half-built meshes into GL state.
+        # _render defers a re-entrant call and coalesces it into one
+        # trailing pass once the in-flight render returns.
+        self._render_in_progress: bool = False
+        self._render_rerender_pending: bool = False
         # Throttle timestamp for _pump_busy_ui — caps the marquee-bar
         # repaint rate at ~33 Hz so the pump can be sprinkled in hot
         # inner loops (every polygon, every per-(phys, net) tile) without
@@ -9172,6 +9185,28 @@ class PdnViewer(QMainWindow):
         QApplication.processEvents()
 
     def _render(self) -> None:
+        # Re-entrancy guard. _render_impl pumps QApplication.processEvents()
+        # at every stage boundary (to keep the busy-popup marquee alive); a
+        # queued signal that connects directly to _render — the outline
+        # toggle, the value-scale range change — can fire inside one of
+        # those pumps and re-enter before the modal busy dialog is up.
+        # Running the body twice interleaved corrupts GL state (the
+        # half-pushed-meshes hazard _run_with_busy_popup's own guard warns
+        # about). Defer instead of dropping: remember that another pass is
+        # needed and run exactly one trailing render once this one returns.
+        if self._render_in_progress:
+            self._render_rerender_pending = True
+            return
+        self._render_in_progress = True
+        try:
+            self._render_impl()
+        finally:
+            self._render_in_progress = False
+        if self._render_rerender_pending:
+            self._render_rerender_pending = False
+            QTimer.singleShot(0, self._render)
+
+    def _render_impl(self) -> None:
         # Optional per-stage timing. When ``self._render_profile`` is a
         # list (set by tools/bench_recolor.py) each stage appends a
         # ``(name, seconds)`` pair; when it's None ``_mark`` is a cheap
@@ -19878,10 +19913,13 @@ class PdnViewer(QMainWindow):
             )
 
         def _on_cancel() -> None:
-            # ProcessPoolExecutor + Shapely don't honour cooperative
-            # cancellation. Drop the worker's signals so its result is
-            # discarded; let the work run to completion in the background.
+            # Ask the worker to unwind at its next stage boundary (the
+            # pure-Python packaging phase honours isInterruptionRequested()).
+            # The ProcessPoolExecutor render phase can't be interrupted
+            # cooperatively, so also drop the worker's signals: whether it
+            # stops early or runs to completion, its result is discarded.
             if self._gerber_worker is not None:
+                self._gerber_worker.requestInterruption()
                 try:
                     self._gerber_worker.finished_ok.disconnect(_on_ok)
                     self._gerber_worker.failed.disconnect(_on_fail)
@@ -23132,6 +23170,17 @@ def _build_stub_lean_solution_from_loaded(loaded):
     )
 
 
+class _GerberImportCancelled(Exception):
+    """Signals that a Gerber import was cancelled cooperatively at a stage
+    boundary. Raised from :func:`_finish_gerber_import` when the worker's
+    ``cancel_cb`` reports an interruption request, and caught in
+    :meth:`_GerberImportWorker.run` so the thread unwinds without emitting a
+    result — mirroring :meth:`_SolveWorker._cancel_requested`. The packaging
+    phase (all-copper / primitives records) is pure Python holding the GIL,
+    so a hard ``terminate()`` there could deadlock the app; the cooperative
+    checkpoint avoids that."""
+
+
 class _GerberImportWorker(QThread):
     """Background worker that runs :func:`_finish_gerber_import` off the
     GUI thread so a fresh-import doesn't freeze the application.
@@ -23175,7 +23224,15 @@ class _GerberImportWorker(QThread):
                     self.substage_changed.emit(substage)
             result = _finish_gerber_import(
                 self._picked_result, self._pseudo, progress_cb=_cb,
+                cancel_cb=self.isInterruptionRequested,
             )
+        except _GerberImportCancelled:
+            # Cancelled at a stage boundary — the GUI already tore down its
+            # dialog and dropped our signals, so just unwind silently.
+            logging.getLogger(__name__).info(
+                "Gerber import cancelled cooperatively.",
+            )
+            return
         except Exception as e:
             logging.getLogger(__name__).exception(
                 "Gerber import worker failed",
@@ -23221,11 +23278,18 @@ def _pick_gerber_inputs(parent_window):
     return result, pseudo
 
 
-def _finish_gerber_import(result, pseudo, progress_cb=None) -> tuple:
+def _finish_gerber_import(result, pseudo, progress_cb=None,
+                          cancel_cb=None) -> tuple:
     """Heavy-lifting half of the Gerber import, safe to run on a worker
     thread. Takes the result of :func:`_pick_gerber_inputs` plus an
     optional ``progress_cb(stage, substage)`` that receives stage label
     updates the GUI can show in a progress dialog.
+
+    ``cancel_cb`` is an optional zero-arg predicate polled at each stage
+    boundary; when it returns True the function raises
+    :class:`_GerberImportCancelled` so a cancelled import unwinds
+    cooperatively during the pure-Python packaging phase (which holds the
+    GIL and can't be safely ``terminate()``d).
 
     Returns ``(stub_solution, metadata, loaded_project, project_file)``.
     """
@@ -23233,7 +23297,12 @@ def _finish_gerber_import(result, pseudo, progress_cb=None) -> tuple:
     from fypa.gerber.loader import load_gerber_project
     from fypa.project_file import ProjectFile
 
+    def _check_cancel():
+        if cancel_cb is not None and cancel_cb():
+            raise _GerberImportCancelled
+
     def _progress(stage=None, substage=None):
+        _check_cancel()
         if progress_cb is None:
             return
         try:
@@ -23479,6 +23548,12 @@ def main(solution, warnings_list=None, metadata=None,
     flow. Pass a folder Path or a saved ``.fypa`` Path; pass any non-None
     value to open the file picker without pre-selection.
     """
+    # Route Python warnings.warn() (e.g. padne's SolverWarning) into the
+    # logging system for the whole process. Set once here at startup rather
+    # than per-solve: it's global process state, and toggling it from the
+    # solve-worker thread on every solve is a needless mutation of shared
+    # state that was never reset.
+    logging.captureWarnings(True)
     # Windows taskbar grouping — must happen BEFORE any window is shown.
     _set_windows_app_user_model_id()
     app = QApplication.instance()
