@@ -2033,6 +2033,84 @@ def free_pardiso_cache() -> None:
             pass
 
 
+# --- Cached mesh + Laplacian assembly ---------------------------------------
+# Meshing and the per-mesh cotangent-Laplacian assembly are the dominant solve
+# cost (tens of seconds on a large board) and are a pure function of the board
+# geometry, per-layer conductance, connection seed geometry, and the mesher
+# config — never of source/sink magnitudes. The GUI editor loop re-solves the
+# same board with only current/voltage values changed (an RHS-only edit), so
+# caching these outputs lets that re-solve skip re-meshing and re-assembling
+# the Laplacian; only the RHS and the fast solve phase remain (the latter also
+# reuses the cached PARDISO factorisation, keyed on the unchanged matrix).
+#
+# Everything downstream of the mesh/Laplacian — vertex→matrix indexing carries
+# over with the meshes, but node indexing, network stamping, and the matrix
+# build — is ALWAYS redone fresh. NodeID is ``eq=False`` (identity equality)
+# and a Network's node order comes from a ``set``, so node index assignment is
+# non-deterministic across Problem rebuilds; nothing that depends on it is ever
+# reused. Only the geometry-derived meshes and their Laplacian triples (whose
+# indices are the deterministic mesh-vertex range [0, n_vertices)) are cached.
+@dataclass
+class _MeshAssembly:
+    fingerprint: str
+    meshes: list
+    mesh_index_to_layer_index: list
+    disconnected_meshes_by_layer: list
+    vindex: "VertexIndexer"
+    mesh_rows: np.ndarray
+    mesh_cols: np.ndarray
+    mesh_vals: np.ndarray
+
+
+_mesh_assembly_cache: "_MeshAssembly | None" = None
+_mesh_assembly_lock = threading.Lock()
+
+
+def free_mesh_assembly_cache() -> None:
+    """Drop the cached mesh + Laplacian assembly (see :class:`_MeshAssembly`).
+
+    Bounds resident memory — a large board's meshes + COO triples run to
+    hundreds of megabytes — and, called on solve-cancel, guarantees a solve
+    hard-killed mid-meshing can't leave a stale assembly for the next solve to
+    reuse. It's pure data, so unlike the PARDISO factorisation there's no
+    native resource to release; the next solve simply re-meshes."""
+    global _mesh_assembly_cache
+    with _mesh_assembly_lock:
+        _mesh_assembly_cache = None
+
+
+def _mesh_assembly_fingerprint(prob: "problem.Problem", mesher_config) -> str:
+    """Content hash of everything that determines the meshes and their
+    Laplacian: the mesher config, each layer's geometry + conductance, and
+    every connection's seed geometry (layer, point, pad region) in the exact
+    order the mesher consumes them (seed order perturbs Triangle's output, so
+    the hash is order-sensitive, not a set). Source/sink magnitudes and node
+    identity are excluded — they never change the mesh or the Laplacian — so a
+    value-only re-solve hashes identically and reuses the cache.
+
+    WKB is exact, so a false hit would need a SHA-1 collision; a false miss (a
+    rebuilt-but-identical geometry that happens to hash differently) only costs
+    a re-mesh, never a wrong answer."""
+    h = hashlib.sha1()
+    h.update(repr(mesher_config).encode("utf-8"))
+    layer_to_index = {id(layer): i for i, layer in enumerate(prob.layers)}
+    for layer in prob.layers:
+        h.update(b"\x00L")
+        h.update(np.float64(layer.conductance).tobytes())
+        h.update(shapely.to_wkb(layer.shape))
+    # Connections in mesher-consumption order (networks, then each network's
+    # connections) — the same order generate_meshes_for_problem collects seed
+    # points in, so the hash tracks exactly what perturbs the mesh.
+    for network in prob.networks:
+        for conn in network.connections:
+            h.update(b"\x00C")
+            h.update(np.int64(layer_to_index.get(id(conn.layer), -1)).tobytes())
+            h.update(np.float64([conn.point.x, conn.point.y]).tobytes())
+            if conn.region is not None:
+                h.update(shapely.to_wkb(conn.region))
+    return h.hexdigest()
+
+
 def _pardiso_solve_sym(
     L_csc: "scipy.sparse.csc_matrix", r: np.ndarray,
 ) -> np.ndarray:
@@ -2419,6 +2497,9 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
     # Note that if mesher_config = None, default parameters are used.
     mesher = mesh.Mesher(mesher_config)
 
+    # Assigned in the mesh/Laplacian cache-miss branch below (see _MeshAssembly).
+    global _mesh_assembly_cache
+
     # Per-stage timing: ``_t0`` is captured right before each stage and
     # ``_record_stage`` logs a "… done in Xs" line and appends the duration
     # to ``timings``. After the solve, ``_log_timing_breakdown`` prints every
@@ -2446,34 +2527,84 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
     connected_layer_mesh_pairs = find_connected_layer_geom_indices(connectivity_graph)
     _record_stage(timings, "Connectivity graph", _t0)
 
-    # One worker pool for BOTH meshing passes — spawns/re-imports at most once.
-    _mesh_pool = _SharedMeshPool()
-    try:
-        _t0 = time.monotonic()
-        log.info("Meshing the connected components")
-        meshes, mesh_index_to_layer_index = \
-            generate_meshes_for_problem(prob, mesher, connected_layer_mesh_pairs,
-                                        strtrees, shared_pool=_mesh_pool)
-        _record_stage(timings, "Connected meshing", _t0, f" ({len(meshes)} mesh(es))")
+    # Mesh + Laplacian assembly — the dominant solve cost, and a pure function
+    # of geometry / conductance / connection seeds / mesher config. Reuse the
+    # cached result when those are unchanged (a value-only re-solve: only the
+    # source/sink magnitudes differ, which touch the RHS alone). Everything
+    # after this block is rebuilt fresh regardless — see _MeshAssembly.
+    _fp = _mesh_assembly_fingerprint(prob, mesher.config)
+    _cached = None
+    with _mesh_assembly_lock:
+        if (_mesh_assembly_cache is not None
+                and _mesh_assembly_cache.fingerprint == _fp):
+            _cached = _mesh_assembly_cache
 
+    if _cached is not None:
         _t0 = time.monotonic()
-        log.info("Meshing the disconnected components")
-        disconnected_meshes_by_layer = \
-            generate_disconnected_meshes(prob, connected_layer_mesh_pairs,
-                                         shared_pool=_mesh_pool)
-        _n_disc = sum(len(m) for m in disconnected_meshes_by_layer)
-        _record_stage(timings, "Disconnected meshing", _t0, f" ({_n_disc} mesh(es))")
-    finally:
-        _mesh_pool.close()
+        log.info("Reusing cached mesh + Laplacian assembly (value-only re-solve)")
+        meshes = _cached.meshes
+        mesh_index_to_layer_index = _cached.mesh_index_to_layer_index
+        disconnected_meshes_by_layer = _cached.disconnected_meshes_by_layer
+        vindex = _cached.vindex
+        mesh_rows = _cached.mesh_rows
+        mesh_cols = _cached.mesh_cols
+        mesh_vals = _cached.mesh_vals
+        _record_stage(timings, "Mesh + Laplacian (cached reuse)", _t0,
+                      f" ({len(meshes)} mesh(es), {len(mesh_vals)} entries)")
+    else:
+        # One worker pool for BOTH meshing passes — spawns/re-imports at most once.
+        _mesh_pool = _SharedMeshPool()
+        try:
+            _t0 = time.monotonic()
+            log.info("Meshing the connected components")
+            meshes, mesh_index_to_layer_index = \
+                generate_meshes_for_problem(prob, mesher, connected_layer_mesh_pairs,
+                                            strtrees, shared_pool=_mesh_pool)
+            _record_stage(timings, "Connected meshing", _t0, f" ({len(meshes)} mesh(es))")
 
-    # In the next step, we assign a global index to each vertex in every mesh.
-    # This is needed since we need to somehow map the vertex indices to the
-    # matrix indices in the final system of equations
-    _t0 = time.monotonic()
-    log.info("Indexing vertices and connections")
-    vindex = VertexIndexer.create(meshes)
-    _record_stage(timings, "Vertex indexing", _t0,
-                  f" ({vindex.n_vertices} vertices)")
+            _t0 = time.monotonic()
+            log.info("Meshing the disconnected components")
+            disconnected_meshes_by_layer = \
+                generate_disconnected_meshes(prob, connected_layer_mesh_pairs,
+                                             shared_pool=_mesh_pool)
+            _n_disc = sum(len(m) for m in disconnected_meshes_by_layer)
+            _record_stage(timings, "Disconnected meshing", _t0, f" ({_n_disc} mesh(es))")
+        finally:
+            _mesh_pool.close()
+
+        # In the next step, we assign a global index to each vertex in every mesh.
+        # This is needed since we need to somehow map the vertex indices to the
+        # matrix indices in the final system of equations
+        _t0 = time.monotonic()
+        log.info("Indexing vertices and connections")
+        vindex = VertexIndexer.create(meshes)
+        _record_stage(timings, "Vertex indexing", _t0,
+                      f" ({vindex.n_vertices} vertices)")
+
+        # Per-mesh cotangent Laplacian in global vertex indices. Depends only
+        # on the meshes + per-layer conductance (both captured by _fp), so it
+        # lives in this cache-miss branch and is stored alongside the meshes.
+        # The mesh-vertex indices [0, n_vertices) it uses are deterministic
+        # from the meshes, so the triples are safe to reuse verbatim.
+        _t0 = time.monotonic()
+        log.info("Constructing the Laplace operators")
+        mesh_conductances = [
+            prob.layers[mesh_index_to_layer_index[i]].conductance
+            for i in range(len(meshes))
+        ]
+        mesh_rows, mesh_cols, mesh_vals = process_mesh_laplace_operators(
+            meshes, mesh_conductances, vindex,
+        )
+        _record_stage(timings, "Laplace operator construction", _t0,
+                      f" ({len(mesh_vals)} mesh entries)")
+
+        _store = _MeshAssembly(
+            _fp, meshes, mesh_index_to_layer_index,
+            disconnected_meshes_by_layer, vindex,
+            mesh_rows, mesh_cols, mesh_vals,
+        )
+        with _mesh_assembly_lock:
+            _mesh_assembly_cache = _store
 
     _t0 = time.monotonic()
     log.info("Processing lumped element networks")
@@ -2528,18 +2659,9 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
     # global L is built ONCE at the end via coo_matrix(...).tocsc(), which
     # sums duplicate (i, j) entries automatically — equivalent to the
     # upstream lil_matrix's ``L[i, j] +=`` semantics, but without paying
-    # ``lil_matrix.__setitem__``'s Python-level overhead per write.
-    _t0 = time.monotonic()
-    log.info("Constructing the Laplace operators")
-    mesh_conductances = [
-        prob.layers[mesh_index_to_layer_index[i]].conductance
-        for i in range(len(meshes))
-    ]
-    mesh_rows, mesh_cols, mesh_vals = process_mesh_laplace_operators(
-        meshes, mesh_conductances, vindex,
-    )
-    _record_stage(timings, "Laplace operator construction", _t0,
-                  f" ({len(mesh_vals)} mesh entries)")
+    # ``lil_matrix.__setitem__``'s Python-level overhead per write. The mesh
+    # Laplacian triples (mesh_rows/cols/vals) were built above — freshly, or
+    # reused from the mesh-assembly cache on a value-only re-solve.
 
     # Network stamps are small (a handful of entries per element) — plain
     # Python list .extend is fine; we'll concatenate once at the end.

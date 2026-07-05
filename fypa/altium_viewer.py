@@ -4535,6 +4535,17 @@ def _abort_solve_worker(owner) -> None:
             logging.getLogger(__name__).warning(
                 "free_pardiso_cache raised %s; carrying on.", _exc,
             )
+        # Also drop the cached mesh + Laplacian assembly. It's pure data (safe
+        # even if the worker is hard-killed mid-populate), but a large board's
+        # meshes + COO triples are hundreds of MB; free them on cancel rather
+        # than leaving them resident for a solve the user abandoned.
+        try:
+            from pdnsolver.solver import free_mesh_assembly_cache
+            free_mesh_assembly_cache()
+        except Exception as _exc:
+            logging.getLogger(__name__).warning(
+                "free_mesh_assembly_cache raised %s; carrying on.", _exc,
+            )
         worker.requestInterruption()
         # Give the worker a chance to stop cooperatively at its next stage
         # boundary first (see _SolveWorker._cancel_requested). This matters for
