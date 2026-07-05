@@ -1259,13 +1259,35 @@ def _triangulate_adaptive(
         return (p1_v if p1_v is not None else np.empty((0, 2), np.float64),
                 p1_t if p1_t is not None else np.empty((0, 3), np.int64))
 
-    # Per-triangle target area from distance to the nearest feature.
-    centroids = p1_v[p1_t].mean(axis=1)
-    dist = _boundary_distance(poly.boundary, centroids)
+    # Per-triangle target area from a *conservative* distance to the nearest
+    # feature: min over the triangle's vertices, minus the circumradius,
+    # clamped at 0. Grading by the centroid distance alone let a coarse
+    # pass-1 triangle CONTAINING a feature (a seed / boundary sliver well
+    # inside it) stay coarse whenever its centroid was beyond ``max_dist``;
+    # the circumradius bounds how far any interior point can be from the
+    # nearest vertex, so ``min_vertex_dist − circumradius`` lower-bounds the
+    # true feature distance anywhere in the triangle.
+    vdist = _boundary_distance(poly.boundary, p1_v)
     if seed_xy is not None and len(seed_xy) > 0:
         kd = scipy.spatial.cKDTree(
             np.ascontiguousarray(seed_xy, dtype=np.float64).reshape(-1, 2))
-        dist = np.minimum(dist, kd.query(centroids)[0])
+        vdist = np.minimum(vdist, kd.query(p1_v)[0])
+    tri_pts = p1_v[p1_t]
+    ea = np.linalg.norm(tri_pts[:, 1] - tri_pts[:, 2], axis=1)
+    eb = np.linalg.norm(tri_pts[:, 2] - tri_pts[:, 0], axis=1)
+    ec = np.linalg.norm(tri_pts[:, 0] - tri_pts[:, 1], axis=1)
+    d1 = tri_pts[:, 1] - tri_pts[:, 0]
+    d2 = tri_pts[:, 2] - tri_pts[:, 0]
+    # 2 × triangle area (z of the 2-D cross product; np.cross on 2-D vectors
+    # is deprecated in numpy 2.x).
+    tri_area2 = np.abs(d1[:, 0] * d2[:, 1] - d1[:, 1] * d2[:, 0])
+    # Circumradius R = abc / (4A); degenerate triangles (A ≈ 0) get dist 0
+    # → refined at the fine size, the safe direction.
+    circumradius = np.divide(
+        ea * eb * ec, 2.0 * tri_area2,
+        out=np.full(len(p1_t), np.inf), where=tri_area2 > 0.0,
+    )
+    dist = np.maximum(vdist[p1_t].min(axis=1) - circumradius, 0.0)
     frac = np.clip((dist - min_dist) / max(max_dist - min_dist, 1e-9), 0.0, 1.0)
     size = fine_size + frac * (coarse_size - fine_size)
     target_area = _AREA * size * size

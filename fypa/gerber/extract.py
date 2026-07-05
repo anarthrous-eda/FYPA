@@ -136,6 +136,12 @@ _CLASSIFIER_RULES: list[tuple[re.Pattern[str], int, int | None]] = [
     (_re(r"\.gbo$"), LAYER_ID_SILK_BOT, None),
     (_re(r"[._-]F[._-]?SilkS"), LAYER_ID_SILK_TOP, None),
     (_re(r"[._-]B[._-]?SilkS"), LAYER_ID_SILK_BOT, None),
+    # Internal plane — Altium .GP1 / .GP2 ... (negative-image artwork). These
+    # ARE copper layers (power/ground planes); the renderer detects the
+    # %IPNEG negative image and floods+subtracts. Must precede the .G<n> rule
+    # so ".gp1" isn't mis-read, and mapped as inner copper so the plane is
+    # offered in the mapping dialog instead of silently ignored.
+    (_re(r"\.gp(\d+)$"), 0, 1),                 # Altium internal plane; group 1 = N
     # Inner copper — Altium .G1 / .G2 ..., KiCad In1.Cu / In2.Cu,
     # generic "innerN" / "L<N>".
     (_re(r"\.g(\d+)$"), 0, 1),                  # Altium inner; group 1 = N
@@ -501,6 +507,22 @@ def _flash_polygon_cached(prim, cache: dict) -> shapely.geometry.Polygon | None:
 _POLARITY_FLIP_WARN_THRESHOLD: int = 50
 
 
+_IP_NEG_RE = re.compile(r"%\s*IP\s*NEG\s*\*\s*%", re.IGNORECASE)
+
+
+def _gerber_is_negative_image(gerber_path: Path) -> bool:
+    """True if the Gerber file carries an ``%IPNEG*%`` (image-polarity
+    negative) statement — the deprecated way plane layers are plotted as
+    negative artwork. Sniffs the raw text (the header sits in the first few
+    hundred bytes) rather than relying on gerbonara, which does not expose the
+    resolved image polarity on the parsed file object."""
+    try:
+        head = gerber_path.read_text(errors="replace")[:4096]
+    except OSError:
+        return False
+    return bool(_IP_NEG_RE.search(head))
+
+
 def render_gerber_to_shapely(gerber_path: Path) -> shapely.geometry.base.BaseGeometry:
     """Open ``gerber_path`` with gerbonara and rasterise every object into one
     Shapely (Multi)Polygon. Polarity-aware: dark primitives are unioned,
@@ -514,6 +536,37 @@ def render_gerber_to_shapely(gerber_path: Path) -> shapely.geometry.base.BaseGeo
     import gerbonara.graphic_primitives as gp
 
     gf = GerberFile.open(str(gerber_path))
+
+    # Negative-image (%IPNEG / deprecated %IP NEG) detection. A negative
+    # internal-plane plot (Altium's default .GP<n> artwork) draws the
+    # anti-pads/clearances as artwork against an implied solid-copper field.
+    # gerbonara does not synthesise that field, so the layer otherwise renders
+    # as a few tiny discs at the anti-pad sites — the plane the tool most needs
+    # is lost. Sniff the raw text for the IP-negative statement; if present,
+    # seed the accumulator with a flood over the object bounding box and treat
+    # every object as a CLEAR that carves the anti-pads out of the field. The
+    # bbox is a local proxy for the board outline (unavailable here) — slightly
+    # undersized at the board edge, but vastly better than tiny-disc output.
+    # Guarded on the statement, so a normal positive layer is never touched.
+    _is_negative = _gerber_is_negative_image(gerber_path)
+    _neg_background = None
+    if _is_negative:
+        try:
+            (x0, y0), (x1, y1) = gf.bounding_box(MM)
+            pad = 0.5  # mm — small margin so edge anti-pads stay inside
+            _neg_background = shapely.geometry.box(
+                x0 - pad, y0 - pad, x1 + pad, y1 + pad)
+            log.warning(
+                "%s: negative-image (IP NEG) layer — flooding the object "
+                "bounding box and subtracting clears. Plane extent is "
+                "approximated by the artwork bbox, not the board outline; "
+                "verify the plane copper near the board edge.",
+                gerber_path.name,
+            )
+        except Exception as e:
+            log.warning("%s: negative-image layer but bbox flood failed (%s) "
+                        "— layer may render empty.", gerber_path.name, e)
+
     # Stream the objects in file order, batching consecutive same-polarity
     # primitives into one unary_union per batch (much faster than unioning
     # one-by-one). When polarity flips, apply the accumulated dark batch
@@ -526,7 +579,9 @@ def render_gerber_to_shapely(gerber_path: Path) -> shapely.geometry.base.BaseGeo
     # distributes over union), but one GEOS call instead of N. Flashed
     # apertures (Circles / Rectangles) go through a per-aperture template
     # cache (see :func:`_flash_polygon_cached`).
-    accumulated: shapely.geometry.base.BaseGeometry = shapely.geometry.Polygon()
+    accumulated: shapely.geometry.base.BaseGeometry = (
+        _neg_background if _neg_background is not None
+        else shapely.geometry.Polygon())
     batch_polys: list[shapely.geometry.base.BaseGeometry] = []
     batch_lines_by_width: dict[float, list[shapely.geometry.LineString]] = {}
     batch_dark = True
@@ -553,6 +608,13 @@ def render_gerber_to_shapely(gerber_path: Path) -> shapely.geometry.base.BaseGeo
     for obj in gf.objects:
         for prim in obj.to_primitives(MM):
             is_dark = bool(prim.polarity_dark)
+            if _is_negative:
+                # The dark anti-pad/clearance artwork of a negative image must
+                # be SUBTRACTED from the seeded copper field (and any explicit
+                # clear becomes added copper). Flip the sense here rather than
+                # relying on gerbonara, whose IPNEG handling leaves these
+                # objects dark in this version.
+                is_dark = not is_dark
             if is_dark != batch_dark and (batch_polys or batch_lines_by_width):
                 _flush()
                 batch_polys = []
@@ -875,6 +937,65 @@ def _x2_drill_span_to_layer_ids(
     return (ordered_layer_ids[lo_idx], ordered_layer_ids[hi_idx])
 
 
+def _stamp_slot_chain(
+    x1: float, y1: float, x2: float, y2: float, width_mm: float,
+    is_npth: bool, layer_start: int, layer_end: int,
+    vias: list[RawVia], npth: list[RawHole],
+) -> None:
+    """Discretise a routed/oval slot (``(x1,y1)``→``(x2,y2)``, ``width_mm``
+    bore) into a chain of overlapping circular stamps so the slot bridges the
+    layer pair across its full length (plated → vias) or is drawn along its
+    length (non-plated → holes). Shared by the Gerber-X2 and Excellon drill
+    paths and the Excellon rout-mode / G85 slot handling."""
+    import math
+    length = math.hypot(x2 - x1, y2 - y1)
+    step = max(width_mm / 2.0, 1e-3)
+    n_stamps = max(2, int(math.ceil(length / step)) + 1)
+    for i in range(n_stamps):
+        t = i / (n_stamps - 1) if n_stamps > 1 else 0.0
+        cx = x1 + (x2 - x1) * t
+        cy = y1 + (y2 - y1) * t
+        if is_npth:
+            npth.append(RawHole(center=Pt2D(cx, cy), diameter_mm=width_mm))
+        else:
+            vias.append(RawVia(
+                center=Pt2D(cx, cy),
+                diameter_mm=width_mm + VIA_ANNULAR_RING_HEURISTIC_MM,
+                hole_diameter_mm=width_mm,
+                layer_start=layer_start,
+                layer_end=layer_end,
+                net_index=NO_NET,
+            ))
+
+
+_G85_RE = re.compile(r"G85", re.IGNORECASE)
+
+
+def _preprocess_excellon_g85(text: str) -> tuple[str, int]:
+    """Split inline G85 canned-slot cycles so gerbonara can parse the file.
+
+    gerbonara 1.5.0 has no G85 rule and raises on the first ``G85`` line,
+    aborting the ENTIRE drill file — so a single oval hole exported as G85
+    (a very common CAM option) silently drops every via in the file. We split
+    each ``X..Y..G85X..Y..`` line at the ``G85`` token into two coordinate
+    hits: both slot endpoints become drill hits of the active tool, so the
+    layer pair is bridged at each end (the slot middle isn't stamped, but that
+    is a strict improvement over losing the file). Because we only insert a
+    line break — never touch the coordinate tokens — gerbonara's format /
+    zero-suppression detection is unaffected. Returns ``(text, n_slots)``."""
+    if "G85" not in text.upper():
+        return text, 0
+    n = 0
+    out: list[str] = []
+    for line in text.splitlines():
+        if _G85_RE.search(line):
+            out.append(_G85_RE.sub("\n", line))
+            n += 1
+        else:
+            out.append(line)
+    return "\n".join(out), n
+
+
 def _gerber_drill_to_vias(
     path: Path,
     ordered_layer_ids: list[int],
@@ -891,7 +1012,6 @@ def _gerber_drill_to_vias(
     so each flash / slot becomes a ``RawHole`` instead — drawn as the
     "Non Plated TH" Board Features overlay but never meshed.
     """
-    import math
     import gerbonara.graphic_primitives as gp
     from gerbonara import GerberFile
     from gerbonara.utils import MM
@@ -944,27 +1064,11 @@ def _gerber_drill_to_vias(
                 w = float(prim.width)
                 if w <= 0:
                     continue
-                dx = float(prim.x2) - float(prim.x1)
-                dy = float(prim.y2) - float(prim.y1)
-                length = math.hypot(dx, dy)
-                step = max(w / 2.0, 1e-3)
-                n_stamps = max(2, int(math.ceil(length / step)) + 1)
-                for i in range(n_stamps):
-                    t = i / (n_stamps - 1) if n_stamps > 1 else 0.0
-                    cx = float(prim.x1) + dx * t
-                    cy = float(prim.y1) + dy * t
-                    if is_npth:
-                        npth.append(RawHole(
-                            center=Pt2D(cx, cy), diameter_mm=w))
-                        continue
-                    vias.append(RawVia(
-                        center=Pt2D(cx, cy),
-                        diameter_mm=w + VIA_ANNULAR_RING_HEURISTIC_MM,
-                        hole_diameter_mm=w,
-                        layer_start=layer_start,
-                        layer_end=layer_end,
-                        net_index=NO_NET,
-                    ))
+                _stamp_slot_chain(
+                    float(prim.x1), float(prim.y1),
+                    float(prim.x2), float(prim.y2), w,
+                    is_npth, layer_start, layer_end, vias, npth,
+                )
             # Arcs / regions in a drill file are uncommon; ignore quietly.
     return vias, npth, warnings
 
@@ -979,6 +1083,7 @@ def _excellon_to_vias(
     (Excellon carries no layer-span info). Explicitly non-plated tools
     become NPTH holes (drawn, not meshed) instead of being discarded.
     """
+    import gerbonara.graphic_objects as go
     from gerbonara import ExcellonFile
     from gerbonara.utils import MM
 
@@ -991,36 +1096,76 @@ def _excellon_to_vias(
     )
     for path in drill_paths:
         try:
-            ef = ExcellonFile.open(str(path))
-        except Exception as e:  # SyntaxError, OSError, …
+            raw = path.read_text(errors="replace")
+        except OSError as e:
+            warnings.append(f"Couldn't read drill file {path.name} ({e}); skipping.")
+            continue
+        cleaned, n_g85 = _preprocess_excellon_g85(raw)
+        if n_g85:
+            warnings.append(
+                f"{path.name}: {n_g85} G85 canned-slot cycle(s) split into "
+                f"endpoint drill hits (gerbonara can't parse G85) — the slot "
+                f"ends are bridged but the slot middle is not stamped."
+            )
+        try:
+            ef = ExcellonFile.from_string(cleaned, filename=str(path))
+        except Exception as e:  # SyntaxError, ValueError, …
             warnings.append(
                 f"Couldn't parse drill file {path.name} ({type(e).__name__}: "
                 f"{e}); skipping."
             )
             continue
+
+        # KiCad marks non-plated drill files with a `TF.FileFunction,NonPlated`
+        # comment that gerbonara stores but does not act on; honour it so an
+        # NPTH file's holes don't become full-stack plated vias.
+        file_is_npth = _excellon_comments_say_nonplated(getattr(ef, "comments", ()))
+
+        n_objs = 0
         for d in ef.objects:
             try:
-                # Let gerbonara handle inch/mm conversion. Its LengthUnit
-                # ``__str__`` returns the shorthand ("in"), so the old
-                # ``str(d.unit) == "inch"`` check never matched and inch drill
-                # files came through 25.4x too small (all holes bunched at the
-                # origin). ``convert_from`` is unit-aware and a no-op for
-                # mm / unit-less files.
-                x = float(MM.convert_from(d.unit, d.x))
-                y = float(MM.convert_from(d.unit, d.y))
                 tool = d.tool        # ExcellonTool
                 diam_mm = float(tool.equivalent_width(MM))
+                if diam_mm <= 0:
+                    continue
+                # Per-tool plating (Altium magic comment) overrides the
+                # file-level NonPlated hint; fall back to the file hint.
+                tool_plated = getattr(tool, "plated", None)
+                is_npth = (tool_plated is False) or (
+                    tool_plated is None and file_is_npth)
+
+                if isinstance(d, go.Line):
+                    # Rout-mode slot (KiCad's default slot output): stamp a
+                    # chain along the slot instead of raising on the missing
+                    # `.x`/`.y` (which silently dropped the slot as a
+                    # "malformed record").
+                    x1 = float(MM.convert_from(d.unit, d.x1))
+                    y1 = float(MM.convert_from(d.unit, d.y1))
+                    x2 = float(MM.convert_from(d.unit, d.x2))
+                    y2 = float(MM.convert_from(d.unit, d.y2))
+                    _stamp_slot_chain(
+                        x1, y1, x2, y2, diam_mm, is_npth,
+                        top_layer_id, bottom_layer_id, vias, npth,
+                    )
+                    n_objs += 1
+                    continue
+
+                # Let gerbonara handle inch/mm conversion. Its LengthUnit
+                # ``__str__`` returns the shorthand ("in"), so an old
+                # ``str(d.unit) == "inch"`` check never matched and inch drill
+                # files came through 25.4x too small. ``convert_from`` is
+                # unit-aware and a no-op for mm / unit-less files.
+                x = float(MM.convert_from(d.unit, d.x))
+                y = float(MM.convert_from(d.unit, d.y))
             except Exception as e:
                 warnings.append(
                     f"Skipping malformed drill record in {path.name} "
                     f"({type(e).__name__}: {e})."
                 )
                 continue
-            if diam_mm <= 0:
-                continue
-            if hasattr(tool, "plated") and tool.plated is False:
-                npth.append(RawHole(
-                    center=Pt2D(x, y), diameter_mm=diam_mm))
+            n_objs += 1
+            if is_npth:
+                npth.append(RawHole(center=Pt2D(x, y), diameter_mm=diam_mm))
                 continue
             vias.append(RawVia(
                 center=Pt2D(x, y),
@@ -1030,7 +1175,27 @@ def _excellon_to_vias(
                 layer_end=bottom_layer_id,
                 net_index=NO_NET,
             ))
+        if n_objs == 0:
+            # A drill file that parsed to zero objects is almost always a parse
+            # degradation (an unsupported construct gerbonara skipped), not a
+            # genuinely empty file — surface it loudly rather than silently
+            # importing a board with no interlayer bridges from this file.
+            warnings.append(
+                f"{path.name}: parsed to 0 drill hits — the file may use an "
+                f"unsupported construct; no vias/holes imported from it."
+            )
     return vias, npth, warnings
+
+
+def _excellon_comments_say_nonplated(comments) -> bool:
+    """True when an Excellon file's comments carry a KiCad-style
+    ``TF.FileFunction,NonPlated`` attribute (gerbonara stores comments but
+    doesn't parse the embedded file-function attribute)."""
+    for c in comments or ():
+        text = str(c).lower()
+        if "filefunction" in text and "nonplated" in text.replace(" ", ""):
+            return True
+    return False
 
 
 def _drill_files_to_vias(

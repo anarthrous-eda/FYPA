@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from dataclasses import dataclass
 
 from fypa.topology.constants import BRIDGE_R, GND_NET, JUNCTION_R, WIRE_EPS
 from fypa.topology.types import TopologyNode, TopologyWire
+
+log = logging.getLogger(__name__)
 
 # Re-export for tests / public API
 __all__ = [
@@ -95,6 +98,11 @@ def _parse_wire_path(path_d: str) -> list[tuple[float, float]]:
             points.append((cx, cy))
             i += 2
         else:
+            log.warning(
+                "Unknown wire path token %r in %r — skipping it "
+                "(only M/H/V orthogonal paths are supported).",
+                cmd, path_d,
+            )
             i += 1
     return points
 

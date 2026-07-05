@@ -392,6 +392,13 @@ class SolverInfo:
     """Diagnostic information from the solver."""
     ground_node_current: float  # Should be ~0 for well-posed problems
     residual_norm: float        # ||L @ v - r||, should be ~0 for solved systems
+    # Which _solve_robust candidate produced the returned solution
+    # ("pardiso-sym", "pardiso", "superlu", "minres"/"lgmres",
+    # "minres+ridge"/"lgmres+ridge", or "direct-best-effort"). Defaulted so
+    # SolverInfo instances pickled before this field existed (solve caches,
+    # lean solutions) still load: pickle restores the old __dict__ and
+    # attribute lookup falls back to this class-level default.
+    method: str = "unknown"
 
 
 @dataclass
@@ -1425,10 +1432,17 @@ def stamp_network_into_system(network: problem.Network,
                 cols.extend((i_v_p, i_v_n, i_v, i_v))
                 vals.extend((1.0, -1.0, 1.0, -1.0))
                 r[i_v] += voltage
-                # Mirror the output current at the input pair with gain.
+                # Mirror the output current at the input pair with gain: the
+                # input side must DRAW gain·i_v from s_f and return it at s_t.
+                # Convention check (matches the VoltageSource stamp above): a
+                # +1 LHS coefficient on i_v at a node's KCL row means that
+                # node RECEIVES i_v (the source injects at p via its +1, and
+                # draws at n via its −1). i_v solves to the output current
+                # delivered at v_p, so the input pin s_f needs the −gain
+                # coefficient (draw) and the return s_t the +gain (inject).
                 rows.extend((i_s_f, i_s_t))
                 cols.extend((i_v, i_v))
-                vals.extend((gain, -gain))
+                vals.extend((-gain, gain))
             case _:
                 raise NotImplementedError(f"Unsupported node type {element}")
 
@@ -2235,7 +2249,9 @@ def _solve_robust(
     is the solver that produced ``v``: ``"pardiso-sym"`` / ``"pardiso"`` (MKL
     PARDISO, symmetric-indefinite or unsymmetric), ``"superlu"`` (scipy's
     direct solver), ``"minres"`` / ``"minres+ridge"`` (Jacobi-preconditioned
-    iterative, the latter with Tikhonov regularisation), or
+    iterative, the latter with Tikhonov regularisation; ``"lgmres"`` /
+    ``"lgmres+ridge"`` when the matrix is unsymmetric — MINRES requires
+    symmetry), or
     ``"direct-best-effort"`` when nothing reaches tolerance and the least-bad
     direct solve is handed back. ``iterations`` is the iteration count for
     iterative methods (1 for direct), and ``residual_norm`` is ``||L·v - r||``
@@ -2336,8 +2352,9 @@ def _solve_robust(
         "a barely-there return path. Note the matrix depends only on the "
         "board topology, not on the source/sink values — editing those "
         "changes which RHS directions expose the singularity, not the "
-        "singularity itself. Falling back to MINRES with Jacobi "
-        "preconditioning. See KNOWN_ISSUES.md.",
+        "singularity itself. Falling back to a Jacobi-preconditioned "
+        "iterative solve (MINRES, or LGMRES when the matrix is "
+        "unsymmetric). See KNOWN_ISSUES.md.",
         best_method, best_res, abs_tol, r_norm,
     )
     if row_describer is not None and best_v is not None:
@@ -2355,19 +2372,29 @@ def _solve_robust(
     inv_diag = 1.0 / np.where(diag_abs > eps, diag_abs, eps)
     M_precond = scipy.sparse.diags(inv_diag, format="csc")
 
-    # Warm-start MINRES from the best direct solve. Even a failed direct
-    # solve is usually correct across most of the system — only the
-    # near-null-space components are wrong — so it is a far better x0 than
-    # zero and cuts the iteration count substantially.
+    # Warm-start the iterative solver from the best direct solve. Even a
+    # failed direct solve is usually correct across most of the system — only
+    # the near-null-space components are wrong — so it is a far better x0
+    # than zero and cuts the iteration count substantially.
     x0 = best_v
 
-    # MINRES tolerance: scipy's default is 1e-5 (rtol). Tightened to 1e-10
+    # MINRES requires a symmetric matrix; with a VoltageRegulator stamped
+    # (symmetric=False) its iterates are meaningless — the residual selection
+    # below would reject them, but only after burning the wall-clock budget
+    # twice. Use LGMRES (general unsymmetric, same callback contract) there;
+    # the symmetric path keeps MINRES, bit-identical to before.
+    if symmetric:
+        _iter_solve, iter_name = scipy.sparse.linalg.minres, "minres"
+    else:
+        _iter_solve, iter_name = scipy.sparse.linalg.lgmres, "lgmres"
+
+    # Iterative tolerance: scipy's default is 1e-5 (rtol). Tightened to 1e-10
     # since we're already in the fallback path. maxiter is a hard ceiling;
     # the wall-clock budget enforced by the callback is the practical bound
     # — without it a multi-million-variable solve appears to hang.
-    progress = _MinresProgress("Jacobi", _MINRES_TIME_BUDGET_S)
+    progress = _MinresProgress(f"{iter_name}/Jacobi", _MINRES_TIME_BUDGET_S)
     try:
-        v, info = scipy.sparse.linalg.minres(
+        v, info = _iter_solve(
             L_csc, r, x0=x0, rtol=_MINRES_RTOL, maxiter=_MINRES_MAXITER,
             M=M_precond, callback=progress,
         )
@@ -2376,26 +2403,26 @@ def _solve_robust(
             x0 if x0 is not None else np.zeros_like(r))
         info = -1
         log.warning(
-            "MINRES hit its %.0fs wall-clock budget after %d iterations — "
+            "%s hit its %.0fs wall-clock budget after %d iterations — "
             "keeping the best iterate so far and trying ridge regularisation.",
-            _MINRES_TIME_BUDGET_S, progress.iterations,
+            iter_name, _MINRES_TIME_BUDGET_S, progress.iterations,
         )
     residual_norm = _residual(v)
-    # Capture the plain-MINRES iteration count before the ridge pass below
+    # Capture the plain-iterative iteration count before the ridge pass below
     # reuses ``progress`` — so the final return reports the WINNING candidate's
     # own iteration count, not the ridge's.
     minres_iters = progress.iterations
     if info == 0 and residual_norm <= abs_tol:
         log.info(
-            "MINRES converged: residual=%.4g (<= tol=%.4g) in %d iterations.",
-            residual_norm, abs_tol, minres_iters,
+            "%s converged: residual=%.4g (<= tol=%.4g) in %d iterations.",
+            iter_name, residual_norm, abs_tol, minres_iters,
         )
-        return v, "minres", minres_iters, residual_norm
+        return v, iter_name, minres_iters, residual_norm
 
     log.warning(
-        "MINRES did not converge cleanly: info=%d, residual=%.4g "
+        "%s did not converge cleanly: info=%d, residual=%.4g "
         "(tol=%.4g). Retrying with Tikhonov ridge regularisation.",
-        info, residual_norm, abs_tol,
+        iter_name, info, residual_norm, abs_tol,
     )
 
     # Last-resort fallback: add a small ridge λI to make the matrix
@@ -2408,9 +2435,9 @@ def _solve_robust(
               else _RIDGE_LAMBDA_FLOOR)
     L_ridge = L_csc + lam * scipy.sparse.identity(L_csc.shape[0], format="csc",
                                                   dtype=DTYPE)
-    progress = _MinresProgress("ridge", _MINRES_TIME_BUDGET_S)
+    progress = _MinresProgress(f"{iter_name}/ridge", _MINRES_TIME_BUDGET_S)
     try:
-        v_ridge, info = scipy.sparse.linalg.minres(
+        v_ridge, info = _iter_solve(
             L_ridge, r, x0=(v if v is not None else x0), rtol=_MINRES_RTOL,
             maxiter=_MINRES_MAXITER, M=M_precond, callback=progress,
         )
@@ -2418,19 +2445,20 @@ def _solve_robust(
         v_ridge = progress.last_x if progress.last_x is not None else v
         info = -1
         log.warning(
-            "MINRES+ridge hit its %.0fs budget after %d iterations.",
-            _MINRES_TIME_BUDGET_S, progress.iterations,
+            "%s+ridge hit its %.0fs budget after %d iterations.",
+            iter_name, _MINRES_TIME_BUDGET_S, progress.iterations,
         )
     ridge_res = _residual(v_ridge)
 
     # Return whichever candidate has the smallest residual against the
-    # original system — plain MINRES, MINRES+ridge, or the best direct
+    # original system — plain iterative, iterative+ridge, or the best direct
     # solve. A fallback must never hand back a worse answer than it started
     # with. NaN residuals (a singular direct solve) sort last.
     # Each candidate carries its OWN iteration count (a direct solve isn't
     # iterative → 1), so the returned count matches whichever method wins.
-    candidates = [("minres", v, residual_norm, minres_iters),
-                  ("minres+ridge", v_ridge, ridge_res, progress.iterations)]
+    candidates = [(iter_name, v, residual_norm, minres_iters),
+                  (f"{iter_name}+ridge", v_ridge, ridge_res,
+                   progress.iterations)]
     if best_v is not None:
         candidates.append(("direct-best-effort", best_v, best_res, 1))
     method, v_final, res_final, iters_final = min(
@@ -2438,9 +2466,9 @@ def _solve_robust(
         key=lambda c: c[2] if math.isfinite(c[2]) else math.inf,
     )
     log.info(
-        "MINRES+ridge (λ=%.4g): info=%d, residual=%.4g. Best available "
+        "%s+ridge (λ=%.4g): info=%d, residual=%.4g. Best available "
         "solution: method=%s, residual=%.4g (tol=%.4g)%s.",
-        lam, info, ridge_res, method, res_final, abs_tol,
+        iter_name, lam, info, ridge_res, method, res_final, abs_tol,
         "" if res_final <= abs_tol else " — STILL ABOVE TOLERANCE; results "
         "for the near-floating region are unreliable",
     )
@@ -2857,8 +2885,27 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
     solver_info = SolverInfo(
         ground_node_current=ground_node_current,
         residual_norm=residual_norm,
+        method=solver_method,
     )
     _record_stage(timings, "Solver diagnostics", _t0)
+
+    # A regularised / best-effort fallback that never reached tolerance
+    # produces a normal-looking solution object — surface it the same way the
+    # ground-current diagnostic is surfaced, so callers (and the GUI's
+    # captured-warnings panel) see that the numbers are unreliable instead of
+    # only a log.info buried in the solve log.
+    residual_tol = max(_DIRECT_SOLVE_ABS_TOL_FLOOR,
+                       _DIRECT_SOLVE_REL_TOL * float(np.linalg.norm(r_solve)))
+    if residual_norm > residual_tol:
+        warnings.warn(
+            f"Linear solve did not reach tolerance: residual "
+            f"{residual_norm:.4g} > {residual_tol:.4g} (method "
+            f"'{solver_method}'). The matrix is near-singular — usually an "
+            "isolated copper region connected only via lumped elements, or a "
+            "fragmented net with a barely-there return path. Voltages in the "
+            "near-floating region are unreliable.",
+            SolverWarning,
+        )
 
     if not np.isclose(ground_node_current, 0):
         # This is a warning, but we still continue to produce the solution object

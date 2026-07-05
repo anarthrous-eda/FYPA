@@ -145,7 +145,13 @@ _SI_PREFIXES: dict[str, float] = {
 }
 # Units we tolerate trailing (the unit suffix is informational; we don't enforce
 # unit/role consistency — the user is responsible for putting volts on a SOURCE).
-_TRAILING_UNITS: tuple[str, ...] = ("V", "A", "Ohm", "OHM", "ohm", "Ω", "Hz", "S", "F", "H", "%")
+# "R" is the EE ohm shorthand (10R = 10 Ω, 10mR = 10 mΩ); without it a value
+# like "10mR" left the milli prefix unapplied and parsed as 10 Ω (1000× high).
+# The engineering form "0R01" (R as decimal point → 0.01 Ω) is handled
+# separately by _VALUE_RE's eng_letter branch and is unaffected.
+_TRAILING_UNITS: tuple[str, ...] = (
+    "V", "A", "Ohm", "OHM", "ohm", "Ω", "R", "Hz", "S", "F", "H", "%",
+)
 
 _VALUE_RE = re.compile(
     r"""^\s*

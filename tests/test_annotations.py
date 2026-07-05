@@ -79,6 +79,19 @@ class TestParseSiValue:
         assert parse_si_value("-2.7") == -2.7
         assert parse_si_value(".001") == 0.001
 
+    def test_ohm_R_shorthand(self):
+        # "R" is the EE ohm unit. Without it in the trailing-unit table the
+        # milli prefix in "10mR" was silently dropped → 10 Ω (1000× too high)
+        # on a very common PDN_R shorthand. Regression for round-2 finding #9.
+        assert parse_si_value("10mR") == pytest.approx(0.01)
+        assert parse_si_value("0.5mR") == pytest.approx(0.0005)
+        assert parse_si_value("10R") == pytest.approx(10.0)
+        assert parse_si_value("2R2") == pytest.approx(2.2)   # eng form
+        assert parse_si_value("0R01") == pytest.approx(0.01)  # eng form
+        # and the equivalent explicit-unit forms agree
+        assert parse_si_value("10mOhm") == pytest.approx(0.01)
+        assert parse_si_value("10mΩ") == pytest.approx(0.01)
+
     def test_spaced_exponent_not_joined(self):
         with pytest.raises(ValueError):
             parse_si_value("1.5 E-9")

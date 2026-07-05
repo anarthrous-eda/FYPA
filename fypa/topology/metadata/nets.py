@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import logging
+
 from fypa.topology.constants import GND_NET, IDEAL_RETURN_RAIL
 from fypa.topology.metadata_schema import TerminalDict
 from fypa.topology.net_aliases import is_gnd_alias
+
+log = logging.getLogger(__name__)
+
+# terminal_net() is called many times per terminal during layout; warn about
+# each inconsistent terminal once per process rather than per call.
+_warned_terminal_nets: set[tuple] = set()
 
 
 def net_to_rail_map(rail_to_members: dict[str, list[str]]) -> dict[str, str]:
@@ -22,6 +30,23 @@ def terminal_net(term: TerminalDict | None) -> str | None:
         return IDEAL_RETURN_RAIL
     req = term.get("requested_net")
     pins = term.get("pins") or []
+    pin_nets = sorted({p.get("net") for p in pins if p.get("net")})
+    if len(pin_nets) > 1 or (req and pin_nets and req not in pin_nets):
+        key = (req, tuple(pin_nets))
+        if key not in _warned_terminal_nets:
+            _warned_terminal_nets.add(key)
+            if len(pin_nets) > 1:
+                log.warning(
+                    "Terminal pins disagree on net (%s); using the first pin's "
+                    "net %r (requested_net=%r).",
+                    ", ".join(pin_nets), pins[0].get("net"), req,
+                )
+            else:
+                log.warning(
+                    "Terminal pins resolved to net %r, contradicting "
+                    "requested_net=%r; using the pin net.",
+                    pins[0].get("net"), req,
+                )
     if pins:
         net = pins[0].get("net")
         if net:
@@ -66,5 +91,5 @@ def port_display_net(term: TerminalDict | None, canonical: str) -> str:
         return canonical
     req = term.get("requested_net")
     if req and canonical == GND_NET:
-        return req if is_gnd_alias(req) else req
+        return req
     return req or canonical

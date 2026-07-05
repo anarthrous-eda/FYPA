@@ -821,20 +821,40 @@ def _plane_sheet_polygon(
                 shapely.geometry.Point(p.center.x, p.center.y).buffer(
                     p.hole_mm / 2.0, resolution=CIRCLE_RESOLUTION // 4))
 
-    # Split-plane heuristic: a plane layer carrying *copper* regions on a net
+    # Split-plane detection: a plane layer carrying *copper* regions on a net
     # other than its own means the artwork splits the layer between multiple
-    # nets — which this single-net flood model can't represent (the other net's
-    # copper is missing). Warn loudly rather than silently mis-model it.
-    for r in proj.shape_based_regions:
-        if (r.layer_id == plane_lid and r.kind == 0 and not r.is_keepout
-                and r.net_index not in (NO_NET, net_index)):
-            log.warning(
-                "Plane layer %d (net %r) carries copper region(s) on a different "
-                "net — this looks like a SPLIT plane. FYPA models it as a single "
-                "%r flood, so the other net's copper on this layer is not "
-                "represented.", plane_lid, stackup.plane_net_name,
-                stackup.plane_net_name)
-            break
+    # nets — which this single-net flood model can't represent (the other
+    # net's copper is missing). Altium stores split-plane copper as filled
+    # Regions6 (`proj.regions`, net inherited from the parent Polygons6),
+    # NOT only as ShapeBasedRegions — the previous check looked at the SBR
+    # stream alone and so never fired on the common case. Scan BOTH streams
+    # and name the foreign nets so the warning is actionable.
+    #
+    # NB this only WARNS; it does not yet re-model the split geometry
+    # (subtract each foreign region from the primary flood and synthesise a
+    # per-net sub-plane). That geometry change is golden-affecting and needs a
+    # corpus split-plane board to validate the region→net mapping and the
+    # flood subtraction; it is deliberately deferred rather than shipped blind.
+    foreign_net_names: set[str] = set()
+    for stream in (proj.regions, proj.shape_based_regions):
+        for r in stream:
+            if (r.layer_id == plane_lid and r.kind == 0 and not r.is_keepout
+                    and not getattr(r, "is_polygon_outline", False)
+                    and not getattr(r, "is_board_cutout", False)
+                    and r.net_index not in (NO_NET, net_index)):
+                if 0 <= r.net_index < len(proj.nets):
+                    foreign_net_names.add(proj.nets[r.net_index].name)
+                else:
+                    foreign_net_names.add(f"#{r.net_index}")
+    if foreign_net_names:
+        log.warning(
+            "Plane layer %d (net %r) carries copper on other net(s) %s — this "
+            "is a SPLIT plane. FYPA models it as a single %r flood, so the "
+            "other net(s)' copper on this layer is NOT represented and their "
+            "return-path resistance will be overstated. Split the plane into "
+            "separate nets in Altium, or treat these rails' results with "
+            "caution.", plane_lid, stackup.plane_net_name,
+            ", ".join(sorted(foreign_net_names)), stackup.plane_net_name)
 
     sheet = base
     if holes:

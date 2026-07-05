@@ -61,10 +61,11 @@ def jump_row_for_directive(directive: DirectiveDict) -> JumpRowDict | None:
 def _directive_has_error(directive: DirectiveDict, errors: list[str]) -> bool:
     label = str(directive.get("label") or directive.get("designator", ""))
     desig = str(directive.get("designator", ""))
+    # Word-boundary match so U1 doesn't inherit an error mentioning U12.
     for err in errors:
-        if desig and desig in err:
+        if desig and re.search(rf"\b{re.escape(desig)}\b", err):
             return True
-        if label and label in err:
+        if label and re.search(rf"\b{re.escape(label)}\b", err):
             return True
     return False
 

@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 shapely = pytest.importorskip("shapely")
-import shapely.geometry  # noqa: E402
+import shapely.geometry  # noqa: E402, F811
 gp = pytest.importorskip("gerbonara.graphic_primitives")
 
 from fypa.gerber import extract as gx  # noqa: E402
@@ -81,6 +81,81 @@ def test_plain_txt_is_ignored(tmp_path):
 def test_missing_txt_is_ignored_not_crash(tmp_path):
     # classify_file may see a path that isn't readable; sniff must not raise.
     assert gx.classify_file(tmp_path / "nope.txt") == gx.LAYER_ID_IGNORE
+
+
+# --- drill slots: G85 canned + rout-mode (round-2 findings #5 / #M1) ----------
+
+def test_g85_slot_does_not_drop_whole_file(tmp_path):
+    # A G85 canned slot used to raise inside gerbonara and drop EVERY via in
+    # the file. It must now split into endpoint hits and keep the plain holes.
+    p = tmp_path / "with_g85.drl"
+    p.write_text(
+        "M48\nMETRIC\nT1C0.300\n%\nT1\n"
+        "X10.0Y10.0\n"
+        "X20.0Y20.0G85X25.0Y20.0\n"
+        "M30\n"
+    )
+    vias, npth, warns = gx._excellon_to_vias([p], [gx.LAYER_ID_TOP, gx.LAYER_ID_BOTTOM])
+    # 1 plain hole + 2 slot endpoints = 3 vias; the file is NOT dropped.
+    assert len(vias) == 3
+    assert any("G85" in w for w in warns)
+
+
+def test_rout_mode_slot_stamps_via_chain(tmp_path):
+    # A rout-mode slot (G00/M15/G01/M16) is a gerbonara Line object; the old
+    # code assumed .x/.y and dropped it as a "malformed record".
+    p = tmp_path / "rout.drl"
+    p.write_text(
+        "M48\nMETRIC\nT1C0.500\n%\nG05\nT1\n"
+        "G00X30.0Y30.0\nM15\nG01X35.0Y30.0\nM16\n"
+        "X10.0Y10.0\n"
+        "M30\n"
+    )
+    vias, npth, warns = gx._excellon_to_vias([p], [gx.LAYER_ID_TOP, gx.LAYER_ID_BOTTOM])
+    # A 5 mm slot with a 0.5 mm tool stamps a multi-via chain (not one hole).
+    assert len(vias) > 5
+
+
+def test_preprocess_g85_is_format_agnostic():
+    text = "X20.0Y20.0G85X25.0Y20.0\n"
+    cleaned, n = gx._preprocess_excellon_g85(text)
+    assert n == 1
+    assert cleaned.splitlines() == ["X20.0Y20.0", "X25.0Y20.0"]
+    # No G85 → untouched.
+    assert gx._preprocess_excellon_g85("X1Y1\n") == ("X1Y1\n", 0)
+
+
+# --- negative-image planes + .gp classifier (round-2 finding #6) --------------
+
+_NEG_PLANE = (
+    "%FSLAX46Y46*%\n%MOMM*%\n%IPNEG*%\n%ADD10C,1.0*%\nD10*\n"
+    "X5000000Y5000000D03*\nX15000000Y5000000D03*\nM02*\n"
+)
+
+
+def test_gp_files_classify_as_inner_copper(tmp_path):
+    # .GP<n> (Altium internal plane) used to fall through to Ignore.
+    assert gx.classify_file(tmp_path / "plane.gp1") != gx.LAYER_ID_IGNORE
+    assert gx.classify_file(tmp_path / "plane.gp2") != gx.LAYER_ID_IGNORE
+    # plain inner .g<n> still works
+    assert gx.classify_file(tmp_path / "inner.g1") != gx.LAYER_ID_IGNORE
+
+
+def test_negative_image_plane_floods_not_tiny_discs(tmp_path):
+    p = tmp_path / "plane.gp1"
+    p.write_text(_NEG_PLANE)
+    geom = gx.render_gerber_to_shapely(p)
+    # Flood over the artwork bbox minus the two anti-pad clears — far larger
+    # than the ~1.57 mm² the two 1 mm discs would occupy if rendered positive.
+    assert geom.area > 10.0
+
+
+def test_positive_layer_unaffected_by_negative_branch(tmp_path):
+    # Same artwork without %IPNEG must still render as the two discs.
+    p = tmp_path / "sig.gtl"
+    p.write_text(_NEG_PLANE.replace("%IPNEG*%\n", ""))
+    geom = gx.render_gerber_to_shapely(p)
+    assert geom.area < 3.0
 
 
 # --- flash cache + width grouping equivalence --------------------------------

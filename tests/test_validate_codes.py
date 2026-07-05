@@ -7,12 +7,39 @@ from fypa.topology.geometry import BridgeCrossing, WireSeg
 from fypa.topology.types import TopologyModel, TopologyNode, TopologyPort, TopologyWire
 from fypa.topology import build_topology_model
 from fypa.topology.validate import (
+    check_conditional_gnd_names,
     check_gutter_wire_crossings,
     check_segment_spacing,
     validate_topology,
     vertical_segment_overlaps_node_body,
 )
 from fypa.topology.validate.util import foreign_segments_cross
+
+
+def _port_node(node_id: str, net: str) -> TopologyNode:
+    return TopologyNode(
+        node_id=node_id, label=node_id, designator=node_id, role="SINK",
+        x=0.0, y=0.0, width=40.0, height=20.0, config_label="",
+        has_error=False, bounds=(0.0, 0.0, 40.0, 20.0),
+        ports=[TopologyPort(terminal="P", net=net, label=net, side="right",
+                            x=0.0, y=10.0, node_id=node_id)],
+    )
+
+
+def test_conditional_gnd_name_warns_when_vss_drawn_separately():
+    # VSS is deliberately NOT folded into GND by name (round-2 finding): it
+    # draws as its own rail, and validate must WARN so the change isn't silent.
+    model = TopologyModel(nodes=[_port_node("U1", "VSS")])
+    issues = check_conditional_gnd_names(model)
+    assert len(issues) == 1
+    assert issues[0]["code"] == "conditional_gnd_name_not_merged"
+    assert issues[0]["severity"] == "warning"
+    assert issues[0]["net"] == "VSS"
+
+
+def test_conditional_gnd_name_quiet_for_plain_nets():
+    model = TopologyModel(nodes=[_port_node("U1", "GND"), _port_node("U2", "+5V")])
+    assert check_conditional_gnd_names(model) == []
 
 
 def test_duplicate_vertical_x_detected():

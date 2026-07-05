@@ -610,14 +610,31 @@ def _directive_to_network(
             node = _pp.NodeID()
             refs[group] = node
         return node
-    def _gather(*term_node_coupling_triples):
+    def _gather(*term_node_coupling_quads):
         all_conns: list[_pp.Connection] = []
         all_aux: list[_pp.BaseLumped] = []
-        for term, node, coupling in term_node_coupling_triples:
+        for term, node, coupling, term_name in term_node_coupling_quads:
             c, a = _terminal_connections(
                 term, node, layer_by_layer_and_net,
                 coupling_resistance_ohm=coupling,
             )
+            # A terminal that HAS pins but resolved to zero connections leaves
+            # its element node dangling (a CurrentSource driving nothing, or a
+            # VoltageSource half-open) — the solver least-squares it into a
+            # wrong answer, or the dead-terminal filter silently drops the
+            # element and loses its current. Warn per-terminal (the caller
+            # previously only warned when BOTH terminals were empty). Common on
+            # fragmented ground nets, exactly when FYPA is run.
+            if term.pins and not c:
+                log.warning(
+                    "%s %s: terminal %s has %d pin(s) but none landed on "
+                    "extracted copper (net/layer with no mesh) — the element's "
+                    "%s node is left unconnected and its contribution may be "
+                    "dropped or mis-solved. Check the net has copper on the "
+                    "pins' layer.",
+                    type(d).__name__, getattr(d, "designator", "?"),
+                    term_name, len(term.pins), term_name,
+                )
             all_conns.extend(c)
             all_aux.extend(a)
         return all_conns, all_aux
@@ -649,14 +666,14 @@ def _directive_to_network(
             element: _pp.BaseLumped = _pp.VoltageSource(
                 p=node_p, n=node_n, voltage=d.voltage)
             conns, aux = _gather(
-                (d.p, node_p, SOURCE_COUPLING_RESISTANCE_OHM),
+                (d.p, node_p, SOURCE_COUPLING_RESISTANCE_OHM, "P"),
             )
         else:
             node_n = _pp.NodeID()
             element = _pp.VoltageSource(p=node_p, n=node_n, voltage=d.voltage)
             conns, aux = _gather(
-                (d.p, node_p, SOURCE_COUPLING_RESISTANCE_OHM),
-                (d.n, node_n, SOURCE_COUPLING_RESISTANCE_OHM),
+                (d.p, node_p, SOURCE_COUPLING_RESISTANCE_OHM, "P"),
+                (d.n, node_n, SOURCE_COUPLING_RESISTANCE_OHM, "N"),
             )
     elif isinstance(d, SinkSpec):
         node_f = _pp.NodeID()
@@ -664,21 +681,21 @@ def _directive_to_network(
             node_t = _return_ref(return_ref_nodes, d.return_group)
             element = _pp.CurrentSource(f=node_f, t=node_t, current=d.current)
             conns, aux = _gather(
-                (d.p, node_f, COUPLING_RESISTANCE_OHM),
+                (d.p, node_f, COUPLING_RESISTANCE_OHM, "P"),
             )
         else:
             node_t = _pp.NodeID()
             element = _pp.CurrentSource(f=node_f, t=node_t, current=d.current)
             conns, aux = _gather(
-                (d.p, node_f, COUPLING_RESISTANCE_OHM),
-                (d.n, node_t, COUPLING_RESISTANCE_OHM),
+                (d.p, node_f, COUPLING_RESISTANCE_OHM, "P"),
+                (d.n, node_t, COUPLING_RESISTANCE_OHM, "N"),
             )
     elif isinstance(d, ResistorSpec):
         node_a, node_b = _pp.NodeID(), _pp.NodeID()
         element = _pp.Resistor(a=node_a, b=node_b, resistance=d.resistance)
         conns, aux = _gather(
-            (d.p, node_a, COUPLING_RESISTANCE_OHM),
-            (d.n, node_b, COUPLING_RESISTANCE_OHM),
+            (d.p, node_a, COUPLING_RESISTANCE_OHM, "P"),
+            (d.n, node_b, COUPLING_RESISTANCE_OHM, "N"),
         )
     elif isinstance(d, RegulatorSpec):
         node_vp, node_vn = _pp.NodeID(), _pp.NodeID()
@@ -688,10 +705,10 @@ def _directive_to_network(
             voltage=d.voltage, gain=d.gain,
         )
         conns, aux = _gather(
-            (d.out_p, node_vp, SOURCE_COUPLING_RESISTANCE_OHM),
-            (d.out_n, node_vn, SOURCE_COUPLING_RESISTANCE_OHM),
-            (d.in_p, node_sf, COUPLING_RESISTANCE_OHM),
-            (d.in_n, node_st, COUPLING_RESISTANCE_OHM),
+            (d.out_p, node_vp, SOURCE_COUPLING_RESISTANCE_OHM, "OUT_P"),
+            (d.out_n, node_vn, SOURCE_COUPLING_RESISTANCE_OHM, "OUT_N"),
+            (d.in_p, node_sf, COUPLING_RESISTANCE_OHM, "IN_P"),
+            (d.in_n, node_st, COUPLING_RESISTANCE_OHM, "IN_N"),
         )
         network_elements: list[_pp.BaseLumped] = [element]
         if d.quiescent_current > 0:
@@ -827,11 +844,14 @@ def _barrel_segment_resistance_ohm(
 # barrel unchanged and so do NOT trigger the fill-aware resistance branch.
 #
 # Values mirror ``altium_monkey.PcbIpc4761ViaType``:
-#   5 = TYPE_5_FILLING, 10/11 = TYPE_6A/B_FILLING_AND_COVERING,
+#   9 = TYPE_5_FILLING, 10/11 = TYPE_6A/B_FILLING_AND_COVERING,
 #   12 = TYPE_7_FILLING_AND_CAPPING.
-# (Type 9 in older corpora was also TYPE_5_FILLING; both are accepted for
-# resilience against minor enum reorderings in altium_monkey.)
-_IPC4761_FILL_TYPES: frozenset[int] = frozenset({5, 9, 10, 11, 12})
+# NB value 5 is TYPE_3A_PLUGGING (not filling) — plugging seals the hole for
+# soldermask/tenting and does not add a conducting rod inside the barrel, so
+# it is deliberately excluded (the loader's own label table maps 5→"IIIa
+# plug"). Including it gave conductive-keyword-plugged vias a spurious
+# full-length parallel fill shunt.
+_IPC4761_FILL_TYPES: frozenset[int] = frozenset({9, 10, 11, 12})
 
 
 # Substrings (case-insensitive) that classify an IPC-4761 fill material as
@@ -3598,6 +3618,32 @@ def _apply_net_remap(
             for it in items
         )
 
+    # Internal-plane sheets are flooded by NAME (`plane_net_name`), resolved
+    # against ``proj.nets`` at geometry-build time — a path the primitive
+    # net_index rewrite above never touches. If the plane's net is the
+    # non-canonical member of a merge, that name still resolves to the
+    # pre-merge index, the sheet lands in a bucket that is filtered out of the
+    # active-net set, and the ENTIRE plane silently vanishes from the FEM
+    # (return-path resistance grossly high). Rewrite each plane's net name to
+    # its canonical net's name so the name lookup lands on the same index the
+    # primitives now carry. Net names are unique per net in Altium, so the
+    # first-index-wins lookup is bijective and the canonical name resolves to
+    # the canonical index.
+    name_to_index: dict[str, int] = {}
+    for i, net in enumerate(proj.nets):
+        name_to_index.setdefault(net.name, i)
+
+    def _canonical_plane_name(s):
+        if not s.is_plane or not s.plane_net_name:
+            return s
+        idx = name_to_index.get(s.plane_net_name)
+        if idx is None or idx not in remap:
+            return s
+        canonical_name = proj.nets[remap[idx]].name
+        if canonical_name == s.plane_net_name:
+            return s
+        return dr(s, plane_net_name=canonical_name)
+
     return dr(
         proj,
         tracks=_rebuild(proj.tracks),
@@ -3607,6 +3653,7 @@ def _apply_net_remap(
         regions=_rebuild(proj.regions),
         shape_based_regions=_rebuild(proj.shape_based_regions),
         fills=_rebuild(proj.fills),
+        stackup=tuple(_canonical_plane_name(s) for s in proj.stackup),
         # nets unchanged — both canonical and non-canonical names still
         # resolve, and parse_annotations applies the remap after lookup.
     )

@@ -2851,7 +2851,11 @@ class _GradientBar(QWidget):
         self._low: float = 0.0
         self._high: float = 1.0
         self._cmap_name: str = "viridis"
-        self._cmap_gradient: QLinearGradient | None = None
+        self._cmap_gradient: object | None = None
+        # LUT colour stops + clamp end-colours, filled by _rebuild_gradient.
+        self._cmap_stops: list[tuple[float, QColor]] = []
+        self._clamp_lo_color: QColor = QColor(0, 0, 0)
+        self._clamp_hi_color: QColor = QColor(255, 255, 255)
         self._dragging: str | None = None  # 'low', 'high', or None
         # Metric name + unit shown above the strip, e.g. "Voltage" / "V".
         # Kept separate so an engineering SI prefix (chosen per render
@@ -2933,18 +2937,25 @@ class _GradientBar(QWidget):
     # --- Painting -----------------------------------------------------------
 
     def _rebuild_gradient(self) -> None:
-        """Pre-compute a QLinearGradient with stops sampled from the active
-        matplotlib colormap. Cached so paintEvent doesn't re-sample on every
-        repaint (drags fire many repaints per second)."""
+        """Pre-compute the colormap LUT stops and the clamp end-colors. Cached
+        so paintEvent doesn't re-sample matplotlib on every repaint (drags fire
+        many repaints per second). The QLinearGradient geometry itself is built
+        per-paint because it must span the *clamp window* [low, high] — not the
+        whole data-range strip — to match how the GPU maps the LUT (full LUT
+        stretched across the window, flat clamp colours outside)."""
         cmap = _mpl_cm.get_cmap(self._cmap_name)
-        grad = QLinearGradient(0, 0, 1, 0)
-        grad.setCoordinateMode(QLinearGradient.ObjectBoundingMode)
         n_stops = 32
+        self._cmap_stops = []
         for i in range(n_stops):
             t = i / (n_stops - 1)
             r, g, b, a = cmap(t)
-            grad.setColorAt(t, QColor.fromRgbF(r, g, b, a))
-        self._cmap_gradient = grad
+            self._cmap_stops.append((t, QColor.fromRgbF(r, g, b, a)))
+        # Clamp colours: the GPU renders values below `low` at LUT[0] and above
+        # `high` at LUT[1], so the bar's out-of-window regions use these.
+        self._clamp_lo_color = self._cmap_stops[0][1]
+        self._clamp_hi_color = self._cmap_stops[-1][1]
+        # Retained for any external reader; geometry is rebuilt per paint.
+        self._cmap_gradient = True
 
     def _strip_rect(self) -> QRectF:
         left = self._CHIP_PAD + self._MARGIN_X
@@ -3016,18 +3027,42 @@ class _GradientBar(QWidget):
                 Qt.AlignLeft | Qt.AlignVCenter, title,
             )
 
-        # Gradient strip + border.
+        # Gradient strip + border. The full LUT is stretched across the clamp
+        # window [low, high] — exactly what the GPU does — with flat clamp
+        # colours outside it (values below `low` render at LUT[0], above `high`
+        # at LUT[1]). Previously the LUT spanned the whole data-range strip, so
+        # a given hue on the bar sat at a different value than on the board
+        # whenever the window ≠ the data range (the out-of-the-box state for
+        # Current/Power Density) — users mis-read every saturated region.
         strip = self._strip_rect()
-        if self._cmap_gradient is not None:
-            p.fillRect(strip, self._cmap_gradient)
+        low_x = self._value_to_x(self._low)
+        high_x = self._value_to_x(self._high)
+        if getattr(self, "_cmap_stops", None):
+            # Flat clamp colours outside the window.
+            if low_x > strip.left():
+                p.fillRect(QRectF(strip.left(), strip.top(),
+                                  low_x - strip.left(), strip.height()),
+                           self._clamp_lo_color)
+            if high_x < strip.right():
+                p.fillRect(QRectF(high_x, strip.top(),
+                                  strip.right() - high_x, strip.height()),
+                           self._clamp_hi_color)
+            # Full LUT across the window, in screen (pixel) coordinates. The
+            # LUT-to-screen map is linear between low_x and high_x in BOTH
+            # linear and log modes (the endpoints already carry the mode's
+            # spacing), so linear stops are correct either way.
+            if high_x > low_x:
+                grad = QLinearGradient(low_x, 0.0, high_x, 0.0)
+                for t, color in self._cmap_stops:
+                    grad.setColorAt(t, color)
+                p.fillRect(QRectF(low_x, strip.top(),
+                                  high_x - low_x, strip.height()), grad)
         p.setPen(self._STRIP_BORDER)
         p.setBrush(Qt.NoBrush)
         p.drawRect(strip)
 
-        # Darken the strip outside [low, high] so the active clamp window
-        # is visually obvious.
-        low_x = self._value_to_x(self._low)
-        high_x = self._value_to_x(self._high)
+        # Faintly dim the out-of-window regions so the active clamp window is
+        # still visually obvious on top of the (now correct-hue) clamp colours.
         p.fillRect(QRectF(strip.left(), strip.top(),
                           low_x - strip.left(), strip.height()), self._MASK)
         p.fillRect(QRectF(high_x, strip.top(),
@@ -4067,15 +4102,21 @@ class _SolveWorker(QThread):
 
             # Sink overrides and editor directives mutate ``loaded`` in
             # place. Adaptive SMPS gain likewise rewrites regulator gains on
-            # ``loaded.annotations`` during the solve. When ``loaded`` is
-            # still the pristine object — in particular the in-memory
-            # LoadedProject the viewer also holds — clone it first so that
-            # shared copy (reused by the next resolve) is never touched. A
-            # stackup override above already returned a fresh private object,
-            # so no clone is needed then.
-            if ((self._sink_overrides or self._editor_directives
-                    or self._copper_names or self._adaptive_regulator_gain)
-                    and loaded is pristine_loaded):
+            # ``loaded.annotations`` during the solve. Clone first so the
+            # pristine in-memory LoadedProject the viewer retains (reused by
+            # the next Resolve) is never touched.
+            #
+            # This clone must run WHENEVER a mutating step will — the previous
+            # ``loaded is pristine_loaded`` gate skipped it after a stackup
+            # override, but ``_apply_stackup_overrides`` returns a fresh
+            # LoadedProject that still SHARES ``annotations`` with the pristine
+            # copy. Mutating that shared annotations in place appended a
+            # duplicate of every editor SOURCE/SINK on each Resolve (~2× sink
+            # current, compounding). ``clone_loaded_for_edit`` copies only the
+            # annotations (fresh directives list) and shares the override'd
+            # extracted/geometry, so the override is preserved.
+            if (self._sink_overrides or self._editor_directives
+                    or self._copper_names or self._adaptive_regulator_gain):
                 loaded = clone_loaded_for_edit(loaded)
 
             if self._sink_overrides:

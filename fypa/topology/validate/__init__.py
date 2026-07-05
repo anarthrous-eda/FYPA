@@ -5,6 +5,7 @@ from __future__ import annotations
 from fypa.topology.constants import MAX_CANVAS_WIDTH, WIRE_EPS
 from fypa.topology.geometry import compute_schematic_geometry
 from fypa.topology.issues import make_issue
+from fypa.topology.net_aliases import is_conditional_gnd_name
 from fypa.topology.types import TopologyModel
 from fypa.topology.validate.labels import check_wire_labels
 from fypa.topology.validate.segments import (
@@ -22,6 +23,7 @@ from fypa.topology.validate.util import vertical_segment_overlaps_node_body
 from fypa.topology.validate.wires import check_dangling_wire_endpoints
 
 __all__ = [
+    "check_conditional_gnd_names",
     "check_dangling_wire_endpoints",
     "check_open_stub_ends",
     "check_segment_spacing",
@@ -67,6 +69,39 @@ def validate_topology(model: TopologyModel) -> list[dict]:
             )
         )
 
+    issues.extend(check_conditional_gnd_names(model))
+
+    return issues
+
+
+def check_conditional_gnd_names(model: TopologyModel) -> list[dict]:
+    """Warn when a ground-looking net (e.g. ``VSS``) is drawn as its own rail.
+
+    ``VSS`` and similar names are deliberately *not* folded into GND by name
+    alone (a real board can carry a negative rail called VSS), so such a net
+    is drawn as its own bus unless the electrical rail grouping ties it to a
+    GND-grouped net — in which case its ports already carry the GND net here.
+    A port still carrying the conditional name means it was kept separate; a
+    single ``warning`` per distinct name tells the user it was not assumed to
+    be ground (rather than letting the change be silent)."""
+    seen: set[str] = set()
+    for node in model.nodes:
+        for port in node.ports:
+            net = port.net
+            if net and is_conditional_gnd_name(net) and net not in seen:
+                seen.add(net)
+    issues: list[dict] = []
+    for net in sorted(seen):
+        issues.append(
+            make_issue(
+                "conditional_gnd_name_not_merged",
+                (f"Net {net!r} is drawn as its own rail, not merged with GND "
+                 f"(a name like VSS is treated as ground only when electrically "
+                 f"tied to a GND-grouped net). Verify this matches the design."),
+                severity="warning",
+                net=net,
+            )
+        )
     return issues
 
 

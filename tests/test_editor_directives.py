@@ -79,6 +79,50 @@ def test_series_non_positive_resistance_is_skipped():
     assert any("positive" in w for w in warnings)
 
 
+def test_resolve_is_idempotent_via_clone(monkeypatch):
+    """Round-2 finding #2: each Resolve must clone before applying editor
+    directives so the pristine (viewer-retained) annotations are never
+    mutated and directives don't accumulate across Resolves.
+
+    Simulates the worker's shared-annotations hazard: ``_apply_stackup_overrides``
+    returns a fresh LoadedProject that SHARES ``annotations`` with the pristine
+    copy. The fix always routes through ``clone_loaded_for_edit`` before
+    ``apply_editor_directives``; here we assert that composition is idempotent
+    on the pristine object.
+    """
+    from types import SimpleNamespace
+
+    from fypa.altium.loader import clone_loaded_for_edit
+
+    base = _loaded(["+5V", "GND"])
+    # Give the stand-in the fields clone_loaded_for_edit reads.
+    pristine = SimpleNamespace(
+        extracted=base.extracted, annotations=base.annotations,
+        absorbed_bridges=[], __dict__={},
+    )
+    # Emulate a stackup-override result: a *different* wrapper that still
+    # shares the pristine annotations object.
+    shared = SimpleNamespace(
+        extracted=base.extracted, annotations=pristine.annotations,
+        absorbed_bridges=[],
+    )
+    eds = [_free("SINK", single_net=True, p_net="+5V", current=1.0)]
+
+    def resolve():
+        clone = clone_loaded_for_edit(shared)
+        apply_editor_directives(clone, eds)
+        return clone
+
+    r1 = resolve()
+    r2 = resolve()
+
+    # Pristine annotations never mutated; each resolve sees exactly one SINK
+    # (no doubling), which is the whole point of the clone.
+    assert pristine.annotations.directives == []
+    assert len(r1.annotations.directives) == 1
+    assert len(r2.annotations.directives) == 1
+
+
 def test_series_bridge_unions_single_net_source_and_sink_return_groups():
     """A single-net SOURCE on +5V and a single-net SINK on +3V3 normally
     land on separate rails (distinct return groups, both open loops). An
