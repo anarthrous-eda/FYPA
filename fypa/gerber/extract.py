@@ -146,6 +146,27 @@ _CLASSIFIER_RULES: list[tuple[re.Pattern[str], int, int | None]] = [
 ]
 
 
+def _sniff_excellon_header(path: Path) -> bool:
+    """Return True if ``path`` looks like an Excellon NC-drill program.
+
+    An Excellon program opens with an ``M48`` header line. We sniff the first
+    handful of lines (skipping leading comments / blank lines) for it. Used to
+    rescue drill files with an ambiguous ``.txt`` extension, which no filename
+    rule can safely claim (readmes, pick-and-place, and BOM exports share it).
+    """
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            for _ in range(20):
+                line = f.readline()
+                if not line:
+                    break
+                if line.strip().upper().startswith("M48"):
+                    return True
+    except OSError:
+        return False
+    return False
+
+
 def classify_file(path: Path) -> int:
     """Best-guess layer id for ``path`` based on its filename.
 
@@ -158,6 +179,13 @@ def classify_file(path: Path) -> int:
     dialog and can reassign anything that came out wrong.
     """
     name = path.name
+    # `.txt` is ambiguous: Altium/KiCad NC-drill is commonly emitted as
+    # `*.TXT`, but so are readmes / pick-and-place / BOM files. No filename
+    # rule can tell them apart, so gate `.txt` on a positive content signal —
+    # an Excellon `M48` header — before calling it a drill file. Everything
+    # else falls through to the ordinary filename rules (→ Ignore).
+    if path.suffix.lower() == ".txt" and _sniff_excellon_header(path):
+        return LAYER_ID_DRILL
     for pat, layer_id, inner_group in _CLASSIFIER_RULES:
         m = pat.search(name)
         if not m:
@@ -395,7 +423,13 @@ def _arcpoly_to_polygon(outline, arc_centers) -> shapely.geometry.Polygon:
 
 
 def _primitive_to_polygon(prim):
-    """Dispatch one gerbonara graphic_primitive → Shapely polygon."""
+    """Dispatch one gerbonara graphic_primitive → Shapely polygon.
+
+    Reference single-primitive rasteriser. :func:`render_gerber_to_shapely`
+    no longer calls this on its hot path (it batches strokes by width and
+    caches flashes), but this keeps the per-primitive mapping in one readable
+    place and is handy for tests / one-off conversions.
+    """
     import gerbonara.graphic_primitives as gp
     if isinstance(prim, gp.Circle):
         return _circle_to_polygon(prim.x, prim.y, prim.r)
@@ -413,6 +447,60 @@ def _primitive_to_polygon(prim):
     return shapely.geometry.Polygon()
 
 
+def _flash_polygon_cached(prim, cache: dict) -> shapely.geometry.Polygon | None:
+    """Rasterise one flashed aperture (``gp.Circle`` / ``gp.Rectangle``) to a
+    Shapely polygon, caching the *unit* shape (built at the origin) keyed on
+    its rounded aperture parameters and translating it to the flash position.
+
+    Real boards flash the same aperture hundreds to thousands of times (every
+    pad of a given size, every via land); building each one from scratch calls
+    ``Point.buffer`` / ``box`` + ``affinity.rotate`` afresh, and gerbonara
+    re-expands the aperture per flash. Rounding the shape params to the
+    nanometre and reusing one buffered template per distinct aperture, then
+    ``affinity.translate``-ing it, is geometrically identical (buffer / rotate
+    are translation-invariant) but collapses the per-flash cost to a cheap
+    coordinate shift.
+
+    Returns ``None`` for a degenerate (zero-size) aperture or an unhandled
+    primitive type so the caller can skip it.
+    """
+    import gerbonara.graphic_primitives as gp
+    if isinstance(prim, gp.Circle):
+        r = float(prim.r)
+        if r <= 0:
+            return None
+        key = ("C", round(r, 6))
+        unit = cache.get(key)
+        if unit is None:
+            unit = _circle_to_polygon(0.0, 0.0, r)
+            cache[key] = unit
+        return shapely.affinity.translate(unit, float(prim.x), float(prim.y))
+    if isinstance(prim, gp.Rectangle):
+        w = float(prim.w)
+        h = float(prim.h)
+        if w <= 0 or h <= 0:
+            return None
+        rot = float(getattr(prim, "rotation", 0.0))
+        # Rotation is about the rectangle centre; building at the origin and
+        # translating is equivalent to building in place (see _rectangle_to_
+        # polygon: origin=(x, y) there, origin=(0, 0) here + translate).
+        key = ("R", round(w, 6), round(h, 6), round(rot, 9))
+        unit = cache.get(key)
+        if unit is None:
+            unit = _rectangle_to_polygon(0.0, 0.0, w, h, rot)
+            cache[key] = unit
+        return shapely.affinity.translate(unit, float(prim.x), float(prim.y))
+    return None
+
+
+# A dark↔clear polarity flip forces a flush (union / difference of the
+# accumulated batch) that can't be avoided without breaking the photoplotter
+# stream semantics. A file that interleaves polarity per pour degrades to
+# O(flips × layer complexity); log a warning past this many flips so a
+# pathologically-authored layer is identifiable from the Messages tab / log.
+_POLARITY_FLIP_WARN_THRESHOLD: int = 50
+
+
 def render_gerber_to_shapely(gerber_path: Path) -> shapely.geometry.base.BaseGeometry:
     """Open ``gerber_path`` with gerbonara and rasterise every object into one
     Shapely (Multi)Polygon. Polarity-aware: dark primitives are unioned,
@@ -423,6 +511,7 @@ def render_gerber_to_shapely(gerber_path: Path) -> shapely.geometry.base.BaseGeo
     """
     from gerbonara import GerberFile
     from gerbonara.utils import MM
+    import gerbonara.graphic_primitives as gp
 
     gf = GerberFile.open(str(gerber_path))
     # Stream the objects in file order, batching consecutive same-polarity
@@ -430,28 +519,87 @@ def render_gerber_to_shapely(gerber_path: Path) -> shapely.geometry.base.BaseGeo
     # one-by-one). When polarity flips, apply the accumulated dark batch
     # to the running shape with ``union``, or the clear batch with
     # ``difference``.
+    #
+    # Within a batch, stroked primitives (Lines / Arcs) are grouped by pen
+    # width and buffered ONCE per width as a single MultiLineString —
+    # geometrically identical to buffering each stroke separately (buffer
+    # distributes over union), but one GEOS call instead of N. Flashed
+    # apertures (Circles / Rectangles) go through a per-aperture template
+    # cache (see :func:`_flash_polygon_cached`).
     accumulated: shapely.geometry.base.BaseGeometry = shapely.geometry.Polygon()
-    batch: list[shapely.geometry.base.BaseGeometry] = []
+    batch_polys: list[shapely.geometry.base.BaseGeometry] = []
+    batch_lines_by_width: dict[float, list[shapely.geometry.LineString]] = {}
     batch_dark = True
-    for obj in gf.objects:
-        for prim in obj.to_primitives(MM):
-            poly = _primitive_to_polygon(prim)
-            if poly.is_empty:
-                continue
-            is_dark = bool(prim.polarity_dark)
-            if is_dark != batch_dark and batch:
-                merged = shapely.ops.unary_union(batch)
-                accumulated = (accumulated.union(merged)
-                               if batch_dark
-                               else accumulated.difference(merged))
-                batch = []
-            batch_dark = is_dark
-            batch.append(poly)
-    if batch:
-        merged = shapely.ops.unary_union(batch)
+    flash_cache: dict = {}
+    flip_count = 0
+
+    def _flush() -> None:
+        nonlocal accumulated
+        parts: list[shapely.geometry.base.BaseGeometry] = list(batch_polys)
+        for width, lines in batch_lines_by_width.items():
+            geom: shapely.geometry.base.BaseGeometry = (
+                lines[0] if len(lines) == 1
+                else shapely.geometry.MultiLineString(lines)
+            )
+            parts.append(geom.buffer(width / 2.0, cap_style="round",
+                                     join_style="round"))
+        if not parts:
+            return
+        merged = shapely.ops.unary_union(parts)
         accumulated = (accumulated.union(merged)
                        if batch_dark
                        else accumulated.difference(merged))
+
+    for obj in gf.objects:
+        for prim in obj.to_primitives(MM):
+            is_dark = bool(prim.polarity_dark)
+            if is_dark != batch_dark and (batch_polys or batch_lines_by_width):
+                _flush()
+                batch_polys = []
+                batch_lines_by_width = {}
+                flip_count += 1
+            batch_dark = is_dark
+            if isinstance(prim, gp.Line):
+                w = float(prim.width)
+                if w <= 0:
+                    continue
+                batch_lines_by_width.setdefault(round(w, 6), []).append(
+                    shapely.geometry.LineString(
+                        [(prim.x1, prim.y1), (prim.x2, prim.y2)]))
+            elif isinstance(prim, gp.Arc):
+                w = float(prim.width)
+                if w <= 0:
+                    continue
+                pts = _discretise_arc_to_points(
+                    prim.x1, prim.y1, prim.x2, prim.y2,
+                    prim.cx, prim.cy, prim.clockwise)
+                if len(pts) < 2:
+                    continue
+                batch_lines_by_width.setdefault(round(w, 6), []).append(
+                    shapely.geometry.LineString(pts))
+            elif isinstance(prim, (gp.Circle, gp.Rectangle)):
+                poly = _flash_polygon_cached(prim, flash_cache)
+                if poly is not None and not poly.is_empty:
+                    batch_polys.append(poly)
+            elif isinstance(prim, gp.ArcPoly):
+                poly = _arcpoly_to_polygon(prim.outline, prim.arc_centers)
+                if not poly.is_empty:
+                    batch_polys.append(poly)
+            else:
+                log.debug("Unhandled gerbonara primitive type: %s",
+                          type(prim).__name__)
+    if batch_polys or batch_lines_by_width:
+        _flush()
+    if flip_count >= _POLARITY_FLIP_WARN_THRESHOLD:
+        log.warning(
+            "%s: %d dark/clear polarity flips — each forces a full-layer "
+            "union/difference, so render time on this layer scales with the "
+            "flip count. If this layer is slow, the source Gerber interleaves "
+            "positive and clearance artwork per pour.",
+            gerber_path.name, flip_count,
+        )
+    else:
+        log.debug("%s: %d polarity flip(s)", gerber_path.name, flip_count)
     if not accumulated.is_valid:
         accumulated = shapely.make_valid(accumulated)
     return accumulated
@@ -522,7 +670,7 @@ def render_outline_to_polyline(gerber_path: Path) -> tuple[Pt2D, ...]:
 
     gf = GerberFile.open(str(gerber_path))
     segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
-    arcpoly_ring: list[tuple[float, float]] | None = None
+    arcpoly_rings: list[list[tuple[float, float]]] = []
     for obj in gf.objects:
         for prim in obj.to_primitives(MM):
             if isinstance(prim, gp.Line):
@@ -535,23 +683,20 @@ def render_outline_to_polyline(gerber_path: Path) -> tuple[Pt2D, ...]:
                 for i in range(len(pts) - 1):
                     segments.append((pts[i], pts[i + 1]))
             elif isinstance(prim, gp.ArcPoly):
-                # Already a closed region — discretise its arc segments
-                # and return immediately (most outline files use either
-                # ArcPoly OR Line/Arc strokes, not a mix). Shares the same
-                # correct arc handling as the copper-region path.
-                arcpoly_ring = _tessellate_arcpoly_ring(
-                    prim.outline, prim.arc_centers,
-                )
-                break
+                # Each ArcPoly is already a closed region. A board-outline
+                # layer routinely carries SEVERAL — the board contour plus
+                # cutouts, mousebites, or fiducial keepouts — and there is no
+                # guarantee the true contour comes first (a cutout or fiducial
+                # can precede it). Collect them all and pick the largest by
+                # area below, rather than returning whichever came first.
+                # Shares the same correct arc handling as the copper path.
+                ring = _tessellate_arcpoly_ring(prim.outline, prim.arc_centers)
+                if len(ring) >= 3:
+                    arcpoly_rings.append(ring)
             # Circles / rectangles on an outline layer are typically pad
             # flashes for fiducials etc; not part of the board boundary.
-        if arcpoly_ring is not None:
-            break
 
-    if arcpoly_ring is not None and len(arcpoly_ring) >= 3:
-        return tuple(Pt2D(float(x), float(y)) for x, y in arcpoly_ring)
-
-    if not segments:
+    if not segments and not arcpoly_rings:
         return ()
 
     # Stitch segments into rings by endpoint hashing. Greedy walk: from
@@ -596,23 +741,31 @@ def render_outline_to_polyline(gerber_path: Path) -> tuple[Pt2D, ...]:
         if len(ring) >= 4 and key(ring[0]) == key(ring[-1]):
             rings.append(ring)
 
-    if not rings:
+    # Candidate rings come from two sources: stitched Line/Arc strokes and
+    # standalone ArcPoly regions. Pick the largest-area ring across BOTH so a
+    # small cutout / fiducial can never win over the real board contour.
+    candidates = rings + arcpoly_rings
+    if not candidates:
         # Couldn't stitch a closed loop — fall back to the slow path so
         # we still get *some* outline (convex-hull-ish via the buffered
         # union pipeline).
         outline_geom = render_outline_to_shapely(gerber_path)
         return _outline_points(outline_geom)
 
-    # Pick the largest-area ring.
+    # Absolute polygon area via the shoelace formula. Uses a modular index so
+    # it is correct whether the ring is explicitly closed (stitched rings
+    # carry a duplicated first==last vertex) or open (ArcPoly rings do not) —
+    # the wrap-around closing edge is zero-length in the closed case.
     def shoelace(pts: list[tuple[float, float]]) -> float:
+        n = len(pts)
         s = 0.0
-        for i in range(len(pts) - 1):
+        for i in range(n):
             x0, y0 = pts[i]
-            x1, y1 = pts[i + 1]
+            x1, y1 = pts[(i + 1) % n]
             s += x0 * y1 - x1 * y0
         return 0.5 * abs(s)
 
-    biggest = max(rings, key=shoelace)
+    biggest = max(candidates, key=shoelace)
     # Drop the duplicated closing vertex to match _outline_points convention.
     if len(biggest) >= 2 and key(biggest[0]) == key(biggest[-1]):
         biggest = biggest[:-1]
@@ -1034,6 +1187,13 @@ def extract_gerber_project(
     #    (render_gerber_to_shapely is) and pass plain Paths.
     sbr_records: list[RawShapeBasedRegion] = []
     all_copper: list[shapely.geometry.base.BaseGeometry] = []
+    # Every entry in copper_files is a COPPER layer. A render failure here is
+    # missing copper — a silently-wrong answer for a power-delivery tool — so
+    # unlike a soft outline/drill failure we collect these and hard-fail the
+    # whole import below rather than opening a viewer with layers quietly
+    # absent (traced only by a Messages-tab line). Collected across all layers
+    # first so the error names every failure, not just the first.
+    failed_copper_layers: list[str] = []
     items = list(copper_files.items())
     # Cap workers: too many spawned Python processes on Windows just
     # thrash memory + I/O without speeding anything up.
@@ -1059,10 +1219,9 @@ def extract_gerber_project(
                     log.info("Gerber: rendered layer %d (%s)",
                              layer_id, path.name)
                 except Exception as e:
-                    warnings.append(
-                        f"Couldn't render Gerber {path.name} for layer "
-                        f"{layer_id} ({type(e).__name__}: {e}); "
-                        "skipping this layer."
+                    failed_copper_layers.append(
+                        f"layer {layer_id} ({path.name}): "
+                        f"{type(e).__name__}: {e}"
                     )
                 done += 1
                 _progress(substage=f"{done} / {len(items)} done "
@@ -1073,15 +1232,25 @@ def extract_gerber_project(
             try:
                 geom_by_layer[layer_id] = render_gerber_to_shapely(path)
             except Exception as e:
-                warnings.append(
-                    f"Couldn't render Gerber {path.name} for layer "
-                    f"{layer_id} ({type(e).__name__}: {e}); "
-                    "skipping this layer."
+                failed_copper_layers.append(
+                    f"layer {layer_id} ({path.name}): "
+                    f"{type(e).__name__}: {e}"
                 )
             _progress(substage=f"{idx} / {len(items)} done "
                                f"(latest: {path.name})")
     log.info("Gerber: per-layer render total %.2fs (%d layer(s))",
              time.monotonic() - t_render0, len(geom_by_layer))
+    if failed_copper_layers:
+        # Abort the import rather than proceed with missing copper. The caller
+        # (_GerberImportWorker) surfaces this as a failure dialog; outline /
+        # drill render failures stay soft (warnings) because a missing board
+        # outline or drill still leaves the copper solve meaningful.
+        raise RuntimeError(
+            "Failed to render "
+            f"{len(failed_copper_layers)} of {len(items)} copper layer(s); "
+            "aborting import so the board isn't opened with copper missing:\n  "
+            + "\n  ".join(failed_copper_layers)
+        )
     # Iterate input order so sbr_records / all_copper are deterministic.
     _progress(stage="Building shape-based region records…", substage="")
     t_sbr0 = time.monotonic()

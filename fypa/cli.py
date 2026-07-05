@@ -547,6 +547,47 @@ _FINGERPRINTABLE_DOC_EXTENSIONS: frozenset[str] = frozenset({
 #   anything else under DocumentPath= that we don't recognise.
 
 
+# Gerber / Excellon input-file extensions. A Gerber-sourced project's
+# synthetic ``<folder>.fypa-gerber`` pseudo-path never exists on disk, so the
+# usual .PrjPcb + DocumentPath walk fingerprints nothing — regenerating the
+# Gerbers in place (the normal respin: same filenames, new content) would then
+# leave the fingerprint unchanged and reuse the stale extract/solution. We
+# instead fold in every CAD-output file sitting in the pseudo-path's folder.
+# The set matches the fypa.gerber.extract classifier's copper / drill / outline
+# / silk extensions (numbered variants like ``.g1`` / ``.gbr3`` / ``.gd2``
+# handled by the ``\d*`` groups). Over-including a stray file is safe — it only
+# costs a spurious re-extract, never a stale reuse.
+_GERBER_INPUT_RE: re.Pattern[str] = re.compile(
+    r"\.(?:gbr\d*|g\d+|gtl|gbl|gko|gm1|gto|gbo|gd\d+|gg\d+|sol|cmp"
+    r"|drl|xln|tap|nc|txt)$",
+    re.IGNORECASE,
+)
+
+# Suffix of the synthetic pseudo-path a Gerber import uses in place of a real
+# .PrjPcb (see fypa.altium_viewer._pick_gerber_inputs).
+_GERBER_PSEUDO_SUFFIX: str = ".fypa-gerber"
+
+
+def _gerber_input_fingerprints(folder: Path) -> dict[str, tuple[float, int] | None]:
+    """``{absolute_path: (mtime, size)}`` for every Gerber/Excellon-looking
+    input file in ``folder`` (non-recursive). Backs the Gerber branch of
+    :func:`_project_file_fingerprints`."""
+    files: dict[str, tuple[float, int] | None] = {}
+    try:
+        entries = sorted(folder.iterdir())
+    except OSError:
+        return files
+    for p in entries:
+        try:
+            if not p.is_file():
+                continue
+        except OSError:
+            continue
+        if _GERBER_INPUT_RE.search(p.name):
+            files[str(p.resolve())] = _stat_fingerprint(p)
+    return files
+
+
 def _project_file_fingerprints(prjpcb_path: Path) -> dict[str, tuple[float, int] | None]:
     """``{absolute_path: (mtime, size)}`` for the .PrjPcb and every
     solve-relevant document it references. Used by both the design-info
@@ -566,9 +607,16 @@ def _project_file_fingerprints(prjpcb_path: Path) -> dict[str, tuple[float, int]
     Files that don't exist on disk are skipped entirely (rather than
     stored as ``None``) so a referenced-but-missing document can't flap
     the fingerprint either.
+
+    A Gerber-sourced project (``.fypa-gerber`` pseudo-path) has no .PrjPcb
+    or DocumentPath references, so we fingerprint the real Gerber/drill/
+    outline inputs in its folder instead — otherwise a regenerated-in-place
+    Gerber set would silently reuse the stale cached extract.
     """
-    files: dict[str, tuple[float, int] | None] = {}
     prjpcb_abs = prjpcb_path.resolve()
+    if prjpcb_abs.suffix.lower() == _GERBER_PSEUDO_SUFFIX:
+        return _gerber_input_fingerprints(prjpcb_abs.parent)
+    files: dict[str, tuple[float, int] | None] = {}
     files[str(prjpcb_abs)] = _stat_fingerprint(prjpcb_abs)
     try:
         text = prjpcb_abs.read_text(encoding="utf-8", errors="ignore")
