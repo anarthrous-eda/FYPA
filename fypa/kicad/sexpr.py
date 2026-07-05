@@ -24,14 +24,39 @@ A parsed node is::
 Leaf atoms are always kept as ``str`` (quoted and bare atoms are
 indistinguishable in the tree — callers coerce with :meth:`SNode.f` /
 :meth:`SNode.s` as needed, which is all FYPA requires).
+
+Tokenising uses one compiled regex over the whole text and the parser consumes
+the token iterator with an explicit stack (no full token list materialised), so
+a large zone-filled ``.kicad_pcb`` parses without the char-by-char loop and the
+multi-hundred-MB transient token list a naive reader would build.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 # Backslash escape sequences KiCAD emits inside quoted strings.
 _ESCAPES = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\"}
+
+# One token: an open/close paren, a double-quoted string (group 1 = its raw
+# contents, escapes intact), or a bare atom (any run without whitespace, parens
+# or a quote). Quoted strings are matched before bare atoms so a leading ``"``
+# always opens a string.
+_TOKEN_RE = re.compile(r'[()]|"((?:[^"\\]|\\.)*)"|[^\s()"]+')
+_STR_ESCAPE_RE = re.compile(r"\\(.)")
+
+
+def _unescape(s: str) -> str:
+    """Resolve backslash escapes in a quoted-string body (``\\n`` etc.).
+
+    Mirrors the original char-by-char reader: a known escape maps via
+    :data:`_ESCAPES`, an unknown one drops the backslash and keeps the
+    following character.
+    """
+    if "\\" not in s:
+        return s
+    return _STR_ESCAPE_RE.sub(lambda m: _ESCAPES.get(m.group(1), m.group(1)), s)
 
 
 @dataclass(slots=True)
@@ -41,17 +66,37 @@ class SNode:
     ``items`` holds the children in order — each is either a leaf ``str`` (a
     bare atom or the unescaped contents of a quoted string) or a nested
     :class:`SNode`.
+
+    ``_atoms`` / ``_by_tag`` are lazily-populated read caches. They are safe
+    because the tree is only mutated while :func:`parse` builds it; every
+    accessor below runs after parsing is complete, so a cache is never left
+    stale. (Mutating ``items`` after an accessor has run would strand a cache —
+    FYPA never does.)
     """
 
     tag: str
     items: list = field(default_factory=list)
+    _atoms: list | None = field(default=None, compare=False, repr=False)
+    _by_tag: dict | None = field(default=None, compare=False, repr=False)
 
     # --- child-node access ------------------------------------------------
     def nodes(self, tag: str | None = None):
-        """Child :class:`SNode`\\ s, optionally filtered to those named *tag*."""
-        for it in self.items:
-            if isinstance(it, SNode) and (tag is None or it.tag == tag):
-                yield it
+        """Child :class:`SNode`\\ s, optionally filtered to those named *tag*.
+
+        Filtered lookups build a ``tag → [SNode, ...]`` index once and reuse it,
+        so repeatedly probing one node for many different tags (e.g. the huge
+        top-level ``kicad_pcb`` node, queried for segments, vias, zones …) costs
+        a single scan instead of one scan per tag.
+        """
+        if tag is None:
+            return (it for it in self.items if isinstance(it, SNode))
+        if self._by_tag is None:
+            idx: dict[str, list] = {}
+            for it in self.items:
+                if isinstance(it, SNode):
+                    idx.setdefault(it.tag, []).append(it)
+            self._by_tag = idx
+        return iter(self._by_tag.get(tag, ()))
 
     def node(self, tag: str) -> SNode | None:
         """First child node named *tag*, or ``None``."""
@@ -60,8 +105,10 @@ class SNode:
     # --- leaf-atom access -------------------------------------------------
     @property
     def atoms(self) -> list[str]:
-        """The leaf (``str``) children, in order."""
-        return [it for it in self.items if isinstance(it, str)]
+        """The leaf (``str``) children, in order (cached after first access)."""
+        if self._atoms is None:
+            self._atoms = [it for it in self.items if isinstance(it, str)]
+        return self._atoms
 
     def atom(self, index: int = 0, default: str | None = None) -> str | None:
         """The *index*-th leaf atom of this node, or *default*."""
@@ -100,74 +147,58 @@ class SNode:
 
 def _tokenize(text: str):
     """Yield ``("(" | ")" , None)`` / ``("atom", str)`` tokens for *text*."""
-    i, n = 0, len(text)
-    while i < n:
-        c = text[i]
-        if c == "(" or c == ")":
-            yield (c, None)
-            i += 1
-        elif c.isspace():
-            i += 1
-        elif c == '"':
-            i += 1
-            buf: list[str] = []
-            while i < n:
-                ch = text[i]
-                if ch == "\\" and i + 1 < n:
-                    buf.append(_ESCAPES.get(text[i + 1], text[i + 1]))
-                    i += 2
-                elif ch == '"':
-                    i += 1
-                    break
-                else:
-                    buf.append(ch)
-                    i += 1
-            yield ("atom", "".join(buf))
+    for m in _TOKEN_RE.finditer(text):
+        tok = m.group(0)
+        if tok == "(" or tok == ")":
+            yield (tok, None)
+        elif tok[0] == '"':
+            yield ("atom", _unescape(m.group(1)))
         else:
-            j = i
-            while j < n and not text[j].isspace() and text[j] not in "()":
-                j += 1
-            yield ("atom", text[i:j])
-            i = j
+            yield ("atom", tok)
 
 
 def parse(text: str) -> SNode:
     """Parse S-expression *text* and return its single top-level node.
 
+    Consumes the token iterator with an explicit stack — no intermediate list
+    of every token is built, so a large board's parse stays proportional to the
+    tree it produces rather than to a materialised token stream.
+
     Raises :class:`ValueError` on unbalanced parentheses or empty input.
     """
-    tokens = list(_tokenize(text))
-    pos = 0
+    stack: list[SNode] = []
+    root: SNode | None = None
+    need_tag = False   # next atom is the current list's tag symbol
 
-    def parse_list() -> SNode:
-        nonlocal pos
-        pos += 1  # consume '('
-        # The tag is the first item; KiCAD always opens a list with a symbol.
-        if pos >= len(tokens):
-            raise ValueError("unexpected end of S-expression after '('")
-        kind, val = tokens[pos]
-        tag = val if kind == "atom" else ""
-        if kind == "atom":
-            pos += 1
-        node = SNode(tag=tag)
-        while pos < len(tokens):
-            kind, val = tokens[pos]
-            if kind == "(":
-                node.items.append(parse_list())
-            elif kind == ")":
-                pos += 1
-                return node
+    for kind, val in _tokenize(text):
+        if kind == "(":
+            node = SNode(tag="")
+            if stack:
+                stack[-1].items.append(node)
+            stack.append(node)
+            need_tag = True
+        elif kind == ")":
+            if not stack:
+                raise ValueError("unbalanced parentheses in S-expression")
+            node = stack.pop()
+            if not stack:
+                root = node          # closed the top-level list
+                break
+            need_tag = False
+        else:  # atom
+            if not stack:
+                continue             # stray atom before the first '(' — skip
+            if need_tag:
+                stack[-1].tag = val
+                need_tag = False
             else:
-                node.items.append(val)
-                pos += 1
-        raise ValueError("unbalanced parentheses in S-expression")
+                stack[-1].items.append(val)
 
-    # Skip to the first '('.
-    while pos < len(tokens) and tokens[pos][0] != "(":
-        pos += 1
-    if pos >= len(tokens):
+    if stack:
+        raise ValueError("unbalanced parentheses in S-expression")
+    if root is None:
         raise ValueError("no S-expression found")
-    return parse_list()
+    return root
 
 
 def parse_file(path: str | Path) -> SNode:

@@ -180,3 +180,153 @@ def _extract_from_string(text: str):
         return extract_kicad_project(path)
     finally:
         Path(path).unlink(missing_ok=True)
+
+
+_STACKUP = (
+    ' (setup (stackup'
+    '   (layer "F.Cu" (type "copper") (thickness 0.035))'
+    '   (layer "B.Cu" (type "copper") (thickness 0.035))))'
+)
+
+
+# --- pad rotation: absolute in the file, must not re-add footprint angle -----
+def test_pad_rotation_is_absolute_not_footprint_plus_pad():
+    """KiCAD stores the pad `at` angle as the absolute board orientation.
+
+    The parent footprint's rotation is already baked in, so the extractor must
+    use the pad angle as-is — adding the footprint's angle again double-counts
+    it. The pad *position*, by contrast, is footprint-relative and is rotated
+    by the footprint angle. This board (footprint at 90°, pad at absolute 90°)
+    pins both behaviours.
+    """
+    board = (
+        '(kicad_pcb (version 20241229) (net 0 "") (net 1 "N1")' + _STACKUP +
+        ' (footprint "test:fp" (layer "F.Cu") (at 50 50 90)'
+        '   (property "Reference" "U1")'
+        '   (pad "1" smd rect (at 1 0 90) (size 2 1)'
+        '     (layers "F.Cu") (net 1 "N1"))))'
+    )
+    proj = _extract_from_string(board)
+    assert len(proj.pads) == 1
+    pad = proj.pads[0]
+    assert pad.rotation_deg == 90.0            # absolute — NOT 90 + 90
+    # Position IS footprint-relative → local (1,0) rotated by frot=90° (Y-down).
+    assert math.isclose(pad.center.x, 50.0, abs_tol=1e-6)
+    assert math.isclose(pad.center.y, 49.0, abs_tol=1e-6)
+
+
+# --- oval (slot) drills stamp a chain, don't collapse to one circle ----------
+def test_oval_plated_slot_stamps_via_chain():
+    board = (
+        '(kicad_pcb (version 20241229) (net 0 "") (net 1 "N1")' + _STACKUP +
+        ' (footprint "test:fp" (layer "F.Cu") (at 10 10 0)'
+        '   (property "Reference" "J1")'
+        '   (pad "1" thru_hole oval (at 0 0 0) (size 3 1.5)'
+        '     (drill oval 2 1) (layers "*.Cu") (net 1 "N1"))))'
+    )
+    proj = _extract_from_string(board)
+    assert len(proj.pads) == 1
+    pad = proj.pads[0]
+    assert pad.is_through_hole
+    assert pad.hole_shape == 2                  # obround slot preserved
+    assert math.isclose(pad.slot_length_mm, 2.0)
+    assert math.isclose(pad.hole_mm, 1.0)       # short-axis bore, not 2.0
+    # The plated barrel must span the slot's length, so a chain of vias — not
+    # the single small circle the old code produced.
+    assert len(proj.vias) >= 2
+    xs = sorted(v.center.x for v in proj.vias)
+    assert math.isclose(xs[0], 9.5) and math.isclose(xs[-1], 10.5)
+    assert all(math.isclose(v.hole_diameter_mm, 1.0) for v in proj.vias)
+    assert all((v.layer_start, v.layer_end) == (1, 32) for v in proj.vias)
+    assert all(v.net_index == 1 for v in proj.vias)
+
+
+def test_oval_npth_slot_stamps_hole_chain():
+    board = (
+        '(kicad_pcb (version 20241229) (net 0 "")' + _STACKUP +
+        ' (footprint "test:fp" (layer "F.Cu") (at 10 10 0)'
+        '   (property "Reference" "H1")'
+        '   (pad "" np_thru_hole oval (at 0 0 0) (size 2 1)'
+        '     (drill oval 2 1) (layers "*.Cu"))))'
+    )
+    proj = _extract_from_string(board)
+    assert len(proj.pads) == 0                  # NPTH is not a copper pad
+    assert len(proj.vias) == 0                   # non-plated → no barrel
+    assert len(proj.npth_holes) >= 2            # a chain of holes, not one
+    assert all(math.isclose(h.diameter_mm, 1.0) for h in proj.npth_holes)
+
+
+# --- board outline from rect / circle / poly tools ---------------------------
+def test_outline_from_gr_rect():
+    board = (
+        '(kicad_pcb (version 20241229) (net 0 "")' + _STACKUP +
+        ' (gr_rect (start 0 0) (end 10 20) (layer "Edge.Cuts")))'
+    )
+    ol = _extract_from_string(board).board_outline
+    assert len(ol) >= 4
+    xs = [p.x for p in ol]
+    ys = [p.y for p in ol]
+    assert min(xs) == 0 and max(xs) == 10
+    assert min(ys) == 0 and max(ys) == 20
+
+
+def test_outline_from_gr_circle():
+    board = (
+        '(kicad_pcb (version 20241229) (net 0 "")' + _STACKUP +
+        ' (gr_circle (center 5 5) (end 15 5) (layer "Edge.Cuts")))'
+    )
+    ol = _extract_from_string(board).board_outline
+    assert len(ol) >= 8
+    xs = [p.x for p in ol]
+    assert math.isclose(min(xs), -5.0, abs_tol=0.2)
+    assert math.isclose(max(xs), 15.0, abs_tol=0.2)
+
+
+def test_outline_from_gr_poly():
+    board = (
+        '(kicad_pcb (version 20241229) (net 0 "")' + _STACKUP +
+        ' (gr_poly (pts (xy 0 0) (xy 30 0) (xy 30 30) (xy 0 30))'
+        '   (layer "Edge.Cuts")))'
+    )
+    ol = _extract_from_string(board).board_outline
+    xs = [p.x for p in ol]
+    ys = [p.y for p in ol]
+    assert min(xs) == 0 and max(xs) == 30
+    assert min(ys) == 0 and max(ys) == 30
+
+
+def test_open_outline_warns(caplog):
+    import logging
+    board = (
+        '(kicad_pcb (version 20241229) (net 0 "")' + _STACKUP +
+        ' (gr_line (start 0 0) (end 10 0) (layer "Edge.Cuts")))'
+    )
+    with caplog.at_level(logging.WARNING):
+        _extract_from_string(board)
+    assert any("closed board outline" in r.message for r in caplog.records)
+
+
+# --- robustness: a malformed numeric token warns + degrades, doesn't crash ---
+def test_malformed_net_token_degrades_to_no_net(caplog):
+    import logging
+    board = (
+        '(kicad_pcb (version 20241229) (net 0 "") (net 1 "N1")' + _STACKUP +
+        ' (segment (start 0 0) (end 1 0) (width 0.25)'
+        '   (layer "F.Cu") (net "bogus")))'
+    )
+    with caplog.at_level(logging.WARNING):
+        proj = _extract_from_string(board)
+    assert len(proj.tracks) == 1
+    assert proj.tracks[0].net_index == NO_NET
+    assert any("malformed" in r.message for r in caplog.records)
+
+
+# --- sexpr reader: cached multi-tag lookups stay correct ---------------------
+def test_sexpr_repeated_tag_lookups_are_consistent():
+    node = sexpr.parse("(root (a 1) (b 2) (a 3) (b 4))")
+    assert [n.f_at(0) for n in node.nodes("a")] == [1.0, 3.0]
+    assert [n.f_at(0) for n in node.nodes("b")] == [2.0, 4.0]
+    # A second pass must hit the tag index and return the same nodes.
+    assert [n.f_at(0) for n in node.nodes("a")] == [1.0, 3.0]
+    assert node.node("a").f_at(0) == 1.0
+    assert len(list(node.nodes(None))) == 4        # all child SNodes

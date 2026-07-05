@@ -24,7 +24,9 @@ What maps where:
   ``compiled_netlist`` stays ``None``;
 * **stackup** ← ``(setup (stackup ...))`` when present, else a synthesised
   default (1 oz copper, 1.6 mm total board split across dielectrics);
-* **board outline** ← ``Edge.Cuts`` ``gr_line`` / ``gr_arc`` graphics.
+* **board outline** ← ``Edge.Cuts`` graphics: ``gr_line`` / ``gr_arc`` /
+  ``gr_rect`` / ``gr_circle`` / ``gr_poly`` and any ``fp_*`` edge graphics
+  drawn inside footprints.
 
 Layer IDs follow the Altium convention used everywhere in FYPA: ``1 = Top``,
 ``32 = Bottom``, ``2..31 = Inner 1..30``, ``74 = Multi-Layer`` (through-hole).
@@ -74,6 +76,25 @@ _DEFAULT_BOARD_THICKNESS_MM: float = 1.6
 
 # Endpoint-match tolerance when stitching the board outline (mm).
 _OUTLINE_STITCH_TOL_MM: float = 0.01
+
+
+def _int_or_none(value: str | None, what: str) -> int | None:
+    """Coerce a KiCAD token to ``int``, warning + returning ``None`` on garbage.
+
+    The numeric accessors on :class:`SNode` (``f`` / ``f_at``) already swallow
+    malformed floats, but net numbers and drill counts are read as raw ``str``
+    atoms and coerced here; a corrupt token would otherwise abort the whole
+    extract with a bare :class:`ValueError` traceback. Mirrors the forgiving
+    ``f()`` pattern: warn once, degrade (an unparseable net → ``None`` →
+    ``NO_NET``) rather than crash.
+    """
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        log.warning("KiCAD: ignoring malformed %s %r", what, value)
+        return None
 
 
 def kicad_layer_to_fypa_id(name: str) -> int | None:
@@ -194,6 +215,31 @@ def _stitch_outline(segments: list[tuple[Pt2D, Pt2D]]) -> tuple[Pt2D, ...]:
     return tuple(chain)
 
 
+def _slot_stamp_centers(
+    center: Pt2D, bore_mm: float, major_mm: float, angle_deg: float
+) -> list[Pt2D]:
+    """Sample an obround (oval) drill's centreline into overlapping stamp points.
+
+    Returns the centres of a chain of ``bore_mm``-diameter circles laid along
+    the slot's major axis (absolute board angle *angle_deg*), spaced half a bore
+    apart so the stamped circles overlap into a continuous slot — mirroring the
+    Gerber drill path (:func:`fypa.gerber.extract` routed-slot handling). Used
+    for both a plated slot's layer-bridging via chain and a non-plated slot's
+    NPTH holes, so neither collapses to a single small circle.
+    """
+    ux, uy = _rotate_local(1.0, 0.0, angle_deg)
+    half = max(0.0, (major_mm - bore_mm) / 2.0)
+    x1, y1 = center.x - ux * half, center.y - uy * half
+    x2, y2 = center.x + ux * half, center.y + uy * half
+    step = max(bore_mm / 2.0, 1e-3)
+    n = max(2, int(math.ceil((2.0 * half) / step)) + 1)
+    out: list[Pt2D] = []
+    for i in range(n):
+        t = i / (n - 1)
+        out.append(Pt2D(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t))
+    return out
+
+
 def _discretize_arc(start: Pt2D, mid: Pt2D, end: Pt2D, step_deg: float = 15.0
                     ) -> list[Pt2D]:
     """Sample a start/mid/end arc into a straight polyline (for the outline)."""
@@ -224,10 +270,10 @@ def _build_nets(pcb: SNode) -> tuple[tuple[RawNet, ...], Callable[[int | None], 
     """
     names: dict[int, str] = {}
     for n in pcb.nodes("net"):
-        num = n.atom(0)
+        num = _int_or_none(n.atom(0), "net number")
         if num is None:
             continue
-        names[int(num)] = n.atom(1, "") or ""
+        names[num] = n.atom(1, "") or ""
     max_no = max(names) if names else 0
     nets = tuple(RawNet(names.get(k, "")) for k in range(max_no + 1))
 
@@ -241,7 +287,7 @@ def _build_nets(pcb: SNode) -> tuple[tuple[RawNet, ...], Callable[[int | None], 
 
 def _pad_net_no(pad: SNode) -> int | None:
     net = pad.node("net")
-    return int(net.atom(0)) if net is not None and net.atom(0) is not None else None
+    return _int_or_none(net.atom(0), "pad net") if net is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -316,24 +362,49 @@ def _parse_footprint(
 
     npth: list[RawHole] = []
     pad_dicts: list[dict] = []
+    fp_vias: list[RawVia] = []
     for pad in fp.nodes("pad"):
         ptype = pad.atom(1, "")
         pat = pad.node("at")
         lpx, lpy = (pat.f_at(0), pat.f_at(1)) if pat else (0.0, 0.0)
+        # KiCAD stores a pad's `at` angle as its *absolute* board orientation
+        # (the parent footprint's rotation is already baked in), whereas the pad
+        # *position* is footprint-relative and must be rotated by `frot`. So the
+        # pad's rotation is `prot` alone — adding `frot` again double-counts the
+        # footprint rotation and mis-orients every non-square pad on a rotated
+        # footprint (the historic rotation TODO).
         prot = pat.f_at(2) if pat else 0.0
         rx, ry = _rotate_local(lpx, lpy, frot)
         center = Pt2D(fx + rx, fy + ry)
+
+        # drill: (drill d) round, or (drill oval dx dy). f_at() coerces each
+        # atom forgivingly (a garbage token → 0.0, not a crash).
         drill = pad.node("drill")
-        # drill: (drill d) round, or (drill oval dx dy).
-        if drill is not None:
-            datoms = [a for a in drill.atoms if a != "oval"]
-            hole_mm = float(datoms[0]) if datoms else 0.0
+        datoms = drill.atoms if drill is not None else []
+        if datoms and datoms[0] == "oval":
+            drill_dx = drill.f_at(1)
+            drill_dy = drill.f_at(2) if len(datoms) >= 3 else drill_dx
+        elif datoms:
+            drill_dx = drill_dy = drill.f_at(0)
         else:
-            hole_mm = 0.0
+            drill_dx = drill_dy = 0.0
+        bore_mm = min(drill_dx, drill_dy)          # obround short axis
+        major_mm = max(drill_dx, drill_dy)         # obround long axis
+        is_slot = bore_mm > 0.0 and (major_mm - bore_mm) > 1e-6
+        hole_mm = bore_mm if is_slot else drill_dx
+        # Major axis lies along the pad's local X when dx is the long side,
+        # else its local Y (a 90° turn); composed with the pad's absolute
+        # orientation this is the slot angle in board coordinates.
+        slot_rot_rel = 0.0 if drill_dx >= drill_dy else 90.0
 
         if ptype == "np_thru_hole":
-            # Non-plated mechanical hole: surface as a RawHole only.
-            if hole_mm > 0.0:
+            # Non-plated mechanical hole/slot: surface as RawHole(s) only. A
+            # slot stamps a chain so it isn't drawn as one small round hole.
+            if is_slot:
+                for c in _slot_stamp_centers(
+                        center, bore_mm, major_mm, prot + slot_rot_rel):
+                    npth.append(RawHole(center=c, diameter_mm=bore_mm))
+            elif hole_mm > 0.0:
                 npth.append(RawHole(center=center, diameter_mm=hole_mm))
             continue
 
@@ -349,22 +420,45 @@ def _parse_footprint(
         if shape == 4:
             rratio = pad.f("roundrect_rratio")
             corner_pct = int(round(max(0.0, min(100.0, rratio * 200.0))))
+        pad_net = net_index(_pad_net_no(pad))
         pad_dicts.append({
             "center": center,
             "width_mm": w,
             "height_mm": h,
             "hole_mm": hole_mm,
             "shape": shape,
-            "rotation_deg": frot + prot,
+            "rotation_deg": prot,
             "layer_id": lid,
-            "net_index": net_index(_pad_net_no(pad)),
+            "net_index": pad_net,
             "designator": pad.atom(0, "") or "",
             "component_index": comp_index,
             "is_through_hole": is_tht,
             "is_smt": not is_tht,
             "corner_radius_pct": corner_pct,
+            # Preserve the slot geometry (obround: hole_shape 2) so the viewer
+            # and metadata draw the real bore, not a round hole.
+            "hole_shape": 2 if is_slot else 0,
+            "slot_length_mm": major_mm if is_slot else 0.0,
+            "slot_rotation_deg": slot_rot_rel if is_slot else 0.0,
         })
-    return comp, [], npth, pad_dicts
+        # A plated slot must bridge layers across its full length, so stamp a
+        # via chain along the major axis (as the Gerber path does). The chain's
+        # stamps overlap by design; the pad's own single-circle barrel (added by
+        # the loader for the plated TH pad) is one more overlapping stamp at the
+        # centre, so this is a strict improvement over the single-circle bridge,
+        # not a phantom parallel conductor.
+        if is_slot and is_tht:
+            for c in _slot_stamp_centers(
+                    center, bore_mm, major_mm, prot + slot_rot_rel):
+                fp_vias.append(RawVia(
+                    center=c,
+                    diameter_mm=bore_mm,
+                    hole_diameter_mm=bore_mm,
+                    layer_start=LAYER_ID_TOP,
+                    layer_end=LAYER_ID_BOTTOM,
+                    net_index=pad_net,
+                ))
+    return comp, fp_vias, npth, pad_dicts
 
 
 # ---------------------------------------------------------------------------
@@ -541,7 +635,7 @@ def extract_kicad_project(
             b=_xy(seg.node("end")),
             width_mm=seg.f("width"),
             layer_id=lid,
-            net_index=net_index(int(seg.s("net")) if seg.s("net") else None),
+            net_index=net_index(_int_or_none(seg.s("net"), "segment net")),
             polygon_index=NO_POLYGON,
             is_polygon_outline=False,
             component_index=-1,
@@ -566,7 +660,7 @@ def extract_kicad_project(
             end_angle_deg=a1,
             width_mm=arc.f("width"),
             layer_id=lid,
-            net_index=net_index(int(arc.s("net")) if arc.s("net") else None),
+            net_index=net_index(_int_or_none(arc.s("net"), "arc net")),
             is_keepout=False,
         ))
 
@@ -583,13 +677,13 @@ def extract_kicad_project(
             hole_diameter_mm=via.f("drill"),
             layer_start=ls if ls is not None else LAYER_ID_TOP,
             layer_end=le if le is not None else LAYER_ID_BOTTOM,
-            net_index=net_index(int(via.s("net")) if via.s("net") else None),
+            net_index=net_index(_int_or_none(via.s("net"), "via net")),
         ))
 
     # --- zones → shape-based regions (copper pours) ---
     shape_based_regions: list[RawShapeBasedRegion] = []
     for zone in pcb.nodes("zone"):
-        znet = net_index(int(zone.s("net")) if zone.s("net") else None)
+        znet = net_index(_int_or_none(zone.s("net"), "zone net"))
         filled = list(zone.nodes("filled_polygon"))
         if not filled:
             nm = zone.s("net_name") or "?"
@@ -629,9 +723,10 @@ def extract_kicad_project(
     npth_holes: list[RawHole] = []
     for fp in pcb.nodes("footprint"):
         idx = len(pcb_components)
-        comp, _fp_vias, npth, pad_dicts = _parse_footprint(fp, idx, net_index)
+        comp, fp_vias, npth, pad_dicts = _parse_footprint(fp, idx, net_index)
         pcb_components.append(comp)
         npth_holes.extend(npth)
+        vias.extend(fp_vias)   # plated-slot barrel chains, if any
         for pd in pad_dicts:
             if pd["layer_id"] not in (MULTI_LAYER_PAD_LAYER_ID,):
                 used_copper_ids.add(pd["layer_id"])
@@ -683,18 +778,114 @@ def extract_kicad_project(
     )
 
 
+def _on_edge_cuts(node: SNode) -> bool:
+    return (node.s("layer") or "") == "Edge.Cuts"
+
+
+def _circle_local_points(center: Pt2D, edge: Pt2D, step_deg: float = 15.0
+                         ) -> list[Pt2D]:
+    """Discretise a circle (given centre + a point on it) into a closed loop."""
+    r = math.hypot(edge.x - center.x, edge.y - center.y)
+    if r <= 0.0:
+        return []
+    n = max(8, int(math.ceil(360.0 / step_deg)))
+    return [Pt2D(center.x + r * math.cos(2.0 * math.pi * k / n),
+                 center.y + r * math.sin(2.0 * math.pi * k / n))
+            for k in range(n)]
+
+
+def _outline_segments_from(
+    container: SNode,
+    tags: tuple[str, str, str, str, str],
+    xf,
+    segments: list[tuple[Pt2D, Pt2D]],
+) -> int:
+    """Append *container*'s ``Edge.Cuts`` graphics to *segments*; return count.
+
+    *tags* is the ``(line, arc, rect, circle, poly)`` element names — ``gr_*``
+    for board graphics, ``fp_*`` for graphics drawn inside a footprint. *xf*
+    maps a raw point to board coordinates (identity for board graphics; the
+    footprint place+rotate transform for ``fp_*``). Shapes are built in the
+    container's own frame and transformed vertex-by-vertex, so a rectangle /
+    polygon on a rotated footprint stays correct.
+    """
+    ln, ar, rc, ci, po = tags
+    n = 0
+    for g in container.nodes(ln):
+        if not _on_edge_cuts(g):
+            continue
+        n += 1
+        segments.append((xf(_xy(g.node("start"))), xf(_xy(g.node("end")))))
+    for g in container.nodes(ar):
+        if not _on_edge_cuts(g):
+            continue
+        n += 1
+        pts = [xf(p) for p in _discretize_arc(
+            _xy(g.node("start")), _xy(g.node("mid")), _xy(g.node("end")))]
+        segments.extend((pts[i], pts[i + 1]) for i in range(len(pts) - 1))
+    for g in container.nodes(rc):
+        if not _on_edge_cuts(g):
+            continue
+        n += 1
+        s, e = _xy(g.node("start")), _xy(g.node("end"))
+        local = [s, Pt2D(e.x, s.y), e, Pt2D(s.x, e.y)]
+        c = [xf(p) for p in local]
+        segments.extend((c[i], c[(i + 1) % 4]) for i in range(4))
+    for g in container.nodes(ci):
+        if not _on_edge_cuts(g):
+            continue
+        n += 1
+        local = _circle_local_points(_xy(g.node("center")), _xy(g.node("end")))
+        c = [xf(p) for p in local]
+        if len(c) >= 3:
+            segments.extend((c[i], c[(i + 1) % len(c)]) for i in range(len(c)))
+    for g in container.nodes(po):
+        if not _on_edge_cuts(g):
+            continue
+        n += 1
+        pts_node = g.node("pts")
+        if pts_node is None:
+            continue
+        local = [Pt2D(xy.f_at(0), xy.f_at(1)) for xy in pts_node.nodes("xy")]
+        c = [xf(p) for p in local]
+        if len(c) >= 2:
+            segments.extend((c[i], c[(i + 1) % len(c)]) for i in range(len(c)))
+    return n
+
+
 def _extract_board_outline(pcb: SNode) -> tuple[Pt2D, ...]:
-    """Stitch ``Edge.Cuts`` ``gr_line`` / ``gr_arc`` graphics into a polyline."""
+    """Stitch the ``Edge.Cuts`` graphics into a board-outline polyline.
+
+    Handles board-level ``gr_line`` / ``gr_arc`` / ``gr_rect`` / ``gr_circle``
+    / ``gr_poly`` (a rectangle- or circle-tool board is very common and would
+    otherwise yield an empty outline) plus any ``Edge.Cuts`` graphics drawn
+    inside footprints (``fp_*``), transformed into board coordinates. Warns when
+    Edge.Cuts carries graphics but they don't close into a ring.
+    """
     segments: list[tuple[Pt2D, Pt2D]] = []
-    for line in pcb.nodes("gr_line"):
-        if (line.s("layer") or "") != "Edge.Cuts":
-            continue
-        segments.append((_xy(line.node("start")), _xy(line.node("end"))))
-    for arc in pcb.nodes("gr_arc"):
-        if (arc.s("layer") or "") != "Edge.Cuts":
-            continue
-        pts = _discretize_arc(_xy(arc.node("start")), _xy(arc.node("mid")),
-                              _xy(arc.node("end")))
-        for i in range(len(pts) - 1):
-            segments.append((pts[i], pts[i + 1]))
-    return _stitch_outline(segments)
+    n_graphics = _outline_segments_from(
+        pcb, ("gr_line", "gr_arc", "gr_rect", "gr_circle", "gr_poly"),
+        lambda p: p, segments)
+
+    for fp in pcb.nodes("footprint"):
+        at = fp.node("at")
+        fx, fy = (at.f_at(0), at.f_at(1)) if at else (0.0, 0.0)
+        frot = at.f_at(2) if at else 0.0
+
+        def xf(p: Pt2D, _fx=fx, _fy=fy, _fr=frot) -> Pt2D:
+            rx, ry = _rotate_local(p.x, p.y, _fr)
+            return Pt2D(_fx + rx, _fy + ry)
+
+        n_graphics += _outline_segments_from(
+            fp, ("fp_line", "fp_arc", "fp_rect", "fp_circle", "fp_poly"),
+            xf, segments)
+
+    outline = _stitch_outline(segments)
+    closed = (len(outline) >= 4
+              and (outline[0].x - outline[-1].x) ** 2
+              + (outline[0].y - outline[-1].y) ** 2 <= _OUTLINE_STITCH_TOL_MM ** 2)
+    if n_graphics and not closed:
+        log.warning(
+            "KiCAD: Edge.Cuts has %d graphic(s) but they don't form a closed "
+            "board outline — the board contour may be incomplete.", n_graphics)
+    return outline
