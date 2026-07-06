@@ -618,6 +618,84 @@ def test_regulator_two_indexed_channels():
     assert by_ch[1].voltage == 1.8
 
 
+def test_bridge_series_terminals_stay_on_distinct_nets():
+    """A SERIES resistor that *creates* a bridge must keep its two terminals
+    on distinct nets — the bridge-accumulation fallback must not pull the
+    bridged net's pad onto a terminal that already matched its own pad.
+
+    Topology: a rail RAIL_OUT is fed through two parallel sense resistors
+    R1 (PRE_A↔RAIL_OUT) and R2 (PRE_B↔RAIL_OUT). A SOURCE U9 names RAIL_OUT
+    but only has pads on PRE_A / PRE_B. The source terminal SHOULD fan into
+    both PRE nets (it has no pad on RAIL_OUT); each resistor terminal SHOULD
+    stay on its single literal net (it does). Regression: previously the
+    fallback ran unconditionally, so R1's P and N both spanned
+    {PRE_A, RAIL_OUT}, shorting the resistor and collapsing the bridge group.
+    """
+    # Nets: 0=GND 1=PRE_A 2=PRE_B 3=RAIL_OUT
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("PRE_A"), RawNet("PRE_B"),
+              RawNet("RAIL_OUT")),
+        sch_components=(
+            RawSchComponent(
+                designator="U9", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SOURCE", "PDN_V": "1",
+                    "PDN_P_NET": "RAIL_OUT", "PDN_N_NET": "GND",
+                },
+                pin_designators=("A1", "A2", "G1"),
+            ),
+            RawSchComponent(
+                designator="R1", schdoc_name="Pwr.SchDoc",
+                parameters={"PDN_ROLE": "SERIES", "PDN_R": "0.01"},
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="R2", schdoc_name="Pwr.SchDoc",
+                parameters={"PDN_ROLE": "SERIES", "PDN_R": "0.01"},
+                pin_designators=("1", "2"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(designator="U9", center=Pt2D(0, 0),
+                            rotation_deg=0.0, layer_name="TOP",
+                            footprint="QFN", source_designator="U9"),
+            RawPcbComponent(designator="R1", center=Pt2D(0, 0),
+                            rotation_deg=0.0, layer_name="TOP",
+                            footprint="0402", source_designator="R1"),
+            RawPcbComponent(designator="R2", center=Pt2D(0, 0),
+                            rotation_deg=0.0, layer_name="TOP",
+                            footprint="0402", source_designator="R2"),
+        ),
+        pads=(
+            _pad(0, "A1", 1, 0),   # U9 on PRE_A
+            _pad(0, "A2", 2, 1),   # U9 on PRE_B
+            _pad(0, "G1", 0, 2),   # U9 on GND
+            _pad(1, "1", 1, 3),    # R1 pad 1 on PRE_A
+            _pad(1, "2", 3, 4),    # R1 pad 2 on RAIL_OUT
+            _pad(2, "1", 2, 5),    # R2 pad 1 on PRE_B
+            _pad(2, "2", 3, 6),    # R2 pad 2 on RAIL_OUT
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+
+    src = next(d for d in result.directives if isinstance(d, SourceSpec))
+    # The source has no pad on RAIL_OUT → its P terminal fans into both
+    # pre-resistor nets (PRE_A=1, PRE_B=2). This behaviour is preserved.
+    assert {p.net_index for p in src.p.pins} == {1, 2}
+
+    for des in ("R1", "R2"):
+        r = next(d for d in result.directives
+                 if isinstance(d, ResistorSpec) and d.designator == des)
+        p_nets = {p.net_index for p in r.p.pins}
+        n_nets = {p.net_index for p in r.n.pins}
+        # Each terminal sits on exactly ONE net, and the two are disjoint —
+        # the resistor is a genuine 2-net bridge, not a self-short.
+        assert len(p_nets) == 1, f"{des} P spans {p_nets}"
+        assert len(n_nets) == 1, f"{des} N spans {n_nets}"
+        assert p_nets.isdisjoint(n_nets), f"{des} P/N overlap: {p_nets}&{n_nets}"
+        assert p_nets | n_nets == ({1, 3} if des == "R1" else {2, 3})
+
+
 def test_series_two_indexed_channels_with_pin_overrides():
     proj = _minimal_proj(
         nets=(
@@ -1540,6 +1618,42 @@ def test_series_channel_on_mixed_part_registers_bridge():
     assert any(isinstance(d, ResistorSpec) for d in result.directives)
     groups = _collect_bridge_groups(_iter_pdn_parameter_sources(proj), proj)
     assert groups.get("+5V") == frozenset({"+5V", "5V_SW"})
+
+
+# --- is_solveable: annotation errors are non-fatal ----------------------------
+
+def test_is_solveable_skips_bad_directive_and_solves_the_rest():
+    """A directive that fails to resolve (its net doesn't exist) is dropped and
+    recorded as an error, but must NOT blank the board — the valid source/sink
+    rail still solves. Regression for the 'one bad PDN parameter blanks every
+    rail' report."""
+    from types import SimpleNamespace
+
+    from fypa.altium.loader import LoadedProject
+
+    extracted = SimpleNamespace(enabled_copper_layer_ids=lambda: [1])
+    ann = AnnotationResult(
+        directives=[_single_source(0), _single_sink(0)],
+        errors=[
+            "SINK on J3 terminal: net 'S00A' does not exist on the PCB "
+            "and could not be resolved as a local schematic net."
+        ],
+    )
+    loaded = LoadedProject(extracted, ann)
+    assert loaded.is_solveable
+
+
+def test_is_solveable_still_false_without_a_source():
+    """Structural impossibility still blocks: a board with copper but no
+    SOURCE / REGULATOR has nothing to drive current and is not solveable."""
+    from types import SimpleNamespace
+
+    from fypa.altium.loader import LoadedProject
+
+    extracted = SimpleNamespace(enabled_copper_layer_ids=lambda: [1])
+    ann = AnnotationResult(directives=[_single_sink(0)])  # sink only
+    loaded = LoadedProject(extracted, ann)
+    assert not loaded.is_solveable
 
 
 def test_format_solve_blockers_lists_errors():

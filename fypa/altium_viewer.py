@@ -413,6 +413,10 @@ _SSAA_QS_KEY = "ui/supersampling"
 # solve (with solve-cache fast path). When disabled, only design info loads
 # and the user presses ↻ Solve in the viewer.
 _AUTO_SOLVE_IMPORT_QS_KEY = "import/auto_solve_on_altium"
+# Opacity (0..1) of via-barrel sections that carry no rail current — the 3D
+# cylinder fade. Persisted so the choice survives a relaunch; defaults to 0.4.
+_VIA_NO_CURRENT_OPACITY_QS_KEY = "ui/via_no_current_opacity"
+_VIA_NO_CURRENT_OPACITY_DEFAULT = 0.4
 _ADAPTIVE_REGULATOR_GAIN_QS_KEY = "solve/adaptive_regulator_gain"
 # When enabled, the heavy mesh+solve+package runs in a child process so a cancel
 # just kills the child (no QThread.terminate() that could orphan solver locks).
@@ -546,6 +550,42 @@ def save_auto_solve_on_import(enabled: bool) -> None:
         logging.getLogger(__name__).debug(
             "Could not persist auto-solve-on-import preference (%s); ignoring.",
             e,
+        )
+
+
+def load_via_no_current_opacity() -> float:
+    """Read the persisted opacity (0..1) for no-current via-barrel sections.
+
+    Defaults to :data:`_VIA_NO_CURRENT_OPACITY_DEFAULT`. Clamped to [0, 1] so
+    a corrupt / out-of-range stored value can't produce an invalid alpha."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        val = qs.value(_VIA_NO_CURRENT_OPACITY_QS_KEY,
+                       _VIA_NO_CURRENT_OPACITY_DEFAULT)
+        f = float(val)
+        if not math.isfinite(f):
+            return _VIA_NO_CURRENT_OPACITY_DEFAULT
+        return min(1.0, max(0.0, f))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not read via no-current opacity preference (%s); using "
+            "default.", e,
+        )
+    return _VIA_NO_CURRENT_OPACITY_DEFAULT
+
+
+def save_via_no_current_opacity(opacity: float) -> None:
+    """Persist the no-current via-barrel opacity for next launch."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        qs.setValue(_VIA_NO_CURRENT_OPACITY_QS_KEY,
+                    min(1.0, max(0.0, float(opacity))))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not persist via no-current opacity preference (%s); "
+            "ignoring.", e,
         )
 
 
@@ -5402,6 +5442,39 @@ class _SettingsTabMixin:
         self._settings_auto_solve_check.toggled.connect(
             lambda checked: save_auto_solve_on_import(bool(checked)))
         gen_layout.addWidget(self._settings_auto_solve_check)
+
+        # No-current via opacity — fade level (3D) of via-barrel sections that
+        # carry no current on the selected rail. Persisted immediately and
+        # live-applied to an open viewer (no re-solve).
+        self._settings_via_opacity_spin = QSpinBox()
+        self._settings_via_opacity_spin.setRange(0, 100)
+        self._settings_via_opacity_spin.setSuffix(" %")
+        self._settings_via_opacity_spin.setValue(
+            int(round(load_via_no_current_opacity() * 100)))
+        self._settings_via_opacity_spin.setToolTip(
+            "Opacity of via-barrel sections carrying no current on the "
+            "selected rail — the 3D cylinder stub ends outside the via's "
+            "current-carrying copper. 100% = fully solid; lower fades them so "
+            "the current-carrying span stands out. 3D view only; persists "
+            "across launches."
+        )
+
+        def _on_via_opacity_changed(pct: int) -> None:
+            alpha = int(pct) / 100.0
+            save_via_no_current_opacity(alpha)
+            apply = getattr(self, "_apply_via_no_current_opacity", None)
+            if callable(apply):
+                apply(alpha)
+
+        self._settings_via_opacity_spin.valueChanged.connect(
+            _on_via_opacity_changed)
+
+        via_op_row = QHBoxLayout()
+        via_op_row.addWidget(QLabel("No-current via opacity"))
+        via_op_row.addStretch(1)
+        via_op_row.addWidget(self._settings_via_opacity_spin)
+        gen_layout.addLayout(via_op_row)
+
         outer.addWidget(gen_box)
 
         # ----- Performance group -----
@@ -5411,17 +5484,22 @@ class _SettingsTabMixin:
         perf_box = QGroupBox("Performance")
         perf_form = QFormLayout(perf_box)
 
+        # Display label per backend; the stored value stays the bare backend
+        # id (kept in item data) so ``save_fuse_backend`` still sees "clipper".
+        _fuse_labels = {"clipper": "clipper (recommended)", "shapely": "shapely"}
         self._settings_fuse_combo = QComboBox()
-        self._settings_fuse_combo.addItems(list(_FUSE_BACKENDS_UI))
+        for _fb in _FUSE_BACKENDS_UI:
+            self._settings_fuse_combo.addItem(_fuse_labels.get(_fb, _fb), _fb)
         _cur_fb = load_fuse_backend()
         self._settings_fuse_combo.setCurrentIndex(
             _FUSE_BACKENDS_UI.index(_cur_fb) if _cur_fb in _FUSE_BACKENDS_UI
             else 0)
         self._settings_fuse_combo.setToolTip(
             "Geometry-fusion backend used when building copper polygons.\n"
-            "• clipper — Clipper2, the fast default.\n"
+            "• clipper — Clipper2, the fast default (recommended).\n"
             "• shapely — the legacy GEOS path (slower; reference)."
         )
+        self._fit_combo_width(self._settings_fuse_combo)
 
         self._settings_mesh_workers_spin = QSpinBox()
         self._settings_mesh_workers_spin.setRange(1, max(1, os.cpu_count() or 1))
@@ -5431,6 +5509,7 @@ class _SettingsTabMixin:
             "on many-core machines but adds memory + spawn overhead; the "
             "default is a physical-core estimate."
         )
+        self._fit_field_width(self._settings_mesh_workers_spin)
 
         self._settings_minres_spin = QSpinBox()
         self._settings_minres_spin.setRange(10, 3600)
@@ -5442,11 +5521,12 @@ class _SettingsTabMixin:
             "when the direct solve can't be used). On timeout the best iterate "
             "so far is kept. Raise this for very large boards."
         )
+        self._fit_field_width(self._settings_minres_spin)
 
         # Connect AFTER setting initial values so seeding them doesn't fire a
         # spurious save/apply.
-        def _on_fuse_changed(text: str) -> None:
-            save_fuse_backend(text)
+        def _on_fuse_changed(_idx: int) -> None:
+            save_fuse_backend(self._settings_fuse_combo.currentData())
             _apply_performance_prefs()
 
         def _on_workers_changed(val: int) -> None:
@@ -5457,7 +5537,7 @@ class _SettingsTabMixin:
             save_minres_budget_s(int(val))
             _apply_performance_prefs()
 
-        self._settings_fuse_combo.currentTextChanged.connect(_on_fuse_changed)
+        self._settings_fuse_combo.currentIndexChanged.connect(_on_fuse_changed)
         self._settings_mesh_workers_spin.valueChanged.connect(_on_workers_changed)
         self._settings_minres_spin.valueChanged.connect(_on_minres_changed)
 
@@ -5575,6 +5655,29 @@ class _SettingsTabMixin:
             f"QComboBox[dirty=\"true\"] {{ border: 1px solid {t['warn_fg']}; }}"
         )
         return widget
+
+    @staticmethod
+    def _fit_field_width(widget: QWidget, margin: float = 0.1) -> None:
+        """Cap a Settings-tab field to its content width (+ ~``margin``)
+        rather than letting the QFormLayout stretch it the full panel width.
+
+        A full-width combo/spin box is an easy accidental target while
+        scrolling the Settings tab — a stray wheel tick lands on it and
+        silently changes the value. Sizing to content keeps the hit area
+        small. Populate/configure the widget (items, range, suffix) before
+        calling this — the width comes from its ``sizeHint``."""
+        width = int(widget.sizeHint().width() * (1.0 + margin))
+        widget.setMaximumWidth(width)
+        # Maximum (not Expanding) so the form layout can't grow it past the
+        # hint; it may still shrink on a very narrow window.
+        widget.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+
+    @classmethod
+    def _fit_combo_width(cls, combo: QComboBox, margin: float = 0.1) -> None:
+        """As ``_fit_field_width`` but first makes the combo size to its
+        widest item (``AdjustToContents``) instead of a fixed default."""
+        combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        cls._fit_field_width(combo, margin)
 
     def _make_settings_group(
         self, title: str,
@@ -5743,7 +5846,7 @@ class _SettingsTabMixin:
         idx = self._fill_mode_combo.findData(cur_mode)
         if idx >= 0:
             self._fill_mode_combo.setCurrentIndex(idx)
-        self._fill_mode_combo.setMinimumWidth(220)
+        self._fit_combo_width(self._fill_mode_combo)
         self._fill_mode_combo.currentIndexChanged.connect(
             self._on_fill_mode_changed)
         self._fill_mode_combo.currentIndexChanged.connect(
@@ -5761,7 +5864,7 @@ class _SettingsTabMixin:
             "Pick a fill material to populate the resistivity field below "
             "with a typical value, or choose Custom to type your own."
         )
-        self._fill_material_combo.setMinimumWidth(220)
+        self._fit_combo_width(self._fill_material_combo)
         self._fill_material_combo.currentIndexChanged.connect(
             self._on_fill_material_changed)
         mat_label = QLabel("Fill material")
@@ -5871,8 +5974,7 @@ class _SettingsTabMixin:
             "matches the rest of the tooling; Light is friendlier in "
             "bright rooms. The choice is remembered for the next launch."
         )
-        self._theme_combo.setMinimumWidth(140)
-        self._theme_combo.setMaximumWidth(180)
+        self._fit_combo_width(self._theme_combo)
         self._theme_combo.currentIndexChanged.connect(self._on_theme_combo_changed)
 
         label_widget = QLabel("Colour theme")
@@ -7302,6 +7404,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             float(display_percentile_high) if display_percentile_high is not None
             else _DISPLAY_PERCENTILE_HIGH
         )
+        # Opacity of no-current via-barrel sections (3D cylinder fade), from
+        # the persisted "No-current via opacity" Settings knob. Read live by
+        # :meth:`_solid_via_chunks` / :meth:`_heatmap_via_chunks`.
+        self._via_dead_section_alpha: float = load_via_no_current_opacity()
         project_name = getattr(solution.problem, "project_name", None) or "unknown"
         self.setWindowTitle(f"FYPA -- {project_name}")
         icon = _load_app_icon()
@@ -12702,10 +12808,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
     # connection, where the solved section current goes to zero (the same
     # "no current" condition the "Grey no current copper" plane toggle
     # greys). The current-carrying span keeps alpha 1.0 so it renders
-    # unchanged. Which hops count as no-current is decided in
-    # :meth:`_hop_live_flags`, reusing the plane classifier's
+    # unchanged. This is the built-in default; the live value is the
+    # per-instance ``_via_dead_section_alpha``, set from the "No-current via
+    # opacity" Settings knob (persisted via
+    # :func:`load_via_no_current_opacity`). Which hops count as no-current is
+    # decided in :meth:`_hop_live_flags`, reusing the plane classifier's
     # ``_NO_CURRENT_PD_*`` power floor.
-    _VIA_DEAD_SECTION_ALPHA: float = 0.4
+    _VIA_DEAD_SECTION_ALPHA: float = _VIA_NO_CURRENT_OPACITY_DEFAULT
     # Plated-through-hole pad styling — light grey so PTHs are visually
     # distinct from the orange vias in both the 2D marker overlay and the
     # 3D cylinder view. PTHs span every enabled copper layer (Altium pads
@@ -13055,7 +13164,8 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         slot: tuple[float, float, float, bool] | None = None,
     ) -> list[tuple[np.ndarray, np.ndarray]]:
         """Flat-colour barrel for a via/PTH, split so sections that carry no
-        rail current fade to :attr:`_VIA_DEAD_SECTION_ALPHA`.
+        rail current fade to :attr:`_via_dead_section_alpha` (the "No-current
+        via opacity" Settings knob).
 
         The metal stubs above the topmost / below the bottommost live copper
         carry no current and are always faded; each inter-layer hop is opaque
@@ -13073,7 +13183,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             return [(pos, col)]
         sampled, powers = sampled_powers
         live = self._hop_live_flags(powers)
-        dead = self._VIA_DEAD_SECTION_ALPHA
+        dead = self._via_dead_section_alpha
         chunks: list[tuple[np.ndarray, np.ndarray]] = []
 
         def _cyl(za: float, zb: float, alpha: float) -> None:
@@ -13192,7 +13302,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             i_seg = abs((v_a - v_b) / r_seg) if r_seg > 0 else 0.0
             hop_powers.append(i_seg * i_seg * r_seg)
         live = self._hop_live_flags(hop_powers)
-        dead = self._VIA_DEAD_SECTION_ALPHA
+        dead = self._via_dead_section_alpha
 
         chunks: list[tuple[np.ndarray, np.ndarray]] = []
         for i, ((lid_a, z_a, v_a), (lid_b, z_b, v_b)) in enumerate(
@@ -14157,6 +14267,23 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             self._gl_viewer.set_levels(float(self._gl_scale(vmin)),
                                         float(self._gl_scale(vmax)))
         self._reshade_baked_via_overlays()
+
+    def _apply_via_no_current_opacity(self, alpha: float) -> None:
+        """Live-apply the "No-current via opacity" Settings knob: store the
+        alpha and re-push the 3D via cylinders so the fade updates without a
+        re-solve. The fade is a 3D-cylinder-only effect, so there's nothing
+        to refresh in 2D."""
+        self._via_dead_section_alpha = min(1.0, max(0.0, float(alpha)))
+        if getattr(self, "_gl_viewer", None) is None:
+            return
+        view_box = getattr(self, "view_3d_box", None)
+        if view_box is None or not view_box.isChecked():
+            return
+        phys_list, rails, _ = self._current_selection()
+        if not phys_list or not rails:
+            return
+        self._push_via_cylinders(
+            phys_list, rails, mode=self.mode_combo.currentText())
 
     def _reshade_baked_via_overlays(self) -> None:
         """Re-push the via cylinders / 2D markers when their colours
@@ -24012,9 +24139,13 @@ def _maybe_warn_needs_directives(parent_win, solution) -> None:
 
 
 def _maybe_show_annotation_errors(parent_win, metadata) -> None:
-    """Pop a notice when annotation errors block solving.
+    """Pop a notice listing PDN directives that could not be resolved and were
+    skipped.
 
-    Fired after a stub viewer opens with ``metadata['annotation_errors']``.
+    Fired after a viewer opens with ``metadata['annotation_errors']``. These
+    no longer block the solve — the offending directive (a mistyped net, a
+    missing pad) is dropped and every valid rail is still solved — so the
+    notice reports what was left out rather than what blocked the run.
     """
     if not isinstance(metadata, dict):
         return
@@ -24027,11 +24158,12 @@ def _maybe_show_annotation_errors(parent_win, metadata) -> None:
         body += f"\n  … and {len(errors) - max_show} more"
     QMessageBox.warning(
         parent_win,
-        "Annotation errors",
-        "These PDN annotation errors must be fixed before the board "
-        "can be solved:\n\n"
+        "Some directives were skipped",
+        "These PDN directives could not be resolved and were skipped — the "
+        "other valid rails were still solved:\n\n"
         f"{body}\n\n"
-        "Details also in Setup → Annotation log.",
+        "Fix them (usually a net-name typo) to include these directives in "
+        "the analysis. Details also in Setup → Annotation log.",
     )
 
 

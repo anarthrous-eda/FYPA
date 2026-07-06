@@ -844,16 +844,26 @@ def _resolve_terminal(
             )
             return None, errors
 
-        if not resolved_via_local:
-            # Bridge-aware fallback: if no pad sits on the literal net but the
-            # user has declared (via SERIES directives) that this net is bridged
-            # to others, accumulate pads from EVERY equivalent net in the bridge
-            # group. This matters when a component (e.g. a multi-output regulator)
-            # sources the rail through several parallel SERIES resistors, each
-            # with its own pre-resistor net (VOUT0_PRE, VOUT1_PRE, …) that all
-            # bridge to the same downstream rail (DAC_SOA_VDD). Previously this
-            # picked only the FIRST equivalent net, silently dropping half the
-            # source pins.
+        if not matched:
+            # Bridge-aware fallback: ONLY when no pad sits on the literal net.
+            # If the user has declared (via SERIES directives) that this net is
+            # bridged to others, accumulate pads from EVERY equivalent net in
+            # the bridge group. This matters when a component (e.g. a
+            # multi-output regulator) sources the rail through several parallel
+            # SERIES resistors, each with its own pre-resistor net (VOUT0_PRE,
+            # VOUT1_PRE, …) that all bridge to the same downstream rail
+            # (DAC_SOA_VDD): the regulator has no pad on DAC_SOA_VDD, so its
+            # terminal must gather the VOUT*_PRE pads instead. Accumulate all
+            # equivalent nets (not just the first) so none of the source pins
+            # are dropped.
+            #
+            # The ``not matched`` guard is essential: the SERIES resistor that
+            # *creates* the bridge (pad 1 on VOUT0_PRE, pad 2 on DAC_SOA_VDD)
+            # DOES have a pad on each literal net, so it must NOT pull in the
+            # bridged net's pad — doing so put both nets on both terminals,
+            # shorting the resistor to itself and tying the whole bridge group
+            # into one node. Only a terminal that found nothing literally
+            # (the regulator/source naming a downstream rail) reaches here.
             seen_pad_designators: set[str] = {p.designator for p in matched}
             bridges_used: list[str] = []
             if bridge_groups is not None:
