@@ -294,6 +294,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSlider,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -417,6 +418,13 @@ _ADAPTIVE_REGULATOR_GAIN_QS_KEY = "solve/adaptive_regulator_gain"
 # just kills the child (no QThread.terminate() that could orphan solver locks).
 # Off by default; the env var FYPA_SOLVE_SUBPROCESS also forces it on.
 _SOLVE_SUBPROCESS_QS_KEY = "solve/use_subprocess"
+# Performance tunables that were previously env-var-only (see
+# _apply_performance_prefs). fuse backend: "clipper" (default) / "shapely" /
+# "verify". mesh workers: worker-process cap for meshing. minres budget:
+# iterative-fallback wall-clock timeout (s).
+_FUSE_BACKEND_QS_KEY = "perf/fuse_backend"
+_MESH_WORKERS_QS_KEY = "perf/mesh_max_workers"
+_MINRES_BUDGET_QS_KEY = "perf/minres_budget_s"
 
 _current_theme_mode: str = "dark"
 
@@ -607,6 +615,127 @@ def save_solve_in_subprocess(enabled: bool) -> None:
             "Could not persist solve-in-subprocess preference (%s); ignoring.",
             e,
         )
+
+
+_FUSE_BACKENDS = ("clipper", "shapely", "verify")
+# Subset offered in the Settings dialog. "verify" stays a valid backend for the
+# env var / tools/bench_fuse.py qualification path, but is not a user-facing
+# runtime choice (it runs both engines every bucket — a validation mode, not a
+# setting to leave on).
+_FUSE_BACKENDS_UI = ("clipper", "shapely")
+
+
+def load_fuse_backend() -> str:
+    """Read the persisted geometry-fusion backend preference.
+
+    Defaults to the current ``FYPA_FUSE_BACKEND`` env value (or ``clipper``) so
+    an externally-set env var is reflected until the user overrides it in the
+    UI."""
+    default = (os.environ.get("FYPA_FUSE_BACKEND", "clipper").strip().lower()
+               or "clipper")
+    if default not in _FUSE_BACKENDS:
+        default = "clipper"
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        val = str(qs.value(_FUSE_BACKEND_QS_KEY, default)).strip().lower()
+        if val in _FUSE_BACKENDS:
+            return val
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not read fuse-backend preference (%s); using default.", e)
+    return default
+
+
+def save_fuse_backend(mode: str) -> None:
+    """Persist the geometry-fusion backend preference."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        qs.setValue(_FUSE_BACKEND_QS_KEY, str(mode).strip().lower())
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not persist fuse-backend preference (%s); ignoring.", e)
+
+
+def load_mesh_max_workers() -> int:
+    """Read the persisted mesh worker-process cap. Defaults to pdnsolver's
+    physical-core heuristic."""
+    from pdnsolver.solver import default_mesh_max_workers
+    default = default_mesh_max_workers()
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        val = int(qs.value(_MESH_WORKERS_QS_KEY, default))
+        if val >= 1:
+            return val
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not read mesh-workers preference (%s); using default.", e)
+    return default
+
+
+def save_mesh_max_workers(n: int) -> None:
+    """Persist the mesh worker-process cap."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        qs.setValue(_MESH_WORKERS_QS_KEY, int(n))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not persist mesh-workers preference (%s); ignoring.", e)
+
+
+def load_minres_budget_s() -> int:
+    """Read the persisted iterative-fallback timeout (seconds). Default 180."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        val = int(qs.value(_MINRES_BUDGET_QS_KEY, 180))
+        if val > 0:
+            return val
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not read solver-timeout preference (%s); using default.", e)
+    return 180
+
+
+def save_minres_budget_s(seconds: int) -> None:
+    """Persist the iterative-fallback timeout (seconds)."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        qs.setValue(_MINRES_BUDGET_QS_KEY, int(seconds))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not persist solver-timeout preference (%s); ignoring.", e)
+
+
+def _apply_performance_prefs() -> None:
+    """Apply the persisted Performance preferences to both execution paths:
+
+    * ``os.environ`` — so a spawned subprocess solve (which reads these at
+      import) inherits them; and, for the fuse backend, so ``_clipper_fuse``
+      picks it up per call.
+    * pdnsolver module globals via its setters — for the in-process solve.
+
+    Called once at startup and again whenever a Performance control changes."""
+    fb = load_fuse_backend()
+    os.environ["FYPA_FUSE_BACKEND"] = fb
+
+    mw = load_mesh_max_workers()
+    os.environ["PDNSOLVER_MESH_MAX_WORKERS"] = str(mw)
+
+    mb = load_minres_budget_s()
+    os.environ["PDNSOLVER_MINRES_BUDGET_S"] = str(mb)
+
+    try:
+        from pdnsolver import solver as _solver
+        _solver.set_mesh_max_workers(mw)
+        _solver.set_minres_time_budget(mb)
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not apply performance prefs to pdnsolver (%s); ignoring.", e)
 
 
 def _metadata_has_adaptive_smps(metadata: dict | None) -> bool:
@@ -13155,17 +13284,10 @@ class PdnViewer(QMainWindow):
             mbtn.hide()
             setattr(self, attr, mbtn)
 
-        ag_chk = QCheckBox("Adaptive SMPS gain", self._gl_viewer)
-        ag_chk.setCursor(Qt.PointingHandCursor)
-        ag_chk.setChecked(load_adaptive_regulator_gain())
-        ag_chk.setToolTip(
-            "When checked, re-solve iterates SMPS regulator gain using the "
-            "solved input voltage (includes SERIES and copper IR drop). "
-            "LDO regulators are unaffected. Adds extra solve time."
-        )
-        ag_chk.toggled.connect(self._on_adaptive_gain_toggled)
-        ag_chk.hide()
-        self._adaptive_gain_check = ag_chk
+        # "Adaptive SMPS gain" lives in Settings > Solve parameters (built in
+        # _build_settings_tab), not as a canvas overlay. Its attribute name and
+        # handler are unchanged, so the solve-time reads and the resolve-enable
+        # logic keep working regardless of where the widget is.
 
         rbtn = QPushButton("↻  Resolve", self._gl_viewer)
         rbtn.setCursor(Qt.PointingHandCursor)
@@ -13258,12 +13380,6 @@ class PdnViewer(QMainWindow):
                 b.move(x, margin)
                 b.raise_()
                 x += b.width() + gap
-        ag_chk = getattr(self, "_adaptive_gain_check", None)
-        if ag_chk is not None and ag_chk.isVisible():
-            ag_chk.adjustSize()
-            ag_chk.move(x, margin + 4)
-            ag_chk.raise_()
-            x += ag_chk.width() + gap
         rbtn = getattr(self, "_resolve_btn", None)
         if rbtn is not None and rbtn.isVisible():
             rbtn.adjustSize()
@@ -13680,7 +13796,8 @@ class PdnViewer(QMainWindow):
         self._has_adaptive_smps = has_smps
         ag_chk = getattr(self, "_adaptive_gain_check", None)
         if ag_chk is not None:
-            ag_chk.setVisible(visible)
+            # Lives in the Settings tab now (always visible there); only its
+            # enabled state tracks SMPS eligibility.
             ag_chk.setEnabled(has_smps)
             if not has_smps:
                 ag_chk.setToolTip(
@@ -18839,9 +18956,32 @@ class PdnViewer(QMainWindow):
         )
         self._settings_adaptive_check.toggled.connect(
             self._on_settings_field_changed)
+        # Adaptive SMPS regulator-gain iteration — moved here from the editor
+        # canvas overlay. Same attribute name + handler as before, so the
+        # solve-time reads and resolve-enable logic are unchanged. Enabled only
+        # for designs with an auto-gain SMPS regulator; disabled (with an
+        # explanatory tooltip) otherwise — _refresh_solve_stale_overlay keeps
+        # the enabled state in sync as the design changes.
+        self._adaptive_gain_check = QCheckBox("Adaptive SMPS gain")
+        self._adaptive_gain_check.setChecked(load_adaptive_regulator_gain())
+        _ag_has_smps = _viewer_has_adaptive_smps(
+            getattr(self, "metadata", None),
+            getattr(self, "_loaded_project", None),
+        )
+        self._adaptive_gain_check.setEnabled(_ag_has_smps)
+        self._adaptive_gain_check.setToolTip(
+            "When checked, re-solve iterates SMPS regulator gain using the "
+            "solved input voltage (includes SERIES and copper IR drop). LDO "
+            "regulators are unaffected. Adds extra solve time."
+            if _ag_has_smps else
+            "Requires a REGULATOR with PDN_REGULATOR_TYPE=SMPS and no PDN_GAIN "
+            "(auto-gain). LDO regulators and manual PDN_GAIN are not iterated."
+        )
+        self._adaptive_gain_check.toggled.connect(self._on_adaptive_gain_toggled)
         _solve_layout = solve_box.layout()
         if _solve_layout is not None:
             _solve_layout.addRow(self._settings_adaptive_check)
+            _solve_layout.addRow(self._adaptive_gain_check)
         outer.addWidget(solve_box)
 
         # ----- Conductive via fill group -----
@@ -18884,6 +19024,68 @@ class PdnViewer(QMainWindow):
             lambda checked: save_auto_solve_on_import(bool(checked)))
         gen_layout.addWidget(self._settings_auto_solve_check)
         outer.addWidget(gen_box)
+
+        # ----- Performance group -----
+        # Tunables previously reachable only via env vars. Persisted and applied
+        # (to os.environ + pdnsolver) immediately; they affect the NEXT solve /
+        # load, not the current result — no re-solve needed to persist them.
+        perf_box = QGroupBox("Performance")
+        perf_form = QFormLayout(perf_box)
+
+        self._settings_fuse_combo = QComboBox()
+        self._settings_fuse_combo.addItems(list(_FUSE_BACKENDS_UI))
+        _cur_fb = load_fuse_backend()
+        self._settings_fuse_combo.setCurrentIndex(
+            _FUSE_BACKENDS_UI.index(_cur_fb) if _cur_fb in _FUSE_BACKENDS_UI
+            else 0)
+        self._settings_fuse_combo.setToolTip(
+            "Geometry-fusion backend used when building copper polygons.\n"
+            "• clipper — Clipper2, the fast default.\n"
+            "• shapely — the legacy GEOS path (slower; reference)."
+        )
+
+        self._settings_mesh_workers_spin = QSpinBox()
+        self._settings_mesh_workers_spin.setRange(1, max(1, os.cpu_count() or 1))
+        self._settings_mesh_workers_spin.setValue(load_mesh_max_workers())
+        self._settings_mesh_workers_spin.setToolTip(
+            "Number of worker processes used for meshing. Higher can be faster "
+            "on many-core machines but adds memory + spawn overhead; the "
+            "default is a physical-core estimate."
+        )
+
+        self._settings_minres_spin = QSpinBox()
+        self._settings_minres_spin.setRange(10, 3600)
+        self._settings_minres_spin.setSingleStep(30)
+        self._settings_minres_spin.setSuffix(" s")
+        self._settings_minres_spin.setValue(load_minres_budget_s())
+        self._settings_minres_spin.setToolTip(
+            "Wall-clock budget for the iterative fallback solver (only reached "
+            "when the direct solve can't be used). On timeout the best iterate "
+            "so far is kept. Raise this for very large boards."
+        )
+
+        # Connect AFTER setting initial values so seeding them doesn't fire a
+        # spurious save/apply.
+        def _on_fuse_changed(text: str) -> None:
+            save_fuse_backend(text)
+            _apply_performance_prefs()
+
+        def _on_workers_changed(val: int) -> None:
+            save_mesh_max_workers(int(val))
+            _apply_performance_prefs()
+
+        def _on_minres_changed(val: int) -> None:
+            save_minres_budget_s(int(val))
+            _apply_performance_prefs()
+
+        self._settings_fuse_combo.currentTextChanged.connect(_on_fuse_changed)
+        self._settings_mesh_workers_spin.valueChanged.connect(_on_workers_changed)
+        self._settings_minres_spin.valueChanged.connect(_on_minres_changed)
+
+        perf_form.addRow("Fusion backend", self._settings_fuse_combo)
+        perf_form.addRow("Mesh worker processes", self._settings_mesh_workers_spin)
+        perf_form.addRow("Iterative-solver timeout", self._settings_minres_spin)
+        outer.addWidget(perf_box)
 
         # ----- Experimental group -----
         # Settings here are persisted immediately (not part of the re-solve
@@ -24023,6 +24225,9 @@ def main(solution, warnings_list=None, metadata=None,
     # window is constructed, so the side panel, menubar and dialogs
     # follow the theme on every machine regardless of system palette.
     apply_app_theme(app, load_saved_theme_mode())
+    # Apply persisted Performance prefs (fuse backend, mesh workers, solver
+    # timeout) to os.environ + pdnsolver before any solve can run.
+    _apply_performance_prefs()
     # Application-wide icon (covers Qt's WM_SETICON path).
     icon = _load_app_icon()
     if icon is not None:

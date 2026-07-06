@@ -124,6 +124,39 @@ _MINRES_MAXITER: int = 5000
 _MINRES_TIME_BUDGET_S: float = float(
     os.environ.get("PDNSOLVER_MINRES_BUDGET_S", "180"),
 )
+
+
+def default_mesh_max_workers() -> int:
+    """The default mesh worker-process cap (before any env / runtime override) —
+    a rough physical-core count. Used by the GUI to seed its Performance
+    setting."""
+    return _MESH_MAX_WORKERS_DEFAULT
+
+
+def set_mesh_max_workers(n) -> None:
+    """Override the mesh worker-process cap for subsequent solves (the GUI's
+    Performance setting mirrors the ``PDNSOLVER_MESH_MAX_WORKERS`` env var for
+    the in-process path). Ignores None / non-positive values."""
+    global _MESH_MAX_WORKERS
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return
+    if n >= 1:
+        _MESH_MAX_WORKERS = n
+
+
+def set_minres_time_budget(seconds) -> None:
+    """Override the iterative-fallback wall-clock budget (seconds) for
+    subsequent solves (mirrors ``PDNSOLVER_MINRES_BUDGET_S`` for the in-process
+    path). Ignores None / non-positive values."""
+    global _MINRES_TIME_BUDGET_S
+    try:
+        seconds = float(seconds)
+    except (TypeError, ValueError):
+        return
+    if seconds > 0:
+        _MINRES_TIME_BUDGET_S = seconds
 # Log MINRES progress every N iterations so the GUI substage feed shows the
 # iterative solve advancing instead of appearing hung.
 _MINRES_PROGRESS_EVERY: int = 250
