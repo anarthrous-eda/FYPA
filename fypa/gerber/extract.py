@@ -42,6 +42,7 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import shapely
 import shapely.affinity
 import shapely.geometry
@@ -60,6 +61,30 @@ from fypa.altium.extract import (
 )
 
 log = logging.getLogger(__name__)
+
+
+# The in-flight per-layer render pool, exposed so the GUI cancel path can tear
+# it down instead of letting it render every remaining layer to completion as
+# an orphan (the ProcessPool render phase is not cooperatively interruptible).
+# Mirrors pdnsolver.solver._active_mesh_pool / cancel_active_mesh_pool.
+import threading as _threading
+_active_gerber_pool = None
+_active_gerber_pool_lock = _threading.Lock()
+
+
+def cancel_active_gerber_pool() -> None:
+    """Tear down any in-flight Gerber render pool. Safe from any thread and
+    safe to call when no pool is active. Cancels queued layers and asks running
+    workers to stop; the render loop then fails/finishes and the import unwinds."""
+    global _active_gerber_pool
+    with _active_gerber_pool_lock:
+        pool = _active_gerber_pool
+        _active_gerber_pool = None
+    if pool is not None:
+        try:
+            pool.shutdown(cancel_futures=True, wait=False)
+        except Exception:  # pragma: no cover - best effort
+            pass
 
 
 # Special "layer id" sentinels for the file-classifier UI. Negative + >32 are
@@ -517,7 +542,12 @@ def _gerber_is_negative_image(gerber_path: Path) -> bool:
     hundred bytes) rather than relying on gerbonara, which does not expose the
     resolved image polarity on the parsed file object."""
     try:
-        head = gerber_path.read_text(errors="replace")[:4096]
+        # Read only the first 4 KB — the IP header sits in the first few
+        # hundred bytes. read_text() would decode the ENTIRE file (tens of MB on
+        # a dense copper layer) just to slice off the head, once per copper
+        # layer, on top of gerbonara's own full parse.
+        with gerber_path.open("r", errors="replace") as f:
+            head = f.read(4096)
     except OSError:
         return False
     return bool(_IP_NEG_RE.search(head))
@@ -706,9 +736,12 @@ def _discretise_arc_to_points(x1: float, y1: float, x2: float, y2: float,
     dtheta_max = 2.0 * math.acos(1.0 - err_ratio)
     sweep = abs(a1 - a0)
     n = max(2, int(math.ceil(sweep / dtheta_max)) + 1)
-    return [(cx + r * math.cos(a0 + (a1 - a0) * (i / (n - 1))),
-             cy + r * math.sin(a0 + (a1 - a0) * (i / (n - 1))))
-            for i in range(n)]
+    # Vectorised: one np.cos/sin over the angle vector instead of per-point trig
+    # (the old comprehension also re-evaluated the angle expression twice/point).
+    angs = a0 + (a1 - a0) * (np.arange(n) / (n - 1))
+    xs = cx + r * np.cos(angs)
+    ys = cy + r * np.sin(angs)
+    return list(zip(xs.tolist(), ys.tolist()))
 
 
 def render_outline_to_polyline(gerber_path: Path) -> tuple[Pt2D, ...]:
@@ -1370,27 +1403,35 @@ def extract_gerber_project(
     if n_workers > 1 and len(items) > 1:
         log.info("Gerber: rendering %d layers in parallel (workers=%d)",
                  len(items), n_workers)
+        global _active_gerber_pool
         with ProcessPoolExecutor(max_workers=n_workers) as pool:
-            fut_to_meta = {
-                pool.submit(render_gerber_to_shapely, path): (layer_id, path)
-                for layer_id, path in items
-            }
-            from concurrent.futures import as_completed
-            done = 0
-            for fut in as_completed(fut_to_meta):
-                layer_id, path = fut_to_meta[fut]
-                try:
-                    geom_by_layer[layer_id] = fut.result()
-                    log.info("Gerber: rendered layer %d (%s)",
-                             layer_id, path.name)
-                except Exception as e:
-                    failed_copper_layers.append(
-                        f"layer {layer_id} ({path.name}): "
-                        f"{type(e).__name__}: {e}"
-                    )
-                done += 1
-                _progress(substage=f"{done} / {len(items)} done "
-                                   f"(latest: {path.name})")
+            with _active_gerber_pool_lock:
+                _active_gerber_pool = pool
+            try:
+                fut_to_meta = {
+                    pool.submit(render_gerber_to_shapely, path): (layer_id, path)
+                    for layer_id, path in items
+                }
+                from concurrent.futures import as_completed
+                done = 0
+                for fut in as_completed(fut_to_meta):
+                    layer_id, path = fut_to_meta[fut]
+                    try:
+                        geom_by_layer[layer_id] = fut.result()
+                        log.info("Gerber: rendered layer %d (%s)",
+                                 layer_id, path.name)
+                    except Exception as e:
+                        failed_copper_layers.append(
+                            f"layer {layer_id} ({path.name}): "
+                            f"{type(e).__name__}: {e}"
+                        )
+                    done += 1
+                    _progress(substage=f"{done} / {len(items)} done "
+                                       f"(latest: {path.name})")
+            finally:
+                with _active_gerber_pool_lock:
+                    if _active_gerber_pool is pool:
+                        _active_gerber_pool = None
     else:
         for idx, (layer_id, path) in enumerate(items, start=1):
             log.info("Gerber: rendering layer %d (%s)", layer_id, path.name)

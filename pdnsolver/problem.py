@@ -62,7 +62,14 @@ class Connection:
     region: shapely.geometry.Polygon | None = None
 
 
-@dataclass(frozen=True)
+# eq=False on every lumped element: they are always handled as instances and
+# keyed by identity (e.g. NodeIndexer.extra_source_to_global_index), never
+# compared or hashed by value. The default eq=True would make two identical
+# parallel elements (e.g. two VRM phases with the same voltage across the same
+# nodes) collide as one dict key — under-sizing the MNA system by a variable
+# and doubling that element's constraint row. eq=False restores identity
+# semantics (and identity hash) so duplicates stay distinct.
+@dataclass(frozen=True, eq=False)
 class BaseLumped:
     """
     Represents a lumped element in the network.
@@ -114,7 +121,7 @@ class Network:
         object.__setattr__(self, "has_source", has_source)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Resistor(BaseLumped):
     a: NodeID
     b: NodeID
@@ -130,7 +137,7 @@ class Resistor(BaseLumped):
         return [self.a, self.b]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class VoltageSource(BaseLumped):
     p: NodeID
     n: NodeID
@@ -149,7 +156,7 @@ class VoltageSource(BaseLumped):
         return 1
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class CurrentSource(BaseLumped):
     f: NodeID
     t: NodeID
@@ -164,7 +171,7 @@ class CurrentSource(BaseLumped):
         return True
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class VoltageRegulator(BaseLumped):
     v_p: NodeID
     v_n: NodeID

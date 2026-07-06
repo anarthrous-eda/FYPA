@@ -1210,7 +1210,12 @@ def _boundary_distance(boundary, centroids: np.ndarray) -> np.ndarray:
     tree = shapely.strtree.STRtree(np.concatenate(seg_arrays))
     res, dists = tree.query_nearest(
         cpts, return_distance=True, all_matches=False)
-    out = np.empty(centroids.shape[0], dtype=np.float64)
+    # np.full(inf), not np.empty: query_nearest should return one hit per input
+    # point, but if it ever drops one (a degenerate/NaN centroid) that entry is
+    # never assigned. Seeding with inf leaves an unmatched point graded as "far"
+    # (coarse) rather than reading uninitialised memory that could mis-grade the
+    # adaptive mesh either way.
+    out = np.full(centroids.shape[0], np.inf, dtype=np.float64)
     out[res[0]] = dists
     return out
 

@@ -60,21 +60,36 @@ def _clean_caches():
     S.free_pardiso_cache()
 
 
+# Every _strip_problem is one layer (index 0) with one geom (index 0), so the
+# meshed set is the same for all of them; the fingerprint differences these
+# tests probe come from geometry/conductance/source, not from this set.
+_PAIRS = {(0, 0)}
+
+
 def test_fingerprint_ignores_source_magnitude():
     """Only source/sink magnitude differs → identical fingerprint (RHS-only)."""
     cfg = MESH.Mesher(None).config
-    assert (S._mesh_assembly_fingerprint(_strip_problem(1.0), cfg)
-            == S._mesh_assembly_fingerprint(_strip_problem(7.0), cfg))
+    assert (S._mesh_assembly_fingerprint(_strip_problem(1.0), cfg, _PAIRS)
+            == S._mesh_assembly_fingerprint(_strip_problem(7.0), cfg, _PAIRS))
 
 
 def test_fingerprint_tracks_geometry_and_conductance():
     """Geometry or conductance changes the meshes/Laplacian → different hash."""
     cfg = MESH.Mesher(None).config
-    base = S._mesh_assembly_fingerprint(_strip_problem(1.0), cfg)
+    base = S._mesh_assembly_fingerprint(_strip_problem(1.0), cfg, _PAIRS)
     assert S._mesh_assembly_fingerprint(
-        _strip_problem(1.0, length=60.0), cfg) != base
+        _strip_problem(1.0, length=60.0), cfg, _PAIRS) != base
     assert S._mesh_assembly_fingerprint(
-        _strip_problem(1.0, conductance=_CU * 2), cfg) != base
+        _strip_problem(1.0, conductance=_CU * 2), cfg, _PAIRS) != base
+
+
+def test_fingerprint_tracks_connected_set():
+    """Same geometry/conductance/seeds but a different meshed set → different
+    hash (e.g. a source→resistor edit that changes which copper is live)."""
+    cfg = MESH.Mesher(None).config
+    base = S._mesh_assembly_fingerprint(_strip_problem(1.0), cfg, _PAIRS)
+    assert S._mesh_assembly_fingerprint(
+        _strip_problem(1.0), cfg, set()) != base
 
 
 def test_value_only_resolve_reuses_assembly_and_scales():

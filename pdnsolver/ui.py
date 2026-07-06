@@ -1088,10 +1088,13 @@ class MeshViewer(QOpenGLWidget):
             max_val = float('-inf')
 
             for index in self.spatial_indices.values():
-                if not index.values:
+                # index.values is a numpy ndarray (vectorised
+                # _extract_points_and_values); `if not values` / `min(values)`
+                # on an array of size > 1 raises "truth value is ambiguous".
+                if index.values.size == 0:
                     continue
-                min_val = min(min_val, min(index.values))
-                max_val = max(max_val, max(index.values))
+                min_val = min(min_val, float(index.values.min()))
+                max_val = max(max_val, float(index.values.max()))
 
             if min_val == float('inf'):
                 min_val, max_val = 0.0, 1.0

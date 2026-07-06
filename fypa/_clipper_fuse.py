@@ -190,6 +190,11 @@ def fuse(pieces, grid_size: float | None, key=None) -> BaseGeometry:
     """
     mode = backend()
     if mode in ("clipper", "verify") and pyclipr is not None:
+        # Materialise once: the fallback and verify branches iterate `pieces` a
+        # second time, which would silently union an empty sequence (→ empty
+        # copper) if a generator were passed. Today's callers pass lists, so
+        # this is cheap insurance against a latent bug.
+        pieces = list(pieces)
         try:
             shape = clipper_union_all(pieces, grid_size=grid_size)
         except Exception as exc:  # pragma: no cover - defensive

@@ -139,8 +139,11 @@ def _arc_polyline_points(a: RawArc) -> list[tuple[float, float]]:
         n = max(8, int(math.ceil(math.radians(sweep) / max_step_rad)))
     angles = np.linspace(math.radians(a.start_angle_deg),
                          math.radians(a.start_angle_deg + sweep), n + 1)
-    return [(a.center.x + a.radius_mm * math.cos(t),
-             a.center.y + a.radius_mm * math.sin(t)) for t in angles]
+    # Vectorised trig over the whole angle array — iterating numpy scalars with
+    # math.cos/sin in a list comp is ~10× slower for the same float64 values.
+    xs = a.center.x + a.radius_mm * np.cos(angles)
+    ys = a.center.y + a.radius_mm * np.sin(angles)
+    return list(zip(xs.tolist(), ys.tolist()))
 
 
 def _arc_polygon(a: RawArc) -> shapely.geometry.Polygon:
@@ -196,10 +199,13 @@ def _region_polygon(
         # polygon repour encounters near-zero-width clearances. They aren't
         # copper. Skip silently at DEBUG; otherwise every repour pollutes
         # the log with a dozen identical warnings.
-        log.debug(
-            "Region on layer %d dropped (zero raw area). %s",
-            r.layer_id, _summarise_region_input(outline, holes),
-        )
+        # Guard the eager arg: _summarise_region_input does an O(V) shoelace +
+        # bbox + string preview, wasted when DEBUG is off (the common case).
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug(
+                "Region on layer %d dropped (zero raw area). %s",
+                r.layer_id, _summarise_region_input(outline, holes),
+            )
         return shapely.geometry.Polygon()
     try:
         poly: shapely.geometry.base.BaseGeometry = shapely.geometry.Polygon(
@@ -340,12 +346,13 @@ def _shape_based_outline_points(
             steps = max(2, int(math.ceil(abs(sweep_rad) / max_step_rad)))
         # Emit ``steps - 1`` intermediate points; the arc's endpoint is
         # contributed as the next vertex's start position so we don't
-        # duplicate it here.
-        for k in range(1, steps):
-            t = cur.start_angle_deg + sweep_deg * (k / steps)
-            rad = math.radians(t)
-            pts.append((cur.center.x + cur.radius_mm * math.cos(rad),
-                        cur.center.y + cur.radius_mm * math.sin(rad)))
+        # duplicate it here. Vectorised over k — same float64 values as the
+        # per-point math.cos/sin loop, ~10× faster on arc-dense pours.
+        ks = np.arange(1, steps)
+        rads = np.radians(cur.start_angle_deg + sweep_deg * (ks / steps))
+        xs = cur.center.x + cur.radius_mm * np.cos(rads)
+        ys = cur.center.y + cur.radius_mm * np.sin(rads)
+        pts.extend(zip(xs.tolist(), ys.tolist()))
     return pts
 
 
@@ -385,10 +392,11 @@ def _shape_based_region_polygon(
     holes = [[(p.x, p.y) for p in ring] for ring in r.holes]
     arc_count = sum(1 for v in r.outline if v.is_arc)
     if _shoelace_area(outline) <= 0.0:
-        log.debug(
-            "Shape-based region on layer %d dropped (zero raw area). %s",
-            r.layer_id, _summarise_region_input(outline, holes, arc_count),
-        )
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug(
+                "Shape-based region on layer %d dropped (zero raw area). %s",
+                r.layer_id, _summarise_region_input(outline, holes, arc_count),
+            )
         return shapely.geometry.Polygon()
     try:
         poly: shapely.geometry.base.BaseGeometry = shapely.geometry.Polygon(
@@ -677,25 +685,69 @@ def _drop_holes(geom: shapely.geometry.base.BaseGeometry):
     return geom
 
 
+class _ThroughFeatureCache:
+    """Layer-independent through-feature footprints, precomputed once and reused
+    across every plane layer (``_plane_sheet_polygon`` is called per plane, and
+    all through features span the whole stack). A through-hole pad's footprint
+    is layer-independent unless it carries a per-layer pad stack
+    (``layer_variations`` — rare), and a via disc never depends on the layer;
+    only via *membership* (``_via_on_layer``) is per-layer. So we cache the disc
+    geometry and the non-variation pad footprints, and recompute only the rare
+    variation pads per layer. Read-only after construction — safe to share
+    across the per-layer thread pool in :func:`build_layer_geometries`."""
+
+    __slots__ = ("pad_footprint_by_id", "via_feats")
+
+    def __init__(self, proj: ExtractedProject) -> None:
+        # id(pad) → hole-dropped footprint, for through pads WITHOUT a per-layer
+        # stack (their shape is identical on every layer). Pads with variations
+        # are absent here and get recomputed per layer.
+        self.pad_footprint_by_id: dict[int, shapely.geometry.base.BaseGeometry] = {}
+        for p in proj.pads:
+            if not (p.is_through_hole or p.layer_id == MULTI_LAYER_PAD_LAYER_ID):
+                continue
+            if getattr(p, "layer_variations", ()):
+                continue  # per-layer stack — recompute per layer
+            poly = _pad_polygon(p, None)
+            if poly is not None and not poly.is_empty:
+                self.pad_footprint_by_id[id(p)] = _drop_holes(poly)
+        # (via, hole-dropped disc, net) — disc reused; membership per layer.
+        self.via_feats: list[tuple[RawVia, shapely.geometry.base.BaseGeometry, int]] = []
+        for v, disc in _batch_via_polygons(proj.vias):
+            if not disc.is_empty:
+                self.via_feats.append((v, _drop_holes(disc), v.net_index))
+
+
 def _through_features_on_layer(
     proj: ExtractedProject, layer_id: int, enabled_layers: list[int],
+    cache: "_ThroughFeatureCache | None" = None,
 ) -> list[tuple[shapely.geometry.base.BaseGeometry, int]]:
     """Solid copper footprints of every through feature (through-hole / multi
-    layer pad, and via barrel) crossing ``layer_id``, paired with their net."""
+    layer pad, and via barrel) crossing ``layer_id``, paired with their net.
+
+    ``cache`` (see :class:`_ThroughFeatureCache`) supplies the layer-independent
+    footprints so a per-plane caller doesn't rebuild every pad/via polygon for
+    each plane; built lazily when omitted. Output order matches the un-cached
+    path (pads in ``proj.pads`` order, then vias in ``proj.vias`` order)."""
+    if cache is None:
+        cache = _ThroughFeatureCache(proj)
     feats: list[tuple[shapely.geometry.base.BaseGeometry, int]] = []
     for p in proj.pads:
         if not (p.is_through_hole or p.layer_id == MULTI_LAYER_PAD_LAYER_ID):
             continue
-        poly = _pad_polygon(p, layer_id)
-        if poly is not None and not poly.is_empty:
-            feats.append((_drop_holes(poly), p.net_index))
+        cached_fp = cache.pad_footprint_by_id.get(id(p))
+        if cached_fp is not None:
+            feats.append((cached_fp, p.net_index))
+        else:
+            # Pad with a per-layer stack (or one whose footprint was empty):
+            # recompute for this specific layer.
+            poly = _pad_polygon(p, layer_id)
+            if poly is not None and not poly.is_empty:
+                feats.append((_drop_holes(poly), p.net_index))
     enabled_pos = {lid: i for i, lid in enumerate(enabled_layers)}
-    for v in proj.vias:
-        if not _via_on_layer(v, layer_id, enabled_layers, enabled_pos):
-            continue
-        poly = _via_polygon(v)
-        if poly is not None and not poly.is_empty:
-            feats.append((_drop_holes(poly), v.net_index))
+    for v, disc, net in cache.via_feats:
+        if _via_on_layer(v, layer_id, enabled_layers, enabled_pos):
+            feats.append((disc, net))
     return feats
 
 
@@ -732,6 +784,7 @@ def _plane_sheet_polygon(
     proj: ExtractedProject,
     stackup,
     enabled_layers: list[int],
+    through_cache: "_ThroughFeatureCache | None" = None,
 ) -> shapely.geometry.base.BaseGeometry | None:
     """Negative-copper sheet for one internal plane.
 
@@ -780,7 +833,7 @@ def _plane_sheet_polygon(
     distances: list[float] = []
     spokes: list[shapely.geometry.base.BaseGeometry] = []
     for footprint, fnet in _through_features_on_layer(
-            proj, stackup.layer_id, enabled_layers):
+            proj, stackup.layer_id, enabled_layers, through_cache):
         footprints.append(footprint)
         if net_index != NO_NET and fnet == net_index:
             distances.append(air_gap)
@@ -871,7 +924,9 @@ def _plane_sheet_polygon(
 
 
 def build_layer_geometry(proj: ExtractedProject, layer_id: int,
-                         enabled_layers: list[int]) -> GeometryLayer:
+                         enabled_layers: list[int],
+                         through_cache: "_ThroughFeatureCache | None" = None
+                         ) -> GeometryLayer:
     stackup_by_id = {s.layer_id: s for s in proj.stackup}
     stackup = stackup_by_id[layer_id]
 
@@ -879,7 +934,7 @@ def build_layer_geometry(proj: ExtractedProject, layer_id: int,
         # Planes are negative copper: the board outline (inset by the plane
         # pullback) flooded on the plane's net, cleared around foreign features
         # and thermal-relieved to same-net features (see _plane_sheet_polygon).
-        sheet = _plane_sheet_polygon(proj, stackup, enabled_layers)
+        sheet = _plane_sheet_polygon(proj, stackup, enabled_layers, through_cache)
         if sheet is None:
             log.warning("Layer %d (%s) is a plane (net=%s) but the board has no"
                         " outline to flood — emitting empty layer.",
@@ -998,9 +1053,15 @@ def build_layer_geometries(proj: ExtractedProject) -> list[GeometryLayer]:
     if not enabled:
         log.warning("No enabled copper layers detected on %s", proj.prjpcb_path.name)
         return []
+    # Through-feature footprints are layer-independent (see
+    # _ThroughFeatureCache): build them ONCE and share across every plane layer
+    # instead of rebuilding all pad/via polygons per plane. Read-only, so safe
+    # to hand to the per-layer thread pool below.
+    through_cache = _ThroughFeatureCache(proj)
     # Small boards: thread-pool overhead isn't worth it.
     if len(enabled) < 3:
-        return [build_layer_geometry(proj, lid, enabled) for lid in enabled]
+        return [build_layer_geometry(proj, lid, enabled, through_cache)
+                for lid in enabled]
 
     import concurrent.futures
     import os
@@ -1011,7 +1072,8 @@ def build_layer_geometries(proj: ExtractedProject) -> list[GeometryLayer]:
         # ex.map preserves input order, so the result list lines up with
         # ``enabled`` exactly as the old list comprehension did.
         return list(ex.map(
-            lambda lid: build_layer_geometry(proj, lid, enabled), enabled,
+            lambda lid: build_layer_geometry(proj, lid, enabled, through_cache),
+            enabled,
         ))
 
 
@@ -1170,6 +1232,30 @@ def _batch_buffer_tracks(tracks: list[RawTrack]) -> list[shapely.geometry.Polygo
     return list(polys)
 
 
+def _batch_via_polygons(
+    vias: "list[RawVia]",
+) -> "list[tuple[RawVia, shapely.geometry.Polygon]]":
+    """Vectorise the per-via ``Point().buffer()`` loop into one ``shapely.buffer``
+    C dispatch, returning ``(via, disc)`` for every via with a positive diameter
+    in input order. Byte-identical to :func:`_via_polygon` — same radius, same
+    ``quad_segs``, round cap — but one GEOS call instead of 10⁴+ Python→GEOS
+    round trips on a stitched board."""
+    valid = [v for v in vias if v.diameter_mm > 0]
+    if not valid:
+        return []
+    n = len(valid)
+    xs = np.fromiter((v.center.x for v in valid), dtype=np.float64, count=n)
+    ys = np.fromiter((v.center.y for v in valid), dtype=np.float64, count=n)
+    radii = np.fromiter((v.diameter_mm * 0.5 for v in valid),
+                        dtype=np.float64, count=n)
+    discs = shapely.buffer(
+        shapely.points(xs, ys), radii,
+        cap_style="round", join_style="round",
+        quad_segs=CIRCLE_RESOLUTION // 4,
+    )
+    return list(zip(valid, discs))
+
+
 def _batch_buffer_arcs(arcs: list[RawArc]) -> list[shapely.geometry.Polygon]:
     """Vectorise the per-arc LineString.buffer() loop.
 
@@ -1300,10 +1386,8 @@ def _build_net_layer_buckets(
 
     if include_vias:
         enabled_pos = {lid: i for i, lid in enumerate(enabled_layers)}
-        for v in proj.vias:
-            poly = _via_polygon(v)
-            if poly is None:
-                continue
+        # One vectorised buffer for all via discs, then distribute to layers.
+        for v, poly in _batch_via_polygons(proj.vias):
             # Span by physical stack position (not raw layer id): internal
             # planes carry ids 39-54 that fall outside a Top..Bottom id range
             # but sit physically between them, so a raw-id range would skip
@@ -1318,14 +1402,20 @@ def _build_net_layer_buckets(
     # conductor in the per-net FEM. It unions with the same-net via/pad discs
     # already bucketed onto this layer above (the vias that stitch the plane to
     # top/bottom copper), keeping the rail connected.
+    # Through-feature footprints are layer-independent — build once, reuse for
+    # every plane sheet below instead of rebuilding all pad/via polygons per
+    # plane (see _ThroughFeatureCache). Built lazily: only if there's a plane.
+    _through_cache: "_ThroughFeatureCache | None" = None
     for s in proj.stackup:
         if not s.is_plane or s.layer_id not in enabled_set:
             continue
         net_index = _net_index_by_name(proj, s.plane_net_name)
         if net_index == NO_NET:
             continue
+        if _through_cache is None:
+            _through_cache = _ThroughFeatureCache(proj)
         # Per-plane: pullback and net differ, so the sheet is built per layer.
-        plane_sheet = _plane_sheet_polygon(proj, s, enabled_layers)
+        plane_sheet = _plane_sheet_polygon(proj, s, enabled_layers, _through_cache)
         if plane_sheet is not None:
             _add(s.layer_id, net_index, plane_sheet)
 
