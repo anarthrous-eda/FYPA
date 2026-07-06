@@ -201,7 +201,9 @@ The legacy unindexed channel and any number of indexed channels coexist
 as independent directives. Indices are sparse — gaps are allowed (e.g.
 just `PDN_V` + `PDN2_V`). A channel is "present" iff its value parameter
 is set; the per-channel `*_NET` and `*_PINS` parameters use the matching
-index. The part-wide `PDN_ROLE` applies to every channel.
+index. The part-wide `PDN_ROLE` is the **default** role for every channel —
+a channel can override it with `PDN<n>_ROLE` (see [Mixed-role
+parts](#mixed-role-parts-a-source-and-a-sink-on-one-component) below).
 
 Example — a SINK with three independent supply rails:
 
@@ -232,6 +234,55 @@ The Setup tab and the Nodes-tab table label indexed channels as
 For `SERIES`, auto-inferred P/N nets (2-pin parts) apply only when the
 part carries a single channel; multi-channel SERIES requires explicit
 `PDNn_P_NET` / `PDNn_N_NET` or `PDNn_P_PINS` / `PDNn_N_PINS` per channel.
+
+### Mixed-role parts (a source and a sink on one component)
+
+`PDN_ROLE` is the part-wide **default** role, but any channel may override
+it with `PDN<n>_ROLE`. That lets a single physical part carry channels of
+different roles — the case where **one component is both a source and a
+sink**.
+
+The motivating example is a DAC: its supply pins **sink** current from the
+power rails, while its outputs **source** current into downstream loads.
+Put the part's majority role on `PDN_ROLE` and override only the channels
+that differ:
+
+```text
+U7 (DAC):
+  PDN_ROLE   = SINK                                    # part-wide default
+  PDN_I      = 80mA    PDN_P_NET  = AVDD      PDN_N_NET  = GND
+  PDN1_I     = 20mA    PDN1_P_NET = DVDD      PDN1_N_NET = GND
+  PDN2_ROLE  = SOURCE                                  # this channel overrides
+  PDN2_V     = 2.5     PDN2_P_NET = DAC_OUT0  PDN2_N_NET = GND
+  PDN3_ROLE  = SOURCE
+  PDN3_V     = 1.8     PDN3_P_NET = DAC_OUT1  PDN3_N_NET = GND
+```
+
+Here channels 0–1 are sinks (AVDD, DVDD supplies) and channels 2–3 are
+sources (the two DAC outputs). Each channel's effective role decides which
+value parameter marks it present (`PDN<n>_V` for a SOURCE/REGULATOR channel,
+`PDN<n>_I` for SINK, `PDN<n>_R` for SERIES) and which net/pin parameters it
+reads. `PDN<n>_ROLE` must be one of `SOURCE`, `SINK`, `SERIES`, `REGULATOR`.
+
+Notes and pitfalls:
+
+- **Uniform parts need nothing new.** Two sinks are still just
+  `PDN_ROLE = SINK` + `PDN_I` / `PDN1_I` — you only write `PDN<n>_ROLE` for
+  the channels that diverge from the default. Existing designs are
+  unaffected.
+- **Mix roles across *different* nets.** A SOURCE and a SINK on the *same*
+  net of one part simply feed current straight back into each other. The
+  mixed-role scheme is for channels on distinct nets (e.g. a supply rail vs
+  a DAC output).
+- **A genuine input→output converter is a `REGULATOR`, not a mixed part.**
+  If the part draws on an input rail and supplies a *derived* output rail
+  (with a current gain between them), model it with a single `REGULATOR`
+  channel — see below — rather than a hand-paired SOURCE + SINK.
+- **Current-output loads:** a `SOURCE` fixes voltage, not current. To impose
+  a known DAC output current, set it on the **load** `SINK` at the far end
+  of the output net; the DAC-output SOURCE then supplies exactly that
+  current through the output copper, and the trace IR drop shows on that
+  rail.
 
 ### `SOURCE` vs `REGULATOR` — when to use which
 

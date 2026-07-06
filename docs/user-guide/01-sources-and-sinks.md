@@ -167,6 +167,72 @@ To override the inferred pad set (e.g. to exclude a thermal pad), use
 the `PDN_P_PINS` / `PDN_N_PINS` parameters documented in the
 [main README](../../README.md).
 
+### Several rails on one part (multi-channel)
+
+An IC that draws from more than one supply rail is a single part with
+several **channels**. Keep the first directive unindexed and add numbered
+channels by appending an integer to `PDN` — each channel gets its own
+value and its own P/N nets:
+
+| Name        | Value   | Name         | Value  |
+|-------------|---------|--------------|--------|
+| `PDN_ROLE`  | `SINK`  |              |        |
+| `PDN_I`     | `500mA` | `PDN_P_NET`  | `+3V3` |
+|             |         | `PDN_N_NET`  | `GND`  |
+| `PDN1_I`    | `250mA` | `PDN1_P_NET` | `+1V8` |
+|             |         | `PDN1_N_NET` | `GND`  |
+| `PDN2_I`    | `50mA`  | `PDN2_P_NET` | `+5V`  |
+|             |         | `PDN2_N_NET` | `GND`  |
+
+Each channel becomes its own directive; the viewer labels them `U7`,
+`U7#1`, `U7#2`. A channel exists as soon as its value parameter
+(`PDN<n>_I` here) is set. Indices can be sparse (gaps allowed). The same
+scheme works for every role — use `PDN<n>_V` for sources/regulators,
+`PDN<n>_R` for series parts. See the [main README](../../README.md#multi-channel-directives)
+for the full reference.
+
+> You only need channels for **different** rails. An IC with many pins on
+> the *same* rail is still one directive — FYPA already groups every pad
+> on `PDN_P_NET` into one terminal (see [Multi-pin parts](#14-multi-pin-parts)
+> above).
+
+### A part that both sources and sinks (mixed roles)
+
+`PDN_ROLE` is the part-wide **default**, but any channel can override it
+with `PDN<n>_ROLE`. That is how one physical component can be **both a
+source and a sink** — for example a DAC whose supply pins sink current
+while its outputs source current:
+
+| Name        | Value      | Name         | Value      |
+|-------------|------------|--------------|------------|
+| `PDN_ROLE`  | `SINK`     |              |            |
+| `PDN_I`     | `80mA`     | `PDN_P_NET`  | `AVDD`     |
+|             |            | `PDN_N_NET`  | `GND`      |
+| `PDN1_I`    | `20mA`     | `PDN1_P_NET` | `DVDD`     |
+|             |            | `PDN1_N_NET` | `GND`      |
+| `PDN2_ROLE` | `SOURCE`   | `PDN2_V`     | `2.5`      |
+|             |            | `PDN2_P_NET` | `DAC_OUT0` |
+|             |            | `PDN2_N_NET` | `GND`      |
+| `PDN3_ROLE` | `SOURCE`   | `PDN3_V`     | `1.8`      |
+|             |            | `PDN3_P_NET` | `DAC_OUT1` |
+|             |            | `PDN3_N_NET` | `GND`      |
+
+Channels 0–1 inherit the default `SINK` role (the AVDD/DVDD supplies);
+channels 2–3 override to `SOURCE` (the two outputs). Only the channels
+that differ from the default carry a `PDN<n>_ROLE` — a plain two-sink part
+needs no role overrides at all.
+
+A few things to keep in mind:
+
+- Mix roles across **different** nets. A source and a sink on the *same*
+  net of one part just feed current back into each other.
+- If the part is really an input→output **converter** (its output current
+  is drawn from an input rail via a gain), model it as a single
+  `REGULATOR` instead — see [Section 4](04-regulators.md).
+- A `SOURCE` fixes voltage, not current. To impose a known output current,
+  set it on the **load** sink at the far end of the output net; the DAC
+  output then supplies exactly that current through the output copper.
+
 ## 1.5 Pre-import checks
 
 Before launching FYPA:
