@@ -33,6 +33,6 @@ def load_topology_fixture(name: str) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def front_like_metadata() -> dict:
-    """Small Front-like layout (J1, U2, U1, R1)."""
-    return load_topology_fixture("front_like")
+def project_b_compact_metadata() -> dict:
+    """Small compact layout (J1, U2, U1, R1)."""
+    return load_topology_fixture("project_b_compact")

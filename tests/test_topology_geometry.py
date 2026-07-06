@@ -15,7 +15,7 @@ from fypa.topology import (
     topology_wiring_report,
     vertical_bridge_path,
 )
-from tests.topology_fixtures import front_like_metadata, list_topology_fixtures, load_topology_fixture
+from tests.topology_fixtures import project_b_compact_metadata, list_topology_fixtures, load_topology_fixture
 
 _FOREIGN_OVERLAP_CODES = frozenset({
     "duplicate_vertical_x",
@@ -92,7 +92,7 @@ def test_hv_junction_and_bridge_classified_by_net():
     assert (100.0, 100.0) in junctions
     assert not vert_cross
 
-    report = topology_wiring_report(build_topology_model(front_like_metadata()))
+    report = topology_wiring_report(build_topology_model(project_b_compact_metadata()))
     j_pts = {(j["x"], j["y"]) for j in report["schematic"]["junctions"]}
     b_pts = {(c["x"], c["y"]) for c in report["schematic"]["bridge_crossings"]}
     assert j_pts.isdisjoint(b_pts)
@@ -136,7 +136,7 @@ def test_stacked_column_taps_and_corners():
 
 def test_gnd_symbol_rail_attachment_gets_junction_dot():
     """GND symbol stub is a third branch at the left rail anchor."""
-    for name in ("front_like", "front_hub_vdd", "column_gnd_feedback"):
+    for name in ("project_b_compact", "project_b_hub_vdd", "column_gnd_feedback"):
         model = build_topology_model(load_topology_fixture(name))
         geo = compute_schematic_geometry(
             model.wires,
@@ -149,7 +149,7 @@ def test_gnd_symbol_rail_attachment_gets_junction_dot():
 
 def test_topology_schematic_junctions_and_vertical_bridges():
     """Bridges render arc hops; junction dots only when branch count > 2."""
-    model = build_topology_model(front_like_metadata())
+    model = build_topology_model(project_b_compact_metadata())
     svg = render_topology_svg(model)
     assert "<circle" in svg
 

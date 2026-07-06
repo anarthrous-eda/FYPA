@@ -117,7 +117,7 @@ def test_foreign_wire_crossing_detected():
 def test_check_gutter_wire_crossings_on_model():
     from tests.topology_fixtures import load_topology_fixture
 
-    model = build_topology_model(load_topology_fixture("rudder_stepper_loop_rails"))
+    model = build_topology_model(load_topology_fixture("project_a_stepper_loop_rails"))
     assert not check_gutter_wire_crossings(model)
 
 

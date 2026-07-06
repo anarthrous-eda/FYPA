@@ -23844,10 +23844,9 @@ def _format_setup_html(solution, metadata: dict | None,
                 parts.append(f"<tr><td>{_esc(term_name)}</td>"
                              "<td colspan='5' class='warn'>(no pins resolved)</td></tr>")
             else:
-                # Show the net the directive named (PDN_*_NET). When a SERIES
-                # bridge resolved the terminal onto a different net's pads,
-                # keep the named net as the headline and note the actual pad
-                # net after it, so the table matches what the user authored.
+                # Show the net the directive named (PDN_*_NET). When local sheet
+                # label resolution maps the name to pads on a different PCB net,
+                # keep the named net as the headline and note the actual pad net.
                 req_net = term.get("requested_net")
                 for i, pin in enumerate(pins):
                     actual_net = pin.get('net', '')
