@@ -8,7 +8,7 @@ from fypa.topology import build_topology_model, find_component_at
 from fypa.topology.hit_test import find_wire_at, topology_net_at, topology_tooltip_at
 from fypa.topology.render import render_net_highlight_svg
 from fypa.topology.constants import MIN_PARALLEL_GAP, NODE_W, PORT_WIRE_STUB
-from tests.topology_fixtures import front_like_metadata, load_topology_fixture
+from tests.topology_fixtures import project_b_compact_metadata, load_topology_fixture
 
 
 def _load_probe_dir(name: str):
@@ -21,7 +21,7 @@ def _load_probe_dir(name: str):
 
 def test_topology_tooltip_only_on_elements():
     """Empty canvas areas must not produce a tooltip; wires/ports/symbols do."""
-    model = build_topology_model(front_like_metadata())
+    model = build_topology_model(project_b_compact_metadata())
     assert topology_tooltip_at(model, 0.0, 0.0) is None
     j1 = next(n for n in model.nodes if n.label == "J1")
     bx, by, bw, bh = j1.bounds
@@ -34,7 +34,7 @@ def test_topology_tooltip_only_on_elements():
 
 
 def test_find_component_at_hit_test():
-    model = build_topology_model(front_like_metadata())
+    model = build_topology_model(project_b_compact_metadata())
     j1 = next(n for n in model.nodes if n.label == "J1")
     bx, by, bw, bh = j1.bounds
     hit = find_component_at(model, bx + bw / 2, by + bh / 2)
@@ -45,7 +45,7 @@ def test_find_component_at_hit_test():
 
 def test_topology_net_highlight_on_wire_hover():
     """Hovering a wire yields highlight SVG for the whole net, not symbols."""
-    model = build_topology_model(front_like_metadata())
+    model = build_topology_model(project_b_compact_metadata())
     assert topology_net_at(model, 0.0, 0.0) is None
     j1 = next(n for n in model.nodes if n.label == "J1")
     bx, by, bw, bh = j1.bounds
@@ -58,7 +58,7 @@ def test_topology_net_highlight_on_wire_hover():
     assert "stroke=" in svg
     assert "430" not in svg or "line" in svg
 
-    model = build_topology_model(front_like_metadata())
+    model = build_topology_model(project_b_compact_metadata())
     j1 = next(n for n in model.nodes if n.label == "J1")
     bx, by, bw, bh = j1.bounds
     hit = find_component_at(model, bx + bw / 2, by + bh / 2)
@@ -114,16 +114,16 @@ def test_topology_nodes_do_not_overlap_in_column():
         )
 
 
-def test_topology_front_like_layout_stays_compact():
+def test_topology_project_b_compact_layout_stays_compact():
     """REGULATOR OUT_N must not propagate columns via GND (oscillation)."""
-    model = build_topology_model(front_like_metadata())
+    model = build_topology_model(project_b_compact_metadata())
     j1 = next(n for n in model.nodes if n.designator == "J1")
     u2 = next(n for n in model.nodes if n.designator == "U2")
     assert j1.x < u2.x
     assert model.width < 1200.0
 
 
-def test_probe_rudder_stays_compact() -> None:
+def test_probe_project_a_stays_compact() -> None:
     """Deprecated alias: row/trunk connectivity is covered by test_hub_routing_regressions."""
     from tests.hub_regression_helpers import FIXTURE_ROW_DETOUR, build_hub_fixture
     from tests.test_hub_routing_regressions import TestHubRowDetourReachesTrunk
@@ -136,7 +136,7 @@ def test_all_sinks_share_rightmost_column():
     """SINK symbols align in the last column even when propagation stops early."""
     from fypa.topology.metadata.layout_bridge import parse_topology_directives, specs_by_column
 
-    parsed = parse_topology_directives(load_topology_fixture("front_hub_vdd"))
+    parsed = parse_topology_directives(load_topology_fixture("project_b_hub_vdd"))
     _, max_col = specs_by_column(parsed.node_specs, parsed.columns)
     sink_cols = {
         parsed.columns[s["node_id"]]
@@ -153,7 +153,7 @@ def test_hub_wires_no_horizontal_backtrack_on_probe() -> None:
 
     from fypa.topology.geometry import parse_wire_path
 
-    probe = Path("_probe/front/topology.pkl")
+    probe = Path("_probe/project_b/topology.pkl")
     if not probe.is_file():
         probe = Path("_probe/topology.pkl")
     if not probe.is_file():
@@ -183,7 +183,7 @@ def test_probe_vdd_5v0_runs_above_u3() -> None:
 
     from fypa.topology.geometry import parse_wire_path
 
-    probe = Path("_probe/front/topology.pkl")
+    probe = Path("_probe/project_b/topology.pkl")
     if not probe.is_file():
         probe = Path("_probe/topology.pkl")
     if not probe.is_file():
@@ -213,7 +213,7 @@ def test_probe_v_plus_minus_junction_near_connector() -> None:
 
     from fypa.topology.geometry import parse_wire_path
 
-    probe = Path("_probe/front/topology.pkl")
+    probe = Path("_probe/project_b/topology.pkl")
     if not probe.is_file():
         probe = Path("_probe/topology.pkl")
     if not probe.is_file():
@@ -257,7 +257,7 @@ def test_probe_stacked_stub_lengths_bottom_to_top() -> None:
 
     from fypa.topology.placement import port_stub_length
 
-    probe = Path("_probe/front/topology.pkl")
+    probe = Path("_probe/project_b/topology.pkl")
     if not probe.is_file():
         probe = Path("_probe/topology.pkl")
     if not probe.is_file():
@@ -282,7 +282,7 @@ def test_probe_regulator_power_gnd_share_wire_column() -> None:
 
     from fypa.topology.placement import port_stub_x
 
-    probe = Path("_probe/front/topology.pkl")
+    probe = Path("_probe/project_b/topology.pkl")
     if not probe.is_file():
         probe = Path("_probe/topology.pkl")
     if not probe.is_file():
@@ -297,13 +297,13 @@ def test_probe_regulator_power_gnd_share_wire_column() -> None:
     assert port_stub_x(pwr) == port_stub_x(gnd)
 
 
-def test_probe_front_gutter_leds_route_via_stub_columns() -> None:
+def test_probe_project_b_gutter_leds_route_via_stub_columns() -> None:
     """Stacked gutter LEDs use stub or bus columns with MIN_PARALLEL_GAP separation."""
     from fypa.topology import parse_wire_path, path_to_segments
     from fypa.topology.constants import MIN_PARALLEL_GAP
     from fypa.topology.placement import port_stub_x
 
-    model = _load_probe_dir("front")
+    model = _load_probe_dir("project_b")
     if model is None:
         return
     d1 = next(n for n in model.nodes if n.designator == "D1")
@@ -327,7 +327,7 @@ def test_direct_neighbors_share_row_y():
     from pathlib import Path
     import pickle
 
-    probe = Path("_probe/front/topology.pkl")
+    probe = Path("_probe/project_b/topology.pkl")
     if not probe.is_file():
         probe = Path("_probe/topology.pkl")
     if not probe.is_file():
@@ -344,10 +344,10 @@ def test_direct_neighbors_share_row_y():
         )
 
 
-def test_topology_front_hub_gutter_wide_enough():
+def test_topology_project_b_hub_gutter_wide_enough():
     """Measured bus span must fit in the gutter between D1 and the U-stack."""
 
-    meta = load_topology_fixture("front_hub_vdd")
+    meta = load_topology_fixture("project_b_hub_vdd")
     model = build_topology_model(meta)
     d1 = next(n for n in model.nodes if n.designator == "D1")
     u_stack = sorted(

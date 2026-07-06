@@ -9,10 +9,10 @@ from fypa.topology import (
 )
 
 
-from tests.topology_fixtures import front_like_metadata as _front_like_metadata
+from tests.topology_fixtures import project_b_compact_metadata as _project_b_compact_metadata
 
 def test_topology_model_has_nodes_and_wires():
-    model = build_topology_model(_front_like_metadata())
+    model = build_topology_model(_project_b_compact_metadata())
     directive_nodes = [n for n in model.nodes if n.role != "GND"]
     assert len(directive_nodes) == 4
     assert any(n.role == "REGULATOR" for n in directive_nodes)
@@ -20,7 +20,7 @@ def test_topology_model_has_nodes_and_wires():
 
 
 def test_topology_marks_errored_directive():
-    model = build_topology_model(_front_like_metadata())
+    model = build_topology_model(_project_b_compact_metadata())
     u2 = next(n for n in model.nodes if n.designator == "U2")
     assert u2.has_error is True
     j1 = next(n for n in model.nodes if n.designator == "J1")
@@ -28,7 +28,7 @@ def test_topology_marks_errored_directive():
 
 
 def test_topology_svg_contains_designators_and_ports():
-    model = build_topology_model(_front_like_metadata())
+    model = build_topology_model(_project_b_compact_metadata())
     svg = render_topology_svg(model)
     assert "J1" in svg
     assert "U2" in svg
@@ -38,7 +38,7 @@ def test_topology_svg_contains_designators_and_ports():
 
 
 def test_topology_nodes_have_input_output_ports():
-    model = build_topology_model(_front_like_metadata())
+    model = build_topology_model(_project_b_compact_metadata())
     j1 = next(n for n in model.nodes if n.designator == "J1")
     sides = {p.side for p in j1.ports}
     assert "left" in sides and "right" in sides
@@ -48,7 +48,7 @@ def test_topology_nodes_have_input_output_ports():
 
 
 def test_gnd_bus_aligns_with_leftmost_drop():
-    model = build_topology_model(_front_like_metadata())
+    model = build_topology_model(_project_b_compact_metadata())
     from fypa.topology.routing import port_stub_x
 
     gnd_ports = [p for n in model.nodes for p in n.ports if p.net == GND_NET]
@@ -62,7 +62,7 @@ def test_gnd_bus_aligns_with_leftmost_drop():
 
 
 def test_topology_gnd_symbol_and_wires():
-    model = build_topology_model(_front_like_metadata())
+    model = build_topology_model(_project_b_compact_metadata())
     assert not any(n.node_id == GND_NET for n in model.nodes)
     assert model.gnd_symbol_x is not None
     assert model.gnd_bus_y is not None
@@ -73,7 +73,7 @@ def test_topology_gnd_symbol_and_wires():
 
 
 def test_topology_svg_shows_values_in_tooltips():
-    model = build_topology_model(_front_like_metadata())
+    model = build_topology_model(_project_b_compact_metadata())
     j1 = next(n for n in model.nodes if n.designator == "J1")
     u1 = next(n for n in model.nodes if n.designator == "U1")
     assert "5 V" in j1.tooltip
@@ -83,7 +83,7 @@ def test_topology_svg_shows_values_in_tooltips():
 
 
 def test_topology_svg_has_no_solve_overlay():
-    model = build_topology_model(_front_like_metadata())
+    model = build_topology_model(_project_b_compact_metadata())
     svg = render_topology_svg(model)
     assert "(not solved)" not in svg
     assert "configuration only" not in svg
@@ -132,7 +132,7 @@ def test_topology_single_net_hides_ideal_return():
 
 
 def test_topology_regulator_has_jump_row():
-    model = build_topology_model(_front_like_metadata())
+    model = build_topology_model(_project_b_compact_metadata())
     u2 = next(n for n in model.nodes if n.designator == "U2")
     assert u2.jump_row is not None
     assert u2.jump_row.get("x_mm") == 3.0
@@ -653,7 +653,7 @@ def test_sandbox_topology_draws_bridge_arcs_and_gutter_labels():
 def test_topology_wiring_report_structure():
     from fypa.topology import topology_wiring_report, topology_wiring_report_json
 
-    model = build_topology_model(_front_like_metadata())
+    model = build_topology_model(_project_b_compact_metadata())
     report = topology_wiring_report(model)
     assert report["version"] == 1
     assert report["summary"]["wires"] == len(model.wires)
@@ -686,7 +686,7 @@ def test_dump_topology_debug_writes_three_files(tmp_path):
         dump_topology_debug,
     )
 
-    meta = _front_like_metadata()
+    meta = _project_b_compact_metadata()
     meta = {
         **meta,
         "primitives": [{"_prepared_shape": sp.prep(Point(0, 0).buffer(1))}],
@@ -712,7 +712,7 @@ def test_dump_topology_debug_writes_three_files(tmp_path):
 def test_topology_wiring_report_detects_backtrack():
     from fypa.topology import TopologyWire, topology_wiring_report
 
-    model = build_topology_model(_front_like_metadata())
+    model = build_topology_model(_project_b_compact_metadata())
     model.wires.append(TopologyWire(
         net="FAKE",
         path_d="M 10.0,10.0 H 50.0 H 30.0 H 40.0",
@@ -727,7 +727,7 @@ def test_gutter_wire_same_row_has_no_vertical_segment():
     """Source and sink on one row route as a flat horizontal."""
     from fypa.topology import topology_wiring_report
 
-    model = build_topology_model(_front_like_metadata())
+    model = build_topology_model(_project_b_compact_metadata())
     gutter_wires = [
         w for w in model.wires
         if w.routing_kind == "gutter" and w.net == "VIN"

@@ -163,6 +163,12 @@ one terminal, and every pad on `PDN_N_NET` as the other. A BGA with
 twelve `+5V` balls and twenty `0V` balls works without any pad
 enumeration.
 
+Only pads **directly** on the named net are included — FYPA does not
+pull in pads from other nets on the same part because a `SERIES`
+directive bridges those nets elsewhere on the board. Name the net that
+the pad actually sits on in the PCB netlist (see 1.8 if the pin is on
+a switching node or pre-inductor net).
+
 To override the inferred pad set (e.g. to exclude a thermal pad), use
 the `PDN_P_PINS` / `PDN_N_PINS` parameters documented in the
 [main README](../../README.md).
@@ -329,6 +335,7 @@ the current flow across the copper from source to sink.
 |---------------------------------------------------|---------------------------------------------------------------------|------------------------------------------------------------------------------|
 | `No PDN_* directives found`                        | No component carries `PDN_ROLE`.                                    | Re-check that the schematic was saved. Parameter names are case-sensitive.   |
 | `Net "+5V" not found on PCB`                       | The net named in `PDN_P_NET` does not exist on the routed board.    | Check spelling against the PCB net list (see 1.5).                           |
+| `component … has no pad on net …`                  | No pad of this part sits on the named net (e.g. buck pin on the switching node, output rail only after the inductor). | Set `PDN_*_NET` to the net the pad is actually on, or place the directive on the correct component. |
 | `Open loop on net …` / source without sink         | A rail has a source but no sink, or vice versa.                     | Add the missing end. Every source needs at least one sink on the same rail.  |
 | Viewer opens but the layer is blank                | The selected layer has no copper on the selected rail.              | Switch layers or rails in the side panel. If all are blank, check copper net assignments on the PCB. |
 

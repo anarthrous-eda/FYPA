@@ -1,4 +1,4 @@
-"""Better smart_footpiece metadata from wiring.json ports."""
+"""Build project_c approximate metadata from wiring.json ports."""
 import json
 import sys
 from pathlib import Path
@@ -54,7 +54,7 @@ for p in ports:
 
 directives = list(by_nid.values())
 meta = {"directives": directives, "net_canonical": {}, "annotation_errors": []}
-Path("scripts/smart_footpiece_approx.json").write_text(
+Path("scripts/project_c_approx.json").write_text(
     json.dumps(meta, indent=2), encoding="utf-8",
 )
 

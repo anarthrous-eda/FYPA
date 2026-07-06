@@ -78,7 +78,7 @@ Extract a fixture from a pickle:
 
 ```python
 import pickle, json
-md = pickle.load(open("front.pkl", "rb"))["metadata"]
+md = pickle.load(open("example.pkl", "rb"))["metadata"]
 trim = {k: md[k] for k in ("directives", "net_canonical", "annotation_errors") if k in md}
 json.dump(trim, open("tests/fixtures/topology/my_case.json", "w"), indent=2)
 ```
@@ -280,8 +280,8 @@ Display labels are truncated consistently via `util.truncate_label` (22 chars).
 Debug report as JSON:
 
 ```bash
-uv run python tools/dump_topology_wiring.py front.pkl -o wiring.json
-uv run python tools/dump_topology_wiring.py front.pkl --issues-only
+uv run python tools/dump_topology_wiring.py example.pkl -o wiring.json
+uv run python tools/dump_topology_wiring.py example.pkl --issues-only
 ```
 
 ## Tests & Fixtures
@@ -290,8 +290,10 @@ Committed metadata fixtures (CI, no pickle required):
 
 ```
 tests/fixtures/topology/
-  front_like.json              small front layout (J1, U2, U1, R1)
-  front_hub_vdd.json           full front design (hub VDD, D1, LEDs)
+  project_b_compact.json         small compact layout (J1, U2, U1, R1)
+  project_b_hub_vdd.json         hub VDD layout (hub VDD, D1, LEDs)
+  project_a_stepper_loop_rails.json  stepper loop column regression
+  project_c_rails.json           SERIES-bridged rail merge regression
   column_gnd_feedback.json     REGULATOR OUT_N / GND column bug
   gutter_parallel_four_nets.json  parallel LED buses (D1/U4)
   gnd_junction_tap.json        two sinks on return rail (junction regression)
@@ -299,8 +301,8 @@ tests/fixtures/topology/
   hub_escape_vertical_branch.json  escape-column tap when stub vertical blocked
   sandbox_subset.json          trimmed sandbox metadata
   svg/                         golden SVG snapshots (visual regression)
-    front_hub_vdd.svg
-    front_like.svg
+    project_b_hub_vdd.svg
+    project_b_compact.svg
     column_gnd_feedback.svg
 ```
 
@@ -308,7 +310,7 @@ Helper: `tests/topology_fixtures.py` — `load_topology_fixture(name)`.
 
 ```python
 from tests.topology_fixtures import load_topology_fixture
-model = build_topology_model(load_topology_fixture("front_hub_vdd"))
+model = build_topology_model(load_topology_fixture("project_b_hub_vdd"))
 ```
 
 Test files:
@@ -395,7 +397,7 @@ New fixture from Altium project — see **Metadata contract** above for the trim
 ```python
 # One-time: extract metadata from pickle (same trim as fixture convention)
 import pickle, json
-md = pickle.load(open("front.pkl", "rb"))["metadata"]
+md = pickle.load(open("example.pkl", "rb"))["metadata"]
 trim = {k: md[k] for k in ("directives", "net_canonical", "annotation_errors") if k in md}
 json.dump(trim, open("tests/fixtures/topology/my_case.json", "w"), indent=2)
 ```

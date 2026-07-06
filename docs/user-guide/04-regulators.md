@@ -94,9 +94,9 @@ When `PDN_GAIN` is omitted, set `PDN_REGULATOR_TYPE`:
 
 For `SMPS`, **Vin_nom** is inferred from an upstream `SOURCE` or
 `REGULATOR` whose output is declared on the same net name as
-`PDN_IN_P_NET` (exact name match — SERIES bridge groups are not expanded
-for Vin lookup; pad resolution still uses them). Set `PDN_REGULATOR_EFFICIENCY` to the datasheet
-value (default `1.0` = ideal).
+`PDN_IN_P_NET` (exact name match — SERIES bridge groups are not used to
+expand Vin lookup or terminal pin resolution). Set
+`PDN_REGULATOR_EFFICIENCY` to the datasheet value (default `1.0` = ideal).
 
 Example — 3.3 V buck from a 5 V `SOURCE`:
 

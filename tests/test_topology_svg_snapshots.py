@@ -13,8 +13,8 @@ from tests.topology_fixtures import load_topology_fixture
 
 _FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "topology" / "svg"
 _SNAPSHOT_NAMES = (
-    "front_hub_vdd",
-    "front_like",
+    "project_b_hub_vdd",
+    "project_b_compact",
     "column_gnd_feedback",
     "gnd_junction_tap",
     "gutter_parallel_four_nets",

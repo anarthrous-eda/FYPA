@@ -2446,9 +2446,9 @@ def _terminal_summary(term, nets) -> dict:
     return {
         "pin_count": len(pins),
         "pins": pins,
-        # The net the directive named (PDN_*_NET) — shown by the Setup tab so
-        # the user sees what they asked for even when a SERIES bridge resolved
-        # the terminal onto a different (bridged-equivalent) net's pads.
+        # The net the directive named (PDN_*_NET) — shown by the Setup tab;
+        # may differ from the pins' PCB net names when resolved via local sheet
+        # label (see ``resolved_via_local``).
         "requested_net": getattr(term, "requested_net", None),
         "resolved_via_local": getattr(term, "resolved_via_local", False),
     }

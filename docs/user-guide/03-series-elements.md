@@ -127,6 +127,7 @@ Once a SERIES directive is in place:
 | `PDN_R must be positive`                                  | `PDN_R = 0` or a negative value.                                            | Enter a small positive resistance (milliohms is fine).                       |
 | `SERIES on R7: ambiguous nets — please set PDN_P_NET / PDN_N_NET` | A 3+ pin part with auto-inference, or a 2-pin part with both pads on the same net. | Add `PDN_P_NET` and `PDN_N_NET` explicitly.                                  |
 | `multi-channel SERIES requires explicit PDNn_P_NET / …` | Two or more `PDNn_R` channels without per-channel nets or pin overrides. | Add `PDNn_P_NET` / `PDNn_N_NET` or `PDNn_P_PINS` / `PDNn_N_PINS` for each channel. |
+| `component … has no pad on net …` on a `SERIES` part | `PDN_P_NET` / `PDN_N_NET` name a net none of this part's pads sit on. | Match the parameter to the PCB net on each pad (see [1.8](01-sources-and-sinks.md#18-troubleshooting)). |
 | The two nets are still not connected in the solve         | The SERIES part was placed on the schematic but does not actually bridge the two nets on the PCB. | Check the PCB netlist: each pad of the SERIES part must be on the corresponding net. |
 
 ## Next steps
