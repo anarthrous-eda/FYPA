@@ -1799,6 +1799,7 @@ def build_solve_metadata(
     All values are JSON-safe primitives (no padne / shapely objects), so the
     metadata can be serialised independently if needed.
     """
+    import numpy as np
     proj = loaded.extracted
     nets = proj.nets
     enabled = proj.enabled_copper_layer_ids()
@@ -2178,12 +2179,13 @@ def build_solve_metadata(
                 if sweep <= 1e-9:
                     sweep += 2.0 * math.pi
                 steps = max(2, int(abs(sweep) / math.radians(12.0)) + 1)
-                for k in range(1, steps):
-                    ang = start + sweep * k / steps
-                    pts.append([
-                        float(v.center.x) + v.radius_mm * math.cos(ang),
-                        float(v.center.y) + v.radius_mm * math.sin(ang),
-                    ])
+                # Vectorised over k — same float64 values as the per-point loop.
+                ks = np.arange(1, steps)
+                angs = start + sweep * ks / steps
+                cx, cy = float(v.center.x), float(v.center.y)
+                xs = cx + v.radius_mm * np.cos(angs)
+                ys = cy + v.radius_mm * np.sin(angs)
+                pts.extend([list(p) for p in zip(xs.tolist(), ys.tolist())])
         primitives["shape_based_regions"].append({
             "id": len(primitives["shape_based_regions"]),
             "kind": "shape_based_region",

@@ -3117,15 +3117,27 @@ class GLMeshViewer(QOpenGLWidget):
         w, h = self.width(), self.height()
         painter.save()
         font = QFont(painter.font())
-        for lab in self._overlay_labels:
-            if bool(lab.get("on_top", False)) != on_top:
-                continue
+        # Batch-project every anchor for this pass in one call — in 3D this
+        # builds the MVP once instead of once per label (world_to_screen rebuilds
+        # it every call). _project_points_screen matches world_to_screen element
+        # for element, so culling / positioning below is unchanged; only the
+        # projection is vectorised (matches how _draw_markers already works).
+        pass_labels = [lab for lab in self._overlay_labels
+                       if bool(lab.get("on_top", False)) == on_top]
+        n_pass = len(pass_labels)
+        if n_pass:
+            _xs = np.fromiter((float(l["x"]) for l in pass_labels),
+                              np.float64, n_pass)
+            _ys = np.fromiter((float(l["y"]) for l in pass_labels),
+                              np.float64, n_pass)
+            _zs = np.fromiter((float(l.get("z", 0.0) or 0.0)
+                               for l in pass_labels), np.float64, n_pass)
+            _px_arr, _py_arr = self._project_points_screen(_xs, _ys, _zs)
+        for _i, lab in enumerate(pass_labels):
             text = lab.get("text") or ""
             if not text:
                 continue
-            wz = float(lab.get("z", 0.0) or 0.0)
-            px, py = self.world_to_screen(
-                float(lab["x"]), float(lab["y"]), wz)
+            px, py = float(_px_arr[_i]), float(_py_arr[_i])
             if px < -1e8 or py < -1e8:
                 continue  # behind the 3D camera
             if px < -200 or px > w + 200 or py < -200 or py > h + 200:

@@ -526,8 +526,15 @@ class ConnectivityGraph:
 
                     if network.has_source:
                         intersecting_node.is_root = True
-            # Wire the nodes together
-            for node_a, node_b in itertools.combinations(nodes_in_this_network, 2):
+            # Wire the nodes together. Dedupe first: nodes_in_this_network holds
+            # one entry per connection, so a high-pin-count net (e.g. a GND pour
+            # with thousands of pins) lands the same few geometry nodes many
+            # times over, and itertools.combinations would then do O(pins²)
+            # redundant pair work + set-adds. dict.fromkeys dedupes by identity
+            # while preserving order (deterministic). Reduces to O(distinct
+            # geoms²), typically single digits.
+            distinct_nodes = list(dict.fromkeys(nodes_in_this_network))
+            for node_a, node_b in itertools.combinations(distinct_nodes, 2):
                 node_a.neighbors.add(node_b)
                 node_b.neighbors.add(node_a)
 
@@ -663,10 +670,13 @@ def laplace_operator(mesh: mesh.Mesh) -> scipy.sparse.coo_matrix:
             w_for_edge_v0_v1, w_for_edge_v0_v1,
         ])
 
-        # Diagonal: L[i, i] -= sum of outgoing weights from i. np.add.at is
-        # an atomic scatter — handles repeated row indices correctly.
-        diag = np.zeros(N, dtype=DTYPE)
-        np.add.at(diag, rows, -vals)
+        # Diagonal: L[i, i] -= sum of outgoing weights from i. bincount is the
+        # vectorised weighted scatter-add — far faster than np.add.at (an
+        # unbuffered element-by-element loop) — and, like add.at, sums repeated
+        # row indices correctly. minlength=N keeps orphan vertices (no incident
+        # triangle) in range.
+        diag = (-np.bincount(rows, weights=vals, minlength=N)).astype(
+            DTYPE, copy=False)
 
         row_chunks.append(rows)
         col_chunks.append(cols)
@@ -1211,14 +1221,22 @@ class NodeIndexer:
                vindex: VertexIndexer,
                filtered_networks: list[problem.Network],
                layer_to_index: dict[int, int] | None = None,
-               off_copper_threshold_mm: float | None = None) -> "NodeIndexer":
+               off_copper_threshold_mm: float | None = None,
+               prebuilt_kdtrees: "tuple[dict, dict] | None" = None
+               ) -> "NodeIndexer":
 
-        layer_to_kdtree, layer_to_globals = cls._construct_kdtrees(
-            prob,
-            meshes,
-            mesh_index_to_layer_index,
-            vindex
-        )
+        # The KDTrees are a pure function of the meshes; on a value-only
+        # re-solve the caller passes the cached pair so we skip rebuilding a
+        # KDTree over every vertex on every layer.
+        if prebuilt_kdtrees is not None:
+            layer_to_kdtree, layer_to_globals = prebuilt_kdtrees
+        else:
+            layer_to_kdtree, layer_to_globals = cls._construct_kdtrees(
+                prob,
+                meshes,
+                mesh_index_to_layer_index,
+                vindex
+            )
 
         if layer_to_index is None:
             layer_to_index = {id(layer): i for i, layer in enumerate(prob.layers)}
@@ -1587,14 +1605,20 @@ def process_mesh_laplace_operators(
 
         # Diagonal (UNSCALED): L[i, i] = -Σ outgoing weights from i. Done before
         # conductance scaling so a vertex's diagonal is (Σ weights)·cond, matching
-        # the per-mesh path exactly rather than Σ(weight·cond).
-        diag = np.zeros(n_total, dtype=DTYPE)
-        np.add.at(diag, rows_off, -vals_off)
+        # the per-mesh path exactly rather than Σ(weight·cond). bincount is the
+        # vectorised weighted scatter-add (far faster than np.add.at's unbuffered
+        # element-by-element loop); minlength keeps orphan vertices in range.
+        diag = (-np.bincount(rows_off, weights=vals_off, minlength=n_total)).astype(
+            DTYPE, copy=False)
 
         # Scale: each off-diagonal entry by its triangle's conductance (the
         # 6 edge sub-blocks all index the same triangle set), each diagonal by
-        # its vertex's conductance.
-        vals_off = vals_off * np.concatenate([tri_cond] * 6)
+        # its vertex's conductance. Scale the 6 T-sized blocks in place rather
+        # than building `np.concatenate([tri_cond] * 6)` — that temporary is 6·T
+        # entries (~200 MB on a multi-million-triangle board).
+        n_tri = tri_cond.shape[0]
+        for _b in range(6):
+            vals_off[_b * n_tri:(_b + 1) * n_tri] *= tri_cond
         diag = diag * vert_cond
 
         diag_idx = np.arange(n_total, dtype=idx_dtype)
@@ -2033,6 +2057,12 @@ class _MinresProgress:
 # corrupt factorisation to be reused.
 _sym_solver = None
 _sym_fingerprint: str | None = None
+# The upper-triangular PARDISO input matrix that matches the cached
+# factorisation. Cached so a value-only re-solve (identical matrix) reuses it
+# instead of rebuilding triu(L)+setdiag+sort_indices — the pypardiso solve
+# phase still needs a matrix argument, and it must be the one that was
+# factorised.
+_sym_M: "scipy.sparse.csr_matrix | None" = None
 _sym_solver_lock = threading.Lock()
 
 
@@ -2052,9 +2082,10 @@ def free_pardiso_cache() -> None:
     on solve-cancel, guarantees a solve that was hard-killed mid-factorisation
     can't leave an inconsistent factorisation for the next solve to reuse. The
     next solve simply re-factorises from scratch."""
-    global _sym_solver, _sym_fingerprint
+    global _sym_solver, _sym_fingerprint, _sym_M
     with _sym_solver_lock:
-        solver, _sym_solver, _sym_fingerprint = _sym_solver, None, None
+        solver, _sym_solver, _sym_fingerprint, _sym_M = (
+            _sym_solver, None, None, None)
     if solver is not None:
         try:
             solver.free_memory(everything=True)
@@ -2089,6 +2120,13 @@ class _MeshAssembly:
     mesh_rows: np.ndarray
     mesh_cols: np.ndarray
     mesh_vals: np.ndarray
+    # Per-layer KDTree over non-orphan mesh vertices + the parallel global-index
+    # array. A pure function of (meshes, mesh_index_to_layer_index) — the same
+    # geometry inputs the meshes/Laplacian are cached on — so it's reused on a
+    # value-only re-solve instead of rebuilding a scipy.spatial.KDTree over
+    # every vertex on every layer (1–3 s on a multi-million-vertex board).
+    layer_to_kdtree: "dict[int, scipy.spatial.KDTree]"
+    layer_to_globals: "dict[int, np.ndarray]"
 
 
 _mesh_assembly_cache: "_MeshAssembly | None" = None
@@ -2129,10 +2167,11 @@ def force_reset_caches_after_terminate() -> None:
 
     Only safe once the worker is confirmed dead — no live thread may be inside a
     solve — which is exactly the post-``terminate()`` cancel path."""
-    global _sym_solver, _sym_fingerprint, _sym_solver_lock
+    global _sym_solver, _sym_fingerprint, _sym_M, _sym_solver_lock
     global _mesh_assembly_cache, _mesh_assembly_lock
     _sym_solver = None
     _sym_fingerprint = None
+    _sym_M = None
     _mesh_assembly_cache = None
     _sym_solver_lock = threading.Lock()
     _mesh_assembly_lock = threading.Lock()
@@ -2218,27 +2257,37 @@ def _pardiso_solve_sym(
     from a reused factorisation is caught anyway by that function's residual
     check. ``size_limit_storage=0`` makes pypardiso store only a hash of the
     factorised matrix (not a full copy), keeping resident memory down."""
-    M = scipy.sparse.triu(L_csc, format="csr")
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")  # scipy setdiag notice
-        M.setdiag(M.diagonal())
-    M.sort_indices()  # canonical form: stable fingerprint, and PARDISO needs it
-
-    global _sym_solver, _sym_fingerprint
+    # Fingerprint L_csc directly rather than the derived triu matrix. L_csc is
+    # already canonical (coo→tocsc sorts indices and sums duplicates), so its
+    # hash changes iff the matrix does — and on a value-only re-solve (identical
+    # matrix) this lets us skip rebuilding triu(L)+setdiag+sort_indices entirely
+    # (hundreds of MB of extraction + a full index sort on a ~40M-nnz board) and
+    # reuse the cached upper-triangular input instead.
+    global _sym_solver, _sym_fingerprint, _sym_M
+    fp = _csr_fingerprint(L_csc)
     with _sym_solver_lock:
         if _sym_solver is None:
             _sym_solver = _pypardiso.PyPardisoSolver(
                 mtype=-2, size_limit_storage=0)
             _sym_fingerprint = None
+            _sym_M = None
         try:
-            fp = _csr_fingerprint(M)
-            if fp != _sym_fingerprint:
-                # First solve, or the matrix changed: analyse + factorise once.
+            if fp != _sym_fingerprint or _sym_M is None:
+                # First solve, or the matrix changed: build the upper-triangular
+                # PARDISO input (the full matrix crashes MKL; the diagonal must
+                # be structurally complete — missing Lagrange-row entries become
+                # explicit zeros) and analyse + factorise once.
+                M = scipy.sparse.triu(L_csc, format="csr")
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")  # scipy setdiag notice
+                    M.setdiag(M.diagonal())
+                M.sort_indices()  # canonical form PARDISO requires
                 _sym_solver.factorize(M)
                 _sym_fingerprint = fp
+                _sym_M = M
             # solve() sees the stored factorisation and runs the solve phase
             # only — the cheap path that makes an identical re-solve fast.
-            return _sym_solver.solve(M, r)
+            return _sym_solver.solve(_sym_M, r)
         except BaseException:
             try:
                 _sym_solver.free_memory(everything=True)
@@ -2246,6 +2295,7 @@ def _pardiso_solve_sym(
                 pass
             _sym_solver = None
             _sym_fingerprint = None
+            _sym_M = None
             raise
 
 
@@ -2650,6 +2700,7 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
         mesh_rows = _cached.mesh_rows
         mesh_cols = _cached.mesh_cols
         mesh_vals = _cached.mesh_vals
+        _prebuilt_kdtrees = (_cached.layer_to_kdtree, _cached.layer_to_globals)
         _record_stage(timings, "Mesh + Laplacian (cached reuse)", _t0,
                       f" ({len(meshes)} mesh(es), {len(mesh_vals)} entries)")
     else:
@@ -2699,10 +2750,21 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
         _record_stage(timings, "Laplace operator construction", _t0,
                       f" ({len(mesh_vals)} mesh entries)")
 
+        # Per-layer KDTrees over the mesh vertices — a pure function of the
+        # meshes, so built here (cache-miss) and stored for value-only re-solves
+        # to reuse. NodeIndexer.create would otherwise rebuild them every solve.
+        _t0 = time.monotonic()
+        layer_to_kdtree, layer_to_globals = NodeIndexer._construct_kdtrees(
+            prob, meshes, mesh_index_to_layer_index, vindex,
+        )
+        _record_stage(timings, "KDTree construction", _t0)
+        _prebuilt_kdtrees = (layer_to_kdtree, layer_to_globals)
+
         _store = _MeshAssembly(
             _fp, meshes, mesh_index_to_layer_index,
             disconnected_meshes_by_layer, vindex,
             mesh_rows, mesh_cols, mesh_vals,
+            layer_to_kdtree, layer_to_globals,
         )
         with _mesh_assembly_lock:
             _mesh_assembly_cache = _store
@@ -2732,6 +2794,8 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
         # A pin more than a few mesh cells from any copper vertex on its net
         # isn't really on that copper — flag it rather than silently snapping.
         off_copper_threshold_mm=_OFF_COPPER_WARN_FACTOR * mesher.config.maximum_size,
+        # Reuse the cached (or freshly-built) per-layer KDTrees.
+        prebuilt_kdtrees=_prebuilt_kdtrees,
     )
     _record_stage(timings, "Node indexing", _t0)
 

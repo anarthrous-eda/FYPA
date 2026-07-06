@@ -2266,6 +2266,20 @@ def _retire_viewer(win: QMainWindow) -> None:
             setattr(win, attr, None)
         except Exception:
             pass
+    # Free the process-global solver caches too. These are freed on solve-cancel
+    # but otherwise live for the process — the mesh + Laplacian assembly is
+    # hundreds of MB and the PARDISO factorisation can be gigabytes. Retiring a
+    # viewer means a full reload/replacement (value-only re-solves refresh in
+    # place and keep the caches warm), so the cached assembly/factorisation for
+    # the outgoing board is dead weight; drop it now. The next solve re-builds.
+    try:
+        from pdnsolver.solver import (
+            free_mesh_assembly_cache, free_pardiso_cache,
+        )
+        free_pardiso_cache()
+        free_mesh_assembly_cache()
+    except Exception:
+        pass
     win.deleteLater()
 
 
@@ -5078,6 +5092,13 @@ class LauncherWindow(QMainWindow):
             # the dialog closes immediately for the user.
             if self._gerber_worker is not None:
                 self._gerber_worker.requestInterruption()
+                # Tear down the render pool so queued layers stop instead of
+                # running to completion as orphans burning every core.
+                try:
+                    from fypa.gerber.extract import cancel_active_gerber_pool
+                    cancel_active_gerber_pool()
+                except Exception:
+                    pass
                 try:
                     self._gerber_worker.finished_ok.disconnect(_on_ok)
                     self._gerber_worker.failed.disconnect(_on_fail)
@@ -20063,6 +20084,13 @@ class PdnViewer(QMainWindow):
             # stops early or runs to completion, its result is discarded.
             if self._gerber_worker is not None:
                 self._gerber_worker.requestInterruption()
+                # Tear down the render pool so queued layers stop instead of
+                # running to completion as orphans burning every core.
+                try:
+                    from fypa.gerber.extract import cancel_active_gerber_pool
+                    cancel_active_gerber_pool()
+                except Exception:
+                    pass
                 try:
                     self._gerber_worker.finished_ok.disconnect(_on_ok)
                     self._gerber_worker.failed.disconnect(_on_fail)
@@ -23136,22 +23164,6 @@ def _triangulate_polygon_for_stub(poly):
         np.asarray(verts, dtype=np.float64),
         np.asarray(tri_indices, dtype=np.int32),
     )
-
-
-def _triangulate_layer_for_stub_worker(polys):
-    """ProcessPool worker: triangulate every polygon in one layer.
-
-    Top-level (not a closure / method) so ``ProcessPoolExecutor`` can
-    pickle it on Windows-spawn. Skips empty results so the caller's
-    parallel arrays stay aligned.
-    """
-    out: list[tuple[np.ndarray, np.ndarray]] = []
-    for p in polys:
-        verts, tris = _triangulate_polygon_for_stub(p)
-        if verts.size == 0 or tris.size == 0:
-            continue
-        out.append((verts, tris))
-    return out
 
 
 def _maybe_warn_needs_directives(parent_win, solution) -> None:
