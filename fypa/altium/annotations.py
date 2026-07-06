@@ -366,10 +366,8 @@ class TerminalSpec:
     """A lumped element's terminal — the set of pads electrically tied to it."""
     pins: tuple[TerminalPin, ...]
     # The net the directive named for this terminal (the PDN_*_NET value),
-    # kept purely for display. It differs from the pins' actual nets when the
-    # terminal resolved via a SERIES bridge — the component has no pad on the
-    # named net, so the resolver matched pads on a bridged-equivalent net
-    # instead. ``None`` when the terminal was given by a *_PINS override.
+    # kept for display and metadata export. ``None`` when the terminal was
+    # given by a *_PINS override.
     requested_net: str | None = None
     # True when ``requested_net`` is a local sheet label resolved via the
     # compiled schematic netlist rather than a direct PCB net-name match.
@@ -636,7 +634,6 @@ def _resolve_terminal(
     override_pins: list[str] | None,
     enabled_layers: list[int],
     role_diagnostic: str,
-    bridge_groups: dict[str, frozenset[str]] | None = None,
     warnings: list[str] | None = None,
     net_remap: dict[int, int] | None = None,
     sch_lookup_designator: str | None = None,
@@ -649,10 +646,12 @@ def _resolve_terminal(
     :func:`_find_pcb_instances`, which is what tells the channels of a
     multi-channel part apart (their PCB designators may be identical).
 
+    Collects every pad on that component whose PCB connectivity (or schematic
+    local-net fallback) matches the named net directly. SERIES bridge
+    equivalence classes are *not* consulted here — those belong to the
+    solver's net graph, not terminal pin selection.
+
     Returns ``(spec, errors)``. If ``errors`` is non-empty, ``spec`` is ``None``.
-    If ``bridge_groups`` is supplied and the literal net match fails, the
-    resolver retries against every net in the same SERIES-bridge group and
-    appends a one-line note to ``warnings`` naming the bridge used.
     """
     errors: list[str] = []
     resolved_via_local = False
@@ -753,54 +752,6 @@ def _resolve_terminal(
                 f"{hint}{local_hint}"
             )
             return None, errors
-
-        if not resolved_via_local:
-            # Bridge-aware fallback: if no pad sits on the literal net but the
-            # user has declared (via SERIES directives) that this net is bridged
-            # to others, accumulate pads from EVERY equivalent net in the bridge
-            # group. This matters when a component (e.g. a multi-output regulator)
-            # sources the rail through several parallel SERIES resistors, each
-            # with its own pre-resistor net (VOUT0_PRE, VOUT1_PRE, …) that all
-            # bridge to the same downstream rail (DAC_SOA_VDD). Previously this
-            # picked only the FIRST equivalent net, silently dropping half the
-            # source pins.
-            seen_pad_designators: set[str] = {p.designator for p in matched}
-            bridges_used: list[str] = []
-            if bridge_groups is not None:
-                group = bridge_groups.get(net_name.upper())
-                if group is not None:
-                    for alt_net in sorted(group):
-                        if alt_net.upper() == net_name.upper():
-                            continue
-                        alt_indices = _net_indices_by_name(proj, alt_net)
-                        if not alt_indices:
-                            continue
-                        if net_remap:
-                            alt_indices = [net_remap.get(ix, ix) for ix in alt_indices]
-                        alt_wanted = set(alt_indices)
-                        alt_pads = [p for p in component_pads
-                                    if p.net_index in alt_wanted
-                                    and p.designator not in seen_pad_designators]
-                        if alt_pads:
-                            matched = matched + alt_pads
-                            seen_pad_designators.update(
-                                p.designator for p in alt_pads
-                            )
-                            bridges_used.append(alt_net)
-
-            if bridges_used and warnings is not None:
-                bridge_list = ", ".join(repr(b) for b in bridges_used)
-                msg = (
-                    f"{role_diagnostic}: no pad on {net_name!r}; resolved via "
-                    f"SERIES bridge to pin(s) on {bridge_list}"
-                )
-                if len(bridges_used) >= 2:
-                    msg += (
-                        ". All listed nets are in the same SERIES bridge "
-                        "group — check SERIES directives (e.g. a "
-                        "multi-channel part bridging VDD to several outputs)"
-                    )
-                warnings.append(msg)
 
         if not matched:
             # List the nets that this component's pads actually sit on, so the
@@ -928,9 +879,9 @@ def _collect_bridge_groups(
     Transitive: if A↔B and B↔C are both bridged, A, B, C all belong to one
     group. Net names are upper-cased for case-insensitive comparison.
 
-    Used by :func:`_resolve_terminal` to allow ``PDN_P_NET=+5V`` to resolve to
-    a pin on ``5V_SW`` when L1 bridges them — matching the user's "U3 sources
-    +5V" mental model without asking them to know the switching-node net name.
+    Used by :func:`_validate_directive_groups` and the solver to treat
+    SERIES-bridged nets as electrically connected. Terminal pin resolution
+    uses direct pad-to-net connectivity only — see :func:`_resolve_terminal`.
     """
     parent: dict[str, str] = {}
 
@@ -1167,7 +1118,6 @@ def _resolve_two_terminal(
     enabled_layers: list[int],
     role_diag: str,
     result: AnnotationResult,
-    bridge_groups: dict[str, frozenset[str]] | None = None,
     net_remap: dict[int, int] | None = None,
     sch_lookup_designator: str | None = None,
     schdoc_name: str | None = None,
@@ -1187,7 +1137,7 @@ def _resolve_two_terminal(
     p_spec, p_err = _resolve_terminal(
         proj, pcb_index, p_net, p_pins, enabled_layers,
         f"{role_diag} P-terminal",
-        bridge_groups=bridge_groups, warnings=result.warnings,
+        warnings=result.warnings,
         net_remap=net_remap,
         sch_lookup_designator=sch_lookup_designator,
         schdoc_name=schdoc_name,
@@ -1195,7 +1145,7 @@ def _resolve_two_terminal(
     n_spec, n_err = _resolve_terminal(
         proj, pcb_index, n_net, n_pins, enabled_layers,
         f"{role_diag} N-terminal",
-        bridge_groups=bridge_groups, warnings=result.warnings,
+        warnings=result.warnings,
         net_remap=net_remap,
         sch_lookup_designator=sch_lookup_designator,
         schdoc_name=schdoc_name,
@@ -1267,7 +1217,6 @@ def _resolve_single_terminal(
     enabled_layers: list[int],
     role_diag: str,
     result: AnnotationResult,
-    bridge_groups: dict[str, frozenset[str]] | None = None,
     net_remap: dict[int, int] | None = None,
     sch_lookup_designator: str | None = None,
     schdoc_name: str | None = None,
@@ -1283,8 +1232,7 @@ def _resolve_single_terminal(
     pins = _split_pin_list(_ci_get(params, pins_key))
     spec, errs = _resolve_terminal(
         proj, pcb_index, net, pins, enabled_layers,
-        f"{role_diag} terminal", bridge_groups=bridge_groups,
-        warnings=result.warnings, net_remap=net_remap,
+        f"{role_diag} terminal", warnings=result.warnings, net_remap=net_remap,
         sch_lookup_designator=sch_lookup_designator,
         schdoc_name=schdoc_name,
     )
@@ -1305,8 +1253,8 @@ def _has_single_net_params(params: dict[str, str]) -> bool:
     return False
 
 
-def _parse_source(comp, proj, enabled_layers, result, bridge_groups=None,
-                  net_remap=None, supply_map=None):
+def _parse_source(comp, proj, enabled_layers, result, net_remap=None,
+                  supply_map=None):
     indices = _discover_channel_indices(comp.parameters, "V")
     if not indices:
         result.errors.append(
@@ -1347,7 +1295,7 @@ def _parse_source(comp, proj, enabled_layers, result, bridge_groups=None,
                     proj, pcb_idx, comp.parameters,
                     _channel_key("NET", idx), _channel_key("PINS", idx),
                     enabled_layers, inst_diag, result,
-                    bridge_groups=bridge_groups, net_remap=net_remap,
+                    net_remap=net_remap,
                     sch_lookup_designator=comp.lookup_designator,
                     schdoc_name=comp.schdoc_name,
                 )
@@ -1362,7 +1310,7 @@ def _parse_source(comp, proj, enabled_layers, result, bridge_groups=None,
                 proj, pcb_idx, comp.parameters,
                 _channel_key("P_NET", idx), _channel_key("N_NET", idx),
                 _channel_key("P_PINS", idx), _channel_key("N_PINS", idx),
-                enabled_layers, inst_diag, result, bridge_groups=bridge_groups,
+                enabled_layers, inst_diag, result,
                 net_remap=net_remap,
                 sch_lookup_designator=comp.lookup_designator,
                 schdoc_name=comp.schdoc_name,
@@ -1376,8 +1324,8 @@ def _parse_source(comp, proj, enabled_layers, result, bridge_groups=None,
     return specs
 
 
-def _parse_sink(comp, proj, enabled_layers, result, bridge_groups=None,
-                net_remap=None, supply_map=None):
+def _parse_sink(comp, proj, enabled_layers, result, net_remap=None,
+                supply_map=None):
     indices = _discover_channel_indices(comp.parameters, "I")
     if not indices:
         result.errors.append(
@@ -1421,7 +1369,7 @@ def _parse_sink(comp, proj, enabled_layers, result, bridge_groups=None,
                     proj, pcb_idx, comp.parameters,
                     _channel_key("NET", idx), _channel_key("PINS", idx),
                     enabled_layers, inst_diag, result,
-                    bridge_groups=bridge_groups, net_remap=net_remap,
+                    net_remap=net_remap,
                     sch_lookup_designator=comp.lookup_designator,
                     schdoc_name=comp.schdoc_name,
                 )
@@ -1437,7 +1385,7 @@ def _parse_sink(comp, proj, enabled_layers, result, bridge_groups=None,
                 proj, pcb_idx, comp.parameters,
                 _channel_key("P_NET", idx), _channel_key("N_NET", idx),
                 _channel_key("P_PINS", idx), _channel_key("N_PINS", idx),
-                enabled_layers, inst_diag, result, bridge_groups=bridge_groups,
+                enabled_layers, inst_diag, result,
                 net_remap=net_remap,
                 sch_lookup_designator=comp.lookup_designator,
                 schdoc_name=comp.schdoc_name,
@@ -1452,8 +1400,8 @@ def _parse_sink(comp, proj, enabled_layers, result, bridge_groups=None,
     return specs
 
 
-def _parse_resistance(comp, proj, enabled_layers, result, bridge_groups=None,
-                      net_remap=None, supply_map=None):
+def _parse_resistance(comp, proj, enabled_layers, result, net_remap=None,
+                      supply_map=None):
     role_raw = (_ci_get(comp.parameters, ROLE_KEY) or "SERIES").strip().upper()
     role_diag_base = f"{role_raw} on {comp.designator}"
     if _has_single_net_params(comp.parameters):
@@ -1543,7 +1491,6 @@ def _parse_resistance(comp, proj, enabled_layers, result, bridge_groups=None,
                 _channel_key("P_PINS", idx), _channel_key("N_PINS", idx),
                 enabled_layers, inst_diag, result,
                 net_remap=net_remap,
-                bridge_groups=bridge_groups,
                 sch_lookup_designator=comp.lookup_designator,
                 schdoc_name=comp.schdoc_name,
             )
@@ -1611,8 +1558,7 @@ def _lookup_inferred_vin(
 
     Uses an exact net-name match only — SERIES bridge equivalence must not
     expand Vin lookup, because sense paths through GND can join unrelated
-    rails (e.g. 48 V input and 12 V output) into one class. Pad resolution
-    still uses bridge groups via :func:`_resolve_terminal`.
+    rails (e.g. 48 V input and 12 V output) into one class.
     """
     if in_p_net is None or not str(in_p_net).strip():
         return None
@@ -1711,8 +1657,8 @@ def _resolve_regulator_gain(
     return gain, reg_type, eff, True
 
 
-def _parse_regulator(comp, proj, enabled_layers, result, bridge_groups=None,
-                     net_remap=None, supply_map=None):
+def _parse_regulator(comp, proj, enabled_layers, result, net_remap=None,
+                     supply_map=None):
     role_diag_base = f"REGULATOR on {comp.designator}"
     if _has_single_net_params(comp.parameters):
         result.errors.append(
@@ -1784,7 +1730,6 @@ def _parse_regulator(comp, proj, enabled_layers, result, bridge_groups=None,
                 _channel_key("OUT_P_NET", idx), _channel_key("OUT_N_NET", idx),
                 _channel_key("OUT_P_PINS", idx), _channel_key("OUT_N_PINS", idx),
                 enabled_layers, f"{inst_diag} OUT", result,
-                bridge_groups=bridge_groups,
                 net_remap=net_remap,
                 sch_lookup_designator=comp.lookup_designator,
                 schdoc_name=comp.schdoc_name,
@@ -1794,7 +1739,6 @@ def _parse_regulator(comp, proj, enabled_layers, result, bridge_groups=None,
                 _channel_key("IN_P_NET", idx), _channel_key("IN_N_NET", idx),
                 _channel_key("IN_P_PINS", idx), _channel_key("IN_N_PINS", idx),
                 enabled_layers, f"{inst_diag} IN", result,
-                bridge_groups=bridge_groups,
                 net_remap=net_remap,
                 sch_lookup_designator=comp.lookup_designator,
                 schdoc_name=comp.schdoc_name,
@@ -2044,9 +1988,7 @@ def parse_annotations(proj: ExtractedProject,
 
     parameter_sources = _iter_pdn_parameter_sources(proj)
 
-    # Build bridge groups from RESISTANCE directives so that, e.g., a SOURCE
-    # naming PDN_P_NET=+5V can resolve to a U3 pin on 5V_SW when L1 bridges
-    # them. Computed once; consulted as a fallback inside _resolve_terminal.
+    # SERIES bridge equivalence for cross-directive validation and the solver.
     bridge_groups = _collect_bridge_groups(parameter_sources, proj)
     supply_map = _collect_supply_voltages_by_net(parameter_sources)
 
@@ -2080,7 +2022,6 @@ def parse_annotations(proj: ExtractedProject,
         _warn_unknown_pdn_params(comp, role, result)
 
         specs = _PARSER_BY_ROLE[role](comp, proj, enabled_layers, result,
-                                      bridge_groups=bridge_groups,
                                       net_remap=net_remap,
                                       supply_map=supply_map)
         # Every parser now returns a list — empty if the directive failed
