@@ -581,8 +581,13 @@ def _half_cotangent(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     out = np.zeros_like(dot)
     mask = crs != 0
     out[mask] = dot[mask] / np.abs(crs[mask])
+    # Halve THEN clamp, so _MAX_HALF_COT is a clamp on the half-cotangent (the
+    # quantity that enters the stiffness matrix), as its name and the comment
+    # above say. Clamping before the * 0.5 would clamp the full cotangent and
+    # halve the effective limit to 2.5e3.
+    out *= 0.5
     np.clip(out, -_MAX_HALF_COT, _MAX_HALF_COT, out=out)
-    return out * 0.5
+    return out
 
 
 def _mesh_source_arrays(msh: mesh.Mesh) -> tuple[np.ndarray, np.ndarray]:
@@ -991,6 +996,16 @@ def generate_meshes_for_problem(prob: problem.Problem,
                     [(p.x, p.y) for p in seed_points_in_geom],
                     dtype=np.float64,
                 )
+                # Drop exact-duplicate seeds (two Connections at identical
+                # coordinates — stacked pins, a via shared by two directives,
+                # or a pad seeded from two networks — each contribute a seed
+                # plus an identical Steiner ring). Triangle lists near-duplicate
+                # vertices as a known failure mode. Order-preserving (keep the
+                # first occurrence in the original order) so the seed sequence
+                # fed to Triangle — and therefore the mesh — is unchanged when
+                # there are no duplicates.
+                _, first_idx = np.unique(seed_xy, axis=0, return_index=True)
+                seed_xy = seed_xy[np.sort(first_idx)]
             else:
                 seed_xy = None
 
@@ -2093,14 +2108,56 @@ def free_mesh_assembly_cache() -> None:
         _mesh_assembly_cache = None
 
 
-def _mesh_assembly_fingerprint(prob: "problem.Problem", mesher_config) -> str:
+def force_reset_caches_after_terminate() -> None:
+    """Recover module cache state after a solve worker was hard-killed
+    (``QThread.terminate()``) while it may have held ``_sym_solver_lock`` or
+    ``_mesh_assembly_lock``.
+
+    A ``threading.Lock`` held by a terminated thread is never released, so the
+    ordinary ``free_pardiso_cache`` / ``free_mesh_assembly_cache`` helpers —
+    which *acquire* those locks — would block the caller forever, and every
+    subsequent solve would deadlock trying to take them. This drops both caches
+    and rebinds the locks to FRESH objects *without acquiring* the (possibly
+    orphaned) old ones.
+
+    The native PARDISO factorisation is not actively freed here: the killed
+    worker may have been mid-factorisation, and calling ``free_memory`` on a
+    half-built native object can crash. We simply drop the Python reference
+    (nulling the cache), so it can never be reused; its native arena leaks until
+    process exit, the same bounded leak ``_abort_solve_worker`` already accepts
+    for a force-killed solve.
+
+    Only safe once the worker is confirmed dead — no live thread may be inside a
+    solve — which is exactly the post-``terminate()`` cancel path."""
+    global _sym_solver, _sym_fingerprint, _sym_solver_lock
+    global _mesh_assembly_cache, _mesh_assembly_lock
+    _sym_solver = None
+    _sym_fingerprint = None
+    _mesh_assembly_cache = None
+    _sym_solver_lock = threading.Lock()
+    _mesh_assembly_lock = threading.Lock()
+
+
+def _mesh_assembly_fingerprint(
+    prob: "problem.Problem",
+    mesher_config,
+    connected_layer_mesh_pairs: "set[tuple[int, int]]",
+) -> str:
     """Content hash of everything that determines the meshes and their
-    Laplacian: the mesher config, each layer's geometry + conductance, and
-    every connection's seed geometry (layer, point, pad region) in the exact
-    order the mesher consumes them (seed order perturbs Triangle's output, so
-    the hash is order-sensitive, not a set). Source/sink magnitudes and node
-    identity are excluded — they never change the mesh or the Laplacian — so a
-    value-only re-solve hashes identically and reuses the cache.
+    Laplacian: the mesher config, each layer's geometry + conductance, every
+    connection's seed geometry (layer, point, pad region) in the exact order
+    the mesher consumes them (seed order perturbs Triangle's output, so the
+    hash is order-sensitive, not a set), and the set of (layer, geom) pairs
+    that are actually meshed. Source/sink magnitudes and node identity are
+    excluded — they never change the mesh or the Laplacian — so a value-only
+    re-solve hashes identically and reuses the cache.
+
+    ``connected_layer_mesh_pairs`` matters because it selects *which* polygons
+    get meshed at all, and it depends on network connectivity (e.g. whether a
+    network has a source), not just on geometry / connection points. Folding it
+    in means a "swap a VoltageSource for a Resistor" edit — which leaves every
+    connection point untouched but changes the connected set — invalidates the
+    cache instead of silently reusing meshes for the old connectivity.
 
     WKB is exact, so a false hit would need a SHA-1 collision; a false miss (a
     rebuilt-but-identical geometry that happens to hash differently) only costs
@@ -2118,10 +2175,25 @@ def _mesh_assembly_fingerprint(prob: "problem.Problem", mesher_config) -> str:
     for network in prob.networks:
         for conn in network.connections:
             h.update(b"\x00C")
-            h.update(np.int64(layer_to_index.get(id(conn.layer), -1)).tobytes())
+            layer_index = layer_to_index.get(id(conn.layer), -1)
+            if layer_index < 0:
+                # A connection whose layer isn't one of prob.layers by identity
+                # collapses to -1, losing which-layer information from the hash
+                # (two such connections on different layers would collide). This
+                # shouldn't happen — connections reuse the same Layer objects —
+                # so surface it rather than hashing a lossy sentinel silently.
+                log.warning(
+                    "Connection layer not found in prob.layers by identity; "
+                    "mesh-assembly fingerprint is using a lossy -1 sentinel "
+                    "and may collide across layers")
+            h.update(np.int64(layer_index).tobytes())
             h.update(np.float64([conn.point.x, conn.point.y]).tobytes())
             if conn.region is not None:
                 h.update(shapely.to_wkb(conn.region))
+    # Which (layer, geom) pairs are meshed — sorted for order-independence.
+    h.update(b"\x00M")
+    for pair in sorted(connected_layer_mesh_pairs):
+        h.update(np.int64(pair).tobytes())
     return h.hexdigest()
 
 
@@ -2560,7 +2632,8 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
     # cached result when those are unchanged (a value-only re-solve: only the
     # source/sink magnitudes differ, which touch the RHS alone). Everything
     # after this block is rebuilt fresh regardless — see _MeshAssembly.
-    _fp = _mesh_assembly_fingerprint(prob, mesher.config)
+    _fp = _mesh_assembly_fingerprint(
+        prob, mesher.config, connected_layer_mesh_pairs)
     _cached = None
     with _mesh_assembly_lock:
         if (_mesh_assembly_cache is not None
@@ -2907,7 +2980,14 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
             SolverWarning,
         )
 
-    if not np.isclose(ground_node_current, 0):
+    # Trigger on the ground current RELATIVE to the total sink current, not on
+    # an absolute atol. A fixed absolute tolerance (np.isclose's default 1e-8 A)
+    # is simultaneously too strict on a 100 A board — where a healthy 1e-6 A
+    # solve residual would trip a scary warning — and too lax on a µA-scale
+    # problem. The floor keeps it from firing on pure round-off when there's no
+    # sink current at all.
+    ground_current_tol = max(1e-9, 1e-6 * abs(total_sink_current))
+    if abs(ground_node_current) > ground_current_tol:
         # This is a warning, but we still continue to produce the solution object
         # since it may still be useful for the user.
         fraction = (

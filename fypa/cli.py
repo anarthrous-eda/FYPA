@@ -658,12 +658,32 @@ def _design_info_fingerprint(prjpcb_path: Path,
     }
 
 
+def _settings_fingerprint(settings=None) -> dict:
+    """The solve-affecting tunables (physics + meshing), folded into the solve
+    fingerprint so a solve run with non-default settings is keyed separately
+    from a default one. Without this, a Re-run with a custom mesh size or
+    conductivity writes the cache under the same key a later plain "Import
+    Altium Design" (which uses defaults) reads — serving the wrong solve.
+
+    ``settings`` is a :class:`fypa.altium.loader.SolveSettings`; ``None`` means
+    the toolchain defaults, matching what a plain import solves with. Sorted,
+    primitives-only, so it hashes stably."""
+    from fypa.altium.loader import SolveSettings
+    if settings is None:
+        settings = SolveSettings()
+    from dataclasses import asdict, is_dataclass
+    raw = asdict(settings) if is_dataclass(settings) else dict(settings)
+    return {k: raw[k] for k in sorted(raw)}
+
+
 def _project_fingerprint(prjpcb_path: Path,
-                         pcbdoc_path: Path | None = None) -> dict:
+                         pcbdoc_path: Path | None = None,
+                         settings=None) -> dict:
     """Fingerprint for the cached solve (solve.pkl).
 
-    Includes everything: project files + all tool source hashes. Any
-    semantic edit to the toolchain invalidates this layer.
+    Includes everything: project files + all tool source hashes + the
+    solve-affecting settings. Any semantic edit to the toolchain — or a change
+    in mesh/physics settings — invalidates this layer.
     """
     return {
         "schema_version": _CACHE_SCHEMA_VERSION,
@@ -671,6 +691,7 @@ def _project_fingerprint(prjpcb_path: Path,
         "files": _project_file_fingerprints(prjpcb_path),
         "tool_source_hashes": _tool_source_hashes(_CACHE_TOOL_SOURCES),
         "pcbdoc_path": str(pcbdoc_path.resolve()) if pcbdoc_path else None,
+        "solve_settings": _settings_fingerprint(settings),
     }
 
 
@@ -1129,7 +1150,14 @@ def do_gui(args: argparse.Namespace) -> int:
     # captures every input that can change the solve result; the design-info
     # fingerprint captures only what affects the LoadedProject so an isolated
     # solver/mesher source edit still reuses the cached extract.
-    solve_fp = _project_fingerprint(args.prjpcb, pcbdoc_path)
+    from fypa.altium.loader import SolveSettings as _SolveSettings
+    _cli_settings = _SolveSettings()
+    _cli_settings.mesh_min_angle_deg = getattr(
+        args, "mesh_angle", _cli_settings.mesh_min_angle_deg)
+    _cli_settings.mesh_max_size_mm = getattr(
+        args, "mesh_size", _cli_settings.mesh_max_size_mm)
+    solve_fp = _project_fingerprint(args.prjpcb, pcbdoc_path,
+                                    settings=_cli_settings)
     design_fp = _design_info_fingerprint(args.prjpcb, pcbdoc_path)
     no_cache = getattr(args, "no_cache", False)
     if not no_cache:

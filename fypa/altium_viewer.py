@@ -2172,6 +2172,60 @@ def _restore_bundled_design_info(proj) -> None:
         pass
 
 
+# Strong references to QThreads that outlived their dialog (e.g. a Gerber
+# import cancelled mid-render, whose ProcessPoolExecutor phase can't be
+# interrupted cooperatively and so runs to completion in the background). We
+# keep them referenced until they emit ``finished`` — dropping the last Python
+# reference to a still-running QThread destroys the C++ object and triggers
+# ``qFatal("QThread: Destroyed while thread is still running")``.
+_ORPHANED_THREADS: set = set()
+
+
+def _retire_thread(worker) -> None:
+    """Safely dispose of a QThread that may still be running.
+
+    Never ``deleteLater()`` a running QThread: ``~QThread`` calls ``qFatal`` if
+    the thread is still executing, aborting the whole app. If the worker has
+    already stopped, delete it now; otherwise ask it to interrupt, stash a
+    strong reference so neither Python GC nor ``deleteLater`` can destroy it
+    while it runs, and let it self-delete once it emits ``finished``."""
+    if worker is None:
+        return
+    try:
+        running = worker.isRunning()
+    except RuntimeError:
+        return  # C++ side already gone
+    if not running:
+        worker.deleteLater()
+        return
+    try:
+        worker.requestInterruption()
+    except RuntimeError:
+        pass
+    _ORPHANED_THREADS.add(worker)
+
+    def _dispose() -> None:
+        _ORPHANED_THREADS.discard(worker)
+        worker.deleteLater()
+
+    worker.finished.connect(_dispose)
+
+
+def _any_gerber_import_running() -> bool:
+    """True if any orphaned Gerber-import worker is still running (its
+    background render pool is still burning cores). Used to refuse launching a
+    second import that would over-subscribe the CPU."""
+    for w in list(_ORPHANED_THREADS):
+        if not isinstance(w, _GerberImportWorker):
+            continue
+        try:
+            if w.isRunning():
+                return True
+        except RuntimeError:
+            _ORPHANED_THREADS.discard(w)
+    return False
+
+
 def _register_viewer(win: QMainWindow) -> None:
     """Append ``win`` to the module-level strong-ref list, pruning any
     entries whose underlying QObject has already been destroyed."""
@@ -4338,8 +4392,12 @@ class _SolveWorker(QThread):
                         _solve_cache_path,
                     )
                     self.stage_changed.emit("Packaging solution: saving cache…")
+                    # Key the cache on the settings THIS solve used, so a plain
+                    # default import (which reads with default settings) can't
+                    # reuse a solve run with non-default mesh/physics settings.
                     solve_fp = _project_fingerprint(
                         self._prjpcb_path, pcbdoc_resolved,
+                        settings=self._settings,
                     )
                     cache_path = _solve_cache_path(
                         self._prjpcb_path, pcbdoc_resolved,
@@ -4557,7 +4615,8 @@ def _abort_solve_worker(owner) -> None:
         # so the children stop after their current Triangle call instead
         # of running to completion as orphans. Safe no-op when no pool is
         # active. Must happen BEFORE terminate(), so the queue close
-        # propagates before the thread holding the pool dies.
+        # propagates before the thread holding the pool dies. This touches
+        # only the mesh pool, never the solver locks, so it can't block.
         try:
             from pdnsolver.solver import cancel_active_mesh_pool
             cancel_active_mesh_pool()
@@ -4565,28 +4624,12 @@ def _abort_solve_worker(owner) -> None:
             logging.getLogger(__name__).warning(
                 "cancel_active_mesh_pool raised %s; carrying on.", _exc,
             )
-        # Drop the cached PARDISO factorisation. If the worker is hard-killed
-        # mid-factorisation below, its persistent solver could otherwise be
-        # left inconsistent and reused (→ garbage or a crash) on the next
-        # re-solve; dropping it forces a clean re-factorisation instead.
-        try:
-            from pdnsolver.solver import free_pardiso_cache
-            free_pardiso_cache()
-        except Exception as _exc:
-            logging.getLogger(__name__).warning(
-                "free_pardiso_cache raised %s; carrying on.", _exc,
-            )
-        # Also drop the cached mesh + Laplacian assembly. It's pure data (safe
-        # even if the worker is hard-killed mid-populate), but a large board's
-        # meshes + COO triples are hundreds of MB; free them on cancel rather
-        # than leaving them resident for a solve the user abandoned.
-        try:
-            from pdnsolver.solver import free_mesh_assembly_cache
-            free_mesh_assembly_cache()
-        except Exception as _exc:
-            logging.getLogger(__name__).warning(
-                "free_mesh_assembly_cache raised %s; carrying on.", _exc,
-            )
+        # Ask the worker to stop, THEN free the solver caches — never before.
+        # free_pardiso_cache/free_mesh_assembly_cache acquire module locks that
+        # the worker holds for the whole factorisation ("seconds to minutes");
+        # calling them here on the GUI thread while the worker is mid-solve
+        # would block the event loop and show "Not Responding" — the exact hang
+        # cancel exists to avoid.
         worker.requestInterruption()
         # Give the worker a chance to stop cooperatively at its next stage
         # boundary first (see _SolveWorker._cancel_requested). This matters for
@@ -4594,11 +4637,39 @@ def _abort_solve_worker(owner) -> None:
         # holds the GIL would deadlock the GUI. Only force-kill if it doesn't
         # unwind on its own — that's the native mesh/solve section, where
         # terminate() is safe because the GIL is released.
-        if not worker.wait(1500):
+        if worker.wait(1500):
+            # Clean cooperative stop: run() returned, so the worker released
+            # every module lock. The frees are now non-blocking and drop the
+            # PARDISO factorisation / mesh assembly so a solve killed mid-way
+            # can't leave stale state for the next solve to reuse.
+            for _free_name in ("free_pardiso_cache", "free_mesh_assembly_cache"):
+                try:
+                    import pdnsolver.solver as _S
+                    getattr(_S, _free_name)()
+                except Exception as _exc:
+                    logging.getLogger(__name__).warning(
+                        "%s raised %s; carrying on.", _free_name, _exc,
+                    )
+        else:
+            # Stuck in a native scipy/Triangle call we can't interrupt. Force
+            # it down. terminate() may kill the worker WHILE it holds
+            # _sym_solver_lock / _mesh_assembly_lock — a threading.Lock held by
+            # a dead thread is never released, so the ordinary frees (and every
+            # future solve) would deadlock on it. force_reset rebinds those
+            # locks to fresh objects and drops the caches WITHOUT acquiring the
+            # orphaned ones.
             worker.terminate()
             # 2 s is plenty for the OS to reap the thread; we don't want to
             # block the GUI indefinitely if something pathological happens.
             worker.wait(2000)
+            try:
+                from pdnsolver.solver import force_reset_caches_after_terminate
+                force_reset_caches_after_terminate()
+            except Exception as _exc:
+                logging.getLogger(__name__).warning(
+                    "force_reset_caches_after_terminate raised %s; carrying on.",
+                    _exc,
+                )
     updater = getattr(owner, "_solve_progress_updater", None)
     if updater is not None:
         updater.stop()
@@ -4930,6 +5001,13 @@ class LauncherWindow(QMainWindow):
         as not responding). A modal :class:`QProgressDialog` shows the
         per-stage progress; on completion, the resulting viewer opens
         and the launcher closes."""
+        if _any_gerber_import_running():
+            QMessageBox.information(
+                self, "Import already running",
+                "A previous Gerber import is still finishing in the "
+                "background. Please wait a moment before starting another.",
+            )
+            return
         picked = _pick_gerber_inputs(self)
         if picked is None:
             return
@@ -4968,7 +5046,10 @@ class LauncherWindow(QMainWindow):
             except (RuntimeError, TypeError):
                 pass
             dlg.close()
-            worker.deleteLater()
+            # The worker may still be inside the non-interruptible ProcessPool
+            # render phase; retire it safely rather than deleteLater()-ing a
+            # running QThread (which would qFatal the app).
+            _retire_thread(worker)
             self._gerber_worker = None
             self._gerber_dlg = None
             self._gerber_updater = None
@@ -19877,6 +19958,13 @@ class PdnViewer(QMainWindow):
         use). The heavy work runs on a :class:`_GerberImportWorker` with
         a modal progress dialog so the existing viewer stays responsive
         while the import is running."""
+        if _any_gerber_import_running():
+            QMessageBox.information(
+                self, "Import already running",
+                "A previous Gerber import is still finishing in the "
+                "background. Please wait a moment before starting another.",
+            )
+            return
         picked = _pick_gerber_inputs(self)
         if picked is None:
             return
@@ -19917,7 +20005,10 @@ class PdnViewer(QMainWindow):
             except (RuntimeError, TypeError):
                 pass
             dlg.close()
-            worker.deleteLater()
+            # The worker may still be inside the non-interruptible ProcessPool
+            # render phase; retire it safely rather than deleteLater()-ing a
+            # running QThread (which would qFatal the app).
+            _retire_thread(worker)
             self._gerber_worker = None
             self._gerber_dlg = None
             self._gerber_updater = None
