@@ -1797,6 +1797,7 @@ def build_solve_metadata(
     stub_pieces_by_pair: dict[tuple[int, int], list] | None = None,
     per_net_layers: list[GeometryLayer] | None = None,
     regulator_adaptive_gain: dict | None = None,
+    mesh_failures: list[dict] | None = None,
 ) -> dict:
     """Collect every input the solve depended on into a serialisable dict.
 
@@ -2401,6 +2402,7 @@ def build_solve_metadata(
         "connectivity_breaks": list(
             getattr(loaded.annotations, "connectivity_breaks", [])
         ),
+        "mesh_failures": list(mesh_failures or []),
         "fem_stats": {
             "padne_layer_count": len(problem.layers) if problem is not None else 0,
             "padne_network_count": (
@@ -2593,6 +2595,142 @@ def _filter_stub_pieces(
     if not kept:
         return shapely.geometry.MultiPolygon(), dropped
     return shapely.geometry.MultiPolygon(kept), dropped
+
+
+# Copper islands smaller than this (mm²) with no directive pin and no via are
+# dropped from the FEM and shown as grey stubs. They are usually union
+# artefacts or micro-slivers that make Triangle fail with "invalid geometry".
+_MIN_FEM_MESH_PIECE_AREA_MM2 = 1e-6
+
+
+def _filter_tiny_pieces(
+    shape: shapely.geometry.base.BaseGeometry,
+    min_area_mm2: float,
+    pin_xys: list[tuple[float, float]],
+    via_xys: list[tuple[float, float]],
+) -> tuple[shapely.geometry.base.BaseGeometry, list]:
+    """Drop sub-micron copper slivers that have no electrical anchor.
+
+    Pieces that contain a directive pin or a via are always kept — even when
+    tiny — because dropping them would silently lose a connection point.
+  """
+    if shape.is_empty or min_area_mm2 <= 0:
+        return shape, []
+    geoms = (list(shape.geoms)
+             if shape.geom_type == "MultiPolygon" else [shape])
+    pin_pts = [shapely.geometry.Point(x, y) for x, y in pin_xys]
+    unique_via_xys = list({(round(x * 1000), round(y * 1000)): (x, y)
+                           for x, y in via_xys}.values())
+    via_pts = [shapely.geometry.Point(x, y) for x, y in unique_via_xys]
+    pin_count = len(pin_pts)
+    all_pts = pin_pts + via_pts
+    tree = shapely.strtree.STRtree(all_pts) if all_pts else None
+
+    kept: list = []
+    dropped: list = []
+    for piece in geoms:
+        if piece.area >= min_area_mm2:
+            kept.append(piece)
+            continue
+        anchored = False
+        if tree is not None:
+            for j in tree.query(piece):
+                j = int(j)
+                if piece.intersects(all_pts[j]):
+                    anchored = True
+                    break
+        if anchored:
+            kept.append(piece)
+        else:
+            log.info(
+                "Dropping tiny copper sliver (area %.3g mm², no pin/via) "
+                "from FEM mesh input.",
+                piece.area,
+            )
+            dropped.append(piece)
+    if not kept:
+        return shapely.geometry.MultiPolygon(), dropped
+    return shapely.geometry.MultiPolygon(kept), dropped
+
+
+def build_mesh_failure_records(
+    exc,
+    problem: _pp.Problem | None,
+    loaded: LoadedProject | None = None,
+    per_net_layers: list | None = None,
+) -> list[dict]:
+    """Turn a :class:`pdnsolver.mesh.MeshingException` into viewer records.
+
+    Each record carries exterior/hole rings (float32), layer/net labels, and
+    a human-readable summary so the board view can highlight the bad copper.
+    """
+    import numpy as np
+
+    piece = None
+    layer_id = None
+    net_name = None
+    layer_label = exc.layer_name
+    if per_net_layers and layer_label:
+        for gl in per_net_layers:
+            if gl.name == layer_label:
+                layer_id = int(gl.layer_id)
+                if "|" in gl.name:
+                    net_name = gl.name.split("|", 1)[1]
+                break
+    if (problem is not None
+            and exc.layer_index is not None
+            and exc.geom_index is not None):
+        try:
+            layer = problem.layers[exc.layer_index]
+            piece = layer.geoms[exc.geom_index]
+            layer_label = layer.name
+            if net_name is None and "|" in layer.name:
+                net_name = layer.name.split("|", 1)[1]
+            if layer_id is None and per_net_layers:
+                for gl in per_net_layers:
+                    if gl.name == layer.name:
+                        layer_id = int(gl.layer_id)
+                        break
+            elif layer_id is None and loaded is not None and "|" in layer.name:
+                phys = layer.name.split("|", 1)[0]
+                for s in loaded.extracted.stackup:
+                    if s.name == phys:
+                        layer_id = int(s.layer_id)
+                        break
+        except (IndexError, AttributeError):
+            piece = None
+    if piece is None and exc.bounds is not None:
+        x0, y0, x1, y1 = exc.bounds
+        piece = shapely.geometry.box(x0, y0, x1, y1)
+    if piece is None:
+        return [{
+            "summary": exc.format_user_message(),
+            "layer_id": -1,
+            "net": net_name or "?",
+            "exterior": np.empty((0, 2), dtype=np.float32),
+            "holes": [],
+            "location_xy": list(exc.location_xy) if exc.location_xy else None,
+        }]
+
+    if layer_id is None and loaded is not None and layer_label and "|" in layer_label:
+        phys_name = layer_label.split("|", 1)[0]
+        for s in loaded.extracted.stackup:
+            if s.name == phys_name:
+                layer_id = int(s.layer_id)
+                break
+    if net_name is None and layer_label and "|" in layer_label:
+        net_name = layer_label.split("|", 1)[1]
+
+    stub = _build_stub_record(
+        piece, int(layer_id or -1), net_name or layer_label or "?",
+    )
+    if stub is None:
+        return []
+    stub["summary"] = exc.format_user_message()
+    if exc.location_xy is not None:
+        stub["location_xy"] = [float(exc.location_xy[0]), float(exc.location_xy[1])]
+    stub["mesh_failure"] = True
+    return [stub]
 
 
 def _drop_unreachable_layers(
@@ -2933,7 +3071,15 @@ def build_problem(
             via_xys_by_pair.get(key, []),
         )
         if dropped_pieces:
-            stub_pieces_by_pair[key] = dropped_pieces
+            stub_pieces_by_pair.setdefault(key, []).extend(dropped_pieces)
+        filtered_shape, tiny_dropped = _filter_tiny_pieces(
+            filtered_shape,
+            _MIN_FEM_MESH_PIECE_AREA_MM2,
+            pin_xys_by_pair.get(key, []),
+            via_xys_by_pair.get(key, []),
+        )
+        if tiny_dropped:
+            stub_pieces_by_pair.setdefault(key, []).extend(tiny_dropped)
         if filtered_shape.is_empty:
             # Every piece on this (layer, net) was a stub — skip the
             # padne Layer entirely. Directives/vias that wanted to land

@@ -19,7 +19,11 @@ import shapely.wkb
 import warnings
 
 from collections.abc import Callable
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import BrokenExecutor, ProcessPoolExecutor, as_completed
+try:
+    from concurrent.futures.process import BrokenProcessPool
+except ImportError:  # pragma: no cover
+    BrokenProcessPool = BrokenExecutor  # type: ignore[misc,assignment]
 from dataclasses import dataclass, field
 
 from . import problem, mesh
@@ -806,6 +810,7 @@ def _mesh_polygons_in_parallel(
     log_label: str,
     adaptive: tuple | None = None,
     shared_pool: "_SharedMeshPool | None" = None,
+    piece_contexts: list[dict] | None = None,
 ) -> list[tuple[np.ndarray, np.ndarray]]:
     """Mesh a batch of polygons concurrently via a ProcessPoolExecutor.
 
@@ -836,23 +841,56 @@ def _mesh_polygons_in_parallel(
     n = len(polys)
     assert n == len(seed_xys), "polys / seed_xys length mismatch"
     assert n == len(switches), "polys / switches length mismatch"
+    if piece_contexts is not None:
+        assert len(piece_contexts) == n, "polys / piece_contexts length mismatch"
     if n == 0:
         return []
+
+    def _worker_crash_exception(idx: int) -> mesh.MeshingException:
+        return mesh.MeshingException(
+            f"Mesh worker process terminated while triangulating copper "
+            f"(piece {idx + 1}/{n})",
+            triangle_cause=(
+                "Triangle aborted in a parallel worker — usually a "
+                "degenerate or self-intersecting copper boundary "
+                "(self-touching edges, near-duplicate vertices, or a "
+                "micro-sliver)."
+            ),
+        )
+
+    def _enrich_failure(idx: int, exc: mesh.MeshingException) -> mesh.MeshingException:
+        poly = polys[idx]
+        ctx = (piece_contexts[idx] if piece_contexts is not None else {})
+        enriched = exc.with_context(
+            poly,
+            layer_index=ctx.get("layer_index"),
+            geom_index=ctx.get("geom_index"),
+            layer_name=ctx.get("layer_name"),
+            piece_index=idx,
+        )
+        log.error(enriched.format_user_message())
+        return enriched
+
+    def _mesh_one(idx: int) -> tuple[np.ndarray, np.ndarray]:
+        poly, sxy, sw = polys[idx], seed_xys[idx], switches[idx]
+        try:
+            if adaptive is not None:
+                return mesh._triangulate_adaptive(poly, sxy, adaptive)
+            vertices, segments, holes = (
+                mesh._prepare_polygon_for_triangle_arrays(poly, sxy)
+            )
+            return mesh._triangulate_arrays(vertices, segments, holes, sw)
+        except mesh.MeshingException as exc:
+            raise _enrich_failure(idx, exc) from exc
+
     # Fall back to serial when the pool wouldn't pay for itself.
     if n < _MESH_PARALLEL_THRESHOLD:
         results: list[tuple[np.ndarray, np.ndarray]] = []
-        for i, (poly, sxy, sw) in enumerate(zip(polys, seed_xys, switches), 1):
-            if adaptive is not None:
-                results.append(mesh._triangulate_adaptive(poly, sxy, adaptive))
-            else:
-                vertices, segments, holes = (
-                    mesh._prepare_polygon_for_triangle_arrays(poly, sxy)
-                )
-                results.append(mesh._triangulate_arrays(
-                    vertices, segments, holes, sw,
-                ))
-            if i == 1 or i == n or (i % 8 == 0):
-                log.info(f"{log_label}: {i}/{n} pieces meshed (serial)")
+        for i in range(n):
+            results.append(_mesh_one(i))
+            done = i + 1
+            if done == 1 or done == n or (done % 8 == 0):
+                log.info(f"{log_label}: {done}/{n} pieces meshed (serial)")
         return results
 
     workers = min(n, _MESH_MAX_WORKERS)
@@ -886,11 +924,14 @@ def _mesh_polygons_in_parallel(
             idx = future_to_idx[fut]
             try:
                 results[idx] = fut.result()
-            except mesh.MeshingException:
-                # Propagate — workers' MeshingException already carries
-                # the failed-input details. Other futures are cancelled
-                # via the finally below.
-                raise
+            except mesh.MeshingException as exc:
+                raise _enrich_failure(idx, exc) from exc
+            except (BrokenProcessPool, BrokenExecutor) as exc:
+                # Triangle can abort a worker process on a bad PSLG — that
+                # surfaces here instead of a catchable MeshingException.
+                if shared_pool is not None:
+                    shared_pool.close()
+                raise _enrich_failure(idx, _worker_crash_exception(idx)) from exc
             done += 1
             # Per-piece progress every doubling (1, 2, 4, 8, …) plus the
             # last one — gives a useful pulse without spamming for large
@@ -964,6 +1005,8 @@ def generate_meshes_for_problem(prob: problem.Problem,
     polys_to_mesh: list[shapely.geometry.Polygon] = []
     seed_xys_to_mesh: list[np.ndarray | None] = []
     layer_indices: list[int] = []
+    geom_indices: list[int] = []
+    piece_contexts: list[dict] = []
 
     for layer_i, layer in enumerate(prob.layers):
         seed_points_in_layer = seed_points_by_layer_id.get(id(layer), [])
@@ -1055,6 +1098,12 @@ def generate_meshes_for_problem(prob: problem.Problem,
             polys_to_mesh.append(layer.geoms[geom_i])
             seed_xys_to_mesh.append(seed_xy)
             layer_indices.append(layer_i)
+            geom_indices.append(geom_i)
+            piece_contexts.append({
+                "layer_index": layer_i,
+                "geom_index": geom_i,
+                "layer_name": layer.name,
+            })
 
     if not polys_to_mesh:
         return [], []
@@ -1077,6 +1126,7 @@ def generate_meshes_for_problem(prob: problem.Problem,
         polys_to_mesh, seed_xys_to_mesh, switches,
         log_label="connected meshes", adaptive=_adaptive,
         shared_pool=shared_pool,
+        piece_contexts=piece_contexts,
     )
 
     meshes: list[mesh.Mesh] = []
