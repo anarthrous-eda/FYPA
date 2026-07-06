@@ -413,6 +413,10 @@ _SSAA_QS_KEY = "ui/supersampling"
 # and the user presses ↻ Solve in the viewer.
 _AUTO_SOLVE_IMPORT_QS_KEY = "import/auto_solve_on_altium"
 _ADAPTIVE_REGULATOR_GAIN_QS_KEY = "solve/adaptive_regulator_gain"
+# When enabled, the heavy mesh+solve+package runs in a child process so a cancel
+# just kills the child (no QThread.terminate() that could orphan solver locks).
+# Off by default; the env var FYPA_SOLVE_SUBPROCESS also forces it on.
+_SOLVE_SUBPROCESS_QS_KEY = "solve/use_subprocess"
 
 _current_theme_mode: str = "dark"
 
@@ -569,6 +573,42 @@ def save_adaptive_regulator_gain(enabled: bool) -> None:
         )
 
 
+def load_solve_in_subprocess() -> bool:
+    """Read the persisted "run the solve in a subprocess" preference.
+
+    Defaults to ``False`` (the in-process QThread solve). The env var
+    ``FYPA_SOLVE_SUBPROCESS`` is an independent override checked alongside this
+    at worker construction, so a power user can force it on without the UI."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        val = qs.value(_SOLVE_SUBPROCESS_QS_KEY, False)
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            return val.strip().lower() in ("1", "true", "yes", "on")
+        return bool(int(val))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not read solve-in-subprocess preference (%s); using "
+            "default (off).", e,
+        )
+    return False
+
+
+def save_solve_in_subprocess(enabled: bool) -> None:
+    """Persist the solve-in-subprocess preference for next launch."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        qs.setValue(_SOLVE_SUBPROCESS_QS_KEY, bool(enabled))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not persist solve-in-subprocess preference (%s); ignoring.",
+            e,
+        )
+
+
 def _metadata_has_adaptive_smps(metadata: dict | None) -> bool:
     if not metadata:
         return False
@@ -657,54 +697,6 @@ def _altium_import_worker_options(
             "simulation."
         ),
     }
-
-
-def _wire_auto_solve_import_toggle(
-    action: QAction,
-    *,
-    checkbox: QCheckBox | None = None,
-    import_action: QAction | None = None,
-) -> None:
-    """Keep a checkable menu action, optional launcher checkbox, and
-    Import-tip text in sync with :func:`save_auto_solve_on_import`."""
-
-    def _apply(checked: bool) -> None:
-        save_auto_solve_on_import(checked)
-        if checkbox is not None and checkbox.isChecked() != checked:
-            checkbox.blockSignals(True)
-            checkbox.setChecked(checked)
-            checkbox.blockSignals(False)
-        if action.isChecked() != checked:
-            action.blockSignals(True)
-            action.setChecked(checked)
-            action.blockSignals(False)
-        if import_action is not None:
-            import_action.setStatusTip(
-                _altium_import_auto_solve_status_tip(checked),
-            )
-
-    action.toggled.connect(_apply)
-    if checkbox is not None:
-        checkbox.toggled.connect(_apply)
-    _apply(load_auto_solve_on_import())
-
-
-def _add_auto_solve_import_action(
-    parent: QWidget,
-    file_menu,
-    import_action: QAction,
-    *,
-    checkbox: QCheckBox | None = None,
-) -> QAction:
-    """Build, register and wire the "Solve automatically on Altium import"
-    checkable menu action. Shared by the launcher and viewer menu builders."""
-    action = QAction("Solve &automatically on Altium import", parent)
-    action.setCheckable(True)
-    file_menu.addAction(action)
-    _wire_auto_solve_import_toggle(
-        action, checkbox=checkbox, import_action=import_action,
-    )
-    return action
 
 
 def _build_app_palette(mode: str):
@@ -857,13 +849,16 @@ def _native_file_dialog_on_theme() -> bool:
 
 
 def _file_dialog_options():
-    """Options for the QFileDialog static helpers: force Qt's own (on-theme)
-    dialog when the native one would clash with the app theme, else default to
-    the native dialog."""
-    opt = QFileDialog.Option(0)
-    if not _native_file_dialog_on_theme():
-        opt |= QFileDialog.Option.DontUseNativeDialog
-    return opt
+    """Options for the QFileDialog static helpers.
+
+    Always use the native Windows shell picker (the Excel/File-Explorer dialog)
+    so the file-open experience matches other Windows apps. The native dialog
+    follows the OS light/dark setting rather than the app's forced theme, so on
+    a machine whose OS scheme differs from the app theme the picker may look
+    light against a dark app (or vice-versa) — an accepted trade-off for the
+    familiar shell dialog. :func:`_native_file_dialog_on_theme` is retained for
+    callers that want to make that theme-match decision explicitly."""
+    return QFileDialog.Option(0)
 
 
 # Hover-probe throttle. Mouse-move callbacks fire up to ~125 Hz on a
@@ -2209,6 +2204,93 @@ def _retire_thread(worker) -> None:
         worker.deleteLater()
 
     worker.finished.connect(_dispose)
+
+
+# Strong refs to in-flight background loaders (see _run_background_load). Held
+# for the worker's lifetime so the Python QThread wrapper can't be GC'd mid-run
+# (which would destroy the C++ object → qFatal). Discarded once ``finished``
+# has been delivered and the worker deleteLater'd.
+_BACKGROUND_LOADERS: set = set()
+
+
+class _BackgroundLoadWorker(QThread):
+    """Run a blocking, Qt-free load callable off the GUI thread.
+
+    ``work`` runs in :meth:`run` (the worker thread) and must touch no Qt
+    widgets — file I/O and unpickling only. Its return value / exception are
+    stashed on the instance and delivered by :meth:`_deliver`, which runs back
+    on the GUI thread because ``finished`` is a queued cross-thread signal (the
+    worker object's affinity is the GUI thread that created it). Exactly one of
+    ``on_success(result)`` / ``on_error(exc_type_name, message)`` then fires.
+
+    Note: unpickling is largely GIL-bound, so this doesn't make the load itself
+    faster — but it keeps the Qt event loop serviced (the GIL is released
+    periodically), so the window keeps repainting the busy dialog instead of
+    going "Not Responding". The fully-robust option is a subprocess load; see
+    the §3 "Move the solve to a subprocess" note in the perf review.
+    """
+
+    def __init__(self, work, on_success, on_error, parent=None) -> None:
+        super().__init__(parent)
+        self._work = work
+        self._on_success = on_success
+        self._on_error = on_error
+        self._result = None
+        self._error: tuple[str, str] | None = None
+        self.finished.connect(self._deliver)
+
+    def run(self) -> None:
+        try:
+            self._result = self._work()
+        except Exception as e:  # noqa: BLE001 — surfaced on the GUI thread
+            self._error = (type(e).__name__, str(e))
+
+    def _deliver(self) -> None:
+        if self._error is not None:
+            self._on_error(*self._error)
+        else:
+            self._on_success(self._result)
+
+
+def _run_background_load(parent, work, on_success, on_error, *,
+                         title: str, label: str) -> None:
+    """Run ``work()`` (a blocking, Qt-free load) on a worker thread behind a
+    modal busy dialog, then call ``on_success(result)`` or
+    ``on_error(exc_type_name, message)`` back on the GUI thread.
+
+    The dialog is application-modal with no cancel button — the load is one
+    synchronous unpickle that can't be interrupted mid-flight — but the event
+    loop keeps running, so the window stays responsive (marquee animating)
+    instead of freezing for the 5 s–1 min a large solution pickle takes."""
+    dlg = QProgressDialog(label, "", 0, 0, parent)
+    dlg.setWindowTitle(title)
+    dlg.setCancelButton(None)
+    dlg.setWindowModality(Qt.ApplicationModal)
+    dlg.setMinimumDuration(0)
+    dlg.setAutoClose(False)
+    dlg.setAutoReset(False)
+    dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+
+    def _cleanup() -> None:
+        dlg.close()
+        dlg.deleteLater()
+        _BACKGROUND_LOADERS.discard(worker)
+        worker.deleteLater()  # safe: finished has fired before _deliver runs
+
+    def _ok(result) -> None:
+        # Tear the dialog down before the continuation, which may itself open
+        # windows / run more blocking GUI-thread work (e.g. PdnViewer.__init__).
+        _cleanup()
+        on_success(result)
+
+    def _fail(exc_type: str, message: str) -> None:
+        _cleanup()
+        on_error(exc_type, message)
+
+    worker = _BackgroundLoadWorker(work, _ok, _fail, parent)
+    _BACKGROUND_LOADERS.add(worker)
+    dlg.show()
+    worker.start()
 
 
 def _any_gerber_import_running() -> bool:
@@ -3907,6 +3989,18 @@ class _SolveWorker(QThread):
         # and let the user press Solve in the viewer (Import Altium Design).
         self._load_only = bool(load_only)
         self._adaptive_regulator_gain = bool(adaptive_regulator_gain)
+        # Opt-in (FYPA_SOLVE_SUBPROCESS): run the heavy mesh+solve+package step
+        # in a child process so a cancel just kills the child — no QThread
+        # terminate() that could orphan the solver's module locks. Off by
+        # default; the in-process path below is unchanged when disabled.
+        from fypa.solve_subprocess import subprocess_solve_enabled
+        # Persisted in-app toggle OR the env-var override — either turns it on.
+        self._use_subprocess = (
+            load_solve_in_subprocess() or subprocess_solve_enabled()
+        )
+        # The child Process handle while a subprocess solve is in flight, so the
+        # GUI abort path can kill it directly. None otherwise.
+        self._solve_child = None
 
     def _emit_stub_and_finish(
         self, loaded, pristine_loaded, _timer,
@@ -4308,75 +4402,19 @@ class _SolveWorker(QThread):
                 ),
             )
 
-            # Python warnings.warn() (e.g. padne's SolverWarning about ground
-            # node current) are routed into the logging system once at app
-            # startup (see main()), so they reach the log file / Messages tab
-            # from here without touching that global state per solve.
-            # Forward pdnsolver's per-step INFO log records to the GUI as
-            # substage updates so the user can see what the solver is
-            # currently doing during the ~20 s opaque "Meshing + solving"
-            # stage ("Meshing the connected components", "Constructing the
-            # Laplace operators", "Solving the system of equations", …).
-            sub_emit = self.substage_changed.emit
-
-            class _SubstageForwarder(logging.Handler):
-                def emit(self_h, record: logging.LogRecord) -> None:
-                    try:
-                        sub_emit(record.getMessage())
-                    except Exception:
-                        pass
-
-            _substage_handler = _SubstageForwarder(level=logging.INFO)
-            _solver_log = logging.getLogger("pdnsolver.solver")
-            _mesh_log = logging.getLogger("pdnsolver.mesh")
-            _solver_log.addHandler(_substage_handler)
-            _mesh_log.addHandler(_substage_handler)
-            with _timer.stage("Mesh + solve"):
-                try:
-                    (padne_solution, problem, via_segment_records,
-                     stub_pieces_by_pair, per_net_layers,
-                     adaptive_info) = solve_problem_adaptive(
-                        loaded,
-                        mesher_config,
-                        adaptive_regulator_gain=self._adaptive_regulator_gain,
-                        stage_callback=self.stage_changed.emit,
-                    )
-                finally:
-                    _solver_log.removeHandler(_substage_handler)
-                    _mesh_log.removeHandler(_substage_handler)
-            si = padne_solution.solver_info
-            _log_post = logging.getLogger(__name__)
-            _log_post.info(
-                "Solver stats: ground_node_current=%.4g A, residual_norm=%.4g",
-                si.ground_node_current, si.residual_norm,
-            )
-            if abs(si.ground_node_current) > 1e-3:
-                _log_post.warning(
-                    "Ground node current is %.4g A — far from zero. The FEM "
-                    "is injecting this current at the reference vertex to "
-                    "balance the system. Absolute voltages are unreliable.",
-                    si.ground_node_current,
-                )
-
-            if self._cancel_requested():
+            # Mesh + solve + package: either in this thread (default) or in a
+            # child process (FYPA_SOLVE_SUBPROCESS). Both return the lean
+            # ``(solution, metadata)``; ``None`` means cancelled (or, for the
+            # subprocess path, a failure that already emitted ``failed``).
+            if self._use_subprocess:
+                _packaged = self._solve_and_package_subprocess(
+                    loaded, mesher_config, _timer)
+            else:
+                _packaged = self._solve_and_package_inprocess(
+                    loaded, mesher_config, _timer)
+            if _packaged is None:
                 return
-            self.stage_changed.emit("Packaging solution: building metadata…")
-            with _timer.stage("Build solve metadata"):
-                metadata = build_solve_metadata(
-                    loaded, problem,
-                    mesher_config=mesher_config,
-                    solver_info=padne_solution.solver_info,
-                    via_segment_records=via_segment_records,
-                    settings=self._settings,
-                    stub_pieces_by_pair=stub_pieces_by_pair,
-                    per_net_layers=per_net_layers,
-                    regulator_adaptive_gain=adaptive_info,
-                )
-            if self._cancel_requested():
-                return
-            self.stage_changed.emit("Packaging solution: converting result…")
-            with _timer.stage("Convert to lean solution"):
-                new_solution = to_lean_solution(padne_solution)
+            new_solution, metadata = _packaged
 
             # Persist the solve to the FYPA solve cache so the next
             # "Import Altium Design" can skip both extract and solve.
@@ -4451,6 +4489,124 @@ class _SolveWorker(QThread):
             self.failed.emit(
                 f"{type(e).__name__}: {e}\n\n{traceback.format_exc()}"
             )
+
+    def _register_solve_child(self, proc) -> None:
+        """Store the in-flight solve child process so :func:`_abort_solve_worker`
+        can kill it directly on cancel."""
+        self._solve_child = proc
+
+    def _solve_and_package_inprocess(self, loaded, mesher_config, _timer):
+        """Mesh + solve + build metadata + convert to lean, on this thread.
+
+        Returns ``(new_solution, metadata)``, or ``None`` if a cancel was
+        requested at a stage boundary. This is the original in-process path,
+        unchanged except that the cancel checks return ``None`` (so the caller
+        returns) instead of returning from ``run`` directly."""
+        from fypa.altium.loader import build_solve_metadata, solve_problem_adaptive
+        from fypa.lean_solution import to_lean_solution
+
+        # Python warnings.warn() (e.g. padne's SolverWarning about ground
+        # node current) are routed into the logging system once at app
+        # startup (see main()), so they reach the log file / Messages tab
+        # from here without touching that global state per solve.
+        # Forward pdnsolver's per-step INFO log records to the GUI as
+        # substage updates so the user can see what the solver is
+        # currently doing during the ~20 s opaque "Meshing + solving"
+        # stage ("Meshing the connected components", "Constructing the
+        # Laplace operators", "Solving the system of equations", …).
+        sub_emit = self.substage_changed.emit
+
+        class _SubstageForwarder(logging.Handler):
+            def emit(self_h, record: logging.LogRecord) -> None:
+                try:
+                    sub_emit(record.getMessage())
+                except Exception:
+                    pass
+
+        _substage_handler = _SubstageForwarder(level=logging.INFO)
+        _solver_log = logging.getLogger("pdnsolver.solver")
+        _mesh_log = logging.getLogger("pdnsolver.mesh")
+        _solver_log.addHandler(_substage_handler)
+        _mesh_log.addHandler(_substage_handler)
+        with _timer.stage("Mesh + solve"):
+            try:
+                (padne_solution, problem, via_segment_records,
+                 stub_pieces_by_pair, per_net_layers,
+                 adaptive_info) = solve_problem_adaptive(
+                    loaded,
+                    mesher_config,
+                    adaptive_regulator_gain=self._adaptive_regulator_gain,
+                    stage_callback=self.stage_changed.emit,
+                )
+            finally:
+                _solver_log.removeHandler(_substage_handler)
+                _mesh_log.removeHandler(_substage_handler)
+        si = padne_solution.solver_info
+        _log_post = logging.getLogger(__name__)
+        _log_post.info(
+            "Solver stats: ground_node_current=%.4g A, residual_norm=%.4g",
+            si.ground_node_current, si.residual_norm,
+        )
+        if abs(si.ground_node_current) > 1e-3:
+            _log_post.warning(
+                "Ground node current is %.4g A — far from zero. The FEM "
+                "is injecting this current at the reference vertex to "
+                "balance the system. Absolute voltages are unreliable.",
+                si.ground_node_current,
+            )
+
+        if self._cancel_requested():
+            return None
+        self.stage_changed.emit("Packaging solution: building metadata…")
+        with _timer.stage("Build solve metadata"):
+            metadata = build_solve_metadata(
+                loaded, problem,
+                mesher_config=mesher_config,
+                solver_info=padne_solution.solver_info,
+                via_segment_records=via_segment_records,
+                settings=self._settings,
+                stub_pieces_by_pair=stub_pieces_by_pair,
+                per_net_layers=per_net_layers,
+                regulator_adaptive_gain=adaptive_info,
+            )
+        if self._cancel_requested():
+            return None
+        self.stage_changed.emit("Packaging solution: converting result…")
+        with _timer.stage("Convert to lean solution"):
+            new_solution = to_lean_solution(padne_solution)
+        return new_solution, metadata
+
+    def _solve_and_package_subprocess(self, loaded, mesher_config, _timer):
+        """Same as :meth:`_solve_and_package_inprocess`, but the mesh + solve +
+        package runs in a child process (opt-in, ``FYPA_SOLVE_SUBPROCESS``).
+
+        Returns ``(new_solution, metadata)``; ``None`` on cancel or on a child
+        failure (which emits ``failed`` itself so ``run`` just returns)."""
+        from fypa.solve_subprocess import (
+            SolveJob, SolveSubprocessError, run_solve_in_subprocess,
+        )
+        job = SolveJob(
+            loaded=loaded,
+            mesher_config=mesher_config,
+            settings=self._settings,
+            adaptive_regulator_gain=self._adaptive_regulator_gain,
+        )
+        try:
+            with _timer.stage("Mesh + solve (subprocess)"):
+                result = run_solve_in_subprocess(
+                    job,
+                    on_stage=self.stage_changed.emit,
+                    on_substage=self.substage_changed.emit,
+                    is_cancelled=self._cancel_requested,
+                    register_process=self._register_solve_child,
+                )
+        except SolveSubprocessError as e:
+            self.failed.emit(f"Solve subprocess failed:\n\n{e}")
+            return None
+        finally:
+            self._solve_child = None
+        # None => cancelled (the child was already terminated in the loop).
+        return result
 
     def _apply_stackup_overrides(self, loaded):
         """Return a new :class:`LoadedProject` whose extracted stackup
@@ -4638,6 +4794,21 @@ def _abort_solve_worker(owner) -> None:
             logging.getLogger(__name__).warning(
                 "cancel_active_mesh_pool raised %s; carrying on.", _exc,
             )
+        # Subprocess solve path: the heavy work runs in a child process holding
+        # the solver's caches/locks in ITS own address space. Kill it directly
+        # so the cancel is prompt and nothing in this (parent) process can be
+        # left locked — the whole reason the subprocess path exists. The worker
+        # thread's polling loop also notices requestInterruption() below and
+        # tears the child down cooperatively; this is belt-and-braces.
+        _child = getattr(worker, "_solve_child", None)
+        if _child is not None:
+            try:
+                if _child.is_alive():
+                    _child.terminate()
+            except Exception as _exc:
+                logging.getLogger(__name__).warning(
+                    "solve child terminate raised %s; carrying on.", _exc,
+                )
         # Ask the worker to stop, THEN free the solver caches — never before.
         # free_pardiso_cache/free_mesh_assembly_cache acquire module locks that
         # the worker holds for the whole factorisation ("seconds to minutes");
@@ -4965,10 +5136,19 @@ class LauncherWindow(QMainWindow):
         )
         file_menu.addAction(open_proj_clean)
 
-        self._act_auto_solve_import = _add_auto_solve_import_action(
-            self, file_menu, self._act_import_altium,
-            checkbox=self._auto_solve_check,
-        )
+        # "Solve automatically on import" is no longer a File-menu item — it's
+        # the launcher-body checkbox and the Settings > General options entry.
+        # Wire the body checkbox to the persisted pref and keep the Import
+        # status tip in sync.
+        def _apply_auto_solve(checked: bool) -> None:
+            save_auto_solve_on_import(bool(checked))
+            self._act_import_altium.setStatusTip(
+                _altium_import_auto_solve_status_tip(bool(checked)))
+
+        self._auto_solve_check.blockSignals(True)
+        self._auto_solve_check.setChecked(load_auto_solve_on_import())
+        self._auto_solve_check.blockSignals(False)
+        self._auto_solve_check.toggled.connect(_apply_auto_solve)
 
         open_gerber = QAction("Import &Gerber Files…", self)
         open_gerber.setShortcut("Ctrl+G")
@@ -5236,16 +5416,25 @@ class LauncherWindow(QMainWindow):
         )
         if not path_str:
             return
-        try:
+
+        def _work():
             from fypa.cli import _load_solution_pickle
-            solution, metadata = _load_solution_pickle(Path(path_str))
-        except Exception as e:
+            return _load_solution_pickle(Path(path_str))
+
+        def _ok(result):
+            solution, metadata = result
+            self._open_viewer_and_close(solution, metadata)
+
+        def _err(exc_type, message):
             QMessageBox.critical(
                 self, "Couldn't open solution",
-                f"Failed to load {path_str}:\n\n{type(e).__name__}: {e}",
+                f"Failed to load {path_str}:\n\n{exc_type}: {message}",
             )
-            return
-        self._open_viewer_and_close(solution, metadata)
+
+        _run_background_load(
+            self, _work, _ok, _err,
+            title="Loading", label="Loading solution…",
+        )
 
     def _on_menu_open_project_file(self) -> None:
         """File > Open Project File… → load a ``.fypa`` and open a viewer
@@ -5288,23 +5477,31 @@ class LauncherWindow(QMainWindow):
                 "pickle, and no cached solve was found.",
             )
             return
-        try:
+        def _work():
             from fypa.cli import _load_solution_pickle
-            solution, metadata = _load_solution_pickle(Path(sol_path))
-        except Exception as e:
+            return _load_solution_pickle(Path(sol_path))
+
+        def _ok(result):
+            solution, metadata = result
+            new_win = self._open_viewer_and_close(
+                solution, metadata, project=proj, project_path=Path(path_str),
+            )
+            # Surface any skipped single-type rails recorded in the metadata.
+            _maybe_warn_open_loop_rails(new_win or self, metadata)
+            # Nets whose source & sink landed on disconnected copper.
+            _maybe_warn_connectivity_breaks(new_win or self, metadata)
+
+        def _err(exc_type, message):
             QMessageBox.critical(
                 self, "Couldn't open project",
                 f"Failed to load the linked solution {sol_path}:\n\n"
-                f"{type(e).__name__}: {e}",
+                f"{exc_type}: {message}",
             )
-            return
-        new_win = self._open_viewer_and_close(
-            solution, metadata, project=proj, project_path=Path(path_str),
+
+        _run_background_load(
+            self, _work, _ok, _err,
+            title="Loading", label="Loading solution…",
         )
-        # Surface any skipped single-type rails recorded in the cached metadata.
-        _maybe_warn_open_loop_rails(new_win or self, metadata)
-        # Nets whose source & sink landed on disconnected copper — tell the user.
-        _maybe_warn_connectivity_breaks(new_win or self, metadata)
 
     def _open_viewer_and_close(self, solution, metadata: dict | None,
                                *, initial_settings=None,
@@ -6023,6 +6220,11 @@ class PdnViewer(QMainWindow):
         # rebuilding them, and stores one copy of xs/ys/tris per layer rather
         # than one per (layer, mode).
         self._layer_geom_cache: dict[int, dict] = {}
+        # Combined GPU geometry-batch cache: (signature, (xs, ys, zs, tris,
+        # no_current)). Built by :meth:`_build_rail_arrays`; reused wholesale
+        # (same array objects) on a geometry-preserving re-render so the
+        # set_mesh GPU upload is skipped. Scoped to the current solve.
+        self._rail_geom_cache: tuple | None = None
         # Lazily-computed set of (layer_index, mesh_index) whose solved mesh
         # carries no current — i.e. a dead-end copper island whose only tie
         # to the rest of the net is a single via, so KCL forces zero current
@@ -6228,6 +6430,7 @@ class PdnViewer(QMainWindow):
         self._layer_cache.clear()
         self._layer_geom_cache.clear()
         self._layer_vec_cache.clear()
+        self._rail_geom_cache = None  # combined batch is solve-specific
         self._last_mesh_upload = None  # release retained GPU-upload arrays
         self._no_current_meshes = None
         self._marker_hover_index_cache = None
@@ -8749,6 +8952,27 @@ class PdnViewer(QMainWindow):
         # keeps the flat mesh as-is (no perf hit on the common path).
         extrude_3d = (self.view_3d_box.isChecked()
                       and self._COPPER_THICKNESS_MM > 0.0)
+        # Geometry-batch cache signature. The concatenated coords / z /
+        # triangles / no-current mask depend ONLY on the draw order, the rail
+        # members, the extrude flag + copper thickness, and each layer's
+        # render-z (which folds in the selected-layer 2D lift and the 2D/3D
+        # mode). Per-vertex VALUES are not part of this — they're rebuilt per
+        # mode below. ``id(self.solution)`` scopes the cache to the current
+        # solve (also cleared on re-solve via _clear_solution_derived_caches).
+        # On a hit we reuse the exact same array objects so _render_impl's
+        # set_mesh identity check fires and skips the multi-million-vertex GPU
+        # re-upload on geometry-preserving re-renders (mode switch, outline /
+        # rail-only toggle, colour-scale change, src-return toggle).
+        geom_sig = (
+            id(self.solution),
+            tuple(phys_draw_order),
+            tuple(members),
+            extrude_3d,
+            self._COPPER_THICKNESS_MM,
+            tuple(self._layer_render_z(p) for p in phys_draw_order),
+        )
+        cached_geom = self._rail_geom_cache
+        reuse_geom = cached_geom is not None and cached_geom[0] == geom_sig
         offset = 0
         for phys in phys_draw_order:
             phys_z = self._layer_render_z(phys)
@@ -8764,35 +8988,49 @@ class PdnViewer(QMainWindow):
                 n_in = entry["xs"].size
                 if n_in == 0 or entry["tris"].size == 0:
                     continue
+                # Per-mode values are always rebuilt (cheap). The prism
+                # extrusion duplicates each vertex top↔bottom, so both the
+                # value array and the vertex count double to stay length-
+                # matched to the (possibly cached) geometry batch.
                 if extrude_3d:
-                    lxs, lys, lzs, lvs, ltris = _extrude_to_prism(
-                        entry["xs"], entry["ys"], entry["vs"], entry["tris"],
-                        z_center=phys_z,
-                        thickness=self._COPPER_THICKNESS_MM,
-                    )
+                    lvs = np.concatenate([entry["vs"], entry["vs"]])
+                    n = 2 * n_in
                 else:
-                    lxs = entry["xs"]
-                    lys = entry["ys"]
-                    lzs = np.full(n_in, phys_z, dtype=np.float64)
                     lvs = entry["vs"]
-                    ltris = entry["tris"]
-                n = lxs.size
-                xs_parts.append(lxs)
-                ys_parts.append(lys)
-                zs_parts.append(lzs)
+                    n = n_in
                 vs_parts.append(lvs)
-                # No-current mask for this block, aligned to lxs. The prism
-                # extrusion duplicates the vertex set top↔bottom (and adds
-                # no new vertices — side walls reuse those indices), so the
-                # mask is duplicated the same way to stay length-matched.
-                nc_block = entry["no_current_mask"]
-                if extrude_3d:
-                    nc_block = np.concatenate([nc_block, nc_block])
-                nc_parts.append(nc_block)
-                # Vectorised offset add — re-base local indices into the
-                # combined GPU batch.
-                tris_parts.append(ltris + offset)
-                offset += n
+                # Geometry (coords / z / triangles / no-current mask) is mode-
+                # independent — rebuild it only on a cache miss. On a hit the
+                # concatenated batch is reused wholesale below, so the loop
+                # skips the per-layer prism extrusion and index re-basing too.
+                if not reuse_geom:
+                    if extrude_3d:
+                        lxs, lys, lzs, _lvs, ltris = _extrude_to_prism(
+                            entry["xs"], entry["ys"], entry["vs"],
+                            entry["tris"],
+                            z_center=phys_z,
+                            thickness=self._COPPER_THICKNESS_MM,
+                        )
+                    else:
+                        lxs = entry["xs"]
+                        lys = entry["ys"]
+                        lzs = np.full(n_in, phys_z, dtype=np.float64)
+                        ltris = entry["tris"]
+                    xs_parts.append(lxs)
+                    ys_parts.append(lys)
+                    zs_parts.append(lzs)
+                    # No-current mask for this block, aligned to lxs. The prism
+                    # extrusion duplicates the vertex set top↔bottom (and adds
+                    # no new vertices — side walls reuse those indices), so the
+                    # mask is duplicated the same way to stay length-matched.
+                    nc_block = entry["no_current_mask"]
+                    if extrude_3d:
+                        nc_block = np.concatenate([nc_block, nc_block])
+                    nc_parts.append(nc_block)
+                    # Vectorised offset add — re-base local indices into the
+                    # combined GPU batch.
+                    tris_parts.append(ltris + offset)
+                    offset += n
                 layer_probes.append({
                     "physical": phys,
                     "net": net,
@@ -8819,20 +9057,30 @@ class PdnViewer(QMainWindow):
         # Reverse to put topmost layer first in the probe walk order.
         layer_probes.reverse()
 
-        if xs_parts:
-            xs = np.concatenate(xs_parts)
-            ys = np.concatenate(ys_parts)
-            zs = np.concatenate(zs_parts)
-            vs = np.concatenate(vs_parts)
-            tris = np.concatenate(tris_parts, axis=0)
-            no_current = np.concatenate(nc_parts)
+        # Values are always freshly concatenated (they track the active mode).
+        vs = (np.concatenate(vs_parts) if vs_parts
+              else np.empty(0, dtype=np.float64))
+
+        if reuse_geom:
+            # Same geometry as the last build — hand back the identical array
+            # objects so the set_mesh identity check in _render_impl skips the
+            # GPU re-upload. vs (above) still aligns: the loop visited the
+            # exact same (phys, net) blocks in the same order and extrude mode.
+            xs, ys, zs, tris, no_current = cached_geom[1]
         else:
-            xs = np.empty(0, dtype=np.float64)
-            ys = np.empty(0, dtype=np.float64)
-            zs = np.empty(0, dtype=np.float64)
-            vs = np.empty(0, dtype=np.float64)
-            tris = np.empty((0, 3), dtype=np.int32)
-            no_current = np.empty(0, dtype=np.float32)
+            if xs_parts:
+                xs = np.concatenate(xs_parts)
+                ys = np.concatenate(ys_parts)
+                zs = np.concatenate(zs_parts)
+                tris = np.concatenate(tris_parts, axis=0)
+                no_current = np.concatenate(nc_parts)
+            else:
+                xs = np.empty(0, dtype=np.float64)
+                ys = np.empty(0, dtype=np.float64)
+                zs = np.empty(0, dtype=np.float64)
+                tris = np.empty((0, 3), dtype=np.int32)
+                no_current = np.empty(0, dtype=np.float32)
+            self._rail_geom_cache = (geom_sig, (xs, ys, zs, tris, no_current))
         return xs, ys, zs, vs, tris, layer_probes, no_current
 
     def _layer_arrays(self, layer_index: int, derive_fn) -> dict:
@@ -18618,6 +18866,45 @@ class PdnViewer(QMainWindow):
         )
         outer.addWidget(display_box)
 
+        # ----- General options group -----
+        # App-behaviour preferences, persisted immediately (not part of the
+        # re-solve field schema).
+        gen_box = QGroupBox("General options")
+        gen_layout = QVBoxLayout(gen_box)
+        self._settings_auto_solve_check = QCheckBox(
+            "Solve automatically on Altium import")
+        self._settings_auto_solve_check.setChecked(load_auto_solve_on_import())
+        self._settings_auto_solve_check.setToolTip(
+            "When checked, Import Altium Design runs the FEM solver immediately "
+            "(reusing the solve cache when possible). When unchecked, only "
+            "design info is loaded — press ↻ Solve in the viewer. Persists "
+            "across launches."
+        )
+        self._settings_auto_solve_check.toggled.connect(
+            lambda checked: save_auto_solve_on_import(bool(checked)))
+        gen_layout.addWidget(self._settings_auto_solve_check)
+        outer.addWidget(gen_box)
+
+        # ----- Experimental group -----
+        # Settings here are persisted immediately (not part of the re-solve
+        # field schema) and take effect on the NEXT solve.
+        exp_box = QGroupBox("Experimental")
+        exp_layout = QVBoxLayout(exp_box)
+        self._settings_subprocess_check = QCheckBox("Run solve in a subprocess")
+        self._settings_subprocess_check.setChecked(load_solve_in_subprocess())
+        self._settings_subprocess_check.setToolTip(
+            "Run the mesh + solve in a separate process, so Cancel becomes a "
+            "clean kill of that process (no risk of a stuck solve leaving the "
+            "app locked). Trade-off: a fresh process per solve does not reuse "
+            "the warm mesh / factorisation caches, so repeated re-solves are "
+            "slower. Applies to the next solve; persists across launches. "
+            "Off by default."
+        )
+        self._settings_subprocess_check.toggled.connect(
+            lambda checked: save_solve_in_subprocess(bool(checked)))
+        exp_layout.addWidget(self._settings_subprocess_check)
+        outer.addWidget(exp_box)
+
         # ----- Status line + buttons -----
         self._settings_status_label = QLabel("")
         self._settings_status_label.setWordWrap(True)
@@ -19778,9 +20065,8 @@ class PdnViewer(QMainWindow):
         )
         file_menu.addAction(open_proj_clean)
 
-        self._act_auto_solve_import = _add_auto_solve_import_action(
-            self, file_menu, self._act_import_altium,
-        )
+        # "Solve automatically on import" is set in Settings > General options,
+        # not the File menu; the import flow reads the persisted pref directly.
 
         open_gerber = QAction("Import &Gerber Files…", self)
         open_gerber.setShortcut("Ctrl+G")
@@ -20127,7 +20413,7 @@ class PdnViewer(QMainWindow):
             prjpcb_path.name, clean=clean,
             auto_solve=(
                 None if clean
-                else self._act_auto_solve_import.isChecked()
+                else load_auto_solve_on_import()
             ),
         )
         self._start_solve_worker(
@@ -20489,36 +20775,44 @@ class PdnViewer(QMainWindow):
                 "pickle, and no cached solve was found.",
             )
             return
-        try:
+        def _work():
             from fypa.cli import _load_solution_pickle
-            solution, metadata = _load_solution_pickle(Path(sol_path))
-        except Exception as e:
+            return _load_solution_pickle(Path(sol_path))
+
+        def _ok(result):
+            solution, metadata = result
+            try:
+                new_win = PdnViewer(
+                    solution, metadata=metadata,
+                    project=proj, project_path=Path(path_str),
+                )
+                # Editor directives present but possibly not reflected by the
+                # loaded solve — offer the resolve button so the user can bring
+                # the heatmap up to date.
+                if proj.editor_directives:
+                    new_win._set_solve_stale(True)
+                _register_viewer(new_win)
+                new_win.show()
+                _force_native_window_icon(new_win)
+                _set_window_aumid(new_win)
+            except Exception as e:
+                QMessageBox.critical(
+                    self, "Couldn't open viewer",
+                    f"Project loaded but the viewer failed to open:\n\n"
+                    f"{type(e).__name__}: {e}",
+                )
+
+        def _err(exc_type, message):
             QMessageBox.critical(
                 self, "Couldn't open project",
                 f"Failed to load the linked solution {sol_path}:\n\n"
-                f"{type(e).__name__}: {e}",
+                f"{exc_type}: {message}",
             )
-            return
-        try:
-            new_win = PdnViewer(
-                solution, metadata=metadata,
-                project=proj, project_path=Path(path_str),
-            )
-            # Editor directives present but possibly not reflected by the
-            # loaded solve — offer the resolve button so the user can bring
-            # the heatmap up to date.
-            if proj.editor_directives:
-                new_win._set_solve_stale(True)
-            _register_viewer(new_win)
-            new_win.show()
-            _force_native_window_icon(new_win)
-            _set_window_aumid(new_win)
-        except Exception as e:
-            QMessageBox.critical(
-                self, "Couldn't open viewer",
-                f"Project loaded but the viewer failed to open:\n\n"
-                f"{type(e).__name__}: {e}",
-            )
+
+        _run_background_load(
+            self, _work, _ok, _err,
+            title="Loading", label="Loading solution…",
+        )
 
     def _on_menu_open_solution(self) -> None:
         """File > Load Solution…  →  load a pickled LeanSolution + metadata
@@ -20532,27 +20826,36 @@ class PdnViewer(QMainWindow):
         )
         if not path_str:
             return
-        try:
+
+        def _work():
             from fypa.cli import _load_solution_pickle
-            solution, metadata = _load_solution_pickle(Path(path_str))
-        except Exception as e:
+            return _load_solution_pickle(Path(path_str))
+
+        def _ok(result):
+            solution, metadata = result
+            try:
+                new_win = PdnViewer(solution, metadata=metadata)
+                _register_viewer(new_win)
+                new_win.show()
+                _force_native_window_icon(new_win)
+                _set_window_aumid(new_win)
+            except Exception as e:
+                QMessageBox.critical(
+                    self, "Couldn't open viewer",
+                    f"Solution loaded but the viewer failed to open:\n\n"
+                    f"{type(e).__name__}: {e}",
+                )
+
+        def _err(exc_type, message):
             QMessageBox.critical(
                 self, "Couldn't open solution",
-                f"Failed to load {path_str}:\n\n{type(e).__name__}: {e}",
+                f"Failed to load {path_str}:\n\n{exc_type}: {message}",
             )
-            return
-        try:
-            new_win = PdnViewer(solution, metadata=metadata)
-            _register_viewer(new_win)
-            new_win.show()
-            _force_native_window_icon(new_win)
-            _set_window_aumid(new_win)
-        except Exception as e:
-            QMessageBox.critical(
-                self, "Couldn't open viewer",
-                f"Solution loaded but the viewer failed to open:\n\n"
-                f"{type(e).__name__}: {e}",
-            )
+
+        _run_background_load(
+            self, _work, _ok, _err,
+            title="Loading", label="Loading solution…",
+        )
 
     def _on_menu_close_project(self) -> None:
         """File > Close Project  →  open a fresh launcher window and close
