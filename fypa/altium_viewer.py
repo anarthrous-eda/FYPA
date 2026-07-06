@@ -4219,12 +4219,9 @@ class _SolveWorker(QThread):
         self.total_stages.emit(self._expected_stage_count())
         try:
             from fypa.altium.loader import (
-                build_solve_metadata,
                 clone_loaded_for_edit,
                 load_project,
-                solve_problem_adaptive,
             )
-            from fypa.lean_solution import to_lean_solution
             from pdnsolver import mesh as _pdn_mesh
 
             # Resolve the PcbDoc up-front so the cache key is stable.
