@@ -57,4 +57,4 @@ ExampleDesigns/Sandbox/*
 # would re-leak exactly what it removes. Run it before each commit.
 sanitize_sandbox.ps1
 wiring.json
-scripts/test-pdn-topology.ps1
+scripts/test-*.ps1
