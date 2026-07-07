@@ -829,20 +829,32 @@ def _altium_import_worker_options(
     auto_solve: bool | None = None,
 ) -> dict:
     """Worker flags + progress-dialog copy for Import Altium Design."""
+    if auto_solve is None:
+        auto_solve = load_auto_solve_on_import()
     if clean:
+        if auto_solve:
+            return {
+                "use_design_cache": False,
+                "try_solve_cache_first": False,
+                "load_only": False,
+                "dialog_title": "Loading project (clean)",
+                "dialog_text": (
+                    f"Loading {prjpcb_name} and solving…\n"
+                    "This can take 10–60 s depending on board size and mesh "
+                    "density."
+                ),
+            }
         return {
             "use_design_cache": False,
             "try_solve_cache_first": False,
-            "load_only": False,
+            "load_only": True,
             "dialog_title": "Loading project (clean)",
             "dialog_text": (
-                f"Loading {prjpcb_name} and solving…\n"
-                "This can take 10–60 s depending on board size and mesh "
-                "density."
+                f"Loading design info for {prjpcb_name} (ignoring cache)…\n"
+                "Press ↻ Solve in the viewer when you're ready to run the "
+                "simulation."
             ),
         }
-    if auto_solve is None:
-        auto_solve = load_auto_solve_on_import()
     if auto_solve:
         return {
             "use_design_cache": True,
@@ -866,6 +878,18 @@ def _altium_import_worker_options(
             "simulation."
         ),
     }
+
+
+def _altium_import_clean_status_tip(auto_solve: bool) -> str:
+    if auto_solve:
+        return (
+            "Pick a .PrjPcb; ignore any cached design info or solution and "
+            "re-extract + re-solve from scratch."
+        )
+    return (
+        "Pick a .PrjPcb; ignore any cached design info or solution and "
+        "re-extract from scratch (press ↻ Solve when ready)."
+    )
 
 
 def _build_app_palette(mode: str):
@@ -4269,12 +4293,9 @@ class _SolveWorker(QThread):
         self.total_stages.emit(self._expected_stage_count())
         try:
             from fypa.altium.loader import (
-                build_solve_metadata,
                 clone_loaded_for_edit,
                 load_project,
-                solve_problem_adaptive,
             )
-            from fypa.lean_solution import to_lean_solution
             from pdnsolver import mesh as _pdn_mesh
 
             # Resolve the PcbDoc up-front so the cache key is stable.
@@ -6385,8 +6406,7 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         open_proj_clean = QAction("Import Altium Design (&Clean)…", self)
         open_proj_clean.setShortcut("Ctrl+Shift+L")
         open_proj_clean.setStatusTip(
-            "Pick a .PrjPcb; ignore any cached design info or solution and "
-            "re-extract + re-solve from scratch."
+            _altium_import_clean_status_tip(load_auto_solve_on_import()),
         )
         open_proj_clean.triggered.connect(
             lambda: self._on_menu_open_project(clean=True)
@@ -20707,8 +20727,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         open_proj_clean = QAction("Import Altium Design (&Clean)…", self)
         open_proj_clean.setShortcut("Ctrl+Shift+L")
         open_proj_clean.setStatusTip(
-            "Pick a .PrjPcb; ignore any cached design info or solution and "
-            "re-extract + re-solve from scratch."
+            _altium_import_clean_status_tip(load_auto_solve_on_import()),
         )
         open_proj_clean.triggered.connect(
             lambda: self._on_menu_open_project(clean=True)
@@ -21041,8 +21060,8 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
 
     def _on_menu_open_project(self, *, clean: bool = False) -> None:
         """File > Import Altium Design[ (Clean)]  →  pick a .PrjPcb and
-        load it into this viewer. Non-clean honours the auto-solve
-        preference; clean always re-extracts + re-solves."""
+        load it into this viewer. Clean ignores caches; both paths honour
+        the auto-solve preference."""
         path_str, _ = QFileDialog.getOpenFileName(
             self,
             "Import Altium project (clean)" if clean else "Import Altium project",
@@ -21061,10 +21080,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._solve_settings.apply_to_modules()
         imp = _altium_import_worker_options(
             prjpcb_path.name, clean=clean,
-            auto_solve=(
-                None if clean
-                else load_auto_solve_on_import()
-            ),
+            auto_solve=load_auto_solve_on_import(),
         )
         self._start_solve_worker(
             prjpcb_path, self._solve_settings,

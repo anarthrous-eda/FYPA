@@ -32,7 +32,7 @@ import os
 import queue as _queue
 import traceback
 from dataclasses import dataclass
-from typing import Callable
+from collections.abc import Callable
 
 log = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ class SolveSubprocessError(RuntimeError):
     returning a result."""
 
 
-def _child_entry(job: SolveJob, q: "mp.Queue") -> None:
+def _child_entry(job: SolveJob, q: mp.Queue) -> None:
     """Child-process entry point: run the solve and stream results back on ``q``.
 
     Messages are tuples: ``("stage", str)`` / ``("substage", str)`` for progress,
@@ -140,7 +140,7 @@ def run_solve_in_subprocess(
     on_substage: Callable[[str], None],
     is_cancelled: Callable[[], bool],
     register_process: Callable[[object], None] | None = None,
-) -> "tuple[object, object] | None":
+) -> tuple[object, object] | None:
     """Run ``job`` in a spawned child, forwarding progress to the callbacks.
 
     Returns ``(lean_solution, metadata)`` on success, or ``None`` if the caller
@@ -154,7 +154,7 @@ def run_solve_in_subprocess(
     orphaned module locks.
     """
     ctx = mp.get_context("spawn")
-    q: "mp.Queue" = ctx.Queue()
+    q: mp.Queue = ctx.Queue()
     # NOT daemon: the solve itself spawns a ProcessPoolExecutor for meshing, and
     # daemonic processes may not have children. We terminate the child
     # explicitly (on cancel, on failure, and in the finally below), so it never
