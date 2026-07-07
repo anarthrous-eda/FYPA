@@ -620,16 +620,13 @@ def test_regulator_two_indexed_channels():
 
 def test_bridge_series_terminals_stay_on_distinct_nets():
     """A SERIES resistor that *creates* a bridge must keep its two terminals
-    on distinct nets — the bridge-accumulation fallback must not pull the
-    bridged net's pad onto a terminal that already matched its own pad.
+    on distinct nets.
 
     Topology: a rail RAIL_OUT is fed through two parallel sense resistors
     R1 (PRE_A↔RAIL_OUT) and R2 (PRE_B↔RAIL_OUT). A SOURCE U9 names RAIL_OUT
-    but only has pads on PRE_A / PRE_B. The source terminal SHOULD fan into
-    both PRE nets (it has no pad on RAIL_OUT); each resistor terminal SHOULD
-    stay on its single literal net (it does). Regression: previously the
-    fallback ran unconditionally, so R1's P and N both spanned
-    {PRE_A, RAIL_OUT}, shorting the resistor and collapsing the bridge group.
+    but only has pads on PRE_A / PRE_B — with direct-only terminal resolution
+    it does not fan into the bridged PRE nets. Each resistor terminal still
+    stays on its single literal net.
     """
     # Nets: 0=GND 1=PRE_A 2=PRE_B 3=RAIL_OUT
     proj = _minimal_proj(
@@ -678,18 +675,14 @@ def test_bridge_series_terminals_stay_on_distinct_nets():
     )
     result = parse_annotations(proj, enabled_layers=[1])
 
-    src = next(d for d in result.directives if isinstance(d, SourceSpec))
-    # The source has no pad on RAIL_OUT → its P terminal fans into both
-    # pre-resistor nets (PRE_A=1, PRE_B=2). This behaviour is preserved.
-    assert {p.net_index for p in src.p.pins} == {1, 2}
+    assert not any(isinstance(d, SourceSpec) for d in result.directives)
+    assert any("RAIL_OUT" in e for e in result.errors)
 
     for des in ("R1", "R2"):
         r = next(d for d in result.directives
                  if isinstance(d, ResistorSpec) and d.designator == des)
         p_nets = {p.net_index for p in r.p.pins}
         n_nets = {p.net_index for p in r.n.pins}
-        # Each terminal sits on exactly ONE net, and the two are disjoint —
-        # the resistor is a genuine 2-net bridge, not a self-short.
         assert len(p_nets) == 1, f"{des} P spans {p_nets}"
         assert len(n_nets) == 1, f"{des} N spans {n_nets}"
         assert p_nets.isdisjoint(n_nets), f"{des} P/N overlap: {p_nets}&{n_nets}"
@@ -1122,7 +1115,7 @@ def test_regulator_smps_vin_not_ambiguous_through_sense_bridges():
                     "PDN5_P_NET": "VDD_12V",
                     "PDN5_N_NET": "GND",
                 },
-                pin_designators=("1", "2", "3", "4"),
+                pin_designators=("1", "2", "3", "4", "5"),
             ),
             RawSchComponent(
                 designator="R3", schdoc_name="Pwr.SchDoc",
@@ -1171,6 +1164,7 @@ def test_regulator_smps_vin_not_ambiguous_through_sense_bridges():
             _pad(0, "1", 1, -10), _pad(0, "2", 0, -9),
             _pad(1, "1", 1, -5), _pad(1, "2", 2, -4),
             _pad(1, "3", 3, -3), _pad(1, "4", 0, -2),
+            _pad(1, "5", 4, -1),
             _pad(2, "1", 3, 0), _pad(2, "2", 0, 1),
             _pad(3, "1", 4, 5), _pad(3, "2", 0, 6),
             _pad(3, "3", 1, 7), _pad(3, "4", 0, 8),
@@ -1431,6 +1425,139 @@ def test_regulator_quiescent_indexed_channel():
     assert reg.quiescent_current == 0.002
 
 
+def test_terminal_resolution_direct_connectivity_only():
+    """Kelvin shunt: terminals collect only pads directly on the named net."""
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("SNS_A")),
+        sch_components=(
+            RawSchComponent(
+                designator="R3", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SERIES",
+                    "PDN_R": "50m",
+                    "PDN_P_NET": "SNS_A",
+                    "PDN_N_NET": "GND",
+                },
+                pin_designators=("1", "2", "2a"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="R3", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="3216R-SHUNT", source_designator="R3",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, 0),
+            _pad(0, "2", 0, 1),
+            _pad(0, "2a", 0, 2),
+            _pad(0, "3", 0, 3),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok
+    r = next(d for d in result.directives if isinstance(d, ResistorSpec))
+    assert {p.pad_designator for p in r.p.pins} == {"1"}
+    assert {p.pad_designator for p in r.n.pins} == {"2", "2a", "3"}
+
+
+def test_terminal_resolution_no_bridge_expansion():
+    """SINK on downstream net does not collect pads on the upstream SERIES net."""
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("VDD_3V3"), RawNet("VDD_MCU")),
+        sch_components=(
+            RawSchComponent(
+                designator="L1", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SERIES",
+                    "PDN_R": "0.48",
+                    "PDN_P_NET": "VDD_3V3",
+                    "PDN_N_NET": "VDD_MCU",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="U2", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SINK",
+                    "PDN_I": "350mA",
+                    "PDN_P_NET": "VDD_MCU",
+                    "PDN_N_NET": "GND",
+                },
+                pin_designators=("1", "2", "3"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="L1", center=Pt2D(-2, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="0402", source_designator="L1",
+            ),
+            RawPcbComponent(
+                designator="U2", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U2",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, -2), _pad(0, "2", 2, -1),
+            _pad(1, "1", 2, 0),
+            _pad(1, "2", 1, 1),
+            _pad(1, "3", 0, 2),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok
+    sink = next(d for d in result.directives if isinstance(d, SinkSpec))
+    assert {p.pad_designator for p in sink.p.pins} == {"1"}
+    assert not any(p.net_index == 1 for p in sink.p.pins)
+
+
+def test_multichannel_series_no_cross_channel_pads():
+    """Bridged SERIES nets must not leak pads into another channel's terminal."""
+    proj = _minimal_proj(
+        nets=(
+            RawNet("GND"), RawNet("VDD_48V"), RawNet("AX"),
+            RawNet("AY"), RawNet("SNS_A"),
+        ),
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="Stepper.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SERIES",
+                    "PDN1_R": "16m",
+                    "PDN1_P_NET": "VDD_48V",
+                    "PDN1_N_NET": "AX",
+                    "PDN2_R": "16m",
+                    "PDN2_P_NET": "AY",
+                    "PDN2_N_NET": "SNS_A",
+                },
+                pin_designators=("E1", "E3", "E4", "E10", "E11"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+            ),
+        ),
+        pads=(
+            _pad(0, "E1", 1, 0),
+            _pad(0, "E3", 3, 1),
+            _pad(0, "E4", 2, 2),
+            _pad(0, "E10", 4, 3),
+            _pad(0, "E11", 4, 4),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok
+    ch2 = next(
+        d for d in result.directives
+        if isinstance(d, ResistorSpec) and d.channel_index == 2
+    )
+    assert {p.pad_designator for p in ch2.p.pins} == {"E3"}
+    assert {p.pad_designator for p in ch2.n.pins} == {"E10", "E11"}
+
+
+
 # --- per-channel role (mixed-role parts) --------------------------------------
 
 def test_mixed_role_source_and_sink_on_one_part():
@@ -1624,7 +1751,7 @@ def test_series_channel_on_mixed_part_registers_bridge():
 
 def test_is_solveable_skips_bad_directive_and_solves_the_rest():
     """A directive that fails to resolve (its net doesn't exist) is dropped and
-    recorded as an error, but must NOT blank the board — the valid source/sink
+    recorded as an error, but must NOT blank the board â€” the valid source/sink
     rail still solves. Regression for the 'one bad PDN parameter blanks every
     rail' report."""
     from types import SimpleNamespace
@@ -1654,6 +1781,9 @@ def test_is_solveable_still_false_without_a_source():
     ann = AnnotationResult(directives=[_single_sink(0)])  # sink only
     loaded = LoadedProject(extracted, ann)
     assert not loaded.is_solveable
+
+
+
 
 
 def test_format_solve_blockers_lists_errors():
