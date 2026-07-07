@@ -10,18 +10,26 @@ side panel, the display modes, and the interactions worth knowing.
 
 ## 5.1 Layout overview
 
-The viewer has three main areas:
+A row of tabs runs across the top — **Heatmap**, Setup, Topology,
+Nodes, Vias, Messages, Settings and Help. The **Heatmap** tab, where
+you spend most of your time, is itself split into three areas:
 
-- **Viewport (centre / left)** — the OpenGL canvas. Shows the current
+- **Control panel (left)** — the Heatmap tab's controls, top to bottom:
+  the **Physical layers** list, the **Rails** list, the **Mode**
+  dropdown, the **Board Features** toggles, and the **Colour scale**
+  (scheme picker and Min / Max boxes).
+- **Viewport (centre / right)** — the OpenGL canvas. Shows the current
   layer's copper, shaded by the current display mode. Pan with the
   mouse, zoom with the wheel.
-- **Side panel (right)** — a tabbed panel with the Setup, Topology,
-  Nodes, Vias, Messages, Settings and Help tabs.
-- **Status bar (bottom)** — short hints, hover-probe readouts and
-  recently-applied actions.
+- **Status bar (bottom)** — hover-probe readouts (the x / y / value /
+  net / layer under the cursor) and short hints.
 
 A small **colour-scale strip** is pinned to the bottom-left of the
 viewport, with two draggable handles for clamping the display range.
+
+The remaining tabs hold the node / via tables, the topology diagram,
+solver messages, and settings — each is covered in its own section
+below.
 
 ![Viewer layout overview](screenshots/05-layout.png)
 
