@@ -19,6 +19,7 @@ Behavioural differences from upstream
 import functools
 import logging
 import math
+import re
 
 import numpy as np
 import scipy.spatial
@@ -835,19 +836,212 @@ class TwoForm:
         return result
 
 
+# Weld sub-precision vertex clusters before Triangle sees the PSLG — matches
+# the viewer's all-copper / stub triangulation repair in altium_viewer.
+_MESH_VERTEX_SIMPLIFY_TOL_MM = 1e-4
+
+
 class MeshingException(RuntimeError):
-    """
-    Exception raised when CGAL mesh generation fails due to invalid geometry.
+    """Raised when Triangle cannot mesh a copper polygon.
 
-    This includes cases such as:
-    - Self-intersecting polygons with unauthorized constraint intersections
-    - Degenerate edges that are too short (near-duplicate vertices)
-    - Other geometric degeneracies that prevent mesh generation
-
-    With CGAL_DEBUG enabled, these issues are detected early through CGAL's
-    internal precondition checking, preventing crashes and providing clear
-    error messages.
+    Optional context fields identify *which* piece failed so the viewer can
+    highlight it on the board and show a useful error dialog.
     """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        layer_index: int | None = None,
+        geom_index: int | None = None,
+        layer_name: str | None = None,
+        piece_index: int | None = None,
+        area_mm2: float | None = None,
+        bounds: tuple[float, float, float, float] | None = None,
+        location_xy: tuple[float, float] | None = None,
+        vertex_count: int | None = None,
+        segment_count: int | None = None,
+        hole_count: int | None = None,
+        triangle_cause: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.layer_index = layer_index
+        self.geom_index = geom_index
+        self.layer_name = layer_name
+        self.piece_index = piece_index
+        self.area_mm2 = area_mm2
+        self.bounds = bounds
+        self.location_xy = location_xy
+        self.vertex_count = vertex_count
+        self.segment_count = segment_count
+        self.hole_count = hole_count
+        self.triangle_cause = triangle_cause
+
+    def with_context(
+        self,
+        poly: shapely.geometry.Polygon,
+        *,
+        layer_index: int | None = None,
+        geom_index: int | None = None,
+        layer_name: str | None = None,
+        piece_index: int | None = None,
+    ) -> "MeshingException":
+        """Return a copy enriched with polygon geometry and caller labels."""
+        loc = self.location_xy
+        if loc is None:
+            loc = _parse_triangle_location(str(self))
+        cause = self.triangle_cause or _humanize_triangle_error(str(self))
+        return MeshingException(
+            str(self),
+            layer_index=layer_index if layer_index is not None
+            else self.layer_index,
+            geom_index=geom_index if geom_index is not None
+            else self.geom_index,
+            layer_name=layer_name if layer_name is not None
+            else self.layer_name,
+            piece_index=piece_index if piece_index is not None
+            else self.piece_index,
+            area_mm2=self.area_mm2 if self.area_mm2 is not None else poly.area,
+            bounds=self.bounds if self.bounds is not None else poly.bounds,
+            location_xy=loc,
+            vertex_count=self.vertex_count,
+            segment_count=self.segment_count,
+            hole_count=self.hole_count,
+            triangle_cause=cause,
+        )
+
+    def format_user_message(self) -> str:
+        """Human-readable summary for dialogs and logs."""
+        lines: list[str] = []
+        if self.layer_name:
+            where = f'"{self.layer_name}"'
+            if self.geom_index is not None:
+                where += f" (copper island #{self.geom_index + 1})"
+            lines.append(f"Meshing failed on {where}.")
+        elif self.piece_index is not None:
+            lines.append(
+                f"Meshing failed on copper piece #{self.piece_index + 1}."
+            )
+        else:
+            lines.append("Meshing failed on a copper polygon.")
+        details: list[str] = []
+        if self.area_mm2 is not None:
+            details.append(f"area {self.area_mm2:.6g} mm²")
+        if self.bounds is not None:
+            x0, y0, x1, y1 = self.bounds
+            details.append(
+                f"bounds ({x0:.3f}, {y0:.3f}) – ({x1:.3f}, {y1:.3f}) mm"
+            )
+        if details:
+            lines.append("  " + ", ".join(details) + ".")
+        if self.location_xy is not None:
+            lx, ly = self.location_xy
+            lines.append(f"  Problem near ({lx:.3f}, {ly:.3f}) mm on the board.")
+        if self.triangle_cause:
+            lines.append(f"  {self.triangle_cause}")
+        else:
+            lines.append(f"  {str(self)}")
+        lines.append(
+            "  This usually means a micro-sliver, self-touching edge, or "
+            "near-duplicate vertex in the copper geometry. Simplify or merge "
+            "the pour/region near the highlighted area in Altium."
+        )
+        return "\n".join(lines)
+
+
+def _parse_triangle_location(message: str) -> tuple[float, float] | None:
+    m = re.search(
+        r"Ran out of precision at\s*\(\s*([-\d.eE+]+)\s*,\s*([-\d.eE+]+)\s*\)",
+        message,
+    )
+    if not m:
+        return None
+    try:
+        return float(m.group(1)), float(m.group(2))
+    except ValueError:
+        return None
+
+
+def _humanize_triangle_error(message: str) -> str:
+    low = message.lower()
+    if "ran out of precision" in low:
+        return (
+            "Triangle ran out of floating-point precision — the boundary "
+            "has edges or vertices that are too close together for reliable "
+            "triangulation."
+        )
+    if "topological inconsistency" in low:
+        return (
+            "Triangle detected a topological inconsistency — the polygon "
+            "boundary likely self-intersects or has overlapping segments."
+        )
+    if "invalid geometry on input" in low:
+        return (
+            "Triangle rejected the polygon as invalid — typically a "
+            "self-intersecting, degenerate, or near-zero-area copper shape."
+        )
+    if "segmentintersection" in low:
+        return (
+            "Triangle's segment intersection routine failed — the "
+            "constrained boundary is probably self-touching."
+        )
+    return message.splitlines()[0] if message else "Triangulation failed."
+
+
+def repair_polygon_for_triangulation(
+    poly: shapely.geometry.Polygon,
+) -> shapely.geometry.Polygon | shapely.geometry.MultiPolygon:
+    """Best-effort repair before handing geometry to Triangle.
+
+    Mirrors the viewer stub / all-copper triangulation guards: ``buffer(0)``
+    for invalid rings, then a sub-micron ``simplify`` to weld float noise.
+    """
+    if poly is None or poly.is_empty:
+        return shapely.geometry.Polygon()
+    if not poly.is_valid:
+        try:
+            repaired = poly.buffer(0)
+        except Exception:
+            repaired = None
+        if repaired is not None and not repaired.is_empty:
+            poly = repaired
+    try:
+        simplified = poly.simplify(
+            _MESH_VERTEX_SIMPLIFY_TOL_MM, preserve_topology=True,
+        )
+    except Exception:
+        simplified = None
+    if (simplified is not None
+            and not simplified.is_empty
+            and simplified.is_valid):
+        poly = simplified
+    return poly
+
+
+def _dedupe_ring_coords(coords: np.ndarray, tol: float) -> np.ndarray:
+    """Collapse consecutive ring vertices closer than *tol*.
+
+    Triangle treats near-coincident boundary vertices as a degenerate PSLG
+    and may abort the process uncatchably — especially in parallel workers.
+    """
+    if coords.shape[0] == 0:
+        return coords
+    tol2 = tol * tol
+    out: list[np.ndarray] = [coords[0]]
+    for row in coords[1:]:
+        dx = float(row[0] - out[-1][0])
+        dy = float(row[1] - out[-1][1])
+        if dx * dx + dy * dy > tol2:
+            out.append(row)
+    arr = np.asarray(out, dtype=np.float64)
+    if arr.shape[0] >= 2:
+        dx = float(arr[0, 0] - arr[-1, 0])
+        dy = float(arr[0, 1] - arr[-1, 1])
+        if dx * dx + dy * dy <= tol2:
+            arr = arr[:-1]
+    if arr.shape[0] < 3:
+        return np.empty((0, 2), dtype=np.float64)
+    return arr
 
 
 class Mesher:
@@ -1094,6 +1288,27 @@ def _prepare_polygon_for_triangle_arrays(
     interior points (lumped-element attachment points); Triangle preserves
     all input vertices, so we just append them after the ring vertices.
     """
+    repaired = repair_polygon_for_triangulation(poly)
+    if repaired.is_empty:
+        return (
+            np.empty((0, 2), dtype=np.float64),
+            np.empty((0, 2), dtype=np.int32),
+            np.empty((0, 2), dtype=np.float64),
+        )
+    if repaired.geom_type == "MultiPolygon":
+        # buffer(0) can split one invalid island into several valid pieces.
+        # Mesh the largest surviving fragment — the others are usually
+        # noise slivers that Triangle cannot handle anyway.
+        parts = [g for g in repaired.geoms if g.geom_type == "Polygon"]
+        if not parts:
+            return (
+                np.empty((0, 2), dtype=np.float64),
+                np.empty((0, 2), dtype=np.int32),
+                np.empty((0, 2), dtype=np.float64),
+            )
+        poly = max(parts, key=lambda g: g.area)
+    else:
+        poly = repaired  # type: ignore[assignment]
     vertex_chunks: list[np.ndarray] = []
     segment_chunks: list[np.ndarray] = []
     holes_list: list[tuple[float, float]] = []
@@ -1108,8 +1323,9 @@ def _prepare_polygon_for_triangle_arrays(
             coords = coords.reshape(-1, 2)
         if not ring.is_ccw:
             coords = coords[::-1]
+        coords = _dedupe_ring_coords(coords, _MESH_VERTEX_SIMPLIFY_TOL_MM)
         n = coords.shape[0]
-        if n == 0:
+        if n < 3:
             return
         idx = np.arange(n, dtype=np.int32)
         seg = np.empty((n, 2), dtype=np.int32)
@@ -1163,7 +1379,16 @@ def _triangulate_arrays(
     try:
         tri_output = _triangle.triangulate(tri_input, switches)
     except Exception as e:
-        raise MeshingException(f"triangle.triangulate failed: {e}") from e
+        loc = _parse_triangle_location(str(e))
+        cause = _humanize_triangle_error(str(e))
+        raise MeshingException(
+            f"triangle.triangulate failed: {e}",
+            location_xy=loc,
+            vertex_count=int(vertices.shape[0]),
+            segment_count=int(segments.shape[0]),
+            hole_count=int(holes.shape[0]),
+            triangle_cause=cause,
+        ) from e
     out_vertices = tri_output.get("vertices")
     out_triangles = tri_output.get("triangles")
     if out_vertices is None or out_triangles is None:
