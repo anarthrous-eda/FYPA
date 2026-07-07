@@ -156,3 +156,36 @@ def compute_rail_groups(
 
     rail_names = sorted(rail_to_members.keys(), key=_rail_sort_key)
     return rail_names, rail_to_members
+
+
+def resolve_rail_member_nets(
+    rail_names: list[str],
+    rail_to_members: dict[str, list[str]],
+    subnet_visible: dict[str, dict[str, bool]] | None = None,
+    *,
+    rail_only: bool = False,
+) -> list[str]:
+    """Resolve visible rail names to the net names whose copper should draw.
+
+    When ``subnet_visible`` is provided for a multi-net rail, only member nets
+    marked visible are included. Otherwise every member of the rail group is
+    included. ``rail_only`` further restricts to each rail's primary name.
+    """
+    if not rail_names:
+        return []
+    members: list[str] = []
+    seen: set[str] = set()
+    for rail_name in rail_names:
+        full = rail_to_members.get(rail_name, [rail_name])
+        subnets = (subnet_visible or {}).get(rail_name)
+        if subnets is not None and len(full) > 1:
+            picks = [n for n in full if subnets.get(n, False)]
+        else:
+            picks = list(full)
+        if rail_only:
+            picks = [rail_name] if rail_name in picks else []
+        for net in picks:
+            if net not in seen:
+                seen.add(net)
+                members.append(net)
+    return members
