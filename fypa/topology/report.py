@@ -235,7 +235,7 @@ def topology_wiring_report(model: TopologyModel) -> dict:
             }
         )
 
-    all_issues = merge_validation_issues(model, wire_issues)
+    all_issues = merge_validation_issues(model, wire_issues, geo)
 
     return {
         "version": 1,

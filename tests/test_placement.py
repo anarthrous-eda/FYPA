@@ -61,6 +61,46 @@ def test_gutter_groups_includes_multi_port_hub_nets():
     assert groups[(110.0, 290.0)] == {"PAIR"}
 
 
+def test_allocate_bus_x_leaves_valid_west_candidate_untouched():
+    """A candidate comfortably west of an assigned bus is valid and must not be
+    shoved east. Regression for the one-sided proximity test (finding 5.4)."""
+    from fypa.topology.placement.bus_grid import allocate_bus_x
+    from fypa.topology.constants import MIN_PARALLEL_GAP
+
+    prev = 300.0
+    nominal = prev - 5 * MIN_PARALLEL_GAP  # far west, well-separated
+    x = allocate_bus_x(
+        nominal,
+        0.0, 100.0,
+        bus_lo=nominal - 50.0, bus_hi=prev + 50.0,
+        reserved_verticals=[],
+        net="VDD",
+        outward=1.0,
+        assigned_in_group=[prev],
+    )
+    assert abs(x - nominal) < 1e-6  # not pushed toward prev
+
+
+def test_allocate_bus_x_separates_when_actually_too_close():
+    """A candidate within MIN_PARALLEL_GAP of an assigned bus is shifted to a
+    valid, at-least-a-gap-away slot inside the corridor."""
+    from fypa.topology.placement.bus_grid import allocate_bus_x
+    from fypa.topology.constants import MIN_PARALLEL_GAP, WIRE_EPS
+
+    prev = 300.0
+    nominal = prev + MIN_PARALLEL_GAP / 3  # too close, east of prev
+    x = allocate_bus_x(
+        nominal,
+        0.0, 100.0,
+        bus_lo=200.0, bus_hi=400.0,
+        reserved_verticals=[],
+        net="VDD",
+        outward=1.0,
+        assigned_in_group=[prev],
+    )
+    assert abs(x - prev) >= MIN_PARALLEL_GAP - WIRE_EPS
+
+
 def test_gnd_column_trunk_x_prefers_gnd_stub():
     gnd = _port(node_id="U1", net=GND_NET, side="left", x=120.0, stub_length=12.0)
     sig = _port(node_id="U1", net="VDD", side="left", x=120.0, y=70.0)

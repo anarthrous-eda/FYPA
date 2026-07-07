@@ -456,10 +456,18 @@ class ExtractedProject:
             ordered.append(cur)
             seen.add(cur)
             cur = by_id[cur].next_layer_id
-        if len(ordered) < 2:
+        # A well-formed chain terminates with next_layer_id == 0. A single-layer
+        # flex board is a legitimate 1-long chain (Top → 0) — trust it. Only
+        # fall back to the artwork scan when the linkage is actually broken:
+        # empty (id=1 absent), a dangling next_layer_id, or a cycle (cur != 0).
+        if not ordered or cur != 0:
             used: set[int] = set()
             for t in self.tracks:
                 used.add(t.layer_id)
+            for a in self.arcs:
+                used.add(a.layer_id)
+            for p in self.pads:
+                used.add(p.layer_id)
             for r in self.regions:
                 used.add(r.layer_id)
             for r in self.shape_based_regions:
@@ -722,14 +730,42 @@ def _split_holes(hole_vertices, hole_count: int,
             tuple(_vertex_to_pt(v, ox_mm, oy_mm) for v in ring)
             for ring in hole_vertices
         )
-    # Case 2: flat list — best-effort split into hole_count rings of equal size.
-    # If sizes differ this is wrong; we emit a warning and dump as one ring.
-    total = len(hole_vertices)
-    if total % hole_count != 0:
-        log.warning(
-            "Region has %d hole_vertices but hole_count=%d (uneven split); "
-            "treating as a single hole ring.", total, hole_count,
+    # Case 2: flat list. Altium closes each hole ring (its last vertex repeats
+    # its first), so split on ring closure rather than assuming equal vertex
+    # counts per ring. Equal division silently produces garbage rings for holes
+    # of differing vertex counts (e.g. 10 + 6 vertices split into two 8-vertex
+    # rings, which make_valid then "repairs" into wrong copper).
+    def _closed(a, b) -> bool:
+        return a.x_raw == b.x_raw and a.y_raw == b.y_raw
+
+    rings: list[list] = []
+    cur: list = []
+    for v in hole_vertices:
+        cur.append(v)
+        # A ring needs ≥3 distinct vertices before its closing repeat, so only
+        # treat a start-vertex match as closure once we have enough points.
+        if len(cur) >= 4 and _closed(v, cur[0]):
+            rings.append(cur)
+            cur = []
+    if cur:
+        rings.append(cur)
+
+    if len(rings) == hole_count:
+        return tuple(
+            tuple(_vertex_to_pt(v, ox_mm, oy_mm) for v in ring)
+            for ring in rings
         )
+
+    # Closure split disagreed with hole_count — fall back to equal division if
+    # it divides evenly, else dump as a single ring. Either way, warn: the
+    # flat-list shape is not what we expected and the result may be wrong.
+    total = len(hole_vertices)
+    log.warning(
+        "Region has %d hole_vertices with hole_count=%d but closure-split "
+        "found %d ring(s); geometry may be wrong.",
+        total, hole_count, len(rings),
+    )
+    if total % hole_count != 0:
         return (tuple(_vertex_to_pt(v, ox_mm, oy_mm) for v in hole_vertices),)
     step = total // hole_count
     return tuple(

@@ -1214,26 +1214,21 @@ def do_gerber_gui(args: argparse.Namespace) -> int:
 
 def do_paraview(args: argparse.Namespace) -> int:
     try:
-        from pdnsolver import paraview as _pdn_paraview
+        import lxml.etree  # noqa: F401 — ensure the export dep is present
     except ImportError as e:
         print(f"`paraview` needs the `lxml` package: {e}", file=sys.stderr)
         return 2
-    # ParaView export needs padne's full half-edge Solution; lean
-    # pickles don't carry the per-face cell topology in the format
-    # padne's exporter expects.
-    solution, _ = _load_solution_pickle(args.solution, lean_ify=False)
-    if isinstance(solution, LeanSolution):
-        print(
-            f"`paraview` can't export from a lean-format pickle "
-            f"({args.solution.name}). Re-run `solve` to produce a "
-            "padne-format pickle, or open an issue if you'd like the "
-            "lean format supported.",
-            file=sys.stderr,
-        )
-        return 2
+    # Export from the lean numeric solution: it carries the flat per-vertex
+    # coordinates, per-triangle indices and potentials the VTU writer needs
+    # (the half-edge Mesh the old pdnsolver.paraview exporter walked is no
+    # longer built by the solver). ``lean_ify=True`` normalises both current
+    # lean pickles and legacy padne pickles to that form. This is the same
+    # writer File > Export > ParaView uses, so CLI and GUI output match.
+    from fypa.paraview_export import export_lean_solution
+    solution, _ = _load_solution_pickle(args.solution, lean_ify=True)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    _pdn_paraview.export_solution(solution, args.output_dir)
-    print(f"ParaView export complete: {args.output_dir}")
+    n_files = export_lean_solution(solution, args.output_dir)
+    print(f"ParaView export complete: {n_files} file(s) in {args.output_dir}")
     return 0
 
 

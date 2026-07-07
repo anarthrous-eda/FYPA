@@ -117,6 +117,13 @@ class GeometryLayer:
 # --- per-primitive shape helpers ---------------------------------------------
 
 def _track_polygon(t: RawTrack) -> shapely.geometry.Polygon:
+    # A zero-length track (a == b) buffers to an EMPTY polygon via LineString,
+    # but Altium renders it as a filled copper dot of the track width — and
+    # such dots are used to hand-stitch features together, so dropping them
+    # loses a connection. Buffer the endpoint as a disc instead.
+    if t.a.x == t.b.x and t.a.y == t.b.y:
+        return shapely.geometry.Point(t.a.x, t.a.y).buffer(
+            t.width_mm / 2.0, resolution=CIRCLE_RESOLUTION // 4)
     line = shapely.geometry.LineString([(t.a.x, t.a.y), (t.b.x, t.b.y)])
     # cap_style=1 → round, join_style=1 → round (Shapely 2.x constants).
     return line.buffer(t.width_mm / 2.0, cap_style=1, join_style=1,
@@ -127,6 +134,17 @@ def _arc_polyline_points(a: RawArc) -> list[tuple[float, float]]:
     """Discretise an arc to a chord-bounded polyline."""
     sweep = (a.end_angle_deg - a.start_angle_deg) % 360.0
     if sweep == 0.0:
+        # Altium repour circles arrive as a 360°-multiple sweep and are meant
+        # to be a full disc — but a genuinely degenerate standalone arc
+        # (collapsed edit, buggy exporter) also lands here and becomes a full
+        # annulus of copper that can short across a clearance. We can't tell
+        # the two apart from sweep alone, so keep the (usually-correct) full-
+        # circle promotion but log it so the annulus case is diagnosable.
+        log.debug(
+            "Arc at (%.3f, %.3f) r=%.3f has zero net sweep — promoting to a "
+            "full circle (repour convention); verify if unexpected.",
+            a.center.x, a.center.y, a.radius_mm,
+        )
         sweep = 360.0  # full circle convention used by Altium repour output
     # Maximum sub-angle for a given chord tolerance: 2·acos(1 - tol/r)
     if a.radius_mm <= 0.0:
@@ -573,8 +591,25 @@ def _pad_outer_shape(p: RawPad, layer_id: int | None = None
         if p.rotation_deg:
             s = shapely.affinity.rotate(s, p.rotation_deg, origin=(cx, cy))
         return s
-    log.warning("Unhandled pad shape code %d at (%.3f, %.3f) — falling back to rectangle",
-                shape, cx, cy)
+    # PAD_SHAPE_CUSTOM (and any other unhandled code) has no primitive geometry
+    # on RawPad, so we can only approximate it by its w×h bounding rectangle.
+    # For a custom-shape pad (RF stub, thermal pad with cutouts) this overstates
+    # copper by bbox-minus-shape and can bridge to adjacent same-net features /
+    # understate resistance right where a directive pin lands. Name the pad so
+    # the approximation is traceable. (A faithful fix needs altium_monkey to
+    # expose the pad's constituent Regions6 children.)
+    designator = getattr(p, "designator", "") or "?"
+    if shape == PAD_SHAPE_CUSTOM:
+        log.warning(
+            "Custom-shape pad %r at (%.3f, %.3f) approximated by its %.3f×%.3f "
+            "mm bounding rectangle — copper may be overstated.",
+            designator, cx, cy, w, h,
+        )
+    else:
+        log.warning(
+            "Unhandled pad shape code %d (pad %r) at (%.3f, %.3f) — falling "
+            "back to bounding rectangle", shape, designator, cx, cy,
+        )
     if w <= 0 or h <= 0:
         return None
     s = shapely.geometry.box(cx - w / 2.0, cy - h / 2.0,
@@ -1223,9 +1258,19 @@ def _batch_buffer_tracks(tracks: list[RawTrack]) -> list[shapely.geometry.Polygo
         coords[i, 1, 0] = t.b.x
         coords[i, 1, 1] = t.b.y
         half_widths[i] = t.width_mm * 0.5
-    lines = shapely.linestrings(coords)
+    # Zero-length tracks (a == b) buffer to EMPTY as LineStrings but Altium
+    # draws them as filled copper dots — route them through Point instead so a
+    # stitching dot isn't silently dropped (see _track_polygon).
+    degenerate = ((coords[:, 0, 0] == coords[:, 1, 0])
+                  & (coords[:, 0, 1] == coords[:, 1, 1]))
+    geoms = np.empty(len(tracks), dtype=object)
+    if degenerate.any():
+        geoms[degenerate] = shapely.points(coords[degenerate, 0, :])
+    normal = ~degenerate
+    if normal.any():
+        geoms[normal] = shapely.linestrings(coords[normal])
     polys = shapely.buffer(
-        lines, half_widths,
+        geoms, half_widths,
         cap_style="round", join_style="round",
         quad_segs=CIRCLE_RESOLUTION // 4,
     )

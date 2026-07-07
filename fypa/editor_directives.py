@@ -217,7 +217,19 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
             fallback_xy = ed.anchor_xy or (0.0, 0.0)
             fallback_lid = ed.layer_id
         else:
-            fallback_xy = _component_center(ed.designator) or (0.0, 0.0)
+            center = _component_center(ed.designator)
+            if center is None:
+                # The bound component is gone from the PCB (renamed / deleted).
+                # Falling back to (0, 0) would silently anchor the terminal at
+                # the origin — and if any copper of its net happens to sit
+                # there, the solve succeeds with a wrong injection point. Skip
+                # with a warning instead.
+                warnings.append(
+                    f"{label}: component {ed.designator!r} not found on the "
+                    "board (renamed or deleted); skipped."
+                )
+                continue
+            fallback_xy = center
             fallback_lid = top_layer
 
         # Pin restrictions only apply to a component-bound terminal that

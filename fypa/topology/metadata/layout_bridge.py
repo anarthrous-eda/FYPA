@@ -463,6 +463,84 @@ def _push_passive_load_columns(
             col[load_id] = max(col.get(load_id, 0), pcol + 1)
 
 
+def _propagation_edges(
+    node_specs: list[NodeSpec],
+    outputs_by_net: dict[str, list[str]],
+    inputs_by_net: dict[str, list[str]],
+    net_to_rail: dict[str, str],
+    loop_parent: dict[str, str],
+) -> dict[str, list[str]]:
+    """Directed edges ``nid -> other`` walked by the column-relaxation passes.
+
+    Mirrors the edge traversal in :func:`assign_columns` exactly (output ports,
+    flow-net resolution, GND/self/loop-parent skips) so cycle detection sees the
+    same graph those passes walk.
+    """
+    edges: dict[str, list[str]] = defaultdict(list)
+    for s in node_specs:
+        nid = s["node_id"]
+        for pname, side, _ in s["port_defs"]:
+            if not is_output_port(s["role"], pname, side):
+                continue
+            term = (s["terms"] or {}).get(pname)
+            if is_ideal_return(term):
+                continue
+            flow_net = _column_net(s["role"], term, net_to_rail, terminal=pname)
+            if not flow_net or flow_net == GND_NET:
+                continue
+            for other in inputs_by_net.get(flow_net, []):
+                if other == nid or (nid in loop_parent and other == loop_parent[nid]):
+                    continue
+                edges[nid].append(other)
+    return edges
+
+
+def _detect_propagation_back_edges(
+    edges: dict[str, list[str]],
+    root_order: list[str],
+) -> set[tuple[str, str]]:
+    """DFS back-edges whose removal makes the propagation graph acyclic.
+
+    Passive SERIES/RESISTOR loops are already broken via ``loop_parent``, but a
+    non-passive cycle — e.g. two REGULATORs feeding each other on an ORing
+    power-path — has no such handling: the relaxation loops would ping-pong,
+    bumping each other's column until the iteration guard trips, so the final
+    order depended on the guard count rather than topology. Breaking these edges
+    turns the graph into a DAG and makes the longest-path relaxation converge to
+    a stable order.
+
+    ``root_order`` seeds the DFS: the column-0 sources come first so exploration
+    runs *downstream* from them and the edge closing a cycle back toward a source
+    is the one classified as the back-edge (the semantically correct one to drop).
+    An unanchored mutual loop falls back to node order as a deterministic
+    tie-break.
+    """
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color: dict[str, int] = {}
+    back: set[tuple[str, str]] = set()
+    for root in root_order:
+        if color.get(root, WHITE) != WHITE:
+            continue
+        color[root] = GRAY
+        stack: list[tuple[str, int]] = [(root, 0)]
+        while stack:
+            node, i = stack[-1]
+            neighbors = edges.get(node, ())
+            if i < len(neighbors):
+                stack[-1] = (node, i + 1)
+                nxt = neighbors[i]
+                c = color.get(nxt, WHITE)
+                if c == WHITE:
+                    color[nxt] = GRAY
+                    stack.append((nxt, 0))
+                elif c == GRAY:
+                    back.add((node, nxt))
+            else:
+                color[node] = BLACK
+                stack.pop()
+    return back
+
+
 def assign_columns(
     node_specs: list[NodeSpec],
     net_to_rail: dict[str, str],
@@ -503,6 +581,10 @@ def assign_columns(
                     inputs_by_canonical[cn].append(nid)
 
     loop_parent = _detect_loop_series_parents(node_specs, outputs_by_net, inputs_by_net)
+    back_edges = _detect_propagation_back_edges(
+        _propagation_edges(node_specs, outputs_by_net, inputs_by_net, net_to_rail, loop_parent),
+        [s["node_id"] for s in sources] + [s["node_id"] for s in node_specs],
+    )
 
     changed = True
     guard = 0
@@ -525,6 +607,8 @@ def assign_columns(
                     if other == nid:
                         continue
                     if nid in loop_parent and other == loop_parent[nid]:
+                        continue
+                    if (nid, other) in back_edges:
                         continue
                     new_c = base + 1
                     if new_c > col.get(other, -1):
@@ -617,6 +701,8 @@ def assign_columns(
                     if other == nid:
                         continue
                     if nid in loop_parent and other == loop_parent[nid]:
+                        continue
+                    if (nid, other) in back_edges:
                         continue
                     new_c = base + 1
                     if new_c > col.get(other, -1):

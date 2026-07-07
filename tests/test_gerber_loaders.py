@@ -14,6 +14,7 @@ Covers:
 * Gerber-sourced projects fold their real input files into the cache
   fingerprint, so a regenerated-in-place Gerber set invalidates the cache.
 """
+import math
 from pathlib import Path
 
 import pytest
@@ -156,6 +157,88 @@ def test_positive_layer_unaffected_by_negative_branch(tmp_path):
     p.write_text(_NEG_PLANE.replace("%IPNEG*%\n", ""))
     geom = gx.render_gerber_to_shapely(p)
     assert geom.area < 3.0
+
+
+# --- aperture holes are transparent, not subtractive (finding 4.1) -----------
+
+_SOLID_3MM = math.pi * 1.5 ** 2  # area of the underlying 3mm-diameter pad
+
+
+def test_aperture_hole_does_not_erase_underlying_copper(tmp_path):
+    # A 3mm solid pad, then a donut aperture (1.5mm OD, 0.8mm hole) flashed on
+    # top at the same centre. Per Gerber spec §4.4.6 the aperture hole is
+    # transparent to whatever sits under the flash — the 3mm pad must show
+    # through the hole, leaving NO interior hole in the accumulated copper.
+    p = tmp_path / "hole.gtl"
+    p.write_text(
+        "%FSLAX46Y46*%\n%MOMM*%\n%ADD10C,3.000*%\n%ADD11C,1.500X0.800*%\n"
+        "D10*\nX0Y0D03*\nD11*\nX0Y0D03*\nM02*\n")
+    geom = gx.render_gerber_to_shapely(p)
+    n_holes = sum(len(poly.interiors) for poly in gx._polygons_in(geom))
+    assert n_holes == 0                       # copper shows through the hole
+    assert geom.area == pytest.approx(_SOLID_3MM, abs=0.05)
+
+
+def test_isolated_hole_flash_keeps_its_hole(tmp_path):
+    # A donut with nothing underneath must still render as an annulus: the
+    # aperture-level pad−hole is preserved, only underlying copper is spared.
+    p = tmp_path / "donut.gtl"
+    p.write_text(
+        "%FSLAX46Y46*%\n%MOMM*%\n%ADD11C,1.500X0.800*%\n"
+        "D11*\nX0Y0D03*\nM02*\n")
+    geom = gx.render_gerber_to_shapely(p)
+    holes = sum(len(poly.interiors) for poly in gx._polygons_in(geom))
+    assert holes == 1
+    # Annulus area = OD disc − hole disc.
+    expected = math.pi * (0.75 ** 2 - 0.40 ** 2)
+    assert geom.area == pytest.approx(expected, abs=0.02)
+
+
+def test_rectangular_pad_hole_is_transparent(tmp_path):
+    # Rectangular pad with a round hole (R,WxHxhole) over a plane: same rule.
+    p = tmp_path / "recthole.gtl"
+    p.write_text(
+        "%FSLAX46Y46*%\n%MOMM*%\n%ADD10C,4.000*%\n%ADD12R,2.000X2.000X0.800*%\n"
+        "D10*\nX0Y0D03*\nD12*\nX0Y0D03*\nM02*\n")
+    geom = gx.render_gerber_to_shapely(p)
+    n_holes = sum(len(poly.interiors) for poly in gx._polygons_in(geom))
+    assert n_holes == 0
+
+
+# --- localized clear difference is identity (finding 4.2) --------------------
+
+def test_bbox_limited_difference_matches_full_difference():
+    a = shapely.geometry.box(0, 0, 1, 1)
+    b = shapely.geometry.box(10, 10, 11, 11)      # far-away island
+    c = shapely.geometry.box(20, 20, 22, 22)
+    base = shapely.geometry.MultiPolygon([a, b, c])
+    cutter = shapely.geometry.box(10.2, 10.2, 10.8, 10.8)  # only bites `b`
+    fast = gx._bbox_limited_difference(base, cutter)
+    slow = base.difference(cutter)
+    assert fast.symmetric_difference(slow).area < 1e-9
+    # `b` gained a hole; `a` and `c` are untouched pass-throughs.
+    assert sum(len(p.interiors) for p in gx._polygons_in(fast)) == 1
+
+
+# --- X2 drill span: drop, don't clamp, when out of range (finding 4.3) -------
+
+def test_x2_span_out_of_range_returns_none():
+    # A 2,5 buried via imported into a Top/In4/Bottom subset (ids [1,5,32])
+    # references position 5 > 3 imported layers — must NOT clamp to a
+    # fabricated In4→Bottom span.
+    assert gx._x2_drill_span_to_layer_ids(
+        ("Plated", "2", "5", "PTH", "Drill"), [1, 5, 32]) is None
+
+
+def test_x2_span_in_range_maps():
+    assert gx._x2_drill_span_to_layer_ids(
+        ("Plated", "1", "2", "PTH", "Drill"), [1, 32]) == (1, 32)
+
+
+def test_x2_span_no_numbers_defaults_full_stack():
+    # A plain through-drill with no numeric span → full imported top↔bottom.
+    assert gx._x2_drill_span_to_layer_ids(
+        ("Plated", "PTH", "Drill"), [1, 2, 32]) == (1, 32)
 
 
 # --- flash cache + width grouping equivalence --------------------------------

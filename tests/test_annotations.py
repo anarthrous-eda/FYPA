@@ -1758,7 +1758,7 @@ def test_is_solveable_skips_bad_directive_and_solves_the_rest():
 
     from fypa.altium.loader import LoadedProject
 
-    extracted = SimpleNamespace(enabled_copper_layer_ids=lambda: [1])
+    extracted = SimpleNamespace(enabled_copper_layer_ids=lambda: [1], nets=())
     ann = AnnotationResult(
         directives=[_single_source(0), _single_sink(0)],
         errors=[
@@ -1777,7 +1777,7 @@ def test_is_solveable_still_false_without_a_source():
 
     from fypa.altium.loader import LoadedProject
 
-    extracted = SimpleNamespace(enabled_copper_layer_ids=lambda: [1])
+    extracted = SimpleNamespace(enabled_copper_layer_ids=lambda: [1], nets=())
     ann = AnnotationResult(directives=[_single_sink(0)])  # sink only
     loaded = LoadedProject(extracted, ann)
     assert not loaded.is_solveable

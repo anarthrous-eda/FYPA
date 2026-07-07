@@ -2060,6 +2060,18 @@ class GLMeshViewer(QOpenGLWidget):
     # ------------------------------------------------------------------
 
     def initializeGL(self) -> None:
+        # Re-entering initializeGL means Qt recreated the GL context (reparent
+        # to a new top-level, driver reset, …). Every VBO/IBO/VAO built by the
+        # previous context is gone, but the host-set ``_n_*`` vertex counts
+        # survive — so without this guard paintGL would draw against the fresh,
+        # never-allocated buffers built below (garbage or a crash). Drop the
+        # counts whose data was already consumed by the old context's upload;
+        # any batch still holding a pending array re-uploads through the normal
+        # flush into the new context. Also re-query the per-context renderbuffer
+        # limit cached by _ensure_ss_fbos.
+        if self._gl_initialized:
+            self._reset_gpu_state_for_new_context()
+        self._max_renderbuffer_size = None
         # Background colour — the bare-substrate look outside the mesh.
         GL.glClearColor(self._bg_r, self._bg_g, self._bg_b, 1.0)
         # Build & link the shader program.
@@ -2230,6 +2242,44 @@ class GLMeshViewer(QOpenGLWidget):
 
         self._gl_initialized = True
 
+    def _reset_gpu_state_for_new_context(self) -> None:
+        """Zero the vertex counts of every batch whose CPU-side pending array
+        was already consumed by a previous GL context's upload.
+
+        Called from :meth:`initializeGL` on a context recreation. The batch's
+        VBO is gone with the old context; with no pending array to re-upload,
+        the only safe state is "empty" so paintGL skips it until the host
+        pushes fresh geometry. Batches that still hold a pending array are left
+        untouched — the flush re-uploads them into the new context.
+
+        This makes the scene survive a context loss as *blank until the next
+        push* rather than fully re-rendering the last data; full survival would
+        require retaining every last-uploaded array (see code review 3.14) and
+        is deferred while the viewer is never reparented in practice."""
+        if self._pending_positions is None:
+            self._n_indices = 0
+            self._n_vertices = 0
+        if self._pending_alpha is None:
+            self._n_alpha = 0
+        if self._pending_neutral is None:
+            self._n_neutral = 0
+        if self._pending_line_positions is None:
+            self._n_line_vertices = 0
+        if self._pending_cyl_positions is None:
+            self._n_cyl_vertices = 0
+        if self._pending_arrow_positions is None:
+            self._n_arrow_vertices = 0
+        if self._pending_stub_positions is None:
+            self._n_stub_vertices = 0
+        if self._pending_sbar_positions is None:
+            self._n_sbar_vertices = 0
+            self._n_sbar_under_vertices = 0
+        if self._pending_bdrl_positions is None:
+            self._n_bdrl_vertices = 0
+        if self._pending_ovl_positions is None:
+            self._n_ovl_vertices = 0
+            self._n_ovl_under_vertices = 0
+
     def resizeGL(self, w: int, h: int) -> None:
         # Use device pixels for the GL viewport on Hi-DPI displays.
         dpr = self.devicePixelRatio()
@@ -2331,10 +2381,16 @@ class GLMeshViewer(QOpenGLWidget):
         w = max(1, int(self.width() * dpr))
         h = max(1, int(self.height() * dpr))
         sw, sh = w * self._SS_FACTOR, h * self._SS_FACTOR
-        try:
-            max_dim = int(GL.glGetIntegerv(GL.GL_MAX_RENDERBUFFER_SIZE))
-        except Exception:
-            max_dim = 0
+        # GL_MAX_RENDERBUFFER_SIZE is a driver constant for the life of the
+        # context, so query it once and cache rather than every SSAA frame.
+        # Reset to None in initializeGL so a context recreation re-queries it.
+        max_dim = getattr(self, "_max_renderbuffer_size", None)
+        if max_dim is None:
+            try:
+                max_dim = int(GL.glGetIntegerv(GL.GL_MAX_RENDERBUFFER_SIZE))
+            except Exception:
+                max_dim = 0
+            self._max_renderbuffer_size = max_dim
         if max_dim and (sw > max_dim or sh > max_dim):
             return False
         if (self._ss_ms_fbo is not None

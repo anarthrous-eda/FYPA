@@ -212,6 +212,7 @@ render parity, always use `compute_schematic_geometry(...).junctions`.
 | `segment_through_foreign_node` | Horizontal **or vertical** segment intersects foreign node |
 | `parallel_vertical_gap` | Vertical buses in the **same gutter span** closer than `MIN_PARALLEL_GAP` (16 px) |
 | `signal_vs_gnd_drop_gap` | Signal bus too close to GND trunk x |
+| `coincident_vertical_x` | Signal vertical exactly overlays a GND drop (gap ~0, ambiguous single line) |
 | `duplicate_vertical_x` | Foreign (or duplicate same-net) vertical segments share x |
 | `duplicate_horizontal_y` | Foreign horizontal segments share y with overlapping x |
 | `junction_near_bridge` | Junction dot within bridge arc clearance on same vertical |

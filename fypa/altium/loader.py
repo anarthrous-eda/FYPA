@@ -368,9 +368,21 @@ class LoadedProject:
         """
         if not self.extracted.enabled_copper_layer_ids():
             return False
+        directives = self.annotations.directives
+        # A source only makes the board solvable if it sits in a CLOSED loop
+        # (its analysis group also has a sink). Counting bare sources here — as
+        # this used to — passes the very common "one SOURCE, no SINK, press
+        # Solve" board, which _flag_open_loop_rails then excludes, leaving
+        # build_problem to seed its BFS from zero networks, drop every layer,
+        # and hand pdnsolver an empty Problem (cryptic mesh failure instead of
+        # the friendly format_solve_blockers dialog). Run the same open-loop
+        # grouping and require ≥1 non-excluded source.
+        excluded_idx, _ = _analyze_open_loop_rails(
+            directives, self.extracted.nets)
         return any(
-            type(d).__name__ in {"SourceSpec", "RegulatorSpec"}
-            for d in self.annotations.directives
+            i not in excluded_idx
+            and type(d).__name__ in {"SourceSpec", "RegulatorSpec"}
+            for i, d in enumerate(directives)
         )
 
     def diagnostic_summary(self) -> str:
@@ -454,12 +466,28 @@ def format_solve_blockers(
     reasons: list[str] = []
     if not loaded.extracted.enabled_copper_layer_ids():
         reasons.append("no enabled copper layers")
+    directives = loaded.annotations.directives
     has_source = any(
         type(d).__name__ in {"SourceSpec", "RegulatorSpec"}
-        for d in loaded.annotations.directives
+        for d in directives
     )
     if not has_source:
         reasons.append("no SOURCE or REGULATOR directive")
+    else:
+        # A source exists but may be open-loop (no sink on its rail): report
+        # that distinctly rather than the misleading "no SOURCE".
+        excluded_idx, _ = _analyze_open_loop_rails(
+            directives, loaded.extracted.nets)
+        closed_source = any(
+            i not in excluded_idx
+            and type(d).__name__ in {"SourceSpec", "RegulatorSpec"}
+            for i, d in enumerate(directives)
+        )
+        if not closed_source:
+            reasons.append(
+                "every SOURCE/REGULATOR rail is open-loop (no SINK to draw "
+                "current) — add a SINK on the driven rail"
+            )
     if reasons:
         lines.append("Other blockers: " + "; ".join(reasons) + ".")
         lines.append("")
@@ -613,7 +641,18 @@ def _directive_to_network(
                     group: int | None) -> _pp.NodeID:
         """The shared ideal-return node for a single-net group, minting a
         fresh isolated one if the group id is unknown (defensive — see the
-        SourceSpec branch)."""
+        SourceSpec branch).
+
+        A ``group`` of ``None`` means the directive was never stamped with a
+        return group (it sits in a group that ``_validate_directive_groups``
+        errored on). Because annotation errors no longer block solving, two
+        *unrelated* errored rails would otherwise both look up key ``None`` and
+        get wired to the *same* ideal 0 Ω return node — closing a phantom
+        current loop between rails that share no copper. Mint a fresh isolated
+        node per un-stamped directive instead of caching under ``None``.
+        """
+        if group is None:
+            return _pp.NodeID()
         node = refs.get(group)
         if node is None:
             node = _pp.NodeID()
@@ -2504,10 +2543,36 @@ def _collect_via_xys_per_layer_net(
     return out
 
 
+def _build_anchor_index(
+    pin_xys: list[tuple[float, float]],
+    via_xys: list[tuple[float, float]],
+) -> tuple[list, int, "shapely.strtree.STRtree | None"]:
+    """Build the ``(points, pin_count, STRtree)`` index the stub-piece and
+    tiny-piece filters both query.
+
+    Vias are deduped by XY (rounded to 1 µm): stacked microvias at one (x, y)
+    touch a single mesh vertex per layer, so they anchor a piece once, not once
+    per span. Points ``0..pin_count-1`` are pins; the rest are the unique vias.
+
+    ``_filter_stub_pieces`` and ``_filter_tiny_pieces`` run back-to-back on the
+    same (layer, net) inputs, so the caller builds this once and hands it to
+    both instead of each rebuilding the identical point list, via dedupe, and
+    tree.
+    """
+    pin_pts = [shapely.geometry.Point(x, y) for x, y in pin_xys]
+    unique_via_xys = list({(round(x * 1000), round(y * 1000)): (x, y)
+                           for x, y in via_xys}.values())
+    via_pts = [shapely.geometry.Point(x, y) for x, y in unique_via_xys]
+    all_pts = pin_pts + via_pts
+    tree = shapely.strtree.STRtree(all_pts) if all_pts else None
+    return all_pts, len(pin_pts), tree
+
+
 def _filter_stub_pieces(
     shape: shapely.geometry.base.BaseGeometry,
     pin_xys: list[tuple[float, float]],
     via_xys: list[tuple[float, float]],
+    anchor_index: tuple[list, int, "shapely.strtree.STRtree | None"] | None = None,
 ) -> tuple[shapely.geometry.base.BaseGeometry, list]:
     """Drop sub-pieces of a (layer, net) shape that are electrically isolated.
 
@@ -2559,26 +2624,15 @@ def _filter_stub_pieces(
         return shape, []
     geoms = (list(shape.geoms)
              if shape.geom_type == "MultiPolygon" else [shape])
-    pin_pts = [shapely.geometry.Point(x, y) for x, y in pin_xys]
-    # Dedupe vias by XY (rounded to 1 µm). Stacked microvias at the same
-    # (x, y) contribute multiple sites — one per pair of adjacent layers
-    # they span — but they all touch the same single mesh vertex on each
-    # intermediate layer, so they only provide ONE connection point per
-    # piece, not N. Counting them separately would incorrectly keep Layer-2
-    # via-cap stubs that are really single-point couplings.
-    unique_via_xys = list({(round(x * 1000), round(y * 1000)): (x, y)
-                           for x, y in via_xys}.values())
-    via_pts = [shapely.geometry.Point(x, y) for x, y in unique_via_xys]
-
-    # STRtree-accelerate the "which points fall inside which piece" test.
-    # Without it, the naive nested loop is O(pieces × (pins + vias)); for
-    # boards with hundreds of disjoint copper sub-pieces × dozens of pin
-    # touchdowns this becomes the dominant cost of the loader. Building one
-    # tree of all pin+via points and querying per piece collapses that to
+    # The point set / via dedupe / STRtree are shared with _filter_tiny_pieces,
+    # so accept a prebuilt index from the caller (see _build_anchor_index) and
+    # only rebuild when called standalone. The tree accelerates the "which
+    # points fall inside which piece" test: without it the naive nested loop is
+    # O(pieces × (pins + vias)); querying one tree per piece is
     # O((pieces + points) · log(points)) inside C.
-    pin_count = len(pin_pts)
-    all_pts = pin_pts + via_pts
-    tree = shapely.strtree.STRtree(all_pts) if all_pts else None
+    all_pts, pin_count, tree = (
+        anchor_index if anchor_index is not None
+        else _build_anchor_index(pin_xys, via_xys))
 
     kept: list = []
     dropped: list = []
@@ -2622,22 +2676,23 @@ def _filter_tiny_pieces(
     min_area_mm2: float,
     pin_xys: list[tuple[float, float]],
     via_xys: list[tuple[float, float]],
+    anchor_index: tuple[list, int, "shapely.strtree.STRtree | None"] | None = None,
 ) -> tuple[shapely.geometry.base.BaseGeometry, list]:
     """Drop sub-micron copper slivers that have no electrical anchor.
 
     Pieces that contain a directive pin or a via are always kept — even when
     tiny — because dropping them would silently lose a connection point.
+
+    Shares the anchor index (points + STRtree) with :func:`_filter_stub_pieces`
+    when the caller passes ``anchor_index``; builds its own otherwise.
   """
     if shape.is_empty or min_area_mm2 <= 0:
         return shape, []
     geoms = (list(shape.geoms)
              if shape.geom_type == "MultiPolygon" else [shape])
-    pin_pts = [shapely.geometry.Point(x, y) for x, y in pin_xys]
-    unique_via_xys = list({(round(x * 1000), round(y * 1000)): (x, y)
-                           for x, y in via_xys}.values())
-    via_pts = [shapely.geometry.Point(x, y) for x, y in unique_via_xys]
-    all_pts = pin_pts + via_pts
-    tree = shapely.strtree.STRtree(all_pts) if all_pts else None
+    all_pts, _pin_count, tree = (
+        anchor_index if anchor_index is not None
+        else _build_anchor_index(pin_xys, via_xys))
 
     kept: list = []
     dropped: list = []
@@ -2868,32 +2923,24 @@ def _rail_display_name(net_names: set[str]) -> str:
     return ordered[0] if ordered else "(rail)"
 
 
-def _flag_open_loop_rails(loaded: LoadedProject) -> list[str]:
-    """Find rails that can't carry current — an analysis group holding only
-    sources (``SourceSpec`` / ``RegulatorSpec``) or only sinks (``SinkSpec``)
-    — and mark their directives ``solve_excluded`` so ``build_problem`` leaves
-    them out of the FEM. The directives stay in
-    ``loaded.annotations.directives`` so the viewer still draws their markers.
+def _analyze_open_loop_rails(
+    directives: list, nets: list,
+) -> tuple[set[int], list[str]]:
+    """Pure open-loop analysis — no mutation.
 
-    Operates on the final merged directive list (schematic + editor
-    directives are appended before this runs), so a rail closed by a mix of
-    schematic and editor markers is correctly recognised as solvable.
+    Groups directives by union-find over the net indices their terminals
+    touch (a ``ResistorSpec`` (SERIES) carries both terminal nets so its rails
+    are bridged automatically), then flags every group holding only sources
+    (``SourceSpec`` / ``RegulatorSpec``) or only sinks (``SinkSpec``): such a
+    rail can carry no current. Returns ``(excluded_directive_indices,
+    warnings)``.
 
-    Groups are formed by union-find over the net indices each directive's
-    terminals touch; a ``ResistorSpec`` (SERIES) carries both terminal nets so
-    its rails are bridged automatically. Returns one human-readable warning
-    per skipped rail and also appends them to ``loaded.annotations.warnings``.
+    Shared by :func:`_flag_open_loop_rails` (which applies the exclusion and
+    surfaces the warnings) and :attr:`LoadedProject.is_solveable` (which only
+    needs to know whether any source survives) so the two never disagree — the
+    exact bug where ``is_solveable`` counted a source that the FEM build then
+    excluded, producing an empty ``Problem`` and a cryptic mesh failure.
     """
-    directives = loaded.annotations.directives
-    nets = loaded.extracted.nets
-
-    # ``open_loop_rails`` was added to AnnotationResult after some design-info
-    # caches were written; an unpickled-from-old-cache annotations object can
-    # lack it. Seed it so the reconcile assignment below (and the connectivity
-    # guard in build_problem) never AttributeError on a stale cache.
-    if not hasattr(loaded.annotations, "open_loop_rails"):
-        loaded.annotations.open_loop_rails = []
-
     def _net_name(idx: int) -> str:
         return nets[idx].name if 0 <= idx < len(nets) else "?"
 
@@ -2960,6 +3007,34 @@ def _flag_open_loop_rails(loaded: LoadedProject) -> list[str]:
                 f"design."
             )
         excluded_idx.update(members)
+    return excluded_idx, warnings
+
+
+def _flag_open_loop_rails(loaded: LoadedProject) -> list[str]:
+    """Find rails that can't carry current — an analysis group holding only
+    sources (``SourceSpec`` / ``RegulatorSpec``) or only sinks (``SinkSpec``)
+    — and mark their directives ``solve_excluded`` so ``build_problem`` leaves
+    them out of the FEM. The directives stay in
+    ``loaded.annotations.directives`` so the viewer still draws their markers.
+
+    Operates on the final merged directive list (schematic + editor
+    directives are appended before this runs), so a rail closed by a mix of
+    schematic and editor markers is correctly recognised as solvable.
+
+    Returns one human-readable warning per skipped rail and also appends them
+    to ``loaded.annotations.warnings``.
+    """
+    directives = loaded.annotations.directives
+    nets = loaded.extracted.nets
+
+    # ``open_loop_rails`` was added to AnnotationResult after some design-info
+    # caches were written; an unpickled-from-old-cache annotations object can
+    # lack it. Seed it so the reconcile assignment below (and the connectivity
+    # guard in build_problem) never AttributeError on a stale cache.
+    if not hasattr(loaded.annotations, "open_loop_rails"):
+        loaded.annotations.open_loop_rails = []
+
+    excluded_idx, warnings = _analyze_open_loop_rails(directives, nets)
 
     # Reconcile (don't accumulate). The GUI hands the worker its in-memory
     # LoadedProject back for every Resolve, so this can run repeatedly on the
@@ -3078,10 +3153,17 @@ def build_problem(
         # dead-end island is KEPT: its via anchors it to the layer it
         # bridges to, so the FEM solves it cleanly (it takes that far-side
         # voltage at zero current) — see _filter_stub_pieces for the why.
+        # Both filters query the same pin/via anchor index for this
+        # (layer, net) — build it once and share it.
+        anchor_index = _build_anchor_index(
+            pin_xys_by_pair.get(key, []),
+            via_xys_by_pair.get(key, []),
+        )
         filtered_shape, dropped_pieces = _filter_stub_pieces(
             gl.shape,
             pin_xys_by_pair.get(key, []),
             via_xys_by_pair.get(key, []),
+            anchor_index=anchor_index,
         )
         if dropped_pieces:
             stub_pieces_by_pair.setdefault(key, []).extend(dropped_pieces)
@@ -3090,6 +3172,7 @@ def build_problem(
             _MIN_FEM_MESH_PIECE_AREA_MM2,
             pin_xys_by_pair.get(key, []),
             via_xys_by_pair.get(key, []),
+            anchor_index=anchor_index,
         )
         if tiny_dropped:
             stub_pieces_by_pair.setdefault(key, []).extend(tiny_dropped)

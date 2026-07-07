@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fypa.topology.constants import MAX_CANVAS_WIDTH, WIRE_EPS
-from fypa.topology.geometry import compute_schematic_geometry
+from fypa.topology.geometry import SchematicGeometry, compute_schematic_geometry
 from fypa.topology.issues import make_issue
 from fypa.topology.net_aliases import is_conditional_gnd_name
 from fypa.topology.types import TopologyModel
@@ -33,8 +33,16 @@ __all__ = [
 ]
 
 
-def validate_topology(model: TopologyModel) -> list[dict]:
-    """Run model-level topology validation checks."""
+def validate_topology(
+    model: TopologyModel,
+    geo: SchematicGeometry | None = None,
+) -> list[dict]:
+    """Run model-level topology validation checks.
+
+    ``geo`` may be a pre-computed :class:`SchematicGeometry` for ``model.wires``
+    (e.g. the one the wiring report already built) to avoid a second O(S²)
+    geometry pass; it is recomputed only when omitted.
+    """
     issues: list[dict] = []
     directive_nodes = [n for n in model.nodes if n.role != "GND"]
 
@@ -44,11 +52,12 @@ def validate_topology(model: TopologyModel) -> list[dict]:
     issues.extend(check_gutter_wire_crossings(model))
     issues.extend(check_signal_vs_gnd_drop_gap(model))
 
-    geo = compute_schematic_geometry(
-        model.wires,
-        gnd_symbol_x=model.gnd_symbol_x,
-        gnd_bus_y=model.gnd_bus_y,
-    )
+    if geo is None:
+        geo = compute_schematic_geometry(
+            model.wires,
+            gnd_symbol_x=model.gnd_symbol_x,
+            gnd_bus_y=model.gnd_bus_y,
+        )
 
     issues.extend(check_wire_labels(model, geo))
     issues.extend(check_segment_spacing(geo.segments, geo.junctions, geo.bridges))
@@ -108,6 +117,12 @@ def check_conditional_gnd_names(model: TopologyModel) -> list[dict]:
 def merge_validation_issues(
     model: TopologyModel,
     wire_issues: list[dict],
+    geo: SchematicGeometry | None = None,
 ) -> list[dict]:
-    """Combine per-wire heuristic issues with model-level validation."""
-    return list(wire_issues) + validate_topology(model)
+    """Combine per-wire heuristic issues with model-level validation.
+
+    ``geo`` is threaded through to :func:`validate_topology` so a caller that
+    already built the geometry (the wiring report) does not pay for a second
+    build.
+    """
+    return list(wire_issues) + validate_topology(model, geo)
