@@ -897,6 +897,44 @@ def _mesh_polygons_in_parallel(
     log.info(f"{log_label}: meshing {n} pieces across {workers} worker(s)")
     payloads = [shapely.wkb.dumps(p) for p in polys]
     results = [None] * n
+
+    def _pinpoint_worker_crash(
+        unfinished: list[int],
+    ) -> mesh.MeshingException:
+        """Find the piece that actually aborted a worker.
+
+        A hard Triangle abort kills its worker process, which marks the whole
+        pool broken; ``BrokenProcessPool`` then surfaces on *every* still-
+        pending future, so the one that raised it is an arbitrary in-flight
+        piece, not the culprit. Re-mesh each unfinished piece in its own
+        single-worker subprocess (one at a time) so a repeat abort takes down
+        only the probe, never this process, and we can name the real offender.
+        """
+        log.info(
+            "%s: mesh worker crashed — isolating the failing copper piece "
+            "across %d unfinished piece(s)…",
+            log_label, len(unfinished),
+        )
+        for i in unfinished:
+            probe = ProcessPoolExecutor(max_workers=1)
+            try:
+                fut = probe.submit(
+                    mesh.triangulate_worker, payloads[i], seed_xys[i],
+                    switches[i], adaptive,
+                )
+                try:
+                    fut.result()
+                except mesh.MeshingException as exc:
+                    return _enrich_failure(i, exc)
+                except (BrokenProcessPool, BrokenExecutor):
+                    return _enrich_failure(i, _worker_crash_exception(i))
+            finally:
+                probe.shutdown(cancel_futures=True, wait=True)
+        # Every unfinished piece re-meshed cleanly: the original abort was
+        # transient (OOM, external kill), not a specific bad polygon. Blame
+        # the first unfinished piece as a best-effort marker.
+        blame = unfinished[0] if unfinished else 0
+        return _enrich_failure(blame, _worker_crash_exception(blame))
     # spawn-mode pool on Windows; workers re-import pdnsolver.mesh and pick up
     # the top-level triangulate_worker by name. When a shared pool is supplied
     # (solve's connected + disconnected passes reuse one), don't create or shut
@@ -928,10 +966,14 @@ def _mesh_polygons_in_parallel(
                 raise _enrich_failure(idx, exc) from exc
             except (BrokenProcessPool, BrokenExecutor) as exc:
                 # Triangle can abort a worker process on a bad PSLG — that
-                # surfaces here instead of a catchable MeshingException.
+                # surfaces here instead of a catchable MeshingException, and
+                # poisons every still-pending future, so `idx` is not the
+                # culprit. Close the (now unusable) pool and re-probe the
+                # unfinished pieces in isolation to name the real offender.
                 if shared_pool is not None:
                     shared_pool.close()
-                raise _enrich_failure(idx, _worker_crash_exception(idx)) from exc
+                unfinished = [i for i in range(n) if results[i] is None]
+                raise _pinpoint_worker_crash(unfinished) from exc
             done += 1
             # Per-piece progress every doubling (1, 2, 4, 8, …) plus the
             # last one — gives a useful pulse without spamming for large
@@ -1005,7 +1047,6 @@ def generate_meshes_for_problem(prob: problem.Problem,
     polys_to_mesh: list[shapely.geometry.Polygon] = []
     seed_xys_to_mesh: list[np.ndarray | None] = []
     layer_indices: list[int] = []
-    geom_indices: list[int] = []
     piece_contexts: list[dict] = []
 
     for layer_i, layer in enumerate(prob.layers):
@@ -1098,7 +1139,6 @@ def generate_meshes_for_problem(prob: problem.Problem,
             polys_to_mesh.append(layer.geoms[geom_i])
             seed_xys_to_mesh.append(seed_xy)
             layer_indices.append(layer_i)
-            geom_indices.append(geom_i)
             piece_contexts.append({
                 "layer_index": layer_i,
                 "geom_index": geom_i,

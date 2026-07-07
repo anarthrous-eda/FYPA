@@ -4751,14 +4751,24 @@ class _SolveWorker(QThread):
                     stage_callback=self.stage_changed.emit,
                 )
             except _pdn_mesh.MeshingException as mesh_exc:
-                from fypa.altium.loader import (
-                    build_mesh_failure_records,
-                    build_problem,
+                from fypa.altium.loader import build_mesh_failure_records
+
+                # solve_problem_adaptive built the Problem before meshing
+                # failed and attaches it to the exception — reuse it instead
+                # of rebuilding the whole geometry a second time. Fall back to
+                # a rebuild only if the artifacts are absent (e.g. the failure
+                # came from a path that did not attach them).
+                problem = getattr(mesh_exc, "built_problem", None)
+                per_net_layers = getattr(mesh_exc, "built_per_net_layers", None)
+                stub_pieces_by_pair = getattr(
+                    mesh_exc, "built_stub_pieces_by_pair", None,
                 )
-                (problem, via_segment_records,
-                 stub_pieces_by_pair, per_net_layers) = build_problem(
-                    loaded,
-                )
+                if problem is None or per_net_layers is None:
+                    from fypa.altium.loader import build_problem
+                    (problem, _via_segment_records,
+                     stub_pieces_by_pair, per_net_layers) = build_problem(
+                        loaded,
+                    )
                 mesh_failures = build_mesh_failure_records(
                     mesh_exc, problem, loaded, per_net_layers,
                 )

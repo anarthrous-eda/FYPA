@@ -1675,6 +1675,7 @@ def solve_problem_adaptive(
     Returns ``(padne_solution, problem, via_segment_records,
     stub_pieces_by_pair, per_net_layers, adaptive_info)``.
     """
+    from pdnsolver import mesh as _pdn_mesh
     from pdnsolver import solver as _pdn_solver
 
     adaptive_info: dict = {
@@ -1695,7 +1696,20 @@ def solve_problem_adaptive(
     def _solve_once(msg: str):
         if stage_callback is not None:
             stage_callback(msg)
-        return _pdn_solver.solve(problem, mesher_config=mesher_config)
+        try:
+            return _pdn_solver.solve(problem, mesher_config=mesher_config)
+        except _pdn_mesh.MeshingException as exc:
+            # Meshing failed after the Problem was already built. Hand the
+            # built geometry to the caller's failure path (attributes on the
+            # exception) so it can locate the bad copper without rebuilding
+            # the whole Problem a second time. Safe to attach here: this
+            # exception is already back in-process (solve() re-raises the
+            # worker's failure on this thread), so it is never re-pickled.
+            exc.built_problem = problem
+            exc.built_via_segment_records = via_segment_records
+            exc.built_stub_pieces_by_pair = stub_pieces_by_pair
+            exc.built_per_net_layers = per_net_layers
+            raise
 
     if not use_adaptive:
         solution = _solve_once(
@@ -2622,7 +2636,6 @@ def _filter_tiny_pieces(
     unique_via_xys = list({(round(x * 1000), round(y * 1000)): (x, y)
                            for x, y in via_xys}.values())
     via_pts = [shapely.geometry.Point(x, y) for x, y in unique_via_xys]
-    len(pin_pts)
     all_pts = pin_pts + via_pts
     tree = shapely.strtree.STRtree(all_pts) if all_pts else None
 
