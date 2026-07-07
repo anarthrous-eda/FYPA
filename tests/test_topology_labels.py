@@ -7,7 +7,7 @@ from fypa.topology import build_topology_model, render_topology_svg
 from fypa.topology.constants import BRIDGE_R, WIRE_EPS
 from fypa.topology.geometry import compute_schematic_geometry, parse_wire_path, path_to_segments
 from fypa.topology.labels import iter_label_candidates, label_text_size
-from tests.topology_fixtures import front_like_metadata, load_topology_fixture
+from tests.topology_fixtures import project_b_compact_metadata, load_topology_fixture
 
 
 def _label_on_segment(wire, net_segs) -> bool:
@@ -33,7 +33,7 @@ def _label_on_segment(wire, net_segs) -> bool:
 
 def test_topology_wire_labels_not_at_origin():
     """Placed net labels must not sit at (0,0); one label per net."""
-    model = build_topology_model(front_like_metadata())
+    model = build_topology_model(project_b_compact_metadata())
     labeled = [w for w in model.wires if w.label and not w.dashed]
     assert labeled
     for w in labeled:
@@ -44,7 +44,7 @@ def test_topology_wire_labels_not_at_origin():
 
 def test_topology_wire_labels_centered_on_segments():
     """Net labels sit on horizontal or vertical wire segments, not beside them."""
-    model = build_topology_model(front_like_metadata())
+    model = build_topology_model(project_b_compact_metadata())
     geo = compute_schematic_geometry(model.wires)
     by_net = {w.net: w for w in model.wires if w.label and not w.dashed}
     for net, wire in by_net.items():
@@ -54,7 +54,7 @@ def test_topology_wire_labels_centered_on_segments():
 
 def test_topology_wire_labels_prefer_horizontal_segments():
     """Wide horizontal runs get horizontal on-wire labels when available."""
-    model = build_topology_model(front_like_metadata())
+    model = build_topology_model(project_b_compact_metadata())
     svg = render_topology_svg(model)
     assert "VDD_3V3" in svg or "VDD_3V3_PWR" in svg
     vdd = next(
@@ -64,9 +64,9 @@ def test_topology_wire_labels_prefer_horizontal_segments():
     assert vdd.label_y in {75.0, 177.0} or not vdd.label_vertical
 
 
-def test_topology_front_hub_labels_clear_bridges():
-    """Dense front gutter: on-wire labels avoid bridge arc centres."""
-    model = build_topology_model(load_topology_fixture("front_hub_vdd"))
+def test_topology_project_b_hub_labels_clear_bridges():
+    """Dense hub gutter: on-wire labels avoid bridge arc centres."""
+    model = build_topology_model(load_topology_fixture("project_b_hub_vdd"))
     geo = compute_schematic_geometry(model.wires)
     labeled = [w for w in model.wires if w.label and not w.dashed]
     assert labeled
@@ -108,9 +108,9 @@ def test_label_search_space_yields_ordered_candidates():
     assert abs(vert.x - 180.0) < 1.0
 
 
-def test_front_hub_key_nets_on_horizontal_runs():
-    """front_hub_vdd: gutter nets label centered on their horizontal runs."""
-    model = build_topology_model(load_topology_fixture("front_hub_vdd"))
+def test_project_b_hub_key_nets_on_horizontal_runs():
+    """project_b_hub_vdd: gutter nets label centered on their horizontal runs."""
+    model = build_topology_model(load_topology_fixture("project_b_hub_vdd"))
     geo = compute_schematic_geometry(model.wires)
     by_net = {
         w.net: w for w in model.wires
@@ -126,9 +126,9 @@ def test_front_hub_key_nets_on_horizontal_runs():
             assert min(abs(w.label_y - y) for y in horiz_ys) < 1.0
 
 
-def test_label_search_front_hub_golden_nets():
-    """front_hub_vdd: key nets keep placed labels after search-space refactor."""
-    model = build_topology_model(load_topology_fixture("front_hub_vdd"))
+def test_label_search_project_b_hub_golden_nets():
+    """project_b_hub_vdd: key nets keep placed labels after search-space refactor."""
+    model = build_topology_model(load_topology_fixture("project_b_hub_vdd"))
     by_net = {
         w.net: w for w in model.wires
         if w.label and not w.dashed and w.label_x != 0.0
@@ -157,7 +157,7 @@ def test_find_label_at_returns_net_for_highlight():
     """Hovering a net label should resolve to that net."""
     from fypa.topology.hit_test import find_label_at, topology_net_at
 
-    model = build_topology_model(front_like_metadata())
+    model = build_topology_model(project_b_compact_metadata())
     labeled = next(w for w in model.wires if w.label and w.label_x)
     hit = find_label_at(model, labeled.label_x, labeled.label_y)
     assert hit is not None

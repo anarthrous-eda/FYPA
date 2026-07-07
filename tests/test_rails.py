@@ -84,7 +84,7 @@ def test_rail_groups_keep_named_net_for_series_bridge():
 
 
 def test_rail_groups_prefer_source_rail_over_bridged_led_nets():
-    """front design: VDD_3V3_PWR (SOURCE) bridged to LED nets via SERIES."""
+    """project_b design: VDD_3V3_PWR (SOURCE) bridged to LED nets via SERIES."""
     metadata = {
         "net_canonical": {
             "VDD_3V3": "VDD_3V3_PWR",

@@ -73,7 +73,7 @@ def test_loop_series_ports_face_parent():
     """Loop child puts all channel ports on the parent-facing side; parent faces child."""
     from tests.topology_fixtures import load_topology_fixture
 
-    model = build_topology_model(load_topology_fixture("rudder_stepper_loop_rails"))
+    model = build_topology_model(load_topology_fixture("project_a_stepper_loop_rails"))
     sides = _resistor_sides(model)
     j7 = sides["J7"]
     u1 = sides["U1"]

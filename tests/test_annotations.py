@@ -1084,7 +1084,7 @@ def test_regulator_explicit_gain_overrides_type():
 
 
 def test_lookup_inferred_vin_ignores_series_bridge_groups():
-    """Sense paths through GND must not make Vin ambiguous (rudder / PDN5_R)."""
+    """Sense paths through GND must not make Vin ambiguous (project_a / PDN5_R)."""
     supply_map = {"VDD_48V": 48.0, "VDD_12V": 12.0}
     assert _lookup_inferred_vin("VDD_48V", supply_map) == 48.0
     assert _lookup_inferred_vin("VDD_12V", supply_map) == 12.0

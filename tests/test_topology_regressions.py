@@ -26,9 +26,9 @@ def test_regression_column_gnd_feedback_stays_compact():
     assert model.width < MAX_CANVAS_WIDTH
 
 
-def test_regression_smart_footpiece_rail_merge_stays_compact():
+def test_regression_project_c_rail_merge_stays_compact():
     """SERIES-bridged rails must not collapse columns (11k+ px canvas bug)."""
-    model = build_topology_model(load_topology_fixture("smart_footpiece_rails"))
+    model = build_topology_model(load_topology_fixture("project_c_rails"))
     assert model.width < MAX_CANVAS_WIDTH
     l4 = next(n for n in model.nodes if n.designator == "L4")
     u6 = next(n for n in model.nodes if n.designator == "U6")
@@ -36,11 +36,11 @@ def test_regression_smart_footpiece_rail_merge_stays_compact():
     assert max(n.x for n in model.nodes if n.role != "GND") < 2000.0
 
 
-def test_regression_rudder_stepper_loop_stays_compact():
+def test_regression_project_a_stepper_loop_stays_compact():
     """U1↔J7 loop must not inflate empty columns (8892px canvas bug)."""
     from fypa.topology.metadata.layout_bridge import parse_topology_directives
 
-    meta = load_topology_fixture("rudder_stepper_loop_rails")
+    meta = load_topology_fixture("project_a_stepper_loop_rails")
     parsed = parse_topology_directives(meta)
     model = build_topology_model(meta)
     j3 = next(n for n in model.nodes if n.designator == "J3")
@@ -54,9 +54,9 @@ def test_regression_rudder_stepper_loop_stays_compact():
     assert parsed.columns["U1"] == parsed.columns["J3"] + 1
 
 
-def test_regression_front_hub_vdd_avoids_resistor_body():
+def test_regression_project_b_hub_vdd_avoids_resistor_body():
     """VDD_3V3_PWR must not run horizontally through the D1 block."""
-    model = build_topology_model(load_topology_fixture("front_hub_vdd"))
+    model = build_topology_model(load_topology_fixture("project_b_hub_vdd"))
     d1 = next(n for n in model.nodes if n.designator == "D1")
     nx, ny, nw, nh = d1.bounds
 
@@ -75,9 +75,9 @@ def test_regression_front_hub_vdd_avoids_resistor_body():
     assert not any(_crosses_d1(w) for w in vdd)
 
 
-def test_regression_front_j1_d1_direct_vdd():
+def test_regression_project_b_j1_d1_direct_vdd():
     """VDD hub row connects J1 to D1 at y=75; no detour vertical on symbol edges."""
-    model = build_topology_model(load_topology_fixture("front_hub_vdd"))
+    model = build_topology_model(load_topology_fixture("project_b_hub_vdd"))
     j1 = next(n for n in model.nodes if n.designator == "J1")
     d1 = next(n for n in model.nodes if n.designator == "D1")
     u3 = next(n for n in model.nodes if n.designator == "U3")
@@ -112,11 +112,11 @@ def test_regression_front_j1_d1_direct_vdd():
                 )
 
 
-def test_regression_front_no_vertical_x_collision():
+def test_regression_project_b_no_vertical_x_collision():
     """Foreign verticals may share x only when their y spans do not overlap."""
     from fypa.topology.geometry import compute_schematic_geometry
 
-    model = build_topology_model(load_topology_fixture("front_hub_vdd"))
+    model = build_topology_model(load_topology_fixture("project_b_hub_vdd"))
     geo = compute_schematic_geometry(model.wires)
     verticals = [s for s in geo.segments if s.orient == "V"]
     for i, a in enumerate(verticals):
@@ -135,18 +135,18 @@ def test_regression_front_no_vertical_x_collision():
             )
 
 
-def test_regression_rudder_inline_passives_before_sinks():
+def test_regression_project_a_inline_passives_before_sinks():
     """Inline passives feeding sinks sit at or before the sink column."""
     from pathlib import Path
     import pickle
 
     from fypa.topology.metadata.layout_bridge import parse_topology_directives
 
-    probe = Path("_probe/rudder/topology.pkl")
+    probe = Path("_probe/project_a/topology.pkl")
     if not probe.is_file():
         import pytest
 
-        pytest.skip("rudder probe missing")
+        pytest.skip("project_a probe missing")
     with probe.open("rb") as f:
         meta = pickle.load(f)
     parsed = parse_topology_directives(meta.get("metadata", meta))
@@ -166,16 +166,16 @@ def test_regression_rudder_inline_passives_before_sinks():
     assert cols["U2"] == sink_col
 
 
-def test_regression_rudder_regulator_column_single_gnd_trunk():
+def test_regression_project_a_regulator_column_single_gnd_trunk():
     """Stacked loads in one column share one GND trunk (not one per stub lane)."""
     from pathlib import Path
     import pickle
 
-    probe = Path("_probe/rudder/topology.pkl")
+    probe = Path("_probe/project_a/topology.pkl")
     if not probe.is_file():
         import pytest
 
-        pytest.skip("rudder probe missing")
+        pytest.skip("project_a probe missing")
     with probe.open("rb") as f:
         meta = pickle.load(f)
     model = build_topology_model(meta.get("metadata", meta))
@@ -196,7 +196,7 @@ def test_regression_probe_boards_no_foreign_gutter_wire_crossings():
     """Gutter signal pairs must not cross each other on probe boards.
 
     Hub tap/trunk geometry in a shared gutter is validated separately (hub
-    fixtures filter ``foreign_wire_crossing``; rudder AX×VDD_3V3 is a known
+    fixtures filter ``foreign_wire_crossing``; project_a AX×VDD_3V3 is a known
     open routing item, not a pair-vs-pair regression).
     """
     from pathlib import Path
@@ -204,7 +204,7 @@ def test_regression_probe_boards_no_foreign_gutter_wire_crossings():
 
     from fypa.topology.validate import validate_topology
 
-    for board in ("front", "rudder", "smart footpiece"):
+    for board in ("project_b", "project_a", "project_c"):
         probe = Path(f"_probe/{board}/topology.pkl")
         if not probe.is_file():
             import pytest
@@ -230,7 +230,7 @@ def test_regression_probe_boards_no_foreign_gutter_wire_crossings():
 
 def test_regression_gnd_column_single_trunk():
     """Each GND column has at most one vertical trunk wire."""
-    model = build_topology_model(load_topology_fixture("front_hub_vdd"))
+    model = build_topology_model(load_topology_fixture("project_b_hub_vdd"))
     trunks_by_x: dict[float, int] = {}
     for w in model.wires:
         if w.routing_kind != "gnd_trunk":
@@ -249,7 +249,7 @@ def test_regression_gutter_vertical_avoids_symbol_columns():
     from fypa.topology.validate.util import foreign_segments_cross
     from fypa.topology.geometry import parse_wire_path, path_to_segments
 
-    model = build_topology_model(load_topology_fixture("rudder_stepper_loop_rails"))
+    model = build_topology_model(load_topology_fixture("project_a_stepper_loop_rails"))
     gap_issues = check_vertical_bus_column_gaps(model)
     assert not gap_issues, gap_issues
     sns = [w for w in model.wires if w.net in ("SNS_A", "SNS_B")]
@@ -326,7 +326,7 @@ def test_regression_sandbox_signal_clears_gnd_drops():
 
 def test_regression_port_horizontal_stub_before_vertical():
     """Wires leaving a port edge must run horizontally to the stub before turning."""
-    model = build_topology_model(load_topology_fixture("front_hub_vdd"))
+    model = build_topology_model(load_topology_fixture("project_b_hub_vdd"))
 
     def _start_port(wire):
         for node in model.nodes:
@@ -387,7 +387,7 @@ def test_regression_port_horizontal_stub_before_vertical():
 
 def test_regression_gnd_trunk_at_stub_column():
     """GND column trunks align with the outward port stub line."""
-    model = build_topology_model(load_topology_fixture("front_hub_vdd"))
+    model = build_topology_model(load_topology_fixture("project_b_hub_vdd"))
     from fypa.topology.placement import port_stub_x
 
     for wire in model.wires:
@@ -408,9 +408,9 @@ def test_regression_gnd_trunk_at_stub_column():
         )
 
 
-def test_regression_gnd_tap_min_stub_front():
+def test_regression_gnd_tap_min_stub_project_b():
     """GND taps leave the port with a horizontal stub before joining the trunk."""
-    model = build_topology_model(load_topology_fixture("front_hub_vdd"))
+    model = build_topology_model(load_topology_fixture("project_b_hub_vdd"))
 
     def _port_for(wire):
         for node in model.nodes:
@@ -444,7 +444,7 @@ def test_regression_stacked_stub_lengths():
         PORT_WIRE_STUB_MIN,
     )
 
-    model = build_topology_model(load_topology_fixture("front_hub_vdd"))
+    model = build_topology_model(load_topology_fixture("project_b_hub_vdd"))
     d1 = next(n for n in model.nodes if n.node_id == "D1")
     right = sorted([p for p in d1.ports if p.side == "right"], key=lambda p: p.y)
     assert len(right) == 3
@@ -471,7 +471,7 @@ def test_regression_no_open_stub_ends():
     """Port stub ends must connect to verticals or continue on the routed net."""
     from fypa.topology.validate.stubs import check_open_stub_ends
 
-    for fixture_name in ("front_hub_vdd", "front_like", "gnd_junction_tap"):
+    for fixture_name in ("project_b_hub_vdd", "project_b_compact", "gnd_junction_tap"):
         model = build_topology_model(load_topology_fixture(fixture_name))
         issues = check_open_stub_ends(model)
         assert not issues, issues
@@ -485,7 +485,7 @@ def test_regression_no_dangling_wire_endpoints():
     from fypa.topology.geometry import compute_schematic_geometry
     from fypa.topology.validate import check_dangling_wire_endpoints
 
-    for fixture_name in ("front_hub_vdd", "front_like", "gnd_junction_tap"):
+    for fixture_name in ("project_b_hub_vdd", "project_b_compact", "gnd_junction_tap"):
         model = build_topology_model(load_topology_fixture(fixture_name))
         geo = compute_schematic_geometry(
             model.wires,
@@ -510,8 +510,8 @@ def test_regression_no_dangling_wire_endpoints():
 
 
 def test_single_pass_builder_zero_issues():
-    """Builder must not need a second layout pass (issues == 0 on front)."""
-    model = build_topology_model(load_topology_fixture("front_hub_vdd"))
+    """Builder must not need a second layout pass (issues == 0 on project_b)."""
+    model = build_topology_model(load_topology_fixture("project_b_hub_vdd"))
     report = topology_wiring_report(model)
     assert report["summary"]["issues"] == 0
 

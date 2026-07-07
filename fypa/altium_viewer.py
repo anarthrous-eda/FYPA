@@ -4209,6 +4209,9 @@ class _SolveWorker(QThread):
         self, loaded, pristine_loaded, _timer,
         *, needs_directives: bool = False,
         stage_message: str | None = None,
+        mesh_failures: list | None = None,
+        stub_pieces_by_pair=None,
+        per_net_layers=None,
     ) -> None:
         """Package a stub LeanSolution + metadata and finish the worker."""
         from fypa.altium.loader import build_solve_metadata
@@ -4220,11 +4223,16 @@ class _SolveWorker(QThread):
         if needs_directives:
             stub_solution.solver_info["needs_directives"] = True
         with _timer.stage("Build stub metadata"):
-            per_net_layers = build_per_net_geometry_layers(loaded.extracted)
+            if per_net_layers is None:
+                per_net_layers = build_per_net_geometry_layers(
+                    loaded.extracted,
+                )
             metadata = build_solve_metadata(
                 loaded, None,
                 settings=self._settings,
                 per_net_layers=per_net_layers,
+                stub_pieces_by_pair=stub_pieces_by_pair,
+                mesh_failures=mesh_failures,
             )
         _timer.log_breakdown()
         self.finished_ok.emit(stub_solution, metadata, pristine_loaded)
@@ -4611,7 +4619,8 @@ class _SolveWorker(QThread):
                     loaded, mesher_config, _timer)
             else:
                 _packaged = self._solve_and_package_inprocess(
-                    loaded, mesher_config, _timer)
+                    loaded, mesher_config, _timer,
+                    pristine_loaded=pristine_loaded)
             if _packaged is None:
                 return
             new_solution, metadata = _packaged
@@ -4695,15 +4704,18 @@ class _SolveWorker(QThread):
         can kill it directly on cancel."""
         self._solve_child = proc
 
-    def _solve_and_package_inprocess(self, loaded, mesher_config, _timer):
+    def _solve_and_package_inprocess(self, loaded, mesher_config, _timer, *,
+                                      pristine_loaded=None):
         """Mesh + solve + build metadata + convert to lean, on this thread.
 
         Returns ``(new_solution, metadata)``, or ``None`` if a cancel was
-        requested at a stage boundary. This is the original in-process path,
-        unchanged except that the cancel checks return ``None`` (so the caller
-        returns) instead of returning from ``run`` directly."""
+        requested at a stage boundary or meshing failed (stub viewer opened).
+        This is the original in-process path, unchanged except that the cancel
+        checks return ``None`` (so the caller returns) instead of returning
+        from ``run`` directly."""
         from fypa.altium.loader import build_solve_metadata, solve_problem_adaptive
         from fypa.lean_solution import to_lean_solution
+        from pdnsolver import mesh as _pdn_mesh
 
         # Python warnings.warn() (e.g. padne's SolverWarning about ground
         # node current) are routed into the logging system once at app
@@ -4738,6 +4750,28 @@ class _SolveWorker(QThread):
                     adaptive_regulator_gain=self._adaptive_regulator_gain,
                     stage_callback=self.stage_changed.emit,
                 )
+            except _pdn_mesh.MeshingException as mesh_exc:
+                from fypa.altium.loader import (
+                    build_mesh_failure_records,
+                    build_problem,
+                )
+                (problem, via_segment_records,
+                 stub_pieces_by_pair, per_net_layers) = build_problem(
+                    loaded,
+                )
+                mesh_failures = build_mesh_failure_records(
+                    mesh_exc, problem, loaded, per_net_layers,
+                )
+                if pristine_loaded is not None:
+                    self._emit_stub_and_finish(
+                        loaded, pristine_loaded, _timer,
+                        mesh_failures=mesh_failures,
+                        stub_pieces_by_pair=stub_pieces_by_pair,
+                        per_net_layers=per_net_layers,
+                        stage_message="Meshing failed — opening design…",
+                    )
+                    return None
+                raise
             finally:
                 _solver_log.removeHandler(_substage_handler)
                 _mesh_log.removeHandler(_substage_handler)
@@ -6670,6 +6704,7 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         # marker placement rather than a finished solve.
         _maybe_warn_needs_directives(new_win or self, new_solution)
         _maybe_show_annotation_errors(new_win or self, metadata)
+        _maybe_show_mesh_failures(new_win or self, metadata)
         # Rails with only sources or only sinks were skipped — tell the user.
         _maybe_warn_open_loop_rails(new_win or self, metadata)
         # Nets whose source & sink landed on disconnected copper — tell the user.
@@ -7629,6 +7664,8 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         # or File > Open Project File), surface any still-pending rails.
         if self._project is not None:
             self._update_pending_rails()
+        if (self.metadata or {}).get("mesh_failures"):
+            _activate_mesh_failure_layer(self)
         self._render()
 
     def _init_solution_indices(self) -> None:
@@ -7860,6 +7897,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         if has_rails:
             self._position_scale_overlay()
 
+        if (self.metadata or {}).get("mesh_failures"):
+            _activate_mesh_failure_layer(self)
+
     def _apply_solve_result(
         self,
         new_solution,
@@ -7972,6 +8012,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
 
             _maybe_warn_needs_directives(self, new_solution)
             _maybe_show_annotation_errors(self, metadata)
+            _maybe_show_mesh_failures(self, metadata)
             _maybe_warn_open_loop_rails(self, metadata)
             _maybe_warn_connectivity_breaks(self, metadata)
 
@@ -9876,6 +9917,49 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                             _emit(self._copper_poly_wire(poly), z, rgb,
                                   alpha=layer_alpha, **ac_bucket)
 
+        # FEM mesh failures — bright marker at the reported problem site.
+        # Drawn on top of everything so it stays visible even when the
+        # solve aborted and there is no heatmap mesh (stub viewer).
+        for rec in md.get("mesh_failures") or []:
+            center = _mesh_failure_marker_xy(rec)
+            if center is None:
+                continue
+            cx, cy = center
+            lid = rec.get("layer_id", -1)
+            z = 0.0
+            if isinstance(lid, int) and lid >= 0:
+                for phys, plid in self._phys_name_to_layer_id.items():
+                    if plid == lid:
+                        z = self._layer_z_for(phys)
+                        break
+            if not in_2d:
+                bucket: dict[str, bool] = {}
+            else:
+                bucket = {"top": True}
+            _emit(
+                _overlay_fan_tris(
+                    _overlay_circle_ring(cx, cy, _MESH_FAILURE_MARKER_RADIUS_MM, 24),
+                ),
+                z, (1.0, 0.15, 0.15), alpha=0.85, **bucket,
+            )
+            _emit(
+                _overlay_outline_tris(
+                    _overlay_circle_ring(cx, cy, _MESH_FAILURE_RING_RADIUS_MM, 32),
+                    0.2, closed=True,
+                ),
+                z, (1.0, 1.0, 0.0), alpha=1.0, **bucket,
+            )
+            # Crosshair arms so the spot is obvious at any zoom.
+            arm = _MESH_FAILURE_RING_RADIUS_MM * 1.6
+            for seg in (
+                [(cx - arm, cy), (cx + arm, cy)],
+                [(cx, cy - arm), (cx, cy + arm)],
+            ):
+                _emit(
+                    _overlay_outline_tris(seg, 0.15, closed=False),
+                    z, (1.0, 1.0, 0.0), alpha=1.0, **bucket,
+                )
+
         # Concatenate under-mesh chunks first so the GL viewer can draw
         # that leading slice before the heatmap mesh.
         # ``under_*`` (drawn before the mesh, 2D only): bottom-side board
@@ -10879,6 +10963,16 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             self._render_rerender_pending = False
             QTimer.singleShot(0, self._render)
 
+    def _ensure_mesh_failure_highlights(self) -> None:
+        """Zoom to mesh-failure site once; outline is also in overlay fills."""
+        if getattr(self, "_mesh_failures_highlighted", False):
+            return
+        failures = (self.metadata or {}).get("mesh_failures") or []
+        if not failures:
+            return
+        self._mesh_failures_highlighted = True
+        _apply_mesh_failure_highlights(self)
+
     def _render_impl(self) -> None:
         # Optional per-stage timing. When ``self._render_profile`` is a
         # list (set by tools/bench_recolor.py) each stage appends a
@@ -10973,6 +11067,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 )
             else:
                 self.summary_label.setText("(no rails selected)")
+            self._ensure_mesh_failure_highlights()
             return
 
         # Combine every per-net layer in the selected rail groups across
@@ -11014,6 +11109,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 )
             else:
                 self.summary_label.setText("(no mesh — selected layers have no copper on these rails)")
+            self._ensure_mesh_failure_highlights()
             return
 
         # Vertices referenced by at least one triangle. Orphan vertices
@@ -11371,6 +11467,8 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         # changes — leave the user's pan/zoom alone.
         if self._need_initial_fit:
             self._fit_board_to_canvas()
+
+        self._ensure_mesh_failure_highlights()
 
         # Summary stats over the mesh's actual values — orphan vertices
         # excluded (same reason as the scale-range filtering above). In
@@ -13951,6 +14049,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         """
         if (not self._need_initial_fit or self._gl_viewer is None
                 or not self._gl_viewer.isVisible()):
+            return
+        failures = (self.metadata or {}).get("mesh_failures") or []
+        if failures:
+            self._need_initial_fit = False
+            if not getattr(self, "_mesh_failures_highlighted", False):
+                self._mesh_failures_highlighted = True
+                _apply_mesh_failure_highlights(self)
             return
         bounds = self._board_outline_bounds() or self._data_bounds
         if bounds is None:
@@ -24154,6 +24259,163 @@ def _maybe_warn_needs_directives(parent_win, solution) -> None:
     )
 
 
+_MESH_FAILURE_MARKER_RADIUS_MM = 3.0
+_MESH_FAILURE_RING_RADIUS_MM = 5.0
+# Only trace the full failing polygon when it is a local feature — large
+# pours would otherwise look like "the whole layer is highlighted".
+_MESH_FAILURE_LOCAL_OUTLINE_MAX_SPAN_MM = 25.0
+
+
+def _mesh_failure_marker_xy(rec: dict) -> tuple[float, float] | None:
+    loc = rec.get("location_xy")
+    if loc and len(loc) >= 2:
+        return float(loc[0]), float(loc[1])
+    ext = rec.get("exterior")
+    if ext is None:
+        return None
+    try:
+        n = len(ext)
+    except TypeError:
+        return None
+    if n < 3:
+        return None
+    xs = [float(p[0]) for p in ext]
+    ys = [float(p[1]) for p in ext]
+    return sum(xs) / len(xs), sum(ys) / len(ys)
+
+
+def _mesh_failure_outline_rings(rec: dict) -> list[list[tuple[float, float]]]:
+    """Rings for the dashed GL overlay — local marker, not whole pours."""
+    center = _mesh_failure_marker_xy(rec)
+    if center is None:
+        return []
+    cx, cy = center
+    rings: list[list[tuple[float, float]]] = []
+    for radius in (_MESH_FAILURE_MARKER_RADIUS_MM, _MESH_FAILURE_RING_RADIUS_MM):
+        ring = _overlay_circle_ring(cx, cy, radius, 32)
+        rings.append([(float(x), float(y)) for x, y in ring])
+    ext = rec.get("exterior")
+    if ext is not None:
+        try:
+            n = len(ext)
+        except TypeError:
+            n = 0
+        if n >= 3:
+            xs = [float(p[0]) for p in ext]
+            ys = [float(p[1]) for p in ext]
+            span = max(max(xs) - min(xs), max(ys) - min(ys))
+            if span <= _MESH_FAILURE_LOCAL_OUTLINE_MAX_SPAN_MM:
+                rings.append([(float(x), float(y)) for x, y in ext])
+    return rings
+
+
+def _maybe_show_mesh_failures(parent_win, metadata) -> None:
+    """Pop a notice and highlight bad copper when FEM meshing failed."""
+    if not isinstance(metadata, dict):
+        return
+    failures = metadata.get("mesh_failures") or []
+    if not failures:
+        return
+    summaries = []
+    for rec in failures[:3]:
+        text = rec.get("summary") or ""
+        if text:
+            summaries.append(text)
+    body = "\n\n".join(summaries) if summaries else (
+        "One or more copper polygons could not be meshed."
+    )
+    if len(failures) > 3:
+        body += f"\n\n… and {len(failures) - 3} more."
+    box = QMessageBox(parent_win)
+    box.setIcon(QMessageBox.Icon.Critical)
+    box.setWindowTitle("Meshing failed")
+    box.setText(
+        "Look for the yellow ring and red disc on the board — that marks "
+        "where the mesh failed. (The red Top-layer copper overlay is "
+        "normal; it is not the error marker.) Fix the geometry there in "
+        "Altium, then press ↻ Solve."
+    )
+    box.setDetailedText(body)
+    box.exec()
+
+
+def _phys_name_for_layer_id(viewer, layer_id: int) -> str | None:
+    """Map a stackup layer_id to the physical-layer name in the side panel."""
+    if layer_id < 0:
+        return None
+    for phys, plid in getattr(viewer, "_phys_name_to_layer_id", {}).items():
+        if plid == layer_id:
+            return phys
+    return None
+
+
+def _primary_mesh_failure_layer_id(failures: list) -> int | None:
+    for rec in failures:
+        lid = rec.get("layer_id")
+        if isinstance(lid, int) and lid >= 0:
+            return lid
+    return None
+
+
+def _activate_mesh_failure_layer(viewer) -> bool:
+    """Turn on and select the physical layer that contains the mesh failure."""
+    metadata = getattr(viewer, "metadata", None) or {}
+    failures = metadata.get("mesh_failures") or []
+    if not failures:
+        return False
+    layer_id = _primary_mesh_failure_layer_id(failures)
+    if layer_id is None:
+        return False
+    phys = _phys_name_for_layer_id(viewer, layer_id)
+    if phys is None:
+        return False
+
+    changed = False
+    for nm, eye in getattr(viewer, "_layer_eye_buttons", []):
+        if nm == phys and not eye.isVisibleState():
+            eye.setVisibleState(True, emit=False)
+            changed = True
+            break
+    for nm, eye2 in getattr(viewer, "_layer_eye2_buttons", []):
+        if nm == phys and not eye2.isVisibleState():
+            eye2.setVisibleState(True, emit=False)
+            changed = True
+            break
+    if getattr(viewer, "_selected_layer", None) != phys:
+        viewer._selected_layer = phys
+        if hasattr(viewer, "_apply_layer_selection_highlight"):
+            viewer._apply_layer_selection_highlight()
+        changed = True
+    if changed:
+        if hasattr(viewer, "_sync_all_layers_eye"):
+            viewer._sync_all_layers_eye()
+        if hasattr(viewer, "_sync_all_layers_eye2"):
+            viewer._sync_all_layers_eye2()
+    return changed
+
+
+def _apply_mesh_failure_highlights(viewer) -> None:
+    """Zoom to and outline the mesh-failure marker(s)."""
+    if viewer is None:
+        return
+    metadata = getattr(viewer, "metadata", None) or {}
+    failures = metadata.get("mesh_failures") or []
+    if not failures:
+        return
+    _activate_mesh_failure_layer(viewer)
+    rings: list[list[tuple[float, float]]] = []
+    focus_xy: tuple[float, float] | None = None
+    for rec in failures:
+        rings.extend(_mesh_failure_outline_rings(rec))
+        if focus_xy is None:
+            focus_xy = _mesh_failure_marker_xy(rec)
+    gl = getattr(viewer, "_gl_viewer", None)
+    if gl is not None and rings:
+        gl.set_mesh_failure_outline(rings)
+    if focus_xy is not None and gl is not None:
+        gl.set_view_center_scale(focus_xy[0], focus_xy[1], 0.08)
+
+
 def _maybe_show_annotation_errors(parent_win, metadata) -> None:
     """Pop a notice listing PDN directives that could not be resolved and were
     skipped.
@@ -24924,10 +25186,9 @@ def _format_setup_html(solution, metadata: dict | None,
                 parts.append(f"<tr><td>{_esc(term_name)}</td>"
                              "<td colspan='5' class='warn'>(no pins resolved)</td></tr>")
             else:
-                # Show the net the directive named (PDN_*_NET). When a SERIES
-                # bridge resolved the terminal onto a different net's pads,
-                # keep the named net as the headline and note the actual pad
-                # net after it, so the table matches what the user authored.
+                # Show the net the directive named (PDN_*_NET). When local sheet
+                # label resolution maps the name to pads on a different PCB net,
+                # keep the named net as the headline and note the actual pad net.
                 req_net = term.get("requested_net")
                 for i, pin in enumerate(pins):
                     actual_net = pin.get('net', '')

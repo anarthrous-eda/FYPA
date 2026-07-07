@@ -690,6 +690,10 @@ class GLMeshViewer(QOpenGLWidget):
         # region-with-holes gets the outer ring plus one ring per hole.
         self._primitive_selection_rings: list[
             list[tuple[float, float]]] | None = None
+        # Red dashed rings around copper that failed FEM meshing — set by the
+        # host when a solve aborts on invalid geometry.
+        self._mesh_failure_rings: list[
+            list[tuple[float, float]]] | None = None
         # Free-marker drag: the host registers a pure hit-test callback
         # (``world_x, world_y -> bool``); a left press over a marker is
         # claimed as a drag gesture instead of a pan / click, and the
@@ -1864,6 +1868,19 @@ class GLMeshViewer(QOpenGLWidget):
         self._primitive_selection_rings = new
         self.update()
 
+    def set_mesh_failure_outline(self, rings) -> None:
+        """Set (or clear, with ``None``) red dashed rings around copper
+        polygons that could not be meshed. Same ring format as
+        :meth:`set_primitive_selection_outline`."""
+        if rings is None:
+            new = None
+        else:
+            new = [[(float(x), float(y)) for x, y in ring] for ring in rings]
+        if new == self._mesh_failure_rings:
+            return
+        self._mesh_failure_rings = new
+        self.update()
+
     def set_measurement_line(self, x0: float, y0: float,
                               x1: float, y1: float) -> None:
         """Show a thin white line from world-mm ``(x0, y0)`` to ``(x1, y1)``.
@@ -2959,6 +2976,7 @@ class GLMeshViewer(QOpenGLWidget):
         painter.setRenderHint(QPainter.Antialiasing, True)
         self._draw_editor_grid(painter)
         self._draw_editor_selection(painter)
+        self._draw_mesh_failure_outline(painter)
         self._draw_primitive_selection(painter)
         self._draw_overlay_labels(painter, on_top=False)
         self._draw_markers(painter)
@@ -3050,6 +3068,34 @@ class GLMeshViewer(QOpenGLWidget):
         painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
         painter.drawPolygon(poly)
+        painter.restore()
+
+    def _draw_mesh_failure_outline(self, painter: QPainter) -> None:
+        """Dashed red outline around copper that failed FEM meshing."""
+        if self._mesh_failure_rings is None:
+            return
+        painter.save()
+        pen = QPen(QColor("#ff4444"))
+        pen.setWidthF(max(_EDITOR_SELECTION_BOX_PX, 2.0))
+        pen.setStyle(Qt.DashLine)
+        pen.setJoinStyle(Qt.MiterJoin)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        for ring in self._mesh_failure_rings:
+            if len(ring) < 2:
+                continue
+            poly = QPolygonF()
+            ok = True
+            for wx, wy in ring:
+                px, py = self.world_to_screen(wx, wy, 0.0)
+                if px < -1e8 or py < -1e8:
+                    ok = False
+                    break
+                poly.append(QPointF(px, py))
+            if not ok or poly.size() < 2:
+                continue
+            painter.drawPolygon(poly)
         painter.restore()
 
     def _draw_primitive_selection(self, painter: QPainter) -> None:
