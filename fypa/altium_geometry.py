@@ -992,8 +992,8 @@ def build_layer_geometry(proj: ExtractedProject, layer_id: int,
     # same helpers the per-net path uses) instead of a per-primitive
     # LineString.buffer() Python call — bit-identical output (verified
     # WKB-for-WKB), far fewer Python↔C round trips on track-heavy layers.
-    # (The GEOS unary_union below is kept as-is: routing it through Clipper2
-    # would be faster but would shift the display geometry at the µm snap.)
+    # (The all-nets union below now runs through the Clipper2 fuse seam at the
+    # 1 nm lossless scale — see the fuse() call at the end of this function.)
     valid_tracks = [t for t in proj.tracks
                     if t.layer_id == layer_id and not t.is_keepout
                     and not t.is_polygon_outline and t.width_mm > 0]
@@ -1057,7 +1057,15 @@ def build_layer_geometry(proj: ExtractedProject, layer_id: int,
     if not pieces:
         shape: shapely.geometry.MultiPolygon = shapely.geometry.MultiPolygon()
     else:
-        unioned = shapely.ops.unary_union(pieces)
+        # Fuse all-nets copper via the selected backend — Clipper2 by default
+        # (~10-16x faster than GEOS on a full-layer union), shapely on any error
+        # or when FYPA_FUSE_BACKEND=shapely. grid_size=None selects Clipper2's
+        # 1 nm integer scale, lossless for PCB coordinates, so the display
+        # geometry does not shift at a µm snap (the reason this union was
+        # historically kept on raw GEOS); FYPA_FUSE_BACKEND=verify re-qualifies
+        # a board by comparing Clipper2 vs shapely areas per layer.
+        unioned = _clipper_fuse.fuse(
+            pieces, grid_size=None, key=f"layer {layer_id} (all nets)")
         shape = _ensure_multipolygon(unioned)
 
     return GeometryLayer(
@@ -1095,6 +1103,15 @@ def build_layer_geometries(proj: ExtractedProject) -> list[GeometryLayer]:
     through_cache = _ThroughFeatureCache(proj)
     # Small boards: thread-pool overhead isn't worth it.
     if len(enabled) < 3:
+        return [build_layer_geometry(proj, lid, enabled, through_cache)
+                for lid in enabled]
+
+    # The Clipper2 fuse backend (the default) is GIL-bound — unlike shapely 2's
+    # union it does not release the GIL — so a per-layer thread pool would only
+    # thrash the GIL. Run serial when it's active; serial Clipper2 still beats
+    # the threaded shapely path on large boards (same trade-off as
+    # _parallel_union_buckets). The shapely / verify backends keep the pool.
+    if _clipper_fuse.backend() == "clipper" and _clipper_fuse.clipper_available():
         return [build_layer_geometry(proj, lid, enabled, through_cache)
                 for lid in enabled]
 
