@@ -1244,8 +1244,12 @@ class GLMeshViewer(QOpenGLWidget):
 
         ``positions`` is an (N, 3) float array of vertex triples
         (consecutive triples form one triangle), so N must be a
-        multiple of 3. ``colors`` is an (N, 3) RGB array in [0..1]
-        matching ``positions`` length.
+        multiple of 3. ``colors`` is an (N, 3) RGB or (N, 4) RGBA
+        array in [0..1] matching ``positions`` length; a 3-channel
+        array is padded to alpha=1.0. Barrel sections that carry no
+        rail current are pushed with alpha < 1 so they render as a
+        faint ghost (see :meth:`altium_viewer._push_via_cylinders`);
+        the batch is alpha-blended so those sections fade out.
 
         Drawn only in 3D mode (skipped in 2D where stacked cylinders
         would just be confusing overlapping circles).
@@ -1254,8 +1258,14 @@ class GLMeshViewer(QOpenGLWidget):
         col = np.ascontiguousarray(colors, dtype=np.float32)
         if pos.ndim != 2 or pos.shape[1] != 3 or pos.shape[0] % 3 != 0:
             raise ValueError("positions must be (3*k, 3)")
-        if col.shape != pos.shape:
-            raise ValueError("colors shape must match positions")
+        if col.ndim != 2 or col.shape[0] != pos.shape[0] \
+                or col.shape[1] not in (3, 4):
+            raise ValueError("colors must be (N, 3) or (N, 4) matching "
+                             "positions length")
+        if col.shape[1] == 3:
+            col = np.concatenate(
+                (col, np.ones((col.shape[0], 1), dtype=np.float32)), axis=1)
+        col = np.ascontiguousarray(col, dtype=np.float32)
         self._pending_cyl_positions = pos
         self._pending_cyl_colors = col
         self._n_cyl_vertices = pos.shape[0]
@@ -2452,7 +2462,7 @@ class GLMeshViewer(QOpenGLWidget):
                 GL.glDepthFunc(GL.GL_LESS)
         if (self._view_mode == "3d"
                 and self._n_cyl_vertices > 0
-                and self._line_program is not None):
+                and self._overlay_program is not None):
             self._draw_cylinders()
         if (self._n_arrow_vertices > 0
                 and self._line_program is not None):
@@ -2768,10 +2778,14 @@ class GLMeshViewer(QOpenGLWidget):
         prog.release()
 
     def _draw_cylinders(self) -> None:
-        """Draw the via-cylinder triangle batch via the line shader."""
-        prog = self._line_program
+        """Draw the via-cylinder triangle batch via the RGBA overlay
+        shader. Uses the 4-channel colour path (not the flat line shader)
+        so barrel sections with no rail current can be pushed at reduced
+        alpha and fade out; blending is enabled around the draw so those
+        sections read as a faint ghost against whatever is behind them."""
+        prog = self._overlay_program
         prog.bind()
-        prog.setUniformValue(self._line_u_mvp_loc, self._current_mvp())
+        prog.setUniformValue(self._overlay_u_mvp_loc, self._current_mvp())
 
         self._cyl_vao.bind()
         self._cyl_pos_vbo.bind()
@@ -2780,10 +2794,13 @@ class GLMeshViewer(QOpenGLWidget):
         self._cyl_pos_vbo.release()
         self._cyl_col_vbo.bind()
         GL.glEnableVertexAttribArray(1)
-        GL.glVertexAttribPointer(1, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
+        GL.glVertexAttribPointer(1, 4, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
         self._cyl_col_vbo.release()
 
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
         GL.glDrawArrays(GL.GL_TRIANGLES, 0, self._n_cyl_vertices)
+        GL.glDisable(GL.GL_BLEND)
 
         GL.glDisableVertexAttribArray(0)
         GL.glDisableVertexAttribArray(1)

@@ -347,8 +347,17 @@ class LoadedProject:
 
     @property
     def is_solveable(self) -> bool:
-        """True if we have at least one enabled copper layer, no annotation
-        errors, and one SOURCE-equivalent directive.
+        """True if we have at least one enabled copper layer and one
+        SOURCE-equivalent directive.
+
+        Annotation errors do NOT block solving. A directive that fails to
+        resolve (a mistyped net, a missing pad) is already dropped from
+        ``directives`` and simply left out of the FEM — the remaining valid
+        rails still solve, so one bad PDN parameter on an unrelated part
+        can't blank the whole board. The dropped directives are surfaced
+        (Setup → Annotation log, plus a load-time dialog) so they aren't
+        missed. Only structural impossibility blocks the solve: no copper,
+        or no source to drive any current.
 
         Reads from ``extracted`` + ``annotations`` only — no longer triggers
         the lazy geometry build (which is the entire reason geometry can be
@@ -358,8 +367,6 @@ class LoadedProject:
         wasteful on every solve.
         """
         if not self.extracted.enabled_copper_layer_ids():
-            return False
-        if self.annotations.errors:
             return False
         return any(
             type(d).__name__ in {"SourceSpec", "RegulatorSpec"}
@@ -398,8 +405,10 @@ class LoadedProject:
             reasons = []
             if not self.extracted.enabled_copper_layer_ids():
                 reasons.append("no enabled copper layers")
-            if self.annotations.errors:
-                reasons.append(f"{len(self.annotations.errors)} annotation error(s)")
+            # Annotation errors no longer block the solve (the offending
+            # directives are skipped, not fatal) — see is_solveable — so they
+            # are not listed as a blocker here; they appear under "Errors"
+            # above.
             has_source = any(
                 type(d).__name__ in {"SourceSpec", "RegulatorSpec"}
                 for d in self.annotations.directives

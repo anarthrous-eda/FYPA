@@ -368,6 +368,52 @@ def test_resolve_local_net_pins_finds_alias_on_sheet():
     assert pins == ["14"]
 
 
+def test_resolve_local_net_pins_matches_multichannel_mangled_alias():
+    # Repeated ("multi-channel") sheet: the local label "S00A" inside sheet
+    # instance SL8M7 is compiled to the alias "S00A_SL8M7" on the flattened
+    # physical net (IOUT3), and the netlist keys terminals by the flattened
+    # designator "J3_SL8M7". The caller only knows the BASE designator "J3"
+    # (comp.lookup_designator) plus the placed instance "J3_SL8M7"
+    # (pcb_designator). Naming the bare label "S00A" must still resolve to this
+    # channel's pins via the mangled alias + flattened terminal designator.
+    netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="IOUT3",
+            aliases=["S00A_SL8M0", "S00A_SL8M7"],
+            source_sheets=["SL8_Module.SchDoc"],
+            terminals=[
+                _FakeTerminal("J3_SL8M0", "29"),
+                _FakeTerminal("J3_SL8M7", "29"),
+                _FakeTerminal("J3_SL8M7", "30"),
+            ],
+        ),
+    ])
+    pins = _resolve_local_net_pins(
+        netlist, "J3", "SL8_Module.SchDoc", "S00A",
+        pcb_designator="J3_SL8M7",
+    )
+    assert pins == ["29", "30"]
+
+
+def test_resolve_local_net_pins_mangled_alias_is_channel_scoped():
+    # The "_<channel>" suffix on the alias must match THIS instance's flattened
+    # designator suffix. A net carrying only the SL8M0 alias must not resolve
+    # for a SL8M7 connector, even though a stray SL8M7 terminal sits on it.
+    netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="IOUT_OTHER",
+            aliases=["S00A_SL8M0"],
+            source_sheets=["SL8_Module.SchDoc"],
+            terminals=[_FakeTerminal("J3_SL8M7", "29")],
+        ),
+    ])
+    pins = _resolve_local_net_pins(
+        netlist, "J3", "SL8_Module.SchDoc", "S00A",
+        pcb_designator="J3_SL8M7",
+    )
+    assert pins == []
+
+
 def test_resolve_terminal_local_net_per_channel_instance():
     netlist = _FakeNetlist(nets=[
         _FakeNet(
@@ -570,6 +616,77 @@ def test_regulator_two_indexed_channels():
     by_ch = {d.channel_index: d for d in regs}
     assert by_ch[None].voltage == 3.3
     assert by_ch[1].voltage == 1.8
+
+
+def test_bridge_series_terminals_stay_on_distinct_nets():
+    """A SERIES resistor that *creates* a bridge must keep its two terminals
+    on distinct nets.
+
+    Topology: a rail RAIL_OUT is fed through two parallel sense resistors
+    R1 (PRE_A↔RAIL_OUT) and R2 (PRE_B↔RAIL_OUT). A SOURCE U9 names RAIL_OUT
+    but only has pads on PRE_A / PRE_B — with direct-only terminal resolution
+    it does not fan into the bridged PRE nets. Each resistor terminal still
+    stays on its single literal net.
+    """
+    # Nets: 0=GND 1=PRE_A 2=PRE_B 3=RAIL_OUT
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("PRE_A"), RawNet("PRE_B"),
+              RawNet("RAIL_OUT")),
+        sch_components=(
+            RawSchComponent(
+                designator="U9", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SOURCE", "PDN_V": "1",
+                    "PDN_P_NET": "RAIL_OUT", "PDN_N_NET": "GND",
+                },
+                pin_designators=("A1", "A2", "G1"),
+            ),
+            RawSchComponent(
+                designator="R1", schdoc_name="Pwr.SchDoc",
+                parameters={"PDN_ROLE": "SERIES", "PDN_R": "0.01"},
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="R2", schdoc_name="Pwr.SchDoc",
+                parameters={"PDN_ROLE": "SERIES", "PDN_R": "0.01"},
+                pin_designators=("1", "2"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(designator="U9", center=Pt2D(0, 0),
+                            rotation_deg=0.0, layer_name="TOP",
+                            footprint="QFN", source_designator="U9"),
+            RawPcbComponent(designator="R1", center=Pt2D(0, 0),
+                            rotation_deg=0.0, layer_name="TOP",
+                            footprint="0402", source_designator="R1"),
+            RawPcbComponent(designator="R2", center=Pt2D(0, 0),
+                            rotation_deg=0.0, layer_name="TOP",
+                            footprint="0402", source_designator="R2"),
+        ),
+        pads=(
+            _pad(0, "A1", 1, 0),   # U9 on PRE_A
+            _pad(0, "A2", 2, 1),   # U9 on PRE_B
+            _pad(0, "G1", 0, 2),   # U9 on GND
+            _pad(1, "1", 1, 3),    # R1 pad 1 on PRE_A
+            _pad(1, "2", 3, 4),    # R1 pad 2 on RAIL_OUT
+            _pad(2, "1", 2, 5),    # R2 pad 1 on PRE_B
+            _pad(2, "2", 3, 6),    # R2 pad 2 on RAIL_OUT
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+
+    assert not any(isinstance(d, SourceSpec) for d in result.directives)
+    assert any("RAIL_OUT" in e for e in result.errors)
+
+    for des in ("R1", "R2"):
+        r = next(d for d in result.directives
+                 if isinstance(d, ResistorSpec) and d.designator == des)
+        p_nets = {p.net_index for p in r.p.pins}
+        n_nets = {p.net_index for p in r.n.pins}
+        assert len(p_nets) == 1, f"{des} P spans {p_nets}"
+        assert len(n_nets) == 1, f"{des} N spans {n_nets}"
+        assert p_nets.isdisjoint(n_nets), f"{des} P/N overlap: {p_nets}&{n_nets}"
+        assert p_nets | n_nets == ({1, 3} if des == "R1" else {2, 3})
 
 
 def test_series_two_indexed_channels_with_pin_overrides():
@@ -1438,6 +1555,235 @@ def test_multichannel_series_no_cross_channel_pads():
     )
     assert {p.pad_designator for p in ch2.p.pins} == {"E3"}
     assert {p.pad_designator for p in ch2.n.pins} == {"E10", "E11"}
+
+
+
+# --- per-channel role (mixed-role parts) --------------------------------------
+
+def test_mixed_role_source_and_sink_on_one_part():
+    # A DAC: supply pins SINK current (AVDD, DVDD); output pins SOURCE current
+    # (DAC_OUT0/1). One physical part carries both roles via per-channel
+    # PDN<n>_ROLE overrides on a part-wide SINK default.
+    # Nets: 0=GND 1=AVDD 2=DVDD 3=DAC_OUT0 4=DAC_OUT1
+    proj = _minimal_proj(
+        nets=(
+            RawNet("GND"), RawNet("AVDD"), RawNet("DVDD"),
+            RawNet("DAC_OUT0"), RawNet("DAC_OUT1"),
+        ),
+        sch_components=(
+            RawSchComponent(
+                designator="U7", schdoc_name="Analog.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SINK",
+                    "PDN_I": "80mA", "PDN_P_NET": "AVDD", "PDN_N_NET": "GND",
+                    "PDN1_I": "20mA", "PDN1_P_NET": "DVDD", "PDN1_N_NET": "GND",
+                    "PDN2_ROLE": "SOURCE",
+                    "PDN2_V": "2.5",
+                    "PDN2_P_NET": "DAC_OUT0", "PDN2_N_NET": "GND",
+                    "PDN3_ROLE": "SOURCE",
+                    "PDN3_V": "1.8",
+                    "PDN3_P_NET": "DAC_OUT1", "PDN3_N_NET": "GND",
+                },
+                pin_designators=("1", "2", "3", "4", "5"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U7", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U7",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, 0),   # AVDD
+            _pad(0, "2", 2, 1),   # DVDD
+            _pad(0, "3", 3, 2),   # DAC_OUT0
+            _pad(0, "4", 4, 3),   # DAC_OUT1
+            _pad(0, "5", 0, 4),   # GND (shared return)
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    sinks = {d.channel_index: d
+             for d in result.directives if isinstance(d, SinkSpec)}
+    sources = {d.channel_index: d
+               for d in result.directives if isinstance(d, SourceSpec)}
+    assert set(sinks) == {None, 1}
+    assert set(sources) == {2, 3}
+    assert sinks[None].current == 0.08
+    assert sinks[1].current == 0.02
+    assert sources[2].voltage == 2.5
+    assert sources[3].voltage == 1.8
+    # SOURCE P terminals landed on the DAC output nets, not the supply nets.
+    assert sources[2].p.pins[0].net_index == 3    # DAC_OUT0
+    assert sources[3].p.pins[0].net_index == 4    # DAC_OUT1
+
+
+def test_two_sinks_need_no_per_channel_role():
+    # The uniform-role case is unchanged by the per-channel-role feature: two
+    # sinks are still just PDN_ROLE=SINK plus PDN_I / PDN1_I, no PDN<n>_ROLE.
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+3V3"), RawNet("+1V8")),
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="M.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SINK",
+                    "PDN_I": "500mA", "PDN_P_NET": "+3V3", "PDN_N_NET": "GND",
+                    "PDN1_I": "250mA", "PDN1_P_NET": "+1V8", "PDN1_N_NET": "GND",
+                },
+                pin_designators=("1", "2", "3"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+            ),
+        ),
+        pads=(_pad(0, "1", 1, 0), _pad(0, "2", 2, 1), _pad(0, "3", 0, 2)),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    sinks = [d for d in result.directives if isinstance(d, SinkSpec)]
+    assert len(sinks) == 2
+    assert {d.channel_index for d in sinks} == {None, 1}
+
+
+def test_per_channel_role_rejects_unknown_role():
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+3V3")),
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="M.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SINK",
+                    "PDN_I": "10mA", "PDN_P_NET": "+3V3", "PDN_N_NET": "GND",
+                    "PDN1_ROLE": "BOGUS",
+                    "PDN1_V": "5", "PDN1_P_NET": "+3V3", "PDN1_N_NET": "GND",
+                },
+                pin_designators=("1", "2"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+            ),
+        ),
+        pads=(_pad(0, "1", 1, 0), _pad(0, "2", 0, 1)),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert not result.ok
+    assert any("PDN1_ROLE" in e and "BOGUS" in e for e in result.errors)
+    # The valid SINK channel still parses despite the bad override channel.
+    assert any(isinstance(d, SinkSpec) for d in result.directives)
+
+
+def test_per_channel_role_missing_value_param_errors():
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+3V3"), RawNet("OUT")),
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="M.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SINK",
+                    "PDN_I": "10mA", "PDN_P_NET": "+3V3", "PDN_N_NET": "GND",
+                    # Declares SOURCE but forgot the PDN1_V value param.
+                    "PDN1_ROLE": "SOURCE",
+                    "PDN1_P_NET": "OUT", "PDN1_N_NET": "GND",
+                },
+                pin_designators=("1", "2", "3"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+            ),
+        ),
+        pads=(_pad(0, "1", 1, 0), _pad(0, "2", 0, 1), _pad(0, "3", 2, 2)),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert not result.ok
+    assert any("PDN1_V" in e for e in result.errors)
+
+
+def test_series_channel_on_mixed_part_registers_bridge():
+    # A part that SINKs on one channel and bridges two nets with a SERIES
+    # channel: the SERIES channel must still parse and register its bridge
+    # even though the part-wide role is SINK.
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+5V"), RawNet("5V_SW")),
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="M.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SINK",
+                    "PDN_I": "100mA", "PDN_P_NET": "+5V", "PDN_N_NET": "GND",
+                    "PDN1_ROLE": "SERIES",
+                    "PDN1_R": "0.01",
+                    "PDN1_P_NET": "+5V", "PDN1_N_NET": "5V_SW",
+                },
+                pin_designators=("1", "2", "3"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, 0),   # +5V
+            _pad(0, "2", 0, 1),   # GND
+            _pad(0, "3", 2, 2),   # 5V_SW
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    assert any(isinstance(d, SinkSpec) for d in result.directives)
+    assert any(isinstance(d, ResistorSpec) for d in result.directives)
+    groups = _collect_bridge_groups(_iter_pdn_parameter_sources(proj), proj)
+    assert groups.get("+5V") == frozenset({"+5V", "5V_SW"})
+
+
+# --- is_solveable: annotation errors are non-fatal ----------------------------
+
+def test_is_solveable_skips_bad_directive_and_solves_the_rest():
+    """A directive that fails to resolve (its net doesn't exist) is dropped and
+    recorded as an error, but must NOT blank the board â€” the valid source/sink
+    rail still solves. Regression for the 'one bad PDN parameter blanks every
+    rail' report."""
+    from types import SimpleNamespace
+
+    from fypa.altium.loader import LoadedProject
+
+    extracted = SimpleNamespace(enabled_copper_layer_ids=lambda: [1])
+    ann = AnnotationResult(
+        directives=[_single_source(0), _single_sink(0)],
+        errors=[
+            "SINK on J3 terminal: net 'S00A' does not exist on the PCB "
+            "and could not be resolved as a local schematic net."
+        ],
+    )
+    loaded = LoadedProject(extracted, ann)
+    assert loaded.is_solveable
+
+
+def test_is_solveable_still_false_without_a_source():
+    """Structural impossibility still blocks: a board with copper but no
+    SOURCE / REGULATOR has nothing to drive current and is not solveable."""
+    from types import SimpleNamespace
+
+    from fypa.altium.loader import LoadedProject
+
+    extracted = SimpleNamespace(enabled_copper_layer_ids=lambda: [1])
+    ann = AnnotationResult(directives=[_single_sink(0)])  # sink only
+    loaded = LoadedProject(extracted, ann)
+    assert not loaded.is_solveable
+
+
+
 
 
 def test_format_solve_blockers_lists_errors():

@@ -413,6 +413,10 @@ _SSAA_QS_KEY = "ui/supersampling"
 # solve (with solve-cache fast path). When disabled, only design info loads
 # and the user presses ↻ Solve in the viewer.
 _AUTO_SOLVE_IMPORT_QS_KEY = "import/auto_solve_on_altium"
+# Opacity (0..1) of via-barrel sections that carry no rail current — the 3D
+# cylinder fade. Persisted so the choice survives a relaunch; defaults to 0.4.
+_VIA_NO_CURRENT_OPACITY_QS_KEY = "ui/via_no_current_opacity"
+_VIA_NO_CURRENT_OPACITY_DEFAULT = 0.4
 _ADAPTIVE_REGULATOR_GAIN_QS_KEY = "solve/adaptive_regulator_gain"
 # When enabled, the heavy mesh+solve+package runs in a child process so a cancel
 # just kills the child (no QThread.terminate() that could orphan solver locks).
@@ -546,6 +550,42 @@ def save_auto_solve_on_import(enabled: bool) -> None:
         logging.getLogger(__name__).debug(
             "Could not persist auto-solve-on-import preference (%s); ignoring.",
             e,
+        )
+
+
+def load_via_no_current_opacity() -> float:
+    """Read the persisted opacity (0..1) for no-current via-barrel sections.
+
+    Defaults to :data:`_VIA_NO_CURRENT_OPACITY_DEFAULT`. Clamped to [0, 1] so
+    a corrupt / out-of-range stored value can't produce an invalid alpha."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        val = qs.value(_VIA_NO_CURRENT_OPACITY_QS_KEY,
+                       _VIA_NO_CURRENT_OPACITY_DEFAULT)
+        f = float(val)
+        if not math.isfinite(f):
+            return _VIA_NO_CURRENT_OPACITY_DEFAULT
+        return min(1.0, max(0.0, f))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not read via no-current opacity preference (%s); using "
+            "default.", e,
+        )
+    return _VIA_NO_CURRENT_OPACITY_DEFAULT
+
+
+def save_via_no_current_opacity(opacity: float) -> None:
+    """Persist the no-current via-barrel opacity for next launch."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        qs.setValue(_VIA_NO_CURRENT_OPACITY_QS_KEY,
+                    min(1.0, max(0.0, float(opacity))))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not persist via no-current opacity preference (%s); "
+            "ignoring.", e,
         )
 
 
@@ -2755,6 +2795,16 @@ def _generate_via_cylinder_gradient(
     col[4::6] = cb
     col[5::6] = cb
     return out, col
+
+
+def _apply_alpha(col_rgb: np.ndarray, alpha: float) -> np.ndarray:
+    """Append a constant alpha column to an (N, 3) RGB colour array,
+    returning an (N, 4) RGBA array. Used to fade via-barrel sections that
+    carry no rail current — the cylinder batch is alpha-blended, so a
+    sub-1.0 alpha renders that section as a faint ghost."""
+    a = np.full((col_rgb.shape[0], 1), float(alpha), dtype=np.float32)
+    return np.concatenate(
+        (np.asarray(col_rgb, dtype=np.float32), a), axis=1)
 
 
 def _sample_cmap_lut(lut: np.ndarray, value: float,
@@ -5122,7 +5172,1037 @@ def _build_help_menu(window) -> None:
     help_menu.addAction(about)
 
 
-class LauncherWindow(QMainWindow):
+class _SettingsTabMixin:
+    """Shared construction of the Settings tab.
+
+    Inherited by :class:`PdnViewer` (full tab, design loaded) and by
+    :class:`LauncherWindow` (no design — a subset built in launcher mode).
+    Launcher mode is signalled by ``self._settings_launcher_mode`` being
+    truthy; the design-only sections (Project/PcbDoc labels, stackup, the
+    Re-run Solver / Reload Design Info actions) are skipped in that mode.
+    """
+
+    # --- Settings tab --------------------------------------------------------
+
+    # Form-field schema: each entry is
+    #   (attr_name, label, unit, getter_from_settings, default_text, tooltip)
+    # The attr_name doubles as the QLineEdit's instance-attribute name on
+    # the viewer (``self.settings_edit_<attr_name>``) and as a key in the
+    # SolveSettings dataclass. ``getter_from_settings`` extracts the
+    # current value from a SolveSettings instance, formatted for display.
+    # ``default_text`` is the static "(default: …)" hint shown beside the
+    # field so users always know the unmodified value.
+    _SETTINGS_FIELDS: tuple[tuple[str, str, str, str], ...] = (
+        # (key, label, unit, tooltip)
+        ("temperature_c",
+         "Board temperature",
+         "°C",
+         "Operating temperature of the copper. Drives the temperature-"
+         "corrected sheet conductivity used by every layer in the FEM."),
+        ("copper_resistivity_20c_microohm_cm",
+         "Copper resistivity (at 20 °C)",
+         "µΩ·cm",
+         "Bulk copper resistivity at the 20 °C reference. Default 1.68 "
+         "µΩ·cm matches annealed (IACS 100 %) copper. Lower for rolled / "
+         "ED copper, higher for thin plated foil."),
+        ("copper_temp_coefficient_per_c",
+         "Copper temperature coefficient α",
+         "1/°C",
+         "Linear temperature coefficient of resistivity. Default 0.00393 "
+         "/°C is the standard value for annealed copper."),
+        ("plating_thickness_mm",
+         "Via plating thickness",
+         "mm",
+         "Plated-through-hole copper wall thickness. Default 0.025 mm "
+         "(~1 mil) matches IPC-A-600 Class 2; bump to 0.030–0.050 mm for "
+         "Class 3 / heavy-copper builds."),
+        ("coupling_resistance_ohm",
+         "Multi-pin coupling resistance",
+         "Ω",
+         "Small star-topology resistor used to tie each pin of a multi-pin "
+         "terminal back to its main NodeID. Should stay << any real trace "
+         "resistance — change only if you know why."),
+        ("fallback_via_resistance_ohm",
+         "Fallback via resistance",
+         "Ω",
+         "Per-hop resistance assigned to vias whose drill geometry is "
+         "missing or degenerate. Most boards never hit this fallback."),
+        ("conductive_fill_resistivity_ohm_mm",
+         "Conductive fill resistivity",
+         "Ω·mm",
+         "Bulk resistivity of IPC-4761 conductive via-fill (copper / silver "
+         "paste). Default 5e-3 Ω·mm matches typical silver-loaded epoxy. "
+         "Lower for pure electroplated-copper fills. Only used when Altium "
+         "marks the via as filled AND the FILLING row's material classifies "
+         "as conductive — non-conductive fills leave the resistance "
+         "unchanged."),
+        ("mesh_min_angle_deg",
+         "Mesh minimum angle",
+         "°",
+         "Triangle quality constraint passed to the Triangle mesher (0–34 "
+         "is safe; higher values can stall on tight features). Smaller "
+         "values mesh faster but yield poorer-conditioned FEM matrices."),
+        ("mesh_max_size_mm",
+         "Mesh maximum edge size",
+         "mm",
+         "Cap on triangle edge length (and area). Smaller = denser mesh, "
+         "slower solve, finer-resolution voltage maps. 0 disables the cap."),
+    )
+
+    # Display-only knobs (no re-solve needed; applied immediately).
+    _SETTINGS_DISPLAY_FIELDS: tuple[tuple[str, str, str, str], ...] = (
+        ("via_current_warn_a",
+         "Via current warning level |I|",
+         "A",
+         "Vias whose worst-segment current is at or above this threshold "
+         "are highlighted red in the Vias tab and contribute to the tab-title "
+         "warning count."),
+        ("display_percentile_high",
+         "Heatmap colour-scale clip percentile",
+         "%",
+         "Default upper clamp for Current Density / Power Density modes. "
+         "Set to e.g. 99 to suppress single-vertex FEM singularity spikes "
+         "and let the rest of the board use the full colour scale."),
+    )
+
+    def _build_settings_tab(self) -> QWidget:
+        """Build the Settings tab — tunable physics + mesh + display knobs
+        and a Re-run Solver button.
+
+        Editing a field does NOT immediately re-solve; the user must press
+        "Re-run Solver" to spawn a fresh solve with the new parameters.
+        Display-only fields (warning threshold, percentile) are also
+        applied by the same button, but those are cheap and never trigger
+        an FEM rebuild on their own.
+
+        In launcher mode (``self._settings_launcher_mode`` truthy, no design
+        loaded) the design-only sections are skipped: the Project/PcbDoc
+        labels, the stackup copper-thickness group, and the Re-run Solver /
+        Reload Design Info actions. The remaining physics / fill / display
+        fields act as session defaults only — they are not persisted, so
+        editing them in the launcher does not carry into a later import."""
+        launcher = bool(getattr(self, "_settings_launcher_mode", False))
+        widget = QWidget(self.tabs)
+        scroll = QScrollArea(widget)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        t = _T()
+        scroll.setStyleSheet(
+            f"QScrollArea {{ background-color: {t['bg']}; }}"
+        )
+
+        inner = QWidget()
+        outer = QVBoxLayout(inner)
+        outer.setContentsMargins(16, 16, 16, 16)
+        outer.setSpacing(12)
+
+        # ----- Intro -----
+        intro = QLabel(
+            "Application preferences below persist across launches. The "
+            "solve, via-fill and display fields shown for reference take "
+            "effect once a design is loaded and re-solved."
+            if launcher else
+            "Adjust the physics and meshing parameters below, then click "
+            "<b>Re-run Solver</b> to re-solve the current project with the "
+            "new values. The viewer will reload with the fresh result."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet(f"QLabel {{ color: {t['fg_label']}; }}")
+        outer.addWidget(intro)
+
+        # Project / PcbDoc labels only make sense once a design is loaded.
+        if not launcher:
+            prjpcb = ""
+            pcbdoc = ""
+            if self.metadata:
+                prjpcb = str(self.metadata.get("prjpcb_path") or "")
+                pcbdoc = str(self.metadata.get("pcbdoc_path") or "")
+            project_lbl = QLabel(
+                f"<span style='color:{t['fg_dim']};'>Project:</span> "
+                f"<code style='color:{t['code']};'>{_esc(prjpcb) or '(not in metadata)'}</code>"
+            )
+            project_lbl.setStyleSheet(f"QLabel {{ color: {t['fg']}; }}")
+            project_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            project_lbl.setWordWrap(True)
+            outer.addWidget(project_lbl)
+
+            pcbdoc_lbl = QLabel(
+                f"<span style='color:{t['fg_dim']};'>PcbDoc:</span> "
+                f"<code style='color:{t['code']};'>{_esc(pcbdoc) or '(not in metadata)'}</code>"
+            )
+            pcbdoc_lbl.setStyleSheet(f"QLabel {{ color: {t['fg']}; }}")
+            pcbdoc_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            pcbdoc_lbl.setWordWrap(True)
+            outer.addWidget(pcbdoc_lbl)
+
+        # ----- Appearance group -----
+        outer.addWidget(self._build_appearance_settings_box())
+
+        # ----- Solve parameters group -----
+        solve_box = self._make_settings_group(
+            "Solve parameters (require re-solve)",
+            self._SETTINGS_FIELDS,
+            source=self._solve_settings,
+            attr_prefix="settings_edit_",
+            # The conductive-fill resistivity field is rebuilt in its own
+            # "Conductive via fill" group below (alongside the mode + material
+            # pickers) — keep it out of the generic solve box here.
+            skip_keys={"conductive_fill_resistivity_ohm_mm"},
+        )
+        # Adaptive-mesh toggle — a boolean, so not part of the QLineEdit-
+        # based _SETTINGS_FIELDS schema; add it into the same group box.
+        self._settings_adaptive_check = QCheckBox(
+            "Adaptive (variable-density) mesh")
+        self._settings_adaptive_check.setChecked(
+            bool(getattr(self._solve_settings, "adaptive_mesh", False)))
+        self._settings_adaptive_check.setToolTip(
+            "Variable-density meshing — a faster approximation. Fine near "
+            "pins, vias and copper edges; coarser elsewhere, which slightly "
+            "reduces accuracy on current-carrying copper away from "
+            "terminals. Best for boards with large low-current pours; "
+            "little benefit on densely via-stitched planes. "
+            "Off = uniform mesh (most accurate — the default)."
+        )
+        self._settings_adaptive_check.toggled.connect(
+            self._on_settings_field_changed)
+        _solve_layout = solve_box.layout()
+        if _solve_layout is not None:
+            _solve_layout.addRow(self._settings_adaptive_check)
+        # Adaptive SMPS regulator-gain iteration — moved here from the editor
+        # canvas overlay. Same attribute name + handler as before, so the
+        # solve-time reads and resolve-enable logic are unchanged. Enabled only
+        # for designs with an auto-gain SMPS regulator; disabled (with an
+        # explanatory tooltip) otherwise — _refresh_solve_stale_overlay keeps
+        # the enabled state in sync as the design changes. Skipped in launcher
+        # mode: it is design-specific and its toggle handler lives on the
+        # viewer, not the mixin.
+        if not launcher:
+            self._adaptive_gain_check = QCheckBox("Adaptive SMPS gain")
+            self._adaptive_gain_check.setChecked(load_adaptive_regulator_gain())
+            _ag_has_smps = _viewer_has_adaptive_smps(
+                getattr(self, "metadata", None),
+                getattr(self, "_loaded_project", None),
+            )
+            self._adaptive_gain_check.setEnabled(_ag_has_smps)
+            self._adaptive_gain_check.setToolTip(
+                "When checked, re-solve iterates SMPS regulator gain using the "
+                "solved input voltage (includes SERIES and copper IR drop). LDO "
+                "regulators are unaffected. Adds extra solve time."
+                if _ag_has_smps else
+                "Requires a REGULATOR with PDN_REGULATOR_TYPE=SMPS and no PDN_GAIN "
+                "(auto-gain). LDO regulators and manual PDN_GAIN are not iterated."
+            )
+            self._adaptive_gain_check.toggled.connect(self._on_adaptive_gain_toggled)
+            if _solve_layout is not None:
+                _solve_layout.addRow(self._adaptive_gain_check)
+        outer.addWidget(solve_box)
+
+        # ----- Conductive via fill group -----
+        outer.addWidget(self._build_conductive_fill_box())
+
+        # ----- Stackup copper-thickness group (design-specific) -----
+        if not launcher:
+            outer.addWidget(self._build_stackup_settings_box())
+
+        # ----- Display parameters group -----
+        # Build a tiny ad-hoc object exposing the same attribute names as
+        # the field schema so the same _make_settings_group helper works.
+        class _DisplayValues:
+            pass
+        display_src = _DisplayValues()
+        display_src.via_current_warn_a = self._via_current_warn_a
+        display_src.display_percentile_high = self._display_percentile_high
+        display_box = self._make_settings_group(
+            "Display options"
+            if launcher else
+            "Display options (applied immediately on Re-run)",
+            self._SETTINGS_DISPLAY_FIELDS,
+            source=display_src,
+            attr_prefix="settings_edit_",
+        )
+        outer.addWidget(display_box)
+
+        # ----- General options group -----
+        # App-behaviour preferences, persisted immediately (not part of the
+        # re-solve field schema).
+        gen_box = QGroupBox("General options")
+        gen_layout = QVBoxLayout(gen_box)
+        self._settings_auto_solve_check = QCheckBox(
+            "Solve automatically on Altium import")
+        self._settings_auto_solve_check.setChecked(load_auto_solve_on_import())
+        self._settings_auto_solve_check.setToolTip(
+            "When checked, Import Altium Design runs the FEM solver immediately "
+            "(reusing the solve cache when possible). When unchecked, only "
+            "design info is loaded — press ↻ Solve in the viewer. Persists "
+            "across launches."
+        )
+        self._settings_auto_solve_check.toggled.connect(
+            lambda checked: save_auto_solve_on_import(bool(checked)))
+        gen_layout.addWidget(self._settings_auto_solve_check)
+
+        # No-current via opacity — fade level (3D) of via-barrel sections that
+        # carry no current on the selected rail. Persisted immediately and
+        # live-applied to an open viewer (no re-solve).
+        self._settings_via_opacity_spin = QSpinBox()
+        self._settings_via_opacity_spin.setRange(0, 100)
+        self._settings_via_opacity_spin.setSuffix(" %")
+        self._settings_via_opacity_spin.setValue(
+            int(round(load_via_no_current_opacity() * 100)))
+        self._settings_via_opacity_spin.setToolTip(
+            "Opacity of via-barrel sections carrying no current on the "
+            "selected rail — the 3D cylinder stub ends outside the via's "
+            "current-carrying copper. 100% = fully solid; lower fades them so "
+            "the current-carrying span stands out. 3D view only; persists "
+            "across launches."
+        )
+
+        def _on_via_opacity_changed(pct: int) -> None:
+            alpha = int(pct) / 100.0
+            save_via_no_current_opacity(alpha)
+            apply = getattr(self, "_apply_via_no_current_opacity", None)
+            if callable(apply):
+                apply(alpha)
+
+        self._settings_via_opacity_spin.valueChanged.connect(
+            _on_via_opacity_changed)
+
+        via_op_row = QHBoxLayout()
+        via_op_row.addWidget(QLabel("No-current via opacity"))
+        via_op_row.addStretch(1)
+        via_op_row.addWidget(self._settings_via_opacity_spin)
+        gen_layout.addLayout(via_op_row)
+
+        outer.addWidget(gen_box)
+
+        # ----- Performance group -----
+        # Tunables previously reachable only via env vars. Persisted and applied
+        # (to os.environ + pdnsolver) immediately; they affect the NEXT solve /
+        # load, not the current result — no re-solve needed to persist them.
+        perf_box = QGroupBox("Performance")
+        perf_form = QFormLayout(perf_box)
+
+        # Display label per backend; the stored value stays the bare backend
+        # id (kept in item data) so ``save_fuse_backend`` still sees "clipper".
+        _fuse_labels = {"clipper": "clipper (recommended)", "shapely": "shapely"}
+        self._settings_fuse_combo = QComboBox()
+        for _fb in _FUSE_BACKENDS_UI:
+            self._settings_fuse_combo.addItem(_fuse_labels.get(_fb, _fb), _fb)
+        _cur_fb = load_fuse_backend()
+        self._settings_fuse_combo.setCurrentIndex(
+            _FUSE_BACKENDS_UI.index(_cur_fb) if _cur_fb in _FUSE_BACKENDS_UI
+            else 0)
+        self._settings_fuse_combo.setToolTip(
+            "Geometry-fusion backend used when building copper polygons.\n"
+            "• clipper — Clipper2, the fast default (recommended).\n"
+            "• shapely — the legacy GEOS path (slower; reference)."
+        )
+        self._fit_combo_width(self._settings_fuse_combo)
+
+        self._settings_mesh_workers_spin = QSpinBox()
+        self._settings_mesh_workers_spin.setRange(1, max(1, os.cpu_count() or 1))
+        self._settings_mesh_workers_spin.setValue(load_mesh_max_workers())
+        self._settings_mesh_workers_spin.setToolTip(
+            "Number of worker processes used for meshing. Higher can be faster "
+            "on many-core machines but adds memory + spawn overhead; the "
+            "default is a physical-core estimate."
+        )
+        self._fit_field_width(self._settings_mesh_workers_spin)
+
+        self._settings_minres_spin = QSpinBox()
+        self._settings_minres_spin.setRange(10, 3600)
+        self._settings_minres_spin.setSingleStep(30)
+        self._settings_minres_spin.setSuffix(" s")
+        self._settings_minres_spin.setValue(load_minres_budget_s())
+        self._settings_minres_spin.setToolTip(
+            "Wall-clock budget for the iterative fallback solver (only reached "
+            "when the direct solve can't be used). On timeout the best iterate "
+            "so far is kept. Raise this for very large boards."
+        )
+        self._fit_field_width(self._settings_minres_spin)
+
+        # Connect AFTER setting initial values so seeding them doesn't fire a
+        # spurious save/apply.
+        def _on_fuse_changed(_idx: int) -> None:
+            save_fuse_backend(self._settings_fuse_combo.currentData())
+            _apply_performance_prefs()
+
+        def _on_workers_changed(val: int) -> None:
+            save_mesh_max_workers(int(val))
+            _apply_performance_prefs()
+
+        def _on_minres_changed(val: int) -> None:
+            save_minres_budget_s(int(val))
+            _apply_performance_prefs()
+
+        self._settings_fuse_combo.currentIndexChanged.connect(_on_fuse_changed)
+        self._settings_mesh_workers_spin.valueChanged.connect(_on_workers_changed)
+        self._settings_minres_spin.valueChanged.connect(_on_minres_changed)
+
+        perf_form.addRow("Fusion backend", self._settings_fuse_combo)
+        perf_form.addRow("Mesh worker processes", self._settings_mesh_workers_spin)
+        perf_form.addRow("Iterative-solver timeout", self._settings_minres_spin)
+        outer.addWidget(perf_box)
+
+        # ----- Experimental group -----
+        # Settings here are persisted immediately (not part of the re-solve
+        # field schema) and take effect on the NEXT solve.
+        exp_box = QGroupBox("Experimental")
+        exp_layout = QVBoxLayout(exp_box)
+        self._settings_subprocess_check = QCheckBox("Run solve in a subprocess")
+        self._settings_subprocess_check.setChecked(load_solve_in_subprocess())
+        self._settings_subprocess_check.setToolTip(
+            "Run the mesh + solve in a separate process, so Cancel becomes a "
+            "clean kill of that process (no risk of a stuck solve leaving the "
+            "app locked). Trade-off: a fresh process per solve does not reuse "
+            "the warm mesh / factorisation caches, so repeated re-solves are "
+            "slower. Applies to the next solve; persists across launches. "
+            "Off by default."
+        )
+        self._settings_subprocess_check.toggled.connect(
+            lambda checked: save_solve_in_subprocess(bool(checked)))
+        exp_layout.addWidget(self._settings_subprocess_check)
+        outer.addWidget(exp_box)
+
+        # ----- Status line + buttons -----
+        self._settings_status_label = QLabel("")
+        self._settings_status_label.setWordWrap(True)
+        self._settings_status_label.setStyleSheet(
+            f"QLabel {{ color: {t['accent']}; padding: 4px 0; }}"
+        )
+        outer.addWidget(self._settings_status_label)
+
+        button_row = QHBoxLayout()
+        # Re-run Solver / Reload Design Info act on a loaded design, so they
+        # are omitted in launcher mode — only Reset to defaults is shown there.
+        if not launcher:
+            self._settings_rerun_btn = QPushButton("Re-run Solver")
+            self._settings_rerun_btn.setToolTip(
+                "Re-solve the current project with the parameters above. "
+                "Updates the heatmap in this window when the solve finishes."
+            )
+            self._settings_rerun_btn.setStyleSheet(
+                f"QPushButton {{ background-color: {t['accent_btn']}; color: {t['fg_strong']};"
+                f"              border: 1px solid {t['accent_btn_hov']}; padding: 6px 14px;"
+                f"              font-weight: 600; }}"
+                f"QPushButton:hover {{ background-color: {t['accent_btn_hov']}; }}"
+                f"QPushButton:disabled {{ background-color: {t['bg_hover']}; color: {t['fg_hint']}; }}"
+            )
+            self._settings_rerun_btn.clicked.connect(self._on_rerun_solver)
+            button_row.addWidget(self._settings_rerun_btn)
+
+            self._settings_reload_design_btn = QPushButton("Reload Design Info")
+            self._settings_reload_design_btn.setToolTip(
+                "Re-extract the design (geometry + annotations) from the on-disk "
+                "Altium project, ignoring the design-info cache. Then re-solve "
+                "with the current settings. Use this when you've edited the "
+                ".PrjPcb / .PcbDoc and want to be sure FYPA picks up the change."
+            )
+            self._settings_reload_design_btn.setStyleSheet(
+                f"QPushButton {{ background-color: {t['bg_hover']}; color: {t['fg']};"
+                f"              border: 1px solid {t['border']}; padding: 6px 14px; }}"
+                f"QPushButton:hover {{ background-color: {t['bg_hover_strong']}; }}"
+                f"QPushButton:disabled {{ background-color: {t['bg_hover']}; color: {t['fg_hint']}; }}"
+            )
+            self._settings_reload_design_btn.clicked.connect(self._on_reload_design_info)
+            button_row.addWidget(self._settings_reload_design_btn)
+
+        reset_btn = QPushButton("Reset to defaults")
+        reset_btn.setToolTip(
+            "Restore every field above to its built-in default value."
+            if launcher else
+            "Restore every field above to its built-in default value "
+            "(does NOT re-solve — press Re-run Solver to commit)."
+        )
+        reset_btn.setStyleSheet(
+            f"QPushButton {{ background-color: {t['bg_hover']}; color: {t['fg']};"
+            f"              border: 1px solid {t['border']}; padding: 6px 14px; }}"
+            f"QPushButton:hover {{ background-color: {t['bg_hover_strong']}; }}"
+        )
+        reset_btn.clicked.connect(self._on_settings_reset)
+        button_row.addWidget(reset_btn)
+        button_row.addStretch(1)
+        outer.addLayout(button_row)
+
+        outer.addStretch(1)
+
+        scroll.setWidget(inner)
+        # Wrap the scroll area in the returned widget so addTab gets a
+        # plain QWidget with the same background as the others.
+        wrap_layout = QVBoxLayout(widget)
+        wrap_layout.setContentsMargins(0, 0, 0, 0)
+        wrap_layout.addWidget(scroll)
+        widget.setStyleSheet(
+            f"QWidget {{ background-color: {t['bg']}; color: {t['fg']}; }}"
+            f"QGroupBox {{ border: 1px solid {t['border']}; border-radius: 4px;"
+            f"            margin-top: 14px; padding: 12px;"
+            f"            background-color: {t['bg']}; }}"
+            f"QGroupBox::title {{ subcontrol-origin: margin; left: 12px;"
+            f"                   padding: 0 6px; color: {t['fg_strong']};"
+            f"                   font-weight: 600; }}"
+            f"QLineEdit {{ background-color: {t['bg_input']}; color: {t['fg']};"
+            f"            border: 1px solid {t['border']}; padding: 3px 6px;"
+            f"            selection-background-color: {t['bg_selection']}; }}"
+            f"QLineEdit:focus {{ border: 1px solid {t['accent']}; }}"
+            # Out-of-date field outline / colour: the dynamic ``dirty``
+            # property is toggled by _update_settings_field_styles when
+            # the field diverges from / matches the current solve.
+            f"QLineEdit[dirty=\"true\"] {{ border: 1px solid {t['warn_fg']}; }}"
+            f"QLineEdit[dirty=\"true\"]:focus {{ border: 1px solid {t['warn_fg']}; }}"
+            f"QCheckBox[dirty=\"true\"] {{ color: {t['warn_fg']}; }}"
+            f"QComboBox[dirty=\"true\"] {{ border: 1px solid {t['warn_fg']}; }}"
+        )
+        return widget
+
+    @staticmethod
+    def _fit_field_width(widget: QWidget, margin: float = 0.1) -> None:
+        """Cap a Settings-tab field to its content width (+ ~``margin``)
+        rather than letting the QFormLayout stretch it the full panel width.
+
+        A full-width combo/spin box is an easy accidental target while
+        scrolling the Settings tab — a stray wheel tick lands on it and
+        silently changes the value. Sizing to content keeps the hit area
+        small. Populate/configure the widget (items, range, suffix) before
+        calling this — the width comes from its ``sizeHint``."""
+        width = int(widget.sizeHint().width() * (1.0 + margin))
+        widget.setMaximumWidth(width)
+        # Maximum (not Expanding) so the form layout can't grow it past the
+        # hint; it may still shrink on a very narrow window.
+        widget.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+
+    @classmethod
+    def _fit_combo_width(cls, combo: QComboBox, margin: float = 0.1) -> None:
+        """As ``_fit_field_width`` but first makes the combo size to its
+        widest item (``AdjustToContents``) instead of a fixed default."""
+        combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        cls._fit_field_width(combo, margin)
+
+    def _make_settings_group(
+        self, title: str,
+        fields: tuple[tuple[str, str, str, str], ...],
+        source: object,
+        attr_prefix: str,
+        skip_keys: frozenset[str] | set[str] | None = None,
+    ) -> QGroupBox:
+        """Build a QGroupBox containing one labelled QLineEdit per field
+        in ``fields``. The current value is pulled from ``source`` via
+        ``getattr``; default-value hints come from a fresh SolveSettings.
+
+        ``skip_keys`` lets a caller omit specific fields from this box (so
+        they can be rebuilt elsewhere) while keeping them in the shared
+        ``_SETTINGS_FIELDS`` schema that reset / dirty / gather iterate."""
+        from fypa.altium.loader import SolveSettings as _SolveSettings
+        from dataclasses import fields as _dc_fields
+        defaults = _SolveSettings()
+        # The display-only fields aren't in SolveSettings — fall back to
+        # the module-level constants for their default-value hint.
+        display_defaults = {
+            "via_current_warn_a": _VIA_CURRENT_WARN_A,
+            "display_percentile_high": _DISPLAY_PERCENTILE_HIGH,
+        }
+        defaults_attrs = {f.name for f in _dc_fields(defaults)}
+
+        box = QGroupBox(title)
+        form = QFormLayout(box)
+        form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        form.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(8)
+
+        for key, label, unit, tooltip in fields:
+            if skip_keys and key in skip_keys:
+                continue
+            current = getattr(source, key, None)
+            if current is None:
+                continue
+            default_val = (
+                getattr(defaults, key) if key in defaults_attrs
+                else display_defaults.get(key)
+            )
+
+            edit = QLineEdit(self._fmt_settings_value(current))
+            validator = QDoubleValidator(self)
+            validator.setNotation(QDoubleValidator.StandardNotation)
+            validator.setBottom(0.0)
+            edit.setValidator(validator)
+            edit.setMinimumWidth(110)
+            edit.setMaximumWidth(160)
+            edit.setToolTip(tooltip)
+            setattr(self, f"{attr_prefix}{key}", edit)
+            edit.textChanged.connect(self._on_settings_field_changed)
+
+            _t = _T()
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            row.addWidget(edit)
+            unit_lbl = QLabel(unit)
+            unit_lbl.setStyleSheet(f"QLabel {{ color: {_t['fg_muted']}; }}")
+            row.addWidget(unit_lbl)
+            row.addSpacing(8)
+            hint = QLabel(f"<span style='color:{_t['fg_hint']};'>"
+                          f"(default: {self._fmt_settings_value(default_val)})</span>"
+                          if default_val is not None else "")
+            row.addWidget(hint)
+            if key == "via_current_warn_a" and not getattr(
+                    self, "_settings_launcher_mode", False):
+                # In-place re-check button: applies the new threshold to
+                # the Vias tab without a full re-solve. Hidden until the
+                # field diverges from the currently-applied level. Omitted in
+                # launcher mode — it re-checks a loaded design's Vias tab, and
+                # its handlers live on the viewer, not the mixin.
+                row.addSpacing(12)
+                btn = QPushButton("Re-run Via Check")
+                btn.setToolTip(
+                    "Re-check vias against the new warning level (no "
+                    "re-solve). Refreshes the Vias tab title, summary, "
+                    "and warning highlights in place."
+                )
+                btn.setStyleSheet(
+                    f"QPushButton {{ background-color: {_t['accent_btn']};"
+                    f"              color: {_t['fg_strong']};"
+                    f"              border: 1px solid {_t['accent_btn_hov']};"
+                    f"              padding: 3px 10px; font-weight: 600; }}"
+                    f"QPushButton:hover {{ background-color: {_t['accent_btn_hov']}; }}"
+                )
+                btn.clicked.connect(self._on_rerun_via_check)
+                btn.setVisible(False)
+                self._settings_rerun_via_check_btn = btn
+                row.addWidget(btn)
+                edit.textChanged.connect(
+                    lambda _t=None: self._update_via_check_btn_visibility()
+                )
+            row.addStretch(1)
+            row_widget = QWidget()
+            row_widget.setLayout(row)
+
+            label_widget = QLabel(label)
+            label_widget.setToolTip(tooltip)
+            label_widget.setStyleSheet(f"QLabel {{ color: {_t['fg']}; }}")
+            form.addRow(label_widget, row_widget)
+
+        return box
+
+    # Fill-material presets for the Conductive via fill picker. Each entry is
+    # (label, resistivity_ohm_mm | None, tooltip). ``None`` marks the Custom
+    # entry, which leaves the resistivity field free for manual entry. Values
+    # are bulk resistivities converted to Ω·mm (1 Ω·cm = 10 Ω·mm):
+    #   silver-loaded epoxy paste ~5e-4 Ω·cm, copper-loaded paste ~5e-3 Ω·cm,
+    #   solid electroplated copper ~ bulk Cu (1.68 µΩ·cm).
+    _FILL_MATERIAL_PRESETS: tuple[tuple[str, float | None, str], ...] = (
+        ("Silver-filled epoxy paste", 5.0e-3,
+         "Silver-loaded thermoset paste — the most common IPC-4761 "
+         "conductive via fill (~5×10⁻⁴ Ω·cm bulk resistivity)."),
+        ("Copper-filled paste / epoxy", 5.0e-2,
+         "Copper-loaded paste/epoxy fill (~5×10⁻³ Ω·cm) — cheaper than "
+         "silver but ~10× more resistive."),
+        ("Solid electroplated copper", 1.7e-5,
+         "Type-VII copper-filled via — the centre void is closed with "
+         "electroplated copper, approaching bulk copper resistivity "
+         "(~1.7×10⁻⁶ Ω·cm). The lowest-resistance fill."),
+        ("Custom (enter value)", None,
+         "Enter the fill resistivity directly in the field below — e.g. "
+         "from the fab's via-fill paste data sheet."),
+    )
+
+    def _build_conductive_fill_box(self) -> QGroupBox:
+        """Build the "Conductive via fill" group: an Auto/All/None override
+        mode, a fill-material preset picker, and the fill-resistivity field.
+
+        The resistivity QLineEdit is built here (instead of in the generic
+        solve box) but keeps its ``settings_edit_conductive_fill_resistivity_
+        ohm_mm`` attribute name, so the shared reset / dirty / gather loops
+        — which walk ``_SETTINGS_FIELDS`` and resolve widgets by attribute —
+        still pick it up unchanged."""
+        fill_fields = tuple(
+            f for f in self._SETTINGS_FIELDS
+            if f[0] == "conductive_fill_resistivity_ohm_mm"
+        )
+        box = self._make_settings_group(
+            "Conductive via fill",
+            fill_fields,
+            source=self._solve_settings,
+            attr_prefix="settings_edit_",
+        )
+        form = box.layout()   # QFormLayout: row 0 is the resistivity field
+        t = _T()
+
+        # ----- Mode combo (Auto / force All / force None) -----
+        self._fill_mode_combo = QComboBox()
+        self._fill_mode_combo.addItem("Auto (from Altium IPC-4761 data)", "auto")
+        self._fill_mode_combo.addItem("Force: treat all vias as filled", "all")
+        self._fill_mode_combo.addItem("Force: treat no vias as filled", "none")
+        self._fill_mode_combo.setToolTip(
+            "Whether a via's centre is modelled as a conductive fill-rod in "
+            "parallel with the plated barrel wall (lowering its resistance).\n"
+            "• Auto — decide per via from the design's IPC-4761 FILLING "
+            "material string (the default).\n"
+            "• Force all — treat every coupled via/through-hole as filled "
+            "(use the fab's fill spec when Altium has no IPC-4761 data).\n"
+            "• Force none — ignore any fill; the plated wall is the only path."
+        )
+        cur_mode = getattr(self._solve_settings, "conductive_fill_mode", "auto")
+        idx = self._fill_mode_combo.findData(cur_mode)
+        if idx >= 0:
+            self._fill_mode_combo.setCurrentIndex(idx)
+        self._fit_combo_width(self._fill_mode_combo)
+        self._fill_mode_combo.currentIndexChanged.connect(
+            self._on_fill_mode_changed)
+        self._fill_mode_combo.currentIndexChanged.connect(
+            self._on_settings_field_changed)
+        mode_label = QLabel("Fill mode")
+        mode_label.setStyleSheet(f"QLabel {{ color: {t['fg']}; }}")
+
+        # ----- Material preset combo -----
+        self._fill_material_combo = QComboBox()
+        for label, _rho, tip in self._FILL_MATERIAL_PRESETS:
+            self._fill_material_combo.addItem(label)
+            self._fill_material_combo.setItemData(
+                self._fill_material_combo.count() - 1, tip, Qt.ToolTipRole)
+        self._fill_material_combo.setToolTip(
+            "Pick a fill material to populate the resistivity field below "
+            "with a typical value, or choose Custom to type your own."
+        )
+        self._fit_combo_width(self._fill_material_combo)
+        self._fill_material_combo.currentIndexChanged.connect(
+            self._on_fill_material_changed)
+        mat_label = QLabel("Fill material")
+        mat_label.setStyleSheet(f"QLabel {{ color: {t['fg']}; }}")
+
+        # Insert mode (row 0) and material (row 1) above the resistivity row.
+        form.insertRow(0, mode_label, self._fill_mode_combo)
+        form.insertRow(1, mat_label, self._fill_material_combo)
+
+        # Initialise the material combo from the current resistivity, and
+        # keep the two in sync when the user edits the resistivity directly.
+        edit = getattr(self, "settings_edit_conductive_fill_resistivity_ohm_mm",
+                       None)
+        if edit is not None:
+            edit.textChanged.connect(self._sync_material_combo_from_resistivity)
+        self._sync_material_combo_from_resistivity()
+        self._apply_fill_mode_enabled()
+        return box
+
+    def _apply_fill_mode_enabled(self) -> None:
+        """Grey out the material + resistivity controls when the mode is
+        "Force none" (no fill, so the value is irrelevant)."""
+        mode = self._fill_mode_combo.currentData()
+        enabled = mode != "none"
+        self._fill_material_combo.setEnabled(enabled)
+        edit = getattr(self, "settings_edit_conductive_fill_resistivity_ohm_mm",
+                       None)
+        if edit is not None:
+            edit.setEnabled(enabled)
+
+    def _on_fill_mode_changed(self, _idx: int) -> None:
+        self._apply_fill_mode_enabled()
+
+    def _on_fill_material_changed(self, idx: int) -> None:
+        """Material picker → write the preset resistivity into the field.
+        The Custom entry (resistivity None) leaves the field untouched."""
+        if idx < 0 or idx >= len(self._FILL_MATERIAL_PRESETS):
+            return
+        _label, rho, _tip = self._FILL_MATERIAL_PRESETS[idx]
+        if rho is None:
+            return
+        edit = getattr(self, "settings_edit_conductive_fill_resistivity_ohm_mm",
+                       None)
+        if edit is None:
+            return
+        new_text = self._fmt_settings_value(rho)
+        if edit.text().strip() != new_text:
+            # Guard against the textChanged → _sync → material-combo loop:
+            # setText fires _sync, which would re-select this same preset.
+            edit.setText(new_text)
+
+    def _sync_material_combo_from_resistivity(self, *_args) -> None:
+        """Resistivity field → select the matching material preset, or fall
+        back to Custom when the value matches none of them."""
+        combo = getattr(self, "_fill_material_combo", None)
+        edit = getattr(self, "settings_edit_conductive_fill_resistivity_ohm_mm",
+                       None)
+        if combo is None or edit is None:
+            return
+        try:
+            val = float(edit.text().strip())
+        except ValueError:
+            return
+        target = len(self._FILL_MATERIAL_PRESETS) - 1   # Custom by default
+        for i, (_label, rho, _tip) in enumerate(self._FILL_MATERIAL_PRESETS):
+            if rho is not None and abs(val - rho) <= abs(rho) * 1e-6:
+                target = i
+                break
+        if combo.currentIndex() != target:
+            combo.blockSignals(True)
+            combo.setCurrentIndex(target)
+            combo.blockSignals(False)
+
+    def _build_appearance_settings_box(self) -> QWidget:
+        """Theme picker (Dark / Light). The choice is persisted via
+        :func:`save_theme_mode` and applied to the running QApplication
+        immediately — the viewer window is rebuilt so the inline-styled
+        widgets (layer list, tables, side panel) pick up the new colours.
+        """
+        t = _T()
+        box = QGroupBox("Appearance")
+        box.setStyleSheet(
+            f"QGroupBox {{ border: 1px solid {t['border']}; border-radius: 4px;"
+            f"            margin-top: 14px; padding: 12px;"
+            f"            background-color: {t['bg']}; }}"
+            f"QGroupBox::title {{ subcontrol-origin: margin; left: 12px;"
+            f"                   padding: 0 6px; color: {t['fg_strong']};"
+            f"                   font-weight: 600; }}"
+        )
+
+        form = QFormLayout(box)
+        form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        form.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(8)
+
+        self._theme_combo = QComboBox()
+        self._theme_combo.addItem("Dark", "dark")
+        self._theme_combo.addItem("Light", "light")
+        current_mode = current_theme_mode()
+        for i in range(self._theme_combo.count()):
+            if self._theme_combo.itemData(i) == current_mode:
+                self._theme_combo.setCurrentIndex(i)
+                break
+        self._theme_combo.setToolTip(
+            "Switch the viewer colour theme. Dark is the default and "
+            "matches the rest of the tooling; Light is friendlier in "
+            "bright rooms. The choice is remembered for the next launch."
+        )
+        self._fit_combo_width(self._theme_combo)
+        self._theme_combo.currentIndexChanged.connect(self._on_theme_combo_changed)
+
+        label_widget = QLabel("Colour theme")
+        label_widget.setStyleSheet(f"QLabel {{ color: {t['fg']}; }}")
+        form.addRow(label_widget, self._theme_combo)
+
+        # High-quality zoom (supersampling / SSAA). When on, the heatmap
+        # canvas renders oversized and downsamples, so thin copper and
+        # outlines stay visible when zoomed far out instead of breaking
+        # up or vanishing. Costs GPU memory + fill while a viewer is open,
+        # hence a toggle; defaults on. Applied to the live canvas right
+        # here (the GL viewer already exists by the time this tab builds)
+        # so the setting takes effect without waiting for the next launch.
+        self._ssaa_check = QCheckBox("High-quality zoom (supersampling)")
+        self._ssaa_check.setChecked(load_supersampling_enabled())
+        self._ssaa_check.setToolTip(
+            "Render the heatmap canvas oversized and downsample it so thin "
+            "copper and outlines stay visible when zoomed far out, instead "
+            "of breaking up or vanishing. Uses more GPU memory while a "
+            "viewer window is open. The choice is remembered for the next "
+            "launch."
+        )
+        self._ssaa_check.toggled.connect(self._on_ssaa_toggled)
+        if self._gl_viewer is not None:
+            self._gl_viewer.set_supersampling(self._ssaa_check.isChecked())
+        ssaa_label = QLabel("High-quality zoom")
+        ssaa_label.setStyleSheet(f"QLabel {{ color: {t['fg']}; }}")
+        form.addRow(ssaa_label, self._ssaa_check)
+
+        # Status / hint line. Starts with the static usage hint and is
+        # overwritten by :meth:`_on_theme_combo_changed` to confirm a
+        # toggle took effect and prompt the user to restart.
+        self._theme_status_label = QLabel(
+            f"<span style='color:{t['fg_hint']};'>"
+            "Dark by default. Switching here saves the choice and updates "
+            "the menubar and dialogs immediately; restart FYPA for the "
+            "side panel and tables to repaint."
+            "</span>"
+        )
+        self._theme_status_label.setWordWrap(True)
+        form.addRow(QLabel(""), self._theme_status_label)
+        return box
+
+    def _on_ssaa_toggled(self, checked: bool) -> None:
+        """Persist and apply the High-quality-zoom (supersampling) toggle.
+        Takes effect on the live canvas immediately — no relaunch."""
+        save_supersampling_enabled(bool(checked))
+        if self._gl_viewer is not None:
+            self._gl_viewer.set_supersampling(bool(checked))
+
+    def _on_theme_combo_changed(self, _idx: int) -> None:
+        """Handle the user picking a different theme from the combobox.
+
+        Persists the choice and updates the QApplication-level palette
+        and base stylesheet immediately. The heavy widget refresh (re-
+        styling the side panel + rebuilding the non-heatmap tabs) is
+        deferred to the next event-loop tick so we're not destroying
+        our own QComboBox in the middle of its currentIndexChanged
+        emission. The Heatmap tab's OpenGL viewer can't be rebuilt
+        safely — its context tear-down kills the process — so we re-
+        style the side-panel widgets in place instead and leave the
+        canvas alone.
+        """
+        mode = self._theme_combo.currentData()
+        if not isinstance(mode, str) or mode not in _THEME_PRESETS:
+            return
+        if mode == current_theme_mode():
+            return
+        save_theme_mode(mode)
+        app = QApplication.instance()
+        if app is not None:
+            apply_app_theme(app, mode)
+        label = getattr(self, "_theme_status_label", None)
+        if label is not None:
+            t = _T()
+            label.setText(
+                f"<span style='color:{t['accent']};'>"
+                f"Theme set to <b>{_esc(mode.capitalize())}</b>. "
+                "Refreshing widgets…</span>"
+            )
+        QTimer.singleShot(0, self._refresh_inline_theme)
+
+    @staticmethod
+    def _fmt_settings_value(v) -> str:
+        """Format a numeric setting for display in a QLineEdit. Uses %g
+        to drop trailing zeros without losing precision for the long-
+        tail values (1e-3, 0.00393, etc.)."""
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return ""
+        if f == 0.0:
+            return "0"
+        # %g picks fixed or scientific automatically; clamp to 6 sig figs.
+        return f"{f:.6g}"
+
+    def _on_settings_reset(self) -> None:
+        """Restore every Settings-tab field to its built-in default. The
+        user still has to press Re-run Solver to commit."""
+        from fypa.altium.loader import SolveSettings as _SolveSettings
+        defaults = _SolveSettings()
+        for key, *_ in self._SETTINGS_FIELDS:
+            edit = getattr(self, f"settings_edit_{key}", None)
+            if edit is not None:
+                edit.setText(self._fmt_settings_value(getattr(defaults, key)))
+        chk = getattr(self, "_settings_adaptive_check", None)
+        if chk is not None:
+            chk.setChecked(bool(defaults.adaptive_mesh))
+        mode_combo = getattr(self, "_fill_mode_combo", None)
+        if mode_combo is not None:
+            idx = mode_combo.findData(defaults.conductive_fill_mode)
+            if idx >= 0:
+                mode_combo.setCurrentIndex(idx)
+            self._apply_fill_mode_enabled()
+        display_defaults = {
+            "via_current_warn_a": _VIA_CURRENT_WARN_A,
+            "display_percentile_high": _DISPLAY_PERCENTILE_HIGH,
+        }
+        for key, *_ in self._SETTINGS_DISPLAY_FIELDS:
+            edit = getattr(self, f"settings_edit_{key}", None)
+            if edit is not None:
+                edit.setText(self._fmt_settings_value(display_defaults[key]))
+        # Restore stackup copper-thickness fields to metadata defaults.
+        for (edit, original_mm) in getattr(
+                self, "_stackup_thickness_edits", {}).values():
+            edit.setText(self._fmt_settings_value(original_mm * 1000.0))
+        self._settings_status_label.setText(
+            f"<span style='color:{_T()['accent']};'>Fields reset — press "
+            "<b>Re-run Solver</b> to commit.</span>"
+        )
+
+    @staticmethod
+    def _mark_field_dirty(widget, dirty: bool) -> None:
+        """Set / clear the ``dirty`` dynamic property on a Settings-tab
+        widget and re-polish so the parent stylesheet's
+        ``[dirty="true"]`` selector kicks in (red outline / text)."""
+        new_val = "true" if dirty else "false"
+        if widget.property("dirty") == new_val:
+            return
+        widget.setProperty("dirty", new_val)
+        widget.style().unpolish(widget)
+        widget.style().polish(widget)
+
+    def _update_settings_field_styles(self) -> bool:
+        """Walk every Settings-tab field, mark each one's ``dirty``
+        property True when it differs from the current solve baseline,
+        False otherwise. Bad input counts as dirty so the red outline
+        stays up while the user is mid-edit. Returns True iff any
+        field is dirty."""
+        any_dirty = False
+        mark = self._mark_field_dirty
+
+        for key, *_ in self._SETTINGS_FIELDS:
+            edit = getattr(self, f"settings_edit_{key}", None)
+            if edit is None:
+                continue
+            baseline = getattr(self._solve_settings, key, None)
+            if baseline is None:
+                mark(edit, False)
+                continue
+            try:
+                val = float(edit.text().strip())
+                dirty = abs(val - float(baseline)) > 1e-12
+            except ValueError:
+                dirty = True
+            mark(edit, dirty)
+            any_dirty = any_dirty or dirty
+
+        chk = getattr(self, "_settings_adaptive_check", None)
+        if chk is not None:
+            dirty = bool(chk.isChecked()) != bool(
+                getattr(self._solve_settings, "adaptive_mesh", False))
+            mark(chk, dirty)
+            any_dirty = any_dirty or dirty
+
+        mode_combo = getattr(self, "_fill_mode_combo", None)
+        if mode_combo is not None:
+            dirty = mode_combo.currentData() != getattr(
+                self._solve_settings, "conductive_fill_mode", "auto")
+            mark(mode_combo, dirty)
+            any_dirty = any_dirty or dirty
+
+        for key, baseline in (
+            ("via_current_warn_a", self._via_current_warn_a),
+            ("display_percentile_high", self._display_percentile_high),
+        ):
+            edit = getattr(self, f"settings_edit_{key}", None)
+            if edit is None:
+                continue
+            try:
+                val = float(edit.text().strip())
+                dirty = abs(val - float(baseline)) > 1e-12
+            except ValueError:
+                dirty = True
+            mark(edit, dirty)
+            any_dirty = any_dirty or dirty
+
+        for _lid, (edit, original_mm) in getattr(
+                self, "_stackup_thickness_edits", {}).items():
+            text = edit.text().strip()
+            if not text:
+                mark(edit, False)
+                continue
+            try:
+                new_um = float(text)
+                dirty = abs(new_um / 1000.0 - original_mm) > 1.0e-6
+            except ValueError:
+                dirty = True
+            mark(edit, dirty)
+            any_dirty = any_dirty or dirty
+
+        return any_dirty
+
+    def _on_settings_field_changed(self, *_args) -> None:
+        """Slot wired to every Settings-tab editor's change signal:
+        refresh per-field dirty outlines and update ``_settings_dirty``
+        against the current solve baseline, then refresh the Resolve
+        overlay button.
+
+        In launcher mode there is no committed solve to be stale against and
+        no editor overlay, so only the per-field dirty outlines are updated."""
+        new_dirty = self._update_settings_field_styles()
+        if getattr(self, "_settings_launcher_mode", False):
+            return
+        if new_dirty == self._settings_dirty:
+            return
+        self._settings_dirty = new_dirty
+        self._refresh_solve_stale_overlay()
+
+
+class LauncherWindow(_SettingsTabMixin, QMainWindow):
     """Minimal launcher window shown when FYPA is invoked with no project.
 
     Has just a File menu (Import Altium Design / Open Project File /
@@ -5138,12 +6218,47 @@ class LauncherWindow(QMainWindow):
         icon = _load_app_icon()
         if icon is not None:
             self.setWindowIcon(icon)
-        self.resize(640, 360)
+        self.resize(720, 520)
 
+        # --- State the shared Settings-tab builder (_SettingsTabMixin) reads.
+        # The launcher has no loaded design, so these are placeholders /
+        # defaults; ``_settings_launcher_mode`` makes the builder skip the
+        # design-only sections (Project/PcbDoc labels, stackup, Re-run /
+        # Reload actions) and treat the physics fields as session defaults.
+        from fypa.altium.loader import SolveSettings as _SolveSettings
+        self._settings_launcher_mode = True
+        self._solve_settings = _SolveSettings()
+        self.metadata = None
+        self._loaded_project = None
+        self._gl_viewer = None
+        self._via_current_warn_a = _VIA_CURRENT_WARN_A
+        self._display_percentile_high = _DISPLAY_PERCENTILE_HIGH
+        self._settings_dirty = False
+
+        # Two tabs: the welcome screen (Home) and a Settings tab that mirrors
+        # the design-loaded viewer's Settings tab minus its design-only
+        # sections (see _SettingsTabMixin._build_settings_tab, launcher mode).
+        self.tabs = QTabWidget(self)
+        self.tabs.addTab(self._build_home_tab(), "Home")
+        self.tabs.addTab(self._build_settings_tab(), "Settings")
+        self.setCentralWidget(self.tabs)
+
+        self._build_menubar()
+
+        # Held across the async solve so Qt + Python keep them alive.
+        self._solve_worker: _SolveWorker | None = None
+        self._solve_progress_dlg: QProgressDialog | None = None
+        self._solve_progress_updater: _SolveProgressUpdater | None = None
+
+    def _build_home_tab(self) -> QWidget:
+        """Build the Home (welcome) tab. Rebuilt wholesale on a theme change
+        (see :meth:`_refresh_inline_theme`) so its inline-styled label, logo
+        and background pick up the new colours — hence the auto-solve
+        checkbox is created *and wired* here, not in ``_build_menubar``."""
+        t = _T()
         centre = QWidget(self)
         layout = QVBoxLayout(centre)
         layout.setContentsMargins(40, 40, 40, 40)
-        t = _T()
         # Use clickable <a> links (with linkActivated) so the user can
         # launch each File-menu action from this welcome screen too.
         link_style = (
@@ -5194,35 +6309,48 @@ class LauncherWindow(QMainWindow):
             text_label.setAlignment(Qt.AlignCenter)
             layout.addWidget(text_label)
         layout.addWidget(label)
-        self._auto_solve_check = QCheckBox(
-            "Solve automatically on Altium import",
-            centre,
-        )
-        self._auto_solve_check.setToolTip(
-            "When checked, Import Altium Design runs the FEM solver "
-            "immediately (reusing the solve cache when possible). When "
-            "unchecked, only design info is loaded — press ↻ Solve in the "
-            "viewer."
-        )
-        _t = _T()
-        self._auto_solve_check.setStyleSheet(
-            f"QCheckBox {{ color: {t['fg_dim']}; }}"
-        )
-        chk_row = QHBoxLayout()
-        chk_row.addStretch(1)
-        chk_row.addWidget(self._auto_solve_check)
-        chk_row.addStretch(1)
-        layout.addLayout(chk_row)
+        # "Solve automatically on Altium import" now lives on the Settings tab
+        # (General options); the import path reads the persisted pref directly.
         layout.addStretch(1)
         centre.setStyleSheet(f"background-color: {t['bg']};")
-        self.setCentralWidget(centre)
+        return centre
 
-        self._build_menubar()
+    def _refresh_inline_theme(self) -> None:
+        """Launcher-side theme refresh, invoked by the shared Settings-tab
+        theme picker (:meth:`_SettingsTabMixin._on_theme_combo_changed`).
 
-        # Held across the async solve so Qt + Python keep them alive.
-        self._solve_worker: _SolveWorker | None = None
-        self._solve_progress_dlg: QProgressDialog | None = None
-        self._solve_progress_updater: _SolveProgressUpdater | None = None
+        Rebuilds both launcher tabs so their inline-styled widgets and pinned
+        backgrounds repaint in the new theme (the app-level palette + base
+        stylesheet were already swapped by ``_on_theme_combo_changed``). The
+        Settings tab is rebuilt last so its theme picker / status label are
+        the ones left standing for the confirmation message below.
+        """
+        tabs = getattr(self, "tabs", None)
+        if tabs is None:
+            return
+        keep_current = tabs.currentIndex()
+        builders = {"Home": self._build_home_tab,
+                    "Settings": self._build_settings_tab}
+        for i in range(tabs.count()):
+            builder = builders.get(tabs.tabText(i))
+            if builder is None:
+                continue
+            title = tabs.tabText(i)
+            old = tabs.widget(i)
+            tabs.removeTab(i)
+            if old is not None:
+                old.setParent(None)
+                old.deleteLater()
+            tabs.insertTab(i, builder(), title)
+        tabs.setCurrentIndex(keep_current)
+        status = getattr(self, "_theme_status_label", None)
+        if status is not None:
+            t = _T()
+            status.setText(
+                f"<span style='color:{t['ok']};'>"
+                f"Theme set to <b>{_esc(current_theme_mode().capitalize())}</b>."
+                "</span>"
+            )
 
     def _on_welcome_link(self, href: str) -> None:
         """Dispatch a click on one of the welcome-label hyperlinks to the
@@ -5263,18 +6391,8 @@ class LauncherWindow(QMainWindow):
         file_menu.addAction(open_proj_clean)
 
         # "Solve automatically on import" is no longer a File-menu item — it's
-        # the launcher-body checkbox and the Settings > General options entry.
-        # Wire the body checkbox to the persisted pref and keep the Import
-        # status tip in sync.
-        def _apply_auto_solve(checked: bool) -> None:
-            save_auto_solve_on_import(bool(checked))
-            self._act_import_altium.setStatusTip(
-                _altium_import_auto_solve_status_tip(bool(checked)))
-
-        self._auto_solve_check.blockSignals(True)
-        self._auto_solve_check.setChecked(load_auto_solve_on_import())
-        self._auto_solve_check.blockSignals(False)
-        self._auto_solve_check.toggled.connect(_apply_auto_solve)
+        # the Settings > General options entry; the import path reads the
+        # persisted pref (load_auto_solve_on_import) directly.
 
         open_gerber = QAction("Import &Gerber Files…", self)
         open_gerber.setShortcut("Ctrl+G")
@@ -5437,7 +6555,7 @@ class LauncherWindow(QMainWindow):
 
         imp = _altium_import_worker_options(
             prjpcb_path.name, clean=clean,
-            auto_solve=self._auto_solve_check.isChecked(),
+            auto_solve=load_auto_solve_on_import(),
         )
         dlg = QProgressDialog(imp["dialog_text"], "Cancel", 0, 0, self)
         dlg.setWindowTitle(imp["dialog_title"])
@@ -6142,7 +7260,7 @@ class _TopologyView(QGraphicsView):
         super().mouseReleaseEvent(event)
 
 
-class PdnViewer(QMainWindow):
+class PdnViewer(_SettingsTabMixin, QMainWindow):
     """Main window — composes the side panel and the matplotlib plot area.
 
     ``metadata`` (if supplied) is the dict bundled into the solve pickle
@@ -6283,6 +7401,10 @@ class PdnViewer(QMainWindow):
             float(display_percentile_high) if display_percentile_high is not None
             else _DISPLAY_PERCENTILE_HIGH
         )
+        # Opacity of no-current via-barrel sections (3D cylinder fade), from
+        # the persisted "No-current via opacity" Settings knob. Read live by
+        # :meth:`_solid_via_chunks` / :meth:`_heatmap_via_chunks`.
+        self._via_dead_section_alpha: float = load_via_no_current_opacity()
         project_name = getattr(solution.problem, "project_name", None) or "unknown"
         self.setWindowTitle(f"FYPA -- {project_name}")
         icon = _load_app_icon()
@@ -11678,6 +12800,18 @@ class PdnViewer(QMainWindow):
     _VIA_CYL_COLOR_RGB: tuple[float, float, float] = (
         0xff / 255.0, 0x8c / 255.0, 0x00 / 255.0,
     )
+    # Alpha applied to barrel sections that carry no rail current — the metal
+    # stub ends outside the via's outermost current-carrying copper
+    # connection, where the solved section current goes to zero (the same
+    # "no current" condition the "Grey no current copper" plane toggle
+    # greys). The current-carrying span keeps alpha 1.0 so it renders
+    # unchanged. This is the built-in default; the live value is the
+    # per-instance ``_via_dead_section_alpha``, set from the "No-current via
+    # opacity" Settings knob (persisted via
+    # :func:`load_via_no_current_opacity`). Which hops count as no-current is
+    # decided in :meth:`_hop_live_flags`, reusing the plane classifier's
+    # ``_NO_CURRENT_PD_*`` power floor.
+    _VIA_DEAD_SECTION_ALPHA: float = _VIA_NO_CURRENT_OPACITY_DEFAULT
     # Plated-through-hole pad styling — light grey so PTHs are visually
     # distinct from the orange vias in both the 2D marker overlay and the
     # 3D cylinder view. PTHs span every enabled copper layer (Altium pads
@@ -11738,26 +12872,26 @@ class PdnViewer(QMainWindow):
         )
         lut: np.ndarray | None = None
         vmin = vmax = 0.0
-        fallback_r_seg = 1.0e-3
         drop_ref = 0.0
-        stackup_ids: list[int] = []
+        # Stackup order + fallback via R are needed for the no-current
+        # barrel-fade in *every* mode (not just the heatmap ones), so they're
+        # computed unconditionally. Each via dict carries its own per-hop R;
+        # the fallback only applies if that's missing (e.g. legacy pickle).
+        stackup_ids: list[int] = [row["layer_id"]
+                                  for row in self.metadata.get("stackup", [])]
+        fallback_r_seg = float(
+            (self.metadata.get("physics_constants", {}) or {})
+            .get("fallback_via_resistance_ohm", 1.0e-3)
+        )
         if heatmap_on:
             lut = _build_cmap_lut(self._cmap_name)
             vmin = float(self._vmin)
             vmax = float(self._vmax)
             if vmax <= vmin:
                 vmax = vmin + 1e-30
-            # Each via dict now carries its own segments list with per-hop R;
-            # this fallback only applies if that's missing (e.g. legacy pickle).
-            fallback_r_seg = float(
-                (self.metadata.get("physics_constants", {}) or {})
-                .get("fallback_via_resistance_ohm", 1.0e-3)
-            )
             if (mode == _VOLTAGE_DROP_MODE
                     and self._last_drop_reference is not None):
                 drop_ref = float(self._last_drop_reference)
-            stackup_ids = [row["layer_id"]
-                           for row in self.metadata.get("stackup", [])]
 
         pos_chunks: list[np.ndarray] = []
         col_chunks: list[np.ndarray] = []
@@ -11810,18 +12944,18 @@ class PdnViewer(QMainWindow):
             # voltages on at least two of the via's spanned layers.
             heatmap_chunks: list[tuple[np.ndarray, np.ndarray]] = []
             if via_current_on and lut is not None:
-                # Via Current mode: one cylinder per via, coloured by
-                # the via's max-|segment-current| (matches the Vias-tab
-                # value and the scale-controller range).
+                # Via Current mode: colour the barrel by the via's
+                # max-|segment-current| (matches the Vias-tab value and the
+                # scale-controller range), split into per-hop cylinders so
+                # the no-current stub sections fade like every other mode.
                 key = (v.get("net", ""), x, y)
                 cur = self._via_current_lookup.get(key)
                 if cur is not None:
                     c = self._shade(lut, cur, vmin, vmax)
-                    pos, col = _generate_via_cylinder(
-                        x, y, z_top, z_bot, radius, c,
-                        n_segments=self._VIA_CYL_SEGMENTS,
+                    heatmap_chunks = self._solid_via_chunks(
+                        v, x, y, radius, lo_id, hi_id, z_top, z_bot,
+                        stackup_ids, id_to_phys, c, fallback_r_seg,
                     )
-                    heatmap_chunks = [(pos, col)]
             elif heatmap_on and lut is not None and mode is not None:
                 heatmap_chunks = self._heatmap_via_chunks(
                     v, x, y, radius, lo_id, hi_id,
@@ -11834,13 +12968,15 @@ class PdnViewer(QMainWindow):
                     pos_chunks.append(pos)
                     col_chunks.append(col)
             else:
-                pos, col = _generate_via_cylinder(
-                    x, y, z_top, z_bot, radius,
-                    self._VIA_CYL_COLOR_RGB,
-                    n_segments=self._VIA_CYL_SEGMENTS,
-                )
-                pos_chunks.append(pos)
-                col_chunks.append(col)
+                # Default (no heatmap) view: solid orange, but with the
+                # no-current barrel sections faded.
+                for pos, col in self._solid_via_chunks(
+                    v, x, y, radius, lo_id, hi_id, z_top, z_bot,
+                    stackup_ids, id_to_phys, self._VIA_CYL_COLOR_RGB,
+                    fallback_r_seg,
+                ):
+                    pos_chunks.append(pos)
+                    col_chunks.append(col)
 
         # Plated through-hole pads — same per-site gating as vias (visible
         # layer ∩ rail). Default to light grey; when the heatmap-vias/PTH
@@ -11909,22 +13045,169 @@ class PdnViewer(QMainWindow):
                     pos_chunks.append(pos)
                     col_chunks.append(col)
             else:
-                pos, col = _generate_via_cylinder(
-                    x, y, z_top, z_bot, radius,
-                    self._PTH_CYL_COLOR_RGB,
-                    n_segments=self._VIA_CYL_SEGMENTS,
-                    slot=slot,
-                )
-                pos_chunks.append(pos)
-                col_chunks.append(col)
+                # Default / Via-Current view: light grey, with no-current
+                # barrel sections faded. PTHs on the active net (their
+                # ``segments`` carry per-hop R the same as vias) fade; those
+                # off the solution can't be sampled and stay fully opaque.
+                for pos, col in self._solid_via_chunks(
+                    p, x, y, radius, lo_id, hi_id, z_top, z_bot,
+                    stackup_ids, id_to_phys, self._PTH_CYL_COLOR_RGB,
+                    fallback_r_seg, slot=slot,
+                ):
+                    pos_chunks.append(pos)
+                    col_chunks.append(col)
 
         if pos_chunks:
+            # Chunks mix RGB (opaque, current-carrying / unsampled) and RGBA
+            # (faded no-current sections); unify to RGBA so the batch is one
+            # array. set_cylinders alpha-blends it.
+            col_all = np.concatenate(
+                [c if c.shape[1] == 4 else _apply_alpha(c, 1.0)
+                 for c in col_chunks], axis=0)
             self._gl_viewer.set_cylinders(
                 np.concatenate(pos_chunks, axis=0),
-                np.concatenate(col_chunks, axis=0),
+                col_all,
             )
         else:
             self._gl_viewer.clear_cylinders()
+
+    def _sample_via_barrel(
+        self, via: dict, x: float, y: float,
+        lo_id: int, hi_id: int,
+        stackup_ids: list[int], id_to_phys: dict[int, str],
+        fallback_r_seg: float,
+    ) -> tuple[list[tuple[int, float, float]], list[float]] | None:
+        """Sample the barrel of one via/PTH against the current solution.
+
+        Returns ``(sampled, powers)`` where ``sampled`` is the list of
+        ``(layer_id, z, voltage)`` for every layer in the via's span that
+        has solved copper on the via's net, and ``powers[i]`` is the I^2 R
+        dissipation of hop ``i`` (between ``sampled[i]`` and
+        ``sampled[i+1]``), derived from the voltage drop and the per-hop
+        barrel resistance. Power (not raw current) so the no-current test in
+        :meth:`_hop_live_flags` matches the plane classifier, which also
+        thresholds on power.
+
+        Returns ``None`` when there is no solution, the net isn't
+        sampleable, or fewer than two layers on the span carry solved
+        copper — the caller then draws the barrel fully opaque (no current
+        data to judge which sections are live). Shares the exact sampling
+        the heatmap path uses so the fade lines up with the colouring.
+        """
+        if getattr(self, "solution", None) is None:
+            return None
+        net = via.get("net", "")
+        if not net or net in ("?", "NO_NET"):
+            return None
+        try:
+            i_start = stackup_ids.index(lo_id)
+            i_end = stackup_ids.index(hi_id)
+        except ValueError:
+            return None
+        span_ids = stackup_ids[i_start:i_end + 1]
+        if len(span_ids) < 2:
+            return None
+        sampled: list[tuple[int, float, float]] = []
+        for lid in span_ids:
+            phys = id_to_phys.get(lid)
+            if phys is None:
+                continue
+            v_at = self._sample_via_voltage(phys, net, x, y)
+            if v_at is None:
+                continue
+            sampled.append((lid, self._layer_z_for(phys), v_at))
+        if len(sampled) < 2:
+            return None
+        r_by_pair: dict[frozenset[int], float] = {}
+        for seg in via.get("segments") or []:
+            r_by_pair[frozenset((seg["layer_a"], seg["layer_b"]))] = (
+                float(seg["resistance_ohm"])
+            )
+        powers: list[float] = []
+        for (lid_a, _z_a, v_a), (lid_b, _z_b, v_b) in zip(
+                sampled, sampled[1:]):
+            r_seg = r_by_pair.get(frozenset((lid_a, lid_b)), fallback_r_seg)
+            i_seg = abs((v_a - v_b) / r_seg) if r_seg > 0 else 0.0
+            powers.append(i_seg * i_seg * r_seg)
+        return sampled, powers
+
+    @classmethod
+    def _hop_live_flags(cls, powers: list[float]) -> list[bool]:
+        """Classify each barrel hop as current-carrying (opaque) or
+        no-current (faded), from each hop's I^2 R dissipation.
+
+        A hop carries current when its power clears the same relative floor
+        the "Grey no current copper" plane classifier
+        (:meth:`_no_current_mesh_set`) uses — ``_NO_CURRENT_PD_REL`` of the
+        via's peak hop, with the ``_NO_CURRENT_PD_ABS`` absolute floor. So a
+        barrel fades exactly where its own section current goes to zero:
+        the stub ends outside the via's outermost current-carrying copper
+        connection. A hop that carries the via's series current (even past a
+        grey no-current island between two live connections) stays opaque.
+        A via with no current on any hop reads fully faded."""
+        if not powers:
+            return []
+        p_max = max(powers)
+        if p_max <= cls._NO_CURRENT_PD_ABS:
+            return [False] * len(powers)
+        thr = max(cls._NO_CURRENT_PD_ABS, cls._NO_CURRENT_PD_REL * p_max)
+        return [p > thr for p in powers]
+
+    def _solid_via_chunks(
+        self, via: dict, x: float, y: float, radius: float,
+        lo_id: int, hi_id: int, z_top: float, z_bot: float,
+        stackup_ids: list[int], id_to_phys: dict[int, str],
+        color_rgb: tuple[float, float, float], fallback_r_seg: float,
+        slot: tuple[float, float, float, bool] | None = None,
+    ) -> list[tuple[np.ndarray, np.ndarray]]:
+        """Flat-colour barrel for a via/PTH, split so sections that carry no
+        rail current fade to :attr:`_via_dead_section_alpha` (the "No-current
+        via opacity" Settings knob).
+
+        The metal stubs above the topmost / below the bottommost live copper
+        carry no current and are always faded; each inter-layer hop is opaque
+        only where it carries current (see :meth:`_hop_live_flags`). When the
+        via's net can't be sampled on >=2 layers there's no current data, so a
+        single full-span opaque cylinder is returned — the pre-fade behaviour.
+        """
+        sampled_powers = self._sample_via_barrel(
+            via, x, y, lo_id, hi_id, stackup_ids, id_to_phys, fallback_r_seg)
+        if sampled_powers is None:
+            pos, col = _generate_via_cylinder(
+                x, y, z_top, z_bot, radius, color_rgb,
+                n_segments=self._VIA_CYL_SEGMENTS, slot=slot,
+            )
+            return [(pos, col)]
+        sampled, powers = sampled_powers
+        live = self._hop_live_flags(powers)
+        dead = self._via_dead_section_alpha
+        chunks: list[tuple[np.ndarray, np.ndarray]] = []
+
+        def _cyl(za: float, zb: float, alpha: float) -> None:
+            if za == zb:
+                return
+            pos, col = _generate_via_cylinder(
+                x, y, za, zb, radius, color_rgb,
+                n_segments=self._VIA_CYL_SEGMENTS, slot=slot,
+            )
+            chunks.append((pos, _apply_alpha(col, alpha)))
+
+        # Faded metal stub above the topmost live copper.
+        _cyl(z_top, sampled[0][1], dead)
+        for i, ((_la, z_a, _va), (_lb, z_b, _vb)) in enumerate(
+                zip(sampled, sampled[1:])):
+            _cyl(z_a, z_b, 1.0 if live[i] else dead)
+        # Faded metal stub below the bottommost live copper.
+        _cyl(sampled[-1][1], z_bot, dead)
+        # All hops collapsed to zero-length (degenerate stackup) — fall back
+        # to a single opaque cylinder so the via never vanishes entirely.
+        if not chunks:
+            pos, col = _generate_via_cylinder(
+                x, y, z_top, z_bot, radius, color_rgb,
+                n_segments=self._VIA_CYL_SEGMENTS, slot=slot,
+            )
+            return [(pos, col)]
+        return chunks
 
     def _heatmap_via_chunks(
         self, via: dict, x: float, y: float, radius: float,
@@ -12005,8 +13288,22 @@ class PdnViewer(QMainWindow):
                 float(seg["resistance_ohm"])
             )
 
+        # Per-hop I^2 R dissipation → which hops carry rail current.
+        # No-current hops fade to _VIA_DEAD_SECTION_ALPHA while keeping their
+        # heatmap colour, so the fade lines up hop-for-hop with the solid and
+        # Via-Current paths (all three read _hop_live_flags off the same R).
+        hop_powers: list[float] = []
+        for (lid_a, _z_a, v_a), (lid_b, _z_b, v_b) in zip(
+                sampled, sampled[1:]):
+            r_seg = r_by_pair.get(frozenset((lid_a, lid_b)), fallback_r_seg)
+            i_seg = abs((v_a - v_b) / r_seg) if r_seg > 0 else 0.0
+            hop_powers.append(i_seg * i_seg * r_seg)
+        live = self._hop_live_flags(hop_powers)
+        dead = self._via_dead_section_alpha
+
         chunks: list[tuple[np.ndarray, np.ndarray]] = []
-        for (lid_a, z_a, v_a), (lid_b, z_b, v_b) in zip(sampled, sampled[1:]):
+        for i, ((lid_a, z_a, v_a), (lid_b, z_b, v_b)) in enumerate(
+                zip(sampled, sampled[1:])):
             if z_a == z_b:
                 continue
             if mode in ("Voltage", _VOLTAGE_DROP_MODE):
@@ -12038,7 +13335,8 @@ class PdnViewer(QMainWindow):
                     n_segments=self._VIA_CYL_SEGMENTS,
                     slot=slot,
                 )
-            chunks.append((pos, col))
+            chunks.append(
+                (pos, _apply_alpha(col, 1.0 if live[i] else dead)))
 
         # For Voltage / Voltage Drop add a filled disk cap at the top and
         # bottom of the via so the endpoint colour is clearly visible at each
@@ -12053,6 +13351,11 @@ class PdnViewer(QMainWindow):
             _, z_bot_cap, v_bot_cap = sampled[-1]
             ct_cap = self._shade(lut, v_top_cap - drop_ref, vmin, vmax)
             cb_cap = self._shade(lut, v_bot_cap - drop_ref, vmin, vmax)
+            # Each end cap sits at the junction of the outermost hop, so it
+            # fades with that hop's liveness — a cap on a dead stub end
+            # shouldn't read as a bright solid disk.
+            a_top = 1.0 if (live and live[0]) else dead
+            a_bot = 1.0 if (live and live[-1]) else dead
             pos_t, col_t = _generate_disk_cap(
                 x, y, z_top_cap, radius, ct_cap,
                 n_segments=self._VIA_CYL_SEGMENTS,
@@ -12063,7 +13366,8 @@ class PdnViewer(QMainWindow):
                 n_segments=self._VIA_CYL_SEGMENTS,
                 slot=slot,
             )
-            chunks = [(pos_t, col_t)] + chunks + [(pos_b, col_b)]
+            chunks = ([(pos_t, _apply_alpha(col_t, a_top))] + chunks
+                      + [(pos_b, _apply_alpha(col_b, a_bot))])
 
         return chunks
 
@@ -12961,6 +14265,23 @@ class PdnViewer(QMainWindow):
                                         float(self._gl_scale(vmax)))
         self._reshade_baked_via_overlays()
 
+    def _apply_via_no_current_opacity(self, alpha: float) -> None:
+        """Live-apply the "No-current via opacity" Settings knob: store the
+        alpha and re-push the 3D via cylinders so the fade updates without a
+        re-solve. The fade is a 3D-cylinder-only effect, so there's nothing
+        to refresh in 2D."""
+        self._via_dead_section_alpha = min(1.0, max(0.0, float(alpha)))
+        if getattr(self, "_gl_viewer", None) is None:
+            return
+        view_box = getattr(self, "view_3d_box", None)
+        if view_box is None or not view_box.isChecked():
+            return
+        phys_list, rails, _ = self._current_selection()
+        if not phys_list or not rails:
+            return
+        self._push_via_cylinders(
+            phys_list, rails, mode=self.mode_combo.currentText())
+
     def _reshade_baked_via_overlays(self) -> None:
         """Re-push the via cylinders / 2D markers when their colours
         come from a baked LUT lookup (Via Current mode, or any other
@@ -13474,6 +14795,17 @@ class PdnViewer(QMainWindow):
         # :meth:`_refresh_net_table`.
         self._net_table_label = QLabel("<b>Nets</b>")
         lay.addWidget(self._net_table_label)
+        # Live name filter — hides non-matching rows as the user types
+        # (case-insensitive substring). Inherits the panel's themed
+        # QLineEdit styling. See :meth:`_apply_net_table_filter`.
+        self._net_table_filter = QLineEdit(panel)
+        self._net_table_filter.setObjectName("NetTableFilter")
+        self._net_table_filter.setPlaceholderText("Filter nets by name…")
+        self._net_table_filter.setClearButtonEnabled(True)
+        self._net_table_filter.textChanged.connect(
+            self._on_net_table_filter_changed)
+        self._net_table_filter.hide()
+        lay.addWidget(self._net_table_filter)
         self._net_table = QTableWidget(0, 2, panel)
         self._net_table.setObjectName("NetTable")
         self._net_table.setHorizontalHeaderLabels(["Net", "Area (mm²)"])
@@ -13490,6 +14822,11 @@ class PdnViewer(QMainWindow):
         hh = self._net_table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.Stretch)
         hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        # A manual header-click re-sort rearranges items but the hidden-row
+        # state is tracked per row position, so re-apply the filter after a
+        # sort to keep the right rows masked.
+        hh.sortIndicatorChanged.connect(
+            lambda *_: self._apply_net_table_filter())
         self._net_table.setStyleSheet(
             f"QTableWidget#NetTable {{ background-color: {t['bg_input']};"
             f"            color: {t['fg']};"
@@ -13543,6 +14880,7 @@ class PdnViewer(QMainWindow):
         self._copper_props_host.show()
         if hasattr(self, "_net_table"):
             self._net_table_label.hide()
+            self._net_table_filter.hide()
             self._net_table.hide()
 
     def _on_editor_mode_toggled(self, checked: bool) -> None:
@@ -13689,6 +15027,7 @@ class PdnViewer(QMainWindow):
         if hasattr(self, "_net_table"):
             show_table = self._editor_mode and sel is None
             self._net_table_label.setVisible(show_table)
+            self._net_table_filter.setVisible(show_table)
             self._net_table.setVisible(show_table)
         self._sync_marker_buttons()
 
@@ -15513,8 +16852,40 @@ class PdnViewer(QMainWindow):
             table.sortItems(sort_col, sort_order)
         finally:
             self._net_table_populating = False
+        # Re-apply the active name filter (and refresh the count label).
+        # A rebuild resets per-row hidden state, so a live filter would
+        # otherwise reveal the rows it was hiding.
+        self._apply_net_table_filter()
+
+    def _on_net_table_filter_changed(self, _text: str) -> None:
+        """Slot for the net-table filter edit — re-run the row filter as
+        the user types."""
+        self._apply_net_table_filter()
+
+    def _apply_net_table_filter(self) -> None:
+        """Hide net rows whose name doesn't contain the filter text
+        (case-insensitive substring), and update the count label to show
+        how many rows match."""
+        table = getattr(self, "_net_table", None)
+        if table is None:
+            return
+        edit = getattr(self, "_net_table_filter", None)
+        needle = edit.text().strip().lower() if edit is not None else ""
+        visible = 0
+        for i in range(table.rowCount()):
+            item = table.item(i, 0)
+            name = item.text().lower() if item is not None else ""
+            hide = bool(needle) and needle not in name
+            table.setRowHidden(i, hide)
+            if not hide:
+                visible += 1
         if hasattr(self, "_net_table_label"):
-            self._net_table_label.setText(f"<b>Nets</b> ({len(rows)})")
+            total = len(getattr(self, "_net_table_rows", ()))
+            if needle:
+                self._net_table_label.setText(
+                    f"<b>Nets</b> ({visible} of {total})")
+            else:
+                self._net_table_label.setText(f"<b>Nets</b> ({total})")
 
     def _on_net_table_selection(self) -> None:
         """Light up the clicked net's copper in the viewport (dim the rest),
@@ -18784,667 +20155,6 @@ class PdnViewer(QMainWindow):
             return voltage, {"physical": phys, "net": net, "is_stub": True}
         return None
 
-    # --- Settings tab --------------------------------------------------------
-
-    # Form-field schema: each entry is
-    #   (attr_name, label, unit, getter_from_settings, default_text, tooltip)
-    # The attr_name doubles as the QLineEdit's instance-attribute name on
-    # the viewer (``self.settings_edit_<attr_name>``) and as a key in the
-    # SolveSettings dataclass. ``getter_from_settings`` extracts the
-    # current value from a SolveSettings instance, formatted for display.
-    # ``default_text`` is the static "(default: …)" hint shown beside the
-    # field so users always know the unmodified value.
-    _SETTINGS_FIELDS: tuple[tuple[str, str, str, str], ...] = (
-        # (key, label, unit, tooltip)
-        ("temperature_c",
-         "Board temperature",
-         "°C",
-         "Operating temperature of the copper. Drives the temperature-"
-         "corrected sheet conductivity used by every layer in the FEM."),
-        ("copper_resistivity_20c_microohm_cm",
-         "Copper resistivity (at 20 °C)",
-         "µΩ·cm",
-         "Bulk copper resistivity at the 20 °C reference. Default 1.68 "
-         "µΩ·cm matches annealed (IACS 100 %) copper. Lower for rolled / "
-         "ED copper, higher for thin plated foil."),
-        ("copper_temp_coefficient_per_c",
-         "Copper temperature coefficient α",
-         "1/°C",
-         "Linear temperature coefficient of resistivity. Default 0.00393 "
-         "/°C is the standard value for annealed copper."),
-        ("plating_thickness_mm",
-         "Via plating thickness",
-         "mm",
-         "Plated-through-hole copper wall thickness. Default 0.025 mm "
-         "(~1 mil) matches IPC-A-600 Class 2; bump to 0.030–0.050 mm for "
-         "Class 3 / heavy-copper builds."),
-        ("coupling_resistance_ohm",
-         "Multi-pin coupling resistance",
-         "Ω",
-         "Small star-topology resistor used to tie each pin of a multi-pin "
-         "terminal back to its main NodeID. Should stay << any real trace "
-         "resistance — change only if you know why."),
-        ("fallback_via_resistance_ohm",
-         "Fallback via resistance",
-         "Ω",
-         "Per-hop resistance assigned to vias whose drill geometry is "
-         "missing or degenerate. Most boards never hit this fallback."),
-        ("conductive_fill_resistivity_ohm_mm",
-         "Conductive fill resistivity",
-         "Ω·mm",
-         "Bulk resistivity of IPC-4761 conductive via-fill (copper / silver "
-         "paste). Default 5e-3 Ω·mm matches typical silver-loaded epoxy. "
-         "Lower for pure electroplated-copper fills. Only used when Altium "
-         "marks the via as filled AND the FILLING row's material classifies "
-         "as conductive — non-conductive fills leave the resistance "
-         "unchanged."),
-        ("mesh_min_angle_deg",
-         "Mesh minimum angle",
-         "°",
-         "Triangle quality constraint passed to the Triangle mesher (0–34 "
-         "is safe; higher values can stall on tight features). Smaller "
-         "values mesh faster but yield poorer-conditioned FEM matrices."),
-        ("mesh_max_size_mm",
-         "Mesh maximum edge size",
-         "mm",
-         "Cap on triangle edge length (and area). Smaller = denser mesh, "
-         "slower solve, finer-resolution voltage maps. 0 disables the cap."),
-    )
-
-    # Display-only knobs (no re-solve needed; applied immediately).
-    _SETTINGS_DISPLAY_FIELDS: tuple[tuple[str, str, str, str], ...] = (
-        ("via_current_warn_a",
-         "Via current warning level |I|",
-         "A",
-         "Vias whose worst-segment current is at or above this threshold "
-         "are highlighted red in the Vias tab and contribute to the tab-title "
-         "warning count."),
-        ("display_percentile_high",
-         "Heatmap colour-scale clip percentile",
-         "%",
-         "Default upper clamp for Current Density / Power Density modes. "
-         "Set to e.g. 99 to suppress single-vertex FEM singularity spikes "
-         "and let the rest of the board use the full colour scale."),
-    )
-
-    def _build_settings_tab(self) -> QWidget:
-        """Build the Settings tab — tunable physics + mesh + display knobs
-        and a Re-run Solver button.
-
-        Editing a field does NOT immediately re-solve; the user must press
-        "Re-run Solver" to spawn a fresh solve with the new parameters.
-        Display-only fields (warning threshold, percentile) are also
-        applied by the same button, but those are cheap and never trigger
-        an FEM rebuild on their own."""
-        widget = QWidget(self.tabs)
-        scroll = QScrollArea(widget)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        t = _T()
-        scroll.setStyleSheet(
-            f"QScrollArea {{ background-color: {t['bg']}; }}"
-        )
-
-        inner = QWidget()
-        outer = QVBoxLayout(inner)
-        outer.setContentsMargins(16, 16, 16, 16)
-        outer.setSpacing(12)
-
-        # ----- Intro -----
-        intro = QLabel(
-            "Adjust the physics and meshing parameters below, then click "
-            "<b>Re-run Solver</b> to re-solve the current project with the "
-            "new values. The viewer will reload with the fresh result."
-        )
-        intro.setWordWrap(True)
-        intro.setStyleSheet(f"QLabel {{ color: {t['fg_label']}; }}")
-        outer.addWidget(intro)
-
-        prjpcb = ""
-        pcbdoc = ""
-        if self.metadata:
-            prjpcb = str(self.metadata.get("prjpcb_path") or "")
-            pcbdoc = str(self.metadata.get("pcbdoc_path") or "")
-        project_lbl = QLabel(
-            f"<span style='color:{t['fg_dim']};'>Project:</span> "
-            f"<code style='color:{t['code']};'>{_esc(prjpcb) or '(not in metadata)'}</code>"
-        )
-        project_lbl.setStyleSheet(f"QLabel {{ color: {t['fg']}; }}")
-        project_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        project_lbl.setWordWrap(True)
-        outer.addWidget(project_lbl)
-
-        pcbdoc_lbl = QLabel(
-            f"<span style='color:{t['fg_dim']};'>PcbDoc:</span> "
-            f"<code style='color:{t['code']};'>{_esc(pcbdoc) or '(not in metadata)'}</code>"
-        )
-        pcbdoc_lbl.setStyleSheet(f"QLabel {{ color: {t['fg']}; }}")
-        pcbdoc_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        pcbdoc_lbl.setWordWrap(True)
-        outer.addWidget(pcbdoc_lbl)
-
-        # ----- Appearance group -----
-        outer.addWidget(self._build_appearance_settings_box())
-
-        # ----- Solve parameters group -----
-        solve_box = self._make_settings_group(
-            "Solve parameters (require re-solve)",
-            self._SETTINGS_FIELDS,
-            source=self._solve_settings,
-            attr_prefix="settings_edit_",
-            # The conductive-fill resistivity field is rebuilt in its own
-            # "Conductive via fill" group below (alongside the mode + material
-            # pickers) — keep it out of the generic solve box here.
-            skip_keys={"conductive_fill_resistivity_ohm_mm"},
-        )
-        # Adaptive-mesh toggle — a boolean, so not part of the QLineEdit-
-        # based _SETTINGS_FIELDS schema; add it into the same group box.
-        self._settings_adaptive_check = QCheckBox(
-            "Adaptive (variable-density) mesh")
-        self._settings_adaptive_check.setChecked(
-            bool(getattr(self._solve_settings, "adaptive_mesh", False)))
-        self._settings_adaptive_check.setToolTip(
-            "Variable-density meshing — a faster approximation. Fine near "
-            "pins, vias and copper edges; coarser elsewhere, which slightly "
-            "reduces accuracy on current-carrying copper away from "
-            "terminals. Best for boards with large low-current pours; "
-            "little benefit on densely via-stitched planes. "
-            "Off = uniform mesh (most accurate — the default)."
-        )
-        self._settings_adaptive_check.toggled.connect(
-            self._on_settings_field_changed)
-        # Adaptive SMPS regulator-gain iteration — moved here from the editor
-        # canvas overlay. Same attribute name + handler as before, so the
-        # solve-time reads and resolve-enable logic are unchanged. Enabled only
-        # for designs with an auto-gain SMPS regulator; disabled (with an
-        # explanatory tooltip) otherwise — _refresh_solve_stale_overlay keeps
-        # the enabled state in sync as the design changes.
-        self._adaptive_gain_check = QCheckBox("Adaptive SMPS gain")
-        self._adaptive_gain_check.setChecked(load_adaptive_regulator_gain())
-        _ag_has_smps = _viewer_has_adaptive_smps(
-            getattr(self, "metadata", None),
-            getattr(self, "_loaded_project", None),
-        )
-        self._adaptive_gain_check.setEnabled(_ag_has_smps)
-        self._adaptive_gain_check.setToolTip(
-            "When checked, re-solve iterates SMPS regulator gain using the "
-            "solved input voltage (includes SERIES and copper IR drop). LDO "
-            "regulators are unaffected. Adds extra solve time."
-            if _ag_has_smps else
-            "Requires a REGULATOR with PDN_REGULATOR_TYPE=SMPS and no PDN_GAIN "
-            "(auto-gain). LDO regulators and manual PDN_GAIN are not iterated."
-        )
-        self._adaptive_gain_check.toggled.connect(self._on_adaptive_gain_toggled)
-        _solve_layout = solve_box.layout()
-        if _solve_layout is not None:
-            _solve_layout.addRow(self._settings_adaptive_check)
-            _solve_layout.addRow(self._adaptive_gain_check)
-        outer.addWidget(solve_box)
-
-        # ----- Conductive via fill group -----
-        outer.addWidget(self._build_conductive_fill_box())
-
-        # ----- Stackup copper-thickness group -----
-        outer.addWidget(self._build_stackup_settings_box())
-
-        # ----- Display parameters group -----
-        # Build a tiny ad-hoc object exposing the same attribute names as
-        # the field schema so the same _make_settings_group helper works.
-        class _DisplayValues:
-            pass
-        display_src = _DisplayValues()
-        display_src.via_current_warn_a = self._via_current_warn_a
-        display_src.display_percentile_high = self._display_percentile_high
-        display_box = self._make_settings_group(
-            "Display options (applied immediately on Re-run)",
-            self._SETTINGS_DISPLAY_FIELDS,
-            source=display_src,
-            attr_prefix="settings_edit_",
-        )
-        outer.addWidget(display_box)
-
-        # ----- General options group -----
-        # App-behaviour preferences, persisted immediately (not part of the
-        # re-solve field schema).
-        gen_box = QGroupBox("General options")
-        gen_layout = QVBoxLayout(gen_box)
-        self._settings_auto_solve_check = QCheckBox(
-            "Solve automatically on Altium import")
-        self._settings_auto_solve_check.setChecked(load_auto_solve_on_import())
-        self._settings_auto_solve_check.setToolTip(
-            "When checked, Import Altium Design runs the FEM solver immediately "
-            "(reusing the solve cache when possible). When unchecked, only "
-            "design info is loaded — press ↻ Solve in the viewer. Persists "
-            "across launches."
-        )
-        self._settings_auto_solve_check.toggled.connect(
-            lambda checked: save_auto_solve_on_import(bool(checked)))
-        gen_layout.addWidget(self._settings_auto_solve_check)
-        outer.addWidget(gen_box)
-
-        # ----- Performance group -----
-        # Tunables previously reachable only via env vars. Persisted and applied
-        # (to os.environ + pdnsolver) immediately; they affect the NEXT solve /
-        # load, not the current result — no re-solve needed to persist them.
-        perf_box = QGroupBox("Performance")
-        perf_form = QFormLayout(perf_box)
-
-        self._settings_fuse_combo = QComboBox()
-        self._settings_fuse_combo.addItems(list(_FUSE_BACKENDS_UI))
-        _cur_fb = load_fuse_backend()
-        self._settings_fuse_combo.setCurrentIndex(
-            _FUSE_BACKENDS_UI.index(_cur_fb) if _cur_fb in _FUSE_BACKENDS_UI
-            else 0)
-        self._settings_fuse_combo.setToolTip(
-            "Geometry-fusion backend used when building copper polygons.\n"
-            "• clipper — Clipper2, the fast default.\n"
-            "• shapely — the legacy GEOS path (slower; reference)."
-        )
-
-        self._settings_mesh_workers_spin = QSpinBox()
-        self._settings_mesh_workers_spin.setRange(1, max(1, os.cpu_count() or 1))
-        self._settings_mesh_workers_spin.setValue(load_mesh_max_workers())
-        self._settings_mesh_workers_spin.setToolTip(
-            "Number of worker processes used for meshing. Higher can be faster "
-            "on many-core machines but adds memory + spawn overhead; the "
-            "default is a physical-core estimate."
-        )
-
-        self._settings_minres_spin = QSpinBox()
-        self._settings_minres_spin.setRange(10, 3600)
-        self._settings_minres_spin.setSingleStep(30)
-        self._settings_minres_spin.setSuffix(" s")
-        self._settings_minres_spin.setValue(load_minres_budget_s())
-        self._settings_minres_spin.setToolTip(
-            "Wall-clock budget for the iterative fallback solver (only reached "
-            "when the direct solve can't be used). On timeout the best iterate "
-            "so far is kept. Raise this for very large boards."
-        )
-
-        # Connect AFTER setting initial values so seeding them doesn't fire a
-        # spurious save/apply.
-        def _on_fuse_changed(text: str) -> None:
-            save_fuse_backend(text)
-            _apply_performance_prefs()
-
-        def _on_workers_changed(val: int) -> None:
-            save_mesh_max_workers(int(val))
-            _apply_performance_prefs()
-
-        def _on_minres_changed(val: int) -> None:
-            save_minres_budget_s(int(val))
-            _apply_performance_prefs()
-
-        self._settings_fuse_combo.currentTextChanged.connect(_on_fuse_changed)
-        self._settings_mesh_workers_spin.valueChanged.connect(_on_workers_changed)
-        self._settings_minres_spin.valueChanged.connect(_on_minres_changed)
-
-        perf_form.addRow("Fusion backend", self._settings_fuse_combo)
-        perf_form.addRow("Mesh worker processes", self._settings_mesh_workers_spin)
-        perf_form.addRow("Iterative-solver timeout", self._settings_minres_spin)
-        outer.addWidget(perf_box)
-
-        # ----- Experimental group -----
-        # Settings here are persisted immediately (not part of the re-solve
-        # field schema) and take effect on the NEXT solve.
-        exp_box = QGroupBox("Experimental")
-        exp_layout = QVBoxLayout(exp_box)
-        self._settings_subprocess_check = QCheckBox("Run solve in a subprocess")
-        self._settings_subprocess_check.setChecked(load_solve_in_subprocess())
-        self._settings_subprocess_check.setToolTip(
-            "Run the mesh + solve in a separate process, so Cancel becomes a "
-            "clean kill of that process (no risk of a stuck solve leaving the "
-            "app locked). Trade-off: a fresh process per solve does not reuse "
-            "the warm mesh / factorisation caches, so repeated re-solves are "
-            "slower. Applies to the next solve; persists across launches. "
-            "Off by default."
-        )
-        self._settings_subprocess_check.toggled.connect(
-            lambda checked: save_solve_in_subprocess(bool(checked)))
-        exp_layout.addWidget(self._settings_subprocess_check)
-        outer.addWidget(exp_box)
-
-        # ----- Status line + buttons -----
-        self._settings_status_label = QLabel("")
-        self._settings_status_label.setWordWrap(True)
-        self._settings_status_label.setStyleSheet(
-            f"QLabel {{ color: {t['accent']}; padding: 4px 0; }}"
-        )
-        outer.addWidget(self._settings_status_label)
-
-        button_row = QHBoxLayout()
-        self._settings_rerun_btn = QPushButton("Re-run Solver")
-        self._settings_rerun_btn.setToolTip(
-            "Re-solve the current project with the parameters above. "
-            "Updates the heatmap in this window when the solve finishes."
-        )
-        self._settings_rerun_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {t['accent_btn']}; color: {t['fg_strong']};"
-            f"              border: 1px solid {t['accent_btn_hov']}; padding: 6px 14px;"
-            f"              font-weight: 600; }}"
-            f"QPushButton:hover {{ background-color: {t['accent_btn_hov']}; }}"
-            f"QPushButton:disabled {{ background-color: {t['bg_hover']}; color: {t['fg_hint']}; }}"
-        )
-        self._settings_rerun_btn.clicked.connect(self._on_rerun_solver)
-        button_row.addWidget(self._settings_rerun_btn)
-
-        self._settings_reload_design_btn = QPushButton("Reload Design Info")
-        self._settings_reload_design_btn.setToolTip(
-            "Re-extract the design (geometry + annotations) from the on-disk "
-            "Altium project, ignoring the design-info cache. Then re-solve "
-            "with the current settings. Use this when you've edited the "
-            ".PrjPcb / .PcbDoc and want to be sure FYPA picks up the change."
-        )
-        self._settings_reload_design_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {t['bg_hover']}; color: {t['fg']};"
-            f"              border: 1px solid {t['border']}; padding: 6px 14px; }}"
-            f"QPushButton:hover {{ background-color: {t['bg_hover_strong']}; }}"
-            f"QPushButton:disabled {{ background-color: {t['bg_hover']}; color: {t['fg_hint']}; }}"
-        )
-        self._settings_reload_design_btn.clicked.connect(self._on_reload_design_info)
-        button_row.addWidget(self._settings_reload_design_btn)
-
-        reset_btn = QPushButton("Reset to defaults")
-        reset_btn.setToolTip(
-            "Restore every field above to its built-in default value "
-            "(does NOT re-solve — press Re-run Solver to commit)."
-        )
-        reset_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {t['bg_hover']}; color: {t['fg']};"
-            f"              border: 1px solid {t['border']}; padding: 6px 14px; }}"
-            f"QPushButton:hover {{ background-color: {t['bg_hover_strong']}; }}"
-        )
-        reset_btn.clicked.connect(self._on_settings_reset)
-        button_row.addWidget(reset_btn)
-        button_row.addStretch(1)
-        outer.addLayout(button_row)
-
-        outer.addStretch(1)
-
-        scroll.setWidget(inner)
-        # Wrap the scroll area in the returned widget so addTab gets a
-        # plain QWidget with the same background as the others.
-        wrap_layout = QVBoxLayout(widget)
-        wrap_layout.setContentsMargins(0, 0, 0, 0)
-        wrap_layout.addWidget(scroll)
-        widget.setStyleSheet(
-            f"QWidget {{ background-color: {t['bg']}; color: {t['fg']}; }}"
-            f"QGroupBox {{ border: 1px solid {t['border']}; border-radius: 4px;"
-            f"            margin-top: 14px; padding: 12px;"
-            f"            background-color: {t['bg']}; }}"
-            f"QGroupBox::title {{ subcontrol-origin: margin; left: 12px;"
-            f"                   padding: 0 6px; color: {t['fg_strong']};"
-            f"                   font-weight: 600; }}"
-            f"QLineEdit {{ background-color: {t['bg_input']}; color: {t['fg']};"
-            f"            border: 1px solid {t['border']}; padding: 3px 6px;"
-            f"            selection-background-color: {t['bg_selection']}; }}"
-            f"QLineEdit:focus {{ border: 1px solid {t['accent']}; }}"
-            # Out-of-date field outline / colour: the dynamic ``dirty``
-            # property is toggled by _update_settings_field_styles when
-            # the field diverges from / matches the current solve.
-            f"QLineEdit[dirty=\"true\"] {{ border: 1px solid {t['warn_fg']}; }}"
-            f"QLineEdit[dirty=\"true\"]:focus {{ border: 1px solid {t['warn_fg']}; }}"
-            f"QCheckBox[dirty=\"true\"] {{ color: {t['warn_fg']}; }}"
-            f"QComboBox[dirty=\"true\"] {{ border: 1px solid {t['warn_fg']}; }}"
-        )
-        return widget
-
-    def _make_settings_group(
-        self, title: str,
-        fields: tuple[tuple[str, str, str, str], ...],
-        source: object,
-        attr_prefix: str,
-        skip_keys: frozenset[str] | set[str] | None = None,
-    ) -> QGroupBox:
-        """Build a QGroupBox containing one labelled QLineEdit per field
-        in ``fields``. The current value is pulled from ``source`` via
-        ``getattr``; default-value hints come from a fresh SolveSettings.
-
-        ``skip_keys`` lets a caller omit specific fields from this box (so
-        they can be rebuilt elsewhere) while keeping them in the shared
-        ``_SETTINGS_FIELDS`` schema that reset / dirty / gather iterate."""
-        from fypa.altium.loader import SolveSettings as _SolveSettings
-        from dataclasses import fields as _dc_fields
-        defaults = _SolveSettings()
-        # The display-only fields aren't in SolveSettings — fall back to
-        # the module-level constants for their default-value hint.
-        display_defaults = {
-            "via_current_warn_a": _VIA_CURRENT_WARN_A,
-            "display_percentile_high": _DISPLAY_PERCENTILE_HIGH,
-        }
-        defaults_attrs = {f.name for f in _dc_fields(defaults)}
-
-        box = QGroupBox(title)
-        form = QFormLayout(box)
-        form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        form.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
-        form.setHorizontalSpacing(12)
-        form.setVerticalSpacing(8)
-
-        for key, label, unit, tooltip in fields:
-            if skip_keys and key in skip_keys:
-                continue
-            current = getattr(source, key, None)
-            if current is None:
-                continue
-            default_val = (
-                getattr(defaults, key) if key in defaults_attrs
-                else display_defaults.get(key)
-            )
-
-            edit = QLineEdit(self._fmt_settings_value(current))
-            validator = QDoubleValidator(self)
-            validator.setNotation(QDoubleValidator.StandardNotation)
-            validator.setBottom(0.0)
-            edit.setValidator(validator)
-            edit.setMinimumWidth(110)
-            edit.setMaximumWidth(160)
-            edit.setToolTip(tooltip)
-            setattr(self, f"{attr_prefix}{key}", edit)
-            edit.textChanged.connect(self._on_settings_field_changed)
-
-            _t = _T()
-            row = QHBoxLayout()
-            row.setSpacing(6)
-            row.addWidget(edit)
-            unit_lbl = QLabel(unit)
-            unit_lbl.setStyleSheet(f"QLabel {{ color: {_t['fg_muted']}; }}")
-            row.addWidget(unit_lbl)
-            row.addSpacing(8)
-            hint = QLabel(f"<span style='color:{_t['fg_hint']};'>"
-                          f"(default: {self._fmt_settings_value(default_val)})</span>"
-                          if default_val is not None else "")
-            row.addWidget(hint)
-            if key == "via_current_warn_a":
-                # In-place re-check button: applies the new threshold to
-                # the Vias tab without a full re-solve. Hidden until the
-                # field diverges from the currently-applied level.
-                row.addSpacing(12)
-                btn = QPushButton("Re-run Via Check")
-                btn.setToolTip(
-                    "Re-check vias against the new warning level (no "
-                    "re-solve). Refreshes the Vias tab title, summary, "
-                    "and warning highlights in place."
-                )
-                btn.setStyleSheet(
-                    f"QPushButton {{ background-color: {_t['accent_btn']};"
-                    f"              color: {_t['fg_strong']};"
-                    f"              border: 1px solid {_t['accent_btn_hov']};"
-                    f"              padding: 3px 10px; font-weight: 600; }}"
-                    f"QPushButton:hover {{ background-color: {_t['accent_btn_hov']}; }}"
-                )
-                btn.clicked.connect(self._on_rerun_via_check)
-                btn.setVisible(False)
-                self._settings_rerun_via_check_btn = btn
-                row.addWidget(btn)
-                edit.textChanged.connect(
-                    lambda _t=None: self._update_via_check_btn_visibility()
-                )
-            row.addStretch(1)
-            row_widget = QWidget()
-            row_widget.setLayout(row)
-
-            label_widget = QLabel(label)
-            label_widget.setToolTip(tooltip)
-            label_widget.setStyleSheet(f"QLabel {{ color: {_t['fg']}; }}")
-            form.addRow(label_widget, row_widget)
-
-        return box
-
-    # Fill-material presets for the Conductive via fill picker. Each entry is
-    # (label, resistivity_ohm_mm | None, tooltip). ``None`` marks the Custom
-    # entry, which leaves the resistivity field free for manual entry. Values
-    # are bulk resistivities converted to Ω·mm (1 Ω·cm = 10 Ω·mm):
-    #   silver-loaded epoxy paste ~5e-4 Ω·cm, copper-loaded paste ~5e-3 Ω·cm,
-    #   solid electroplated copper ~ bulk Cu (1.68 µΩ·cm).
-    _FILL_MATERIAL_PRESETS: tuple[tuple[str, float | None, str], ...] = (
-        ("Silver-filled epoxy paste", 5.0e-3,
-         "Silver-loaded thermoset paste — the most common IPC-4761 "
-         "conductive via fill (~5×10⁻⁴ Ω·cm bulk resistivity)."),
-        ("Copper-filled paste / epoxy", 5.0e-2,
-         "Copper-loaded paste/epoxy fill (~5×10⁻³ Ω·cm) — cheaper than "
-         "silver but ~10× more resistive."),
-        ("Solid electroplated copper", 1.7e-5,
-         "Type-VII copper-filled via — the centre void is closed with "
-         "electroplated copper, approaching bulk copper resistivity "
-         "(~1.7×10⁻⁶ Ω·cm). The lowest-resistance fill."),
-        ("Custom (enter value)", None,
-         "Enter the fill resistivity directly in the field below — e.g. "
-         "from the fab's via-fill paste data sheet."),
-    )
-
-    def _build_conductive_fill_box(self) -> QGroupBox:
-        """Build the "Conductive via fill" group: an Auto/All/None override
-        mode, a fill-material preset picker, and the fill-resistivity field.
-
-        The resistivity QLineEdit is built here (instead of in the generic
-        solve box) but keeps its ``settings_edit_conductive_fill_resistivity_
-        ohm_mm`` attribute name, so the shared reset / dirty / gather loops
-        — which walk ``_SETTINGS_FIELDS`` and resolve widgets by attribute —
-        still pick it up unchanged."""
-        fill_fields = tuple(
-            f for f in self._SETTINGS_FIELDS
-            if f[0] == "conductive_fill_resistivity_ohm_mm"
-        )
-        box = self._make_settings_group(
-            "Conductive via fill",
-            fill_fields,
-            source=self._solve_settings,
-            attr_prefix="settings_edit_",
-        )
-        form = box.layout()   # QFormLayout: row 0 is the resistivity field
-        t = _T()
-
-        # ----- Mode combo (Auto / force All / force None) -----
-        self._fill_mode_combo = QComboBox()
-        self._fill_mode_combo.addItem("Auto (from Altium IPC-4761 data)", "auto")
-        self._fill_mode_combo.addItem("Force: treat all vias as filled", "all")
-        self._fill_mode_combo.addItem("Force: treat no vias as filled", "none")
-        self._fill_mode_combo.setToolTip(
-            "Whether a via's centre is modelled as a conductive fill-rod in "
-            "parallel with the plated barrel wall (lowering its resistance).\n"
-            "• Auto — decide per via from the design's IPC-4761 FILLING "
-            "material string (the default).\n"
-            "• Force all — treat every coupled via/through-hole as filled "
-            "(use the fab's fill spec when Altium has no IPC-4761 data).\n"
-            "• Force none — ignore any fill; the plated wall is the only path."
-        )
-        cur_mode = getattr(self._solve_settings, "conductive_fill_mode", "auto")
-        idx = self._fill_mode_combo.findData(cur_mode)
-        if idx >= 0:
-            self._fill_mode_combo.setCurrentIndex(idx)
-        self._fill_mode_combo.setMinimumWidth(220)
-        self._fill_mode_combo.currentIndexChanged.connect(
-            self._on_fill_mode_changed)
-        self._fill_mode_combo.currentIndexChanged.connect(
-            self._on_settings_field_changed)
-        mode_label = QLabel("Fill mode")
-        mode_label.setStyleSheet(f"QLabel {{ color: {t['fg']}; }}")
-
-        # ----- Material preset combo -----
-        self._fill_material_combo = QComboBox()
-        for label, _rho, tip in self._FILL_MATERIAL_PRESETS:
-            self._fill_material_combo.addItem(label)
-            self._fill_material_combo.setItemData(
-                self._fill_material_combo.count() - 1, tip, Qt.ToolTipRole)
-        self._fill_material_combo.setToolTip(
-            "Pick a fill material to populate the resistivity field below "
-            "with a typical value, or choose Custom to type your own."
-        )
-        self._fill_material_combo.setMinimumWidth(220)
-        self._fill_material_combo.currentIndexChanged.connect(
-            self._on_fill_material_changed)
-        mat_label = QLabel("Fill material")
-        mat_label.setStyleSheet(f"QLabel {{ color: {t['fg']}; }}")
-
-        # Insert mode (row 0) and material (row 1) above the resistivity row.
-        form.insertRow(0, mode_label, self._fill_mode_combo)
-        form.insertRow(1, mat_label, self._fill_material_combo)
-
-        # Initialise the material combo from the current resistivity, and
-        # keep the two in sync when the user edits the resistivity directly.
-        edit = getattr(self, "settings_edit_conductive_fill_resistivity_ohm_mm",
-                       None)
-        if edit is not None:
-            edit.textChanged.connect(self._sync_material_combo_from_resistivity)
-        self._sync_material_combo_from_resistivity()
-        self._apply_fill_mode_enabled()
-        return box
-
-    def _apply_fill_mode_enabled(self) -> None:
-        """Grey out the material + resistivity controls when the mode is
-        "Force none" (no fill, so the value is irrelevant)."""
-        mode = self._fill_mode_combo.currentData()
-        enabled = mode != "none"
-        self._fill_material_combo.setEnabled(enabled)
-        edit = getattr(self, "settings_edit_conductive_fill_resistivity_ohm_mm",
-                       None)
-        if edit is not None:
-            edit.setEnabled(enabled)
-
-    def _on_fill_mode_changed(self, _idx: int) -> None:
-        self._apply_fill_mode_enabled()
-
-    def _on_fill_material_changed(self, idx: int) -> None:
-        """Material picker → write the preset resistivity into the field.
-        The Custom entry (resistivity None) leaves the field untouched."""
-        if idx < 0 or idx >= len(self._FILL_MATERIAL_PRESETS):
-            return
-        _label, rho, _tip = self._FILL_MATERIAL_PRESETS[idx]
-        if rho is None:
-            return
-        edit = getattr(self, "settings_edit_conductive_fill_resistivity_ohm_mm",
-                       None)
-        if edit is None:
-            return
-        new_text = self._fmt_settings_value(rho)
-        if edit.text().strip() != new_text:
-            # Guard against the textChanged → _sync → material-combo loop:
-            # setText fires _sync, which would re-select this same preset.
-            edit.setText(new_text)
-
-    def _sync_material_combo_from_resistivity(self, *_args) -> None:
-        """Resistivity field → select the matching material preset, or fall
-        back to Custom when the value matches none of them."""
-        combo = getattr(self, "_fill_material_combo", None)
-        edit = getattr(self, "settings_edit_conductive_fill_resistivity_ohm_mm",
-                       None)
-        if combo is None or edit is None:
-            return
-        try:
-            val = float(edit.text().strip())
-        except ValueError:
-            return
-        target = len(self._FILL_MATERIAL_PRESETS) - 1   # Custom by default
-        for i, (_label, rho, _tip) in enumerate(self._FILL_MATERIAL_PRESETS):
-            if rho is not None and abs(val - rho) <= abs(rho) * 1e-6:
-                target = i
-                break
-        if combo.currentIndex() != target:
-            combo.blockSignals(True)
-            combo.setCurrentIndex(target)
-            combo.blockSignals(False)
-
     def _make_collapsible_section(
         self, title: str, body_widget: QWidget, *,
         expanded: bool = False,
@@ -19496,126 +20206,6 @@ class PdnViewer(QMainWindow):
             header.setText(f"{head} — {new_tail}")
         header.toggled.connect(_on_toggled)
         return wrap, header
-
-    def _build_appearance_settings_box(self) -> QWidget:
-        """Theme picker (Dark / Light). The choice is persisted via
-        :func:`save_theme_mode` and applied to the running QApplication
-        immediately — the viewer window is rebuilt so the inline-styled
-        widgets (layer list, tables, side panel) pick up the new colours.
-        """
-        t = _T()
-        box = QGroupBox("Appearance")
-        box.setStyleSheet(
-            f"QGroupBox {{ border: 1px solid {t['border']}; border-radius: 4px;"
-            f"            margin-top: 14px; padding: 12px;"
-            f"            background-color: {t['bg']}; }}"
-            f"QGroupBox::title {{ subcontrol-origin: margin; left: 12px;"
-            f"                   padding: 0 6px; color: {t['fg_strong']};"
-            f"                   font-weight: 600; }}"
-        )
-
-        form = QFormLayout(box)
-        form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        form.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
-        form.setHorizontalSpacing(12)
-        form.setVerticalSpacing(8)
-
-        self._theme_combo = QComboBox()
-        self._theme_combo.addItem("Dark", "dark")
-        self._theme_combo.addItem("Light", "light")
-        current_mode = current_theme_mode()
-        for i in range(self._theme_combo.count()):
-            if self._theme_combo.itemData(i) == current_mode:
-                self._theme_combo.setCurrentIndex(i)
-                break
-        self._theme_combo.setToolTip(
-            "Switch the viewer colour theme. Dark is the default and "
-            "matches the rest of the tooling; Light is friendlier in "
-            "bright rooms. The choice is remembered for the next launch."
-        )
-        self._theme_combo.setMinimumWidth(140)
-        self._theme_combo.setMaximumWidth(180)
-        self._theme_combo.currentIndexChanged.connect(self._on_theme_combo_changed)
-
-        label_widget = QLabel("Colour theme")
-        label_widget.setStyleSheet(f"QLabel {{ color: {t['fg']}; }}")
-        form.addRow(label_widget, self._theme_combo)
-
-        # High-quality zoom (supersampling / SSAA). When on, the heatmap
-        # canvas renders oversized and downsamples, so thin copper and
-        # outlines stay visible when zoomed far out instead of breaking
-        # up or vanishing. Costs GPU memory + fill while a viewer is open,
-        # hence a toggle; defaults on. Applied to the live canvas right
-        # here (the GL viewer already exists by the time this tab builds)
-        # so the setting takes effect without waiting for the next launch.
-        self._ssaa_check = QCheckBox("High-quality zoom (supersampling)")
-        self._ssaa_check.setChecked(load_supersampling_enabled())
-        self._ssaa_check.setToolTip(
-            "Render the heatmap canvas oversized and downsample it so thin "
-            "copper and outlines stay visible when zoomed far out, instead "
-            "of breaking up or vanishing. Uses more GPU memory while a "
-            "viewer window is open. The choice is remembered for the next "
-            "launch."
-        )
-        self._ssaa_check.toggled.connect(self._on_ssaa_toggled)
-        if self._gl_viewer is not None:
-            self._gl_viewer.set_supersampling(self._ssaa_check.isChecked())
-        ssaa_label = QLabel("High-quality zoom")
-        ssaa_label.setStyleSheet(f"QLabel {{ color: {t['fg']}; }}")
-        form.addRow(ssaa_label, self._ssaa_check)
-
-        # Status / hint line. Starts with the static usage hint and is
-        # overwritten by :meth:`_on_theme_combo_changed` to confirm a
-        # toggle took effect and prompt the user to restart.
-        self._theme_status_label = QLabel(
-            f"<span style='color:{t['fg_hint']};'>"
-            "Dark by default. Switching here saves the choice and updates "
-            "the menubar and dialogs immediately; restart FYPA for the "
-            "side panel and tables to repaint."
-            "</span>"
-        )
-        self._theme_status_label.setWordWrap(True)
-        form.addRow(QLabel(""), self._theme_status_label)
-        return box
-
-    def _on_ssaa_toggled(self, checked: bool) -> None:
-        """Persist and apply the High-quality-zoom (supersampling) toggle.
-        Takes effect on the live canvas immediately — no relaunch."""
-        save_supersampling_enabled(bool(checked))
-        if self._gl_viewer is not None:
-            self._gl_viewer.set_supersampling(bool(checked))
-
-    def _on_theme_combo_changed(self, _idx: int) -> None:
-        """Handle the user picking a different theme from the combobox.
-
-        Persists the choice and updates the QApplication-level palette
-        and base stylesheet immediately. The heavy widget refresh (re-
-        styling the side panel + rebuilding the non-heatmap tabs) is
-        deferred to the next event-loop tick so we're not destroying
-        our own QComboBox in the middle of its currentIndexChanged
-        emission. The Heatmap tab's OpenGL viewer can't be rebuilt
-        safely — its context tear-down kills the process — so we re-
-        style the side-panel widgets in place instead and leave the
-        canvas alone.
-        """
-        mode = self._theme_combo.currentData()
-        if not isinstance(mode, str) or mode not in _THEME_PRESETS:
-            return
-        if mode == current_theme_mode():
-            return
-        save_theme_mode(mode)
-        app = QApplication.instance()
-        if app is not None:
-            apply_app_theme(app, mode)
-        label = getattr(self, "_theme_status_label", None)
-        if label is not None:
-            t = _T()
-            label.setText(
-                f"<span style='color:{t['accent']};'>"
-                f"Theme set to <b>{_esc(mode.capitalize())}</b>. "
-                "Refreshing widgets…</span>"
-            )
-        QTimer.singleShot(0, self._refresh_inline_theme)
 
     def _refresh_inline_theme(self) -> None:
         """Re-apply the active theme to every widget that pinned its
@@ -19947,148 +20537,6 @@ class PdnViewer(QMainWindow):
         )
         self._stackup_collapse_btn = header
         return wrap
-
-    @staticmethod
-    def _fmt_settings_value(v) -> str:
-        """Format a numeric setting for display in a QLineEdit. Uses %g
-        to drop trailing zeros without losing precision for the long-
-        tail values (1e-3, 0.00393, etc.)."""
-        try:
-            f = float(v)
-        except (TypeError, ValueError):
-            return ""
-        if f == 0.0:
-            return "0"
-        # %g picks fixed or scientific automatically; clamp to 6 sig figs.
-        return f"{f:.6g}"
-
-    def _on_settings_reset(self) -> None:
-        """Restore every Settings-tab field to its built-in default. The
-        user still has to press Re-run Solver to commit."""
-        from fypa.altium.loader import SolveSettings as _SolveSettings
-        defaults = _SolveSettings()
-        for key, *_ in self._SETTINGS_FIELDS:
-            edit = getattr(self, f"settings_edit_{key}", None)
-            if edit is not None:
-                edit.setText(self._fmt_settings_value(getattr(defaults, key)))
-        chk = getattr(self, "_settings_adaptive_check", None)
-        if chk is not None:
-            chk.setChecked(bool(defaults.adaptive_mesh))
-        mode_combo = getattr(self, "_fill_mode_combo", None)
-        if mode_combo is not None:
-            idx = mode_combo.findData(defaults.conductive_fill_mode)
-            if idx >= 0:
-                mode_combo.setCurrentIndex(idx)
-            self._apply_fill_mode_enabled()
-        display_defaults = {
-            "via_current_warn_a": _VIA_CURRENT_WARN_A,
-            "display_percentile_high": _DISPLAY_PERCENTILE_HIGH,
-        }
-        for key, *_ in self._SETTINGS_DISPLAY_FIELDS:
-            edit = getattr(self, f"settings_edit_{key}", None)
-            if edit is not None:
-                edit.setText(self._fmt_settings_value(display_defaults[key]))
-        # Restore stackup copper-thickness fields to metadata defaults.
-        for (edit, original_mm) in getattr(
-                self, "_stackup_thickness_edits", {}).values():
-            edit.setText(self._fmt_settings_value(original_mm * 1000.0))
-        self._settings_status_label.setText(
-            f"<span style='color:{_T()['accent']};'>Fields reset — press "
-            "<b>Re-run Solver</b> to commit.</span>"
-        )
-
-    @staticmethod
-    def _mark_field_dirty(widget, dirty: bool) -> None:
-        """Set / clear the ``dirty`` dynamic property on a Settings-tab
-        widget and re-polish so the parent stylesheet's
-        ``[dirty="true"]`` selector kicks in (red outline / text)."""
-        new_val = "true" if dirty else "false"
-        if widget.property("dirty") == new_val:
-            return
-        widget.setProperty("dirty", new_val)
-        widget.style().unpolish(widget)
-        widget.style().polish(widget)
-
-    def _update_settings_field_styles(self) -> bool:
-        """Walk every Settings-tab field, mark each one's ``dirty``
-        property True when it differs from the current solve baseline,
-        False otherwise. Bad input counts as dirty so the red outline
-        stays up while the user is mid-edit. Returns True iff any
-        field is dirty."""
-        any_dirty = False
-        mark = self._mark_field_dirty
-
-        for key, *_ in self._SETTINGS_FIELDS:
-            edit = getattr(self, f"settings_edit_{key}", None)
-            if edit is None:
-                continue
-            baseline = getattr(self._solve_settings, key, None)
-            if baseline is None:
-                mark(edit, False)
-                continue
-            try:
-                val = float(edit.text().strip())
-                dirty = abs(val - float(baseline)) > 1e-12
-            except ValueError:
-                dirty = True
-            mark(edit, dirty)
-            any_dirty = any_dirty or dirty
-
-        chk = getattr(self, "_settings_adaptive_check", None)
-        if chk is not None:
-            dirty = bool(chk.isChecked()) != bool(
-                getattr(self._solve_settings, "adaptive_mesh", False))
-            mark(chk, dirty)
-            any_dirty = any_dirty or dirty
-
-        mode_combo = getattr(self, "_fill_mode_combo", None)
-        if mode_combo is not None:
-            dirty = mode_combo.currentData() != getattr(
-                self._solve_settings, "conductive_fill_mode", "auto")
-            mark(mode_combo, dirty)
-            any_dirty = any_dirty or dirty
-
-        for key, baseline in (
-            ("via_current_warn_a", self._via_current_warn_a),
-            ("display_percentile_high", self._display_percentile_high),
-        ):
-            edit = getattr(self, f"settings_edit_{key}", None)
-            if edit is None:
-                continue
-            try:
-                val = float(edit.text().strip())
-                dirty = abs(val - float(baseline)) > 1e-12
-            except ValueError:
-                dirty = True
-            mark(edit, dirty)
-            any_dirty = any_dirty or dirty
-
-        for _lid, (edit, original_mm) in getattr(
-                self, "_stackup_thickness_edits", {}).items():
-            text = edit.text().strip()
-            if not text:
-                mark(edit, False)
-                continue
-            try:
-                new_um = float(text)
-                dirty = abs(new_um / 1000.0 - original_mm) > 1.0e-6
-            except ValueError:
-                dirty = True
-            mark(edit, dirty)
-            any_dirty = any_dirty or dirty
-
-        return any_dirty
-
-    def _on_settings_field_changed(self, *_args) -> None:
-        """Slot wired to every Settings-tab editor's change signal:
-        refresh per-field dirty outlines and update ``_settings_dirty``
-        against the current solve baseline, then refresh the Resolve
-        overlay button."""
-        new_dirty = self._update_settings_field_styles()
-        if new_dirty == self._settings_dirty:
-            return
-        self._settings_dirty = new_dirty
-        self._refresh_solve_stale_overlay()
 
     def _update_via_check_btn_visibility(self) -> None:
         """Show the Re-run Via Check button only when the field value
@@ -23688,9 +24136,13 @@ def _maybe_warn_needs_directives(parent_win, solution) -> None:
 
 
 def _maybe_show_annotation_errors(parent_win, metadata) -> None:
-    """Pop a notice when annotation errors block solving.
+    """Pop a notice listing PDN directives that could not be resolved and were
+    skipped.
 
-    Fired after a stub viewer opens with ``metadata['annotation_errors']``.
+    Fired after a viewer opens with ``metadata['annotation_errors']``. These
+    no longer block the solve — the offending directive (a mistyped net, a
+    missing pad) is dropped and every valid rail is still solved — so the
+    notice reports what was left out rather than what blocked the run.
     """
     if not isinstance(metadata, dict):
         return
@@ -23703,11 +24155,12 @@ def _maybe_show_annotation_errors(parent_win, metadata) -> None:
         body += f"\n  … and {len(errors) - max_show} more"
     QMessageBox.warning(
         parent_win,
-        "Annotation errors",
-        "These PDN annotation errors must be fixed before the board "
-        "can be solved:\n\n"
+        "Some directives were skipped",
+        "These PDN directives could not be resolved and were skipped — the "
+        "other valid rails were still solved:\n\n"
         f"{body}\n\n"
-        "Details also in Setup → Annotation log.",
+        "Fix them (usually a net-name typo) to include these directives in "
+        "the analysis. Details also in Setup → Annotation log.",
     )
 
 
