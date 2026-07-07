@@ -9907,7 +9907,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                     if plid == lid:
                         z = self._layer_z_for(phys)
                         break
-            if in_3d:
+            if not in_2d:
                 bucket: dict[str, bool] = {}
             else:
                 bucket = {"top": True}
