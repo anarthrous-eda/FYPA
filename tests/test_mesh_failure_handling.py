@@ -4,7 +4,10 @@ import numpy as np
 import shapely.geometry
 
 from fypa.altium_viewer import (
+    _activate_mesh_failure_layer,
     _mesh_failure_outline_rings,
+    _phys_name_for_layer_id,
+    _primary_mesh_failure_layer_id,
 )
 from fypa.altium.loader import _filter_tiny_pieces
 from pdnsolver.mesh import (
@@ -115,3 +118,65 @@ def test_filter_tiny_pieces_keeps_anchored_sliver_with_pin():
     )
     assert dropped == []
     assert not kept.is_empty
+
+
+class _FakeEye:
+    def __init__(self, visible: bool = False):
+        self._visible = visible
+
+    def isVisibleState(self) -> bool:
+        return self._visible
+
+    def setVisibleState(self, on: bool, *, emit: bool = True) -> None:
+        self._visible = on
+
+
+class _FakeViewer:
+    def __init__(self):
+        self.metadata = {
+            "mesh_failures": [{"layer_id": 2, "summary": "bad island"}],
+        }
+        self._phys_name_to_layer_id = {"Top": 1, "Bottom": 2}
+        self._layer_eye_buttons = [
+            ("Top", _FakeEye(True)),
+            ("Bottom", _FakeEye(False)),
+        ]
+        self._layer_eye2_buttons = [
+            ("Top", _FakeEye(True)),
+            ("Bottom", _FakeEye(False)),
+        ]
+        self._selected_layer = None
+        self.synced_eye = False
+        self.synced_eye2 = False
+
+    def _apply_layer_selection_highlight(self) -> None:
+        pass
+
+    def _sync_all_layers_eye(self) -> None:
+        self.synced_eye = True
+
+    def _sync_all_layers_eye2(self) -> None:
+        self.synced_eye2 = True
+
+
+def test_primary_mesh_failure_layer_id_skips_unknown():
+    assert _primary_mesh_failure_layer_id([
+        {"layer_id": -1},
+        {"layer_id": 3},
+    ]) == 3
+
+
+def test_phys_name_for_layer_id_reverse_maps_stackup():
+    viewer = _FakeViewer()
+    assert _phys_name_for_layer_id(viewer, 2) == "Bottom"
+    assert _phys_name_for_layer_id(viewer, 99) is None
+
+
+def test_activate_mesh_failure_layer_enables_and_selects():
+    viewer = _FakeViewer()
+    assert _activate_mesh_failure_layer(viewer) is True
+    assert viewer._layer_eye_buttons[1][1].isVisibleState()
+    assert viewer._layer_eye2_buttons[1][1].isVisibleState()
+    assert viewer._selected_layer == "Bottom"
+    assert viewer.synced_eye and viewer.synced_eye2
+    assert _activate_mesh_failure_layer(viewer) is False

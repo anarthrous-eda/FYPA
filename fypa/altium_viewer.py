@@ -7641,6 +7641,8 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         # or File > Open Project File), surface any still-pending rails.
         if self._project is not None:
             self._update_pending_rails()
+        if (self.metadata or {}).get("mesh_failures"):
+            _activate_mesh_failure_layer(self)
         self._render()
 
     def _init_solution_indices(self) -> None:
@@ -7871,6 +7873,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._scale_overlay.setVisible(has_rails)
         if has_rails:
             self._position_scale_overlay()
+
+        if (self.metadata or {}).get("mesh_failures"):
+            _activate_mesh_failure_layer(self)
 
     def _apply_solve_result(
         self,
@@ -24315,6 +24320,61 @@ def _maybe_show_mesh_failures(parent_win, metadata) -> None:
     box.exec()
 
 
+def _phys_name_for_layer_id(viewer, layer_id: int) -> str | None:
+    """Map a stackup layer_id to the physical-layer name in the side panel."""
+    if layer_id < 0:
+        return None
+    for phys, plid in getattr(viewer, "_phys_name_to_layer_id", {}).items():
+        if plid == layer_id:
+            return phys
+    return None
+
+
+def _primary_mesh_failure_layer_id(failures: list) -> int | None:
+    for rec in failures:
+        lid = rec.get("layer_id")
+        if isinstance(lid, int) and lid >= 0:
+            return lid
+    return None
+
+
+def _activate_mesh_failure_layer(viewer) -> bool:
+    """Turn on and select the physical layer that contains the mesh failure."""
+    metadata = getattr(viewer, "metadata", None) or {}
+    failures = metadata.get("mesh_failures") or []
+    if not failures:
+        return False
+    layer_id = _primary_mesh_failure_layer_id(failures)
+    if layer_id is None:
+        return False
+    phys = _phys_name_for_layer_id(viewer, layer_id)
+    if phys is None:
+        return False
+
+    changed = False
+    for nm, eye in getattr(viewer, "_layer_eye_buttons", []):
+        if nm == phys and not eye.isVisibleState():
+            eye.setVisibleState(True, emit=False)
+            changed = True
+            break
+    for nm, eye2 in getattr(viewer, "_layer_eye2_buttons", []):
+        if nm == phys and not eye2.isVisibleState():
+            eye2.setVisibleState(True, emit=False)
+            changed = True
+            break
+    if getattr(viewer, "_selected_layer", None) != phys:
+        viewer._selected_layer = phys
+        if hasattr(viewer, "_apply_layer_selection_highlight"):
+            viewer._apply_layer_selection_highlight()
+        changed = True
+    if changed:
+        if hasattr(viewer, "_sync_all_layers_eye"):
+            viewer._sync_all_layers_eye()
+        if hasattr(viewer, "_sync_all_layers_eye2"):
+            viewer._sync_all_layers_eye2()
+    return changed
+
+
 def _apply_mesh_failure_highlights(viewer) -> None:
     """Zoom to and outline the mesh-failure marker(s)."""
     if viewer is None:
@@ -24323,6 +24383,7 @@ def _apply_mesh_failure_highlights(viewer) -> None:
     failures = metadata.get("mesh_failures") or []
     if not failures:
         return
+    _activate_mesh_failure_layer(viewer)
     rings: list[list[tuple[float, float]]] = []
     focus_xy: tuple[float, float] | None = None
     for rec in failures:
