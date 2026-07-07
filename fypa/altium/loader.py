@@ -2622,7 +2622,7 @@ def _filter_tiny_pieces(
     unique_via_xys = list({(round(x * 1000), round(y * 1000)): (x, y)
                            for x, y in via_xys}.values())
     via_pts = [shapely.geometry.Point(x, y) for x, y in unique_via_xys]
-    pin_count = len(pin_pts)
+    len(pin_pts)
     all_pts = pin_pts + via_pts
     tree = shapely.strtree.STRtree(all_pts) if all_pts else None
 

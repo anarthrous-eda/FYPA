@@ -4,7 +4,6 @@ import numpy as np
 import shapely.geometry
 
 from fypa.altium_viewer import (
-    _mesh_failure_marker_xy,
     _mesh_failure_outline_rings,
 )
 from fypa.altium.loader import _filter_tiny_pieces

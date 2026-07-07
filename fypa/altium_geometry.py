@@ -720,7 +720,7 @@ class _ThroughFeatureCache:
 
 def _through_features_on_layer(
     proj: ExtractedProject, layer_id: int, enabled_layers: list[int],
-    cache: "_ThroughFeatureCache | None" = None,
+    cache: _ThroughFeatureCache | None = None,
 ) -> list[tuple[shapely.geometry.base.BaseGeometry, int]]:
     """Solid copper footprints of every through feature (through-hole / multi
     layer pad, and via barrel) crossing ``layer_id``, paired with their net.
@@ -784,7 +784,7 @@ def _plane_sheet_polygon(
     proj: ExtractedProject,
     stackup,
     enabled_layers: list[int],
-    through_cache: "_ThroughFeatureCache | None" = None,
+    through_cache: _ThroughFeatureCache | None = None,
 ) -> shapely.geometry.base.BaseGeometry | None:
     """Negative-copper sheet for one internal plane.
 
@@ -925,7 +925,7 @@ def _plane_sheet_polygon(
 
 def build_layer_geometry(proj: ExtractedProject, layer_id: int,
                          enabled_layers: list[int],
-                         through_cache: "_ThroughFeatureCache | None" = None
+                         through_cache: _ThroughFeatureCache | None = None
                          ) -> GeometryLayer:
     stackup_by_id = {s.layer_id: s for s in proj.stackup}
     stackup = stackup_by_id[layer_id]
@@ -1233,8 +1233,8 @@ def _batch_buffer_tracks(tracks: list[RawTrack]) -> list[shapely.geometry.Polygo
 
 
 def _batch_via_polygons(
-    vias: "list[RawVia]",
-) -> "list[tuple[RawVia, shapely.geometry.Polygon]]":
+    vias: list[RawVia],
+) -> list[tuple[RawVia, shapely.geometry.Polygon]]:
     """Vectorise the per-via ``Point().buffer()`` loop into one ``shapely.buffer``
     C dispatch, returning ``(via, disc)`` for every via with a positive diameter
     in input order. Byte-identical to :func:`_via_polygon` — same radius, same
@@ -1405,7 +1405,7 @@ def _build_net_layer_buckets(
     # Through-feature footprints are layer-independent — build once, reuse for
     # every plane sheet below instead of rebuilding all pad/via polygons per
     # plane (see _ThroughFeatureCache). Built lazily: only if there's a plane.
-    _through_cache: "_ThroughFeatureCache | None" = None
+    _through_cache: _ThroughFeatureCache | None = None
     for s in proj.stackup:
         if not s.is_plane or s.layer_id not in enabled_set:
             continue
