@@ -1594,9 +1594,12 @@ def build_net_canonical_map(netlist) -> dict[str, str]:
 
 # --- adaptive SMPS regulator gain (optional fixed-point iteration) ------------
 
-_ADAPTIVE_GAIN_MAX_ITERATIONS: int = 8
+_ADAPTIVE_GAIN_MAX_ITERATIONS: int = 12
 _ADAPTIVE_GAIN_REL_TOL: float = 1e-3
 _ADAPTIVE_GAIN_VIN_FLOOR_V: float = 0.1
+# Blend toward the measured-Vin target gain each iteration (1 = full step).
+# Values < 1 stabilise coupled SMPS rails that share a SERIES upstream path.
+_ADAPTIVE_GAIN_BLEND: float = 0.65
 
 
 def has_adaptive_smps_regulators(loaded: LoadedProject) -> bool:
@@ -1727,6 +1730,11 @@ def solve_problem_adaptive(
         bool(adaptive_regulator_gain)
         and has_adaptive_smps_regulators(loaded)
     )
+    n_adaptive = sum(
+        1 for d in loaded.annotations.directives
+        if isinstance(d, RegulatorSpec) and d.adaptive_gain_eligible
+    )
+    gain_blend = _ADAPTIVE_GAIN_BLEND if n_adaptive > 1 else 1.0
 
     problem, via_segment_records, stub_pieces_by_pair, per_net_layers = (
         build_problem(loaded)
@@ -1788,7 +1796,8 @@ def solve_problem_adaptive(
                 new_gain = d.gain
             else:
                 any_vin_sampled = True
-                new_gain = d.voltage / (vin * d.efficiency)
+                target_gain = d.voltage / (vin * d.efficiency)
+                new_gain = (1.0 - gain_blend) * d.gain + gain_blend * target_gain
             if d.gain != 0.0:
                 max_rel_change = max(
                     max_rel_change,

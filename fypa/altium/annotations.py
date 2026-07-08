@@ -1361,7 +1361,8 @@ def _has_single_net_params(params: dict[str, str],
 
 
 def _parse_source(comp, proj, enabled_layers, result, bridge_groups=None,
-                  net_remap=None, supply_map=None, only_indices=None):
+                  net_remap=None, supply_map=None, only_indices=None,
+                  series_upstream=None, ambiguous_downstream=None):
     # ``only_indices`` (from the per-channel role dispatcher) restricts this
     # parser to the channels whose effective role is SOURCE; when ``None`` the
     # whole part is SOURCE and channels are discovered here.
@@ -1438,7 +1439,8 @@ def _parse_source(comp, proj, enabled_layers, result, bridge_groups=None,
 
 
 def _parse_sink(comp, proj, enabled_layers, result, bridge_groups=None,
-                net_remap=None, supply_map=None, only_indices=None):
+                net_remap=None, supply_map=None, only_indices=None,
+                series_upstream=None, ambiguous_downstream=None):
     # ``only_indices`` restricts this parser to the part's SINK-role channels;
     # see _parse_source.
     if only_indices is not None:
@@ -1519,7 +1521,8 @@ def _parse_sink(comp, proj, enabled_layers, result, bridge_groups=None,
 
 
 def _parse_resistance(comp, proj, enabled_layers, result, bridge_groups=None,
-                      net_remap=None, supply_map=None, only_indices=None):
+                      net_remap=None, supply_map=None, only_indices=None,
+                      series_upstream=None, ambiguous_downstream=None):
     # This parser only ever handles SERIES-role channels (part-wide or a
     # PDN<n>_ROLE=SERIES override), so the role for diagnostics is always
     # SERIES regardless of the part-wide PDN_ROLE.
@@ -1672,22 +1675,120 @@ def _collect_supply_voltages_by_net(
     return out
 
 
+def _canonical_supply_net_name(
+    proj: ExtractedProject,
+    net_name: str,
+    net_remap: dict[int, int] | None = None,
+) -> str:
+    """Upper-case supply net label, optionally remapped to a merge canonical."""
+    key = net_name.strip().upper()
+    indices = _net_indices_by_name(proj, key)
+    if not indices:
+        return key
+    idx = indices[0]
+    if net_remap:
+        idx = net_remap.get(idx, idx)
+    return proj.nets[idx].name.upper()
+
+
+def _collect_series_upstream_map(
+    parameter_sources: list[PdnParameterSource],
+    proj: ExtractedProject,
+    net_remap: dict[int, int] | None = None,
+) -> tuple[dict[str, str], frozenset[str]]:
+    """Directed SERIES power-flow edges for nominal Vin lookup.
+
+    Each SERIES channel contributes one edge ``downstream N_NET → upstream
+    P_NET``. Unlike :func:`_collect_bridge_groups`, this graph is directed
+    only — sense paths that undirectedly bridge unrelated rails via GND must
+    not collapse Vin inference.
+
+    Returns ``(upstream_map, ambiguous_downstream)``. A downstream net is
+    *ambiguous* when two SERIES channels name different upstream nets for the
+    same ``N_NET``.
+    """
+    upstream: dict[str, str] = {}
+    ambiguous: set[str] = set()
+
+    def _register_edge(downstream: str, upstream_net: str) -> None:
+        dn = _canonical_supply_net_name(proj, downstream, net_remap)
+        up = _canonical_supply_net_name(proj, upstream_net, net_remap)
+        if dn in ambiguous:
+            return
+        prev = upstream.get(dn)
+        if prev is not None:
+            if prev != up:
+                ambiguous.add(dn)
+                upstream.pop(dn, None)
+            return
+        upstream[dn] = up
+
+    for comp in parameter_sources:
+        part_role_raw = _ci_get(comp.parameters, ROLE_KEY)
+        if part_role_raw is None:
+            continue
+        part_role = part_role_raw.strip().upper()
+        indices = [
+            idx for idx in _discover_channel_indices(comp.parameters, "R")
+            if _effective_role(comp.parameters, idx, part_role)
+            in _RESISTOR_LIKE_ROLES
+        ]
+        if not indices:
+            continue
+        for idx in indices:
+            p_net = _ci_get(comp.parameters, _channel_key("P_NET", idx))
+            n_net = _ci_get(comp.parameters, _channel_key("N_NET", idx))
+            if p_net is None and n_net is None and \
+                    _ci_get(comp.parameters, _channel_key("P_PINS", idx)) is None and \
+                    _ci_get(comp.parameters, _channel_key("N_PINS", idx)) is None:
+                if len(indices) == 1:
+                    for pcb_idx in _pcb_indices_for_source(comp, proj):
+                        inferred = _autoinfer_2pin_nets(proj, pcb_idx)
+                        if inferred is not None:
+                            _register_edge(inferred[1], inferred[0])
+            if p_net and n_net:
+                _register_edge(n_net, p_net)
+
+    return upstream, frozenset(ambiguous)
+
+
 def _lookup_inferred_vin(
     in_p_net: str | None,
     supply_map: dict[str, float],
-) -> float | None:
-    """Nominal Vin from an upstream SOURCE / REGULATOR on ``in_p_net``.
+    series_upstream: dict[str, str] | None = None,
+    ambiguous_downstream: frozenset[str] | None = None,
+) -> tuple[float | None, str | None]:
+    """Nominal Vin from an upstream SOURCE / REGULATOR reachable from ``in_p_net``.
 
-    Uses an exact net-name match only — SERIES bridge equivalence must not
-    expand Vin lookup, because sense paths through GND can join unrelated
-    rails (e.g. 48 V input and 12 V output) into one class.
+    ``supply_map`` lists voltages on SOURCE ``P_NET`` and REGULATOR ``OUT_P_NET``
+    only. When ``series_upstream`` is provided, walk directed SERIES edges
+    (downstream ``N_NET`` → upstream ``P_NET``) until a mapped voltage is found.
+
+    Returns ``(vin, failure)`` where ``failure`` is ``'ambiguous'`` when
+    ``in_p_net`` is an ambiguous SERIES downstream, ``'cycle'`` when the walk
+    loops, or ``None`` on success / no match.
+
+    Undirected :func:`_collect_bridge_groups` equivalence must not be used here:
+    sense paths through GND can join unrelated rails into one class.
     """
     if in_p_net is None or not str(in_p_net).strip():
-        return None
-    v = supply_map.get(in_p_net.strip().upper())
-    if v is not None and v > 0:
-        return v
-    return None
+        return None, None
+    net = in_p_net.strip().upper()
+    if ambiguous_downstream and net in ambiguous_downstream:
+        return None, "ambiguous"
+    visited: set[str] = set()
+    while net not in visited:
+        v = supply_map.get(net)
+        if v is not None and v > 0:
+            return v, None
+        visited.add(net)
+        if not series_upstream:
+            return None, None
+        parent = series_upstream.get(net)
+        if parent is None:
+            return None, None
+        net = parent
+    return None, "cycle"
 
 
 def _resolve_regulator_gain(
@@ -1698,6 +1799,8 @@ def _resolve_regulator_gain(
     supply_map: dict[str, float],
     role_diag: str,
     result: AnnotationResult,
+    series_upstream: dict[str, str] | None = None,
+    ambiguous_downstream: frozenset[str] | None = None,
 ) -> tuple[float, str | None, float, bool] | None:
     """Return ``(gain, regulator_type, efficiency, adaptive_gain_eligible)``."""
     gain_key = _channel_key("GAIN", idx)
@@ -1765,14 +1868,29 @@ def _resolve_regulator_gain(
         )
         return None
 
-    vin = _lookup_inferred_vin(in_p_net, supply_map)
+    vin, vin_failure = _lookup_inferred_vin(
+        in_p_net, supply_map,
+        series_upstream=series_upstream,
+        ambiguous_downstream=ambiguous_downstream,
+    )
     if vin is None or vin <= 0:
         in_key = _channel_key("IN_P_NET", idx)
-        result.errors.append(
-            f"{role_diag}: cannot infer input voltage for SMPS gain — "
-            f"no unique upstream SOURCE/REGULATOR voltage found for "
-            f"{in_key}={in_p_net!r}"
-        )
+        if vin_failure == "ambiguous":
+            result.errors.append(
+                f"{role_diag}: cannot infer input voltage for SMPS gain — "
+                f"ambiguous SERIES upstream for {in_key}={in_p_net!r}"
+            )
+        elif vin_failure == "cycle":
+            result.errors.append(
+                f"{role_diag}: cannot infer input voltage for SMPS gain — "
+                f"cyclic SERIES upstream path for {in_key}={in_p_net!r}"
+            )
+        else:
+            result.errors.append(
+                f"{role_diag}: cannot infer input voltage for SMPS gain — "
+                f"no unique upstream SOURCE/REGULATOR voltage found for "
+                f"{in_key}={in_p_net!r}"
+            )
         return None
 
     gain = v_out / (vin * eff)
@@ -1780,7 +1898,8 @@ def _resolve_regulator_gain(
 
 
 def _parse_regulator(comp, proj, enabled_layers, result, bridge_groups=None,
-                     net_remap=None, supply_map=None, only_indices=None):
+                     net_remap=None, supply_map=None, only_indices=None,
+                     series_upstream=None, ambiguous_downstream=None):
     role_diag_base = f"REGULATOR on {comp.designator}"
     if _has_single_net_params(comp.parameters, only_indices):
         result.errors.append(
@@ -1827,6 +1946,8 @@ def _parse_regulator(comp, proj, enabled_layers, result, bridge_groups=None,
         resolved = _resolve_regulator_gain(
             comp.parameters, idx, v, in_p_net,
             supply_map, role_diag, result,
+            series_upstream=series_upstream,
+            ambiguous_downstream=ambiguous_downstream,
         ) if v is not None else None
         if v is None or resolved is None:
             continue
@@ -2190,6 +2311,9 @@ def parse_annotations(proj: ExtractedProject,
     # SERIES bridge equivalence for cross-directive validation and the solver.
     bridge_groups = _collect_bridge_groups(parameter_sources, proj)
     supply_map = _collect_supply_voltages_by_net(parameter_sources)
+    series_upstream, series_ambiguous = _collect_series_upstream_map(
+        parameter_sources, proj, net_remap=net_remap,
+    )
 
     for comp in parameter_sources:
         if comp.designator.upper() in skip_set:
@@ -2234,7 +2358,9 @@ def parse_annotations(proj: ExtractedProject,
             specs = _PARSER_BY_ROLE[role](comp, proj, enabled_layers, result,
                                           bridge_groups=bridge_groups,
                                           net_remap=net_remap,
-                                          supply_map=supply_map)
+                                          supply_map=supply_map,
+                                          series_upstream=series_upstream,
+                                          ambiguous_downstream=series_ambiguous)
             result.directives.extend(specs)
         else:
             for chan_role, idxs in channel_roles.items():
@@ -2242,6 +2368,8 @@ def parse_annotations(proj: ExtractedProject,
                     comp, proj, enabled_layers, result,
                     bridge_groups=bridge_groups, net_remap=net_remap,
                     supply_map=supply_map, only_indices=idxs,
+                    series_upstream=series_upstream,
+                    ambiguous_downstream=series_ambiguous,
                 )
                 # Every parser returns a list — empty if the directive failed
                 # to resolve, one element per resolved channel otherwise.
