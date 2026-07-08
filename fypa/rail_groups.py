@@ -168,8 +168,10 @@ def resolve_rail_member_nets(
     """Resolve visible rail names to the net names whose copper should draw.
 
     When ``subnet_visible`` is provided for a multi-net rail, only member nets
-    marked visible are included. Otherwise every member of the rail group is
-    included. ``rail_only`` further restricts to each rail's primary name.
+    marked visible are included. Members omitted from the per-rail map default
+    to visible (so a partial map does not silently hide nets). Single-net
+    rails ignore ``subnet_visible`` entirely. ``rail_only`` further restricts
+    to each rail's primary name.
     """
     if not rail_names:
         return []
@@ -179,7 +181,7 @@ def resolve_rail_member_nets(
         full = rail_to_members.get(rail_name, [rail_name])
         subnets = (subnet_visible or {}).get(rail_name)
         if subnets is not None and len(full) > 1:
-            picks = [n for n in full if subnets.get(n, False)]
+            picks = [n for n in full if subnets.get(n, True)]
         else:
             picks = list(full)
         if rail_only:

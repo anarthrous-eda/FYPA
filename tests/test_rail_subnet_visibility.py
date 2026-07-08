@@ -88,3 +88,18 @@ def test_resolve_multiple_rails_deduplicates():
     }
     out = resolve_rail_member_nets(["A", "B"], members, None, rail_only=False)
     assert out == ["A", "SHARED", "B"]
+
+
+def test_resolve_partial_subnet_map_defaults_missing_to_visible():
+    subnet_visible = {
+        "+3V3": {
+            "3V3_SW": False,
+        },
+    }
+    out = resolve_rail_member_nets(
+        ["+3V3"],
+        _RAIL_TO_MEMBERS,
+        subnet_visible,
+        rail_only=False,
+    )
+    assert out == ["+3V3", "3V3_LDO"]

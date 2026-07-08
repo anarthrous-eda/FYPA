@@ -45,6 +45,7 @@ import shapely.geometry as _sg
 import shapely.prepared as _sp
 
 from fypa import log_buffer
+from fypa.rail_groups import resolve_rail_member_nets
 from fypa.gl_mesh_viewer import (
     GLMeshViewer,
     LegendRow,
@@ -6897,7 +6898,7 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
                                *, initial_settings=None,
                                loaded_project=None,
                                project=None,
-                               project_path=None) -> "PdnViewer | None":
+                               project_path=None) -> PdnViewer | None:
         try:
             kwargs = {"metadata": metadata}
             if initial_settings is not None:
@@ -9042,8 +9043,14 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
 
         saved_rails = saved_rails or {}
         saved_subnets = saved_subnets or {}
-        if saved_expanded:
-            self._rail_expanded.update(saved_expanded)
+        if saved_expanded is not None:
+            self._rail_expanded = {
+                r: bool(saved_expanded[r])
+                for r in self._rails
+                if r in saved_expanded
+            }
+        else:
+            self._rail_expanded = {}
 
         for rail in self._rails:
             members = self._rail_to_members.get(rail, [rail])
@@ -10502,7 +10509,6 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             rail: {net: eye.isVisibleState() for net, eye in nets.items()}
             for rail, nets in self._subnet_eye_buttons.items()
         }
-        from fypa.rail_groups import resolve_rail_member_nets
         return resolve_rail_member_nets(
             list(rail_names),
             self._rail_to_members,
@@ -16023,7 +16029,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         data = self._layer_strtrees().get(int(layer_id))
         if data is None:
             return None
-        shapes = data["shapes"]
+        data["shapes"]
         polys = data["polys"]
         nets = data["nets"]
         try:
@@ -19034,18 +19040,16 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         """Whether an editor directive belongs to a currently-visible rail.
 
         Source / sink markers track the rail eyes the same way the solved
-        markers do: a directive on a hidden rail drops out, so when only one
-        rail is shown its return-path markers no longer bleed in alongside
-        every other rail's. A directive that isn't part of any solved rail
+        markers do: a directive on a hidden rail (or hidden subnet within a
+        rail) drops out, so when only one rail is shown its return-path
+        markers no longer bleed in alongside every other rail's. A directive that isn't part of any solved rail
         yet (freshly placed, not-yet-resolved) always shows so the user can
         still see what they've just dropped while editing."""
         net = d.p_net
         if not net:
             return True
         conn = self._connected_nets(net)
-        visible_members: set[str] = set()
-        for name in self._visible_rails():
-            visible_members.update(self._rail_to_members.get(name, [name]))
+        visible_members = set(self._effective_rail_members(self._visible_rails()))
         if conn & visible_members:
             return True
         solved_members: set[str] = set()
