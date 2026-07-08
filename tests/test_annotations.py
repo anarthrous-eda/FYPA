@@ -29,6 +29,7 @@ from fypa.altium.annotations import (
     _resolve_local_net_pins,
     _resolve_terminal,
     _schdoc_for_pcb_instance,
+    _instance_resolver,
     _sheet_name_matches,
     _terminal_mode,
     _validate_directive_groups,
@@ -941,6 +942,234 @@ def test_pcb_sourced_local_net_scoped_per_instance():
     by_des = {d.designator: d for d in sinks}
     assert by_des["U1_CH1"].p.pins[0].net_index == 1
     assert by_des["U1_CH2"].p.pins[0].net_index == 2
+
+
+def test_pcb_sourced_reused_sheet_slotted_local_net():
+    """PCB ECO on a repeated sheet: local net VCC_EFUSE → VCC_EFUSE.N on PCB."""
+    netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="VCC_EFUSE",
+            source_sheets=["efuse.schdoc"],
+            terminals=[_FakeTerminal("R63", "2")],
+        ),
+        _FakeNet(
+            name="VDD_5V0",
+            aliases=["VDD_5V0.1", "VDD_5V0.2", "VDD_5V0.3", "VDD_5V0.4"],
+            source_sheets=["can-phy.schdoc", "efuse.schdoc"],
+            terminals=[_FakeTerminal("R63", "1")],
+        ),
+    ])
+    proj = _minimal_proj(
+        nets=(
+            RawNet("VDD_5V0"),
+            RawNet("VCC_EFUSE.1"),
+            RawNet("VCC_EFUSE.4"),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="R63.1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="1005R", source_designator="R63",
+                parameters={
+                    "PDN_ROLE": "SERIES",
+                    "PDN1_R": "0.01",
+                    "PDN1_P_NET": "VDD_5V0",
+                    "PDN1_N_NET": "VCC_EFUSE",
+                },
+            ),
+            RawPcbComponent(
+                designator="R63.4", center=Pt2D(3, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="1005R", source_designator="R63",
+                parameters={
+                    "PDN_ROLE": "SERIES",
+                    "PDN1_R": "0.01",
+                    "PDN1_P_NET": "VDD_5V0",
+                    "PDN1_N_NET": "VCC_EFUSE",
+                },
+            ),
+        ),
+        sch_components=(
+            RawSchComponent(
+                designator="R63", schdoc_name="efuse.SchDoc",
+                parameters={"Comment": "0R"}, pin_designators=("1", "2"),
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 0, 0),
+            _pad(0, "2", 1, 1),
+            _pad(1, "1", 0, 2),
+            _pad(1, "2", 2, 3),
+        ),
+        compiled_netlist=netlist,
+    )
+    assert _schdoc_for_pcb_instance(proj, 0, "R63") == "efuse.schdoc"
+    assert _schdoc_for_pcb_instance(proj, 1, "R63") == "efuse.schdoc"
+
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    series = [d for d in result.directives if isinstance(d, ResistorSpec)]
+    assert len(series) == 2
+    by_des = {d.designator: d for d in series}
+    assert by_des["R63.1"].n.pins[0].net_index == 1
+    assert by_des["R63.4"].n.pins[0].net_index == 2
+
+
+def test_resolve_local_net_pins_dot_channel_alias():
+    netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="IOUT3",
+            aliases=["S00A.1", "S00A.4"],
+            source_sheets=["Child.SchDoc"],
+            terminals=[
+                _FakeTerminal("J3.1", "29"),
+                _FakeTerminal("J3.4", "29"),
+            ],
+        ),
+    ])
+    pins = _resolve_local_net_pins(
+        netlist, "J3", "Child.SchDoc", "S00A",
+        pcb_designator="J3.4",
+    )
+    assert pins == ["29"]
+
+
+def test_resolve_local_net_pins_dot_channel_alias_scoped():
+    netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="IOUT_OTHER",
+            aliases=["S00A.1"],
+            source_sheets=["Child.SchDoc"],
+            terminals=[_FakeTerminal("J3.4", "29")],
+        ),
+    ])
+    pins = _resolve_local_net_pins(
+        netlist, "J3", "Child.SchDoc", "S00A",
+        pcb_designator="J3.4",
+    )
+    assert pins == []
+
+
+def test_schdoc_inference_pin_centric_without_net_name_match():
+    """PCB net VCC_EFUSE.4 must not block efuse.SchDoc vote via pin 2 alone."""
+    netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="VCC_EFUSE",
+            source_sheets=["efuse.schdoc"],
+            terminals=[_FakeTerminal("R63", "2")],
+        ),
+        _FakeNet(
+            name="VDD_5V0",
+            aliases=["VDD_5V0.4"],
+            source_sheets=["can-phy.schdoc", "efuse.schdoc"],
+            terminals=[_FakeTerminal("R63", "1")],
+        ),
+    ])
+    proj = _minimal_proj(
+        nets=(RawNet("VDD_5V0"), RawNet("VCC_EFUSE.4")),
+        pcb_components=(
+            RawPcbComponent(
+                designator="R63.4", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="1005R", source_designator="R63",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 0, 0),
+            _pad(0, "2", 1, 1),
+        ),
+        compiled_netlist=netlist,
+    )
+    assert _schdoc_for_pcb_instance(proj, 0, "R63") == "efuse.schdoc"
+
+
+def test_variant_alias_pattern_via_pad_netlist():
+    """MDI.TD_P4 style aliases resolve via pad/netlist cross-check."""
+    netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="MDI.TD_P",
+            aliases=["MDI.TD_P4"],
+            source_sheets=["eth.schdoc"],
+            terminals=[_FakeTerminal("R1", "1")],
+        ),
+    ])
+    proj = _minimal_proj(
+        nets=(RawNet("MDI.TD_P4"), RawNet("GND")),
+        pcb_components=(
+            RawPcbComponent(
+                designator="R1_D4", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="0402", source_designator="R1",
+            ),
+        ),
+        pads=(_pad(0, "1", 0, 0), _pad(0, "2", 1, 1)),
+        compiled_netlist=netlist,
+    )
+    spec, errors = _resolve_terminal(
+        proj, 0, "MDI.TD_P", None, [1], "SERIES P",
+        sch_lookup_designator="R1", schdoc_name="eth.schdoc",
+    )
+    assert not errors
+    assert spec is not None
+    assert spec.pins[0].net_index == 0
+
+
+def test_bridge_groups_expand_slotted_local_names():
+    netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="VCC_EFUSE",
+            source_sheets=["efuse.schdoc"],
+            terminals=[_FakeTerminal("R63", "2")],
+        ),
+        _FakeNet(
+            name="VDD_5V0",
+            source_sheets=["efuse.schdoc"],
+            terminals=[_FakeTerminal("R63", "1")],
+        ),
+    ])
+    proj = _minimal_proj(
+        nets=(RawNet("VDD_5V0"), RawNet("VCC_EFUSE.4")),
+        pcb_components=(
+            RawPcbComponent(
+                designator="R63.4", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="1005R", source_designator="R63",
+                parameters={
+                    "PDN_ROLE": "SERIES",
+                    "PDN1_R": "0.01",
+                    "PDN1_P_NET": "VDD_5V0",
+                    "PDN1_N_NET": "VCC_EFUSE",
+                },
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 0, 0),
+            _pad(0, "2", 1, 1),
+        ),
+        compiled_netlist=netlist,
+    )
+    expanded = _instance_resolver(proj).expand_net_names("VCC_EFUSE")
+    assert "VCC_EFUSE" in expanded
+    assert "VCC_EFUSE.4" in expanded
+
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+
+
+def test_resolve_terminal_no_double_suffix_on_qualified_net():
+    """Degraded mode must not append another channel suffix to VCC_EFUSE.4."""
+    proj = _minimal_proj(
+        nets=(RawNet("VCC_EFUSE.4"),),
+        pcb_components=(
+            RawPcbComponent(
+                designator="R63.1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="1005R", source_designator="R63",
+            ),
+        ),
+        pads=(_pad(0, "2", 0, 0),),
+        compiled_netlist=None,
+    )
+    spec, errors = _resolve_terminal(
+        proj, 0, "VCC_EFUSE.4", None, [1], "SERIES N",
+    )
+    assert not errors
+    assert spec is not None
+    assert spec.pins[0].net_index == 0
 
 
 def test_local_fallback_skips_no_net_pad():

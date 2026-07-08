@@ -287,16 +287,65 @@ placing them on every symbol:
 
 `PDN_P_NET`, `PDN_N_NET`, and `PDN_NET` may use the **local net name
 as it appears on the schematic sheet** where the directive applies
-(for example `+3V3` on a child sheet). FYPA compiles the schematic
-netlist and resolves the name to the correct PCB pads per component
-instance. Physical PCB net names still work unchanged — FYPA tries a
-direct PCB match first, then falls back to local-name resolution.
+(for example `VCC_EFUSE` on `efuse.SchDoc`, or `+3V3` on a child
+sheet). FYPA compiles the schematic netlist and maps that label to the
+correct PCB pads **per component instance** — independent of how
+Altium names channels on the PCB (`R63.4`, `J3_SL8M7`, `CAN.RX1`, …).
 
-> On hierarchical designs you no longer need to look up the flattened
-> PCB net name manually when the local sheet name is unambiguous on
-> that sheet. If resolution fails, check that the project compiles
-> cleanly and that the component’s schematic designator matches the
-> PCB `source_designator`.
+Resolution order:
+
+1. **Direct PCB net name** — if the parameter already names a flattened
+   PCB net (e.g. `VCC_EFUSE.4`), FYPA uses it as-is.
+2. **Local name via schematic pins** — the compiled netlist finds which
+   pin(s) carry the local label on the inferred sheet; FYPA selects the
+   matching pad(s) on that PCB instance (primary path for repeated sheets).
+3. **Netlist aliases** — when Altium compiles channel-qualified aliases
+   (`VDD_5V0.4`, `MDI.TD_P4`, …), FYPA cross-checks pad connectivity.
+
+Physical PCB net names still work unchanged. You do **not** need to look
+up flattened PCB net names when authoring on a child sheet.
+
+#### Repeated sheets (REPEAT)
+
+A sheet symbol placed multiple times (e.g. `vip-port.SchDoc` × 4, each
+containing `efuse.SchDoc`) creates several PCB instances of the same
+schematic designator (`R63` → `R63.1` … `R63.4`). Use the **local**
+net label from the child sheet in `PDN_*_NET` — FYPA binds each
+instance to its own slot net (`VCC_EFUSE.1` … `VCC_EFUSE.4`) via pin
+connectivity, not by parsing your `ChannelDesignatorFormatString`.
+
+Example — a 0 Ω link `R63` on `efuse.SchDoc` inside a repeated VIP port:
+
+| Parameter      | Value        |
+|----------------|--------------|
+| `PDN_ROLE`     | `SERIES`     |
+| `PDN1_R`       | `0.01`       |
+| `PDN1_P_NET`   | `VDD_5V0`    |
+| `PDN1_N_NET`   | `VCC_EFUSE`  |
+
+The same parameters on every instance; FYPA resolves `VCC_EFUSE` to
+`VCC_EFUSE.N` per placement. A log line such as
+`resolved local net 'VCC_EFUSE' via schematic pins ['2'] → PCB net(s) VCC_EFUSE.4`
+is expected and not an error.
+
+#### PCB-only parameters (Blanket / ECO)
+
+When `PDN_*` parameters are pushed to the PCB only (Blanket rule or ECO),
+FYPA infers the originating schematic sheet from pad ↔ netlist
+connectivity so local-net resolution stays scoped to that instance.
+
+#### Troubleshooting local nets
+
+| Symptom | Likely cause | Fix |
+|---------|--------------|-----|
+| `net 'FOO' does not exist on the PCB and could not be resolved as a local schematic net` | Project does not compile / netlist unavailable | Compile the schematic; re-open the project in FYPA |
+| Same message, project compiles | Wrong local label or wrong sheet | Check the net label on the child sheet matches `PDN_*_NET` exactly |
+| `component … has no pad on net FOO` | Slot-qualified name on the wrong instance (e.g. `FOO.3` on channel 1) | Use the local name `FOO` instead of a channel suffix |
+| `resolved local net … via schematic pins` (warning) | Normal for repeated sheets | No action needed — mapping succeeded |
+
+> If resolution still fails, verify that the component's schematic
+> designator matches the PCB `source_designator` and that the project
+> compiles without errors.
 
 ## 1.6 Importing into FYPA
 
