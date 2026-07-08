@@ -362,6 +362,7 @@ _THEME_PRESETS: dict[str, dict[str, str]] = {
         "separator":       "#707070",
         "eye_open":        "#f0f0f0",
         "eye_closed":      "#7a7a7a",
+        "eye_partial":     "#b8b8b8",
     },
     "light": {
         # Core surfaces
@@ -399,6 +400,7 @@ _THEME_PRESETS: dict[str, dict[str, str]] = {
         "separator":       "#9a9a9a",
         "eye_open":        "#2d2d2d",
         "eye_closed":      "#9a9a9a",
+        "eye_partial":     "#5c5c5c",
     },
 }
 
@@ -1083,14 +1085,35 @@ CURSOR_TOOLTIP_THROTTLE_S: float = 0.008
 
 # --- Altium-style "eye" visibility icons -----------------------------------
 
-_EYE_PIXMAP_CACHE: dict[tuple[str, bool, int], QPixmap] = {}
+_EYE_PIXMAP_CACHE: dict[tuple[str, bool, bool, int], QPixmap] = {}
+
+# Partial visibility: open-eye glyph, muted between eye_open and eye_closed.
+_EYE_PARTIAL_BLEND: float = 0.32
 
 
-def _make_eye_pixmap(open_: bool, *, size: int = 16) -> QPixmap:
+def _eye_icon_color(theme: dict, *, open_: bool, partial: bool) -> QColor:
+    if partial:
+        keyed = theme.get("eye_partial")
+        if keyed:
+            return QColor(keyed)
+        a, b = QColor(theme["eye_open"]), QColor(theme["eye_closed"])
+        w = _EYE_PARTIAL_BLEND
+        return QColor(
+            int(a.red() * (1 - w) + b.red() * w),
+            int(a.green() * (1 - w) + b.green() * w),
+            int(a.blue() * (1 - w) + b.blue() * w),
+        )
+    if open_:
+        return QColor(theme["eye_open"])
+    return QColor(theme["eye_closed"])
+
+
+def _make_eye_pixmap(open_: bool, *, partial: bool = False, size: int = 16) -> QPixmap:
     """Draw an Altium-style eye icon.
 
-    ``open_`` = True  → white eye (layer visible).
-    ``open_`` = False → muted grey eye with a diagonal slash (layer hidden).
+    ``open_`` = True  → full-contrast open eye (all children visible).
+    ``partial`` = True → same open-eye shape, muted (some children visible).
+    ``open_`` = False → muted eye with a diagonal slash (all hidden).
     """
     px = QPixmap(size, size)
     px.fill(Qt.transparent)
@@ -1098,7 +1121,7 @@ def _make_eye_pixmap(open_: bool, *, size: int = 16) -> QPixmap:
     p.setRenderHint(QPainter.Antialiasing, True)
 
     t = current_theme()
-    color = QColor(t["eye_open"] if open_ else t["eye_closed"])
+    color = _eye_icon_color(t, open_=open_, partial=partial)
     pen = QPen(color)
     pen.setWidthF(max(1.0, size * 0.09))
     pen.setCapStyle(Qt.RoundCap)
@@ -1120,7 +1143,7 @@ def _make_eye_pixmap(open_: bool, *, size: int = 16) -> QPixmap:
     r = size * 0.17
     p.drawEllipse(QPointF(size / 2.0, cy), r, r)
 
-    if not open_:
+    if not open_ and not partial:
         slash = QPen(color)
         slash.setWidthF(max(1.2, size * 0.11))
         slash.setCapStyle(Qt.RoundCap)
@@ -1133,13 +1156,24 @@ def _make_eye_pixmap(open_: bool, *, size: int = 16) -> QPixmap:
     return px
 
 
-def _eye_pixmap(open_: bool, size: int = 16) -> QPixmap:
-    key = (current_theme_mode(), open_, size)
+def _eye_pixmap(open_: bool, size: int = 16, *, partial: bool = False) -> QPixmap:
+    key = (current_theme_mode(), open_, partial, size)
     cached = _EYE_PIXMAP_CACHE.get(key)
     if cached is None:
-        cached = _make_eye_pixmap(open_, size=size)
+        cached = _make_eye_pixmap(open_, partial=partial, size=size)
         _EYE_PIXMAP_CACHE[key] = cached
     return cached
+
+
+def _qt_widget_alive(widget) -> bool:
+    """True when ``widget`` is a live Qt C++ object (not already deleted)."""
+    if widget is None:
+        return False
+    try:
+        from shiboken6 import isValid
+        return bool(isValid(widget))
+    except Exception:
+        return False
 
 
 class EyeButton(QToolButton):
@@ -1153,9 +1187,11 @@ class EyeButton(QToolButton):
                  tip_hide: str = "Hide layer") -> None:
         super().__init__(parent)
         self._visible = bool(visible)
+        self._partial = False
         self._icon_size = icon_size
         self._tip_show = tip_show
         self._tip_hide = tip_hide
+        self._tip_partial = "Some subnet nets visible — click to show all"
         self.setAutoRaise(True)
         self.setCursor(Qt.PointingHandCursor)
         self.setIconSize(QSize(icon_size, icon_size))
@@ -1167,21 +1203,36 @@ class EyeButton(QToolButton):
     def isVisibleState(self) -> bool:
         return self._visible
 
-    def setVisibleState(self, on: bool, *, emit: bool = True) -> None:
+    def isPartialState(self) -> bool:
+        return self._partial
+
+    def setVisibleState(
+        self, on: bool, *, partial: bool = False, emit: bool = True,
+    ) -> None:
         on = bool(on)
-        if on == self._visible:
+        partial = bool(partial) and on
+        if on == self._visible and partial == self._partial:
             return
         self._visible = on
+        self._partial = partial
         self._apply_icon()
         if emit:
             self.toggled_visible.emit(self._visible)
 
     def _apply_icon(self) -> None:
-        self.setIcon(QIcon(_eye_pixmap(self._visible, self._icon_size)))
-        self.setToolTip(self._tip_hide if self._visible else self._tip_show)
+        self.setIcon(QIcon(_eye_pixmap(
+            self._visible, self._icon_size, partial=self._partial,
+        )))
+        if self._partial:
+            self.setToolTip(self._tip_partial)
+        else:
+            self.setToolTip(self._tip_hide if self._visible else self._tip_show)
 
     def _on_clicked(self) -> None:
-        self.setVisibleState(not self._visible)
+        if self._partial:
+            self.setVisibleState(True, partial=False)
+        else:
+            self.setVisibleState(not self._visible, partial=False)
 
 
 # --- Wire-mesh / solid fill toggle icons -----------------------------------
@@ -7885,6 +7936,16 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             if hasattr(self, attr):
                 delattr(self, attr)
 
+    def _clear_gl_mesh(self) -> None:
+        """Drop the GL heatmap mesh and the host-side upload cache.
+
+        ``GLMeshViewer.clear_mesh`` zeroes the GPU vertex count; if
+        ``_last_mesh_upload`` is left pointing at the previous arrays the
+        next render can skip :meth:`set_mesh` (identity match) while still
+        calling :meth:`set_values` — which then raises length mismatch."""
+        self._gl_viewer.clear_mesh()
+        self._last_mesh_upload = None
+
     def _no_pdn_visibility(self) -> bool:
         """Whether to use the 'blank board' layer / rail visibility defaults:
         no rails shown, and the top physical layer's all-copper turned on.
@@ -8974,6 +9035,12 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         """Allocate per-rail / per-subnet visibility state containers."""
         self._rail_eye_buttons: list[tuple[str, EyeButton]] = []
         self._subnet_eye_buttons: dict[str, dict[str, EyeButton]] = {}
+        # Hidden parent keeps subnet EyeButtons alive while their list rows
+        # are collapsed/removed — otherwise takeItem() deletes the row widget
+        # and the C++ EyeButton along with it.
+        self._subnet_eye_holder = QWidget(self)
+        self._subnet_eye_holder.setFixedSize(0, 0)
+        self._subnet_eye_holder.hide()
         self._rail_expand_buttons: dict[str, QToolButton] = {}
         self._rail_subnet_items: dict[str, list[QListWidgetItem]] = {}
         self._rail_expanded: dict[str, bool] = {}
@@ -9024,6 +9091,28 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             layout.addWidget(expand_btn)
         return w
 
+    def _detach_subnet_eyes(self, rail: str) -> None:
+        """Reparent subnet eyes off a list row before the row is destroyed."""
+        holder = getattr(self, "_subnet_eye_holder", None)
+        if holder is None:
+            return
+        for eye in self._subnet_eye_buttons.get(rail, {}).values():
+            if _qt_widget_alive(eye):
+                eye.setParent(holder)
+
+    def _silence_rail_list_widgets(self) -> None:
+        """Block signals on rail-list widgets about to be destroyed."""
+        for _name, eye in getattr(self, "_rail_eye_buttons", []):
+            if _qt_widget_alive(eye):
+                eye.blockSignals(True)
+        for btn in getattr(self, "_rail_expand_buttons", {}).values():
+            if _qt_widget_alive(btn):
+                btn.blockSignals(True)
+        for nets in getattr(self, "_subnet_eye_buttons", {}).values():
+            for eye in nets.values():
+                if _qt_widget_alive(eye):
+                    eye.blockSignals(True)
+
     def _populate_rail_list(
         self,
         *,
@@ -9033,6 +9122,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         saved_expanded: dict[str, bool] | None = None,
     ) -> None:
         """Rebuild solved-rail rows (not including the 'All Rails' header)."""
+        self._silence_rail_list_widgets()
+        for rail in list(self._subnet_eye_buttons.keys()):
+            self._detach_subnet_eyes(rail)
         while self.rail_list.count() > 1:
             self.rail_list.takeItem(self.rail_list.count() - 1)
         self._rail_eye_buttons.clear()
@@ -9099,6 +9191,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 self._subnet_eye_buttons[rail] = {}
                 for net in members:
                     subnet_eye = EyeButton(
+                        parent=self._subnet_eye_holder,
                         visible=False,
                         tip_show=f"Show {net} copper",
                         tip_hide=f"Hide {net} copper",
@@ -9143,7 +9236,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         row_idx = self.rail_list.row(after_item) + 1
         for net in members:
             eye = subnets.get(net)
-            if eye is None:
+            if eye is None or not _qt_widget_alive(eye):
                 continue
             is_primary = net == rail
             subnet_row = self._build_rail_row_widget(
@@ -9169,6 +9262,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._rail_subnet_items[rail] = items
 
     def _remove_subnet_rows(self, rail: str) -> None:
+        self._detach_subnet_eyes(rail)
         for item in self._rail_subnet_items.pop(rail, []):
             row = self.rail_list.row(item)
             if row >= 0:
@@ -9182,22 +9276,34 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
 
     def _fan_out_rail_eye_to_subnets(self, rail: str, on: bool) -> None:
         for eye in self._subnet_eye_buttons.get(rail, {}).values():
-            eye.setVisibleState(on, emit=False)
+            if _qt_widget_alive(eye):
+                eye.setVisibleState(on, emit=False)
 
     def _sync_rail_eye_from_subnets(self, rail: str) -> None:
         subnets = self._subnet_eye_buttons.get(rail, {})
         if not subnets:
             return
-        any_on = any(eye.isVisibleState() for eye in subnets.values())
+        alive = [
+            eye for eye in subnets.values()
+            if _qt_widget_alive(eye)
+        ]
+        if not alive:
+            return
+        on_count = sum(eye.isVisibleState() for eye in alive)
+        all_on = on_count == len(alive)
+        all_off = on_count == 0
+        partial = not all_on and not all_off
         for name, eye in self._rail_eye_buttons:
-            if name == rail:
-                eye.setVisibleState(any_on, emit=False)
+            if name == rail and _qt_widget_alive(eye):
+                eye.setVisibleState(
+                    not all_off, partial=partial, emit=False,
+                )
                 break
 
     def _on_rail_expand_toggled(self, rail: str, expanded: bool) -> None:
         self._rail_expanded[rail] = expanded
         btn = self._rail_expand_buttons.get(rail)
-        if btn is not None:
+        if btn is not None and _qt_widget_alive(btn):
             btn.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
         parent_item = self._rail_list_items.get(rail)
         if parent_item is None:
@@ -9209,6 +9315,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._update_rail_list_height()
 
     def _on_subnet_eye_toggled(self, rail: str, net: str, _on: bool) -> None:
+        eye = self._subnet_eye_buttons.get(rail, {}).get(net)
+        if eye is None or not _qt_widget_alive(eye):
+            return
         self._sync_rail_eye_from_subnets(rail)
         self._sync_all_rails_eye()
         self._sync_rail_only_visibility()
@@ -9375,7 +9484,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
 
     def _on_rail_eye_toggled(self, rail: str, on: bool) -> None:
         """An individual rail's eye was clicked."""
+        if not any(
+            name == rail and _qt_widget_alive(eye)
+            for name, eye in self._rail_eye_buttons
+        ):
+            return
         self._fan_out_rail_eye_to_subnets(rail, on)
+        self._sync_rail_eye_from_subnets(rail)
         self._sync_all_rails_eye()
         self._sync_rail_only_visibility()
         self._render_with_busy_popup()
@@ -9383,16 +9498,29 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
     def _on_all_rails_toggled(self, on: bool) -> None:
         """The "All Rails" eye was clicked — show or hide every rail."""
         for name, eye in self._rail_eye_buttons:
-            eye.setVisibleState(on, emit=False)
+            if _qt_widget_alive(eye):
+                eye.setVisibleState(on, partial=False, emit=False)
             self._fan_out_rail_eye_to_subnets(name, on)
+        self._sync_all_rails_eye()
         self._sync_rail_only_visibility()
         self._render_with_busy_popup()
 
     def _sync_all_rails_eye(self) -> None:
         """Reflect "any rail visible" in the All Rails eye state."""
-        any_visible = any(eye.isVisibleState()
-                          for _n, eye in self._rail_eye_buttons)
-        self._all_rails_eye.setVisibleState(any_visible, emit=False)
+        any_visible = False
+        any_hidden = False
+        for _n, eye in self._rail_eye_buttons:
+            if not _qt_widget_alive(eye):
+                continue
+            if eye.isVisibleState():
+                any_visible = True
+            else:
+                any_hidden = True
+        partial = any_visible and any_hidden
+        if _qt_widget_alive(self._all_rails_eye):
+            self._all_rails_eye.setVisibleState(
+                any_visible, partial=partial, emit=False,
+            )
 
     def _visible_rails(self) -> list[str]:
         """Names of the rails currently visible (eye open), in the
@@ -9401,9 +9529,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         for name, eye in self._rail_eye_buttons:
             subnets = self._subnet_eye_buttons.get(name)
             if subnets:
-                if any(e.isVisibleState() for e in subnets.values()):
+                if any(
+                    e.isVisibleState()
+                    for e in subnets.values()
+                    if _qt_widget_alive(e)
+                ):
                     out.append(name)
-            elif eye.isVisibleState():
+            elif _qt_widget_alive(eye) and eye.isVisibleState():
                 out.append(name)
         return out
 
@@ -10506,7 +10638,11 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         if not rail_names:
             return []
         subnet_visible = {
-            rail: {net: eye.isVisibleState() for net, eye in nets.items()}
+            rail: {
+                net: eye.isVisibleState()
+                for net, eye in nets.items()
+                if _qt_widget_alive(eye)
+            }
             for rail, nets in self._subnet_eye_buttons.items()
         }
         return resolve_rail_member_nets(
@@ -10844,6 +10980,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             # GPU re-upload. vs (above) still aligns: the loop visited the
             # exact same (phys, net) blocks in the same order and extrude mode.
             xs, ys, zs, tris, no_current = cached_geom[1]
+            if vs.size != xs.size:
+                # Values/geometry drift (e.g. stale cache) — rebuild geometry.
+                reuse_geom = False
+                self._rail_geom_cache = None
+                return self._build_rail_arrays(
+                    phys_list, rail_names, derive_fn,
+                )
         else:
             if xs_parts:
                 xs = np.concatenate(xs_parts)
@@ -11479,7 +11622,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             getattr(self.solution, "solver_info", {}).get("stub", False)
         )
         if not phys_list or not rails:
-            self._gl_viewer.clear_mesh()
+            self._clear_gl_mesh()
             self._gl_viewer.clear_outlines()
             self._gl_viewer.clear_cylinders()
             self._gl_viewer.clear_arrows()
@@ -11519,7 +11662,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._layer_probes = layer_probes
         _mark("build_rail_arrays")
         if xs.size == 0 or tris.size == 0:
-            self._gl_viewer.clear_mesh()
+            self._clear_gl_mesh()
             self._gl_viewer.clear_outlines()
             self._gl_viewer.clear_arrows()
             self._gl_viewer.clear_series_bars()
@@ -11797,9 +11940,11 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         # (holding the references so a garbage-collected array's id can't be
         # reused and cause a false match).
         _last = getattr(self, "_last_mesh_upload", None)
+        _gl_verts = getattr(self._gl_viewer, "_n_vertices", 0)
         if not (_last is not None
                 and xs_arr is _last[0] and ys_arr is _last[1]
-                and tris_arr is _last[2] and zs is _last[3]):
+                and tris_arr is _last[2] and zs is _last[3]
+                and _gl_verts == xs_arr.size):
             self._gl_viewer.set_mesh(xs_arr, ys_arr, tris_arr,
                                       data_bounds=self._data_bounds,
                                       zs=zs.astype(np.float32))
