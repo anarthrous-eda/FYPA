@@ -1283,36 +1283,66 @@ def _series_channel_has_net_params(
     )
 
 
+def _resolve_series_channel_nets(
+    comp: PdnParameterSource,
+    proj: ExtractedProject,
+    ch_idx: int,
+    pcb_idx: int,
+    ch_indices: list[int],
+) -> tuple[str, str] | None:
+    """P/N net names for one SERIES channel on one PCB placement."""
+    p_net = _ci_get(comp.parameters, _channel_key("P_NET", ch_idx))
+    n_net = _ci_get(comp.parameters, _channel_key("N_NET", ch_idx))
+    if p_net is None and n_net is None and not _series_channel_has_net_params(
+        comp, ch_idx,
+    ):
+        if len(ch_indices) != 1:
+            return None
+        return _autoinfer_2pin_nets(proj, pcb_idx)
+    if p_net and n_net:
+        return p_net, n_net
+    return None
+
+
 def _iter_series_bridge_pairs(
     parameter_sources: list[PdnParameterSource],
     proj: ExtractedProject,
-) -> Iterator[tuple[str, str]]:
-    """Yield ``(p_net, n_net)`` name pairs for each SERIES bridge.
+    *,
+    per_placement: bool,
+) -> Iterator[tuple[int | None, str, str]]:
+    """Yield ``(pcb_index, p_net, n_net)`` for each SERIES bridge.
 
-    Explicit ``PDN<n>_P_NET`` / ``PDN<n>_N_NET`` pairs are yielded as-is.
-    A single-channel SERIES part with no net/pin parameters replicates the
-    per-directive 2-pin auto-inference so the bridge graph stays consistent
-    with the parser. A multi-channel SERIES part bridges a different net
-    pair in each channel, so every channel yields its own pair — stopping
-    at the first would strand the other channels.
+    ``pcb_index`` is ``None`` only for parameter-level name pairs
+    (``per_placement=False``). Placement-scoped iteration is used by
+    cross-directive validation; parameter-level pairs build the transitive
+    name equivalence map in :func:`_collect_bridge_groups`.
     """
     for comp in parameter_sources:
         ch_indices = _series_channel_indices(comp)
         if not ch_indices:
             continue
+        pcb_indices = _pcb_indices_for_source(comp, proj)
         for ch_idx in ch_indices:
+            if per_placement:
+                for pcb_idx in pcb_indices:
+                    pair = _resolve_series_channel_nets(
+                        comp, proj, ch_idx, pcb_idx, ch_indices,
+                    )
+                    if pair is not None:
+                        yield pcb_idx, pair[0], pair[1]
+                continue
             p_net = _ci_get(comp.parameters, _channel_key("P_NET", ch_idx))
             n_net = _ci_get(comp.parameters, _channel_key("N_NET", ch_idx))
             if p_net and n_net:
-                yield p_net, n_net
+                yield None, p_net, n_net
             elif p_net is None and n_net is None and not _series_channel_has_net_params(
                 comp, ch_idx,
             ):
                 if len(ch_indices) == 1:
-                    for pcb_idx in _pcb_indices_for_source(comp, proj):
+                    for pcb_idx in pcb_indices:
                         pair = _autoinfer_2pin_nets(proj, pcb_idx)
                         if pair is not None:
-                            yield pair
+                            yield pcb_idx, pair[0], pair[1]
 
 
 def _collect_bridge_groups(
@@ -1327,9 +1357,8 @@ def _collect_bridge_groups(
     Transitive: if A↔B and B↔C are both bridged, A, B, C all belong to one
     group. Net names are upper-cased for case-insensitive comparison.
 
-    Name-level equivalence only — used in unit tests. Cross-directive
-    validation unions PCB net indices via
-    :func:`_union_series_bridge_net_indices` (instance-scoped expansion).
+    Name-level equivalence for unit tests. Cross-directive validation unions
+    PCB net indices via :func:`_union_series_bridge_net_indices`.
     Terminal pin resolution uses direct pad-to-net connectivity only — see
     :func:`_resolve_terminal`.
     """
@@ -1346,7 +1375,9 @@ def _collect_bridge_groups(
         if ra != rb:
             parent[rb] = ra
 
-    for p_net, n_net in _iter_series_bridge_pairs(parameter_sources, proj):
+    for _pcb_idx, p_net, n_net in _iter_series_bridge_pairs(
+        parameter_sources, proj, per_placement=False,
+    ):
         union(p_net.upper(), n_net.upper())
 
     # Materialise each equivalence class as a frozenset and map every net to it.
@@ -1369,44 +1400,20 @@ def _union_series_bridge_net_indices(
     channels in analysis-group validation.
     """
     resolver = _instance_resolver(proj)
-    for comp in parameter_sources:
-        part_role_raw = _ci_get(comp.parameters, ROLE_KEY)
-        if part_role_raw is None:
+    for pcb_idx, p_net, n_net in _iter_series_bridge_pairs(
+        parameter_sources, proj, per_placement=True,
+    ):
+        if pcb_idx is None:
             continue
-        part_role = part_role_raw.strip().upper()
-        ch_indices = [
-            idx for idx in _discover_channel_indices(comp.parameters, "R")
-            if _effective_role(comp.parameters, idx, part_role)
-            in _RESISTOR_LIKE_ROLES
-        ]
-        if not ch_indices:
-            continue
-        for pcb_idx in _pcb_indices_for_source(comp, proj):
-            for ch_idx in ch_indices:
-                p_net = _ci_get(comp.parameters, _channel_key("P_NET", ch_idx))
-                n_net = _ci_get(comp.parameters, _channel_key("N_NET", ch_idx))
-                if p_net is None and n_net is None and \
-                        _ci_get(comp.parameters, _channel_key("P_PINS", ch_idx)) is None and \
-                        _ci_get(comp.parameters, _channel_key("N_PINS", ch_idx)) is None:
-                    if len(ch_indices) == 1:
-                        inferred = _autoinfer_2pin_nets(proj, pcb_idx)
-                        if inferred is not None:
-                            p_net, n_net = inferred
-                        else:
-                            continue
-                    else:
-                        continue
-                if not p_net or not n_net:
-                    continue
-                idxs: list[int] = []
-                for name in (p_net, n_net):
-                    for expanded in resolver.expand_net_names(
-                        name, pcb_index=pcb_idx,
-                    ):
-                        idxs.extend(_net_indices_by_name(proj, expanded))
-                unique_idxs = list(dict.fromkeys(idxs))
-                for other in unique_idxs[1:]:
-                    union(unique_idxs[0], other)
+        idxs: list[int] = []
+        for name in (p_net, n_net):
+            for expanded in resolver.expand_net_names(
+                name, pcb_index=pcb_idx,
+            ):
+                idxs.extend(_net_indices_by_name(proj, expanded))
+        unique_idxs = list(dict.fromkeys(idxs))
+        for other in unique_idxs[1:]:
+            union(unique_idxs[0], other)
 
 
 def _autoinfer_2pin_nets(proj: ExtractedProject, pcb_index: int) -> tuple[str, str] | None:
