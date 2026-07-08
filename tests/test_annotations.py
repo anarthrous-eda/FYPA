@@ -199,7 +199,7 @@ def _two_terminal_sink(p_net: int, n_net: int, des: str = "U2") -> SinkSpec:
 def test_single_net_group_ok_and_shares_return_group():
     result = AnnotationResult(directives=[
         _single_source(0), _single_sink(0)])
-    _validate_directive_groups(result, None, {})
+    _validate_directive_groups(result, None)
     assert not result.errors
     assert {d.return_group for d in result.directives} == {0}
 
@@ -209,13 +209,13 @@ def test_single_net_open_loop_source_without_sink_is_not_an_error():
     # loader._flag_open_loop_rails (so the rail is skipped + warned, not a
     # whole-board hard error). Validation must no longer error here.
     result = AnnotationResult(directives=[_single_source(0)])
-    _validate_directive_groups(result, None, {})
+    _validate_directive_groups(result, None)
     assert not result.errors
 
 
 def test_single_net_open_loop_sink_without_source_is_not_an_error():
     result = AnnotationResult(directives=[_single_sink(0)])
-    _validate_directive_groups(result, None, {})
+    _validate_directive_groups(result, None)
     assert not result.errors
 
 
@@ -223,7 +223,7 @@ def test_group_may_not_mix_single_net_and_two_terminal():
     # Single-net SOURCE and a two-terminal SINK both touch net 0.
     result = AnnotationResult(directives=[
         _single_source(0), _two_terminal_sink(0, 1)])
-    _validate_directive_groups(result, None, {})
+    _validate_directive_groups(result, None)
     assert any("mixes single-net" in e for e in result.errors)
 
 
@@ -231,7 +231,7 @@ def test_independent_single_net_groups_get_distinct_return_groups():
     result = AnnotationResult(directives=[
         _single_source(0, "J1"), _single_sink(0, "U1"),
         _single_source(5, "J2"), _single_sink(5, "U2")])
-    _validate_directive_groups(result, None, {})
+    _validate_directive_groups(result, None)
     assert not result.errors
     by_des = {d.designator: d for d in result.directives}
     assert by_des["J1"].return_group == by_des["U1"].return_group
@@ -245,7 +245,7 @@ def test_two_terminal_only_board_is_unaffected():
         SourceSpec(designator="U1", schdoc_name="s.SchDoc", voltage=5.0,
                    p=_term(0), n=_term(1)),
         _two_terminal_sink(0, 1, des="U2")])
-    _validate_directive_groups(result, None, {})
+    _validate_directive_groups(result, None)
     assert not result.errors
     assert all(d.return_group is None for d in result.directives)
 
@@ -1159,6 +1159,183 @@ def test_alias_fallback_no_cross_channel_family_leak():
     assert len(spec.pins) == 1
     assert spec.pins[0].pad_designator == "2"
     assert spec.pins[0].net_index == 1
+
+
+def test_alias_fallback_flattened_terminal_designator():
+    """Alias fallback must query netlist rows keyed by flattened designators."""
+    netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="IOUT3",
+            aliases=["S00A.4"],
+            source_sheets=["Child.SchDoc"],
+            terminals=[_FakeTerminal("J3.4", "29")],
+        ),
+    ])
+    proj = _minimal_proj(
+        nets=(RawNet("IOUT3"), RawNet("GND")),
+        pcb_components=(
+            RawPcbComponent(
+                designator="J3.4", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="CONN", source_designator="J3",
+            ),
+        ),
+        pads=(_pad(0, "29", 0, 0),),
+        compiled_netlist=netlist,
+    )
+    with patch(
+        "fypa.altium.annotations._resolve_local_net_pins",
+        return_value=[],
+    ):
+        spec, errors = _resolve_terminal(
+            proj, 0, "S00A", None, [1], "SINK P",
+            sch_lookup_designator="J3", schdoc_name="Child.SchDoc",
+        )
+    assert not errors
+    assert spec is not None
+    assert spec.pins[0].pad_designator == "29"
+    assert spec.pins[0].net_index == 0
+
+
+def test_bridge_validation_scoped_per_instance_no_cross_channel_merge():
+    """SERIES bridge expansion must not union slotted nets across channels."""
+    netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="NET_A.1",
+            aliases=["NET_A"],
+            source_sheets=["ch1.schdoc"],
+            terminals=[_FakeTerminal("R1", "1")],
+        ),
+        _FakeNet(
+            name="NET_B.1",
+            aliases=["NET_B"],
+            source_sheets=["ch1.schdoc"],
+            terminals=[
+                _FakeTerminal("R1", "2"),
+                _FakeTerminal("U1", "1"),
+            ],
+        ),
+        _FakeNet(
+            name="NET_A.2",
+            aliases=["NET_A"],
+            source_sheets=["ch2.schdoc"],
+            terminals=[_FakeTerminal("R1", "1")],
+        ),
+        _FakeNet(
+            name="NET_B.2",
+            aliases=["NET_B"],
+            source_sheets=["ch2.schdoc"],
+            terminals=[
+                _FakeTerminal("R1", "2"),
+                _FakeTerminal("U2", "1"),
+            ],
+        ),
+    ])
+    proj = _minimal_proj(
+        nets=(
+            RawNet("NET_A.1"), RawNet("NET_B.1"),
+            RawNet("NET_A.2"), RawNet("NET_B.2"),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="R1.1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="1005R", source_designator="R1",
+                parameters={
+                    "PDN_ROLE": "SERIES",
+                    "PDN1_R": "0.01",
+                    "PDN1_P_NET": "NET_A",
+                    "PDN1_N_NET": "NET_B",
+                },
+            ),
+            RawPcbComponent(
+                designator="R1.2", center=Pt2D(1, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="1005R", source_designator="R1",
+                parameters={
+                    "PDN_ROLE": "SERIES",
+                    "PDN1_R": "0.01",
+                    "PDN1_P_NET": "NET_A",
+                    "PDN1_N_NET": "NET_B",
+                },
+            ),
+            RawPcbComponent(
+                designator="U1.1", center=Pt2D(2, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="SOIC", source_designator="U1",
+                parameters={
+                    "PDN_ROLE": "SINK",
+                    "PDN_I": "10mA",
+                    "PDN_NET": "NET_B",
+                },
+            ),
+            RawPcbComponent(
+                designator="U2.2", center=Pt2D(3, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="SOIC", source_designator="U2",
+                parameters={
+                    "PDN_ROLE": "SINK",
+                    "PDN_I": "20mA",
+                    "PDN_NET": "NET_B",
+                },
+            ),
+        ),
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="ch1.SchDoc",
+                parameters={"Comment": "IC"}, pin_designators=("1",),
+            ),
+            RawSchComponent(
+                designator="U2", schdoc_name="ch2.SchDoc",
+                parameters={"Comment": "IC"}, pin_designators=("1",),
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 0, 0), _pad(0, "2", 1, 1),
+            _pad(1, "1", 0, 2), _pad(1, "2", 1, 3),
+            _pad(2, "1", 1, 1),
+            _pad(3, "1", 3, 3),
+        ),
+        compiled_netlist=netlist,
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    sinks = [d for d in result.directives if isinstance(d, SinkSpec)]
+    assert len(sinks) == 2
+    by_des = {d.designator: d for d in sinks}
+    assert by_des["U1.1"].return_group != by_des["U2.2"].return_group
+
+
+def test_expand_net_names_scoped_to_pcb_instance():
+    netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="VCC_EFUSE",
+            source_sheets=["efuse.schdoc"],
+            terminals=[_FakeTerminal("R63", "2")],
+        ),
+    ])
+    proj = _minimal_proj(
+        nets=(
+            RawNet("VDD_5V0"),
+            RawNet("VCC_EFUSE.1"),
+            RawNet("VCC_EFUSE.4"),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="R63.1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="1005R", source_designator="R63",
+            ),
+            RawPcbComponent(
+                designator="R63.4", center=Pt2D(1, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="1005R", source_designator="R63",
+            ),
+        ),
+        pads=(
+            _pad(0, "2", 1, 0),
+            _pad(1, "2", 2, 1),
+        ),
+        compiled_netlist=netlist,
+    )
+    resolver = _instance_resolver(proj)
+    assert "VCC_EFUSE.1" in resolver.expand_net_names("VCC_EFUSE", pcb_index=0)
+    assert "VCC_EFUSE.4" not in resolver.expand_net_names("VCC_EFUSE", pcb_index=0)
+    assert "VCC_EFUSE.4" in resolver.expand_net_names("VCC_EFUSE", pcb_index=1)
+    assert "VCC_EFUSE.1" not in resolver.expand_net_names("VCC_EFUSE", pcb_index=1)
 
 
 def test_bridge_groups_expand_slotted_local_names():

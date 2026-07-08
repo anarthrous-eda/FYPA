@@ -142,7 +142,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -724,9 +724,12 @@ class InstanceLocalNetResolver:
         if cached is not None:
             return cached
 
-        names: set[str] = set(_netlist_label_family(
-            self.proj.compiled_netlist, local_name,
-        ))
+        if pcb_index is None:
+            names: set[str] = set(_netlist_label_family(
+                self.proj.compiled_netlist, local_name,
+            ))
+        else:
+            names = {local_name.upper()}
 
         if self.proj.compiled_netlist is not None:
             indices = (
@@ -943,21 +946,22 @@ def _resolve_alias_fallback_pads(
         if pin_key in seen_pins:
             continue
         pcb_n = proj.nets[pad.net_index].name.upper()
-        for nl_pin, names, sheets in netlist_index.get(
-            sch_lookup_designator.upper(), (),
-        ):
-            if nl_pin != pin_key or pcb_n not in names:
-                continue
-            if not any(
-                _local_net_label_matches(n, net_name, des_candidates)
-                for n in names
-            ):
-                continue
-            if not _sheet_name_matches(schdoc_name, list(sheets)):
-                continue
-            matched.append(pad)
-            seen_pins.add(pin_key)
-            break
+        for des_key in des_candidates:
+            for nl_pin, names, sheets in netlist_index.get(des_key, ()):
+                if nl_pin != pin_key or pcb_n not in names:
+                    continue
+                if not any(
+                    _local_net_label_matches(n, net_name, des_candidates)
+                    for n in names
+                ):
+                    continue
+                if not _sheet_name_matches(schdoc_name, list(sheets)):
+                    continue
+                matched.append(pad)
+                seen_pins.add(pin_key)
+                break
+            if pin_key in seen_pins:
+                break
     return matched
 
 
@@ -1335,6 +1339,58 @@ def _collect_bridge_groups(
         root = find(net)
         classes.setdefault(root, set()).add(net)
     return {net: frozenset(classes[find(net)]) for net in parent}
+
+
+def _union_series_bridge_net_indices(
+    proj: ExtractedProject,
+    parameter_sources: list[PdnParameterSource],
+    union: Callable[[int, int], None],
+) -> None:
+    """Union PCB net indices for each SERIES placement, scoped to that instance.
+
+    Local net names are expanded with :meth:`InstanceLocalNetResolver.expand_net_names`
+    ``pcb_index`` so channel slots from one repeated sheet do not bridge unrelated
+    channels in analysis-group validation.
+    """
+    resolver = _instance_resolver(proj)
+    for comp in parameter_sources:
+        part_role_raw = _ci_get(comp.parameters, ROLE_KEY)
+        if part_role_raw is None:
+            continue
+        part_role = part_role_raw.strip().upper()
+        ch_indices = [
+            idx for idx in _discover_channel_indices(comp.parameters, "R")
+            if _effective_role(comp.parameters, idx, part_role)
+            in _RESISTOR_LIKE_ROLES
+        ]
+        if not ch_indices:
+            continue
+        for pcb_idx in _pcb_indices_for_source(comp, proj):
+            for ch_idx in ch_indices:
+                p_net = _ci_get(comp.parameters, _channel_key("P_NET", ch_idx))
+                n_net = _ci_get(comp.parameters, _channel_key("N_NET", ch_idx))
+                if p_net is None and n_net is None and \
+                        _ci_get(comp.parameters, _channel_key("P_PINS", ch_idx)) is None and \
+                        _ci_get(comp.parameters, _channel_key("N_PINS", ch_idx)) is None:
+                    if len(ch_indices) == 1:
+                        inferred = _autoinfer_2pin_nets(proj, pcb_idx)
+                        if inferred is not None:
+                            p_net, n_net = inferred
+                        else:
+                            continue
+                    else:
+                        continue
+                if not p_net or not n_net:
+                    continue
+                idxs: list[int] = []
+                for name in (p_net, n_net):
+                    for expanded in resolver.expand_net_names(
+                        name, pcb_index=pcb_idx,
+                    ):
+                        idxs.extend(_net_indices_by_name(proj, expanded))
+                unique_idxs = list(dict.fromkeys(idxs))
+                for other in unique_idxs[1:]:
+                    union(unique_idxs[0], other)
 
 
 def _autoinfer_2pin_nets(proj: ExtractedProject, pcb_index: int) -> tuple[str, str] | None:
@@ -2213,8 +2269,9 @@ def _spec_terminals(d: DirectiveSpec) -> list[TerminalSpec]:
 
 
 def _validate_directive_groups(result: AnnotationResult,
-                               proj: ExtractedProject,
-                               bridge_groups: dict[str, frozenset[str]]) -> None:
+                               proj: ExtractedProject | None,
+                               parameter_sources: list[PdnParameterSource]
+                               | None = None) -> None:
     """Cross-directive checks on every analysis group + return-node grouping.
 
     An *analysis group* is a set of directives that share copper (their
@@ -2263,14 +2320,8 @@ def _validate_directive_groups(result: AnnotationResult,
             union(nets[0], other)
     # SERIES bridges (ferrite / 0 Ω link) join the nets they span, so a
     # point-to-point check across one stays a single group.
-    resolver = _instance_resolver(proj)
-    for group in bridge_groups.values():
-        idxs: list[int] = []
-        for name in group:
-            for expanded in resolver.expand_net_names(name):
-                idxs.extend(_net_indices_by_name(proj, expanded))
-        for other in idxs[1:]:
-            union(idxs[0], other)
+    if proj is not None and parameter_sources:
+        _union_series_bridge_net_indices(proj, parameter_sources, union)
 
     groups: dict[int, list[DirectiveSpec]] = {}
     for d in directives:
@@ -2570,7 +2621,7 @@ def parse_annotations(proj: ExtractedProject,
                 result.directives.extend(specs)
 
     # Cross-directive checks (mode consistency, open-loop) + return grouping.
-    _validate_directive_groups(result, proj, bridge_groups)
+    _validate_directive_groups(result, proj, parameter_sources)
     return result
 
 
