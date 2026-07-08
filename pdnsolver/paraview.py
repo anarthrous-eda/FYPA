@@ -177,6 +177,12 @@ def create_piece(mesh_obj: mesh.Mesh, potentials: mesh.ZeroForm) -> Element:
     Returns:
         Piece element containing mesh geometry and voltage field
     """
+    # Modern meshes are built with build_halfedges=False (the solver reads the
+    # flat _source_xys / _source_tris arrays directly). This exporter walks the
+    # half-edge graph — face.edges, face.is_boundary — so materialise it on
+    # demand. Idempotent and a no-op once built.
+    mesh_obj._build_halfedges()
+
     num_points = len(mesh_obj.vertices)
     num_cells = len([f for f in mesh_obj.faces if not f.is_boundary])
 

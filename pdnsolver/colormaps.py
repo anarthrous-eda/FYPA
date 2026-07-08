@@ -9,6 +9,12 @@ class UniformColorMap:
     points: list[tuple[float, float, float]]
 
     def __call__(self, v: float) -> tuple[float, float, float]:
+        # A near-singular ("direct-best-effort") solve can produce NaN
+        # potentials. math.floor(nan) raises ValueError, and both range
+        # clamps below are False for NaN (so it would reach the floor), so
+        # normalise NaN to the low end of the map up front.
+        if v != v:  # NaN
+            v = 0.0
         i = v * len(self.points)
 
         # Clamp to range

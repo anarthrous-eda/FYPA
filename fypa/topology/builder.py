@@ -42,7 +42,14 @@ def build_topology_model(metadata: TopologyMetadata | None) -> TopologyModel:
     )
     finalize_wire_labels(wires, nodes=layout.directive_nodes, geo=geo)
 
-    width = layout.content_right + MARGIN
+    # Wires can extend right of the last node column — e.g. a right-side stack
+    # with ≥2 lanes puts its outermost bus at node_right + a stagger, past
+    # content_right. Include the drawn geometry so the viewBox never clips it.
+    max_wire_x = max(
+        (max(s.x1, s.x2) for s in geo.segments),
+        default=layout.content_right,
+    )
+    width = max(layout.content_right, max_wire_x) + MARGIN
     directive_bottom = max(
         (n.y + n.height for n in layout.directive_nodes),
         default=MARGIN,

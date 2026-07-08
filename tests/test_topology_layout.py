@@ -176,6 +176,87 @@ def test_hub_wires_no_horizontal_backtrack_on_probe() -> None:
                 )
 
 
+def test_regulator_mutual_feed_columns_are_deterministic() -> None:
+    """Two REGULATORs feeding each other must not ping-pong the column
+    relaxation to a guard-limited order. The cycle is broken back toward the
+    source anchor, so U1 (source-fed) sits left of U2 (fed only by U1), the
+    columns stay bounded, and the result is independent of spec ordering.
+    Regression for finding 5.3 (non-passive cycles in assign_columns).
+    """
+    from fypa.topology.metadata.layout_bridge import assign_columns
+
+    def term(net: str) -> dict:
+        return {"requested_net": net}
+
+    ideal = {"ideal_return": True}
+
+    def spec(nid: str, role: str, terms: dict, port_defs: list) -> dict:
+        return {
+            "node_id": nid, "label": nid, "designator": nid, "role": role,
+            "config_label": "", "has_error": False, "terms": terms,
+            "port_defs": port_defs, "port_directives": {}, "tooltip": "",
+            "directive": {}, "directives": [],
+        }
+
+    v1 = spec("V1", "SOURCE", {"P": term("VIN"), "N": ideal},
+              [("P", "right", 0), ("N", "left", 1)])
+    # U1 <- VIN (source) and RAIL_Y (from U2); U1 -> RAIL_X.
+    u1 = spec("U1", "REGULATOR",
+              {"IN_P": term("VIN"), "IN_P2": term("RAIL_Y"),
+               "OUT_P": term("RAIL_X"), "OUT_N": ideal},
+              [("IN_P", "left", 2), ("IN_P2", "left", 3),
+               ("OUT_P", "right", 0), ("OUT_N", "right", 1)])
+    # U2 <- RAIL_X (from U1); U2 -> RAIL_Y (back to U1) -> mutual cycle.
+    u2 = spec("U2", "REGULATOR",
+              {"IN_P": term("RAIL_X"), "OUT_P": term("RAIL_Y"), "OUT_N": ideal},
+              [("IN_P", "left", 2), ("OUT_P", "right", 0), ("OUT_N", "right", 1)])
+
+    cols = assign_columns([v1, u1, u2], {})
+    assert cols["V1"] < cols["U1"] < cols["U2"]
+    # No guard-limited inflation: the cycle-broken DAG's longest path is
+    # V1 -> U1 -> U2, so columns compact to 0..2.
+    assert max(cols.values()) <= len(cols) - 1
+    # Deterministic regardless of spec order.
+    assert assign_columns([u2, u1, v1], {}) == cols
+
+
+def test_hub_tap_escape_stays_outward_of_symbol_body() -> None:
+    """When the stub column is blocked by a foreign vertical, the escape column
+    must leave the port *outward* (away from the symbol body), not double back
+    through it. Regression for the inverted ``outward_escape_stub_x``.
+    """
+    from fypa.topology.placement import port_stub_x
+    from fypa.topology.routing.context import RoutingContext
+    from fypa.topology.routing.paths import hub_tap_path, outward_escape_stub_x
+    from fypa.topology.types import TopologyPort
+    from fypa.topology.geometry import parse_wire_path
+
+    def has_backtrack(path_d: str) -> bool:
+        pts = parse_wire_path(path_d)
+        for i in range(len(pts) - 2):
+            (x0, y0), (x1, y1), (x2, y2) = pts[i], pts[i + 1], pts[i + 2]
+            if abs(y0 - y1) < 0.5 and abs(y1 - y2) < 0.5:
+                d1, d2 = x1 - x0, x2 - x1
+                if d1 * d2 < 0 and abs(d1) > 0.5 and abs(d2) > 0.5:
+                    return True
+        return False
+
+    # A right-side downstream port fed by a trunk further east; outward is +x.
+    right = TopologyPort(terminal="P", net="VDD", label="", side="right",
+                         x=200.0, y=100.0, node_id="U1")
+    assert outward_escape_stub_x(right) > right.x  # away from body (west)
+    ctx = RoutingContext()
+    ctx.reserve_vertical(port_stub_x(right), 80.0, 120.0, "OTHER")
+    path, _ = hub_tap_path(right, bus_x=260.0, obstacles=[], ctx=ctx, net="VDD")
+    assert not has_backtrack(path), path
+
+    # A left-side port; outward is -x, so the escape must sit west of the port,
+    # never east into the node body.
+    left = TopologyPort(terminal="P", net="VDD", label="", side="left",
+                        x=200.0, y=100.0, node_id="U2")
+    assert outward_escape_stub_x(left) < left.x  # away from body (east)
+
+
 def test_probe_vdd_5v0_runs_above_u3() -> None:
     """VDD_5V0 gutter bus should clear U3 from above, not detour below it."""
     from pathlib import Path

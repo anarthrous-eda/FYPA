@@ -121,6 +121,36 @@ def nudge_bus_from_gnd_columns(
     return x
 
 
+def _separate_from_assigned(
+    x: float,
+    assigned: list[float],
+    bus_lo: float,
+    bus_hi: float,
+    *,
+    outward: float,
+) -> float:
+    """Keep ``x`` at least ``MIN_PARALLEL_GAP`` from each assigned bus.
+
+    Two-sided: a candidate comfortably to *either* side of ``prev`` is left
+    alone (the old ``x < prev + MIN_PARALLEL_GAP`` test also fired for an ``x``
+    far *west* of ``prev`` and shoved every such bus east, exhausting the
+    corridor). Only a genuinely-too-close ``x`` is shifted, to whichever side
+    keeps it in ``[bus_lo, bus_hi]`` and moves it least.
+    """
+    for prev in assigned:
+        if abs(x - prev) >= MIN_PARALLEL_GAP - WIRE_EPS:
+            continue
+        east, west = prev + MIN_PARALLEL_GAP, prev - MIN_PARALLEL_GAP
+        in_range = [
+            c for c in (east, west) if bus_lo - WIRE_EPS <= c <= bus_hi + WIRE_EPS
+        ]
+        if in_range:
+            x = min(in_range, key=lambda c: abs(c - x))
+        else:
+            x = east if outward >= 0 else west
+    return x
+
+
 def allocate_bus_x(
     nominal: float,
     y_lo: float,
@@ -155,9 +185,7 @@ def allocate_bus_x(
 
     for candidate in ordered:
         x = max(bus_lo, min(bus_hi, candidate))
-        for prev in assigned:
-            if x < prev + MIN_PARALLEL_GAP - WIRE_EPS:
-                x = prev + MIN_PARALLEL_GAP
+        x = _separate_from_assigned(x, assigned, bus_lo, bus_hi, outward=outward)
         x = max(bus_lo, min(bus_hi, x))
         if _vertical_blocks_x(x, y_lo, y_hi, reserved_verticals, net):
             x = _shift_for_blockers(
@@ -169,9 +197,8 @@ def allocate_bus_x(
                 outward=outward,
             )
             x = max(bus_lo, min(bus_hi, x))
-            for prev in assigned:
-                if x < prev + MIN_PARALLEL_GAP - WIRE_EPS:
-                    x = min(bus_hi, prev + MIN_PARALLEL_GAP)
+            x = _separate_from_assigned(x, assigned, bus_lo, bus_hi, outward=outward)
+            x = max(bus_lo, min(bus_hi, x))
         if not _vertical_blocks_x(x, y_lo, y_hi, reserved_verticals, net):
             return x
     return max(bus_lo, min(bus_hi, nominal))

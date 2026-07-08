@@ -749,8 +749,12 @@ class ShaderProgram:
     @contextlib.contextmanager
     def use(self):
         self.shader_program.bind()
-        yield
-        self.shader_program.release()
+        try:
+            yield
+        finally:
+            # Release even if the body raises, so an exception mid-draw can't
+            # leave this program bound for the next unrelated GL calls.
+            self.shader_program.release()
 
 
 @dataclass
@@ -1009,6 +1013,23 @@ class RenderedMesh:
 class RenderedPoints:
     vao_points: int
     point_count: int
+    # VBO ids backing the VAO (coords + colors). Retained so release() can
+    # free them — deleting a VAO does not delete the buffers bound into it, so
+    # without these ids the buffer memory leaks on every re-solve (which
+    # rebuilds all connection points). Empty when there were no points.
+    vbos: tuple[int, ...] = ()
+
+    def release(self) -> None:
+        """Delete this batch's GL objects. Must be called with the owning GL
+        context current. Safe to call more than once — ids are zeroed after
+        deletion."""
+        if self.vao_points:
+            gl.glDeleteVertexArrays(1, [self.vao_points])
+        bufs = [b for b in self.vbos if b]
+        if bufs:
+            gl.glDeleteBuffers(len(bufs), bufs)
+        self.vao_points = 0
+        self.vbos = ()
 
     @classmethod
     def from_points(cls, points_data: list[tuple[tuple[float, float], tuple[float, float, float]]]):
@@ -1051,7 +1072,8 @@ class RenderedPoints:
 
         gl.glBindVertexArray(0)
         # The number of points is the length of the original points_data list
-        return cls(vao_points, len(points_data))
+        return cls(vao_points, len(points_data),
+                   vbos=(vbo_point_coords, vbo_point_colors))
 
     def render(self):
         if self.point_count > 0:
@@ -1579,12 +1601,30 @@ class MeshViewer(QOpenGLWidget):
         self.needs_initial_autoscale = True
 
         if self.mesh_shader is not None:
-            self.setupConnectionPointsData()
+            # setupConnectionPointsData builds VAOs/VBOs via
+            # RenderedPoints.from_points, so it needs this widget's GL context
+            # current. In the standalone flow the solution is set once before
+            # initializeGL (where the context is already current); on a
+            # re-solve we reach here with no context bound, so make it current
+            # for the rebuild. (The initializeGL call site at the bottom of
+            # that method is already inside a current context.)
+            self.makeCurrent()
+            try:
+                self.setupConnectionPointsData()
+            finally:
+                self.doneCurrent()
 
         self.update()
 
     def setupConnectionPointsData(self) -> None:
-        """Set up the connection points data for rendering."""
+        """Set up the connection points data for rendering.
+
+        Callers must ensure this widget's GL context is current — it both
+        deletes the previous batches' GL objects and builds new ones."""
+        # Free the previous batches' VAOs/VBOs before dropping the Python refs;
+        # clearing the dict alone leaks the GL buffers on every re-solve.
+        for rendered_obj in self.rendered_connection_points.values():
+            rendered_obj.release()
         self.rendered_connection_points.clear()
 
         if not self.solution or not self.solution.problem:
@@ -2097,7 +2137,14 @@ class MeshViewer(QOpenGLWidget):
     @Slot(str)
     def setCurrentLayerByName(self, layer_name: str):
         """Sets the current layer by its name."""
-        self.current_layer_index = self.visible_layers.index(layer_name)
+        # A stale toolbar layer name (e.g. after a solution swap changed the
+        # layer set) would otherwise raise ValueError from .index() inside a
+        # Qt slot. Ignore names that aren't in the current layer list.
+        try:
+            self.current_layer_index = self.visible_layers.index(layer_name)
+        except ValueError:
+            log.debug("Ignoring unknown layer name %r", layer_name)
+            return
         self.currentLayerChanged.emit(layer_name)
         self.update()
 
@@ -2115,8 +2162,16 @@ class MeshViewer(QOpenGLWidget):
                 # Note that this is a _return_
                 return
 
-            # Update shader color map for new mode
-            self._updateShaderColorMap()
+            # Update shader color map for new mode. This binds the shader and
+            # uploads 256 uniforms, so the GL context must be current — unlike
+            # the initializeGL call site, this slot fires from the UI with no
+            # context bound, so make it current for the upload.
+            if self.mesh_shader is not None:
+                self.makeCurrent()
+                try:
+                    self._updateShaderColorMap()
+                finally:
+                    self.doneCurrent()
 
             # Emit signals
             self.currentModeChanged.emit(mode.name)

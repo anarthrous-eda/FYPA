@@ -22,9 +22,16 @@ from fypa.topology.types import TopologyNode, TopologyPort
 
 
 def outward_escape_stub_x(port: TopologyPort) -> float:
+    """Escape column one stub-length *outward* of the port (away from the body).
+
+    Outward is -x for left ports and +x for right ports, matching
+    ``port_stub_x`` and ``away_from_symbol_x``. The signs were previously
+    reversed, which drew a left port's escape across its own symbol body and
+    made a right port double back through the port (``horizontal_backtrack``).
+    """
     if port.side == "left":
-        return port.x + PORT_WIRE_STUB
-    return port.x - PORT_WIRE_STUB
+        return port.x - PORT_WIRE_STUB
+    return port.x + PORT_WIRE_STUB
 
 
 def away_from_symbol_x(port: TopologyPort, stub_x: float) -> float:

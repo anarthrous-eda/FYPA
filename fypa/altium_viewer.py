@@ -700,19 +700,32 @@ def save_fuse_backend(mode: str) -> None:
 
 def load_mesh_max_workers() -> int:
     """Read the persisted mesh worker-process cap. Defaults to pdnsolver's
-    physical-core heuristic."""
-    from pdnsolver.solver import default_mesh_max_workers
-    default = default_mesh_max_workers()
+    physical-core heuristic.
+
+    The QSettings read is done first, and ``pdnsolver.solver`` (which drags in
+    the whole scipy/pdnsolver stack) is imported only when there is no stored
+    value to fall back on. This keeps launcher cold-start off the heavy import
+    for every returning user who has already picked a worker count."""
     try:
         from PySide6.QtCore import QSettings
         qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
-        val = int(qs.value(_MESH_WORKERS_QS_KEY, default))
-        if val >= 1:
-            return val
+        raw = qs.value(_MESH_WORKERS_QS_KEY, None)
+        if raw is not None:
+            val = int(raw)
+            if val >= 1:
+                return val
     except Exception as e:
         logging.getLogger(__name__).debug(
             "Could not read mesh-workers preference (%s); using default.", e)
-    return default
+    # No usable stored value → fall back to pdnsolver's heuristic. This is the
+    # only branch that pays the heavy import (first launch, or a cleared pref).
+    try:
+        from pdnsolver.solver import default_mesh_max_workers
+        return default_mesh_max_workers()
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not compute default mesh workers (%s); using 1.", e)
+        return 1
 
 
 def save_mesh_max_workers(n: int) -> None:
@@ -2390,6 +2403,16 @@ def _retire_thread(worker) -> None:
         worker.requestInterruption()
     except RuntimeError:
         pass
+    # Detach from the Qt parent. A worker constructed with ``parent=self`` (the
+    # solve / Gerber-import workers are) would otherwise be destroyed by Qt's
+    # parent teardown when that parent dies — e.g. at app exit or when the
+    # owning window closes — and ``~QThread`` on a still-running thread calls
+    # qFatal. The _ORPHANED_THREADS strong ref only stops Python GC; it can't
+    # stop C++ parent teardown, so we must reparent to None.
+    try:
+        worker.setParent(None)
+    except RuntimeError:
+        pass
     _ORPHANED_THREADS.add(worker)
 
     def _dispose() -> None:
@@ -2397,6 +2420,15 @@ def _retire_thread(worker) -> None:
         worker.deleteLater()
 
     worker.finished.connect(_dispose)
+    # Race guard: if the worker emitted ``finished`` between the isRunning()
+    # check above and this connect, ``_dispose`` would never fire and the
+    # strong ref would leak in _ORPHANED_THREADS (and the worker never gets
+    # deleteLater'd). Re-check and dispose now; ``_dispose`` is idempotent.
+    try:
+        if not worker.isRunning():
+            _dispose()
+    except RuntimeError:
+        _ORPHANED_THREADS.discard(worker)
 
 
 # Strong refs to in-flight background loaders (see _run_background_load). Held
@@ -2575,18 +2607,18 @@ def _slider_data_max(vs_arr: np.ndarray, mode: str, raw_max: float) -> float:
 def _face_to_vertex_average(tris: np.ndarray, face_values: np.ndarray,
                             n_verts: int) -> np.ndarray:
     """Average face-defined values onto vertices (each vertex gets the mean
-    of the values of its incident faces). Vectorised via ``np.add.at`` —
-    same result as a Python loop, ~50× faster on large meshes."""
-    totals = np.zeros(n_verts, dtype=np.float64)
-    counts = np.zeros(n_verts, dtype=np.float64)
+    of the values of its incident faces). Vectorised via ``np.bincount`` —
+    same result as a Python loop, and 5–10× faster than ``np.add.at`` on
+    large meshes (bincount is a single C pass instead of six scatter-adds)."""
     if tris.size == 0:
-        return totals
-    np.add.at(totals, tris[:, 0], face_values)
-    np.add.at(totals, tris[:, 1], face_values)
-    np.add.at(totals, tris[:, 2], face_values)
-    np.add.at(counts, tris[:, 0], 1.0)
-    np.add.at(counts, tris[:, 1], 1.0)
-    np.add.at(counts, tris[:, 2], 1.0)
+        return np.zeros(n_verts, dtype=np.float64)
+    # tris.ravel() is [f0v0, f0v1, f0v2, f1v0, …]; each vertex slot's weight is
+    # its face's value, so repeat face_values 3× to match that order.
+    flat = tris.ravel()
+    totals = np.bincount(
+        flat, weights=np.repeat(face_values, 3), minlength=n_verts,
+    )[:n_verts]
+    counts = np.bincount(flat, minlength=n_verts)[:n_verts].astype(np.float64)
     counts[counts == 0] = 1.0
     return totals / counts
 
@@ -4204,6 +4236,13 @@ class _SolveWorker(QThread):
         # The child Process handle while a subprocess solve is in flight, so the
         # GUI abort path can kill it directly. None otherwise.
         self._solve_child = None
+        # True while the worker is inside a pure-Python packaging stage
+        # (build_solve_metadata / to_lean_solution / cache pickle). Those hold
+        # the GIL continuously for 10+ s on large boards and only observe a
+        # cancel at the NEXT stage boundary, so the GUI abort path must NOT
+        # terminate() while this is set — it would kill the thread mid-GIL and
+        # hang the whole app. It waits for the flag to clear instead.
+        self._in_python_packaging = False
 
     def _emit_stub_and_finish(
         self, loaded, pristine_loaded, _timer,
@@ -4663,12 +4702,18 @@ class _SolveWorker(QThread):
                     cache_path = _solve_cache_path(
                         self._prjpcb_path, pcbdoc_resolved,
                     )
-                    with _timer.stage("Write solve cache"):
-                        wrote = _save_cached_solution(
-                            self._prjpcb_path, solve_fp,
-                            new_solution, metadata,
-                            pcbdoc_path=pcbdoc_resolved,
-                        )
+                    # Pickling the solution + metadata is another GIL-holding
+                    # Python stage — guard it from terminate() the same way.
+                    self._in_python_packaging = True
+                    try:
+                        with _timer.stage("Write solve cache"):
+                            wrote = _save_cached_solution(
+                                self._prjpcb_path, solve_fp,
+                                new_solution, metadata,
+                                pcbdoc_path=pcbdoc_resolved,
+                            )
+                    finally:
+                        self._in_python_packaging = False
                     if wrote:
                         _cache_log.info(
                             "Solve cache written to %s "
@@ -4801,23 +4846,30 @@ class _SolveWorker(QThread):
 
         if self._cancel_requested():
             return None
-        self.stage_changed.emit("Packaging solution: building metadata…")
-        with _timer.stage("Build solve metadata"):
-            metadata = build_solve_metadata(
-                loaded, problem,
-                mesher_config=mesher_config,
-                solver_info=padne_solution.solver_info,
-                via_segment_records=via_segment_records,
-                settings=self._settings,
-                stub_pieces_by_pair=stub_pieces_by_pair,
-                per_net_layers=per_net_layers,
-                regulator_adaptive_gain=adaptive_info,
-            )
-        if self._cancel_requested():
-            return None
-        self.stage_changed.emit("Packaging solution: converting result…")
-        with _timer.stage("Convert to lean solution"):
-            new_solution = to_lean_solution(padne_solution)
+        # Enter the pure-Python packaging phase — signal the GUI abort path not
+        # to terminate() us while these GIL-holding stages run (see
+        # ``_in_python_packaging`` and ``_cancel_requested``).
+        self._in_python_packaging = True
+        try:
+            self.stage_changed.emit("Packaging solution: building metadata…")
+            with _timer.stage("Build solve metadata"):
+                metadata = build_solve_metadata(
+                    loaded, problem,
+                    mesher_config=mesher_config,
+                    solver_info=padne_solution.solver_info,
+                    via_segment_records=via_segment_records,
+                    settings=self._settings,
+                    stub_pieces_by_pair=stub_pieces_by_pair,
+                    per_net_layers=per_net_layers,
+                    regulator_adaptive_gain=adaptive_info,
+                )
+            if self._cancel_requested():
+                return None
+            self.stage_changed.emit("Packaging solution: converting result…")
+            with _timer.stage("Convert to lean solution"):
+                new_solution = to_lean_solution(padne_solution)
+        finally:
+            self._in_python_packaging = False
         return new_solution, metadata
 
     def _solve_and_package_subprocess(self, loaded, mesher_config, _timer):
@@ -5066,7 +5118,21 @@ def _abort_solve_worker(owner) -> None:
         # holds the GIL would deadlock the GUI. Only force-kill if it doesn't
         # unwind on its own — that's the native mesh/solve section, where
         # terminate() is safe because the GIL is released.
-        if worker.wait(1500):
+        reaped = worker.wait(1500)
+        if not reaped:
+            # wait(1500) timed out. If the worker is inside a pure-Python
+            # packaging stage (build_solve_metadata / to_lean_solution / cache
+            # pickle) it holds the GIL continuously for 10+ s and only observes
+            # the cancel at the NEXT stage boundary. terminate() here would kill
+            # the thread while it owns the GIL — it never gets released and the
+            # whole app hangs (the exact failure cancel exists to avoid). So
+            # while the packaging flag is set, keep waiting for it to reach that
+            # boundary and unwind cooperatively instead of force-killing.
+            while getattr(worker, "_in_python_packaging", False):
+                if worker.wait(500):
+                    reaped = True
+                    break
+        if reaped:
             # Clean cooperative stop: run() returned, so the worker released
             # every module lock. The frees are now non-blocking and drop the
             # PARDISO factorisation / mesh assembly so a solve killed mid-way
@@ -5080,8 +5146,9 @@ def _abort_solve_worker(owner) -> None:
                         "%s raised %s; carrying on.", _free_name, _exc,
                     )
         else:
-            # Stuck in a native scipy/Triangle call we can't interrupt. Force
-            # it down. terminate() may kill the worker WHILE it holds
+            # Stuck in a native scipy/Triangle call we can't interrupt (not in a
+            # Python packaging stage — that case kept waiting above). Force it
+            # down. terminate() may kill the worker WHILE it holds
             # _sym_solver_lock / _mesh_assembly_lock — a threading.Lock held by
             # a dead thread is never released, so the ordinary frees (and every
             # future solve) would deadlock on it. force_reset rebinds those
@@ -5090,7 +5157,7 @@ def _abort_solve_worker(owner) -> None:
             worker.terminate()
             # 2 s is plenty for the OS to reap the thread; we don't want to
             # block the GUI indefinitely if something pathological happens.
-            worker.wait(2000)
+            reaped = worker.wait(2000)
             try:
                 from pdnsolver.solver import force_reset_caches_after_terminate
                 force_reset_caches_after_terminate()
@@ -5116,9 +5183,17 @@ def _abort_solve_worker(owner) -> None:
         except (RuntimeError, TypeError):
             pass
         dlg.close()
+        # close() merely hides the parented dialog; delete it so it doesn't
+        # leak one QProgressDialog per cancelled solve.
+        dlg.deleteLater()
         owner._solve_progress_dlg = None
     if worker is not None:
-        worker.deleteLater()
+        # terminate() + wait(2000) above can fail to reap a pathologically stuck
+        # thread; deleteLater() on a still-running QThread calls ~QThread →
+        # qFatal and aborts the app. Route through _retire_thread, which only
+        # deletes once the thread has actually stopped (and otherwise holds a
+        # strong ref until it emits ``finished``).
+        _retire_thread(worker)
         owner._solve_worker = None
 
 
@@ -6551,6 +6626,9 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
             except (RuntimeError, TypeError):
                 pass
             dlg.close()
+            # close() only hides the parented dialog — delete it so imports
+            # don't leak one QProgressDialog each.
+            dlg.deleteLater()
             # The worker may still be inside the non-interruptible ProcessPool
             # render phase; retire it safely rather than deleteLater()-ing a
             # running QThread (which would qFatal the app).
@@ -6819,7 +6897,7 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
                                *, initial_settings=None,
                                loaded_project=None,
                                project=None,
-                               project_path=None) -> None:
+                               project_path=None) -> "PdnViewer | None":
         try:
             kwargs = {"metadata": metadata}
             if initial_settings is not None:
@@ -7376,15 +7454,22 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         # when opened from a bare pickle — a resolve then falls back to the
         # design-info cache.
         self._loaded_project = loaded_project
-        # _project_dirty: editor edits not yet written to the .fypa.
+        # _project_dirty: editor edits not yet written to the .fypa that also
+        #                 invalidate the solve (directives, copper names, …).
+        # _display_dirty: cosmetic edits not yet written to the .fypa that do
+        #                 NOT invalidate the solve (overlay colours). Kept
+        #                 separate so a display-only colour pick can't light
+        #                 up the Resolve button (see _on_overlay_color).
         # _settings_dirty: Settings-tab fields differ from the values
         #                  the current solve was run against.
         # _initial_solve_stale: viewer loaded with edits not yet
         #                       reflected by the solve (e.g. .fypa with
         #                       editor directives + a stale solve pickle).
-        # _solve_stale: derived = OR of the three above; drives the
+        # _solve_stale: derived = OR of _project_dirty / _settings_dirty /
+        #               _initial_solve_stale (NOT _display_dirty); drives the
         #               Resolve overlay button.
         self._project_dirty: bool = False
+        self._display_dirty: bool = False
         self._settings_dirty: bool = False
         self._initial_solve_stale: bool = False
         self._solve_stale: bool = False
@@ -7490,6 +7575,11 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         # processEvents() during the popup-paint can't stack a second
         # dialog on top of the first.
         self._render_busy_active: bool = False
+        # Latest work callable that re-entered _run_with_busy_popup while it
+        # was busy. Rather than silently drop it (which leaves an eye button
+        # flipped but its copper never pushed), we run exactly one trailing
+        # pass with the most recent work once the current one returns.
+        self._busy_popup_pending_work = None
         # Re-entrancy guard for _render itself. Some signals (the outline
         # toggle, the value-scale range change) connect directly to
         # _render, bypassing _run_with_busy_popup's guard. _render pumps
@@ -7541,6 +7631,11 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         # (same array objects) on a geometry-preserving re-render so the
         # set_mesh GPU upload is skipped. Scoped to the current solve.
         self._rail_geom_cache: tuple | None = None
+        # Signature of the inputs the last overlay-fill build read (see
+        # :meth:`_overlay_geom_signature`). When an incoming refresh matches it,
+        # the previously-built overlay batch is still valid and the heavy
+        # rebuild + GPU re-upload is skipped. Reset on any solution swap.
+        self._overlay_geom_sig: tuple | None = None
         # Lazily-computed set of (layer_index, mesh_index) whose solved mesh
         # carries no current — i.e. a dead-end copper island whose only tie
         # to the rest of the net is a single via, so KCL forces zero current
@@ -7749,6 +7844,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._layer_geom_cache.clear()
         self._layer_vec_cache.clear()
         self._rail_geom_cache = None  # combined batch is solve-specific
+        self._overlay_geom_sig = None  # overlay batch is solve-specific too
         self._last_mesh_upload = None  # release retained GPU-upload arrays
         self._no_current_meshes = None
         self._marker_hover_index_cache = None
@@ -7768,6 +7864,22 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._last_scale_selection = None
         self._layer_probes.clear()
         self._data_bounds = None
+        # Copper hit-test / connectivity indices are built from ``self.metadata``
+        # and keyed on ``id(poly_dict)``; ``_apply_solve_result`` replaces
+        # ``self.metadata`` wholesale, so a re-solve (or File > Import of a
+        # different board) leaves these STRtrees / union-find indexing the old
+        # board's polygons and their ``id()``-keyed lookups can never match the
+        # new metadata. Drop them so they rebuild against the new board.
+        self._all_copper_bridges_cache = None
+        self._layer_strtrees_cache = None
+        self._cc_cache = None
+        # Editor selection / connectivity highlight also reference the previous
+        # board (``_editor_highlight_polys`` and ``_copper_selection`` hold
+        # ``id(poly)`` keys into the stale metadata). Reset them so a re-solve
+        # doesn't highlight / rename the wrong copper.
+        self._editor_selection = None
+        self._editor_highlight_polys = set()
+        self._copper_selection = None
         for attr in ("_nodes_rows_cache", "_vias_rows_cache"):
             if hasattr(self, attr):
                 delattr(self, attr)
@@ -7959,6 +8071,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 self.setWindowTitle(f"FYPA -- {project_name}")
                 # New board → re-fit rather than inherit the old framing.
                 self._need_initial_fit = True
+                # The Overlays (Board Features) list is filtered by source kind
+                # (Gerber imports hide silkscreen/pads/designator rows). An
+                # import can swap the source kind of this window, so rebuild the
+                # list — otherwise an Altium design imported into a Gerber-opened
+                # viewer permanently hides those rows (and vice-versa leaves dead
+                # rows). Safe to call synchronously; metadata is already set.
+                self._build_overlay_list()
 
             self._init_solution_indices()
             self._clear_solution_derived_caches()
@@ -9214,20 +9333,27 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
 
     def _on_layer_fill_toggled(self, _solid: bool) -> None:
         """A layer's all-copper wire-mesh / solid fill toggle flipped."""
-        self._refresh_overlay_geometry(self._visible_rails())
+        # Route through the busy-popup guard so a toggle landing inside another
+        # pumping refresh can't interleave two overlay builds reading
+        # half-old/half-new GL state (see :meth:`_run_with_busy_popup`).
+        self._run_with_busy_popup(
+            lambda: self._refresh_overlay_geometry(self._visible_rails()))
 
     def _on_all_layers_fill_toggled(self, solid: bool) -> None:
         """The "All Layers" fill toggle — set every layer's all-copper fill
         style at once."""
         for _name, fill in self._layer_fill_buttons:
             fill.setSolid(solid, emit=False)
-        self._refresh_overlay_geometry(self._visible_rails())
+        self._run_with_busy_popup(
+            lambda: self._refresh_overlay_geometry(self._visible_rails()))
 
     def _on_layer_transparency_toggled(self, _step: int) -> None:
         """A layer's transparency was cycled. Fades both the heatmap mesh
         (per-vertex alpha) and the all-copper overlay for that layer."""
-        self._push_mesh_alpha()
-        self._refresh_overlay_geometry(self._visible_rails())
+        def _work() -> None:
+            self._push_mesh_alpha()
+            self._refresh_overlay_geometry(self._visible_rails())
+        self._run_with_busy_popup(_work)
 
     def _on_all_layers_transparency_toggled(self, step: int) -> None:
         """The "All Layers" transparency cycler — fan out to every per-
@@ -9235,8 +9361,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         after the fan-out so the GPU only sees a single re-push."""
         for _name, transp in self._layer_transparency_buttons:
             transp.setStep(step, emit=False)
-        self._push_mesh_alpha()
-        self._refresh_overlay_geometry(self._visible_rails())
+        def _work() -> None:
+            self._push_mesh_alpha()
+            self._refresh_overlay_geometry(self._visible_rails())
+        self._run_with_busy_popup(_work)
 
     def _on_rail_eye_toggled(self, rail: str, on: bool) -> None:
         """An individual rail's eye was clicked."""
@@ -9618,7 +9746,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             self._overlay_bottom_colors[key] = rgb
         else:
             self._overlay_colors[key] = rgb
-        self._project_dirty = True
+        # Display-only change: it needs saving to the .fypa but does NOT make
+        # the solve stale, so use _display_dirty rather than _project_dirty —
+        # otherwise a cosmetic colour pick would light the ↻ Resolve button.
+        self._display_dirty = True
         QTimer.singleShot(0, self._build_overlay_list)
         self._on_overlay_changed()
 
@@ -9696,6 +9827,65 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         a = _transparency_alpha(st["both"].get("alpha_step", 0))
         return {"top": a, "bottom": a}
 
+    def _overlay_geom_signature(self, rails) -> tuple:
+        """A hashable snapshot of every input :meth:`_refresh_overlay_geometry`
+        reads to build the overlay-fill batch + labels. When two successive
+        refreshes produce the same signature the previously-built batch is
+        still valid, so the rebuild + GPU re-upload can be skipped.
+
+        Stackup / layer-z / metadata-derived inputs (``self._physicals``, the
+        ``md.get(...)`` records, ``_layer_z_for``) are NOT captured field by
+        field — they only change on a solution swap, which resets
+        ``_overlay_geom_sig`` via :meth:`_clear_solution_derived_caches`. This
+        captures only the inputs that change *within* one solution."""
+        def _freeze(o):
+            if isinstance(o, dict):
+                return tuple(sorted(((str(k), _freeze(v)) for k, v in o.items()),
+                                    key=lambda kv: kv[0]))
+            if isinstance(o, (list, tuple)):
+                return tuple(_freeze(v) for v in o)
+            return o
+
+        in_2d = not self.view_3d_box.isChecked()
+        rail_members = (tuple(sorted(self._effective_rail_members(rails)))
+                        if rails else ())
+        via_span = bool(getattr(self, "via_span_box", None) is not None
+                        and self.via_span_box.isChecked())
+        # Board-feature rows (silkscreen / components / pads / designators /
+        # npth / board outline): all per-row vis / solid / alpha_step / split
+        # state plus the overlay colours. Frozen generically so any field the
+        # geometry reads is captured without structural assumptions.
+        rows = (_freeze(self._overlay_state),
+                _freeze(self._overlay_colors),
+                _freeze(self._overlay_bottom_colors))
+        # Per-layer all-copper (second eye): visibility, fill style, alpha,
+        # swatch colour. _layer_render_z's only dynamic inputs are the
+        # selected layer + 2D/3D, both captured below.
+        fill_by_name = dict(getattr(self, "_layer_fill_buttons", []))
+        transp_by_name = dict(getattr(self, "_layer_transparency_buttons", []))
+        ac = []
+        for name, eye2 in getattr(self, "_layer_eye2_buttons", []):
+            fb = fill_by_name.get(name)
+            tb = transp_by_name.get(name)
+            ac.append((
+                name,
+                bool(eye2.isVisibleState()),
+                bool(fb.isSolid()) if fb is not None else False,
+                float(tb.alpha()) if tb is not None else 1.0,
+                str(self._layer_color_for(name)),
+            ))
+        return (
+            in_2d,
+            rail_members,
+            bool(self._editor_mode),
+            frozenset(self._editor_highlight_nets),
+            frozenset(self._editor_highlight_polys),
+            self._selected_layer,
+            via_span,
+            tuple(rows),
+            tuple(ac),
+        )
+
     def _refresh_overlay_geometry(self, rails) -> None:
         """Rebuild and push the Overlays control's GL geometry.
 
@@ -9715,7 +9905,24 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         if md is None:
             gv.clear_overlay_fills()
             gv.clear_overlay_labels()
+            # Force a rebuild once metadata comes back.
+            self._overlay_geom_sig = None
             return
+
+        # Skip the (heavy) rebuild + GPU re-upload when nothing that feeds the
+        # overlay batch has changed since the last build. set_overlay_fills /
+        # clear_overlay_fills are only ever called from this method, so the GL
+        # viewer still holds the correct batch when we skip. (Finding 3.8.)
+        try:
+            sig = self._overlay_geom_signature(rails)
+        except Exception:
+            sig = None  # never let signature trouble block a real refresh
+        if sig is not None and sig == self._overlay_geom_sig:
+            return
+        # Invalidate now; only re-store after the build below completes, so a
+        # build that raises part-way doesn't leave a stale sig marking a
+        # half-uploaded batch as current.
+        self._overlay_geom_sig = None
 
         rail_members = (set(self._effective_rail_members(rails))
                         if rails else set())
@@ -10194,6 +10401,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             gv.set_overlay_labels(labels)
         else:
             gv.clear_overlay_labels()
+        # Build succeeded and the batch is uploaded — record its signature so
+        # the next identical refresh is an identity-skip (finding 3.8).
+        self._overlay_geom_sig = sig
 
     def _copper_poly_wire(self, poly: dict) -> np.ndarray:
         """Mitered wire-mesh outline triangles for one all-copper polygon
@@ -11079,7 +11289,17 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         # batches). The popup itself is ApplicationModal so it blocks
         # user input on other windows; in practice this guard only fires
         # on stray internal signals.
+        #
+        # Don't DROP the re-entrant request: the toggle that raised it has
+        # already flipped its EyeButton/FillButton state, so discarding the
+        # work leaves the control out of sync with the view (the second rail's
+        # eye reads "open" but its copper is never pushed until an unrelated
+        # re-render). Remember the most recent pending work and run one trailing
+        # pass once the current one returns — mirroring _render's coalescing.
+        # Latest-wins is safe: each work rebuilds fully from the current widget
+        # state, so the final pass reflects every flipped toggle.
         if self._render_busy_active:
+            self._busy_popup_pending_work = work
             return
         self._render_busy_active = True
         self._last_pump_time = 0.0
@@ -11124,6 +11344,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 dlg_box[0].close()
                 dlg_box[0].deleteLater()
             self._render_busy_active = False
+        # Run exactly one trailing pass for any work that re-entered while we
+        # were busy (see the guard above). Deferred via singleShot(0) so it runs
+        # cleanly on the next event-loop turn rather than recursing here.
+        pending = self._busy_popup_pending_work
+        if pending is not None:
+            self._busy_popup_pending_work = None
+            QTimer.singleShot(0, lambda w=pending: self._run_with_busy_popup(w))
 
     # Backwards-compat thin wrapper: existing toggle signals connect to
     # this name. New callers should prefer :meth:`_run_with_busy_popup`
@@ -11439,21 +11666,16 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 vmax = _slider_data_max(vs_used, mode, vmax)
                 if vmax <= vmin:
                     vmax = vmin + 1e-12
-                # Re-shift each layer probe's values + rebuild samplers
-                # so the hover probe reports the shifted (drop) values too.
-                # Pre-setting ``interpolator`` here (rather than clearing it
-                # to None) is deliberate: Voltage and Voltage Drop share a
-                # _layer_cache entry, so a lazily-built sampler would write
-                # the *shifted* field back into the cache and corrupt plain
-                # Voltage mode. _FastTriSampler builds in ~50-150 ms, so the
-                # eager rebuild no longer stalls the way LinearTriInterpolator
-                # did.
+                # The hover probe must report the shifted (drop) values too.
+                # Rather than re-shift each probe's field and eagerly rebuild
+                # its ~50-150 ms _FastTriSampler every render (per visible
+                # layer), store the constant drop shift on the probe and apply
+                # it at sample time in _probe_at_point. The lazily-built sampler
+                # then stays keyed to the BASE values — shared uncorrupted with
+                # plain Voltage mode (which uses the same _layer_cache entry) —
+                # and the costly per-render rebuild disappears. (Finding 3.7.)
                 for lp in layer_probes:
-                    shifted = lp["values"] - drop_reference
-                    lp["values"] = shifted
-                    lp["interpolator"] = _FastTriSampler(
-                        lp["triangulation"], shifted,
-                    )
+                    lp["value_offset"] = drop_reference
 
         # Voltage mode: reference each net to its own SOURCE return pin, so
         # the heatmap reads each net's true differential (<= rail voltage)
@@ -11488,20 +11710,15 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 vmax = _slider_data_max(vs_used, mode, vmax)
                 if vmax <= vmin:
                     vmax = vmin + 1e-12
-                # Re-shift each layer probe's values + rebuild its sampler so
-                # the hover probe reports the referenced values too. Eager
-                # rebuild (not None) keeps the shared Voltage/Voltage-Drop
-                # cache from lazily writing the shifted field back — same
-                # reasoning as the Voltage Drop branch above.
+                # As in the Voltage Drop branch: store each net's constant
+                # source-return offset on the probe and apply it at sample time
+                # (_probe_at_point) instead of re-shifting the field and
+                # rebuilding the sampler every render. The base-valued sampler
+                # stays shared and uncorrupted across Voltage / Voltage-Drop.
                 for lp in layer_probes:
                     off = offsets.get(lp["net"], 0.0)
-                    if not off:
-                        continue
-                    shifted = lp["values"] - off
-                    lp["values"] = shifted
-                    lp["interpolator"] = _FastTriSampler(
-                        lp["triangulation"], shifted,
-                    )
+                    if off:
+                        lp["value_offset"] = off
 
         x_min, x_max = float(xs_arr.min()), float(xs_arr.max())
         y_min, y_max = float(ys_arr.min()), float(ys_arr.max())
@@ -15752,12 +15969,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         return bridges
 
     def _layer_strtrees(self) -> dict[int, dict]:
-        """Cached per-layer Shapely ``STRtree`` + parallel ``shapes`` and
-        ``polys`` lists for fast point-in-polygon lookup against the
-        ``all_copper`` overlay. Building a Polygon and an STRtree once
-        per layer collapses the O(polys × queries) point tests the flood
-        and click handlers used to do into ``O(log polys)`` candidate
-        prefilters."""
+        """Cached per-layer Shapely ``STRtree`` + parallel ``shapes``,
+        ``polys`` and ``nets`` lists for fast point-in-polygon lookup against
+        the ``all_copper`` overlay. Building a Polygon and an STRtree once
+        per layer collapses the O(polys × queries) point tests the flood,
+        click and hover handlers used to do into ``O(log polys)`` candidate
+        prefilters. ``nets[i]`` is the owning record's net for ``polys[i]``
+        (may be falsy for ``"(none)"`` copper)."""
         cached = getattr(self, "_layer_strtrees_cache", None)
         if cached is not None:
             return cached
@@ -15768,8 +15986,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             lid = rec.get("layer_id")
             if lid is None:
                 continue
+            net = rec.get("net")
             b = buckets.setdefault(
-                int(lid), {"shapes": [], "polys": []})
+                int(lid), {"shapes": [], "polys": [], "nets": []})
             for poly in rec.get("polygons", []):
                 ext = poly.get("exterior")
                 if ext is None or (hasattr(ext, "size") and ext.size == 0):
@@ -15782,6 +16001,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                     continue
                 b["shapes"].append(shp)
                 b["polys"].append(poly)
+                b["nets"].append(net)
         out: dict[int, dict] = {}
         for lid, b in buckets.items():
             if not b["shapes"]:
@@ -15790,9 +16010,43 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 "tree": _st.STRtree(b["shapes"]),
                 "shapes": b["shapes"],
                 "polys": b["polys"],
+                "nets": b["nets"],
             }
         self._layer_strtrees_cache = out
         return out
+
+    def _named_copper_hit_on_layer(self, layer_id: int, pt) -> str | None:
+        """Net of the ``all_copper`` polygon on ``layer_id`` containing
+        ``pt`` (a shapely ``Point``), or ``None``. STRtree-prefiltered so the
+        cost is ``O(log polys)`` per layer. Skips ``"(none)"`` copper — the
+        hover / editor picks only want named nets from this helper."""
+        data = self._layer_strtrees().get(int(layer_id))
+        if data is None:
+            return None
+        shapes = data["shapes"]
+        polys = data["polys"]
+        nets = data["nets"]
+        try:
+            cand = data["tree"].query(pt)
+        except Exception:
+            return None
+        for j in cand:
+            try:
+                idx = int(j)
+            except Exception:
+                continue
+            net = nets[idx]
+            if not net:
+                continue
+            prepped = self._copper_poly_prepared(polys[idx])
+            if prepped is None:
+                continue
+            try:
+                if prepped.contains(pt):
+                    return net
+            except Exception:
+                continue
+        return None
 
     def _connected_components_data(self) -> dict:
         """Cached connected-components decomposition of every
@@ -16076,37 +16330,25 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         md = self.metadata
         if not md:
             return None
-        records = md.get("all_copper") or []
-        if not records:
+        indexed = self._layer_strtrees()
+        if not indexed:
             return None
         id_to_phys = {v: k for k, v in self._phys_name_to_layer_id.items()}
         pt = _sg.Point(world_x, world_y)
-        best: dict | None = None
-        best_rank = 1 << 30
-        for rec in records:
-            net = rec.get("net")
-            if not net:
-                continue
-            layer_id = rec.get("layer_id")
-            phys = id_to_phys.get(layer_id)
-            rank = self._phys_stackup_rank.get(phys, 1 << 30)
-            # A layer already hit at or above this one wins (topmost = the
-            # lowest stackup rank), so this record can't improve the pick.
-            if best is not None and rank >= best_rank:
-                continue
-            for poly in rec.get("polygons", []):
-                prepped = self._copper_poly_prepared(poly)
-                if prepped is None:
-                    continue
-                try:
-                    if not prepped.contains(pt):
-                        continue
-                except Exception:
-                    continue
-                best = {"net": net, "physical": phys, "layer_id": layer_id}
-                best_rank = rank
-                break
-        return best
+        # Walk indexed layers top-first (lowest stackup rank) and return the
+        # first STRtree hit — the topmost layer wins, so no candidate below it
+        # can improve the pick. O(layers × log polys) instead of a full scan.
+        for layer_id in sorted(
+            indexed,
+            key=lambda lid: self._phys_stackup_rank.get(
+                id_to_phys.get(lid), 1 << 30),
+        ):
+            net = self._named_copper_hit_on_layer(layer_id, pt)
+            if net is not None:
+                return {"net": net,
+                        "physical": id_to_phys.get(layer_id),
+                        "layer_id": layer_id}
+        return None
 
     def _visible_all_copper_layer_ids(self) -> dict[int, str]:
         """``layer_id → physical_name`` for layers whose 'all copper'
@@ -16145,11 +16387,11 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         md = self.metadata
         if not md:
             return None
-        records = md.get("all_copper") or []
-        if not records:
-            return None
         visible = self._visible_all_copper_layer_ids()
         if not visible:
+            return None
+        indexed = self._layer_strtrees()
+        if not indexed:
             return None
         # A selected layer is painted on top (2D) and is the layer the user
         # is focused on, so it wins the pick wherever it has copper under the
@@ -16158,33 +16400,22 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         # copper here falls back to topmost-stackup exactly as before.
         sel = self._selected_layer
         pt = _sg.Point(x, y)
-        best: dict | None = None
-        best_rank = (2, 1 << 30)
-        for rec in records:
-            layer_id = rec.get("layer_id")
-            phys = visible.get(layer_id)
-            if phys is None:
-                continue
-            net = rec.get("net")
-            if not net:
-                continue
-            rank = (0 if (sel is not None and phys == sel) else 1,
-                    self._phys_stackup_rank.get(phys, 1 << 30))
-            if best is not None and rank >= best_rank:
-                continue
-            for poly in rec.get("polygons", []):
-                prepped = self._copper_poly_prepared(poly)
-                if prepped is None:
-                    continue
-                try:
-                    if not prepped.contains(pt):
-                        continue
-                except Exception:
-                    continue
-                best = {"net": net, "physical": phys, "layer_id": layer_id}
-                best_rank = rank
-                break
-        return best
+        # Only visible layers that actually have an index, ordered
+        # (selected-first, then topmost stackup) — first STRtree hit wins.
+        candidate_ids = [lid for lid in visible if lid in indexed]
+        for layer_id in sorted(
+            candidate_ids,
+            key=lambda lid: (
+                0 if (sel is not None and visible.get(lid) == sel) else 1,
+                self._phys_stackup_rank.get(visible.get(lid), 1 << 30),
+            ),
+        ):
+            net = self._named_copper_hit_on_layer(layer_id, pt)
+            if net is not None:
+                return {"net": net,
+                        "physical": visible.get(layer_id),
+                        "layer_id": layer_id}
+        return None
 
     def _all_copper_at_point_3d(self, x_px: float, y_px: float
                                 ) -> dict | None:
@@ -19902,7 +20133,11 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 continue
             if not np.isfinite(v):
                 continue
-            return v, lp
+            # The sampler holds the BASE field; Voltage Drop / source-referenced
+            # Voltage store their constant shift on the probe (see _render_impl)
+            # so the sampler can stay shared. Apply it here so the hover readout
+            # matches the shifted heatmap.
+            return v - float(lp.get("value_offset", 0.0)), lp
         return None
 
     def _probe_at_point_3d(self, x_px: float, y_px: float
@@ -19939,7 +20174,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 continue
             if not np.isfinite(v):
                 continue
-            return v, lp
+            # Apply the probe's stored Voltage-Drop / source-reference shift so
+            # the hover readout matches the shifted heatmap (see _probe_at_point).
+            return v - float(lp.get("value_offset", 0.0)), lp
         return None
 
     # --- Via hover probe ----------------------------------------------------
@@ -21378,6 +21615,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             except (RuntimeError, TypeError):
                 pass
             dlg.close()
+            # close() only hides the parented dialog — delete it so imports
+            # don't leak one QProgressDialog each.
+            dlg.deleteLater()
             # The worker may still be inside the non-interruptible ProcessPool
             # render phase; retire it safely rather than deleteLater()-ing a
             # running QThread (which would qFatal the app).
@@ -21693,6 +21933,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             return False
         self._project_path = path
         self._project_dirty = False
+        self._display_dirty = False
         self.statusBar().showMessage(f"Saved project to {path}", 5000)
         return True
 
@@ -22180,6 +22421,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             except (RuntimeError, TypeError):
                 pass
             dlg.close()
+            # close() only hides the dialog; it stays alive parented to the
+            # window, leaking one QProgressDialog per solve/import. Schedule
+            # its destruction.
+            dlg.deleteLater()
             self._solve_progress_dlg = None
         worker = getattr(self, "_solve_worker", None)
         if worker is not None:
@@ -22192,6 +22437,11 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         """User clicked Cancel on the solve progress dialog. Kill the
         worker, then return to a fresh launcher window (same dance as
         File > Close Project)."""
+        # _abort_solve_worker retires the worker via _retire_thread, which
+        # reparents it off ``self`` if it couldn't be reaped (the GIL-holding
+        # packaging case). That MUST happen before self.close() below —
+        # otherwise destroying the viewer with the QThread still parented and
+        # running would qFatal the process.
         _abort_solve_worker(self)
         app = QApplication.instance()
         launcher = LauncherWindow()

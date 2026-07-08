@@ -335,6 +335,14 @@ def _arc_to_polygon(x1: float, y1: float, x2: float, y2: float,
     # Full-circle detection: Gerber draws closed circles as arcs with
     # p1 == p2. atan2(0, 0) would be undefined and the sweep would be
     # 0, so handle separately.
+    #
+    # Only safe because gerbonara resolves quadrant mode during parsing: a
+    # deprecated G74 single-quadrant arc whose start == end is a zero-sweep
+    # no-op and gerbonara emits NO primitive for it (verified against
+    # gerbonara 1.5.0), so a p1 == p2 Arc reaching here is always a genuine
+    # G75 multi-quadrant full circle. The r <= 0 guard above additionally
+    # rejects a truly degenerate (zero-radius) arc, so this can't synthesise a
+    # phantom copper ring from a no-op record.
     epsilon = max(1e-6, r * 1e-9)
     is_full_circle = (abs(x2 - x1) < epsilon and abs(y2 - y1) < epsilon)
     a0 = math.atan2(y1 - cy, x1 - cx)
@@ -524,6 +532,160 @@ def _flash_polygon_cached(prim, cache: dict) -> shapely.geometry.Polygon | None:
     return None
 
 
+@dataclass(frozen=True)
+class _ResolvedFlash:
+    """A hole-bearing aperture flash whose hole was resolved locally (``pad −
+    hole``) before entering the polarity-flip machinery — see
+    :func:`_resolve_hole_flashes`. Always dark (added copper); the hole is
+    already carved out of ``poly``."""
+    poly: shapely.geometry.base.BaseGeometry
+
+
+def _flash_with_hole_cached(prim, hole_rs: tuple[float, ...],
+                            cache: dict) -> shapely.geometry.Polygon | None:
+    """Rasterise a hole-bearing flash to ``pad − hole(s)`` as one polygon,
+    caching the *unit* composite (built at the origin) keyed on the pad + hole
+    parameters and translating it to the flash position.
+
+    Concentric hole circles are subtracted from the pad locally, so the hole is
+    transparent only to the pad's own copper — never to whatever copper already
+    sits under the flash (Gerber spec §4.4.6). Shares ``cache`` with
+    :func:`_flash_polygon_cached`; the ``"CH"`` / ``"RH"`` key prefixes keep the
+    two namespaces from colliding.
+    """
+    import gerbonara.graphic_primitives as gp
+    if isinstance(prim, gp.Circle):
+        R = float(prim.r)
+        if R <= 0:
+            return None
+        key = ("CH", round(R, 6), hole_rs)
+        unit = cache.get(key)
+        if unit is None:
+            unit = _circle_to_polygon(0.0, 0.0, R)
+            for hr in hole_rs:
+                unit = unit.difference(_circle_to_polygon(0.0, 0.0, hr))
+            cache[key] = unit
+        return shapely.affinity.translate(unit, float(prim.x), float(prim.y))
+    if isinstance(prim, gp.Rectangle):
+        w = float(prim.w)
+        h = float(prim.h)
+        if w <= 0 or h <= 0:
+            return None
+        rot = float(getattr(prim, "rotation", 0.0))
+        key = ("RH", round(w, 6), round(h, 6), round(rot, 9), hole_rs)
+        unit = cache.get(key)
+        if unit is None:
+            unit = _rectangle_to_polygon(0.0, 0.0, w, h, rot)
+            for hr in hole_rs:
+                unit = unit.difference(_circle_to_polygon(0.0, 0.0, hr))
+            cache[key] = unit
+        return shapely.affinity.translate(unit, float(prim.x), float(prim.y))
+    return None
+
+
+def _is_concentric_hole(clr, flash) -> bool:
+    """True if ``clr`` is a clear ``Circle`` that is the aperture hole of the
+    dark ``flash`` primitive: concentric with it and contained within it.
+
+    gerbonara renders a hole-bearing standard aperture as the dark pad followed
+    by a clear ``Circle`` at the same centre (see the review's finding 4.1 and
+    the ``ADD..C,ODXhole`` / ``ADD..R,WXHXhole`` apertures). Detecting the pair
+    lets us build ``pad − hole`` locally instead of letting the clear circle
+    subtract from every previously-accumulated object underneath."""
+    import gerbonara.graphic_primitives as gp
+    if not isinstance(clr, gp.Circle):
+        return False
+    if bool(getattr(clr, "polarity_dark", True)):
+        return False  # a hole is a CLEAR circle
+    r = float(clr.r)
+    if r <= 0:
+        return False
+    tol = 1e-6  # mm — gerbonara emits pad and hole at the identical flash centre
+    if (abs(float(clr.x) - float(flash.x)) > tol
+            or abs(float(clr.y) - float(flash.y)) > tol):
+        return False
+    # A genuine aperture hole is strictly smaller than the pad it sits in. If a
+    # concentric clear is *larger* than the pad it is not a standard hole (it is
+    # some deliberate clearance) — leave it to the normal polarity path.
+    if isinstance(flash, gp.Circle):
+        return r < float(flash.r) - 1e-9
+    if isinstance(flash, gp.Rectangle):
+        return 2.0 * r < min(float(flash.w), float(flash.h)) - 1e-9
+    return False
+
+
+def _resolve_hole_flashes(prims: list, cache: dict) -> list:
+    """Pre-pass over one graphic object's primitive list that folds each
+    hole-bearing flash (dark pad + concentric clear circle(s)) into a single
+    ``pad − hole`` polygon, yielding a :class:`_ResolvedFlash` in its place.
+
+    Every other primitive passes through untouched and in order, so the
+    caller's polarity-flip batching is unchanged for real clears. Only the
+    aperture-hole clears — which the photoplotter treats as transparent to
+    underlying copper, not as a subtraction from it — are pulled out of the
+    stream here."""
+    import gerbonara.graphic_primitives as gp
+    out: list = []
+    i = 0
+    n = len(prims)
+    while i < n:
+        prim = prims[i]
+        if (bool(getattr(prim, "polarity_dark", False))
+                and isinstance(prim, (gp.Circle, gp.Rectangle))):
+            holes = []
+            j = i + 1
+            while j < n and _is_concentric_hole(prims[j], prim):
+                holes.append(prims[j])
+                j += 1
+            if holes:
+                hole_rs = tuple(round(float(h.r), 6) for h in holes)
+                poly = _flash_with_hole_cached(prim, hole_rs, cache)
+                if poly is not None and not poly.is_empty:
+                    out.append(_ResolvedFlash(poly))
+                i = j
+                continue
+        out.append(prim)
+        i += 1
+    return out
+
+
+def _bbox_limited_difference(
+    base: shapely.geometry.base.BaseGeometry,
+    cutter: shapely.geometry.base.BaseGeometry,
+) -> shapely.geometry.base.BaseGeometry:
+    """``base.difference(cutter)`` but only the components of ``base`` whose
+    bounding box meets ``cutter``'s are fed through GEOS; components that don't
+    overlap the cutter are passed through untouched and re-unioned.
+
+    A clear batch only affects copper it physically overlaps, so on a layer
+    with many separate copper islands (the common case once aperture holes are
+    resolved locally, per finding 4.1) a localized clear no longer pays a
+    full-layer difference against every island. The result is identical to
+    ``base.difference(cutter)``."""
+    if base.is_empty or cutter.is_empty:
+        return base
+    comps = _polygons_in(base)
+    if len(comps) <= 1:
+        # A single (possibly holed) polygon — nothing to split; the difference
+        # against it is unavoidable.
+        return base.difference(cutter)
+    cminx, cminy, cmaxx, cmaxy = cutter.bounds
+    untouched: list[shapely.geometry.Polygon] = []
+    affected: list[shapely.geometry.Polygon] = []
+    for c in comps:
+        minx, miny, maxx, maxy = c.bounds
+        if maxx < cminx or minx > cmaxx or maxy < cminy or miny > cmaxy:
+            untouched.append(c)
+        else:
+            affected.append(c)
+    if not affected:
+        return base
+    cut = shapely.ops.unary_union(affected).difference(cutter)
+    if not untouched:
+        return cut
+    return shapely.ops.unary_union([cut, *untouched])
+
+
 # A dark↔clear polarity flip forces a flush (union / difference of the
 # accumulated batch) that can't be avoided without breaking the photoplotter
 # stream semantics. A file that interleaves polarity per pour degrades to
@@ -633,10 +795,30 @@ def render_gerber_to_shapely(gerber_path: Path) -> shapely.geometry.base.BaseGeo
         merged = shapely.ops.unary_union(parts)
         accumulated = (accumulated.union(merged)
                        if batch_dark
-                       else accumulated.difference(merged))
+                       else _bbox_limited_difference(accumulated, merged))
 
     for obj in gf.objects:
-        for prim in obj.to_primitives(MM):
+        prims = list(obj.to_primitives(MM))
+        # Positive images: fold each hole-bearing flash (dark pad + concentric
+        # clear circle) into one ``pad − hole`` polygon so the hole stays
+        # transparent to the pad's own copper but never erases copper already
+        # laid down underneath it (Gerber spec §4.4.6 — finding 4.1). Negative
+        # images already invert polarity below and are planes, not pad flashes,
+        # so we leave that path untouched.
+        items = prims if _is_negative else _resolve_hole_flashes(prims, flash_cache)
+        for prim in items:
+            if isinstance(prim, _ResolvedFlash):
+                # A resolved hole-flash is always added copper (dark). Respect
+                # the batch's polarity boundary exactly like a real primitive.
+                if batch_dark is False and (batch_polys or batch_lines_by_width):
+                    _flush()
+                    batch_polys = []
+                    batch_lines_by_width = {}
+                    flip_count += 1
+                batch_dark = True
+                if not prim.poly.is_empty:
+                    batch_polys.append(prim.poly)
+                continue
             is_dark = bool(prim.polarity_dark)
             if _is_negative:
                 # The dark anti-pad/clearance artwork of a negative image must
@@ -937,15 +1119,27 @@ def _is_gerber_x2_drill(path: Path) -> bool:
 def _x2_drill_span_to_layer_ids(
     file_function: tuple[str, ...] | None,
     ordered_layer_ids: list[int],
-) -> tuple[int, int]:
+) -> tuple[int, int] | None:
     """Translate the X2 ``%TF.FileFunction`` span into FYPA layer ids.
 
     FileFunction is e.g. ``('Plated', '1', '16', 'PTH', 'Drill')`` — the two
     integers are **1-based physical layer positions** (1 = top, N = bottom)
-    in the originating CAD. We map position k → ``ordered_layer_ids[k-1]``;
-    out-of-range positions clamp to the nearest end of the imported stack so
-    a drill file describing a 16-layer board still produces sensible vias
-    when the user only imports a subset.
+    in the originating CAD. We map position k → ``ordered_layer_ids[k-1]``.
+
+    Returns ``None`` when either physical position falls **outside** the
+    imported stack (``< 1`` or ``> len(ordered_layer_ids)``). The old code
+    clamped out-of-range positions to the nearest end of the imported stack,
+    which fabricates a layer span: a ``Plated,2,5`` buried via imported into a
+    Top/In4/Bottom subset clamped to In4→Bottom, cross-connecting copper the
+    via never touched. Cross-connecting planes is the one failure mode a PDN
+    tool must not have, so the caller drops such a file with a loud warning
+    instead. A file with no numeric span (a plain through-drill) still defaults
+    to the full imported top↔bottom.
+
+    Note the in-range mapping still assumes the imported layers are the full
+    contiguous stack top-down; a non-contiguous subset can mis-map even
+    in-range positions, but that needs the originating stack depth we don't
+    have here — the out-of-range drop covers the cross-plane hazard.
     """
     if not ordered_layer_ids:
         return (LAYER_ID_TOP, LAYER_ID_BOTTOM)
@@ -965,9 +1159,9 @@ def _x2_drill_span_to_layer_ids(
     if start_pos is None or end_pos is None:
         return (ordered_layer_ids[0], ordered_layer_ids[-1])
     lo, hi = sorted((start_pos, end_pos))
-    lo_idx = max(0, min(n - 1, lo - 1))
-    hi_idx = max(0, min(n - 1, hi - 1))
-    return (ordered_layer_ids[lo_idx], ordered_layer_ids[hi_idx])
+    if lo < 1 or hi > n:
+        return None  # references layer positions we didn't import — caller drops
+    return (ordered_layer_ids[lo - 1], ordered_layer_ids[hi - 1])
 
 
 def _stamp_slot_chain(
@@ -1067,9 +1261,19 @@ def _gerber_drill_to_vias(
     is_npth = bool(file_function
                    and file_function[0].strip().lower() == "nonplated")
 
-    layer_start, layer_end = _x2_drill_span_to_layer_ids(
-        file_function, ordered_layer_ids,
-    )
+    span = _x2_drill_span_to_layer_ids(file_function, ordered_layer_ids)
+    if span is None:
+        ff = ",".join(file_function) if file_function else "?"
+        warnings.append(
+            f"{path.name}: drill span ({ff}) references layer positions "
+            f"outside the {len(ordered_layer_ids)} imported copper layer(s); "
+            f"dropping this drill file rather than mapping its vias to a "
+            f"fabricated layer span that could cross-connect planes the vias "
+            f"never touch. Re-import with the full copper stack to include "
+            f"these vias."
+        )
+        return vias, npth, warnings
+    layer_start, layer_end = span
 
     for obj in gf.objects:
         for prim in obj.to_primitives(MM):
@@ -1183,6 +1387,31 @@ def _excellon_to_vias(
                     n_objs += 1
                     continue
 
+                if isinstance(d, go.Arc):
+                    # Rout-mode ARC slot (a G02/G03 rout move). Discretise the
+                    # arc to chord points and stamp a via/hole chain along each
+                    # chord, so a curved slot bridges the layer pair along its
+                    # full length instead of falling into the generic
+                    # exception path below as an unnamed "malformed record".
+                    x1 = float(MM.convert_from(d.unit, d.x1))
+                    y1 = float(MM.convert_from(d.unit, d.y1))
+                    x2 = float(MM.convert_from(d.unit, d.x2))
+                    y2 = float(MM.convert_from(d.unit, d.y2))
+                    cx = float(MM.convert_from(d.unit, d.cx))
+                    cy = float(MM.convert_from(d.unit, d.cy))
+                    arc_pts = _discretise_arc_to_points(
+                        x1, y1, x2, y2, cx, cy, bool(d.clockwise))
+                    if len(arc_pts) < 2:
+                        arc_pts = [(x1, y1), (x2, y2)]
+                    for k in range(len(arc_pts) - 1):
+                        (ax, ay), (bx, by) = arc_pts[k], arc_pts[k + 1]
+                        _stamp_slot_chain(
+                            ax, ay, bx, by, diam_mm, is_npth,
+                            top_layer_id, bottom_layer_id, vias, npth,
+                        )
+                    n_objs += 1
+                    continue
+
                 # Let gerbonara handle inch/mm conversion. Its LengthUnit
                 # ``__str__`` returns the shorthand ("in"), so an old
                 # ``str(d.unit) == "inch"`` check never matched and inch drill
@@ -1192,8 +1421,8 @@ def _excellon_to_vias(
                 y = float(MM.convert_from(d.unit, d.y))
             except Exception as e:
                 warnings.append(
-                    f"Skipping malformed drill record in {path.name} "
-                    f"({type(e).__name__}: {e})."
+                    f"Skipping unsupported {type(d).__name__} drill record in "
+                    f"{path.name} ({type(e).__name__}: {e})."
                 )
                 continue
             n_objs += 1

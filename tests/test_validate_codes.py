@@ -70,6 +70,31 @@ def test_duplicate_vertical_x_uses_corridor_gap():
     assert not check_segment_spacing(segments_far, [], [])
 
 
+def test_coincident_signal_over_gnd_vertical_flagged():
+    """A signal vertical exactly overlaying a GND drop (gap ~0, overlapping
+    spans) is rendered as one ambiguous line and must be flagged. It slips
+    through both duplicate_vertical_x (GND-skipped) and signal_vs_gnd_drop_gap
+    (which requires WIRE_EPS < gap)."""
+    segments = [
+        WireSeg(GND_NET, "V", 100.0, 10.0, 100.0, 90.0, wire_index=0),
+        WireSeg("VDD", "V", 100.0, 20.0, 100.0, 80.0, wire_index=1),
+    ]
+    issues = check_segment_spacing(segments, [], [])
+    assert any(i["code"] == "coincident_vertical_x" for i in issues)
+
+
+def test_signal_gnd_vertical_gap_still_deferred():
+    """A non-zero signal-vs-GND gap is not a coincident overlay; it stays
+    deferred to check_signal_vs_gnd_drop_gap, so check_segment_spacing is quiet."""
+    segments = [
+        WireSeg(GND_NET, "V", 100.0, 10.0, 100.0, 90.0, wire_index=0),
+        WireSeg("VDD", "V", 105.0, 20.0, 105.0, 80.0, wire_index=1),
+    ]
+    codes = {i["code"] for i in check_segment_spacing(segments, [], [])}
+    assert "coincident_vertical_x" not in codes
+    assert "duplicate_vertical_x" not in codes
+
+
 def test_duplicate_horizontal_y_detected():
     segments = [
         WireSeg("VDD", "H", 10.0, 40.0, 90.0, 40.0, wire_index=0),

@@ -19,7 +19,12 @@ import shapely.wkb
 import warnings
 
 from collections.abc import Callable
-from concurrent.futures import BrokenExecutor, ProcessPoolExecutor, as_completed
+from concurrent.futures import (
+    BrokenExecutor,
+    CancelledError,
+    ProcessPoolExecutor,
+    as_completed,
+)
 try:
     from concurrent.futures.process import BrokenProcessPool
 except ImportError:  # pragma: no cover
@@ -127,6 +132,19 @@ _MINRES_MAXITER: int = 5000
 # for very large boards.
 _MINRES_TIME_BUDGET_S: float = float(
     os.environ.get("PDNSOLVER_MINRES_BUDGET_S", "180"),
+)
+# DOF ceiling above which the Jacobi-preconditioned MINRES fallback cannot
+# converge within _MINRES_MAXITER, so both budgeted passes would merely burn
+# 2×_MINRES_TIME_BUDGET_S (up to ~6 min) and hand back the direct best-effort
+# anyway. A 2-D cotangent Laplacian has condition number κ ~ O(N), so MINRES
+# needs ~O(√N · ln(1/rtol)) iterations; setting that ≈ maxiter gives
+# N ≈ (maxiter / ln(1/rtol))². Above ~4× that we skip the iterative ladder and
+# return the best direct solve immediately. Small/mid systems (where the
+# iterative rescue genuinely works) are unaffected. Override via env for
+# experimentation.
+_MINRES_MAX_DOF: int = int(os.environ.get(
+    "PDNSOLVER_MINRES_MAX_DOF",
+    str(int(4.0 * (_MINRES_MAXITER / math.log(1.0 / _MINRES_RTOL)) ** 2))),
 )
 
 
@@ -357,7 +375,22 @@ def _build_contraction(
 # user-cancelled solve doesn't leak worker processes that keep running
 # their Triangle call to completion in the background.
 _active_mesh_pool: ProcessPoolExecutor | None = None
+# The _SharedMeshPool instance owning _active_mesh_pool, so the cancel path can
+# drop its pool reference (else the next pass submits to the shut-down pool and
+# raises "cannot schedule new futures after shutdown").
+_active_shared_pool: "_SharedMeshPool | None" = None
 _active_mesh_pool_lock = threading.Lock()
+# Set by cancel_active_mesh_pool(); lets the meshing dispatch tell a genuine
+# BrokenProcessPool / RuntimeError from a user cancellation. Cleared at the
+# start of each solve().
+_mesh_cancel_event = threading.Event()
+
+
+class SolveCancelled(Exception):
+    """Raised when meshing is aborted via :func:`cancel_active_mesh_pool`
+    (the GUI's solve-cancel path), so the cancellation surfaces as a
+    recognisable exception type instead of an opaque ``CancelledError`` /
+    ``RuntimeError`` leaking out of :func:`solve`."""
 
 
 class _SharedMeshPool:
@@ -373,20 +406,23 @@ class _SharedMeshPool:
         self.pool: ProcessPoolExecutor | None = None
 
     def get(self, max_workers: int) -> ProcessPoolExecutor:
-        global _active_mesh_pool
+        global _active_mesh_pool, _active_shared_pool
         if self.pool is None:
             self.pool = ProcessPoolExecutor(max_workers=max_workers)
             with _active_mesh_pool_lock:
                 _active_mesh_pool = self.pool
+                _active_shared_pool = self
         return self.pool
 
     def close(self) -> None:
-        global _active_mesh_pool
+        global _active_mesh_pool, _active_shared_pool
         pool, self.pool = self.pool, None
         if pool is not None:
             with _active_mesh_pool_lock:
                 if _active_mesh_pool is pool:
                     _active_mesh_pool = None
+                if _active_shared_pool is self:
+                    _active_shared_pool = None
             pool.shutdown(cancel_futures=True, wait=True)
 
 
@@ -400,9 +436,21 @@ def cancel_active_mesh_pool() -> None:
     polygon (we can't kill a C library mid-call), but no further work is
     dispatched and the pool's queues are torn down so the workers exit
     once their current task returns.
+
+    Sets :data:`_mesh_cancel_event` and drops the shared pool's reference to
+    the now-dead executor so the meshing dispatch reports a clean
+    :class:`SolveCancelled` (rather than an opaque ``CancelledError`` /
+    ``RuntimeError``) and any subsequent pass creates a fresh pool.
     """
+    global _active_mesh_pool
+    _mesh_cancel_event.set()
     with _active_mesh_pool_lock:
         pool = _active_mesh_pool
+        _active_mesh_pool = None
+        # Null the shared holder's pool so the next _SharedMeshPool.get()
+        # builds a fresh executor instead of submitting to this dead one.
+        if _active_shared_pool is not None:
+            _active_shared_pool.pool = None
     if pool is not None:
         try:
             pool.shutdown(cancel_futures=True, wait=False)
@@ -488,6 +536,11 @@ def resolve_connection_geoms(
     conns_by_layer: dict[int, list[problem.Connection]] = collections.defaultdict(list)
     for network in problem.networks:
         for conn in network.connections:
+            # A layer-less connection (unattached terminal) can't be located on
+            # any layer — skip it rather than KeyError. The downstream stamping
+            # guards (see solve()) already treat this as a legal state.
+            if conn.layer is None:
+                continue
             conns_by_layer[layer_to_index[id(conn.layer)]].append(conn)
 
     out: dict[int, list[int]] = {}
@@ -544,6 +597,10 @@ class ConnectivityGraph:
         for network in problem.networks:
             nodes_in_this_network = []
             for conn in network.connections:
+                # A layer-less connection (unattached terminal) has no geometry
+                # to place on the connectivity graph — skip rather than KeyError.
+                if conn.layer is None:
+                    continue
                 # Find the layer index for this connection
                 layer_i = layer_to_index[id(conn.layer)]
                 # Geoms this connection's point lies in. The shared precomputed
@@ -915,21 +972,28 @@ def _mesh_polygons_in_parallel(
             "across %d unfinished piece(s)…",
             log_label, len(unfinished),
         )
-        for i in unfinished:
-            probe = ProcessPoolExecutor(max_workers=1)
-            try:
-                fut = probe.submit(
-                    mesh.triangulate_worker, payloads[i], seed_xys[i],
-                    switches[i], adaptive,
-                )
+        # Reuse ONE probe pool across all unfinished pieces (in submission
+        # order, so the pieces most likely to have been running are checked
+        # first). A clean re-mesh leaves the worker healthy, so the pool is
+        # reused; the offending piece hard-aborts its worker (BrokenProcessPool)
+        # and we return immediately — no piece after the culprit needs a pool,
+        # so a single spawn suffices instead of one per piece.
+        probe = ProcessPoolExecutor(max_workers=1)
+        try:
+            for i in unfinished:
                 try:
+                    fut = probe.submit(
+                        mesh.triangulate_worker, payloads[i], seed_xys[i],
+                        switches[i], adaptive,
+                    )
                     fut.result()
                 except mesh.MeshingException as exc:
                     return _enrich_failure(i, exc)
                 except (BrokenProcessPool, BrokenExecutor):
+                    # This piece killed its worker: it's the offender.
                     return _enrich_failure(i, _worker_crash_exception(i))
-            finally:
-                probe.shutdown(cancel_futures=True, wait=True)
+        finally:
+            probe.shutdown(cancel_futures=True, wait=True)
         # Every unfinished piece re-meshed cleanly: the original abort was
         # transient (OOM, external kill), not a specific bad polygon. Blame
         # the first unfinished piece as a best-effort marker.
@@ -950,21 +1014,39 @@ def _mesh_polygons_in_parallel(
             _active_mesh_pool = pool
         own_pool = True
     try:
-        future_to_idx = {
-            pool.submit(
-                mesh.triangulate_worker, payloads[i], seed_xys[i],
-                switches[i], adaptive,
-            ): i for i in range(n)
-        }
+        try:
+            future_to_idx = {
+                pool.submit(
+                    mesh.triangulate_worker, payloads[i], seed_xys[i],
+                    switches[i], adaptive,
+                ): i for i in range(n)
+            }
+        except RuntimeError as exc:
+            # "cannot schedule new futures after shutdown" — the GUI cancelled
+            # (and shut down) the pool between passes. Surface it as a clean
+            # cancellation rather than an opaque RuntimeError.
+            if _mesh_cancel_event.is_set():
+                raise SolveCancelled("meshing cancelled") from exc
+            raise
         done = 0
         next_log = 1
         for fut in as_completed(future_to_idx):
             idx = future_to_idx[fut]
             try:
                 results[idx] = fut.result()
+            except CancelledError as exc:
+                # A cancel_futures=True shutdown (the GUI cancel path) cancels
+                # the still-pending futures; their result() raises here. Report
+                # a clean cancellation instead of letting it escape solve().
+                raise SolveCancelled("meshing cancelled") from exc
             except mesh.MeshingException as exc:
                 raise _enrich_failure(idx, exc) from exc
             except (BrokenProcessPool, BrokenExecutor) as exc:
+                # A user cancel that tore the pool down can also surface here —
+                # that's a cancellation, not a bad polygon, so report it cleanly
+                # instead of wasting time pinpointing a non-existent "culprit".
+                if _mesh_cancel_event.is_set():
+                    raise SolveCancelled("meshing cancelled") from exc
                 # Triangle can abort a worker process on a bad PSLG — that
                 # surfaces here instead of a catchable MeshingException, and
                 # poisons every still-pending future, so `idx` is not the
@@ -2189,13 +2271,36 @@ _sym_M: "scipy.sparse.csr_matrix | None" = None
 _sym_solver_lock = threading.Lock()
 
 
+# Number of strided value/index samples the matrix fingerprint hashes instead
+# of the whole (~0.5 GB at 40M nnz) data + indices buffers. See _csr_fingerprint.
+_FINGERPRINT_SAMPLE: int = 1 << 16
+
+
 def _csr_fingerprint(m: "scipy.sparse.csr_matrix") -> str:
-    """Content hash of a CSR matrix — changes iff the matrix (structure or
-    values) changes, so an identical re-solve is detected and the cached
-    factorisation reused."""
-    return (hashlib.sha1(np.ascontiguousarray(m.indptr)).hexdigest()
-            + hashlib.sha1(np.ascontiguousarray(m.indices)).hexdigest()
-            + hashlib.sha1(np.ascontiguousarray(m.data)).hexdigest())
+    """Fast content fingerprint of a CSR matrix, used solely to decide whether
+    the cached PARDISO factorisation still matches this matrix.
+
+    The previous implementation ran three full SHA-1 passes over indptr +
+    indices + data — ~0.3–0.6 s per solve at 40M nnz, paid even on cache-miss
+    solves. This hashes the shape, nnz, the full ``indptr`` (cheap: N+1 entries)
+    and a strided sample of ``indices`` / ``data`` instead. A value-only
+    re-solve produces a bit-identical matrix (guaranteed hit); a genuine change
+    almost always alters the structure sampled here. In the rare event a change
+    slips past the sample, the reused factorisation yields a large residual that
+    :func:`_solve_robust`'s residual check rejects (it then re-factorises), so
+    trading full cryptographic strength for speed is safe here."""
+    def _sample(a: np.ndarray) -> np.ndarray:
+        a = np.ascontiguousarray(a)
+        if a.size <= _FINGERPRINT_SAMPLE:
+            return a
+        return np.ascontiguousarray(a[:: a.size // _FINGERPRINT_SAMPLE])
+
+    h = hashlib.blake2b(digest_size=16)
+    h.update(np.asarray((*m.shape, m.nnz), dtype=np.int64).tobytes())
+    h.update(np.ascontiguousarray(m.indptr))
+    h.update(_sample(m.indices))
+    h.update(_sample(m.data))
+    return h.hexdigest()
 
 
 def free_pardiso_cache() -> None:
@@ -2605,6 +2710,29 @@ def _solve_robust(
     if row_describer is not None and best_v is not None:
         _log_singular_diagnostic(L_csc, r, best_v, row_describer)
 
+    # Short-circuit the iterative fallback when it cannot possibly converge.
+    # For a large near-singular system the Jacobi-MINRES ladder needs far more
+    # than _MINRES_MAXITER iterations, so both budgeted passes time out (up to
+    # ~6 min total) only to return the direct best-effort anyway — and this
+    # repeats on every value-only re-solve of the same ill-posed board (the
+    # matrix, hence the singularity, is unchanged). Skip straight to the best
+    # direct solve. This never fires for systems small enough for the iterative
+    # rescue to work (see _MINRES_MAX_DOF).
+    n_dof = L_csc.shape[0]
+    if best_v is not None and n_dof > _MINRES_MAX_DOF:
+        log.warning(
+            "Skipping the iterative fallback: a %d-DOF near-singular system "
+            "cannot converge within %d Jacobi-MINRES iterations, so both "
+            "budgeted passes (%.0fs each) would time out and return the direct "
+            "best-effort regardless. Returning it now (method=%s, "
+            "residual=%.4g, tol=%.4g) — results for the near-floating region "
+            "are unreliable. Set PDNSOLVER_MINRES_MAX_DOF to change this "
+            "threshold.",
+            n_dof, _MINRES_MAXITER, _MINRES_TIME_BUDGET_S,
+            best_method, best_res, abs_tol,
+        )
+        return best_v, "direct-best-effort", 1, best_res
+
     # Jacobi preconditioner: M⁻¹ ≈ diag(1/|L_ii|). Cheap and effective for
     # symmetric matrices with widely-varying diagonal entries (our case —
     # copper Laplacian diagonals are O(100-1000 S) while Lagrange-row
@@ -2769,6 +2897,11 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
     # http://mobile.rodolphe-vaillant.fr/entry/101/definition-laplacian-matrix-for-triangle-meshes
     # Note that if mesher_config = None, default parameters are used.
     mesher = mesh.Mesher(mesher_config)
+
+    # Clear any cancellation flag left set by a previously-cancelled solve so a
+    # fresh solve isn't immediately treated as cancelled (see
+    # cancel_active_mesh_pool / SolveCancelled).
+    _mesh_cancel_event.clear()
 
     # Assigned in the mesh/Laplacian cache-miss branch below (see _MeshAssembly).
     global _mesh_assembly_cache

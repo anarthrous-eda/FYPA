@@ -152,8 +152,16 @@ class HalfEdge:
                 break
 
     def cotan(self) -> float:
-        """
-        Compute the cotangent weight for this half-edge.
+        """Cotangent weight (cot α + cot β)/2 for this edge, summed over its
+        (up to two) opposite apex angles.
+
+        cot θ = (vi·vk) / |vi×vk|; the SIGN comes from the dot product, so an
+        obtuse apex (vi·vk < 0) correctly contributes a NEGATIVE cotangent.
+        Taking ``abs`` of the whole ratio (the previous behaviour) over-conducts
+        obtuse triangles and breaks convergence under mesh refinement — see
+        ``solver._half_cotangent``, which carries the correct sign. This legacy
+        half-edge path is not used by the solve path (which reads the flat
+        triangle arrays) but is kept correct for tools that walk the graph.
         """
         vertex_i = self.origin
         # Grab the vertex on the other side of the edge
@@ -165,7 +173,10 @@ class HalfEdge:
                 continue
             vi = vertex_i.p - other.origin.p
             vk = vertex_k.p - other.origin.p
-            ratio += abs(vi.dot(vk) / (vi ^ vk)) / 2
+            cross = vi ^ vk
+            if cross == 0:
+                continue  # degenerate (collinear) apex — no finite cotangent
+            ratio += (vi.dot(vk) / abs(cross)) / 2
         return ratio
 
 
@@ -1173,6 +1184,7 @@ class Mesher:
         polygon: shapely.geometry.Polygon,
         config_max_size: float,
         width_refinement_factor: float = 5.0,
+        min_size_divisor: float = 50.0,
     ) -> float:
         """Per-polygon mesh max-size derived from the polygon's local width.
 
@@ -1202,6 +1214,14 @@ class Mesher:
         refined. Fixing that requires local-width sampling (medial axis)
         or per-region max-area attributes — deferred until profile-level
         accuracy on mixed geometry actually matters.
+
+        Lower clamp: a long micro-sliver (e.g. a 5 µm × 20 mm spur that
+        survives the loader's stub filter because it's electrically
+        connected) drives ``width_based`` toward zero, and the √3/4·size²
+        area cap then implies hundreds of thousands of triangles for one
+        dust piece — millions of DOF and a possible meshing stall / OOM.
+        The size is floored at ``config_max_size / min_size_divisor`` so a
+        single sliver can't explode the mesh; it stays coarse but present.
         """
         if polygon.length <= 0.0 or polygon.area <= 0.0:
             return config_max_size  # degenerate; defer to global
@@ -1209,7 +1229,10 @@ class Mesher:
         width_based = characteristic_width / width_refinement_factor
         if config_max_size <= 0:
             return width_based  # no global cap — just use the width-based size
-        return min(config_max_size, width_based)
+        size = min(config_max_size, width_based)
+        if min_size_divisor > 0:
+            size = max(size, config_max_size / min_size_divisor)
+        return size
 
     def poly_to_mesh(self,
                      poly: shapely.geometry.Polygon,
@@ -1250,8 +1273,12 @@ class Mesher:
         return Mesh.from_triangle_arrays(out_vertices, out_triangles)
 
 
+# Disconnected copper is display-only — never solved, only drawn — so it needs
+# no quality refinement. minimum_angle=0 drops Triangle's ``q`` switch, giving a
+# plain constrained Delaunay triangulation (no Ruppert refinement / Steiner
+# insertion). Measurably cheaper on pour-heavy boards, visually identical.
 Mesher.Config.RELAXED = Mesher.Config(
-    minimum_angle=5.0,
+    minimum_angle=0.0,
     maximum_size=0,
     variable_size_maximum_factor=1.0
 )
@@ -1307,6 +1334,21 @@ def _prepare_polygon_for_triangle_arrays(
                 np.empty((0, 2), dtype=np.float64),
             )
         poly = max(parts, key=lambda g: g.area)
+        # Only the largest fragment is meshed, so any comparably-sized dropped
+        # fragment is real copper vanishing from the FEM (a bowtie / figure-8
+        # pour outline can repair into two genuine halves — the smaller may
+        # carry the return path). Warn when the dropped area isn't negligible
+        # so the loss is visible instead of silent.
+        dropped_area = sum(g.area for g in parts) - poly.area
+        if dropped_area > 0.01 * poly.area:
+            log.warning(
+                "Polygon repair split an invalid copper region into %d pieces; "
+                "meshing only the largest (%.4g mm²) and dropping %.4g mm² of "
+                "copper (%.1f%% of the kept piece) near %s. Reported IR drop "
+                "for this net may be wrong — check the source geometry.",
+                len(parts), poly.area, dropped_area,
+                100.0 * dropped_area / poly.area, poly.bounds,
+            )
     else:
         poly = repaired  # type: ignore[assignment]
     vertex_chunks: list[np.ndarray] = []
