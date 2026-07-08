@@ -914,6 +914,53 @@ def _terminal_layer_for_pad(pad: RawPad, enabled_layers: list[int]) -> int:
     return pad.layer_id
 
 
+def _resolve_alias_fallback_pads(
+    proj: ExtractedProject,
+    component_pads: list[RawPad],
+    net_name: str,
+    sch_lookup_designator: str,
+    schdoc_name: str,
+    pcb_designator: str,
+) -> list[RawPad]:
+    """Match pads via compiled-netlist aliases when pin-local resolution failed.
+
+    Only accepts a pad when its pin appears on a netlist row for the schematic
+    designator, the row's label class matches ``net_name``, the pad's PCB net is
+    listed on that row, and the row's sheet matches ``schdoc_name``. The broad
+    ``family`` match (all pads on any equivalent label) is intentionally omitted
+    to avoid cross-channel leaks when several channel nets share one local alias.
+    """
+    if proj.compiled_netlist is None:
+        return []
+    netlist_index = _build_netlist_designator_index(proj.compiled_netlist)
+    des_candidates = _designator_candidates(sch_lookup_designator, pcb_designator)
+    matched: list[RawPad] = []
+    seen_pins: set[str] = set()
+    for pad in component_pads:
+        if pad.net_index == NO_NET:
+            continue
+        pin_key = pad.designator.upper()
+        if pin_key in seen_pins:
+            continue
+        pcb_n = proj.nets[pad.net_index].name.upper()
+        for nl_pin, names, sheets in netlist_index.get(
+            sch_lookup_designator.upper(), (),
+        ):
+            if nl_pin != pin_key or pcb_n not in names:
+                continue
+            if not any(
+                _local_net_label_matches(n, net_name, des_candidates)
+                for n in names
+            ):
+                continue
+            if not _sheet_name_matches(schdoc_name, list(sheets)):
+                continue
+            matched.append(pad)
+            seen_pins.add(pin_key)
+            break
+    return matched
+
+
 def _resolve_terminal(
     proj: ExtractedProject,
     pcb_index: int,
@@ -1024,27 +1071,29 @@ def _resolve_terminal(
             and sch_lookup_designator
             and proj.compiled_netlist is not None
         ):
-            family = _netlist_label_family(proj.compiled_netlist, net_name)
-            netlist_index = _build_netlist_designator_index(proj.compiled_netlist)
-            alias_matched: list[RawPad] = []
-            for pad in component_pads:
-                if pad.net_index == NO_NET:
-                    continue
-                pcb_n = proj.nets[pad.net_index].name.upper()
-                if pcb_n in family:
-                    alias_matched.append(pad)
-                    continue
-                pin_key = pad.designator.upper()
-                for nl_pin, names, sheets in netlist_index.get(
-                    sch_lookup_designator.upper(), (),
-                ):
-                    if nl_pin != pin_key or pcb_n not in names:
-                        continue
-                    if _sheet_name_matches(schdoc_name or "", list(sheets)):
-                        alias_matched.append(pad)
-                        break
+            alias_matched = _resolve_alias_fallback_pads(
+                proj,
+                component_pads,
+                net_name,
+                sch_lookup_designator,
+                schdoc_name or "",
+                designator,
+            )
             if alias_matched:
                 matched = alias_matched
+                if warnings is not None:
+                    pcb_net_names = sorted({
+                        proj.nets[p.net_index].name
+                        for p in matched
+                        if p.net_index != NO_NET
+                    })
+                    nets_text = ", ".join(pcb_net_names) if pcb_net_names else "?"
+                    warnings.append(
+                        f"{role_diagnostic}: resolved local net "
+                        f"{net_name!r} via netlist alias on pin(s) "
+                        f"{sorted(p.designator for p in matched)} "
+                        f"→ PCB net(s) {nets_text}"
+                    )
 
         if not matched and proj.compiled_netlist is None:
             for candidate in _degraded_pcb_net_candidates(net_name, designator):

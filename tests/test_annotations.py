@@ -8,6 +8,8 @@ assignment. See ``fypa.altium.annotations`` for the schema.
 """
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1108,6 +1110,55 @@ def test_variant_alias_pattern_via_pad_netlist():
     assert not errors
     assert spec is not None
     assert spec.pins[0].net_index == 0
+
+
+def test_alias_fallback_no_cross_channel_family_leak():
+    """Alias fallback must not match every pad in an unscoped label family."""
+    netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="CH1_+3V3",
+            aliases=["+3V3"],
+            source_sheets=["child1.schdoc"],
+            terminals=[
+                _FakeTerminal("U1", "1"),
+                _FakeTerminal("U1", "2"),
+            ],
+        ),
+        _FakeNet(
+            name="CH2_+3V3",
+            aliases=["+3V3"],
+            source_sheets=["child2.schdoc"],
+            terminals=[_FakeTerminal("U1", "2")],
+        ),
+    ])
+    proj = _minimal_proj(
+        nets=(RawNet("CH1_+3V3"), RawNet("CH2_+3V3"), RawNet("GND")),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1_PLACED", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="SOIC", source_designator="U1",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 0, 0),
+            _pad(0, "2", 1, 1),
+            _pad(0, "3", 2, 2),
+        ),
+        compiled_netlist=netlist,
+    )
+    with patch(
+        "fypa.altium.annotations._resolve_local_net_pins",
+        return_value=[],
+    ):
+        spec, errors = _resolve_terminal(
+            proj, 0, "+3V3", None, [1], "SINK P",
+            sch_lookup_designator="U1", schdoc_name="child2.schdoc",
+        )
+    assert not errors
+    assert spec is not None
+    assert len(spec.pins) == 1
+    assert spec.pins[0].pad_designator == "2"
+    assert spec.pins[0].net_index == 1
 
 
 def test_bridge_groups_expand_slotted_local_names():
