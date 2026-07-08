@@ -1082,6 +1082,40 @@ def test_schdoc_inference_pin_centric_without_net_name_match():
     assert _schdoc_for_pcb_instance(proj, 0, "R63") == "efuse.schdoc"
 
 
+def test_schdoc_inference_flattened_terminal_designator():
+    """Netlist terminals keyed as J3.4 must vote when lookup designator is J3."""
+    netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="IOUT3",
+            aliases=["S00A.4"],
+            source_sheets=["Child.SchDoc"],
+            terminals=[_FakeTerminal("J3.4", "29")],
+        ),
+    ])
+    proj = _minimal_proj(
+        nets=(RawNet("IOUT3"),),
+        pcb_components=(
+            RawPcbComponent(
+                designator="J3.4", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="CONN", source_designator="J3",
+            ),
+        ),
+        sch_components=(
+            RawSchComponent(
+                designator="J3", schdoc_name="Other.SchDoc",
+                parameters={"Comment": "CONN"}, pin_designators=("29",),
+            ),
+            RawSchComponent(
+                designator="J3", schdoc_name="Child.SchDoc",
+                parameters={"Comment": "CONN"}, pin_designators=("29",),
+            ),
+        ),
+        pads=(_pad(0, "29", 0, 0),),
+        compiled_netlist=netlist,
+    )
+    assert _schdoc_for_pcb_instance(proj, 0, "J3") == "Child.SchDoc"
+
+
 def test_variant_alias_pattern_via_pad_netlist():
     """MDI.TD_P4 style aliases resolve via pad/netlist cross-check."""
     netlist = _FakeNetlist(nets=[
@@ -1371,7 +1405,9 @@ def test_bridge_groups_expand_slotted_local_names():
         ),
         compiled_netlist=netlist,
     )
-    expanded = _instance_resolver(proj).expand_net_names("VCC_EFUSE")
+    expanded = _instance_resolver(proj).expand_net_names(
+        "VCC_EFUSE", pcb_index=0,
+    )
     assert "VCC_EFUSE" in expanded
     assert "VCC_EFUSE.4" in expanded
 

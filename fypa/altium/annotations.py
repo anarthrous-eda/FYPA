@@ -134,9 +134,9 @@ parse ``ChannelDesignatorFormatString`` — resolution is **pin-driven**:
 4. Degraded fallback (no compiled netlist): weak suffix heuristics only.
 
 :class:`InstanceLocalNetResolver` (cached per :class:`ExtractedProject`) performs
-sheet inference for PCB-only directives, local-net expansion for bridge groups,
-and the steps above. See the user guide section *Local net names* in
-``docs/user-guide/01-sources-and-sinks.md``.
+sheet inference for PCB-only directives, instance-scoped local-net expansion
+for SERIES bridge validation, and the steps above. See the user guide section
+*Local net names* in ``docs/user-guide/01-sources-and-sinks.md``.
 """
 from __future__ import annotations
 
@@ -667,7 +667,8 @@ class InstanceLocalNetResolver:
     ) -> str:
         if not lookup_des:
             return ""
-        target_des = lookup_des.upper()
+        pcb_designator = self.proj.pcb_components[pcb_index].designator
+        des_candidates = _designator_candidates(lookup_des, pcb_designator)
         if pads_by_component is None:
             pads_by_component = _build_pads_by_component(self.proj)
         routed_pads = pads_by_component.get(pcb_index, {})
@@ -682,16 +683,17 @@ class InstanceLocalNetResolver:
                 )
             for pin_key, pad in routed_pads.items():
                 pcb_net_upper = self.proj.nets[pad.net_index].name.upper()
-                for nl_pin, names, sheets in netlist_index.get(target_des, ()):
-                    if nl_pin != pin_key:
-                        continue
-                    vote_weight = 1
-                    if pcb_net_upper in names:
-                        vote_weight = 2
-                    for sheet in sheets:
-                        key = sheet.replace("\\", "/").lower()
-                        sheet_votes[key] = sheet_votes.get(key, 0) + vote_weight
-                        sheet_paths.setdefault(key, sheet)
+                for des_key in des_candidates:
+                    for nl_pin, names, sheets in netlist_index.get(des_key, ()):
+                        if nl_pin != pin_key:
+                            continue
+                        vote_weight = 1
+                        if pcb_net_upper in names:
+                            vote_weight = 2
+                        for sheet in sheets:
+                            key = sheet.replace("\\", "/").lower()
+                            sheet_votes[key] = sheet_votes.get(key, 0) + vote_weight
+                            sheet_paths.setdefault(key, sheet)
 
         if sheet_votes:
             best = max(sorted(sheet_votes), key=lambda k: sheet_votes[k])
@@ -707,7 +709,7 @@ class InstanceLocalNetResolver:
 
         sch_matches = [
             c.schdoc_name for c in self.proj.sch_components
-            if c.designator.upper() == target_des
+            if c.designator.upper() == lookup_des.upper()
         ]
         if len(sch_matches) == 1:
             return sch_matches[0]
@@ -718,13 +720,25 @@ class InstanceLocalNetResolver:
         local_name: str,
         pcb_index: int | None = None,
     ) -> tuple[str, ...]:
-        """All PCB / netlist labels equivalent to a local schematic net name."""
+        """All PCB / netlist labels equivalent to a local schematic net name.
+
+        Always pass ``pcb_index`` for production resolution paths. The
+        ``pcb_index is None`` mode scans every placement and seeds from the
+        unscoped netlist label family — it can merge unrelated channel slots
+        (e.g. ``VCC_EFUSE.1`` and ``VCC_EFUSE.4``) and is intended for tests
+        and diagnostics only.
+        """
         cache_key = f"{local_name.upper()}\0{pcb_index}"
         cached = self._expanded_cache.get(cache_key)
         if cached is not None:
             return cached
 
         if pcb_index is None:
+            log.debug(
+                "expand_net_names(%r) without pcb_index: unscoped label-family "
+                "expansion — prefer pcb_index= for instance-safe resolution",
+                local_name,
+            )
             names: set[str] = set(_netlist_label_family(
                 self.proj.compiled_netlist, local_name,
             ))
@@ -1313,9 +1327,11 @@ def _collect_bridge_groups(
     Transitive: if A↔B and B↔C are both bridged, A, B, C all belong to one
     group. Net names are upper-cased for case-insensitive comparison.
 
-    Used by :func:`_validate_directive_groups` and the solver to treat
-    SERIES-bridged nets as electrically connected. Terminal pin resolution
-    uses direct pad-to-net connectivity only — see :func:`_resolve_terminal`.
+    Name-level equivalence only — used in unit tests. Cross-directive
+    validation unions PCB net indices via
+    :func:`_union_series_bridge_net_indices` (instance-scoped expansion).
+    Terminal pin resolution uses direct pad-to-net connectivity only — see
+    :func:`_resolve_terminal`.
     """
     parent: dict[str, str] = {}
 
@@ -1726,7 +1742,7 @@ def _has_single_net_params(params: dict[str, str],
     return False
 
 
-def _parse_source(comp, proj, enabled_layers, result, bridge_groups=None,
+def _parse_source(comp, proj, enabled_layers, result,
                   net_remap=None, supply_map=None, only_indices=None):
     # ``only_indices`` (from the per-channel role dispatcher) restricts this
     # parser to the channels whose effective role is SOURCE; when ``None`` the
@@ -1803,7 +1819,7 @@ def _parse_source(comp, proj, enabled_layers, result, bridge_groups=None,
     return specs
 
 
-def _parse_sink(comp, proj, enabled_layers, result, bridge_groups=None,
+def _parse_sink(comp, proj, enabled_layers, result,
                 net_remap=None, supply_map=None, only_indices=None):
     # ``only_indices`` restricts this parser to the part's SINK-role channels;
     # see _parse_source.
@@ -1884,7 +1900,7 @@ def _parse_sink(comp, proj, enabled_layers, result, bridge_groups=None,
     return specs
 
 
-def _parse_resistance(comp, proj, enabled_layers, result, bridge_groups=None,
+def _parse_resistance(comp, proj, enabled_layers, result,
                       net_remap=None, supply_map=None, only_indices=None):
     # This parser only ever handles SERIES-role channels (part-wide or a
     # PDN<n>_ROLE=SERIES override), so the role for diagnostics is always
@@ -2142,7 +2158,7 @@ def _resolve_regulator_gain(
     return gain, reg_type, eff, True
 
 
-def _parse_regulator(comp, proj, enabled_layers, result, bridge_groups=None,
+def _parse_regulator(comp, proj, enabled_layers, result,
                      net_remap=None, supply_map=None, only_indices=None):
     role_diag_base = f"REGULATOR on {comp.designator}"
     if _has_single_net_params(comp.parameters, only_indices):
@@ -2555,8 +2571,6 @@ def parse_annotations(proj: ExtractedProject,
 
     parameter_sources = _iter_pdn_parameter_sources(proj)
 
-    # SERIES bridge equivalence for cross-directive validation and the solver.
-    bridge_groups = _collect_bridge_groups(parameter_sources, proj)
     supply_map = _collect_supply_voltages_by_net(parameter_sources)
 
     for comp in parameter_sources:
@@ -2605,7 +2619,6 @@ def parse_annotations(proj: ExtractedProject,
             if not role:
                 continue
             specs = _PARSER_BY_ROLE[role](comp, proj, enabled_layers, result,
-                                          bridge_groups=bridge_groups,
                                           net_remap=net_remap,
                                           supply_map=supply_map)
             result.directives.extend(specs)
@@ -2613,7 +2626,7 @@ def parse_annotations(proj: ExtractedProject,
             for chan_role, idxs in channel_roles.items():
                 specs = _PARSER_BY_ROLE[chan_role](
                     comp, proj, enabled_layers, result,
-                    bridge_groups=bridge_groups, net_remap=net_remap,
+                    net_remap=net_remap,
                     supply_map=supply_map, only_indices=idxs,
                 )
                 # Every parser returns a list — empty if the directive failed
