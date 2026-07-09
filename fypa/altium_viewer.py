@@ -45,6 +45,7 @@ import shapely.geometry as _sg
 import shapely.prepared as _sp
 
 from fypa import log_buffer
+from fypa.rail_groups import resolve_rail_member_nets
 from fypa.gl_mesh_viewer import (
     GLMeshViewer,
     LegendRow,
@@ -361,6 +362,7 @@ _THEME_PRESETS: dict[str, dict[str, str]] = {
         "separator":       "#707070",
         "eye_open":        "#f0f0f0",
         "eye_closed":      "#7a7a7a",
+        "eye_partial":     "#b8b8b8",
     },
     "light": {
         # Core surfaces
@@ -398,6 +400,7 @@ _THEME_PRESETS: dict[str, dict[str, str]] = {
         "separator":       "#9a9a9a",
         "eye_open":        "#2d2d2d",
         "eye_closed":      "#9a9a9a",
+        "eye_partial":     "#5c5c5c",
     },
 }
 
@@ -1082,14 +1085,35 @@ CURSOR_TOOLTIP_THROTTLE_S: float = 0.008
 
 # --- Altium-style "eye" visibility icons -----------------------------------
 
-_EYE_PIXMAP_CACHE: dict[tuple[str, bool, int], QPixmap] = {}
+_EYE_PIXMAP_CACHE: dict[tuple[str, bool, bool, int], QPixmap] = {}
+
+# Partial visibility: open-eye glyph, muted between eye_open and eye_closed.
+_EYE_PARTIAL_BLEND: float = 0.32
 
 
-def _make_eye_pixmap(open_: bool, *, size: int = 16) -> QPixmap:
+def _eye_icon_color(theme: dict, *, open_: bool, partial: bool) -> QColor:
+    if partial:
+        keyed = theme.get("eye_partial")
+        if keyed:
+            return QColor(keyed)
+        a, b = QColor(theme["eye_open"]), QColor(theme["eye_closed"])
+        w = _EYE_PARTIAL_BLEND
+        return QColor(
+            int(a.red() * (1 - w) + b.red() * w),
+            int(a.green() * (1 - w) + b.green() * w),
+            int(a.blue() * (1 - w) + b.blue() * w),
+        )
+    if open_:
+        return QColor(theme["eye_open"])
+    return QColor(theme["eye_closed"])
+
+
+def _make_eye_pixmap(open_: bool, *, partial: bool = False, size: int = 16) -> QPixmap:
     """Draw an Altium-style eye icon.
 
-    ``open_`` = True  → white eye (layer visible).
-    ``open_`` = False → muted grey eye with a diagonal slash (layer hidden).
+    ``open_`` = True  → full-contrast open eye (all children visible).
+    ``partial`` = True → same open-eye shape, muted (some children visible).
+    ``open_`` = False → muted eye with a diagonal slash (all hidden).
     """
     px = QPixmap(size, size)
     px.fill(Qt.transparent)
@@ -1097,7 +1121,7 @@ def _make_eye_pixmap(open_: bool, *, size: int = 16) -> QPixmap:
     p.setRenderHint(QPainter.Antialiasing, True)
 
     t = current_theme()
-    color = QColor(t["eye_open"] if open_ else t["eye_closed"])
+    color = _eye_icon_color(t, open_=open_, partial=partial)
     pen = QPen(color)
     pen.setWidthF(max(1.0, size * 0.09))
     pen.setCapStyle(Qt.RoundCap)
@@ -1119,7 +1143,7 @@ def _make_eye_pixmap(open_: bool, *, size: int = 16) -> QPixmap:
     r = size * 0.17
     p.drawEllipse(QPointF(size / 2.0, cy), r, r)
 
-    if not open_:
+    if not open_ and not partial:
         slash = QPen(color)
         slash.setWidthF(max(1.2, size * 0.11))
         slash.setCapStyle(Qt.RoundCap)
@@ -1132,13 +1156,24 @@ def _make_eye_pixmap(open_: bool, *, size: int = 16) -> QPixmap:
     return px
 
 
-def _eye_pixmap(open_: bool, size: int = 16) -> QPixmap:
-    key = (current_theme_mode(), open_, size)
+def _eye_pixmap(open_: bool, size: int = 16, *, partial: bool = False) -> QPixmap:
+    key = (current_theme_mode(), open_, partial, size)
     cached = _EYE_PIXMAP_CACHE.get(key)
     if cached is None:
-        cached = _make_eye_pixmap(open_, size=size)
+        cached = _make_eye_pixmap(open_, partial=partial, size=size)
         _EYE_PIXMAP_CACHE[key] = cached
     return cached
+
+
+def _qt_widget_alive(widget) -> bool:
+    """True when ``widget`` is a live Qt C++ object (not already deleted)."""
+    if widget is None:
+        return False
+    try:
+        from shiboken6 import isValid
+        return bool(isValid(widget))
+    except Exception:
+        return False
 
 
 class EyeButton(QToolButton):
@@ -1152,9 +1187,11 @@ class EyeButton(QToolButton):
                  tip_hide: str = "Hide layer") -> None:
         super().__init__(parent)
         self._visible = bool(visible)
+        self._partial = False
         self._icon_size = icon_size
         self._tip_show = tip_show
         self._tip_hide = tip_hide
+        self._tip_partial = "Some subnet nets visible — click to show all"
         self.setAutoRaise(True)
         self.setCursor(Qt.PointingHandCursor)
         self.setIconSize(QSize(icon_size, icon_size))
@@ -1166,21 +1203,36 @@ class EyeButton(QToolButton):
     def isVisibleState(self) -> bool:
         return self._visible
 
-    def setVisibleState(self, on: bool, *, emit: bool = True) -> None:
+    def isPartialState(self) -> bool:
+        return self._partial
+
+    def setVisibleState(
+        self, on: bool, *, partial: bool = False, emit: bool = True,
+    ) -> None:
         on = bool(on)
-        if on == self._visible:
+        partial = bool(partial) and on
+        if on == self._visible and partial == self._partial:
             return
         self._visible = on
+        self._partial = partial
         self._apply_icon()
         if emit:
             self.toggled_visible.emit(self._visible)
 
     def _apply_icon(self) -> None:
-        self.setIcon(QIcon(_eye_pixmap(self._visible, self._icon_size)))
-        self.setToolTip(self._tip_hide if self._visible else self._tip_show)
+        self.setIcon(QIcon(_eye_pixmap(
+            self._visible, self._icon_size, partial=self._partial,
+        )))
+        if self._partial:
+            self.setToolTip(self._tip_partial)
+        else:
+            self.setToolTip(self._tip_hide if self._visible else self._tip_show)
 
     def _on_clicked(self) -> None:
-        self.setVisibleState(not self._visible)
+        if self._partial:
+            self.setVisibleState(True, partial=False)
+        else:
+            self.setVisibleState(not self._visible, partial=False)
 
 
 # --- Wire-mesh / solid fill toggle icons -----------------------------------
@@ -6897,7 +6949,7 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
                                *, initial_settings=None,
                                loaded_project=None,
                                project=None,
-                               project_path=None) -> "PdnViewer | None":
+                               project_path=None) -> PdnViewer | None:
         try:
             kwargs = {"metadata": metadata}
             if initial_settings is not None:
@@ -7884,6 +7936,16 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             if hasattr(self, attr):
                 delattr(self, attr)
 
+    def _clear_gl_mesh(self) -> None:
+        """Drop the GL heatmap mesh and the host-side upload cache.
+
+        ``GLMeshViewer.clear_mesh`` zeroes the GPU vertex count; if
+        ``_last_mesh_upload`` is left pointing at the previous arrays the
+        next render can skip :meth:`set_mesh` (identity match) while still
+        calling :meth:`set_values` — which then raises length mismatch."""
+        self._gl_viewer.clear_mesh()
+        self._last_mesh_upload = None
+
     def _no_pdn_visibility(self) -> bool:
         """Whether to use the 'blank board' layer / rail visibility defaults:
         no rails shown, and the top physical layer's all-copper turned on.
@@ -7905,6 +7967,8 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         saved_layers: dict[str, bool] = {}
         saved_layers2: dict[str, bool] = {}
         saved_rails: dict[str, bool] = {}
+        saved_subnets: dict[tuple[str, str], bool] = {}
+        saved_expanded: dict[str, bool] = {}
         if preserve_visibility:
             saved_layers = {
                 p: e.isVisibleState() for p, e in self._layer_eye_buttons
@@ -7915,6 +7979,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             saved_rails = {
                 r: e.isVisibleState() for r, e in self._rail_eye_buttons
             }
+            for rail, nets in getattr(self, "_subnet_eye_buttons", {}).items():
+                for net, eye in nets.items():
+                    saved_subnets[(rail, net)] = eye.isVisibleState()
+            saved_expanded = dict(getattr(self, "_rail_expanded", {}))
 
         while self.layer_list.count() > 1:
             self.layer_list.takeItem(self.layer_list.count() - 1)
@@ -7974,38 +8042,11 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             (len(self._physicals) + 1) * approx_row_h + 6,
         )
 
-        while self.rail_list.count() > 1:
-            self.rail_list.takeItem(self.rail_list.count() - 1)
-        self._rail_eye_buttons.clear()
-
-        _ground_rails = {"0v", "gnd", "ground", "vss"}
-        _no_pdn = self._no_pdn_visibility()
-        for rail in self._rails:
-            eye = EyeButton(visible=False)
-            eye.toggled_visible.connect(self._on_rail_eye_toggled)
-            row = self._build_layer_row_widget(
-                eye, swatch_color=None,
-                label_text=rail, bold=False,
-            )
-            item = QListWidgetItem()
-            item.setFlags(Qt.ItemIsEnabled)
-            self.rail_list.addItem(item)
-            item.setSizeHint(row.sizeHint())
-            self.rail_list.setItemWidget(item, row)
-            self._rail_eye_buttons.append((rail, eye))
-            if _no_pdn:
-                # Unsolved stub / no-PDN board → show no rails.
-                eye.setVisibleState(False, emit=False)
-            elif preserve_visibility and rail in saved_rails:
-                eye.setVisibleState(saved_rails[rail], emit=False)
-            else:
-                eye.setVisibleState(
-                    rail.lower() not in _ground_rails, emit=False,
-                )
-        self._sync_all_rails_eye()
-        approx_rail_h = self.rail_list.sizeHintForRow(0) or 22
-        self.rail_list.setFixedHeight(
-            (len(self._rails) + 1) * approx_rail_h + 6,
+        self._populate_rail_list(
+            preserve_visibility=preserve_visibility,
+            saved_rails=saved_rails,
+            saved_subnets=saved_subnets,
+            saved_expanded=saved_expanded,
         )
 
         has_rails = bool(self._rails)
@@ -8417,10 +8458,11 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             "PDN rails — tick one or more to show their copper. Each rail "
             "groups together nets bridged by a RESISTOR directive (e.g. "
             "selecting '+3V3' shows both +3V3 and 3V3_SW copper if L2 "
-            "bridges them). 'All Rails' toggles every rail at once."
+            "bridges them). Expand a rail (▶) to toggle individual subnet "
+            "nets. 'All Rails' toggles every rail at once."
         )
 
-        self._rail_eye_buttons: list[tuple[str, EyeButton]] = []
+        self._init_rail_list_state()
 
         self._all_rails_eye = EyeButton(visible=False)
         all_rails_row = self._build_layer_row_widget(
@@ -8435,37 +8477,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self.rail_list.setItemWidget(all_rails_item, all_rails_row)
         self._all_rails_eye.toggled_visible.connect(self._on_all_rails_toggled)
 
-        for rail in self._rails:
-            eye = EyeButton(visible=False)
-            eye.toggled_visible.connect(self._on_rail_eye_toggled)
-            row = self._build_layer_row_widget(
-                eye, swatch_color=None,
-                label_text=rail, bold=False,
-            )
-            item = QListWidgetItem()
-            item.setFlags(Qt.ItemIsEnabled)
-            self.rail_list.addItem(item)
-            item.setSizeHint(row.sizeHint())
-            self.rail_list.setItemWidget(item, row)
-            self._rail_eye_buttons.append((rail, eye))
-
-        # Default: every rail visible except generic ground names (GND,
-        # 0V, …) so a fresh import shows all power rails at once. An unsolved
-        # stub (Import without auto-solve) shows no rails — like a no-PDN
-        # board — until the user runs the solver.
-        _ground_rails = {"0v", "gnd", "ground", "vss"}
-        _no_pdn = self._no_pdn_visibility()
-        for rail, eye in self._rail_eye_buttons:
-            eye.setVisibleState(
-                (not _no_pdn) and rail.lower() not in _ground_rails,
-                emit=False,
-            )
-        self._sync_all_rails_eye()
-
-        approx_rail_h = self.rail_list.sizeHintForRow(0) or 22
-        self.rail_list.setFixedHeight(
-            (len(self._rails) + 1) * approx_rail_h + 6
-        )
+        self._populate_rail_list()
         side.addWidget(self.rail_list)
 
         side.addSpacing(8)
@@ -9017,6 +9029,300 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             layout.addWidget(fill_btn)
         return w
 
+    # --- Rails list (expandable subnet rows) ---------------------------------
+
+    def _init_rail_list_state(self) -> None:
+        """Allocate per-rail / per-subnet visibility state containers."""
+        self._rail_eye_buttons: list[tuple[str, EyeButton]] = []
+        self._subnet_eye_buttons: dict[str, dict[str, EyeButton]] = {}
+        # Hidden parent keeps subnet EyeButtons alive while their list rows
+        # are collapsed/removed — otherwise takeItem() deletes the row widget
+        # and the C++ EyeButton along with it.
+        self._subnet_eye_holder = QWidget(self)
+        self._subnet_eye_holder.setFixedSize(0, 0)
+        self._subnet_eye_holder.hide()
+        self._rail_expand_buttons: dict[str, QToolButton] = {}
+        self._rail_subnet_items: dict[str, list[QListWidgetItem]] = {}
+        self._rail_expanded: dict[str, bool] = {}
+        self._rail_list_items: dict[str, QListWidgetItem] = {}
+        self._pending_rail_items: list = []
+        self._pending_rail_list_items: dict[str, QListWidgetItem] = {}
+        self._pending_rail_expand_buttons: dict[str, QToolButton] = {}
+        self._pending_rail_subnet_items: dict[str, list[QListWidgetItem]] = {}
+        self._pending_rail_expanded: dict[str, bool] = {}
+
+    def _ground_rail_names(self) -> set[str]:
+        return {"0v", "gnd", "ground", "vss"}
+
+    def _default_rail_visible(self, rail: str) -> bool:
+        if self._no_pdn_visibility():
+            return False
+        return rail.lower() not in self._ground_rail_names()
+
+    def _build_rail_row_widget(
+        self,
+        eye: EyeButton,
+        *,
+        expand_btn: QToolButton | None = None,
+        label_text: str,
+        bold: bool = False,
+        indent: int = 0,
+    ) -> QWidget:
+        """Build a row for the Rails list: eye + name, expand on the right."""
+        w = QWidget()
+        w.setObjectName("layerRow")
+        w.setAttribute(Qt.WA_StyledBackground, True)
+        layout = QHBoxLayout(w)
+        layout.setContentsMargins(2 + indent, 1, 6, 1)
+        layout.setSpacing(4)
+        layout.addWidget(eye)
+        name_spacer = QLabel()
+        name_spacer.setFixedSize(14, 14)
+        layout.addWidget(name_spacer)
+        name = QLabel(label_text)
+        _fg = _T()["fg"]
+        name.setStyleSheet(
+            f"QLabel {{ color: {_fg}; font-weight: bold; }}"
+            if bold else f"QLabel {{ color: {_fg}; }}"
+        )
+        layout.addWidget(name)
+        layout.addStretch(1)
+        if expand_btn is not None:
+            layout.addWidget(expand_btn)
+        return w
+
+    def _detach_subnet_eyes(self, rail: str) -> None:
+        """Reparent subnet eyes off a list row before the row is destroyed."""
+        holder = getattr(self, "_subnet_eye_holder", None)
+        if holder is None:
+            return
+        for eye in self._subnet_eye_buttons.get(rail, {}).values():
+            if _qt_widget_alive(eye):
+                eye.setParent(holder)
+
+    def _silence_rail_list_widgets(self) -> None:
+        """Block signals on rail-list widgets about to be destroyed."""
+        for _name, eye in getattr(self, "_rail_eye_buttons", []):
+            if _qt_widget_alive(eye):
+                eye.blockSignals(True)
+        for btn in getattr(self, "_rail_expand_buttons", {}).values():
+            if _qt_widget_alive(btn):
+                btn.blockSignals(True)
+        for nets in getattr(self, "_subnet_eye_buttons", {}).values():
+            for eye in nets.values():
+                if _qt_widget_alive(eye):
+                    eye.blockSignals(True)
+
+    def _populate_rail_list(
+        self,
+        *,
+        preserve_visibility: bool = False,
+        saved_rails: dict[str, bool] | None = None,
+        saved_subnets: dict[tuple[str, str], bool] | None = None,
+        saved_expanded: dict[str, bool] | None = None,
+    ) -> None:
+        """Rebuild solved-rail rows (not including the 'All Rails' header)."""
+        self._silence_rail_list_widgets()
+        for rail in list(self._subnet_eye_buttons.keys()):
+            self._detach_subnet_eyes(rail)
+        while self.rail_list.count() > 1:
+            self.rail_list.takeItem(self.rail_list.count() - 1)
+        self._rail_eye_buttons.clear()
+        self._subnet_eye_buttons.clear()
+        self._rail_expand_buttons.clear()
+        self._rail_subnet_items.clear()
+        self._rail_list_items.clear()
+
+        saved_rails = saved_rails or {}
+        saved_subnets = saved_subnets or {}
+        if saved_expanded is not None:
+            self._rail_expanded = {
+                r: bool(saved_expanded[r])
+                for r in self._rails
+                if r in saved_expanded
+            }
+        else:
+            self._rail_expanded = {}
+
+        for rail in self._rails:
+            members = self._rail_to_members.get(rail, [rail])
+            has_subnets = len(members) > 1
+
+            eye = EyeButton(visible=False)
+            eye.toggled_visible.connect(
+                lambda on, r=rail: self._on_rail_eye_toggled(r, on),
+            )
+
+            expand_btn = None
+            expanded = bool(self._rail_expanded.get(rail, False))
+            if has_subnets:
+                expand_btn = QToolButton()
+                expand_btn.setCheckable(True)
+                expand_btn.setChecked(expanded)
+                expand_btn.setArrowType(
+                    Qt.DownArrow if expanded else Qt.RightArrow,
+                )
+                expand_btn.setFixedSize(14, 14)
+                expand_btn.setAutoRaise(True)
+                expand_btn.setFocusPolicy(Qt.NoFocus)
+                expand_btn.setCursor(Qt.PointingHandCursor)
+                expand_btn.setToolTip("Show/hide subnet nets")
+                expand_btn.toggled.connect(
+                    lambda exp, r=rail: self._on_rail_expand_toggled(r, exp),
+                )
+                self._rail_expand_buttons[rail] = expand_btn
+                self._rail_expanded[rail] = expanded
+
+            row = self._build_rail_row_widget(
+                eye,
+                expand_btn=expand_btn,
+                label_text=rail,
+                bold=False,
+            )
+            item = QListWidgetItem()
+            item.setFlags(Qt.ItemIsEnabled)
+            self.rail_list.addItem(item)
+            item.setSizeHint(row.sizeHint())
+            self.rail_list.setItemWidget(item, row)
+            self._rail_eye_buttons.append((rail, eye))
+            self._rail_list_items[rail] = item
+
+            if has_subnets:
+                self._subnet_eye_buttons[rail] = {}
+                for net in members:
+                    subnet_eye = EyeButton(
+                        parent=self._subnet_eye_holder,
+                        visible=False,
+                        tip_show=f"Show {net} copper",
+                        tip_hide=f"Hide {net} copper",
+                    )
+                    subnet_eye.toggled_visible.connect(
+                        lambda on, r=rail, n=net: self._on_subnet_eye_toggled(
+                            r, n, on,
+                        ),
+                    )
+                    self._subnet_eye_buttons[rail][net] = subnet_eye
+                    key = (rail, net)
+                    if preserve_visibility and key in saved_subnets:
+                        vis = saved_subnets[key]
+                    elif preserve_visibility and rail in saved_rails:
+                        vis = saved_rails[rail]
+                    else:
+                        vis = self._default_rail_visible(rail)
+                    subnet_eye.setVisibleState(vis, emit=False)
+                self._sync_rail_eye_from_subnets(rail)
+            else:
+                if preserve_visibility and rail in saved_rails:
+                    vis = saved_rails[rail]
+                else:
+                    vis = self._default_rail_visible(rail)
+                eye.setVisibleState(vis, emit=False)
+
+            if has_subnets and expanded:
+                self._insert_subnet_rows(rail, after_item=item)
+
+        self._sync_all_rails_eye()
+        self._update_rail_list_height()
+
+    def _insert_subnet_rows(
+        self, rail: str, *, after_item: QListWidgetItem,
+    ) -> None:
+        """Insert indented subnet rows directly below a parent rail row."""
+        if self._rail_subnet_items.get(rail):
+            return
+        members = self._rail_to_members.get(rail, [rail])
+        subnets = self._subnet_eye_buttons.get(rail, {})
+        items: list[QListWidgetItem] = []
+        row_idx = self.rail_list.row(after_item) + 1
+        for net in members:
+            eye = subnets.get(net)
+            if eye is None or not _qt_widget_alive(eye):
+                continue
+            is_primary = net == rail
+            subnet_row = self._build_rail_row_widget(
+                eye,
+                label_text=net,
+                bold=is_primary,
+                indent=18,
+            )
+            if is_primary:
+                tip = f"Primary net of rail {rail}"
+            else:
+                tip = (
+                    f"Subnet of rail {rail} — joined via a SERIES bridge"
+                )
+            subnet_row.setToolTip(tip)
+            item = QListWidgetItem()
+            item.setFlags(Qt.ItemIsEnabled)
+            self.rail_list.insertItem(row_idx, item)
+            item.setSizeHint(subnet_row.sizeHint())
+            self.rail_list.setItemWidget(item, subnet_row)
+            items.append(item)
+            row_idx += 1
+        self._rail_subnet_items[rail] = items
+
+    def _remove_subnet_rows(self, rail: str) -> None:
+        self._detach_subnet_eyes(rail)
+        for item in self._rail_subnet_items.pop(rail, []):
+            row = self.rail_list.row(item)
+            if row >= 0:
+                self.rail_list.takeItem(row)
+
+    def _update_rail_list_height(self) -> None:
+        if not hasattr(self, "rail_list"):
+            return
+        approx = self.rail_list.sizeHintForRow(0) or 22
+        self.rail_list.setFixedHeight(self.rail_list.count() * approx + 6)
+
+    def _fan_out_rail_eye_to_subnets(self, rail: str, on: bool) -> None:
+        for eye in self._subnet_eye_buttons.get(rail, {}).values():
+            if _qt_widget_alive(eye):
+                eye.setVisibleState(on, emit=False)
+
+    def _sync_rail_eye_from_subnets(self, rail: str) -> None:
+        subnets = self._subnet_eye_buttons.get(rail, {})
+        if not subnets:
+            return
+        alive = [
+            eye for eye in subnets.values()
+            if _qt_widget_alive(eye)
+        ]
+        if not alive:
+            return
+        on_count = sum(eye.isVisibleState() for eye in alive)
+        all_on = on_count == len(alive)
+        all_off = on_count == 0
+        partial = not all_on and not all_off
+        for name, eye in self._rail_eye_buttons:
+            if name == rail and _qt_widget_alive(eye):
+                eye.setVisibleState(
+                    not all_off, partial=partial, emit=False,
+                )
+                break
+
+    def _on_rail_expand_toggled(self, rail: str, expanded: bool) -> None:
+        self._rail_expanded[rail] = expanded
+        btn = self._rail_expand_buttons.get(rail)
+        if btn is not None and _qt_widget_alive(btn):
+            btn.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        parent_item = self._rail_list_items.get(rail)
+        if parent_item is None:
+            return
+        if expanded:
+            self._insert_subnet_rows(rail, after_item=parent_item)
+        else:
+            self._remove_subnet_rows(rail)
+        self._update_rail_list_height()
+
+    def _on_subnet_eye_toggled(self, rail: str, net: str, _on: bool) -> None:
+        eye = self._subnet_eye_buttons.get(rail, {}).get(net)
+        if eye is None or not _qt_widget_alive(eye):
+            return
+        self._sync_rail_eye_from_subnets(rail)
+        self._sync_all_rails_eye()
+        self._sync_rail_only_visibility()
+        self._render_with_busy_popup()
+
     def _on_layer_eye_toggled(self, _on: bool) -> None:
         """An individual layer's eye was clicked."""
         self._sync_all_layers_eye()
@@ -9176,30 +9482,62 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             self._refresh_overlay_geometry(self._visible_rails())
         self._run_with_busy_popup(_work)
 
-    def _on_rail_eye_toggled(self, _on: bool) -> None:
+    def _on_rail_eye_toggled(self, rail: str, on: bool) -> None:
         """An individual rail's eye was clicked."""
+        if not any(
+            name == rail and _qt_widget_alive(eye)
+            for name, eye in self._rail_eye_buttons
+        ):
+            return
+        self._fan_out_rail_eye_to_subnets(rail, on)
+        self._sync_rail_eye_from_subnets(rail)
         self._sync_all_rails_eye()
         self._sync_rail_only_visibility()
         self._render_with_busy_popup()
 
     def _on_all_rails_toggled(self, on: bool) -> None:
         """The "All Rails" eye was clicked — show or hide every rail."""
-        for _name, eye in self._rail_eye_buttons:
-            eye.setVisibleState(on, emit=False)
+        for name, eye in self._rail_eye_buttons:
+            if _qt_widget_alive(eye):
+                eye.setVisibleState(on, partial=False, emit=False)
+            self._fan_out_rail_eye_to_subnets(name, on)
+        self._sync_all_rails_eye()
         self._sync_rail_only_visibility()
         self._render_with_busy_popup()
 
     def _sync_all_rails_eye(self) -> None:
         """Reflect "any rail visible" in the All Rails eye state."""
-        any_visible = any(eye.isVisibleState()
-                          for _n, eye in self._rail_eye_buttons)
-        self._all_rails_eye.setVisibleState(any_visible, emit=False)
+        any_visible = False
+        any_hidden = False
+        for _n, eye in self._rail_eye_buttons:
+            if not _qt_widget_alive(eye):
+                continue
+            if eye.isVisibleState():
+                any_visible = True
+            else:
+                any_hidden = True
+        partial = any_visible and any_hidden
+        if _qt_widget_alive(self._all_rails_eye):
+            self._all_rails_eye.setVisibleState(
+                any_visible, partial=partial, emit=False,
+            )
 
     def _visible_rails(self) -> list[str]:
         """Names of the rails currently visible (eye open), in the
         sort order they were registered (matches the rail list UI)."""
-        return [name for name, eye in self._rail_eye_buttons
-                if eye.isVisibleState()]
+        out: list[str] = []
+        for name, eye in self._rail_eye_buttons:
+            subnets = self._subnet_eye_buttons.get(name)
+            if subnets:
+                if any(
+                    e.isVisibleState()
+                    for e in subnets.values()
+                    if _qt_widget_alive(e)
+                ):
+                    out.append(name)
+            elif _qt_widget_alive(eye) and eye.isVisibleState():
+                out.append(name)
+        return out
 
     def _rail_only_meaningful(self) -> bool:
         """True iff any currently-visible rail has SERIES-bridged sibling
@@ -10299,20 +10637,20 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             rail_names = [rail_names] if rail_names else []
         if not rail_names:
             return []
-        rail_only = self.rail_only_box.isChecked()
-        members: list[str] = []
-        seen: set[str] = set()
-        for rail_name in rail_names:
-            full = self._rail_to_members.get(rail_name, [rail_name])
-            if rail_only and rail_name in full:
-                picks: list[str] = [rail_name]
-            else:
-                picks = list(full)
-            for m in picks:
-                if m not in seen:
-                    seen.add(m)
-                    members.append(m)
-        return members
+        subnet_visible = {
+            rail: {
+                net: eye.isVisibleState()
+                for net, eye in nets.items()
+                if _qt_widget_alive(eye)
+            }
+            for rail, nets in self._subnet_eye_buttons.items()
+        }
+        return resolve_rail_member_nets(
+            list(rail_names),
+            self._rail_to_members,
+            subnet_visible,
+            rail_only=self.rail_only_box.isChecked(),
+        )
 
     # Power-density thresholds for classifying a solved mesh as "no current".
     # A dead-end island's current is ~0 (numerical noise), so its peak power
@@ -10642,6 +10980,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             # GPU re-upload. vs (above) still aligns: the loop visited the
             # exact same (phys, net) blocks in the same order and extrude mode.
             xs, ys, zs, tris, no_current = cached_geom[1]
+            if vs.size != xs.size:
+                # Values/geometry drift (e.g. stale cache) — rebuild geometry.
+                reuse_geom = False
+                self._rail_geom_cache = None
+                return self._build_rail_arrays(
+                    phys_list, rail_names, derive_fn,
+                )
         else:
             if xs_parts:
                 xs = np.concatenate(xs_parts)
@@ -11277,7 +11622,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             getattr(self.solution, "solver_info", {}).get("stub", False)
         )
         if not phys_list or not rails:
-            self._gl_viewer.clear_mesh()
+            self._clear_gl_mesh()
             self._gl_viewer.clear_outlines()
             self._gl_viewer.clear_cylinders()
             self._gl_viewer.clear_arrows()
@@ -11317,7 +11662,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._layer_probes = layer_probes
         _mark("build_rail_arrays")
         if xs.size == 0 or tris.size == 0:
-            self._gl_viewer.clear_mesh()
+            self._clear_gl_mesh()
             self._gl_viewer.clear_outlines()
             self._gl_viewer.clear_arrows()
             self._gl_viewer.clear_series_bars()
@@ -11595,9 +11940,11 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         # (holding the references so a garbage-collected array's id can't be
         # reused and cause a false match).
         _last = getattr(self, "_last_mesh_upload", None)
+        _gl_verts = getattr(self._gl_viewer, "_n_vertices", 0)
         if not (_last is not None
                 and xs_arr is _last[0] and ys_arr is _last[1]
-                and tris_arr is _last[2] and zs is _last[3]):
+                and tris_arr is _last[2] and zs is _last[3]
+                and _gl_verts == xs_arr.size):
             self._gl_viewer.set_mesh(xs_arr, ys_arr, tris_arr,
                                       data_bounds=self._data_bounds,
                                       zs=zs.astype(np.float32))
@@ -15827,7 +16174,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         data = self._layer_strtrees().get(int(layer_id))
         if data is None:
             return None
-        shapes = data["shapes"]
+        data["shapes"]
         polys = data["polys"]
         nets = data["nets"]
         try:
@@ -18838,18 +19185,16 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         """Whether an editor directive belongs to a currently-visible rail.
 
         Source / sink markers track the rail eyes the same way the solved
-        markers do: a directive on a hidden rail drops out, so when only one
-        rail is shown its return-path markers no longer bleed in alongside
-        every other rail's. A directive that isn't part of any solved rail
+        markers do: a directive on a hidden rail (or hidden subnet within a
+        rail) drops out, so when only one rail is shown its return-path
+        markers no longer bleed in alongside every other rail's. A directive that isn't part of any solved rail
         yet (freshly placed, not-yet-resolved) always shows so the user can
         still see what they've just dropped while editing."""
         net = d.p_net
         if not net:
             return True
         conn = self._connected_nets(net)
-        visible_members: set[str] = set()
-        for name in self._visible_rails():
-            visible_members.update(self._rail_to_members.get(name, [name]))
+        visible_members = set(self._effective_rail_members(self._visible_rails()))
         if conn & visible_members:
             return True
         solved_members: set[str] = set()
@@ -19055,16 +19400,49 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             row = self.rail_list.row(item)
             if row >= 0:
                 self.rail_list.takeItem(row)
-        self._pending_rail_items: list = []
+        for items in getattr(self, "_pending_rail_subnet_items", {}).values():
+            for item in items:
+                row = self.rail_list.row(item)
+                if row >= 0:
+                    self.rail_list.takeItem(row)
+        self._pending_rail_items = []
+        self._pending_rail_list_items = {}
+        self._pending_rail_expand_buttons = {}
+        self._pending_rail_subnet_items = {}
         self._pending_rails = self._editor_pending_rails()
         t = _T()
         for name in sorted(self._pending_rails):
+            members = self._pending_rails[name]
+            has_subnets = len(members) > 1
             eye = EyeButton(visible=False)
             eye.setEnabled(False)
             eye.setToolTip("Unsolved rail — press Resolve to compute it.")
-            row = self._build_layer_row_widget(
-                eye, swatch_color=None,
-                label_text=f"{name}  (unsolved)", bold=False,
+            expand_btn = None
+            expanded = bool(self._pending_rail_expanded.get(name, False))
+            if has_subnets:
+                expand_btn = QToolButton()
+                expand_btn.setCheckable(True)
+                expand_btn.setChecked(expanded)
+                expand_btn.setArrowType(
+                    Qt.DownArrow if expanded else Qt.RightArrow,
+                )
+                expand_btn.setFixedSize(14, 14)
+                expand_btn.setAutoRaise(True)
+                expand_btn.setFocusPolicy(Qt.NoFocus)
+                expand_btn.setCursor(Qt.PointingHandCursor)
+                expand_btn.setToolTip("Show/hide subnet nets (unsolved)")
+                expand_btn.toggled.connect(
+                    lambda exp, n=name: self._on_pending_rail_expand_toggled(
+                        n, exp,
+                    ),
+                )
+                self._pending_rail_expand_buttons[name] = expand_btn
+                self._pending_rail_expanded[name] = expanded
+            row = self._build_rail_row_widget(
+                eye,
+                expand_btn=expand_btn,
+                label_text=f"{name}  (unsolved)",
+                bold=False,
             )
             row.setStyleSheet(
                 f"color: {t['fg_muted']}; font-style: italic;"
@@ -19075,8 +19453,61 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             item.setSizeHint(row.sizeHint())
             self.rail_list.setItemWidget(item, row)
             self._pending_rail_items.append(item)
-        approx = self.rail_list.sizeHintForRow(0) or 22
-        self.rail_list.setFixedHeight(self.rail_list.count() * approx + 6)
+            self._pending_rail_list_items[name] = item
+            if has_subnets and expanded:
+                self._insert_pending_subnet_rows(name, after_item=item)
+        self._update_rail_list_height()
+
+    def _insert_pending_subnet_rows(
+        self, rail: str, *, after_item: QListWidgetItem,
+    ) -> None:
+        if self._pending_rail_subnet_items.get(rail):
+            return
+        members = self._pending_rails.get(rail, [rail])
+        items: list[QListWidgetItem] = []
+        row_idx = self.rail_list.row(after_item) + 1
+        t = _T()
+        for net in members:
+            eye = EyeButton(visible=False)
+            eye.setEnabled(False)
+            is_primary = net == rail
+            subnet_row = self._build_rail_row_widget(
+                eye,
+                label_text=net,
+                bold=is_primary,
+                indent=18,
+            )
+            subnet_row.setStyleSheet(
+                f"color: {t['fg_muted']}; font-style: italic;"
+            )
+            subnet_row.setToolTip(
+                f"Unsolved subnet of rail {rail} — press Resolve to compute it."
+            )
+            item = QListWidgetItem()
+            item.setFlags(Qt.ItemIsEnabled)
+            self.rail_list.insertItem(row_idx, item)
+            item.setSizeHint(subnet_row.sizeHint())
+            self.rail_list.setItemWidget(item, subnet_row)
+            items.append(item)
+            row_idx += 1
+        self._pending_rail_subnet_items[rail] = items
+
+    def _on_pending_rail_expand_toggled(self, rail: str, expanded: bool) -> None:
+        self._pending_rail_expanded[rail] = expanded
+        btn = self._pending_rail_expand_buttons.get(rail)
+        if btn is not None:
+            btn.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        parent_item = self._pending_rail_list_items.get(rail)
+        if parent_item is None:
+            return
+        if expanded:
+            self._insert_pending_subnet_rows(rail, after_item=parent_item)
+        else:
+            for item in self._pending_rail_subnet_items.pop(rail, []):
+                row = self.rail_list.row(item)
+                if row >= 0:
+                    self.rail_list.takeItem(row)
+        self._update_rail_list_height()
 
     def _unnamed_copper_directives(self) -> list:
         """Editor directives whose ``p_net`` / ``n_net`` is still the
