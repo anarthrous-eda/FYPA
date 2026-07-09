@@ -22,6 +22,7 @@ from fypa.altium.extract import (
 from fypa.altium_geometry import (
     MULTI_LAYER_PAD_LAYER_ID,
     build_layer_geometries,
+    build_layer_geometry,
     build_net_layer_shapes,
 )
 
@@ -183,3 +184,12 @@ def test_multilayer_track_in_build_layer_geometries_signal_layers_only():
     assert not layers[32].shape.is_empty
     assert layers[39].is_plane
     assert (39, 0) not in build_net_layer_shapes(proj, [1, 39, 32])
+
+
+def test_build_layer_geometry_without_shared_cache_includes_multilayer():
+    proj = _proj(tracks=(_horizontal_track(MULTI_LAYER_PAD_LAYER_ID, 0),))
+    top = build_layer_geometry(proj, 1, [1, 32])
+    bottom = build_layer_geometry(proj, 32, [1, 32])
+
+    assert not top.shape.is_empty
+    assert not bottom.shape.is_empty
