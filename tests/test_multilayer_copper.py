@@ -193,3 +193,30 @@ def test_build_layer_geometry_without_shared_cache_includes_multilayer():
 
     assert not top.shape.is_empty
     assert not bottom.shape.is_empty
+
+
+def test_multilayer_primitive_layer_ids_signal_layers_only():
+    from fypa.altium.loader import _primitive_visible_layer_ids
+
+    enabled = [1, 39, 32]
+    plane = {39}
+    lids = _primitive_visible_layer_ids(MULTI_LAYER_PAD_LAYER_ID, 0, enabled, plane)
+    assert lids == [1, 32]
+
+
+def test_multilayer_track_primitive_in_solve_metadata():
+    from fypa.altium.annotations import AnnotationResult
+    from fypa.altium.loader import LoadedProject, build_solve_metadata
+    from fypa.altium_geometry import build_per_net_geometry_layers
+
+    proj = _proj(
+        nets=(RawNet("SIG"), RawNet("GND")),
+        stackup=_stackup_with_internal_plane(),
+        tracks=(_horizontal_track(MULTI_LAYER_PAD_LAYER_ID, 0),),
+    )
+    loaded = LoadedProject(proj, AnnotationResult(directives=(), errors=()))
+    per_net = build_per_net_geometry_layers(proj)
+    md = build_solve_metadata(loaded, None, per_net_layers=per_net)
+    tracks = md["primitives"]["tracks"]
+    assert len(tracks) == 1
+    assert tracks[0]["layer_ids"] == [1, 32]
