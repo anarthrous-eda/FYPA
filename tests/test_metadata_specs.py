@@ -119,3 +119,65 @@ def test_passive_merge_p_when_shared_pad():
     assert pnames == ["P"]
     n_names = [p[0] for p in specs[0]["port_defs"] if p[0].startswith("N")]
     assert len(n_names) == 2
+
+
+def test_multi_role_same_designator_merges_into_one_spec():
+    """SERIES + SINK on one part → one stacked symbol, not two overlapping nodes."""
+    directives = [
+        {
+            "role": "SERIES",
+            "designator": "U2",
+            "channel_index": 1,
+            "terminals": {
+                "P": {"pins": [{"net": "VIN", "pad": "1"}]},
+                "N": {"pins": [{"net": "VOUT", "pad": "2"}]},
+            },
+        },
+        {
+            "role": "SINK",
+            "designator": "U2",
+            "channel_index": 2,
+            "terminals": {
+                "P": {"pins": [{"net": "VCC", "pad": "3"}]},
+                "N": {"pins": [{"net": "GND", "pad": "4"}]},
+            },
+        },
+    ]
+    specs = directives_to_component_specs(directives, [], {})
+    assert len(specs) == 1
+    spec = specs[0]
+    assert spec["node_id"] == "U2"
+    sections = spec.get("sections")
+    assert sections is not None
+    assert len(sections) == 2
+    assert sections[0]["role"] in ("SERIES", "RESISTOR")
+    assert sections[1]["role"] == "SINK"
+    assert spec["port_roles"]["P1"] in ("SERIES", "RESISTOR")
+    assert spec["port_roles"]["P2"] == "SINK"
+
+
+def test_multi_role_sections_sorted_by_channel_index():
+    directives = [
+        {
+            "role": "SINK",
+            "designator": "U2",
+            "channel_index": 2,
+            "terminals": {
+                "P": {"pins": [{"net": "VCC", "pad": "3"}]},
+                "N": {"pins": [{"net": "GND", "pad": "4"}]},
+            },
+        },
+        {
+            "role": "SERIES",
+            "designator": "U2",
+            "channel_index": 1,
+            "terminals": {
+                "P": {"pins": [{"net": "VIN", "pad": "1"}]},
+                "N": {"pins": [{"net": "VOUT", "pad": "2"}]},
+            },
+        },
+    ]
+    specs = directives_to_component_specs(directives, [], {})
+    sections = specs[0]["sections"]
+    assert sections[0]["role"] in ("SERIES", "RESISTOR")
+    assert sections[1]["role"] == "SINK"

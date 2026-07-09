@@ -42,9 +42,10 @@ def assign_stacked_stub_lengths(ports: list[TopologyPort]) -> None:
 
 def _port_vertical_bias(port: TopologyPort, role: str) -> str:
     """How a port's wire leaves the symbol edge: up, down, or horizontally."""
+    port_role = port.role or role
     if port.net == GND_NET:
         return "down"
-    if role == "REGULATOR" and port.side == "left" and is_power_input_port(role, port.terminal):
+    if port_role == "REGULATOR" and port.side == "left" and is_power_input_port(port_role, port.terminal):
         return "up"
     return "horizontal"
 
