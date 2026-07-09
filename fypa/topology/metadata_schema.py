@@ -56,6 +56,14 @@ class ResolvedPortDict(TypedDict):
 # ``port_defs`` entries: (terminal name, left/right side, sort key).
 PortDef = tuple[str, str, int]
 
+# One role block inside a multi-role component symbol.
+class RoleSection(TypedDict):
+    role: str
+    port_defs: list[PortDef]
+    terms: dict[str, TerminalDict]
+    port_directives: dict[str, DirectiveDict]
+    directives: list[DirectiveDict]
+
 
 class NodeSpec(TypedDict):
     """One placed component derived from directive metadata."""
@@ -73,6 +81,8 @@ class NodeSpec(TypedDict):
     directive: DirectiveDict
     directives: list[DirectiveDict]
     resolved_ports: NotRequired[dict[str, ResolvedPort]]
+    sections: NotRequired[list[RoleSection]]
+    port_roles: NotRequired[dict[str, str]]
 
 
 class TopologyMetadata(TypedDict, total=False):

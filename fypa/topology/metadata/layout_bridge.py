@@ -19,6 +19,10 @@ from fypa.topology.metadata.specs import (
     driven_power_nets,
     jump_row_for_directive,
     natural_sort_key,
+    spec_has_role,
+    spec_has_series_role,
+    spec_port_role,
+    spec_series_terms,
 )
 from fypa.topology.metadata.tooltips import port_tooltip
 from fypa.topology.metadata_schema import NodeSpec, TerminalDict, TopologyMetadata
@@ -68,8 +72,8 @@ def _has_source_rail_p_input(
     source_ids: set[str],
     outputs_by_net: dict[str, list[str]],
 ) -> bool:
-    """True when a P port is fed directly from a SOURCE output."""
-    for pname, term in (spec.get("terms") or {}).items():
+    """True when a series P port is fed directly from a SOURCE output."""
+    for pname, term in spec_series_terms(spec):
         if not pname.startswith("P") or not term or is_ideal_return(term):
             continue
         flow_net = _column_flow_net(term)
@@ -126,7 +130,7 @@ def _detect_loop_series_parents(
     loop_parent: dict[str, str] = {}
     spec_by_id = {s["node_id"]: s for s in node_specs}
     for s in node_specs:
-        if s["role"] not in ("RESISTOR", "SERIES"):
+        if not spec_has_series_role(s):
             continue
         child_id = s["node_id"]
         for parent_id, parent in spec_by_id.items():
@@ -134,7 +138,7 @@ def _detect_loop_series_parents(
                 continue
             from_parent = False
             to_parent = False
-            for pname, term in (s["terms"] or {}).items():
+            for pname, term in spec_series_terms(s):
                 if not term or is_ideal_return(term):
                     continue
                 flow_net = _column_flow_net(term)
@@ -149,7 +153,10 @@ def _detect_loop_series_parents(
             if from_parent and to_parent:
                 loop_parent[child_id] = parent_id
                 break
-    source_ids = {s["node_id"] for s in node_specs if s["role"] in ("SOURCE", "REGULATOR")}
+    source_ids = {
+        s["node_id"] for s in node_specs
+        if spec_has_role(s, ("SOURCE", "REGULATOR"))
+    }
     return _resolve_mutual_loop_parents(loop_parent, node_specs, source_ids, outputs_by_net)
 
 
@@ -162,7 +169,7 @@ def _passive_upstream_cols(
 ) -> list[int]:
     """Column indices of nodes driving this passive's P-side inputs (excl. loop-back)."""
     upstream: list[int] = []
-    for pname, term in (spec.get("terms") or {}).items():
+    for pname, term in spec_series_terms(spec):
         if not term or is_ideal_return(term) or not pname.startswith("P"):
             continue
         flow_net = _column_flow_net(term)
@@ -185,7 +192,7 @@ def _passive_downstream_cols(
 ) -> list[int]:
     """Column indices of nodes fed from this passive's N-side outputs."""
     downstream: list[int] = []
-    for pname, term in (spec.get("terms") or {}).items():
+    for pname, term in spec_series_terms(spec):
         if not term or is_ideal_return(term) or not pname.startswith("N"):
             continue
         flow_net = _column_flow_net(term)
@@ -313,7 +320,11 @@ def _orient_loop_series_ports(
         loop_children[parent_id].append(child_id)
 
     for s in node_specs:
-        if s["role"] not in ("RESISTOR", "SERIES"):
+        # Multi-role composites lay out their rows from the per-section
+        # port_defs, so rewriting the composite-level sides/sort keys here
+        # would have no visual effect and would corrupt the section-offset
+        # sort-key scheme. The single-role reorder below doesn't apply.
+        if not spec_has_series_role(s) or s.get("sections"):
             continue
         nid = s["node_id"]
         if nid not in loop_parent:
@@ -342,7 +353,7 @@ def _orient_loop_series_ports(
         ] + other_ports
 
     for s in node_specs:
-        if s["role"] not in ("RESISTOR", "SERIES"):
+        if not spec_has_series_role(s) or s.get("sections"):
             continue
         nid = s["node_id"]
         children = loop_children.get(nid)
@@ -437,7 +448,7 @@ def _push_passive_load_columns(
 ) -> None:
     """Loads on a single-channel passive's N net sit one column right of the bridge."""
     for s in node_specs:
-        if s["role"] not in ("RESISTOR", "SERIES"):
+        if not spec_has_series_role(s):
             continue
         nid = s["node_id"]
         if nid in loop_parent:
@@ -446,7 +457,7 @@ def _push_passive_load_columns(
             continue
         n_terms = [
             pname
-            for pname, term in (s.get("terms") or {}).items()
+            for pname, term in spec_series_terms(s)
             if pname.startswith("N") and term and not is_ideal_return(term)
         ]
         if len(n_terms) != 1:
@@ -480,12 +491,13 @@ def _propagation_edges(
     for s in node_specs:
         nid = s["node_id"]
         for pname, side, _ in s["port_defs"]:
-            if not is_output_port(s["role"], pname, side):
+            port_role = spec_port_role(s, pname)
+            if not is_output_port(port_role, pname, side):
                 continue
             term = (s["terms"] or {}).get(pname)
             if is_ideal_return(term):
                 continue
-            flow_net = _column_net(s["role"], term, net_to_rail, terminal=pname)
+            flow_net = _column_net(port_role, term, net_to_rail, terminal=pname)
             if not flow_net or flow_net == GND_NET:
                 continue
             for other in inputs_by_net.get(flow_net, []):
@@ -568,14 +580,15 @@ def assign_columns(
             term = (s["terms"] or {}).get(pname)
             if is_ideal_return(term):
                 continue
-            flow_net = _column_net(s["role"], term, net_to_rail, terminal=pname)
+            port_role = spec_port_role(s, pname)
+            flow_net = _column_net(port_role, term, net_to_rail, terminal=pname)
             if not flow_net or flow_net == GND_NET:
                 continue
-            if is_output_port(s["role"], pname, side):
+            if is_output_port(port_role, pname, side):
                 outputs_by_net[flow_net].append(nid)
             else:
                 inputs_by_net[flow_net].append(nid)
-            if not is_output_port(s["role"], pname, side):
+            if not is_output_port(port_role, pname, side):
                 cn = canonical_net(terminal_net(term), net_to_rail)
                 if cn and cn != GND_NET:
                     inputs_by_canonical[cn].append(nid)
@@ -595,12 +608,13 @@ def assign_columns(
             nid = s["node_id"]
             base = col.get(nid, 0)
             for pname, side, _ in s["port_defs"]:
-                if not is_output_port(s["role"], pname, side):
+                port_role = spec_port_role(s, pname)
+                if not is_output_port(port_role, pname, side):
                     continue
                 term = (s["terms"] or {}).get(pname)
                 if is_ideal_return(term):
                     continue
-                flow_net = _column_net(s["role"], term, net_to_rail, terminal=pname)
+                flow_net = _column_net(port_role, term, net_to_rail, terminal=pname)
                 if not flow_net or flow_net == GND_NET:
                     continue
                 for other in inputs_by_net.get(flow_net, []):
@@ -624,7 +638,7 @@ def assign_columns(
         col[child_id] = col.get(parent_id, 0) + 1
 
     for s in node_specs:
-        if s["role"] not in ("RESISTOR", "SERIES"):
+        if not spec_has_series_role(s):
             continue
         nid = s["node_id"]
         if nid in loop_parent:
@@ -634,7 +648,7 @@ def assign_columns(
             col[nid] = min(col.get(nid, 0), max(upstream_cols) + 1)
 
     for s in node_specs:
-        if s["role"] not in ("RESISTOR", "SERIES"):
+        if not spec_has_series_role(s):
             continue
         _apply_passive_column_col(
             s,
@@ -648,12 +662,12 @@ def assign_columns(
     # Parallel taps on the P-side rail sit to the right of the bridge (not
     # downstream loads on the N-side nets).
     for s in node_specs:
-        if s["role"] not in ("RESISTOR", "SERIES"):
+        if not spec_has_series_role(s):
             continue
         nid = s["node_id"]
         rcol = col.get(nid, 0)
         downstream: set[str] = set()
-        for pname, term in (s["terms"] or {}).items():
+        for pname, term in spec_series_terms(s):
             if not term or is_ideal_return(term) or not pname.startswith("N"):
                 continue
             n_net = _column_flow_net(term)
@@ -662,7 +676,7 @@ def assign_columns(
             for other in inputs_by_net.get(n_net, []):
                 if other != nid:
                     downstream.add(other)
-        for pname, term in (s["terms"] or {}).items():
+        for pname, term in spec_series_terms(s):
             if not term or is_ideal_return(term):
                 continue
             if not pname.startswith("P"):
@@ -689,12 +703,13 @@ def assign_columns(
             nid = s["node_id"]
             base = col.get(nid, 0)
             for pname, side, _ in s["port_defs"]:
-                if not is_output_port(s["role"], pname, side):
+                port_role = spec_port_role(s, pname)
+                if not is_output_port(port_role, pname, side):
                     continue
                 term = (s["terms"] or {}).get(pname)
                 if is_ideal_return(term):
                     continue
-                flow_net = _column_net(s["role"], term, net_to_rail, terminal=pname)
+                flow_net = _column_net(port_role, term, net_to_rail, terminal=pname)
                 if not flow_net or flow_net == GND_NET:
                     continue
                 for other in inputs_by_net.get(flow_net, []):
@@ -713,7 +728,7 @@ def assign_columns(
         col[child_id] = col.get(parent_id, 0) + 1
 
     for s in node_specs:
-        if s["role"] not in ("RESISTOR", "SERIES"):
+        if not spec_has_series_role(s):
             continue
         _apply_passive_column_col(
             s,
@@ -752,7 +767,7 @@ def assign_columns(
     _orient_loop_series_ports(node_specs, col, loop_parent, outputs_by_net, inputs_by_net)
 
     for s in node_specs:
-        if s["role"] not in ("RESISTOR", "SERIES"):
+        if not spec_has_series_role(s):
             continue
         nid = s["node_id"]
         if nid in loop_parent:

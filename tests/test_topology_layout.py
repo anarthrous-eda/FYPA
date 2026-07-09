@@ -7,7 +7,7 @@ import pickle
 from fypa.topology import build_topology_model, find_component_at
 from fypa.topology.hit_test import find_wire_at, topology_net_at, topology_tooltip_at
 from fypa.topology.render import render_net_highlight_svg
-from fypa.topology.constants import MIN_PARALLEL_GAP, NODE_W, PORT_WIRE_STUB
+from fypa.topology.constants import HEADER_H, MIN_PARALLEL_GAP, NODE_W, PORT_WIRE_STUB
 from tests.topology_fixtures import project_b_compact_metadata, load_topology_fixture
 
 
@@ -463,3 +463,61 @@ def test_topology_project_b_hub_gutter_wide_enough():
                 assert not (d1.x <= nx <= u_stack.x), (
                     f"bus_x={bx} inside node {n.designator}"
                 )
+
+
+def test_multi_role_stacked_symbol_geometry():
+    """Section bands tile the composite symbol; each port sits in its own band."""
+    meta = {
+        "directives": [
+            {
+                "role": "SOURCE",
+                "designator": "J1",
+                "label": "J1",
+                "value_str": "5 V",
+                "terminals": {
+                    "P": {"requested_net": "VIN", "pins": [{"net": "VIN", "pad": "1"}]},
+                    "N": {"ideal_return": True, "pin_count": 0, "pins": []},
+                },
+            },
+            {
+                "role": "SERIES",
+                "designator": "U2",
+                "label": "U2",
+                "channel_index": 1,
+                "terminals": {
+                    "P": {"requested_net": "VIN", "pins": [{"net": "VIN", "pad": "1"}]},
+                    "N": {"requested_net": "VOUT", "pins": [{"net": "VOUT", "pad": "2"}]},
+                },
+            },
+            {
+                "role": "SINK",
+                "designator": "U2",
+                "label": "U2",
+                "channel_index": 2,
+                "terminals": {
+                    "P": {"requested_net": "VCC", "pins": [{"net": "VCC", "pad": "3"}]},
+                    "N": {"requested_net": "GND", "pins": [{"net": "GND", "pad": "4"}]},
+                },
+            },
+        ],
+    }
+    model = build_topology_model(meta)
+    u2_nodes = [n for n in model.nodes if n.designator == "U2"]
+    assert len(u2_nodes) == 1
+    u2 = u2_nodes[0]
+    assert [s.role for s in u2.sections] == ["SERIES", "SINK"]
+
+    # Bands start at the symbol top and tile it exactly.
+    assert u2.sections[0].y == 0.0
+    for above, below in zip(u2.sections, u2.sections[1:]):
+        assert above.y + above.height == below.y
+    last = u2.sections[-1]
+    assert last.y + last.height == u2.height
+
+    # Every port lands inside its own role band, below the band's header.
+    assert u2.ports
+    for port in u2.ports:
+        sec = next(s for s in u2.sections if s.role == port.role)
+        assert u2.y + sec.y + HEADER_H < port.y < u2.y + sec.y + sec.height, (
+            f"port {port.terminal} ({port.role}) outside its section band"
+        )

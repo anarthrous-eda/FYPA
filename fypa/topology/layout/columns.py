@@ -18,9 +18,12 @@ from fypa.topology.constants import (
 from fypa.topology.layout.stubs import assign_edge_wire_columns, assign_stacked_stub_lengths
 from fypa.topology.layout.vertical_align import (
     assign_vertical_positions,
+    composite_node_height,
     node_height,
     port_layout_rows,
+    section_y_offsets,
 )
+from fypa.topology.metadata.specs import spec_port_role
 from fypa.topology.metadata.layout_bridge import (
     is_return_port_row,
     jump_row_for_directive,
@@ -35,7 +38,7 @@ from fypa.topology.placement import (
     plan_signal_buses,
 )
 from fypa.topology.terminal_roles import is_power_input_port
-from fypa.topology.types import TopologyNode, TopologyPort
+from fypa.topology.types import NodeSection, TopologyNode, TopologyPort
 
 
 def _col_gap_for_gutter_slots(n_slots: int, *, gnd_reserve: bool = True) -> float:
@@ -131,9 +134,13 @@ def _place_columns(
     all_ports: list[TopologyPort] = []
     for c in range(max_col + 1):
         for s in by_col.get(c, []):
-            visible_ports = s["port_defs"]
-            n_layout_rows, return_row_map = port_layout_rows(visible_ports)
-            nh = node_height(n_layout_rows)
+            sections = s.get("sections")
+            if sections:
+                nh = composite_node_height(sections)
+            else:
+                visible_ports = s["port_defs"]
+                n_layout_rows, _ = port_layout_rows(visible_ports)
+                nh = node_height(n_layout_rows)
             nx = col_x[c]
             ny = y_assign[s["node_id"]]
             role = s["role"]
@@ -149,32 +156,72 @@ def _place_columns(
                 config_label="",
                 has_error=s["has_error"],
                 tooltip=s.get("tooltip", ""),
-                single_net=is_single_net_node(role, visible_ports),
+                single_net=is_single_net_node(role, s["port_defs"]) if not sections else False,
                 bounds=(nx, ny, NODE_W, nh),
                 jump_row=jump_row_for_directive(s["directive"]),
             )
             resolved_ports = s.get("resolved_ports") or {}
-            sorted_ports = sorted(visible_ports, key=lambda t: t[2])
-            for pname, side, sort_key in sorted_ports:
-                resolved = resolved_ports.get(pname)
-                if resolved is None:
-                    continue
-                row_i = sort_key if not is_return_port_row(sort_key) else return_row_map[sort_key]
-                py = ny + HEADER_H + BODY_PAD + row_i * PORT_ROW_H + PORT_ROW_H / 2
-                px = nx if side == "left" else nx + NODE_W
-                port = TopologyPort(
-                    terminal=pname,
-                    net=resolved.wnet,
-                    label=resolved.plabel,
-                    side=side,
-                    x=px,
-                    y=py,
-                    node_id=s["node_id"],
-                    is_power_input=is_power_input_port(role, pname),
-                    tooltip=resolved.tooltip,
-                )
-                node.ports.append(port)
-                all_ports.append(port)
+            if sections:
+                for sec, sec_y, sec_h in section_y_offsets(sections):
+                    node.sections.append(
+                        NodeSection(role=sec["role"], y=sec_y, height=sec_h),
+                    )
+                    n_rows, return_row_map = port_layout_rows(sec["port_defs"])
+                    sorted_ports = sorted(sec["port_defs"], key=lambda t: t[2])
+                    for pname, side, sort_key in sorted_ports:
+                        resolved = resolved_ports.get(pname)
+                        if resolved is None:
+                            continue
+                        row_i = (
+                            sort_key
+                            if not is_return_port_row(sort_key)
+                            else return_row_map[sort_key]
+                        )
+                        py = (
+                            ny + sec_y + HEADER_H + BODY_PAD
+                            + row_i * PORT_ROW_H + PORT_ROW_H / 2
+                        )
+                        px = nx if side == "left" else nx + NODE_W
+                        port_role = spec_port_role(s, pname)
+                        port = TopologyPort(
+                            terminal=pname,
+                            net=resolved.wnet,
+                            label=resolved.plabel,
+                            side=side,
+                            x=px,
+                            y=py,
+                            node_id=s["node_id"],
+                            role=port_role,
+                            is_power_input=is_power_input_port(port_role, pname),
+                            tooltip=resolved.tooltip,
+                        )
+                        node.ports.append(port)
+                        all_ports.append(port)
+            else:
+                visible_ports = s["port_defs"]
+                n_layout_rows, return_row_map = port_layout_rows(visible_ports)
+                sorted_ports = sorted(visible_ports, key=lambda t: t[2])
+                for pname, side, sort_key in sorted_ports:
+                    resolved = resolved_ports.get(pname)
+                    if resolved is None:
+                        continue
+                    row_i = sort_key if not is_return_port_row(sort_key) else return_row_map[sort_key]
+                    py = ny + HEADER_H + BODY_PAD + row_i * PORT_ROW_H + PORT_ROW_H / 2
+                    px = nx if side == "left" else nx + NODE_W
+                    port = TopologyPort(
+                        terminal=pname,
+                        net=resolved.wnet,
+                        label=resolved.plabel,
+                        side=side,
+                        x=px,
+                        y=py,
+                        node_id=s["node_id"],
+                        role=role,
+                        is_power_input=is_power_input_port(role, pname),
+                        tooltip=resolved.tooltip,
+                    )
+                    node.ports.append(port)
+                    all_ports.append(port)
             assign_stacked_stub_lengths(node.ports)
             nodes.append(node)
     for node in nodes:

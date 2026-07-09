@@ -14,12 +14,39 @@ from fypa.topology.constants import (
     WIRE_EPS,
 )
 from fypa.topology.metadata.layout_bridge import is_return_port_row
-from fypa.topology.metadata_schema import NodeSpec
+from fypa.topology.metadata_schema import NodeSpec, RoleSection
+from fypa.topology.metadata.specs import spec_port_role
 from fypa.topology.terminal_roles import is_output_port
 
 
 def node_height(n_rows: int) -> float:
     return HEADER_H + BODY_PAD + max(n_rows, 1) * PORT_ROW_H + BODY_PAD
+
+
+def section_body_height(n_rows: int) -> float:
+    """Body height for one stacked role block (excludes its header)."""
+    return BODY_PAD + max(n_rows, 1) * PORT_ROW_H + BODY_PAD
+
+
+def composite_node_height(sections: list[RoleSection]) -> float:
+    """Total symbol height for a multi-role component."""
+    total = 0.0
+    for sec in sections:
+        n_rows, _ = port_layout_rows(sec["port_defs"])
+        total += HEADER_H + section_body_height(n_rows)
+    return total
+
+
+def section_y_offsets(sections: list[RoleSection]) -> list[tuple[RoleSection, float, float]]:
+    """Return ``(section, y_offset, section_height)`` for stacked layout."""
+    out: list[tuple[RoleSection, float, float]] = []
+    y = 0.0
+    for sec in sections:
+        n_rows, _ = port_layout_rows(sec["port_defs"])
+        sec_h = HEADER_H + section_body_height(n_rows)
+        out.append((sec, y, sec_h))
+        y += sec_h
+    return out
 
 
 def port_layout_rows(port_defs: list[tuple[str, str, int]]) -> tuple[int, dict[int, int]]:
@@ -43,6 +70,9 @@ def port_layout_rows(port_defs: list[tuple[str, str, int]]) -> tuple[int, dict[i
 
 
 def _spec_layout_height(spec: NodeSpec) -> float:
+    sections = spec.get("sections")
+    if sections:
+        return composite_node_height(sections)
     n_layout_rows, _ = port_layout_rows(spec["port_defs"])
     return node_height(n_layout_rows)
 
@@ -120,10 +150,9 @@ def _pick_downstream_align_partner(
     in_next = [o for o in candidates if columns[o] == next_col]
     if len(in_next) == 1:
         return in_next[0]
-    role = spec["role"]
     output_nets: set[str] = set()
     for pname, side, _ in spec["port_defs"]:
-        if not is_output_port(role, pname, side):
+        if not is_output_port(spec_port_role(spec, pname), pname, side):
             continue
         resolved = (spec.get("resolved_ports") or {}).get(pname)
         if resolved and resolved.wnet:

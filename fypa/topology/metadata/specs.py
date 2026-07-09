@@ -23,9 +23,158 @@ from fypa.topology.metadata_schema import (
     JumpRowDict,
     NodeSpec,
     PortDef,
+    RoleSection,
     TerminalDict,
 )
 from fypa.topology.terminal_roles import is_output_port
+
+
+# Composite port_defs carry ``section_index * stride + sort_key``. Return-port
+# sentinels (RETURN_PORT_SORT_BASE = 900 / RETURN_PORT_GND_SORT_BASE = 950)
+# stay ≥ 900 for every section, so ``is_return_port_row`` keeps working on
+# composite keys as long as a section's regular rows never reach the stride
+# and the section count stays below RETURN_PORT_SORT_BASE / stride (= 9;
+# there are only 4 distinct roles). Row layout itself always goes through the
+# per-section port_defs, which keep their original sort keys.
+_SECTION_SORT_STRIDE = 100
+
+_ROLE_SECTION_ORDER: dict[str, int] = {
+    "SOURCE": 0,
+    "REGULATOR": 1,
+    "SERIES": 2,
+    "RESISTOR": 2,
+    "SINK": 3,
+}
+
+
+def spec_port_role(spec: NodeSpec, pname: str) -> str:
+    """Effective role for one port — per-port on multi-role symbols."""
+    port_roles = spec.get("port_roles")
+    if port_roles and pname in port_roles:
+        return port_roles[pname]
+    return spec["role"]
+
+
+def spec_has_role(spec: NodeSpec, roles: tuple[str, ...]) -> bool:
+    """True when the top-level role or any stacked section role is in *roles*."""
+    if spec["role"] in roles:
+        return True
+    sections = spec.get("sections")
+    return bool(sections and any(sec["role"] in roles for sec in sections))
+
+
+def spec_has_series_role(spec: NodeSpec) -> bool:
+    """True when the component carries a SERIES / RESISTOR role block."""
+    return spec_has_role(spec, ("RESISTOR", "SERIES"))
+
+
+def spec_series_terms(spec: NodeSpec) -> list[tuple[str, TerminalDict | None]]:
+    """(port, terminal) pairs whose effective role is SERIES / RESISTOR.
+
+    On a multi-role composite this excludes the other sections' ports (e.g.
+    a SINK channel's supply pins), so the series loop/column heuristics only
+    see the nets the bridge itself connects.
+    """
+    return [
+        (pname, term)
+        for pname, term in (spec.get("terms") or {}).items()
+        if spec_port_role(spec, pname) in ("RESISTOR", "SERIES")
+    ]
+
+
+def _role_section_sort_key(role: str) -> tuple[int, str]:
+    return (_ROLE_SECTION_ORDER.get(role, 9), role)
+
+
+def _section_sort_key(spec: NodeSpec) -> tuple:
+    """Order stacked sections by PDN channel index (PDN1, PDN2, …)."""
+    indices = [
+        int(d["channel_index"])
+        for d in spec["directives"]
+        if d.get("channel_index") is not None
+    ]
+    if indices:
+        return (0, min(indices))
+    return (1, _role_section_sort_key(spec["role"]))
+
+
+def _merge_specs_for_designator(designator: str, specs: list[NodeSpec]) -> NodeSpec:
+    """Stack multiple role blocks into one composite symbol."""
+    ordered = sorted(specs, key=_section_sort_key)
+    sections: list[RoleSection] = []
+    port_defs: list[PortDef] = []
+    terms: dict[str, TerminalDict] = {}
+    port_directives: dict[str, DirectiveDict] = {}
+    port_roles: dict[str, str] = {}
+    directives: list[DirectiveDict] = []
+    has_error = False
+    tooltip_parts: list[str] = []
+
+    used_names: set[str] = set()
+    for sec_i, s in enumerate(ordered):
+        has_error = has_error or s["has_error"]
+        display_role = "SERIES" if s["role"] in ("RESISTOR", "SERIES") else s["role"]
+        tooltip_parts.append(f"{display_role} {designator}")
+        for line in component_tooltip(s["role"], designator, s["directives"]).splitlines()[1:]:
+            if line:
+                tooltip_parts.append(line)
+        offset = sec_i * _SECTION_SORT_STRIDE
+        rename_map: dict[str, str] = {}
+        for pname, side, sk in s["port_defs"]:
+            out_pname = pname
+            d = s["port_directives"].get(pname)
+            ch_idx = d.get("channel_index") if d else None
+            if ch_idx is not None:
+                base = _base_terminal_name(pname)
+                out_pname = _suffix_for_channel(int(ch_idx), multi=True, base=base)
+            if out_pname in used_names:
+                base = _base_terminal_name(out_pname)
+                suffix = int(ch_idx) if ch_idx is not None else sec_i + 1
+                out_pname = _suffix_for_channel(suffix, multi=True, base=base)
+                while out_pname in used_names:
+                    suffix += 1
+                    out_pname = _suffix_for_channel(suffix, multi=True, base=base)
+            rename_map[pname] = out_pname
+            used_names.add(out_pname)
+        # Section dicts are keyed by the renamed port names throughout, so a
+        # section is self-consistent with the composite-level maps.
+        sec: RoleSection = {
+            "role": s["role"],
+            "port_defs": [],
+            "terms": {},
+            "port_directives": {},
+            "directives": list(s["directives"]),
+        }
+        for pname, side, sk in s["port_defs"]:
+            out_pname = rename_map[pname]
+            sec["port_defs"].append((out_pname, side, sk))
+            sec["terms"][out_pname] = s["terms"][pname]
+            port_roles[out_pname] = s["role"]
+            port_defs.append((out_pname, side, offset + sk))
+            terms[out_pname] = s["terms"][pname]
+            if pname in s["port_directives"]:
+                sec["port_directives"][out_pname] = s["port_directives"][pname]
+                port_directives[out_pname] = s["port_directives"][pname]
+        sections.append(sec)
+        directives.extend(s["directives"])
+
+    primary = ordered[0]
+    return {
+        "node_id": designator,
+        "label": designator,
+        "designator": designator,
+        "role": primary["role"],
+        "config_label": "",
+        "has_error": has_error,
+        "terms": terms,
+        "port_defs": port_defs,
+        "port_directives": port_directives,
+        "port_roles": port_roles,
+        "sections": sections,
+        "tooltip": "\n".join(tooltip_parts),
+        "directive": primary["directive"],
+        "directives": directives,
+    }
 
 
 def natural_sort_key(label: str) -> tuple:
@@ -375,9 +524,9 @@ def directives_to_component_specs(
         role = str(d.get("role", ""))
         groups[(desig, role)].append(d)
 
-    specs: list[NodeSpec] = []
+    by_designator: dict[str, list[NodeSpec]] = defaultdict(list)
     for desig, role in sorted(groups.keys(), key=lambda k: natural_sort_key(k[0])):
-        specs.append(
+        by_designator[desig].append(
             component_spec_from_directives(
                 desig,
                 role,
@@ -386,6 +535,14 @@ def directives_to_component_specs(
                 net_to_rail,
             )
         )
+
+    specs: list[NodeSpec] = []
+    for desig in sorted(by_designator.keys(), key=natural_sort_key):
+        role_specs = by_designator[desig]
+        if len(role_specs) == 1:
+            specs.append(role_specs[0])
+        else:
+            specs.append(_merge_specs_for_designator(desig, role_specs))
     return specs
 
 
@@ -399,7 +556,7 @@ def driven_power_nets(
             term = (s["terms"] or {}).get(pname)
             if is_ideal_return(term):
                 continue
-            if not is_output_port(s["role"], pname, side):
+            if not is_output_port(spec_port_role(s, pname), pname, side):
                 continue
             cnet = canonical_net(terminal_net(term), net_to_rail)
             if cnet and cnet != GND_NET:
