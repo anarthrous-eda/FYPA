@@ -133,17 +133,104 @@ def test_probe_project_a_stays_compact() -> None:
 
 
 def test_all_sinks_share_rightmost_column():
-    """SINK symbols align in the last column even when propagation stops early."""
-    from fypa.topology.metadata.layout_bridge import parse_topology_directives, specs_by_column
+    """Pure SINK symbols align in the last column even when propagation stops early."""
+    from fypa.topology.metadata.layout_bridge import (
+        _mixed_role_node_ids,
+        parse_topology_directives,
+        specs_by_column,
+    )
 
     parsed = parse_topology_directives(load_topology_fixture("project_b_hub_vdd"))
     _, max_col = specs_by_column(parsed.node_specs, parsed.columns)
+    mixed = _mixed_role_node_ids(parsed.node_specs)
     sink_cols = {
         parsed.columns[s["node_id"]]
         for s in parsed.node_specs
-        if s["role"] == "SINK"
+        if s["role"] == "SINK" and s["node_id"] not in mixed
     }
     assert sink_cols == {max_col}
+
+
+def test_mixed_role_series_sink_keeps_bridge_before_pure_sink():
+    """SERIES+SINK on one part: bridge column from propagation, not sink push."""
+    from fypa.topology.metadata.layout_bridge import parse_topology_directives, specs_by_column
+
+    metadata = {
+        "annotation_errors": [],
+        "net_canonical": {},
+        "directives": [
+            {
+                "role": "SOURCE",
+                "designator": "J1",
+                "label": "J1",
+                "value_str": "12 V",
+                "terminals": {
+                    "P": {
+                        "requested_net": "+12V",
+                        "pins": [{"net": "+12V", "pad": "1"}],
+                    },
+                    "N": {
+                        "requested_net": "GND",
+                        "pins": [{"net": "GND", "pad": "2"}],
+                    },
+                },
+            },
+            {
+                "role": "RESISTOR",
+                "designator": "U1",
+                "label": "U1",
+                "value_str": "0 mOhm",
+                "terminals": {
+                    "P": {
+                        "requested_net": "+12V",
+                        "pins": [{"net": "+12V", "pad": "1"}],
+                    },
+                    "N": {
+                        "requested_net": "+5V",
+                        "pins": [{"net": "+5V", "pad": "2"}],
+                    },
+                },
+            },
+            {
+                "role": "SINK",
+                "designator": "U1",
+                "label": "U1#1",
+                "channel_index": 1,
+                "value_str": "10 mA",
+                "terminals": {
+                    "P": {
+                        "requested_net": "SENSE",
+                        "pins": [{"net": "SENSE", "pad": "3"}],
+                    },
+                    "N": {
+                        "requested_net": "GND",
+                        "pins": [{"net": "GND", "pad": "4"}],
+                    },
+                },
+            },
+            {
+                "role": "SINK",
+                "designator": "J2",
+                "label": "J2",
+                "value_str": "100 mA",
+                "terminals": {
+                    "P": {
+                        "requested_net": "+5V",
+                        "pins": [{"net": "+5V", "pad": "1"}],
+                    },
+                    "N": {
+                        "requested_net": "GND",
+                        "pins": [{"net": "GND", "pad": "2"}],
+                    },
+                },
+            },
+        ],
+    }
+    parsed = parse_topology_directives(metadata)
+    cols = parsed.columns
+    _, max_col = specs_by_column(parsed.node_specs, cols)
+    assert cols["U1"] < cols["J2"]
+    assert cols["J2"] == max_col
 
 
 def test_hub_wires_no_horizontal_backtrack_on_probe() -> None:
