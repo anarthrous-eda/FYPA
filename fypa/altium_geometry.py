@@ -16,10 +16,16 @@ Geometry rules
 --------------
 * **Tracks** with ``is_keepout`` or ``is_polygon_outline`` are skipped; the
   remaining tracks are buffered LineStrings of half-width with round caps.
+  Tracks on layer id ``MULTI_LAYER_PAD_LAYER_ID`` (74) with an assigned net
+  appear on every enabled **signal** copper layer; internal planes are
+  excluded. Unassigned (``NO_NET``) ones are omitted.
 * **Arcs** are discretised to a polyline whose chord error is bounded by
-  :data:`ARC_CHORD_TOLERANCE_MM`, then buffered with round caps.
+  :data:`ARC_CHORD_TOLERANCE_MM`, then buffered with round caps. Multi-layer
+  arcs follow the same net-assignment rule as tracks.
 * **Regions** (Altium ``Regions6``) are included when ``kind == 0`` (copper),
-  not a polygon outline, not a keepout, and not a board cutout.
+  not a polygon outline, not a keepout, and not a board cutout. Multi-layer
+  regions and fills with an assigned net appear on every enabled signal copper
+  layer (internal planes excluded).
 * **Pads** on layer id ``MULTI_LAYER_PAD_LAYER_ID`` (74) are through-hole and
   appear on every copper layer; SMT pads appear only on their assigned layer.
   Drill holes are subtracted from the pad shape.
@@ -654,6 +660,38 @@ def _pad_on_layer(p: RawPad, layer_id: int) -> bool:
     return p.layer_id == layer_id
 
 
+def _plane_layer_ids(proj: ExtractedProject) -> set[int]:
+    return {s.layer_id for s in proj.stackup if s.is_plane}
+
+
+def _is_multilayer_copper(layer_id: int, net_index: int) -> bool:
+    return layer_id == MULTI_LAYER_PAD_LAYER_ID and net_index != NO_NET
+
+
+def _copper_primitive_on_layer(prim_layer_id: int, target_layer_id: int,
+                               net_index: int,
+                               plane_layer_ids: set[int] | None = None) -> bool:
+    if _is_multilayer_copper(prim_layer_id, net_index):
+        return not plane_layer_ids or target_layer_id not in plane_layer_ids
+    return prim_layer_id == target_layer_id
+
+
+def _distribute_to_layers(
+    prim_layer_id: int,
+    net_index: int,
+    geom: shapely.geometry.base.BaseGeometry,
+    enabled_layers: list[int],
+    add_fn,
+    plane_layer_ids: set[int],
+) -> None:
+    if _is_multilayer_copper(prim_layer_id, net_index):
+        for lid in enabled_layers:
+            if lid not in plane_layer_ids:
+                add_fn(lid, net_index, geom)
+    else:
+        add_fn(prim_layer_id, net_index, geom)
+
+
 def _via_on_layer(v: RawVia, layer_id: int, enabled: list[int],
                   pos: dict[int, int] | None = None) -> bool:
     """Whether via ``v``'s barrel spans ``layer_id`` in the enabled stack.
@@ -751,6 +789,66 @@ class _ThroughFeatureCache:
         for v, disc in _batch_via_polygons(proj.vias):
             if not disc.is_empty:
                 self.via_feats.append((v, _drop_holes(disc), v.net_index))
+
+
+class _MultilayerCopperCache:
+    """Pre-buffered polygons for layer-74 copper primitives with an assigned net.
+
+    Built once by :func:`build_layer_geometries` and shared across every
+    per-layer call so multilayer tracks / arcs are not re-buffered once per
+    physical layer."""
+
+    __slots__ = ("track_polys", "arc_polys", "region_polys", "sbr_polys",
+                 "fill_polys")
+
+    def __init__(self, proj: ExtractedProject) -> None:
+        ml_tracks = [
+            t for t in proj.tracks
+            if _is_multilayer_copper(t.layer_id, t.net_index)
+            and not t.is_keepout and not t.is_polygon_outline and t.width_mm > 0
+        ]
+        self.track_polys = list(zip(ml_tracks, _batch_buffer_tracks(ml_tracks)))
+
+        ml_arcs = [
+            a for a in proj.arcs
+            if _is_multilayer_copper(a.layer_id, a.net_index)
+            and not a.is_keepout and not a.is_polygon_outline and a.width_mm > 0
+        ]
+        self.arc_polys = list(zip(ml_arcs, _batch_buffer_arcs(ml_arcs)))
+
+        sbr_poly_indices = _shape_based_polygon_indices(proj)
+        self.region_polys: list[tuple[RawRegion, shapely.geometry.base.BaseGeometry]] = []
+        for r in proj.regions:
+            if not _is_multilayer_copper(r.layer_id, r.net_index):
+                continue
+            if (r.is_keepout or r.is_polygon_outline or r.is_board_cutout
+                    or r.kind != 0 or len(r.outline) < 3):
+                continue
+            if _skip_region_as_duplicate(r, sbr_poly_indices):
+                continue
+            poly = _region_polygon(r)
+            if not poly.is_empty:
+                self.region_polys.append((r, poly))
+
+        self.sbr_polys: list[tuple[RawShapeBasedRegion,
+                                    shapely.geometry.base.BaseGeometry]] = []
+        for r in proj.shape_based_regions:
+            if not _is_multilayer_copper(r.layer_id, r.net_index):
+                continue
+            if (r.is_keepout or r.is_polygon_outline or r.is_board_cutout
+                    or r.kind != 0 or len(r.outline) < 3):
+                continue
+            poly = _shape_based_region_polygon(r)
+            if not poly.is_empty:
+                self.sbr_polys.append((r, poly))
+
+        self.fill_polys: list[tuple[RawFill, shapely.geometry.base.BaseGeometry]] = []
+        for f in proj.fills:
+            if not _is_multilayer_copper(f.layer_id, f.net_index) or f.is_keepout:
+                continue
+            poly = _fill_polygon(f)
+            if poly is not None and not poly.is_empty:
+                self.fill_polys.append((f, poly))
 
 
 def _through_features_on_layer(
@@ -960,10 +1058,12 @@ def _plane_sheet_polygon(
 
 def build_layer_geometry(proj: ExtractedProject, layer_id: int,
                          enabled_layers: list[int],
-                         through_cache: _ThroughFeatureCache | None = None
+                         through_cache: _ThroughFeatureCache | None = None,
+                         multilayer_cache: _MultilayerCopperCache | None = None,
                          ) -> GeometryLayer:
     stackup_by_id = {s.layer_id: s for s in proj.stackup}
     stackup = stackup_by_id[layer_id]
+    plane_layers = _plane_layer_ids(proj)
 
     if stackup.is_plane:
         # Planes are negative copper: the board outline (inset by the plane
@@ -995,19 +1095,38 @@ def build_layer_geometry(proj: ExtractedProject, layer_id: int,
     # (The all-nets union below now runs through the Clipper2 fuse seam at the
     # 1 nm lossless scale — see the fuse() call at the end of this function.)
     valid_tracks = [t for t in proj.tracks
-                    if t.layer_id == layer_id and not t.is_keepout
+                    if not _is_multilayer_copper(t.layer_id, t.net_index)
+                    and _copper_primitive_on_layer(
+                        t.layer_id, layer_id, t.net_index, plane_layers)
+                    and not t.is_keepout
                     and not t.is_polygon_outline and t.width_mm > 0]
     pieces.extend(_batch_buffer_tracks(valid_tracks))
 
     valid_arcs = [a for a in proj.arcs
-                  if a.layer_id == layer_id and not a.is_keepout
+                  if not _is_multilayer_copper(a.layer_id, a.net_index)
+                  and _copper_primitive_on_layer(
+                      a.layer_id, layer_id, a.net_index, plane_layers)
+                  and not a.is_keepout
                   and not a.is_polygon_outline
                   and a.width_mm > 0]
     pieces.extend(_batch_buffer_arcs(valid_arcs))
 
+    if multilayer_cache is not None:
+        for t, poly in multilayer_cache.track_polys:
+            if _copper_primitive_on_layer(
+                    t.layer_id, layer_id, t.net_index, plane_layers):
+                pieces.append(poly)
+        for a, poly in multilayer_cache.arc_polys:
+            if _copper_primitive_on_layer(
+                    a.layer_id, layer_id, a.net_index, plane_layers):
+                pieces.append(poly)
+
     sbr_poly_indices = _shape_based_polygon_indices(proj)
     for r in proj.regions:
-        if r.layer_id != layer_id:
+        if _is_multilayer_copper(r.layer_id, r.net_index):
+            continue
+        if not _copper_primitive_on_layer(
+                r.layer_id, layer_id, r.net_index, plane_layers):
             continue
         if r.is_keepout or r.is_polygon_outline or r.is_board_cutout:
             continue
@@ -1020,8 +1139,17 @@ def build_layer_geometry(proj: ExtractedProject, layer_id: int,
             continue
         pieces.append(poly)
 
+    if multilayer_cache is not None:
+        for r, poly in multilayer_cache.region_polys:
+            if _copper_primitive_on_layer(
+                    r.layer_id, layer_id, r.net_index, plane_layers):
+                pieces.append(poly)
+
     for r in proj.shape_based_regions:
-        if r.layer_id != layer_id:
+        if _is_multilayer_copper(r.layer_id, r.net_index):
+            continue
+        if not _copper_primitive_on_layer(
+                r.layer_id, layer_id, r.net_index, plane_layers):
             continue
         if r.is_keepout or r.is_polygon_outline or r.is_board_cutout:
             continue
@@ -1032,12 +1160,29 @@ def build_layer_geometry(proj: ExtractedProject, layer_id: int,
             continue
         pieces.append(poly)
 
+    if multilayer_cache is not None:
+        for r, poly in multilayer_cache.sbr_polys:
+            if _copper_primitive_on_layer(
+                    r.layer_id, layer_id, r.net_index, plane_layers):
+                pieces.append(poly)
+
     for f in proj.fills:
-        if f.layer_id != layer_id or f.is_keepout:
+        if _is_multilayer_copper(f.layer_id, f.net_index):
+            continue
+        if not _copper_primitive_on_layer(
+                f.layer_id, layer_id, f.net_index, plane_layers):
+            continue
+        if f.is_keepout:
             continue
         poly = _fill_polygon(f)
         if poly is not None:
             pieces.append(poly)
+
+    if multilayer_cache is not None:
+        for f, poly in multilayer_cache.fill_polys:
+            if _copper_primitive_on_layer(
+                    f.layer_id, layer_id, f.net_index, plane_layers):
+                pieces.append(poly)
 
     for p in proj.pads:
         if not _pad_on_layer(p, layer_id):
@@ -1098,12 +1243,15 @@ def build_layer_geometries(proj: ExtractedProject) -> list[GeometryLayer]:
         return []
     # Through-feature footprints are layer-independent (see
     # _ThroughFeatureCache): build them ONCE and share across every plane layer
-    # instead of rebuilding all pad/via polygons per plane. Read-only, so safe
-    # to hand to the per-layer thread pool below.
+    # instead of rebuilding all pad/via polygons per plane. Multilayer copper
+    # primitives are pre-buffered once in _MultilayerCopperCache for the same
+    # reason. Read-only, so safe to hand to the per-layer thread pool below.
     through_cache = _ThroughFeatureCache(proj)
+    multilayer_cache = _MultilayerCopperCache(proj)
     # Small boards: thread-pool overhead isn't worth it.
     if len(enabled) < 3:
-        return [build_layer_geometry(proj, lid, enabled, through_cache)
+        return [build_layer_geometry(proj, lid, enabled, through_cache,
+                                     multilayer_cache)
                 for lid in enabled]
 
     # The Clipper2 fuse backend (the default) is GIL-bound — unlike shapely 2's
@@ -1112,7 +1260,8 @@ def build_layer_geometries(proj: ExtractedProject) -> list[GeometryLayer]:
     # the threaded shapely path on large boards (same trade-off as
     # _parallel_union_buckets). The shapely / verify backends keep the pool.
     if _clipper_fuse.backend() == "clipper" and _clipper_fuse.clipper_available():
-        return [build_layer_geometry(proj, lid, enabled, through_cache)
+        return [build_layer_geometry(proj, lid, enabled, through_cache,
+                                     multilayer_cache)
                 for lid in enabled]
 
     import concurrent.futures
@@ -1124,7 +1273,8 @@ def build_layer_geometries(proj: ExtractedProject) -> list[GeometryLayer]:
         # ex.map preserves input order, so the result list lines up with
         # ``enabled`` exactly as the old list comprehension did.
         return list(ex.map(
-            lambda lid: build_layer_geometry(proj, lid, enabled, through_cache),
+            lambda lid: build_layer_geometry(proj, lid, enabled, through_cache,
+                                             multilayer_cache),
             enabled,
         ))
 
@@ -1388,7 +1538,8 @@ def _build_net_layer_buckets(
                     and t.layer_id not in plane_layer_ids]
     track_polys = _batch_buffer_tracks(valid_tracks)
     for t, poly in zip(valid_tracks, track_polys):
-        _add(t.layer_id, t.net_index, poly)
+        _distribute_to_layers(t.layer_id, t.net_index, poly, enabled_layers,
+                              _add, plane_layer_ids)
 
     # Arcs: same vectorised-buffer trick. Exclude polygon-pour *outline* arcs
     # (boundary artwork, not copper) exactly as the track filter above does.
@@ -1398,7 +1549,8 @@ def _build_net_layer_buckets(
                   and a.layer_id not in plane_layer_ids]
     arc_polys = _batch_buffer_arcs(valid_arcs)
     for a, poly in zip(valid_arcs, arc_polys):
-        _add(a.layer_id, a.net_index, poly)
+        _distribute_to_layers(a.layer_id, a.net_index, poly, enabled_layers,
+                              _add, plane_layer_ids)
 
     sbr_poly_indices = _shape_based_polygon_indices(proj)
     for r in proj.regions:
@@ -1408,19 +1560,26 @@ def _build_net_layer_buckets(
             continue
         if _skip_region_as_duplicate(r, sbr_poly_indices):
             continue
-        _add(r.layer_id, r.net_index, _region_polygon(r))
+        poly = _region_polygon(r)
+        _distribute_to_layers(r.layer_id, r.net_index, poly, enabled_layers,
+                              _add, plane_layer_ids)
 
     for r in proj.shape_based_regions:
         if r.is_keepout or r.is_polygon_outline or r.is_board_cutout or r.kind != 0:
             continue
         if len(r.outline) < 3 or r.layer_id in plane_layer_ids:
             continue
-        _add(r.layer_id, r.net_index, _shape_based_region_polygon(r))
+        poly = _shape_based_region_polygon(r)
+        _distribute_to_layers(r.layer_id, r.net_index, poly, enabled_layers,
+                              _add, plane_layer_ids)
 
     for f in proj.fills:
         if f.is_keepout or f.layer_id in plane_layer_ids:
             continue
-        _add(f.layer_id, f.net_index, _fill_polygon(f))
+        poly = _fill_polygon(f)
+        if poly is not None:
+            _distribute_to_layers(f.layer_id, f.net_index, poly, enabled_layers,
+                                  _add, plane_layer_ids)
 
     for p in proj.pads:
         if p.is_through_hole or p.layer_id == MULTI_LAYER_PAD_LAYER_ID:
