@@ -2555,7 +2555,7 @@ def _collect_via_xys_per_layer_net(
 def _build_anchor_index(
     pin_xys: list[tuple[float, float]],
     via_xys: list[tuple[float, float]],
-) -> tuple[list, int, "shapely.strtree.STRtree | None"]:
+) -> tuple[list, int, shapely.strtree.STRtree | None]:
     """Build the ``(points, pin_count, STRtree)`` index the stub-piece and
     tiny-piece filters both query.
 
@@ -2581,7 +2581,7 @@ def _filter_stub_pieces(
     shape: shapely.geometry.base.BaseGeometry,
     pin_xys: list[tuple[float, float]],
     via_xys: list[tuple[float, float]],
-    anchor_index: tuple[list, int, "shapely.strtree.STRtree | None"] | None = None,
+    anchor_index: tuple[list, int, shapely.strtree.STRtree | None] | None = None,
 ) -> tuple[shapely.geometry.base.BaseGeometry, list]:
     """Drop sub-pieces of a (layer, net) shape that are electrically isolated.
 
@@ -2685,7 +2685,7 @@ def _filter_tiny_pieces(
     min_area_mm2: float,
     pin_xys: list[tuple[float, float]],
     via_xys: list[tuple[float, float]],
-    anchor_index: tuple[list, int, "shapely.strtree.STRtree | None"] | None = None,
+    anchor_index: tuple[list, int, shapely.strtree.STRtree | None] | None = None,
 ) -> tuple[shapely.geometry.base.BaseGeometry, list]:
     """Drop sub-micron copper slivers that have no electrical anchor.
 
