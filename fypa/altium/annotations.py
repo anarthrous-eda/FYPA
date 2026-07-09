@@ -124,6 +124,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -991,6 +992,90 @@ def _pads_by_component_all(proj: ExtractedProject) -> dict[int, list[RawPad]]:
     return entry[1]
 
 
+def _series_channel_indices(
+    comp: PdnParameterSource,
+) -> list[int]:
+    """Indexed SERIES (resistor-like) channel numbers on one parameter source."""
+    part_role = _part_role_default(comp.parameters)
+    return [
+        idx for idx in _discover_channel_indices(comp.parameters, "R")
+        if _effective_role(comp.parameters, idx, part_role)
+        in _RESISTOR_LIKE_ROLES
+    ]
+
+
+def _series_channel_has_net_params(
+    comp: PdnParameterSource,
+    ch_idx: int,
+) -> bool:
+    return (
+        _ci_get(comp.parameters, _channel_key("P_PINS", ch_idx)) is not None
+        or _ci_get(comp.parameters, _channel_key("N_PINS", ch_idx)) is not None
+    )
+
+
+def _resolve_series_channel_nets(
+    comp: PdnParameterSource,
+    proj: ExtractedProject,
+    ch_idx: int,
+    pcb_idx: int,
+    ch_indices: list[int],
+) -> tuple[str, str] | None:
+    """P/N net names for one SERIES channel on one PCB placement."""
+    p_net = _ci_get(comp.parameters, _channel_key("P_NET", ch_idx))
+    n_net = _ci_get(comp.parameters, _channel_key("N_NET", ch_idx))
+    if p_net is None and n_net is None and not _series_channel_has_net_params(
+        comp, ch_idx,
+    ):
+        if len(ch_indices) != 1:
+            return None
+        return _autoinfer_2pin_nets(proj, pcb_idx)
+    if p_net and n_net:
+        return p_net, n_net
+    return None
+
+
+def _iter_series_bridge_pairs(
+    parameter_sources: list[PdnParameterSource],
+    proj: ExtractedProject,
+    *,
+    per_placement: bool,
+) -> Iterator[tuple[int | None, str, str]]:
+    """Yield ``(pcb_index, p_net, n_net)`` for each SERIES bridge.
+
+    ``pcb_index`` is ``None`` only for parameter-level name pairs
+    (``per_placement=False``). Placement-scoped iteration is used by
+    cross-directive validation; parameter-level pairs build the transitive
+    name equivalence map in :func:`_collect_bridge_groups`.
+    """
+    for comp in parameter_sources:
+        ch_indices = _series_channel_indices(comp)
+        if not ch_indices:
+            continue
+        pcb_indices = _pcb_indices_for_source(comp, proj)
+        for ch_idx in ch_indices:
+            if per_placement:
+                for pcb_idx in pcb_indices:
+                    pair = _resolve_series_channel_nets(
+                        comp, proj, ch_idx, pcb_idx, ch_indices,
+                    )
+                    if pair is not None:
+                        yield pcb_idx, pair[0], pair[1]
+                continue
+            p_net = _ci_get(comp.parameters, _channel_key("P_NET", ch_idx))
+            n_net = _ci_get(comp.parameters, _channel_key("N_NET", ch_idx))
+            if p_net and n_net:
+                yield None, p_net, n_net
+            elif p_net is None and n_net is None and not _series_channel_has_net_params(
+                comp, ch_idx,
+            ):
+                if len(ch_indices) == 1:
+                    for pcb_idx in pcb_indices:
+                        pair = _autoinfer_2pin_nets(proj, pcb_idx)
+                        if pair is not None:
+                            yield pcb_idx, pair[0], pair[1]
+
+
 def _collect_bridge_groups(
     parameter_sources: list[PdnParameterSource],
     proj: ExtractedProject,
@@ -1003,9 +1088,10 @@ def _collect_bridge_groups(
     Transitive: if A↔B and B↔C are both bridged, A, B, C all belong to one
     group. Net names are upper-cased for case-insensitive comparison.
 
-    Used by :func:`_validate_directive_groups` and the solver to treat
-    SERIES-bridged nets as electrically connected. Terminal pin resolution
-    uses direct pad-to-net connectivity only — see :func:`_resolve_terminal`.
+    Name-level equivalence for unit tests. Cross-directive validation unions
+    PCB net indices via :func:`_union_series_bridge_net_indices` when present.
+    Terminal pin resolution uses direct pad-to-net connectivity only — see
+    :func:`_resolve_terminal`.
     """
     parent: dict[str, str] = {}
 
@@ -1020,35 +1106,10 @@ def _collect_bridge_groups(
         if ra != rb:
             parent[rb] = ra
 
-    for comp in parameter_sources:
-        part_role = _part_role_default(comp.parameters)
-        # Only SERIES-role channels bridge nets. On a mixed-role part the
-        # part role may be e.g. SINK, so filter by each channel's effective
-        # role rather than the part role.
-        indices = [
-            idx for idx in _discover_channel_indices(comp.parameters, "R")
-            if _effective_role(comp.parameters, idx, part_role)
-            in _RESISTOR_LIKE_ROLES
-        ]
-        if not indices:
-            continue
-        for idx in indices:
-            p_net = _ci_get(comp.parameters, _channel_key("P_NET", idx))
-            n_net = _ci_get(comp.parameters, _channel_key("N_NET", idx))
-            # Replicate auto-infer for 2-pin resistors so the bridge graph stays
-            # consistent with the per-directive parser. A multi-channel SERIES
-            # part bridges a different net pair in each channel, so union every
-            # instance — stopping at the first would strand the other channels.
-            if p_net is None and n_net is None and \
-                    _ci_get(comp.parameters, _channel_key("P_PINS", idx)) is None and \
-                    _ci_get(comp.parameters, _channel_key("N_PINS", idx)) is None:
-                if len(indices) == 1:
-                    for pcb_idx in _pcb_indices_for_source(comp, proj):
-                        inferred = _autoinfer_2pin_nets(proj, pcb_idx)
-                        if inferred is not None:
-                            union(inferred[0].upper(), inferred[1].upper())
-            if p_net and n_net:
-                union(p_net.upper(), n_net.upper())
+    for _pcb_idx, p_net, n_net in _iter_series_bridge_pairs(
+        parameter_sources, proj, per_placement=False,
+    ):
+        union(p_net.upper(), n_net.upper())
 
     # Materialise each equivalence class as a frozenset and map every net to it.
     classes: dict[str, set[str]] = {}
