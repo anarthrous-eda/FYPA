@@ -150,7 +150,6 @@ def _pick_downstream_align_partner(
     in_next = [o for o in candidates if columns[o] == next_col]
     if len(in_next) == 1:
         return in_next[0]
-    role = spec["role"]
     output_nets: set[str] = set()
     for pname, side, _ in spec["port_defs"]:
         if not is_output_port(spec_port_role(spec, pname), pname, side):

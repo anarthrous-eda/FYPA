@@ -22,6 +22,7 @@ from fypa.altium.annotations import (
     TerminalPin,
     TerminalSpec,
     _collect_bridge_groups,
+    _collect_supply_voltages_by_net,
     _iter_pdn_parameter_sources,
     _lookup_inferred_vin,
     _require_value,
@@ -1886,6 +1887,53 @@ def test_stray_pdn_params_without_any_role_warns():
     result = parse_annotations(proj, enabled_layers=[1])
     assert not result.directives
     assert any("no PDN_ROLE or PDN<n>_ROLE" in w for w in result.warnings)
+
+
+def test_indexed_roles_only_source_channel_contributes_supply_voltage():
+    # A SOURCE channel on an indexed-only part (no part-wide PDN_ROLE) must
+    # both produce its directive and register its nominal rail voltage.
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+5V"), RawNet("+3V3")),
+        sch_components=(
+            RawSchComponent(
+                designator="U3", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN1_ROLE": "SOURCE",
+                    "PDN1_V": "5V",
+                    "PDN1_P_NET": "+5V",
+                    "PDN1_N_NET": "GND",
+                    "PDN2_ROLE": "SINK",
+                    "PDN2_I": "10mA",
+                    "PDN2_P_NET": "+3V3",
+                    "PDN2_N_NET": "GND",
+                },
+                pin_designators=("1", "2", "3", "4"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U3", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U3",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, 0),   # +5V
+            _pad(0, "2", 0, 1),   # GND
+            _pad(0, "3", 2, 2),   # +3V3
+            _pad(0, "4", 0, 3),   # GND
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    sources = [d for d in result.directives if isinstance(d, SourceSpec)]
+    sinks = [d for d in result.directives if isinstance(d, SinkSpec)]
+    assert len(sources) == 1
+    assert len(sinks) == 1
+    assert sources[0].channel_index == 1
+    assert sources[0].voltage == pytest.approx(5.0)
+
+    supply_map = _collect_supply_voltages_by_net(_iter_pdn_parameter_sources(proj))
+    assert supply_map == {"+5V": 5.0}
 
 
 # --- is_solveable: annotation errors are non-fatal ----------------------------

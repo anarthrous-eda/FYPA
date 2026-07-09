@@ -29,6 +29,13 @@ from fypa.topology.metadata_schema import (
 from fypa.topology.terminal_roles import is_output_port
 
 
+# Composite port_defs carry ``section_index * stride + sort_key``. Return-port
+# sentinels (RETURN_PORT_SORT_BASE = 900 / RETURN_PORT_GND_SORT_BASE = 950)
+# stay ≥ 900 for every section, so ``is_return_port_row`` keeps working on
+# composite keys as long as a section's regular rows never reach the stride
+# and the section count stays below RETURN_PORT_SORT_BASE / stride (= 9;
+# there are only 4 distinct roles). Row layout itself always goes through the
+# per-section port_defs, which keep their original sort keys.
 _SECTION_SORT_STRIDE = 100
 
 _ROLE_SECTION_ORDER: dict[str, int] = {
@@ -48,15 +55,31 @@ def spec_port_role(spec: NodeSpec, pname: str) -> str:
     return spec["role"]
 
 
-def spec_has_series_role(spec: NodeSpec) -> bool:
-    """True when the component carries a SERIES / RESISTOR role block."""
-    if spec["role"] in ("RESISTOR", "SERIES"):
+def spec_has_role(spec: NodeSpec, roles: tuple[str, ...]) -> bool:
+    """True when the top-level role or any stacked section role is in *roles*."""
+    if spec["role"] in roles:
         return True
     sections = spec.get("sections")
-    return bool(
-        sections
-        and any(sec["role"] in ("RESISTOR", "SERIES") for sec in sections)
-    )
+    return bool(sections and any(sec["role"] in roles for sec in sections))
+
+
+def spec_has_series_role(spec: NodeSpec) -> bool:
+    """True when the component carries a SERIES / RESISTOR role block."""
+    return spec_has_role(spec, ("RESISTOR", "SERIES"))
+
+
+def spec_series_terms(spec: NodeSpec) -> list[tuple[str, TerminalDict | None]]:
+    """(port, terminal) pairs whose effective role is SERIES / RESISTOR.
+
+    On a multi-role composite this excludes the other sections' ports (e.g.
+    a SINK channel's supply pins), so the series loop/column heuristics only
+    see the nets the bridge itself connects.
+    """
+    return [
+        (pname, term)
+        for pname, term in (spec.get("terms") or {}).items()
+        if spec_port_role(spec, pname) in ("RESISTOR", "SERIES")
+    ]
 
 
 def _role_section_sort_key(role: str) -> tuple[int, str]:
@@ -89,14 +112,6 @@ def _merge_specs_for_designator(designator: str, specs: list[NodeSpec]) -> NodeS
 
     used_names: set[str] = set()
     for sec_i, s in enumerate(ordered):
-        sec: RoleSection = {
-            "role": s["role"],
-            "port_defs": list(s["port_defs"]),
-            "terms": dict(s["terms"]),
-            "port_directives": dict(s["port_directives"]),
-            "directives": list(s["directives"]),
-        }
-        sections.append(sec)
         has_error = has_error or s["has_error"]
         display_role = "SERIES" if s["role"] in ("RESISTOR", "SERIES") else s["role"]
         tooltip_parts.append(f"{display_role} {designator}")
@@ -116,18 +131,31 @@ def _merge_specs_for_designator(designator: str, specs: list[NodeSpec]) -> NodeS
                 base = _base_terminal_name(out_pname)
                 suffix = int(ch_idx) if ch_idx is not None else sec_i + 1
                 out_pname = _suffix_for_channel(suffix, multi=True, base=base)
+                while out_pname in used_names:
+                    suffix += 1
+                    out_pname = _suffix_for_channel(suffix, multi=True, base=base)
             rename_map[pname] = out_pname
             used_names.add(out_pname)
-        sec_port_defs: list[PortDef] = []
+        # Section dicts are keyed by the renamed port names throughout, so a
+        # section is self-consistent with the composite-level maps.
+        sec: RoleSection = {
+            "role": s["role"],
+            "port_defs": [],
+            "terms": {},
+            "port_directives": {},
+            "directives": list(s["directives"]),
+        }
         for pname, side, sk in s["port_defs"]:
             out_pname = rename_map[pname]
-            sec_port_defs.append((out_pname, side, sk))
+            sec["port_defs"].append((out_pname, side, sk))
+            sec["terms"][out_pname] = s["terms"][pname]
             port_roles[out_pname] = s["role"]
             port_defs.append((out_pname, side, offset + sk))
             terms[out_pname] = s["terms"][pname]
             if pname in s["port_directives"]:
+                sec["port_directives"][out_pname] = s["port_directives"][pname]
                 port_directives[out_pname] = s["port_directives"][pname]
-        sec["port_defs"] = sec_port_defs
+        sections.append(sec)
         directives.extend(s["directives"])
 
     primary = ordered[0]

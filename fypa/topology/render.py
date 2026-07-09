@@ -268,7 +268,11 @@ def _draw_section_header(
     color: str,
     round_top: bool,
 ) -> None:
-    """Draw one role band inside a composite symbol — square bottom, optional rounded top."""
+    """Draw one role header band — square bottom, optional rounded top.
+
+    Used for every band of a composite symbol and (with ``round_top=True``)
+    for a single-role node's header.
+    """
     if round_top:
         parts.append(
             f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{HEADER_H:.1f}"'
@@ -319,8 +323,11 @@ def _draw_node(
     )
 
     if node.sections:
+        port_colors = {
+            sec.role: _role_color(sec.role, single_net=False, fg=fg)
+            for sec in node.sections
+        }
         for i, sec in enumerate(node.sections):
-            sec_color = _role_color(sec.role, single_net=False, fg=fg)
             _draw_section_header(
                 parts,
                 x=x,
@@ -328,56 +335,23 @@ def _draw_node(
                 w=w,
                 role=sec.role,
                 label=node.label if i == 0 else None,
-                color=sec_color,
+                color=port_colors[sec.role],
                 round_top=(i == 0),
             )
-        if node.has_error:
-            parts.append(
-                f'<text x="{x + w - 6:.1f}" y="{y + h - 6:.1f}" text-anchor="end"'
-                f' fill="{esc(err)}" font-size="12">⚠</text>'
-            )
-        port_colors = {
-            sec.role: _role_color(sec.role, single_net=False, fg=fg)
-            for sec in node.sections
-        }
-        for port in node.ports:
-            px, py = port.x, port.y
-            color = port_colors.get(port.role or node.role, fg)
-            parts.append(
-                f'<circle cx="{px:.1f}" cy="{py:.1f}" r="{PORT_R:.1f}"'
-                f' fill="{esc(color)}" stroke="{esc(border)}" stroke-width="1"/>'
-            )
-            text_x = px + 8.0 if port.side == "left" else px - 8.0
-            anchor = "start" if port.side == "left" else "end"
-            line = truncate_label(port.label)
-            parts.append(
-                f'<text x="{text_x:.1f}" y="{py + 3:.1f}" text-anchor="{anchor}"'
-                f' fill="{esc(fg_dim)}" font-family="Consolas,monospace"'
-                f' font-size="8">{esc(line)}</text>'
-            )
-        return
+    else:
+        color = _role_color(node.role, single_net=node.single_net, fg=fg)
+        port_colors = {node.role: color}
+        _draw_section_header(
+            parts,
+            x=x,
+            y=y,
+            w=w,
+            role=node.role,
+            label=node.label,
+            color=color,
+            round_top=True,
+        )
 
-    color = _role_color(node.role, single_net=node.single_net, fg=fg)
-    title = _role_display_title(node.role)
-
-    parts.append(
-        f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{HEADER_H:.1f}"'
-        f' rx="6" fill="{esc(color)}"/>'
-    )
-    parts.append(
-        f'<rect x="{x:.1f}" y="{y + HEADER_H - 6:.1f}" width="{w:.1f}"'
-        f' height="6" fill="{esc(color)}"/>'
-    )
-    parts.append(
-        f'<text x="{x + 8:.1f}" y="{y + 15:.1f}" fill="#ffffff"'
-        f' font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">'
-        f"{esc(title)}</text>"
-    )
-    parts.append(
-        f'<text x="{x + w - 8:.1f}" y="{y + 15:.1f}" fill="#ffffff"'
-        f' text-anchor="end" font-family="Segoe UI,sans-serif"'
-        f' font-size="10" font-weight="600">{esc(node.label)}</text>'
-    )
     if node.has_error:
         parts.append(
             f'<text x="{x + w - 6:.1f}" y="{y + h - 6:.1f}" text-anchor="end"'
@@ -386,6 +360,7 @@ def _draw_node(
 
     for port in node.ports:
         px, py = port.x, port.y
+        color = port_colors.get(port.role or node.role, fg)
         parts.append(
             f'<circle cx="{px:.1f}" cy="{py:.1f}" r="{PORT_R:.1f}"'
             f' fill="{esc(color)}" stroke="{esc(border)}" stroke-width="1"/>'
