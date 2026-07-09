@@ -86,6 +86,12 @@ just ``PDN_ROLE = SINK`` plus ``PDN_I`` / ``PDN1_I``. Only the channels that
 diverge from the default carry an override, so pick the majority role as
 ``PDN_ROLE`` and override the exceptions.
 
+When every active channel carries its own ``PDN<n>_ROLE``, the part-wide
+``PDN_ROLE`` may be omitted entirely — e.g. a part with a SERIES channel
+(``PDN1_ROLE`` / ``PDN1_R``) and a SINK channel (``PDN2_ROLE`` / ``PDN2_I``)
+on different nets. Each indexed channel must then declare its role explicitly;
+channels without ``PDN<n>_ROLE`` and without a part-wide default are rejected.
+
 Example — a DAC: supply SINK (channels 0/1) plus two output SOURCEs::
 
     PDN_ROLE   = SINK                                    # part-wide default
@@ -399,6 +405,34 @@ def _effective_role(params: dict[str, str], index: int | None,
     return part_role
 
 
+def _has_indexed_role_params(params: dict[str, str]) -> bool:
+    """True when at least one non-empty ``PDN<n>_ROLE`` parameter exists (n ≥ 1)."""
+    for k, v in params.items():
+        m = _INDEXED_KEY_RE.match(k.strip())
+        if m is None or not m.group(1):
+            continue
+        if m.group(2).upper() != "ROLE":
+            continue
+        if v is not None and str(v).strip():
+            return True
+    return False
+
+
+def _is_pdn_annotated(params: dict[str, str]) -> bool:
+    """True when the part carries ``PDN_ROLE`` or explicit ``PDN<n>_ROLE`` keys."""
+    if _ci_get(params, ROLE_KEY) is not None:
+        return True
+    return _has_indexed_role_params(params)
+
+
+def _part_role_default(params: dict[str, str]) -> str:
+    """Upper-cased part-wide ``PDN_ROLE``, or ``""`` when only indexed roles are set."""
+    raw = _ci_get(params, ROLE_KEY)
+    if raw is None:
+        return ""
+    return raw.strip().upper()
+
+
 # --- terminal / pin resolution ------------------------------------------------
 
 @dataclass(frozen=True)
@@ -559,7 +593,7 @@ def _iter_pdn_parameter_sources(proj: ExtractedProject) -> list[PdnParameterSour
     sch_with_role: set[str] = set()
 
     for comp in proj.sch_components:
-        if _ci_get(comp.parameters, ROLE_KEY) is None:
+        if not _is_pdn_annotated(comp.parameters):
             continue
         sch_with_role.add(comp.designator.upper())
         sources.append(PdnParameterSource(
@@ -574,7 +608,7 @@ def _iter_pdn_parameter_sources(proj: ExtractedProject) -> list[PdnParameterSour
         dict[str, list[tuple[str, tuple[str, ...], tuple[str, ...]]]] | None
     ) = None
     for idx, pcb in enumerate(proj.pcb_components):
-        if _ci_get(pcb.parameters, ROLE_KEY) is None:
+        if not _is_pdn_annotated(pcb.parameters):
             continue
         lookup_des = pcb.source_designator or pcb.designator
         if lookup_des.upper() in sch_with_role:
@@ -987,10 +1021,7 @@ def _collect_bridge_groups(
             parent[rb] = ra
 
     for comp in parameter_sources:
-        part_role_raw = _ci_get(comp.parameters, ROLE_KEY)
-        if part_role_raw is None:
-            continue
-        part_role = part_role_raw.strip().upper()
+        part_role = _part_role_default(comp.parameters)
         # Only SERIES-role channels bridge nets. On a mixed-role part the
         # part role may be e.g. SINK, so filter by each channel's effective
         # role rather than the part role.
@@ -1640,10 +1671,7 @@ def _collect_supply_voltages_by_net(
         raw.setdefault(net.strip().upper(), set()).add(float(voltage))
 
     for comp in parameter_sources:
-        part_role_raw = _ci_get(comp.parameters, ROLE_KEY)
-        if part_role_raw is None:
-            continue
-        part_role = part_role_raw.strip().upper()
+        part_role = _part_role_default(comp.parameters)
         # Both SOURCE and REGULATOR carry PDN<n>_V; switch on each channel's
         # effective role so a SOURCE (or REGULATOR) channel on a mixed-role
         # part still contributes its nominal rail voltage.
@@ -2120,6 +2148,12 @@ def _resolve_channel_roles(
                 )
                 continue
         else:
+            if not part_role:
+                result.errors.append(
+                    f"{_channel_label(designator, idx)}: missing "
+                    f"{_channel_key('ROLE', idx)} (no part-wide PDN_ROLE)"
+                )
+                continue
             eff = part_role
         value_key = _channel_key(_VALUE_SUFFIX_BY_ROLE[eff], idx)
         if _ci_get(params, value_key) is None:
@@ -2171,18 +2205,20 @@ def parse_annotations(proj: ExtractedProject,
 
     for comp in proj.sch_components:
         stray = [k for k in comp.parameters if k.upper().startswith(PARAM_PREFIX)]
-        if stray and _ci_get(comp.parameters, ROLE_KEY) is None:
+        if stray and not _is_pdn_annotated(comp.parameters):
             result.warnings.append(
                 f"{comp.designator} ({comp.schdoc_name}): has {len(stray)} "
-                f"PDN_* parameter(s) but no PDN_ROLE — directive ignored"
+                f"PDN_* parameter(s) but no PDN_ROLE or PDN<n>_ROLE — "
+                f"directive ignored"
             )
     for pcb in proj.pcb_components:
         stray = [k for k in pcb.parameters if k.upper().startswith(PARAM_PREFIX)]
-        if stray and _ci_get(pcb.parameters, ROLE_KEY) is None:
+        if stray and not _is_pdn_annotated(pcb.parameters):
             lookup = pcb.source_designator or pcb.designator
             result.warnings.append(
                 f"{pcb.designator} (PCB, from {lookup}): has {len(stray)} "
-                f"PDN_* parameter(s) but no PDN_ROLE — directive ignored"
+                f"PDN_* parameter(s) but no PDN_ROLE or PDN<n>_ROLE — "
+                f"directive ignored"
             )
 
     parameter_sources = _iter_pdn_parameter_sources(proj)
@@ -2196,15 +2232,18 @@ def parse_annotations(proj: ExtractedProject,
             continue  # Absorbed by net-merge pre-pass — see fypa.altium.loader.
         role_raw = _ci_get(comp.parameters, ROLE_KEY)
         if role_raw is None:
-            continue
-
-        role = role_raw.strip().upper()
-        if role not in VALID_ROLES:
-            result.errors.append(
-                f"{comp.designator} ({comp.schdoc_name}): unknown PDN_ROLE={role_raw!r} "
-                f"— must be one of {sorted(VALID_ROLES)}"
-            )
-            continue
+            if not _has_indexed_role_params(comp.parameters):
+                continue
+            role = ""
+        else:
+            role = role_raw.strip().upper()
+            if role not in VALID_ROLES:
+                result.errors.append(
+                    f"{comp.designator} ({comp.schdoc_name}): unknown "
+                    f"PDN_ROLE={role_raw!r} — must be one of "
+                    f"{sorted(VALID_ROLES)}"
+                )
+                continue
 
         # A designator with a SOURCE in one schdoc and SINK in another would be
         # ambiguous — flag duplicates (schematic logical designators only).
@@ -2231,6 +2270,8 @@ def parse_annotations(proj: ExtractedProject,
         if not channel_roles:
             # No resolvable channels — call the part-role parser so it emits
             # the role-appropriate "missing PDN_V / PDN_I / …" diagnostic.
+            if not role:
+                continue
             specs = _PARSER_BY_ROLE[role](comp, proj, enabled_layers, result,
                                           bridge_groups=bridge_groups,
                                           net_remap=net_remap,
