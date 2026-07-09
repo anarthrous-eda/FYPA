@@ -8,6 +8,14 @@ from fypa.topology.metadata_schema import JumpRowDict
 
 
 @dataclass
+class NodeSection:
+    """One stacked role block inside a multi-role topology symbol."""
+    role: str
+    y: float
+    height: float
+
+
+@dataclass
 class TopologyPort:
     terminal: str
     net: str
@@ -21,6 +29,7 @@ class TopologyPort:
     tooltip: str = ""
     stub_length: float = 0.0
     wire_x: float | None = None
+    role: str = ""
 
 
 @dataclass
@@ -40,6 +49,7 @@ class TopologyNode:
     ports: list[TopologyPort] = field(default_factory=list)
     bounds: tuple[float, float, float, float] = (0, 0, 0, 0)
     jump_row: JumpRowDict | None = None
+    sections: list[NodeSection] = field(default_factory=list)
 
 
 @dataclass

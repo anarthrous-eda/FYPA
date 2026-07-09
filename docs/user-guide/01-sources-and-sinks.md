@@ -228,6 +228,23 @@ channels 2–3 override to `SOURCE` (the two outputs). Only the channels
 that differ from the default carry a `PDN<n>_ROLE` — a plain two-sink part
 needs no role overrides at all.
 
+When every active channel has its own role, you may omit `PDN_ROLE`
+entirely and set only `PDN<n>_ROLE` on each indexed channel — for example
+a part that SERIES-bridges the input rail and SINKs quiescent current on
+a separate IC supply:
+
+| Name         | Value          | Name          | Value          |
+|--------------|----------------|---------------|----------------|
+| `PDN1_ROLE`  | `SERIES`       | `PDN1_R`      | `7m`           |
+|              |                | `PDN1_P_NET`  | `VIN`          |
+|              |                | `PDN1_N_NET`  | `VOUT`         |
+| `PDN2_ROLE`  | `SINK`         | `PDN2_I`      | `10mA`         |
+|              |                | `PDN2_P_NET`  | `VCC`          |
+|              |                | `PDN2_N_NET`  | `GND`          |
+
+Each indexed channel must then declare its role explicitly; channels
+without `PDN<n>_ROLE` and without a part-wide `PDN_ROLE` are rejected.
+
 A few things to keep in mind:
 
 - Mix roles across **different** nets. A source and a sink on the *same*
