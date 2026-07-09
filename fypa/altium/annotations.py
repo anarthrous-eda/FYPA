@@ -124,7 +124,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -1089,7 +1089,7 @@ def _collect_bridge_groups(
     group. Net names are upper-cased for case-insensitive comparison.
 
     Name-level equivalence for unit tests. Cross-directive validation unions
-    PCB net indices via :func:`_union_series_bridge_net_indices` when present.
+    PCB net indices via :func:`_union_series_bridge_net_indices`.
     Terminal pin resolution uses direct pad-to-net connectivity only — see
     :func:`_resolve_terminal`.
     """
