@@ -385,6 +385,14 @@ class RawStackupLayer:
     # (Altium ``PLANE<n>PULLBACK``), in mm. 0.0 for signal layers and for
     # planes that don't define a pullback.
     plane_pullback_mm: float = 0.0
+    # Relative permittivity (Dk) and loss tangent (Df) of the dielectric
+    # BELOW this copper layer (the same gap ``dielectric_thickness_mm``
+    # measures). A multi-ply gap (core + prepreg) is thickness-weighted.
+    # ``None`` when the .PcbDoc doesn't store a value — consumers fall back
+    # to their own default. Not used by the DC solve (conductance is
+    # Dk-independent); carried for the PDN inductance/impedance analyses.
+    dielectric_dk: float | None = None
+    dielectric_df: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1036,6 +1044,48 @@ def _extract_board_outline(pcb, ox_mm: float, oy_mm: float) -> tuple[Pt2D, ...]:
     return tuple(pts)
 
 
+def _v9_dielectric_gaps(pcb) -> dict[str, tuple[float | None, float | None]]:
+    """Per-copper-layer (Dk, Df) of the dielectric gap below it, keyed by the
+    copper layer's lower-cased display name.
+
+    Walks the V9 physical stack (the only view carrying ``diel_constant`` /
+    ``diel_loss_tangent`` per dielectric ply) top→bottom: for each copper
+    layer, the plies down to the next copper layer form its gap; a multi-ply
+    gap (core + prepreg) is thickness-weighted. Plies without a stored Dk/Df
+    (0.0 in the record) are excluded from that average; a gap with no data at
+    all yields ``None``. Boards without a V9 stack return an empty dict and
+    callers fall back to the legacy per-layer ``diel_constant``.
+    """
+    v9 = list(getattr(pcb.board, "v9_stack", ()) or ())
+    if not v9:
+        return {}
+    v9.sort(key=lambda l: int(getattr(l, "stack_index", 0)))
+    out: dict[str, tuple[float | None, float | None]] = {}
+    for i, layer in enumerate(v9):
+        if not getattr(layer, "is_copper", False):
+            continue
+        dk_wsum = df_wsum = dk_h = df_h = 0.0
+        for ply in v9[i + 1:]:
+            if getattr(ply, "is_copper", False):
+                break
+            h = float(getattr(ply, "diel_height", 0.0) or 0.0)
+            if h <= 0.0:
+                continue
+            dk = float(getattr(ply, "diel_constant", 0.0) or 0.0)
+            df = float(getattr(ply, "diel_loss_tangent", 0.0) or 0.0)
+            if dk > 0.0:
+                dk_wsum += dk * h
+                dk_h += h
+            if df > 0.0:
+                df_wsum += df * h
+                df_h += h
+        out[str(layer.name).strip().lower()] = (
+            dk_wsum / dk_h if dk_h > 0.0 else None,
+            df_wsum / df_h if df_h > 0.0 else None,
+        )
+    return out
+
+
 def _extract_stackup(pcb) -> tuple[RawStackupLayer, ...]:
     # ``plane_net_names_by_index`` is keyed by the *internal-plane index*
     # (1..16, parsed from the ``PLANE<n>NETNAME`` board records), NOT by the
@@ -1052,10 +1102,16 @@ def _extract_stackup(pcb) -> tuple[RawStackupLayer, ...]:
         internal_plane_1 + (int(idx) - 1): name
         for idx, name in plane_index_map.items()
     }
+    diel_gaps = _v9_dielectric_gaps(pcb)
     out: list[RawStackupLayer] = []
     for ls in pcb.board.layer_stackup:
         layer_id = int(ls.layer_id)
         plane_name = plane_map.get(layer_id)
+        # Dk/Df of the gap below: prefer the V9 physical stack (thickness-
+        # weighted across plies, carries Df); fall back to the legacy record's
+        # single per-layer diel_constant (no Df there).
+        v9_dk, v9_df = diel_gaps.get(str(ls.name).strip().lower(), (None, None))
+        legacy_dk = float(getattr(ls, "diel_constant", 0.0) or 0.0)
         out.append(RawStackupLayer(
             layer_id=layer_id,
             name=str(ls.name),
@@ -1065,6 +1121,9 @@ def _extract_stackup(pcb) -> tuple[RawStackupLayer, ...]:
             is_plane=plane_name is not None,
             plane_net_name=str(plane_name) if plane_name is not None else None,
             mech_enabled=bool(ls.mech_enabled),
+            dielectric_dk=v9_dk if v9_dk is not None
+            else (legacy_dk if legacy_dk > 0.0 else None),
+            dielectric_df=v9_df,
         ))
 
     # Internal-plane layers (legacy ids 39-54) are never present in the legacy
@@ -1191,6 +1250,7 @@ def _splice_plane_layers(
              str(rl.display_name or "")))
 
     legacy_by_id = {r.layer_id: r for r in legacy_rows}
+    diel_gaps = _v9_dielectric_gaps(pcb)
 
     rebuilt: list[RawStackupLayer] = []
     for k, (lid, cu_mils, diel_mils, disp_name) in enumerate(conductors):
@@ -1201,6 +1261,11 @@ def _splice_plane_layers(
             # Signal layer already parsed: keep its copper/name/mech, only
             # re-link next_layer_id and dielectric to the resolved neighbour
             # (a no-op on plane-free boards, where the chain is unchanged).
+            # The re-linked gap may differ from the legacy one (a plane was
+            # spliced in between), so re-look-up its Dk/Df by name too.
+            v9_dk, v9_df = diel_gaps.get(legacy.name.strip().lower(),
+                                         (legacy.dielectric_dk,
+                                          legacy.dielectric_df))
             rebuilt.append(RawStackupLayer(
                 layer_id=lid,
                 name=legacy.name,
@@ -1210,12 +1275,16 @@ def _splice_plane_layers(
                 is_plane=legacy.is_plane,
                 plane_net_name=legacy.plane_net_name,
                 mech_enabled=legacy.mech_enabled,
+                dielectric_dk=v9_dk,
+                dielectric_df=v9_df,
             ))
         else:
             # Internal-plane layer, sourced wholly from the resolved stack.
+            name = disp_name or f"Internal Plane {lid - ip1 + 1}"
+            v9_dk, v9_df = diel_gaps.get(name.strip().lower(), (None, None))
             rebuilt.append(RawStackupLayer(
                 layer_id=lid,
-                name=disp_name or f"Internal Plane {lid - ip1 + 1}",
+                name=name,
                 copper_thickness_mm=mils_to_mm(cu_mils),
                 dielectric_thickness_mm=mils_to_mm(diel_mils),
                 next_layer_id=next_id,
@@ -1223,6 +1292,8 @@ def _splice_plane_layers(
                 plane_net_name=plane_net,
                 mech_enabled=False,
                 plane_pullback_mm=_plane_pullback_mm(lid),
+                dielectric_dk=v9_dk,
+                dielectric_df=v9_df,
             ))
 
     # Preserve any legacy rows the resolved conductive walk didn't cover
