@@ -21,6 +21,7 @@ from fypa.caploop.identify import (
     CapInstance,
     CavityRef,
     EscapeVia,
+    has_flag,
     identify_capacitors,
 )
 from fypa.caploop.tier1 import Tier1Result, mounted_inductance
@@ -31,6 +32,7 @@ __all__ = [
     "CapInstance",
     "CavityRef",
     "EscapeVia",
+    "has_flag",
     "identify_capacitors",
     "Tier1Result",
     "mounted_inductance",

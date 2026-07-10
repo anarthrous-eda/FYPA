@@ -580,14 +580,13 @@ def _designator_candidates(
 def _local_net_label_matches(
     label: str | None,
     local_net_name: str,
-    des_candidates: set[str] | None = None,
+    des_candidates: set[str],
 ) -> bool:
     """True when ``label`` names the same local net class as ``local_net_name``.
 
-    With ``des_candidates``, channel-mangled aliases (``S00A_SL8M7``, ``S00A.4``)
-    are accepted only when an instance designator carries the same channel token.
-    Without ``des_candidates`` (bridge-group expansion), any alias sharing the
-    local prefix is accepted.
+    Channel-mangled aliases (``S00A_SL8M7``, ``S00A.4``) are accepted only
+    when an instance designator in ``des_candidates`` carries the same
+    channel token.
     """
     if not label:
         return False
@@ -595,8 +594,6 @@ def _local_net_label_matches(
     lu = label.upper()
     if lu == ln:
         return True
-    if des_candidates is None:
-        return lu.startswith((ln + ".", ln + "_"))
     if lu.startswith(ln + "."):
         channel = lu[len(ln) + 1:]
         if channel and any(d.endswith("." + channel) for d in des_candidates):
@@ -606,20 +603,6 @@ def _local_net_label_matches(
         if channel and any(d.endswith("_" + channel) for d in des_candidates):
             return True
     return False
-
-
-def _netlist_label_family(netlist, local_net_name: str) -> set[str]:
-    """All netlist labels (name + aliases) in the same family as a local name."""
-    if netlist is None:
-        return {local_net_name.upper()}
-    family: set[str] = set()
-    for net in netlist.nets:
-        names = [net.name, *getattr(net, "aliases", ())]
-        if any(_local_net_label_matches(n, local_net_name) for n in names):
-            family.update(n.upper() for n in names if n)
-    if not family:
-        family.add(local_net_name.upper())
-    return family
 
 
 def _channel_suffix_from_pcb_designator(pcb_designator: str) -> str | None:
@@ -638,13 +621,18 @@ def _degraded_pcb_net_candidates(
     local_net_name: str,
     pcb_designator: str,
 ) -> list[str]:
-    """Last-resort PCB net names when the compiled netlist is unavailable."""
-    names = [local_net_name]
-    if "." not in local_net_name:
-        suffix = _channel_suffix_from_pcb_designator(pcb_designator)
-        if suffix:
-            names.append(f"{local_net_name}.{suffix}")
-    return names
+    """Last-resort suffixed PCB net guesses when the compiled netlist is
+    unavailable.
+
+    Only channel-suffix guesses are returned — the caller has already tried
+    ``local_net_name`` as a direct PCB net name before falling back here.
+    """
+    if "." in local_net_name:
+        return []
+    suffix = _channel_suffix_from_pcb_designator(pcb_designator)
+    if not suffix:
+        return []
+    return [f"{local_net_name}.{suffix}"]
 
 
 @dataclass
@@ -655,6 +643,28 @@ class InstanceLocalNetResolver:
     _expanded_cache: dict[str, tuple[str, ...]] = field(
         default_factory=dict, repr=False,
     )
+    _pads_by_component: dict[int, dict[str, RawPad]] | None = field(
+        default=None, repr=False,
+    )
+    _netlist_index: (
+        dict[str, list[tuple[str, tuple[str, ...], tuple[str, ...]]]] | None
+    ) = field(default=None, repr=False)
+
+    def pads_index(self) -> dict[int, dict[str, RawPad]]:
+        """Memoized :func:`_build_pads_by_component` for this project."""
+        if self._pads_by_component is None:
+            self._pads_by_component = _build_pads_by_component(self.proj)
+        return self._pads_by_component
+
+    def designator_index(
+        self,
+    ) -> dict[str, list[tuple[str, tuple[str, ...], tuple[str, ...]]]]:
+        """Memoized :func:`_build_netlist_designator_index` for this project."""
+        if self._netlist_index is None:
+            self._netlist_index = _build_netlist_designator_index(
+                self.proj.compiled_netlist,
+            )
+        return self._netlist_index
 
     def infer_schdoc(
         self,
@@ -670,7 +680,7 @@ class InstanceLocalNetResolver:
         pcb_designator = self.proj.pcb_components[pcb_index].designator
         des_candidates = _designator_candidates(lookup_des, pcb_designator)
         if pads_by_component is None:
-            pads_by_component = _build_pads_by_component(self.proj)
+            pads_by_component = self.pads_index()
         routed_pads = pads_by_component.get(pcb_index, {})
 
         sheet_votes: dict[str, int] = {}
@@ -678,9 +688,7 @@ class InstanceLocalNetResolver:
 
         if routed_pads:
             if netlist_index is None:
-                netlist_index = _build_netlist_designator_index(
-                    self.proj.compiled_netlist,
-                )
+                netlist_index = self.designator_index()
             for pin_key, pad in routed_pads.items():
                 pcb_net_upper = self.proj.nets[pad.net_index].name.upper()
                 for des_key in des_candidates:
@@ -718,59 +726,36 @@ class InstanceLocalNetResolver:
     def expand_net_names(
         self,
         local_name: str,
-        pcb_index: int | None = None,
+        pcb_index: int,
     ) -> tuple[str, ...]:
-        """All PCB / netlist labels equivalent to a local schematic net name.
-
-        Always pass ``pcb_index`` for production resolution paths. The
-        ``pcb_index is None`` mode scans every placement and seeds from the
-        unscoped netlist label family — it can merge unrelated channel slots
-        (e.g. ``VCC_EFUSE.1`` and ``VCC_EFUSE.4``) and is intended for tests
-        and diagnostics only.
+        """All PCB / netlist labels equivalent to a local schematic net name,
+        scoped to one PCB placement so channel slots of a repeated sheet
+        (``VCC_EFUSE.1`` vs ``VCC_EFUSE.4``) never merge across instances.
         """
         cache_key = f"{local_name.upper()}\0{pcb_index}"
         cached = self._expanded_cache.get(cache_key)
         if cached is not None:
             return cached
 
-        if pcb_index is None:
-            log.debug(
-                "expand_net_names(%r) without pcb_index: unscoped label-family "
-                "expansion — prefer pcb_index= for instance-safe resolution",
-                local_name,
-            )
-            names: set[str] = set(_netlist_label_family(
-                self.proj.compiled_netlist, local_name,
-            ))
-        else:
-            names = {local_name.upper()}
+        names = {local_name.upper()}
 
         if self.proj.compiled_netlist is not None:
-            indices = (
-                [pcb_index] if pcb_index is not None
-                else range(len(self.proj.pcb_components))
+            pads_by = self.pads_index()
+            pcb = self.proj.pcb_components[pcb_index]
+            lookup_des = pcb.source_designator or pcb.designator
+            schdoc = self.infer_schdoc(
+                pcb_index, lookup_des, pads_by_component=pads_by,
             )
-            pads_by = _build_pads_by_component(self.proj)
-            for idx in indices:
-                pcb = self.proj.pcb_components[idx]
-                lookup_des = pcb.source_designator or pcb.designator
-                schdoc = self.infer_schdoc(
-                    idx, lookup_des, pads_by_component=pads_by,
-                )
-                routed = pads_by.get(idx, {})
-                if not routed:
-                    continue
-                routed_keys = set(routed)
+            routed = pads_by.get(pcb_index, {})
+            if routed:
                 local_pins = _resolve_local_net_pins(
                     self.proj.compiled_netlist,
                     lookup_des,
                     schdoc,
                     local_name,
-                    routed_pin_keys=routed_keys,
+                    routed_pin_keys=set(routed),
                     pcb_designator=pcb.designator,
                 )
-                if not local_pins:
-                    continue
                 wanted = {p.upper() for p in local_pins}
                 for pin_key, pad in routed.items():
                     if pin_key in wanted and pad.net_index != NO_NET:
@@ -821,11 +806,10 @@ def _iter_pdn_parameter_sources(proj: ExtractedProject) -> list[PdnParameterSour
         if lookup_des.upper() in sch_with_role:
             continue
         if pads_by_component is None:
-            # Built once, only when a PCB-sourced directive actually exists.
-            pads_by_component = _build_pads_by_component(proj)
-            netlist_index = _build_netlist_designator_index(
-                proj.compiled_netlist
-            )
+            # Fetched once, only when a PCB-sourced directive actually exists.
+            resolver = _instance_resolver(proj)
+            pads_by_component = resolver.pads_index()
+            netlist_index = resolver.designator_index()
         sources.append(PdnParameterSource(
             designator=pcb.designator,
             schdoc_name=_schdoc_for_pcb_instance(
@@ -949,7 +933,7 @@ def _resolve_alias_fallback_pads(
     """
     if proj.compiled_netlist is None:
         return []
-    netlist_index = _build_netlist_designator_index(proj.compiled_netlist)
+    netlist_index = _instance_resolver(proj).designator_index()
     des_candidates = _designator_candidates(sch_lookup_designator, pcb_designator)
     matched: list[RawPad] = []
     seen_pins: set[str] = set()
@@ -1115,14 +1099,23 @@ def _resolve_terminal(
 
         if not matched and proj.compiled_netlist is None:
             for candidate in _degraded_pcb_net_candidates(net_name, designator):
-                net_indices = _net_indices_by_name(proj, candidate)
-                if not net_indices:
+                candidate_indices = _net_indices_by_name(proj, candidate)
+                if not candidate_indices:
                     continue
                 if net_remap:
-                    net_indices = [net_remap.get(ix, ix) for ix in net_indices]
-                wanted_nets = set(net_indices)
+                    candidate_indices = [
+                        net_remap.get(ix, ix) for ix in candidate_indices
+                    ]
+                wanted_nets = set(candidate_indices)
                 matched = [p for p in component_pads if p.net_index in wanted_nets]
                 if matched:
+                    if warnings is not None:
+                        warnings.append(
+                            f"{role_diagnostic}: no compiled netlist — guessed "
+                            f"PCB net {candidate!r} for {net_name!r} from the "
+                            f"channel suffix of {designator!r}; verify this is "
+                            f"the intended net"
+                        )
                     break
 
         if not matched and not net_indices:
@@ -1307,15 +1300,14 @@ def _resolve_series_channel_nets(
 def _iter_series_bridge_pairs(
     parameter_sources: list[PdnParameterSource],
     proj: ExtractedProject,
-    *,
-    per_placement: bool,
-) -> Iterator[tuple[int | None, str, str]]:
-    """Yield ``(pcb_index, p_net, n_net)`` for each SERIES bridge.
+) -> Iterator[tuple[int, str, str]]:
+    """Yield ``(pcb_index, p_net, n_net)`` for each SERIES bridge placement.
 
-    ``pcb_index`` is ``None`` only for parameter-level name pairs
-    (``per_placement=False``). Placement-scoped iteration is used by
-    cross-directive validation; parameter-level pairs build the transitive
-    name equivalence map in :func:`_collect_bridge_groups`.
+    Every channel of every placement yields its own pair — a multi-channel
+    SERIES part bridges a different net pair per channel, and a repeated
+    sheet places the same channel once per PCB instance. Explicit
+    ``PDN<n>_P_NET`` / ``PDN<n>_N_NET`` pairs and single-channel 2-pin
+    auto-inference are resolved by :func:`_resolve_series_channel_nets`.
     """
     for comp in parameter_sources:
         ch_indices = _series_channel_indices(comp)
@@ -1323,69 +1315,12 @@ def _iter_series_bridge_pairs(
             continue
         pcb_indices = _pcb_indices_for_source(comp, proj)
         for ch_idx in ch_indices:
-            if per_placement:
-                for pcb_idx in pcb_indices:
-                    pair = _resolve_series_channel_nets(
-                        comp, proj, ch_idx, pcb_idx, ch_indices,
-                    )
-                    if pair is not None:
-                        yield pcb_idx, pair[0], pair[1]
-                continue
-            p_net = _ci_get(comp.parameters, _channel_key("P_NET", ch_idx))
-            n_net = _ci_get(comp.parameters, _channel_key("N_NET", ch_idx))
-            if p_net and n_net:
-                yield None, p_net, n_net
-            elif p_net is None and n_net is None and not _series_channel_has_net_params(
-                comp, ch_idx,
-            ):
-                if len(ch_indices) == 1:
-                    for pcb_idx in pcb_indices:
-                        pair = _autoinfer_2pin_nets(proj, pcb_idx)
-                        if pair is not None:
-                            yield pcb_idx, pair[0], pair[1]
-
-
-def _collect_bridge_groups(
-    parameter_sources: list[PdnParameterSource],
-    proj: ExtractedProject,
-) -> dict[str, frozenset[str]]:
-    """Build a mapping from each net name to its electrical-equivalence class
-    based on SERIES directives in the schematic.
-
-    Two nets land in the same group if they are bridged by a SERIES
-    directive (inductor DCR, 0-ohm jumper, ferrite bead, sense resistor, …).
-    Transitive: if A↔B and B↔C are both bridged, A, B, C all belong to one
-    group. Net names are upper-cased for case-insensitive comparison.
-
-    Name-level equivalence for unit tests. Cross-directive validation unions
-    PCB net indices via :func:`_union_series_bridge_net_indices`.
-    Terminal pin resolution uses direct pad-to-net connectivity only — see
-    :func:`_resolve_terminal`.
-    """
-    parent: dict[str, str] = {}
-
-    def find(x: str) -> str:
-        while parent.setdefault(x, x) != x:
-            parent[x] = parent[parent[x]]  # path compression
-            x = parent[x]
-        return x
-
-    def union(a: str, b: str) -> None:
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[rb] = ra
-
-    for _pcb_idx, p_net, n_net in _iter_series_bridge_pairs(
-        parameter_sources, proj, per_placement=False,
-    ):
-        union(p_net.upper(), n_net.upper())
-
-    # Materialise each equivalence class as a frozenset and map every net to it.
-    classes: dict[str, set[str]] = {}
-    for net in list(parent.keys()):
-        root = find(net)
-        classes.setdefault(root, set()).add(net)
-    return {net: frozenset(classes[find(net)]) for net in parent}
+            for pcb_idx in pcb_indices:
+                pair = _resolve_series_channel_nets(
+                    comp, proj, ch_idx, pcb_idx, ch_indices,
+                )
+                if pair is not None:
+                    yield pcb_idx, pair[0], pair[1]
 
 
 def _union_series_bridge_net_indices(
@@ -1401,10 +1336,8 @@ def _union_series_bridge_net_indices(
     """
     resolver = _instance_resolver(proj)
     for pcb_idx, p_net, n_net in _iter_series_bridge_pairs(
-        parameter_sources, proj, per_placement=True,
+        parameter_sources, proj,
     ):
-        if pcb_idx is None:
-            continue
         idxs: list[int] = []
         for name in (p_net, n_net):
             for expanded in resolver.expand_net_names(

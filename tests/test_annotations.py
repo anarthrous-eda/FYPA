@@ -23,9 +23,10 @@ from fypa.altium.annotations import (
     SourceSpec,
     TerminalPin,
     TerminalSpec,
-    _collect_bridge_groups,
     _collect_supply_voltages_by_net,
     _iter_pdn_parameter_sources,
+    _iter_series_bridge_pairs,
+    _union_series_bridge_net_indices,
     _lookup_inferred_vin,
     _require_value,
     _resolve_local_net_pins,
@@ -836,7 +837,9 @@ def test_series_nested_pcb_placement_and_indexed_channels():
     assert ("FB1_CH2", 1, 2) in labels
 
 
-def test_bridge_groups_indexed_series_nets():
+def test_bridge_pairs_indexed_series_nets():
+    # A multi-channel SERIES part bridges a different net pair per channel;
+    # iteration must yield every channel's pair, not stop at the first.
     source = PdnParameterSource(
         designator="FB1",
         schdoc_name="Pwr.SchDoc",
@@ -850,13 +853,16 @@ def test_bridge_groups_indexed_series_nets():
             "PDN2_N_NET": "RAIL_D",
         },
     )
-    proj = _minimal_proj()
-    groups = _collect_bridge_groups([source], proj)
-    assert "RAIL_A" in groups
-    assert "RAIL_B" in groups["RAIL_A"]
-    assert "RAIL_C" in groups
-    assert "RAIL_D" in groups["RAIL_C"]
-    assert "RAIL_A" not in groups["RAIL_C"]
+    proj = _minimal_proj(
+        pcb_components=(
+            RawPcbComponent(
+                designator="FB1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="FB", source_designator="FB1",
+            ),
+        ),
+    )
+    pairs = {(p, n) for _idx, p, n in _iter_series_bridge_pairs([source], proj)}
+    assert pairs == {("RAIL_A", "RAIL_B"), ("RAIL_C", "RAIL_D")}
 
 
 def test_sheet_name_matches_full_path_not_basename_collision():
@@ -1434,6 +1440,29 @@ def test_resolve_terminal_no_double_suffix_on_qualified_net():
     assert not errors
     assert spec is not None
     assert spec.pins[0].net_index == 0
+
+
+def test_resolve_terminal_degraded_suffix_guess_warns():
+    """No netlist: VCC_EFUSE on R63.4 maps to VCC_EFUSE.4 — with a warning."""
+    proj = _minimal_proj(
+        nets=(RawNet("VCC_EFUSE.4"),),
+        pcb_components=(
+            RawPcbComponent(
+                designator="R63.4", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="1005R", source_designator="R63",
+            ),
+        ),
+        pads=(_pad(0, "2", 0, 0),),
+        compiled_netlist=None,
+    )
+    warnings: list[str] = []
+    spec, errors = _resolve_terminal(
+        proj, 0, "VCC_EFUSE", None, [1], "SERIES N", warnings=warnings,
+    )
+    assert not errors
+    assert spec is not None
+    assert spec.pins[0].net_index == 0
+    assert any("VCC_EFUSE.4" in w and "guessed" in w for w in warnings)
 
 
 def test_local_fallback_skips_no_net_pad():
@@ -2237,8 +2266,12 @@ def test_series_channel_on_mixed_part_registers_bridge():
     assert result.ok, result.errors
     assert any(isinstance(d, SinkSpec) for d in result.directives)
     assert any(isinstance(d, ResistorSpec) for d in result.directives)
-    groups = _collect_bridge_groups(_iter_pdn_parameter_sources(proj), proj)
-    assert groups.get("+5V") == frozenset({"+5V", "5V_SW"})
+    unions: list[tuple[int, int]] = []
+    _union_series_bridge_net_indices(
+        proj, _iter_pdn_parameter_sources(proj),
+        lambda a, b: unions.append((a, b)),
+    )
+    assert (1, 2) in unions  # +5V ↔ 5V_SW
 
 
 def test_indexed_roles_only_mixed_series_and_sink():
@@ -2289,7 +2322,7 @@ def test_indexed_roles_only_mixed_series_and_sink():
     assert sinks[0].current == pytest.approx(0.01)
 
 
-def test_indexed_roles_only_bridge_group_registers():
+def test_indexed_roles_only_bridge_registers():
     proj = _minimal_proj(
         nets=(RawNet("GND"), RawNet("VIN"), RawNet("VOUT"), RawNet("VCC")),
         sch_components=(
@@ -2321,8 +2354,12 @@ def test_indexed_roles_only_bridge_group_registers():
             _pad(0, "4", 0, 3),
         ),
     )
-    groups = _collect_bridge_groups(_iter_pdn_parameter_sources(proj), proj)
-    assert groups.get("VIN") == frozenset({"VIN", "VOUT"})
+    unions: list[tuple[int, int]] = []
+    _union_series_bridge_net_indices(
+        proj, _iter_pdn_parameter_sources(proj),
+        lambda a, b: unions.append((a, b)),
+    )
+    assert (1, 2) in unions  # VIN ↔ VOUT
 
 
 def test_indexed_roles_channel_without_role_errors():

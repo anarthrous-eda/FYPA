@@ -71,10 +71,12 @@ This is **not** the PCB layout; for spatial placement use the Heatmap tab.
   Each port is labelled with the **physical PCB net name** from the pad
   assignment (the same names you see on the Heatmap and in the Nodes
   table), not the schematic `PDN_*_NET` text or the merged rail name from
-  the Rails list. When one directive terminal ties several pads on
-  different nets (multi-pin part), the port label lists every distinct
-  net, comma-separated. Hub resistors with several channels still show
-  one net per channel row (`N1`, `N2`, …).
+  the Rails list. Ground ports are the exception: they keep the schematic
+  name you gave them (`GND`, `AGND`, …). When one directive terminal ties
+  several pads on different nets (multi-pin part), the port label lists
+  every distinct net, comma-separated; hover the port for the full list if
+  the label is truncated. Multi-channel parts show one net per channel row
+  (`N1`, `N2`, …) — the net that row's wire actually carries.
 - **Wires** — orthogonal links between ports on the same electrical net,
   each labelled once above the link. Real return nets meet a horizontal
   rail below the diagram, terminated by a schematic **GND** symbol

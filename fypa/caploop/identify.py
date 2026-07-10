@@ -681,6 +681,16 @@ def _rail_priority(net_name: str) -> int:
 
 # --- main entry ------------------------------------------------------------------
 
+def has_flag(flags: tuple[str, ...] | list[str], name: str) -> bool:
+    """Is ``name`` among ``flags``, ignoring any parenthesised detail?
+
+    The side-specific flags carry the offending pad's net —
+    ``"no-escape-via (GND)"`` — so a plain ``"no-escape-via" in flags`` would
+    silently miss them. Match the base token instead.
+    """
+    return any(f == name or f.startswith(f"{name} (") for f in flags)
+
+
 def apply_cap_overrides(
     caps: list[CapInstance],
     rail_to_members: dict[str, list[str]],
@@ -886,19 +896,29 @@ def identify_capacitors(
                     set(rail_member_names), metadata_directives)
             target_is_override = False
 
+        # Three of the flags describe one *pad* of the capacitor, not the part
+        # as a whole: a cap can escape cleanly on its ground side and not at
+        # all on its rail side. Name the offending side's net, or the user has
+        # to work out which pad to go and look at.
+        sides = ((vias_rail, rail_net), (vias_return, return_net))
+
         flags: list[str] = []
-        if not vias_rail or not vias_return:
-            flags.append("no-escape-via")
-        elif min(len(vias_rail), len(vias_return)) == 1:
-            flags.append("single-via")
-        # The worse of the two sides' shortest escape runs, measured from the
-        # pad edge — a via-in-pad escapes in 0 mm and must never flag.
-        nearest_escape = max(
-            (min(e.escape_mm for e in side)
-             for side in (vias_rail, vias_return) if side),
-            default=0.0)
-        if nearest_escape > settings.long_escape_warn_mm:
-            flags.append("long-escape")
+        missing = [net for vias, net in sides if not vias]
+        if missing:
+            flags.append(f"no-escape-via ({', '.join(missing)})")
+        else:
+            thin = [net for vias, net in sides if len(vias) == 1]
+            if thin:
+                flags.append(f"single-via ({', '.join(thin)})")
+        # Each side's shortest escape run, measured from the pad edge — a
+        # via-in-pad escapes in 0 mm and must never flag.
+        long_sides = [
+            net for vias, net in sides
+            if vias and min(e.escape_mm for e in vias)
+            > settings.long_escape_warn_mm
+        ]
+        if long_sides:
+            flags.append(f"long-escape ({', '.join(long_sides)})")
         if cavity is None:
             flags.append("no-cavity")
         elif cavity.depth_mm > settings.far_plane_warn_mm:

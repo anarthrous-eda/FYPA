@@ -106,6 +106,7 @@ def _merge_specs_for_designator(designator: str, specs: list[NodeSpec]) -> NodeS
     terms: dict[str, TerminalDict] = {}
     port_directives: dict[str, DirectiveDict] = {}
     port_roles: dict[str, str] = {}
+    channel_ports: set[str] = set()
     directives: list[DirectiveDict] = []
     has_error = False
     tooltip_parts: list[str] = []
@@ -136,6 +137,9 @@ def _merge_specs_for_designator(designator: str, specs: list[NodeSpec]) -> NodeS
                     out_pname = _suffix_for_channel(suffix, multi=True, base=base)
             rename_map[pname] = out_pname
             used_names.add(out_pname)
+        # A collision rename (P → P1) does not make a port a channel row; only
+        # the section's own channel rows carry over under their new names.
+        channel_ports |= {rename_map[p] for p in s.get("channel_ports") or ()}
         # Section dicts are keyed by the renamed port names throughout, so a
         # section is self-consistent with the composite-level maps.
         sec: RoleSection = {
@@ -170,6 +174,7 @@ def _merge_specs_for_designator(designator: str, specs: list[NodeSpec]) -> NodeS
         "port_defs": port_defs,
         "port_directives": port_directives,
         "port_roles": port_roles,
+        "channel_ports": sorted(channel_ports),
         "sections": sections,
         "tooltip": "\n".join(tooltip_parts),
         "directive": primary["directive"],
@@ -241,12 +246,7 @@ def _channel_number(directive: DirectiveDict, position: int) -> int:
 
 
 def _suffix_for_channel(index: int, *, multi: bool, base: str) -> str:
-    """Suffix passive/SINK channel ports (``P1``, ``N2``, …).
-
-    Names must stay ``{P|N}<digit>`` when ``multi`` — see
-    ``_PASSIVE_CHANNEL_PORT`` in :mod:`fypa.topology.metadata.nets`
-    (hub gutter rows show one net per channel, not every pad net).
-    """
+    """Suffix a per-channel port with its channel index (``P1``, ``IN_P2``, …)."""
     if not multi:
         return base
     return f"{base}{index}"
@@ -293,8 +293,16 @@ def _collapse_ports_by_physical_key(
     net_to_rail: dict[str, str],
     *,
     role: str = "",
-) -> tuple[list[PortDef], dict[str, TerminalDict], dict[str, DirectiveDict]]:
-    """One schematic port per distinct pad set (same net + pads → single connector)."""
+    channel_ports: set[str] | None = None,
+) -> tuple[list[PortDef], dict[str, TerminalDict], dict[str, DirectiveDict], set[str]]:
+    """One schematic port per distinct pad set (same net + pads → single connector).
+
+    ``channel_ports`` names the per-channel rows going in; the returned set
+    names them after collapsing. A row that ends up alone loses its channel
+    index (``P1`` → ``P``) and stops being a channel row — with no siblings
+    left, its label should show every pad net again.
+    """
+    channel_ports = channel_ports or set()
     passthrough: list[PortDef] = []
     groups: dict[str, list[PortDef]] = defaultdict(list)
     for pd in port_defs:
@@ -314,6 +322,7 @@ def _collapse_ports_by_physical_key(
     new_directives: dict[str, DirectiveDict] = {
         p[0]: port_directives[p[0]] for p in passthrough if p[0] in port_directives
     }
+    new_channel_ports: set[str] = {p[0] for p in passthrough if p[0] in channel_ports}
 
     base_counts: dict[str, int] = defaultdict(int)
     grouped: list[tuple[PortDef, list[PortDef]]] = []
@@ -333,16 +342,19 @@ def _collapse_ports_by_physical_key(
 
     for winner, pds in grouped:
         base = _base_terminal_name(winner[0])
-        pname = base if base_counts[base] == 1 else winner[0]
+        collapsed = base_counts[base] == 1
+        pname = base if collapsed else winner[0]
         side = winner[1]
         sort_key = min(p[2] for p in pds)
         new_defs.append((pname, side, sort_key))
         new_terms[pname] = terms[winner[0]]
         if winner[0] in port_directives:
             new_directives[pname] = port_directives[winner[0]]
+        if not collapsed and winner[0] in channel_ports:
+            new_channel_ports.add(pname)
 
     new_defs.sort(key=lambda p: p[2])
-    return new_defs, new_terms, new_directives
+    return new_defs, new_terms, new_directives, new_channel_ports
 
 
 def _dedupe_return_terms(
@@ -386,10 +398,11 @@ def _passive_channel_port_defs(
     net_to_rail: dict[str, str],
     *,
     multi: bool,
-) -> tuple[list[PortDef], dict[str, TerminalDict], dict[str, DirectiveDict]]:
+) -> tuple[list[PortDef], dict[str, TerminalDict], dict[str, DirectiveDict], set[str]]:
     port_defs: list[PortDef] = []
     terms: dict[str, TerminalDict] = {}
     port_directives: dict[str, DirectiveDict] = {}
+    channel_ports: set[str] = set()
 
     rows: list[tuple[int, DirectiveDict, TerminalDict | None, TerminalDict | None]] = []
     for i, d in enumerate(channels):
@@ -408,13 +421,18 @@ def _passive_channel_port_defs(
                 port_defs.append((pname, "left", row_i))
                 terms[pname] = p_term
                 port_directives[pname] = d
+                # A merged P is one row for the whole part, not a channel row.
+                if multi and not merge_p:
+                    channel_ports.add(pname)
         if n_term and not is_ideal_return(n_term):
             pname = _suffix_for_channel(ch_idx, multi=multi, base="N")
             port_defs.append((pname, "right", row_i))
             terms[pname] = n_term
             port_directives[pname] = d
+            if multi:
+                channel_ports.add(pname)
 
-    return port_defs, terms, port_directives
+    return port_defs, terms, port_directives, channel_ports
 
 
 def component_spec_from_directives(
@@ -429,6 +447,10 @@ def component_spec_from_directives(
     port_defs: list[PortDef] = []
     terms: dict[str, TerminalDict] = {}
     port_directives: dict[str, DirectiveDict] = {}
+    # Per-channel rows: their terminal carries the whole part's pads, so the
+    # label shows the row's own net (see nets.port_display_net). Return rows
+    # from _dedupe_return_terms are shared across channels and stay out.
+    channel_ports: set[str] = set()
     has_error = any(_directive_has_error(d, errors) for d in channels)
 
     if role == "SINK":
@@ -440,6 +462,8 @@ def component_spec_from_directives(
                 port_defs.append((pname, "left", i))
                 terms[pname] = p_term
                 port_directives[pname] = d
+                if multi:
+                    channel_ports.add(pname)
         for pname, n_term, sort_key in _dedupe_return_terms(channels, "N", net_to_rail):
             port_defs.append((pname, "left", sort_key))
             terms[pname] = n_term
@@ -453,6 +477,8 @@ def component_spec_from_directives(
                     port_defs.append((pname, side, i))
                     terms[pname] = term
                     port_directives[pname] = d
+                    if multi:
+                        channel_ports.add(pname)
         for pname, term, sort_key in _dedupe_return_terms(channels, "IN_N", net_to_rail):
             port_defs.append((pname, "left", sort_key))
             terms[pname] = term
@@ -468,10 +494,12 @@ def component_spec_from_directives(
                 if term and not is_ideal_return(term):
                     port_defs.append((pname, side, i))
                     terms[pname] = term
+                    if multi:
+                        channel_ports.add(pname)
                     if base == "P":
                         port_directives[pname] = d
     elif role in ("RESISTOR", "SERIES"):
-        p_defs, p_terms, p_dirs = _passive_channel_port_defs(
+        p_defs, p_terms, p_dirs, p_channel_ports = _passive_channel_port_defs(
             channels,
             net_to_rail,
             multi=multi,
@@ -479,6 +507,7 @@ def component_spec_from_directives(
         port_defs.extend(p_defs)
         terms.update(p_terms)
         port_directives.update(p_dirs)
+        channel_ports |= p_channel_ports
     else:
         d = channels[0]
         port_defs = list(ROLE_PORTS.get(role, [("P", "left", 0), ("N", "right", 1)]))
@@ -492,15 +521,17 @@ def component_spec_from_directives(
         port_defs = list(ROLE_PORTS.get(role, [("P", "left", 0), ("N", "right", 1)]))
         terms = dict(d.get("terminals") or {})
         port_defs = _visible_port_defs(port_defs, terms)
+        channel_ports.clear()
         for pname, _, _ in port_defs:
             port_directives[pname] = d
 
-    port_defs, terms, port_directives = _collapse_ports_by_physical_key(
+    port_defs, terms, port_directives, channel_ports = _collapse_ports_by_physical_key(
         port_defs,
         terms,
         port_directives,
         net_to_rail,
         role=role,
+        channel_ports=channel_ports,
     )
 
     return {
@@ -513,6 +544,7 @@ def component_spec_from_directives(
         "terms": terms,
         "port_defs": port_defs,
         "port_directives": port_directives,
+        "channel_ports": sorted(channel_ports),
         "tooltip": component_tooltip(role, designator, channels),
         "directive": channels[0],
         "directives": channels,

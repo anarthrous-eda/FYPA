@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import re
 
 from fypa.topology.constants import GND_NET, IDEAL_RETURN_RAIL
 from fypa.topology.metadata_schema import TerminalDict
@@ -14,11 +13,6 @@ log = logging.getLogger(__name__)
 # terminal_net() is called many times per terminal during layout; warn about
 # each inconsistent terminal once per process rather than per call.
 _warned_terminal_nets: set[tuple] = set()
-
-_PASSIVE_CHANNEL_PORT = re.compile(r"^(?:P|N)\d+$")
-# Passive channel rows from specs._suffix_for_channel (P1, N2, …) only.
-# Regulator rows (IN_P1, OUT_P2, …) are not matched — multi-pin there
-# lists every pad net.
 
 
 def net_to_rail_map(rail_to_members: dict[str, list[str]]) -> dict[str, str]:
@@ -107,21 +101,16 @@ def _port_display_single_net(
     if not term:
         return physical_net or "?"
     req = term.get("requested_net")
-    if req and physical_net and (
-        physical_net == GND_NET or is_gnd_alias(physical_net)
-    ):
+    if req and physical_net and is_gnd_alias(physical_net):
         return req
-    if physical_net and physical_net != "?":
-        return physical_net
-    return req or physical_net or "?"
+    return physical_net or req or "?"
 
 
 def port_display_net(
     term: TerminalDict | None,
     physical_net: str | None = None,
     *,
-    role: str = "",
-    port_name: str = "",
+    channel_row: bool = False,
 ) -> str:
     """Label text for a topology port — physical PCB net name(s).
 
@@ -131,22 +120,26 @@ def port_display_net(
     rail members keep distinct names (e.g. ``VDD_48V_PORT.1`` vs
     ``VDD_48V_RP``).
 
-    Multi-pin terminals list every distinct pad net (comma-separated) unless
-    the port is a channel-split passive row (``N1``, ``P2``, … — ``P``/``N``
-    plus a channel index from :func:`specs._suffix_for_channel`) where each
-    row drives one gutter net. Regulator channel ports (``IN_P1``, ``OUT_P2``,
-    …) are not in that exception and list all pad nets when they disagree.
-    GND aliases still show the schematic ``requested_net`` when present.
+    A terminal whose pads span several nets normally lists them all,
+    comma-separated: the port is the only place that tie is visible. When the
+    port is a channel row (``channel_row``, i.e. sibling rows exist for the
+    same terminal, so the pad set spans the whole part) the label shows just
+    that row's net, matching the one wire the row drives.
+
+    A GND-alias net shows the schematic ``requested_net`` instead, so the
+    ground symbol keeps the designer's name (``AGND``, ``DGND``, …). A
+    multi-net terminal that merely *includes* a ground pad still lists every
+    net, since no single requested name describes it.
 
     Routing (:func:`terminal_net` → ``ResolvedPort.wnet``) always uses the
     first pin net so each connector row still drives one wire/bus.
     """
     pin_nets = terminal_pin_nets(term)
-    if len(pin_nets) > 1:
-        if role in ("RESISTOR", "SERIES") and _PASSIVE_CHANNEL_PORT.match(port_name):
-            return _port_display_single_net(term, physical_net or terminal_net(term))
+    if len(pin_nets) > 1 and not channel_row:
         return ", ".join(pin_nets)
+    # terminal_net() only when pads exist — an ideal return has none and would
+    # yield the IDEAL_RETURN_RAIL sentinel rather than a name.
     return _port_display_single_net(
         term,
-        physical_net or (pin_nets[0] if pin_nets else None),
+        physical_net or (terminal_net(term) if pin_nets else None),
     )

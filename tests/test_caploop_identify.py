@@ -30,6 +30,7 @@ from fypa.caploop.identify import (
     associate_escape_vias,
     default_target_for_rail,
     design_voltage_for_rail,
+    has_flag,
     identify_capacitors,
     parse_cap_params,
 )
@@ -155,7 +156,7 @@ def test_detects_decoupling_cap_and_orientation():
     assert cap.rail_group == "+3V3"
     assert cap.included
     assert len(cap.vias_rail) == 2 and len(cap.vias_return) == 2
-    assert "single-via" not in cap.flags and "no-escape-via" not in cap.flags
+    assert not has_flag(cap.flags, "single-via") and not has_flag(cap.flags, "no-escape-via")
 
 
 def test_skips_non_cap_designators():
@@ -233,7 +234,7 @@ def test_long_escape_within_max_dist_is_kept_and_flagged():
     ))
     caps = _identify(proj)
     assert len(caps[0].vias_rail) == 1
-    assert "long-escape" in caps[0].flags
+    assert has_flag(caps[0].flags, "long-escape")
 
 
 def test_distant_via_kept_as_only_path_when_nothing_local():
@@ -244,16 +245,54 @@ def test_distant_via_kept_as_only_path_when_nothing_local():
     caps = _identify(proj)
     assert len(caps[0].vias_rail) == 1
     assert caps[0].vias_rail[0].dist_mm == pytest.approx(2.5)
-    assert "long-escape" in caps[0].flags
+    assert has_flag(caps[0].flags, "long-escape")
 
 
-def test_no_escape_via_flag():
+def test_no_escape_via_flag_names_the_offending_pad():
+    """A capacitor can escape cleanly on one pad and not at all on the other.
+    The flag must say which, or the user has no idea which pad to go and look
+    at."""
     proj = _standard_cap_project(vias=(
         _via(0.9, 0.0, GND), _via(1.05, 0.0, GND),
     ))
     caps = _identify(proj)
     assert caps[0].vias_rail == ()
-    assert "no-escape-via" in caps[0].flags
+    assert has_flag(caps[0].flags, "no-escape-via")
+    # The rail pad is the stranded one; the GND pad has two vias.
+    assert "no-escape-via (+3V3)" in caps[0].flags
+
+
+def test_no_escape_via_names_both_pads_when_both_are_stranded():
+    caps = _identify(_standard_cap_project(vias=()))
+    assert "no-escape-via (+3V3, GND)" in caps[0].flags
+
+
+def test_single_via_flag_names_the_offending_pad():
+    proj = _standard_cap_project(vias=(
+        _via(-0.9, 0.0, PWR),                             # rail: one via
+        _via(0.9, 0.0, GND), _via(1.05, 0.0, GND),        # return: two
+    ))
+    assert "single-via (+3V3)" in _identify(proj)[0].flags
+
+
+def test_long_escape_flag_names_the_offending_pad():
+    proj = _standard_cap_project(vias=(
+        _via(-2.0, 0.0, PWR),                             # rail: 1.5 mm out
+        _via(0.9, 0.0, GND), _via(1.05, 0.0, GND),        # return: adjacent
+    ))
+    flags = _identify(proj)[0].flags
+    assert "long-escape (+3V3)" in flags
+    long_flag = next(f for f in flags if f.startswith("long-escape"))
+    assert "GND" not in long_flag
+
+
+def test_has_flag_matches_the_base_token_only():
+    flags = ("no-escape-via (+3V3, GND)", "no-cavity")
+    assert has_flag(flags, "no-escape-via")
+    assert has_flag(flags, "no-cavity")
+    assert not has_flag(flags, "no-target")
+    # A shared prefix is not a match.
+    assert not has_flag(("single-via (GND)",), "single")
 
 
 def test_through_hole_pad_is_its_own_escape():
@@ -266,7 +305,7 @@ def test_through_hole_pad_is_its_own_escape():
     assert len(rail) == 1 and rail[0].is_pad_hole
     assert rail[0].dist_mm == 0.0
     assert rail[0].drill_mm == pytest.approx(0.5)
-    assert "no-escape-via" not in caps[0].flags
+    assert not has_flag(caps[0].flags, "no-escape-via")
 
 
 def test_single_via_flag():
@@ -275,7 +314,7 @@ def test_single_via_flag():
         _via(0.9, 0.0, GND), _via(1.05, 0.0, GND),
     ))
     caps = _identify(proj)
-    assert "single-via" in caps[0].flags
+    assert has_flag(caps[0].flags, "single-via")
 
 
 def test_escape_is_measured_from_the_pad_edge_not_its_centre():
@@ -310,7 +349,7 @@ def test_via_in_pad_never_raises_long_escape():
         vias=(_via(-0.5, 0.0, PWR), _via(0.5, 0.0, GND)),
     )
     caps = _identify(proj)
-    assert "long-escape" not in caps[0].flags
+    assert not has_flag(caps[0].flags, "long-escape")
 
 
 def test_buried_via_that_misses_the_mounting_layer_is_not_an_escape():
@@ -325,7 +364,7 @@ def test_buried_via_that_misses_the_mounting_layer_is_not_an_escape():
     ))
     caps = _identify(proj)
     assert caps[0].vias_rail == ()
-    assert "no-escape-via" in caps[0].flags
+    assert has_flag(caps[0].flags, "no-escape-via")
 
 
 def test_bottom_mounted_cap_ignores_top_only_vias():

@@ -320,14 +320,25 @@ exclude or a retargeting changes no geometry, so
 
 ## Flags
 
-| Flag | Meaning |
-|---|---|
-| `single-via` | One escape via on at least one side — the dominant, most fixable loop-L contributor |
-| `long-escape` | The pad-edge-to-via run exceeds the warning distance |
-| `far-plane` | The reference cavity is deeper than the warning depth below the mounting surface |
-| `no-cavity` | No reachable plane pair; Tier 1 falls back and Tier 2 is skipped |
-| `no-escape-via` | No via reaches this pad's mounting layer within the search radius |
-| `no-target` | No SINK directive on this rail, so the loop has no far end |
+A capacitor has two pads and they fail independently — it can escape cleanly
+on its ground side and not at all on its rail side. The three flags that
+describe *one pad* therefore name that pad's net, e.g.
+`no-escape-via (+3V3)`, or both when both are stranded:
+`no-escape-via (+3V3, GND)`. Use
+:func:`~fypa.caploop.identify.has_flag` to test for a flag rather than
+matching the string, so the parenthesised detail doesn't defeat the check.
+
+| Flag | Per-pad? | Meaning |
+|---|---|---|
+| `single-via (net)` | yes | One escape via on the named pad — the dominant, most fixable loop-L contributor |
+| `long-escape (net)` | yes | The named pad's edge-to-via run exceeds the warning distance |
+| `no-escape-via (net)` | yes | No via reaches the named pad's own layer within the search radius |
+| `far-plane` | no | The reference cavity is deeper than the warning depth below the mounting surface |
+| `no-cavity` | no | No reachable plane pair; Tier 1 falls back (shown with a `~`) and Tier 2 is skipped |
+| `no-target` | no | No SINK directive on this rail, so the loop has no far end |
+
+Hovering the Flags cell spells each one out and quotes the threshold that was
+actually applied, which is a Settings-tab value, not necessarily the default.
 
 ## Design guidance (SWPA222A §3)
 

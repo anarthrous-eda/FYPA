@@ -836,10 +836,12 @@ def _enrich_resolved_ports(spec: NodeSpec) -> None:
     ``wnet`` always comes from :func:`terminal_net` (first pin when pads
     disagree) so routing stays on one gutter/bus per connector row.
     ``plabel`` may list every pad net on multi-pin terminals — see
-    :func:`port_display_net`.
+    :func:`port_display_net`. The tooltip keeps the full list even when the
+    drawn label is truncated to fit.
     """
     resolved: dict[str, ResolvedPort] = {}
     port_directives = spec.get("port_directives") or {}
+    channel_ports = set(spec.get("channel_ports") or ())
     terms = spec.get("terms") or {}
     for pname, _, _ in spec["port_defs"]:
         term = terms.get(pname)
@@ -847,18 +849,11 @@ def _enrich_resolved_ports(spec: NodeSpec) -> None:
         wnet = wire_net(raw)
         if not wnet:
             continue
-        plabel = truncate_label(
-            port_display_net(
-                term,
-                raw,
-                role=spec.get("role", ""),
-                port_name=pname,
-            )
-        )
+        label = port_display_net(term, raw, channel_row=pname in channel_ports)
         resolved[pname] = ResolvedPort(
             wnet=wnet,
-            plabel=plabel,
-            tooltip=port_tooltip(plabel, port_directives.get(pname), pname),
+            plabel=truncate_label(label),
+            tooltip=port_tooltip(label, port_directives.get(pname), pname),
         )
     spec["resolved_ports"] = resolved
 

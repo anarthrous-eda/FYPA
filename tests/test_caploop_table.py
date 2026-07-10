@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (  # noqa: E402
 )
 
 import fypa.altium_viewer as av  # noqa: E402
+from fypa.caploop.identify import has_flag  # noqa: E402
 from fypa.caploop.tier3 import Tier3Result  # noqa: E402
 from fypa.project_file import ProjectFile  # noqa: E402
 from tests.test_caploop_identify import (  # noqa: E402
@@ -178,6 +179,26 @@ def test_parasitic_override_survives_an_include_toggle(viewer):
     _cell(viewer, viewer._CAPS_USE_COL).setCheckState(Qt.Unchecked)
     only = viewer._project.cap_overrides[0]
     assert only.esr_ohm == 3e-3 and only.include is False
+
+
+def test_flags_tooltip_names_the_pad_and_quotes_the_threshold(qapp):
+    from tests.test_caploop_identify import GND, _standard_cap_project, _via
+
+    v = _Viewer()
+    # Rail pad stranded (no via reaches it); return pad has a single via.
+    v._loaded_project = types.SimpleNamespace(
+        extracted=_standard_cap_project(vias=(_via(0.9, 0.0, GND),)))
+    v._caps_tab_index = v.tabs.addTab(v._build_capacitors_tab(), "Capacitors")
+    v._populate_caps_table()
+
+    tip = _cell(v, "Flags").toolTip()
+    assert "no-escape-via (+3V3)" in tip          # names the offending pad
+    assert "this pad's own layer" in tip          # says what it means
+    assert "within 3 mm" in tip                   # quotes the search radius
+
+
+def test_flags_tooltip_when_a_capacitor_is_clean(viewer):
+    assert "No geometry concerns" in _cell(viewer, "Flags").toolTip()
 
 
 def test_tier1_tooltip_breaks_the_inductance_down(viewer):
@@ -409,4 +430,4 @@ def test_a_settings_change_does_rebuild_the_identification(viewer):
     viewer._invalidate_caps_cache(repopulate=False, heavy=True)
     assert viewer._caps_identity_cache is None
     rows = viewer._get_or_compute_cap_rows()
-    assert "no-escape-via" in rows[0]["flags"]
+    assert has_flag(rows[0]["flags"], "no-escape-via")

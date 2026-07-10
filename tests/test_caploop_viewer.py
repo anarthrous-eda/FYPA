@@ -14,6 +14,7 @@ import pytest
 
 from fypa.altium_viewer import PdnViewer
 from fypa.caploop.constants import CapLoopSettings
+from fypa.caploop.identify import has_flag
 from fypa.project_file import ProjectFile
 from tests.test_caploop_identify import (
     RAILS,
@@ -158,7 +159,7 @@ def test_settings_change_invalidates_the_rows():
     v._invalidate_caps_cache(repopulate=False)
     rows = v._get_or_compute_cap_rows()
     assert rows is not first
-    assert "no-escape-via" in rows[0]["flags"]
+    assert has_flag(rows[0]["flags"], "no-escape-via")
 
 
 def test_cluster_limit_keeps_the_nearest_via_as_a_single_escape():
@@ -169,8 +170,8 @@ def test_cluster_limit_keeps_the_nearest_via_as_a_single_escape():
     v._caploop_settings_obj = CapLoopSettings(escape_via_max_dist_mm=0.01)
     row = v._get_or_compute_cap_rows()[0]
     assert row["vias_str"] == "1+1"
-    assert "single-via" in row["flags"]
-    assert "no-escape-via" not in row["flags"]
+    assert has_flag(row["flags"], "single-via")
+    assert not has_flag(row["flags"], "no-escape-via")
 
 
 # --- heatmap overlay ---------------------------------------------------------------

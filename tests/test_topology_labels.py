@@ -24,7 +24,7 @@ def test_port_display_net_prefers_physical_pin_net():
 
 def test_port_display_net_falls_back_to_requested_without_pins():
     term = {"requested_net": "VCC_PORT", "pins": []}
-    assert port_display_net(term, "?") == "VCC_PORT"
+    assert port_display_net(term) == "VCC_PORT"
 
 
 def test_port_display_net_not_rail_canonicalized():
@@ -44,12 +44,11 @@ def test_port_display_net_lists_multi_pin_nets():
             {"net": "LED_R", "pad": "3"},
         ],
     }
-    assert port_display_net(term, "LED_B", role="SINK", port_name="P") == (
-        "LED_B, LED_G, LED_R"
-    )
+    assert port_display_net(term, "LED_B") == "LED_B, LED_G, LED_R"
 
 
-def test_port_display_net_channel_passive_keeps_one_net():
+def test_port_display_net_channel_row_keeps_one_net():
+    """A channel row shows its own net — the pad set spans the whole part."""
     term = {
         "requested_net": "LED_R",
         "pins": [
@@ -58,21 +57,13 @@ def test_port_display_net_channel_passive_keeps_one_net():
             {"net": "LED_G", "pad": "2"},
         ],
     }
-    assert port_display_net(term, "LED_R", role="RESISTOR", port_name="N1") == "LED_R"
+    assert port_display_net(term, "LED_R", channel_row=True) == "LED_R"
+    assert port_display_net(term, "LED_R") == "LED_B, LED_G, LED_R"
 
 
-def test_port_display_net_regulator_channel_lists_all_pin_nets():
-    """IN_P1 is outside the passive P/N channel exception."""
-    term = {
-        "requested_net": "VDD_3V3",
-        "pins": [
-            {"net": "VDD_3V3_A", "pad": "1"},
-            {"net": "VDD_3V3_B", "pad": "2"},
-        ],
-    }
-    assert port_display_net(
-        term, "VDD_3V3_A", role="REGULATOR", port_name="IN_P1"
-    ) == "VDD_3V3_A, VDD_3V3_B"
+def test_port_display_net_gnd_alias_shows_requested_net():
+    term = {"requested_net": "AGND", "pins": [{"net": "GND", "pad": "1"}]}
+    assert port_display_net(term, "GND") == "AGND"
 
 
 def test_truncate_label_shortens_long_multi_pin_port_label():
@@ -214,6 +205,146 @@ def test_topology_hub_passive_channel_ports_keep_distinct_labels():
     assert labels["N2"] == "LED_G"
     assert labels["N3"] == "LED_B"
     assert all(", " not in label for label in labels.values())
+
+
+def test_topology_hub_channel_labels_survive_role_stacking():
+    """A second role block on D1 must not disturb the passive channel rows.
+
+    The composite's top-level role is whichever section sorts first, so keying
+    the channel-row exception off it mislabels every N row as the full pad list
+    while each row's wire still routes to one net.
+    """
+    meta = load_topology_fixture("project_b_hub_vdd")
+    meta["directives"].insert(0, {
+        "role": "SOURCE",
+        "designator": "D1",
+        "label": "D1#1",
+        "channel_index": 1,
+        "terminals": {
+            "P": {"requested_net": "VDD_3V3", "pins": [{"net": "VDD_3V3_PWR", "pad": "9"}]},
+            "N": {"requested_net": "GND", "pins": [{"net": "GND", "pad": "8"}]},
+        },
+    })
+    d1 = next(n for n in build_topology_model(meta).nodes if n.designator == "D1")
+    rows = {p.terminal: (p.label, p.net) for p in d1.ports}
+    assert rows["N1"] == ("LED_R", "LED_R")
+    assert rows["N2"] == ("LED_G", "LED_G")
+    assert rows["N3"] == ("LED_B", "LED_B")
+
+
+def test_topology_multi_channel_sink_rows_keep_one_net():
+    """Channel rows label their own net whatever the role — label matches wire."""
+    def channel(idx, pins):
+        return {
+            "role": "SINK",
+            "designator": "U1",
+            "label": f"U1#{idx}",
+            "channel_index": idx,
+            "terminals": {
+                "P": {"requested_net": f"LED_{idx}", "pins": pins},
+                "N": {"requested_net": "GND", "pins": [{"net": "GND", "pad": "9"}]},
+            },
+        }
+
+    meta = {
+        "directives": [
+            {
+                "role": "SOURCE",
+                "designator": "J1",
+                "terminals": {
+                    "P": {"requested_net": "VDD", "pins": [{"net": "VDD", "pad": "1"}]},
+                    "N": {"requested_net": "GND", "pins": [{"net": "GND", "pad": "2"}]},
+                },
+            },
+            channel(1, [
+                {"net": "LED_R", "pad": "1"},
+                {"net": "LED_G", "pad": "2"},
+                {"net": "LED_B", "pad": "3"},
+            ]),
+            channel(2, [
+                {"net": "LED_G", "pad": "2"},
+                {"net": "LED_R", "pad": "1"},
+            ]),
+        ],
+    }
+    u1 = next(n for n in build_topology_model(meta).nodes if n.designator == "U1")
+    rows = {p.terminal: (p.label, p.net) for p in u1.ports}
+    assert rows["P1"] == ("LED_R", "LED_R")
+    assert rows["P2"] == ("LED_G", "LED_G")
+
+
+def test_topology_single_channel_regulator_input_lists_all_pin_nets():
+    """No sibling rows — the port is the only place the pad tie is visible."""
+    meta = {
+        "directives": [
+            {
+                "role": "SOURCE",
+                "designator": "J1",
+                "terminals": {
+                    "P": {
+                        "requested_net": "VDD_3V3",
+                        "pins": [{"net": "VDD_3V3_A", "pad": "1"}],
+                    },
+                    "N": {"requested_net": "GND", "pins": [{"net": "GND", "pad": "2"}]},
+                },
+            },
+            {
+                "role": "REGULATOR",
+                "designator": "U1",
+                "terminals": {
+                    "IN_P": {
+                        "requested_net": "VDD_3V3",
+                        "pins": [
+                            {"net": "VDD_3V3_A", "pad": "1"},
+                            {"net": "VDD_3V3_B", "pad": "2"},
+                        ],
+                    },
+                    "IN_N": {"requested_net": "GND", "pins": [{"net": "GND", "pad": "3"}]},
+                    "OUT_P": {"requested_net": "VOUT", "pins": [{"net": "VOUT", "pad": "4"}]},
+                    "OUT_N": {"requested_net": "GND", "pins": [{"net": "GND", "pad": "5"}]},
+                },
+            },
+        ],
+    }
+    u1 = next(n for n in build_topology_model(meta).nodes if n.designator == "U1")
+    in_p = next(p for p in u1.ports if p.terminal == "IN_P")
+    assert in_p.label == "VDD_3V3_A, VDD_3V3_B"
+    assert in_p.net == "VDD_3V3_A"
+
+
+def test_topology_tooltip_keeps_full_net_list_when_label_truncated():
+    """A truncated label must not truncate the tooltip — it is the only escape hatch."""
+    meta = {
+        "directives": [
+            {
+                "role": "SOURCE",
+                "designator": "J1",
+                "terminals": {
+                    "P": {"requested_net": "VDD", "pins": [{"net": "VDD", "pad": "1"}]},
+                    "N": {"requested_net": "GND", "pins": [{"net": "GND", "pad": "2"}]},
+                },
+            },
+            {
+                "role": "SINK",
+                "designator": "U1",
+                "terminals": {
+                    "P": {
+                        "requested_net": "VDD",
+                        "pins": [
+                            {"net": f"VDD_48V_PORT.{i}", "pad": str(i)} for i in (1, 2, 3)
+                        ],
+                    },
+                    "N": {"requested_net": "GND", "pins": [{"net": "GND", "pad": "9"}]},
+                },
+            },
+        ],
+    }
+    u1 = next(n for n in build_topology_model(meta).nodes if n.designator == "U1")
+    p = next(p for p in u1.ports if p.terminal == "P")
+    full = "VDD_48V_PORT.1, VDD_48V_PORT.2, VDD_48V_PORT.3"
+    assert len(p.label) <= LABEL_MAX_LEN
+    assert p.label != full
+    assert p.tooltip == full
 
 
 def test_topology_port_labels_use_physical_nets_for_local_resolution():

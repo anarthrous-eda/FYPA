@@ -173,15 +173,66 @@ def test_showing_individual_branches_adds_a_curve_per_capacitor(viewer):
     assert len(viewer._imp_axes.lines) > before
 
 
+def _empty_plot(v) -> str:
+    v._replot_impedance()          # no rail selected
+    assert v._imp_axes.texts
+    return v._imp_axes.texts[0].get_text()
+
+
 def test_empty_rail_list_draws_an_explanation_not_a_crash(qapp):
     v = _Viewer()
     v._caps_tab_index = v.tabs.addTab(v._build_capacitors_tab(), "Capacitors")
     v._populate_caps_table()
     v._impedance_tab_index = v.tabs.addTab(v._build_impedance_tab(),
                                            "Impedance")
-    v._replot_impedance()          # no rail selected
-    assert v._imp_axes.texts
-    assert "No rail" in v._imp_axes.texts[0].get_text()
+    # Every capacitor excluded: the rail list is empty, but the reason is the
+    # exclusion, not a missing rail.
+    v._set_cap_override("C1", include=False)
+    text = _empty_plot(v)
+    assert "excluded" in text and "Tick Use" in text
+
+
+def test_empty_state_reuses_the_capacitors_tab_reason(qapp):
+    """A Gerber import carries no component data at all. Telling the user "no
+    rail carries an included decoupling capacitor" sends them hunting for a
+    capacitor that was never going to be found."""
+    import dataclasses
+
+    v = _Viewer()
+    v._loaded_project = types.SimpleNamespace(
+        extracted=dataclasses.replace(_project_with(), pcb_components=()))
+    v._caps_tab_index = v.tabs.addTab(v._build_capacitors_tab(), "Capacitors")
+    v._populate_caps_table()
+    v._impedance_tab_index = v.tabs.addTab(v._build_impedance_tab(),
+                                           "Impedance")
+    text = _empty_plot(v)
+    assert "Gerber" in text
+    assert "No rail" not in text
+
+
+def test_empty_state_before_the_capacitors_tab_has_run(qapp):
+    v = _Viewer()
+    v._caps_rows_cache = None
+    v._impedance_tab_index = v.tabs.addTab(v._build_impedance_tab(),
+                                           "Impedance")
+    assert "Open the Capacitors tab" in _empty_plot(v)
+
+
+def test_empty_state_is_drawn_in_the_app_theme(qapp):
+    """An unstyled axes is white with black text — near-invisible on the dark
+    theme, which is what makes an empty plot look like a broken one."""
+    v = _Viewer()
+    v._caps_rows_cache = None
+    v._impedance_tab_index = v.tabs.addTab(v._build_impedance_tab(),
+                                           "Impedance")
+    v._replot_impedance()
+    theme = av._T()
+    assert v._imp_axes.texts[0].get_color() == theme["fg"]
+    assert v._imp_figure.get_facecolor() == \
+        matplotlib.colors.to_rgba(theme["bg"])
+    # And the stale readouts are cleared, not left showing another rail's.
+    assert v.imp_ztarget_label.text() == "—"
+    assert v.imp_plane_label.text() == "—"
 
 
 # --- plane-pair capacitance ---------------------------------------------------

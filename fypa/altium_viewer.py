@@ -24991,6 +24991,52 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             f"<span style='color:{_T()['accent']};'>Capacitor check "
             f"re-run with the new settings.</span>")
 
+    # What each capacitor flag means, keyed by its base token. The
+    # side-specific ones carry the offending pad's net in parentheses.
+    _CAP_FLAG_HELP: dict[str, str] = {
+        "no-escape-via":
+            "No via within the search radius reaches this pad's own layer, "
+            "so its current leaves the pad over surface copper. The named "
+            "net is the pad with no via.",
+        "single-via":
+            "Only one escape via on the named pad. Halving the via count "
+            "roughly doubles that side's loop inductance — usually the "
+            "cheapest thing to fix.",
+        "long-escape":
+            "The run from the named pad's edge to its nearest via exceeds "
+            "the warning distance. Via-in-pad escapes in 0 mm.",
+        "far-plane":
+            "The reference plane pair sits deeper below the mounting "
+            "surface than the warning depth, so the loop reaches further "
+            "into the stack than it needs to.",
+        "no-cavity":
+            "No reachable plane pair, so the closed forms can't model this "
+            "capacitor. Its L1 is a fallback estimate (shown with a ~) and "
+            "Tier 2 will skip it.",
+        "no-target":
+            "No SINK directive on this rail, so the loop has no far end to "
+            "be measured to. Pick a device in the Target column.",
+    }
+
+    def _cap_flags_tooltip(self, row: dict) -> str:
+        """Spell out this row's flags. Thresholds live in the Settings tab, so
+        quote the ones that were actually applied rather than the defaults."""
+        flags = row.get("flags", ())
+        if not flags:
+            return "No geometry concerns for this capacitor."
+        settings = self._caploop_settings()
+        limits = {
+            "long-escape": f" (over {settings.long_escape_warn_mm:g} mm)",
+            "far-plane": f" (deeper than {settings.far_plane_warn_mm:g} mm)",
+            "no-escape-via": f" (within {settings.escape_via_search_mm:g} mm)",
+        }
+        lines = []
+        for flag in flags:
+            token = flag.split(" (", 1)[0]
+            help_text = self._CAP_FLAG_HELP.get(token, "")
+            lines.append(f"• {flag}{limits.get(token, '')}\n    {help_text}")
+        return "\n".join(lines)
+
     def _cap_l_best_nh(self, row: dict) -> float | None:
         """Best-available loop inductance: Tier 3 > Tier 2 > Tier 1."""
         for key in ("l3_nh", "l2_nh", "l1_nh"):
@@ -25148,6 +25194,8 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                             if row.get("l2_reason") else
                             "Needs a Tier-2 spreading term — "
                             "press Compute Tier 2/3.")
+                if col_label == "Flags":
+                    item.setToolTip(self._cap_flags_tooltip(row))
                 if col_label == "Pkg":
                     item.setToolTip(
                         f"SMD case size parsed from the footprint "
@@ -26060,6 +26108,28 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._set_caploop_rail_config(rail, cfg)
         self._replot_impedance()
 
+    def _impedance_empty_reason(self) -> str:
+        """Why there is no rail to plot.
+
+        The rail list is derived from the capacitor rows, so an empty list has
+        three quite different causes and only one of them is "no rail". Saying
+        "no rail carries an included decoupling capacitor" to someone who
+        imported Gerbers — which carry no component data at all — sends them
+        looking for a capacitor that was never going to be found.
+        """
+        rows = getattr(self, "_caps_rows_cache", None)
+        if rows is None:
+            return ("Open the Capacitors tab to analyse this design, then "
+                    "come back to plot its impedance.")
+        if not rows:
+            # The Capacitors tab already worked out exactly why (no design
+            # info, a Gerber import, no capacitors detected) — reuse it rather
+            # than guess.
+            return (getattr(self, "_caps_empty_reason", "")
+                    or "No decoupling capacitors were found on this design.")
+        return (f"All {len(rows)} detected capacitor(s) are excluded from the "
+                f"analysis.\nTick Use on the Capacitors tab to include one.")
+
     def _replot_impedance(self, *_args) -> None:
         """Redraw |Z(f)| for the selected rail."""
         if getattr(self, "_imp_axes", None) is None:
@@ -26071,10 +26141,14 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
 
         if not rail:
             ax.set_axis_off()
-            ax.text(0.5, 0.5,
-                    "No rail carries an included decoupling capacitor.",
-                    ha="center", va="center", transform=ax.transAxes)
+            # Style before drawing: an unstyled axes is white with black text,
+            # which is invisible-adjacent on the dark theme.
+            self._style_impedance_axes(ax)
+            ax.text(0.5, 0.5, self._impedance_empty_reason(),
+                    ha="center", va="center", transform=ax.transAxes,
+                    color=t["fg"], fontsize=9, wrap=True)
             self.imp_summary_label.setText("")
+            self.imp_ztarget_label.setText("—")
             self.imp_plane_label.setText("—")
             self._imp_canvas.draw_idle()
             return
