@@ -22,6 +22,7 @@ from fypa.altium.annotations import (
     TerminalPin,
     TerminalSpec,
     _collect_bridge_groups,
+    _collect_supply_voltages_by_net,
     _iter_pdn_parameter_sources,
     _lookup_inferred_vin,
     _require_value,
@@ -1943,6 +1944,194 @@ def test_series_channel_on_mixed_part_registers_bridge():
     assert any(isinstance(d, ResistorSpec) for d in result.directives)
     groups = _collect_bridge_groups(_iter_pdn_parameter_sources(proj), proj)
     assert groups.get("+5V") == frozenset({"+5V", "5V_SW"})
+
+
+def test_indexed_roles_only_mixed_series_and_sink():
+    # SERIES on the input path plus SINK on a separate IC supply — no
+    # part-wide PDN_ROLE required.
+    proj = _minimal_proj(
+        nets=(
+            RawNet("GND"), RawNet("VIN"), RawNet("VOUT"), RawNet("VCC"),
+        ),
+        sch_components=(
+            RawSchComponent(
+                designator="U2", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN1_ROLE": "SERIES",
+                    "PDN1_R": "7m",
+                    "PDN1_P_NET": "VIN",
+                    "PDN1_N_NET": "VOUT",
+                    "PDN2_ROLE": "SINK",
+                    "PDN2_I": "10mA",
+                    "PDN2_P_NET": "VCC",
+                    "PDN2_N_NET": "GND",
+                },
+                pin_designators=("1", "2", "3", "4"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U2", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U2",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, 0),   # VIN
+            _pad(0, "2", 2, 1),   # VOUT
+            _pad(0, "3", 3, 2),   # VCC
+            _pad(0, "4", 0, 3),   # GND
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    series = [d for d in result.directives if isinstance(d, ResistorSpec)]
+    sinks = [d for d in result.directives if isinstance(d, SinkSpec)]
+    assert len(series) == 1
+    assert len(sinks) == 1
+    assert series[0].channel_index == 1
+    assert sinks[0].channel_index == 2
+    assert series[0].resistance == pytest.approx(0.007)
+    assert sinks[0].current == pytest.approx(0.01)
+
+
+def test_indexed_roles_only_bridge_group_registers():
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("VIN"), RawNet("VOUT"), RawNet("VCC")),
+        sch_components=(
+            RawSchComponent(
+                designator="U2", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN1_ROLE": "SERIES",
+                    "PDN1_R": "7m",
+                    "PDN1_P_NET": "VIN",
+                    "PDN1_N_NET": "VOUT",
+                    "PDN2_ROLE": "SINK",
+                    "PDN2_I": "10mA",
+                    "PDN2_P_NET": "VCC",
+                    "PDN2_N_NET": "GND",
+                },
+                pin_designators=("1", "2", "3", "4"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U2", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U2",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, 0),
+            _pad(0, "2", 2, 1),
+            _pad(0, "3", 3, 2),
+            _pad(0, "4", 0, 3),
+        ),
+    )
+    groups = _collect_bridge_groups(_iter_pdn_parameter_sources(proj), proj)
+    assert groups.get("VIN") == frozenset({"VIN", "VOUT"})
+
+
+def test_indexed_roles_channel_without_role_errors():
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+3V3"), RawNet("OUT")),
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="M.SchDoc",
+                parameters={
+                    "PDN1_ROLE": "SINK",
+                    "PDN1_I": "10mA", "PDN1_P_NET": "+3V3", "PDN1_N_NET": "GND",
+                    "PDN2_I": "5mA", "PDN2_P_NET": "OUT", "PDN2_N_NET": "GND",
+                },
+                pin_designators=("1", "2", "3"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+            ),
+        ),
+        pads=(_pad(0, "1", 1, 0), _pad(0, "2", 0, 1), _pad(0, "3", 2, 2)),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert not result.ok
+    assert any(
+        "PDN2_ROLE" in e and "no part-wide PDN_ROLE" in e
+        for e in result.errors
+    )
+
+
+def test_stray_pdn_params_without_any_role_warns():
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+3V3")),
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="M.SchDoc",
+                parameters={
+                    "PDN_I": "10mA",
+                    "PDN_P_NET": "+3V3",
+                    "PDN_N_NET": "GND",
+                },
+                pin_designators=("1", "2"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="R", source_designator="U1",
+            ),
+        ),
+        pads=(_pad(0, "1", 1, 0), _pad(0, "2", 0, 1)),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert not result.directives
+    assert any("no PDN_ROLE or PDN<n>_ROLE" in w for w in result.warnings)
+
+
+def test_indexed_roles_only_source_channel_contributes_supply_voltage():
+    # A SOURCE channel on an indexed-only part (no part-wide PDN_ROLE) must
+    # both produce its directive and register its nominal rail voltage.
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+5V"), RawNet("+3V3")),
+        sch_components=(
+            RawSchComponent(
+                designator="U3", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN1_ROLE": "SOURCE",
+                    "PDN1_V": "5V",
+                    "PDN1_P_NET": "+5V",
+                    "PDN1_N_NET": "GND",
+                    "PDN2_ROLE": "SINK",
+                    "PDN2_I": "10mA",
+                    "PDN2_P_NET": "+3V3",
+                    "PDN2_N_NET": "GND",
+                },
+                pin_designators=("1", "2", "3", "4"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U3", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U3",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, 0),   # +5V
+            _pad(0, "2", 0, 1),   # GND
+            _pad(0, "3", 2, 2),   # +3V3
+            _pad(0, "4", 0, 3),   # GND
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    sources = [d for d in result.directives if isinstance(d, SourceSpec)]
+    sinks = [d for d in result.directives if isinstance(d, SinkSpec)]
+    assert len(sources) == 1
+    assert len(sinks) == 1
+    assert sources[0].channel_index == 1
+    assert sources[0].voltage == pytest.approx(5.0)
+
+    supply_map = _collect_supply_voltages_by_net(_iter_pdn_parameter_sources(proj))
+    assert supply_map == {"+5V": 5.0}
 
 
 # --- is_solveable: annotation errors are non-fatal ----------------------------

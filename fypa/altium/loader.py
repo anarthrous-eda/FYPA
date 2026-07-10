@@ -46,7 +46,9 @@ from fypa.altium.extract import (
 import dataclasses
 from fypa.altium_geometry import (
     GeometryLayer,
+    _is_multilayer_copper,
     _pad_outer_shape,
+    _plane_layer_ids,
     build_layer_geometries,
     build_per_net_geometry_layers_split,
 )
@@ -1290,6 +1292,22 @@ def _build_stub_record(piece, layer_id: int, net_name: str) -> dict | None:
     return record
 
 
+def _primitive_visible_layer_ids(
+    prim_layer_id: int,
+    net_index: int,
+    enabled: list[int],
+    plane_layer_ids: set[int],
+) -> list[int]:
+    """Physical copper layer ids a primitive is selectable on in the viewer.
+
+    Multilayer (layer 74) primitives with an assigned net fan out to every
+    enabled signal layer, matching :func:`fypa.altium_geometry._distribute_to_layers`.
+    """
+    if _is_multilayer_copper(prim_layer_id, net_index):
+        return [lid for lid in enabled if lid not in plane_layer_ids]
+    return [int(prim_layer_id)]
+
+
 def _build_all_copper_records(
     per_net_layers: list[GeometryLayer] | None,
     net_name_fn,
@@ -2179,15 +2197,17 @@ def build_solve_metadata(
     # Artwork on a negative internal-plane layer (boundary / split lines) is not
     # copper — it's excluded from the rendered geometry (altium_geometry), so
     # skip it here too, leaving only the selectable plane sheet emitted below.
-    _plane_layer_ids = {s.layer_id for s in proj.stackup if s.is_plane}
+    plane_layer_ids = _plane_layer_ids(proj)
     for i, t in enumerate(proj.tracks):
         _gil_yield(i)
-        if int(t.layer_id) in _plane_layer_ids:
+        if int(t.layer_id) in plane_layer_ids:
             continue
         primitives["tracks"].append({
             "id": len(primitives["tracks"]),
             "kind": "track",
             "layer_id": int(t.layer_id),
+            "layer_ids": _primitive_visible_layer_ids(
+                t.layer_id, t.net_index, enabled, plane_layer_ids),
             "net": _net_name(t.net_index),
             "ax": float(t.a.x), "ay": float(t.a.y),
             "bx": float(t.b.x), "by": float(t.b.y),
@@ -2197,12 +2217,14 @@ def build_solve_metadata(
         })
     for i, a in enumerate(proj.arcs):
         _gil_yield(i)
-        if int(a.layer_id) in _plane_layer_ids:
+        if int(a.layer_id) in plane_layer_ids:
             continue
         primitives["arcs"].append({
             "id": len(primitives["arcs"]),
             "kind": "arc",
             "layer_id": int(a.layer_id),
+            "layer_ids": _primitive_visible_layer_ids(
+                a.layer_id, a.net_index, enabled, plane_layer_ids),
             "net": _net_name(a.net_index),
             "cx": float(a.center.x), "cy": float(a.center.y),
             "radius_mm": float(a.radius_mm),
@@ -2213,12 +2235,14 @@ def build_solve_metadata(
         })
     for i, rg in enumerate(proj.regions):
         _gil_yield(i)
-        if int(rg.layer_id) in _plane_layer_ids:
+        if int(rg.layer_id) in plane_layer_ids:
             continue
         primitives["regions"].append({
             "id": len(primitives["regions"]),
             "kind": "region",
             "layer_id": int(rg.layer_id),
+            "layer_ids": _primitive_visible_layer_ids(
+                rg.layer_id, rg.net_index, enabled, plane_layer_ids),
             "net": _net_name(rg.net_index),
             "outline": [[float(p.x), float(p.y)] for p in rg.outline],
             "holes": [[[float(p.x), float(p.y)] for p in h]
@@ -2235,7 +2259,7 @@ def build_solve_metadata(
     # the properties panel.
     for i, rg in enumerate(proj.shape_based_regions):
         _gil_yield(i)
-        if int(rg.layer_id) in _plane_layer_ids:
+        if int(rg.layer_id) in plane_layer_ids:
             continue
         pts: list[list[float]] = []
         arc_count = 0
@@ -2262,6 +2286,8 @@ def build_solve_metadata(
             "id": len(primitives["shape_based_regions"]),
             "kind": "shape_based_region",
             "layer_id": int(rg.layer_id),
+            "layer_ids": _primitive_visible_layer_ids(
+                rg.layer_id, rg.net_index, enabled, plane_layer_ids),
             "net": _net_name(rg.net_index),
             "outline": pts,
             "holes": [[[float(p.x), float(p.y)] for p in h]
@@ -2275,12 +2301,14 @@ def build_solve_metadata(
         })
     for i, f in enumerate(proj.fills):
         _gil_yield(i)
-        if int(f.layer_id) in _plane_layer_ids:
+        if int(f.layer_id) in plane_layer_ids:
             continue
         primitives["fills"].append({
             "id": len(primitives["fills"]),
             "kind": "fill",
             "layer_id": int(f.layer_id),
+            "layer_ids": _primitive_visible_layer_ids(
+                f.layer_id, f.net_index, enabled, plane_layer_ids),
             "net": _net_name(f.net_index),
             "x1_mm": float(f.x1_mm), "y1_mm": float(f.y1_mm),
             "x2_mm": float(f.x2_mm), "y2_mm": float(f.y2_mm),

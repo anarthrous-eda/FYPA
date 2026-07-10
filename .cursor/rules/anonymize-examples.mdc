@@ -1,0 +1,37 @@
+---
+description: Use generic names in docs, tests, and comments — never leak real project identifiers
+alwaysApply: true
+---
+
+# Anonymize project-specific names
+
+When writing or editing **documentation**, **tests**, **comments**, or **commit/PR text**, never use identifiers from a real board or customer project — even when debugging started from that project.
+
+## Replace with generic equivalents
+
+| Avoid (project-specific) | Use instead (generic) |
+|---|---|
+| Board/product names (`VIP-Connector`, `rudder_main`, …) | `example board`, `Pwr.SchDoc`, `Main.SchDoc` |
+| Part numbers (`MP5048`, …) | `power-switch IC`, `LDO`, `e-fuse` (type only, no MPN) |
+| Project net names (`VCC_EFUSE`, `VDD_48V_PORT`, `S00A_SL8M7`) | `VIN`, `VOUT`, `VCC`, `+5V`, `GND` |
+| Project sheet names (`efuse.SchDoc`) | `Pwr.SchDoc`, `Supply.SchDoc` |
+| Debug probe paths (`_probe/vip-connector-module`) | Refer to behaviour, not probe folder names, in committed artifacts |
+
+Generic designators (`U2`, `J1`) and standard rail names (`+3V3`, `GND`) are fine.
+
+## Where this applies
+
+- `docs/**` — user guide, README examples
+- `tests/**` — fixtures, docstrings, inline comments
+- `fypa/**` — module docstrings and inline comments (not parsed Altium data)
+- PR descriptions and commit messages
+
+## Allowed exceptions
+
+- `_probe/` and other gitignored debug output (not committed)
+- Tests that intentionally load `_probe/*.pkl` regression fixtures (path only; no project names in assertions/docs)
+- Code that reads real project files at runtime (no hard-coded project names in examples)
+
+## Before finishing
+
+Scan changed files for names that appeared only in the triggering debug session. If unsure, prefer the smallest generic example that still exercises the behaviour.
