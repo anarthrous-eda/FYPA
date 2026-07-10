@@ -119,12 +119,30 @@ and N_NET automatically from the two nets the component sits on. When a
 part carries more than one SERIES channel (``PDN1_R`` + ``PDN2_R``, …),
 each channel must name its nets or pin overrides explicitly — auto-inference
 is not attempted.
+
+Local net resolution (multi-channel / reused sheets)
+----------------------------------------------------
+``PDN_P_NET``, ``PDN_N_NET``, and ``PDN_NET`` may name a **local sheet label**
+(e.g. ``VCC_EFUSE`` on ``efuse.SchDoc``) even when the PCB net is channel-
+qualified (``VCC_EFUSE.4``, ``S00A_SL8M7``, ``CAN.RX1``, …). FYPA does **not**
+parse ``ChannelDesignatorFormatString`` — resolution is **pin-driven**:
+
+1. Direct PCB net-name match when the parameter already names a flattened net.
+2. Compiled schematic netlist → schematic pin(s) for the local label on the
+   inferred sheet → PCB pad(s) on that component instance (primary path).
+3. Pad net names cross-checked against netlist ``aliases`` for that pin.
+4. Degraded fallback (no compiled netlist): weak suffix heuristics only.
+
+:class:`InstanceLocalNetResolver` (cached per :class:`ExtractedProject`) performs
+sheet inference for PCB-only directives, instance-scoped local-net expansion
+for SERIES bridge validation, and the steps above. See the user guide section
+*Local net names* in ``docs/user-guide/01-sources-and-sinks.md``.
 """
 from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -541,51 +559,239 @@ def _schdoc_for_pcb_instance(
     to reuse the indexes across many directives; otherwise they are built
     on demand for this single call.
     """
-    if not lookup_des:
+    return _instance_resolver(proj).infer_schdoc(
+        pcb_index,
+        lookup_des,
+        pads_by_component=pads_by_component,
+        netlist_index=netlist_index,
+    )
+
+
+def _designator_candidates(
+    sch_designator: str,
+    pcb_designator: str | None = None,
+) -> set[str]:
+    candidates = {sch_designator.upper()}
+    if pcb_designator:
+        candidates.add(pcb_designator.upper())
+    return candidates
+
+
+def _local_net_label_matches(
+    label: str | None,
+    local_net_name: str,
+    des_candidates: set[str] | None = None,
+) -> bool:
+    """True when ``label`` names the same local net class as ``local_net_name``.
+
+    With ``des_candidates``, channel-mangled aliases (``S00A_SL8M7``, ``S00A.4``)
+    are accepted only when an instance designator carries the same channel token.
+    Without ``des_candidates`` (bridge-group expansion), any alias sharing the
+    local prefix is accepted.
+    """
+    if not label:
+        return False
+    ln = local_net_name.upper()
+    lu = label.upper()
+    if lu == ln:
+        return True
+    if des_candidates is None:
+        return lu.startswith((ln + ".", ln + "_"))
+    if lu.startswith(ln + "."):
+        channel = lu[len(ln) + 1:]
+        if channel and any(d.endswith("." + channel) for d in des_candidates):
+            return True
+    if lu.startswith(ln + "_"):
+        channel = lu[len(ln) + 1:]
+        if channel and any(d.endswith("_" + channel) for d in des_candidates):
+            return True
+    return False
+
+
+def _netlist_label_family(netlist, local_net_name: str) -> set[str]:
+    """All netlist labels (name + aliases) in the same family as a local name."""
+    if netlist is None:
+        return {local_net_name.upper()}
+    family: set[str] = set()
+    for net in netlist.nets:
+        names = [net.name, *getattr(net, "aliases", ())]
+        if any(_local_net_label_matches(n, local_net_name) for n in names):
+            family.update(n.upper() for n in names if n)
+    if not family:
+        family.add(local_net_name.upper())
+    return family
+
+
+def _channel_suffix_from_pcb_designator(pcb_designator: str) -> str | None:
+    """Numeric channel tail from a flattened PCB designator (degraded mode only).
+
+    Altium's ``$Component.$ChannelIndex`` room style yields ``R63.4`` → ``4``.
+    Non-numeric tails (``J3_SL8M7``) are handled via netlist aliases, not here.
+    """
+    if "." not in pcb_designator:
+        return None
+    suffix = pcb_designator.rsplit(".", 1)[-1]
+    return suffix if suffix.isdigit() else None
+
+
+def _degraded_pcb_net_candidates(
+    local_net_name: str,
+    pcb_designator: str,
+) -> list[str]:
+    """Last-resort PCB net names when the compiled netlist is unavailable."""
+    names = [local_net_name]
+    if "." not in local_net_name:
+        suffix = _channel_suffix_from_pcb_designator(pcb_designator)
+        if suffix:
+            names.append(f"{local_net_name}.{suffix}")
+    return names
+
+
+@dataclass
+class InstanceLocalNetResolver:
+    """Pin-driven local-net resolution for one :class:`ExtractedProject`."""
+
+    proj: ExtractedProject
+    _expanded_cache: dict[str, tuple[str, ...]] = field(
+        default_factory=dict, repr=False,
+    )
+
+    def infer_schdoc(
+        self,
+        pcb_index: int,
+        lookup_des: str,
+        *,
+        pads_by_component: dict[int, dict[str, RawPad]] | None = None,
+        netlist_index: dict[str, list[tuple[str, tuple[str, ...], tuple[str, ...]]]]
+        | None = None,
+    ) -> str:
+        if not lookup_des:
+            return ""
+        pcb_designator = self.proj.pcb_components[pcb_index].designator
+        des_candidates = _designator_candidates(lookup_des, pcb_designator)
+        if pads_by_component is None:
+            pads_by_component = _build_pads_by_component(self.proj)
+        routed_pads = pads_by_component.get(pcb_index, {})
+
+        sheet_votes: dict[str, int] = {}
+        sheet_paths: dict[str, str] = {}
+
+        if routed_pads:
+            if netlist_index is None:
+                netlist_index = _build_netlist_designator_index(
+                    self.proj.compiled_netlist,
+                )
+            for pin_key, pad in routed_pads.items():
+                pcb_net_upper = self.proj.nets[pad.net_index].name.upper()
+                for des_key in des_candidates:
+                    for nl_pin, names, sheets in netlist_index.get(des_key, ()):
+                        if nl_pin != pin_key:
+                            continue
+                        vote_weight = 1
+                        if pcb_net_upper in names:
+                            vote_weight = 2
+                        for sheet in sheets:
+                            key = sheet.replace("\\", "/").lower()
+                            sheet_votes[key] = sheet_votes.get(key, 0) + vote_weight
+                            sheet_paths.setdefault(key, sheet)
+
+        if sheet_votes:
+            best = max(sorted(sheet_votes), key=lambda k: sheet_votes[k])
+            top = sheet_votes[best]
+            if sum(1 for v in sheet_votes.values() if v == top) > 1:
+                log.debug(
+                    "Ambiguous sheet vote for %s (pcb_index=%d): %s; choosing %s",
+                    lookup_des, pcb_index,
+                    sorted(k for k, v in sheet_votes.items() if v == top),
+                    sheet_paths[best],
+                )
+            return sheet_paths[best]
+
+        sch_matches = [
+            c.schdoc_name for c in self.proj.sch_components
+            if c.designator.upper() == lookup_des.upper()
+        ]
+        if len(sch_matches) == 1:
+            return sch_matches[0]
         return ""
-    target_des = lookup_des.upper()
-    if pads_by_component is None:
-        pads_by_component = _build_pads_by_component(proj)
-    routed_pads = pads_by_component.get(pcb_index, {})
 
-    sheet_votes: dict[str, int] = {}
-    sheet_paths: dict[str, str] = {}
+    def expand_net_names(
+        self,
+        local_name: str,
+        pcb_index: int | None = None,
+    ) -> tuple[str, ...]:
+        """All PCB / netlist labels equivalent to a local schematic net name.
 
-    if routed_pads:
-        if netlist_index is None:
-            netlist_index = _build_netlist_designator_index(proj.compiled_netlist)
-        for pin_key, names, sheets in netlist_index.get(target_des, ()):
-            pad = routed_pads.get(pin_key)
-            if pad is None:
-                continue
-            if proj.nets[pad.net_index].name.upper() not in names:
-                continue
-            for sheet in sheets:
-                key = sheet.replace("\\", "/").lower()
-                sheet_votes[key] = sheet_votes.get(key, 0) + 1
-                sheet_paths.setdefault(key, sheet)
+        Always pass ``pcb_index`` for production resolution paths. The
+        ``pcb_index is None`` mode scans every placement and seeds from the
+        unscoped netlist label family — it can merge unrelated channel slots
+        (e.g. ``VCC_EFUSE.1`` and ``VCC_EFUSE.4``) and is intended for tests
+        and diagnostics only.
+        """
+        cache_key = f"{local_name.upper()}\0{pcb_index}"
+        cached = self._expanded_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
-    if sheet_votes:
-        # Deterministic tie-break: highest vote, ties broken by the
-        # lexicographically smallest sheet key (sorted() before max()).
-        best = max(sorted(sheet_votes), key=lambda k: sheet_votes[k])
-        top = sheet_votes[best]
-        if sum(1 for v in sheet_votes.values() if v == top) > 1:
+        if pcb_index is None:
             log.debug(
-                "Ambiguous sheet vote for %s (pcb_index=%d): %s; choosing %s",
-                lookup_des, pcb_index,
-                sorted(k for k, v in sheet_votes.items() if v == top),
-                sheet_paths[best],
+                "expand_net_names(%r) without pcb_index: unscoped label-family "
+                "expansion — prefer pcb_index= for instance-safe resolution",
+                local_name,
             )
-        return sheet_paths[best]
+            names: set[str] = set(_netlist_label_family(
+                self.proj.compiled_netlist, local_name,
+            ))
+        else:
+            names = {local_name.upper()}
 
-    sch_matches = [
-        c.schdoc_name for c in proj.sch_components
-        if c.designator.upper() == target_des
-    ]
-    if len(sch_matches) == 1:
-        return sch_matches[0]
-    return ""
+        if self.proj.compiled_netlist is not None:
+            indices = (
+                [pcb_index] if pcb_index is not None
+                else range(len(self.proj.pcb_components))
+            )
+            pads_by = _build_pads_by_component(self.proj)
+            for idx in indices:
+                pcb = self.proj.pcb_components[idx]
+                lookup_des = pcb.source_designator or pcb.designator
+                schdoc = self.infer_schdoc(
+                    idx, lookup_des, pads_by_component=pads_by,
+                )
+                routed = pads_by.get(idx, {})
+                if not routed:
+                    continue
+                routed_keys = set(routed)
+                local_pins = _resolve_local_net_pins(
+                    self.proj.compiled_netlist,
+                    lookup_des,
+                    schdoc,
+                    local_name,
+                    routed_pin_keys=routed_keys,
+                    pcb_designator=pcb.designator,
+                )
+                if not local_pins:
+                    continue
+                wanted = {p.upper() for p in local_pins}
+                for pin_key, pad in routed.items():
+                    if pin_key in wanted and pad.net_index != NO_NET:
+                        names.add(self.proj.nets[pad.net_index].name.upper())
+
+        result = tuple(sorted(names))
+        self._expanded_cache[cache_key] = result
+        return result
+
+
+_resolver_cache: dict[int, tuple[ExtractedProject, InstanceLocalNetResolver]] = {}
+
+
+def _instance_resolver(proj: ExtractedProject) -> InstanceLocalNetResolver:
+    entry = _resolver_cache.get(id(proj))
+    if entry is None or entry[0] is not proj:
+        _resolver_cache.clear()
+        resolver = InstanceLocalNetResolver(proj)
+        _resolver_cache[id(proj)] = (proj, resolver)
+        return resolver
+    return entry[1]
 
 
 def _iter_pdn_parameter_sources(proj: ExtractedProject) -> list[PdnParameterSource]:
@@ -681,40 +887,14 @@ def _resolve_local_net_pins(
     """
     if netlist is None:
         return []
-    # Netlist terminal designators may be the base schematic designator or the
-    # channel-flattened instance designator depending on the design; accept
-    # both. The channel token lives on the flattened form.
-    des_candidates = {sch_designator.upper()}
-    if pcb_designator:
-        des_candidates.add(pcb_designator.upper())
-    ln = local_net_name.upper()
-
-    def _label_matches(label: str | None) -> bool:
-        # Exact label, or the channel-mangled form Altium generates inside a
-        # repeated ("multi-channel") sheet: a local label ``S00A`` in sheet
-        # instance ``SL8M3`` compiles to ``S00A_SL8M3`` (carried as an alias of
-        # the flattened physical net, e.g. ``IOUT3``). The flattened instance
-        # designator gains the same suffix (``J3`` → ``J3_SL8M3``), so accept a
-        # ``<net>_<channel>`` alias only when one of this instance's designators
-        # ends with ``_<channel>``. That binds the alias to this connector's own
-        # channel and stops sibling instances (``S00A_SL8M0``) from matching.
-        if not label:
-            return False
-        lu = label.upper()
-        if lu == ln:
-            return True
-        if lu.startswith(ln + "_"):
-            channel = lu[len(ln) + 1:]
-            if channel and any(d.endswith("_" + channel) for d in des_candidates):
-                return True
-        return False
+    des_candidates = _designator_candidates(sch_designator, pcb_designator)
 
     pins: list[str] = []
     seen: set[str] = set()
     unscoped_used = False
     for net in netlist.nets:
         names = [net.name, *getattr(net, "aliases", ())]
-        if not any(_label_matches(n) for n in names):
+        if not any(_local_net_label_matches(n, local_net_name, des_candidates) for n in names):
             continue
         net_sheets = list(getattr(net, "source_sheets", ()) or ())
         if not _sheet_name_matches(schdoc_name, net_sheets):
@@ -749,6 +929,54 @@ def _terminal_layer_for_pad(pad: RawPad, enabled_layers: list[int]) -> int:
     if pad.is_through_hole or pad.layer_id == MULTI_LAYER_PAD_LAYER_ID:
         return enabled_layers[0]
     return pad.layer_id
+
+
+def _resolve_alias_fallback_pads(
+    proj: ExtractedProject,
+    component_pads: list[RawPad],
+    net_name: str,
+    sch_lookup_designator: str,
+    schdoc_name: str,
+    pcb_designator: str,
+) -> list[RawPad]:
+    """Match pads via compiled-netlist aliases when pin-local resolution failed.
+
+    Only accepts a pad when its pin appears on a netlist row for the schematic
+    designator, the row's label class matches ``net_name``, the pad's PCB net is
+    listed on that row, and the row's sheet matches ``schdoc_name``. The broad
+    ``family`` match (all pads on any equivalent label) is intentionally omitted
+    to avoid cross-channel leaks when several channel nets share one local alias.
+    """
+    if proj.compiled_netlist is None:
+        return []
+    netlist_index = _build_netlist_designator_index(proj.compiled_netlist)
+    des_candidates = _designator_candidates(sch_lookup_designator, pcb_designator)
+    matched: list[RawPad] = []
+    seen_pins: set[str] = set()
+    for pad in component_pads:
+        if pad.net_index == NO_NET:
+            continue
+        pin_key = pad.designator.upper()
+        if pin_key in seen_pins:
+            continue
+        pcb_n = proj.nets[pad.net_index].name.upper()
+        for des_key in des_candidates:
+            for nl_pin, names, sheets in netlist_index.get(des_key, ()):
+                if nl_pin != pin_key or pcb_n not in names:
+                    continue
+                if not any(
+                    _local_net_label_matches(n, net_name, des_candidates)
+                    for n in names
+                ):
+                    continue
+                if not _sheet_name_matches(schdoc_name, list(sheets)):
+                    continue
+                matched.append(pad)
+                seen_pins.add(pin_key)
+                break
+            if pin_key in seen_pins:
+                break
+    return matched
 
 
 def _resolve_terminal(
@@ -855,6 +1083,47 @@ def _resolve_terminal(
                             f"{net_name!r} via schematic pins "
                             f"{sorted(local_pins)} → PCB net(s) {nets_text}"
                         )
+
+        if (
+            not matched
+            and sch_lookup_designator
+            and proj.compiled_netlist is not None
+        ):
+            alias_matched = _resolve_alias_fallback_pads(
+                proj,
+                component_pads,
+                net_name,
+                sch_lookup_designator,
+                schdoc_name or "",
+                designator,
+            )
+            if alias_matched:
+                matched = alias_matched
+                if warnings is not None:
+                    pcb_net_names = sorted({
+                        proj.nets[p.net_index].name
+                        for p in matched
+                        if p.net_index != NO_NET
+                    })
+                    nets_text = ", ".join(pcb_net_names) if pcb_net_names else "?"
+                    warnings.append(
+                        f"{role_diagnostic}: resolved local net "
+                        f"{net_name!r} via netlist alias on pin(s) "
+                        f"{sorted(p.designator for p in matched)} "
+                        f"→ PCB net(s) {nets_text}"
+                    )
+
+        if not matched and proj.compiled_netlist is None:
+            for candidate in _degraded_pcb_net_candidates(net_name, designator):
+                net_indices = _net_indices_by_name(proj, candidate)
+                if not net_indices:
+                    continue
+                if net_remap:
+                    net_indices = [net_remap.get(ix, ix) for ix in net_indices]
+                wanted_nets = set(net_indices)
+                matched = [p for p in component_pads if p.net_index in wanted_nets]
+                if matched:
+                    break
 
         if not matched and not net_indices:
             # Common authoring slip is a near-miss spelling (e.g. "+3.3V" vs
@@ -1014,36 +1283,66 @@ def _series_channel_has_net_params(
     )
 
 
+def _resolve_series_channel_nets(
+    comp: PdnParameterSource,
+    proj: ExtractedProject,
+    ch_idx: int,
+    pcb_idx: int,
+    ch_indices: list[int],
+) -> tuple[str, str] | None:
+    """P/N net names for one SERIES channel on one PCB placement."""
+    p_net = _ci_get(comp.parameters, _channel_key("P_NET", ch_idx))
+    n_net = _ci_get(comp.parameters, _channel_key("N_NET", ch_idx))
+    if p_net is None and n_net is None and not _series_channel_has_net_params(
+        comp, ch_idx,
+    ):
+        if len(ch_indices) != 1:
+            return None
+        return _autoinfer_2pin_nets(proj, pcb_idx)
+    if p_net and n_net:
+        return p_net, n_net
+    return None
+
+
 def _iter_series_bridge_pairs(
     parameter_sources: list[PdnParameterSource],
     proj: ExtractedProject,
-) -> Iterator[tuple[str, str]]:
-    """Yield ``(p_net, n_net)`` name pairs for each SERIES bridge.
+    *,
+    per_placement: bool,
+) -> Iterator[tuple[int | None, str, str]]:
+    """Yield ``(pcb_index, p_net, n_net)`` for each SERIES bridge.
 
-    Explicit ``PDN<n>_P_NET`` / ``PDN<n>_N_NET`` pairs are yielded as-is.
-    A single-channel SERIES part with no net/pin parameters replicates the
-    per-directive 2-pin auto-inference so the bridge graph stays consistent
-    with the parser. A multi-channel SERIES part bridges a different net
-    pair in each channel, so every channel yields its own pair — stopping
-    at the first would strand the other channels.
+    ``pcb_index`` is ``None`` only for parameter-level name pairs
+    (``per_placement=False``). Placement-scoped iteration is used by
+    cross-directive validation; parameter-level pairs build the transitive
+    name equivalence map in :func:`_collect_bridge_groups`.
     """
     for comp in parameter_sources:
         ch_indices = _series_channel_indices(comp)
         if not ch_indices:
             continue
+        pcb_indices = _pcb_indices_for_source(comp, proj)
         for ch_idx in ch_indices:
+            if per_placement:
+                for pcb_idx in pcb_indices:
+                    pair = _resolve_series_channel_nets(
+                        comp, proj, ch_idx, pcb_idx, ch_indices,
+                    )
+                    if pair is not None:
+                        yield pcb_idx, pair[0], pair[1]
+                continue
             p_net = _ci_get(comp.parameters, _channel_key("P_NET", ch_idx))
             n_net = _ci_get(comp.parameters, _channel_key("N_NET", ch_idx))
             if p_net and n_net:
-                yield p_net, n_net
+                yield None, p_net, n_net
             elif p_net is None and n_net is None and not _series_channel_has_net_params(
                 comp, ch_idx,
             ):
                 if len(ch_indices) == 1:
-                    for pcb_idx in _pcb_indices_for_source(comp, proj):
+                    for pcb_idx in pcb_indices:
                         pair = _autoinfer_2pin_nets(proj, pcb_idx)
                         if pair is not None:
-                            yield pair
+                            yield pcb_idx, pair[0], pair[1]
 
 
 def _collect_bridge_groups(
@@ -1058,9 +1357,10 @@ def _collect_bridge_groups(
     Transitive: if A↔B and B↔C are both bridged, A, B, C all belong to one
     group. Net names are upper-cased for case-insensitive comparison.
 
-    Used by :func:`_validate_directive_groups` and the solver to treat
-    SERIES-bridged nets as electrically connected. Terminal pin resolution
-    uses direct pad-to-net connectivity only — see :func:`_resolve_terminal`.
+    Name-level equivalence for unit tests. Cross-directive validation unions
+    PCB net indices via :func:`_union_series_bridge_net_indices`.
+    Terminal pin resolution uses direct pad-to-net connectivity only — see
+    :func:`_resolve_terminal`.
     """
     parent: dict[str, str] = {}
 
@@ -1075,7 +1375,9 @@ def _collect_bridge_groups(
         if ra != rb:
             parent[rb] = ra
 
-    for p_net, n_net in _iter_series_bridge_pairs(parameter_sources, proj):
+    for _pcb_idx, p_net, n_net in _iter_series_bridge_pairs(
+        parameter_sources, proj, per_placement=False,
+    ):
         union(p_net.upper(), n_net.upper())
 
     # Materialise each equivalence class as a frozenset and map every net to it.
@@ -1084,6 +1386,34 @@ def _collect_bridge_groups(
         root = find(net)
         classes.setdefault(root, set()).add(net)
     return {net: frozenset(classes[find(net)]) for net in parent}
+
+
+def _union_series_bridge_net_indices(
+    proj: ExtractedProject,
+    parameter_sources: list[PdnParameterSource],
+    union: Callable[[int, int], None],
+) -> None:
+    """Union PCB net indices for each SERIES placement, scoped to that instance.
+
+    Local net names are expanded with :meth:`InstanceLocalNetResolver.expand_net_names`
+    ``pcb_index`` so channel slots from one repeated sheet do not bridge unrelated
+    channels in analysis-group validation.
+    """
+    resolver = _instance_resolver(proj)
+    for pcb_idx, p_net, n_net in _iter_series_bridge_pairs(
+        parameter_sources, proj, per_placement=True,
+    ):
+        if pcb_idx is None:
+            continue
+        idxs: list[int] = []
+        for name in (p_net, n_net):
+            for expanded in resolver.expand_net_names(
+                name, pcb_index=pcb_idx,
+            ):
+                idxs.extend(_net_indices_by_name(proj, expanded))
+        unique_idxs = list(dict.fromkeys(idxs))
+        for other in unique_idxs[1:]:
+            union(unique_idxs[0], other)
 
 
 def _autoinfer_2pin_nets(proj: ExtractedProject, pcb_index: int) -> tuple[str, str] | None:
@@ -1419,7 +1749,7 @@ def _has_single_net_params(params: dict[str, str],
     return False
 
 
-def _parse_source(comp, proj, enabled_layers, result, bridge_groups=None,
+def _parse_source(comp, proj, enabled_layers, result,
                   net_remap=None, supply_map=None, only_indices=None):
     # ``only_indices`` (from the per-channel role dispatcher) restricts this
     # parser to the channels whose effective role is SOURCE; when ``None`` the
@@ -1496,7 +1826,7 @@ def _parse_source(comp, proj, enabled_layers, result, bridge_groups=None,
     return specs
 
 
-def _parse_sink(comp, proj, enabled_layers, result, bridge_groups=None,
+def _parse_sink(comp, proj, enabled_layers, result,
                 net_remap=None, supply_map=None, only_indices=None):
     # ``only_indices`` restricts this parser to the part's SINK-role channels;
     # see _parse_source.
@@ -1577,7 +1907,7 @@ def _parse_sink(comp, proj, enabled_layers, result, bridge_groups=None,
     return specs
 
 
-def _parse_resistance(comp, proj, enabled_layers, result, bridge_groups=None,
+def _parse_resistance(comp, proj, enabled_layers, result,
                       net_remap=None, supply_map=None, only_indices=None):
     # This parser only ever handles SERIES-role channels (part-wide or a
     # PDN<n>_ROLE=SERIES override), so the role for diagnostics is always
@@ -1835,7 +2165,7 @@ def _resolve_regulator_gain(
     return gain, reg_type, eff, True
 
 
-def _parse_regulator(comp, proj, enabled_layers, result, bridge_groups=None,
+def _parse_regulator(comp, proj, enabled_layers, result,
                      net_remap=None, supply_map=None, only_indices=None):
     role_diag_base = f"REGULATOR on {comp.designator}"
     if _has_single_net_params(comp.parameters, only_indices):
@@ -1962,8 +2292,9 @@ def _spec_terminals(d: DirectiveSpec) -> list[TerminalSpec]:
 
 
 def _validate_directive_groups(result: AnnotationResult,
-                               proj: ExtractedProject,
-                               bridge_groups: dict[str, frozenset[str]]) -> None:
+                               proj: ExtractedProject | None,
+                               parameter_sources: list[PdnParameterSource]
+                               | None = None) -> None:
     """Cross-directive checks on every analysis group + return-node grouping.
 
     An *analysis group* is a set of directives that share copper (their
@@ -2012,12 +2343,8 @@ def _validate_directive_groups(result: AnnotationResult,
             union(nets[0], other)
     # SERIES bridges (ferrite / 0 Ω link) join the nets they span, so a
     # point-to-point check across one stays a single group.
-    for group in bridge_groups.values():
-        idxs: list[int] = []
-        for name in group:
-            idxs.extend(_net_indices_by_name(proj, name))
-        for other in idxs[1:]:
-            union(idxs[0], other)
+    if proj is not None and parameter_sources:
+        _union_series_bridge_net_indices(proj, parameter_sources, union)
 
     groups: dict[int, list[DirectiveSpec]] = {}
     for d in directives:
@@ -2251,8 +2578,6 @@ def parse_annotations(proj: ExtractedProject,
 
     parameter_sources = _iter_pdn_parameter_sources(proj)
 
-    # SERIES bridge equivalence for cross-directive validation and the solver.
-    bridge_groups = _collect_bridge_groups(parameter_sources, proj)
     supply_map = _collect_supply_voltages_by_net(parameter_sources)
 
     for comp in parameter_sources:
@@ -2301,7 +2626,6 @@ def parse_annotations(proj: ExtractedProject,
             if not role:
                 continue
             specs = _PARSER_BY_ROLE[role](comp, proj, enabled_layers, result,
-                                          bridge_groups=bridge_groups,
                                           net_remap=net_remap,
                                           supply_map=supply_map)
             result.directives.extend(specs)
@@ -2309,7 +2633,7 @@ def parse_annotations(proj: ExtractedProject,
             for chan_role, idxs in channel_roles.items():
                 specs = _PARSER_BY_ROLE[chan_role](
                     comp, proj, enabled_layers, result,
-                    bridge_groups=bridge_groups, net_remap=net_remap,
+                    net_remap=net_remap,
                     supply_map=supply_map, only_indices=idxs,
                 )
                 # Every parser returns a list — empty if the directive failed
@@ -2317,7 +2641,7 @@ def parse_annotations(proj: ExtractedProject,
                 result.directives.extend(specs)
 
     # Cross-directive checks (mode consistency, open-loop) + return grouping.
-    _validate_directive_groups(result, proj, bridge_groups)
+    _validate_directive_groups(result, proj, parameter_sources)
     return result
 
 
