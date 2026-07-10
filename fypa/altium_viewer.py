@@ -16640,9 +16640,15 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         for bucket in ("tracks", "arcs", "regions",
                        "shape_based_regions", "fills", "planes"):
             for rec in prims.get(bucket, []):
-                key = (int(rec.get("layer_id", -1)),
-                       str(rec.get("net", "")))
-                idx.setdefault(key, []).append(rec)
+                lids = rec.get("layer_ids")
+                if lids:
+                    for lid in lids:
+                        key = (int(lid), str(rec.get("net", "")))
+                        idx.setdefault(key, []).append(rec)
+                else:
+                    key = (int(rec.get("layer_id", -1)),
+                           str(rec.get("net", "")))
+                    idx.setdefault(key, []).append(rec)
         self._primitives_by_layer_net = idx
         return idx
 
@@ -16852,7 +16858,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             except Exception:
                 continue
             return {"kind": prim["kind"], "record": prim,
-                    "layer_id": int(prim["layer_id"]),
+                    "layer_id": int(cover["layer_id"]),
                     "net": str(prim["net"])}
         return None
 
@@ -16995,7 +17001,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 names = [self._layer_name_for_id(i) for i in ids]
                 add("Layers", ", ".join(names))
         else:
-            add("Layer", self._layer_name_for_id(hit.get("layer_id")))
+            ids = list(rec.get("layer_ids") or [])
+            if len(ids) > 1:
+                names = [self._layer_name_for_id(i) for i in ids]
+                add("Layers", ", ".join(names))
+            else:
+                add("Layer", self._layer_name_for_id(
+                    ids[0] if ids else hit.get("layer_id")))
 
         if kind == "track":
             ax, ay = float(rec["ax"]), float(rec["ay"])

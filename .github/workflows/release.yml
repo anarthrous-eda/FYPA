@@ -1,0 +1,73 @@
+name: Release
+
+# Build the PyInstaller distribution and publish it as a GitHub release
+# whenever a version tag is pushed:
+#
+#   git tag v1.6.0
+#   git push origin v1.6.0
+#
+# The zip is named after the tag (FYPA-v1.6.0.zip), so no manual renaming,
+# and the release is created with auto-generated notes from the merged PRs
+# since the previous tag.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  # Needed to create the release and upload the zip asset.
+  contents: write
+
+jobs:
+  build-and-release:
+    # Same platform rationale as ci.yml — Windows is FYPA's target platform
+    # and the platform the PyInstaller spec is written for.
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          # Keep in lockstep with ci.yml.
+          version: "0.11.x"
+          enable-cache: true
+
+      - name: Sync dependencies (runtime + dev + build + spacemouse)
+        # Mirrors packaging/build_dist.bat: the `build` group pulls in
+        # PyInstaller, the spacemouse extra ships pynavlib in the bundle.
+        run: uv sync --group build --extra spacemouse
+
+      # Tag pushes don't trigger ci.yml (it filters on branches), so run the
+      # same lint + test gate here rather than shipping an untested build.
+      - name: Lint (ruff)
+        run: uv run ruff check .
+
+      - name: Test (pytest)
+        run: uv run pytest
+
+      - name: Stamp version from tag
+        # The built exe reports the release version instead of "0.1.0-dev".
+        # Build-time only — nothing is committed back to the repo.
+        run: |
+          $tag = "${{ github.ref_name }}"
+          (Get-Content fypa/cli.py) -replace '^__version__ = .*', "__version__ = `"$tag`"" | Set-Content fypa/cli.py
+
+      - name: Build (PyInstaller)
+        run: uv run pyinstaller packaging/FYPA.spec
+
+      - name: Copy README into dist
+        run: Copy-Item README.md dist/FYPA/README.md
+
+      - name: Create zip
+        run: Compress-Archive -Path dist/FYPA -DestinationPath "dist/FYPA-${{ github.ref_name }}.zip"
+
+      - name: Publish GitHub release
+        # `gh` is preinstalled on GitHub runners. --generate-notes builds the
+        # changelog from merged PRs since the last tag. Add --draft here if
+        # you'd rather review the release before it goes public.
+        run: gh release create "${{ github.ref_name }}" "dist/FYPA-${{ github.ref_name }}.zip" --title "FYPA ${{ github.ref_name }}" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
