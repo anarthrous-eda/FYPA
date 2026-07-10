@@ -553,6 +553,20 @@ def _detect_propagation_back_edges(
     return back
 
 
+def _mixed_role_node_ids(node_specs: list[NodeSpec]) -> set[str]:
+    """Designators that carry more than one PDN role (e.g. SERIES + SINK)."""
+    roles_by_id: dict[str, set[str]] = defaultdict(set)
+    for spec in node_specs:
+        nid = spec["node_id"]
+        sections = spec.get("sections")
+        if sections:
+            roles_by_id[nid].update(sec["role"] for sec in sections)
+        else:
+            roles_by_id[nid].add(spec["role"])
+        roles_by_id[nid].update((spec.get("port_roles") or {}).values())
+    return {nid for nid, rs in roles_by_id.items() if len(rs) > 1}
+
+
 def assign_columns(
     node_specs: list[NodeSpec],
     net_to_rail: dict[str, str],
@@ -560,6 +574,7 @@ def assign_columns(
     """Place nodes in columns by propagating from SOURCE outputs along nets."""
     col: dict[str, int] = {}
     role_by_id = {s["node_id"]: s["role"] for s in node_specs}
+    mixed_role_ids = _mixed_role_node_ids(node_specs)
 
     sources = [s for s in node_specs if s["role"] in ("SOURCE",)]
     for s in node_specs:
@@ -749,7 +764,7 @@ def assign_columns(
     if col:
         sink_col = max(col.values())
         for s in node_specs:
-            if s["role"] == "SINK":
+            if s["role"] == "SINK" and s["node_id"] not in mixed_role_ids:
                 col[s["node_id"]] = sink_col
 
     # Orient each SERIES/RESISTOR so the terminal carrying the downstream loads
