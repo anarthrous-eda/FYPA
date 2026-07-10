@@ -68,6 +68,13 @@ This is **not** the PCB layout; for spatial placement use the Heatmap tab.
   the header shows the role colour and designator; the body shows the
   configured value (`PDN_V`, `PDN_I`, `PDN_R`, regulator gain).
 - **Ports** — small connectors on the left (inputs) and right (outputs).
+  Each port is labelled with the **physical PCB net name** from the pad
+  assignment (the same names you see on the Heatmap and in the Nodes
+  table), not the schematic `PDN_*_NET` text or the merged rail name from
+  the Rails list. When one directive terminal ties several pads on
+  different nets (multi-pin part), the port label lists every distinct
+  net, comma-separated. Hub resistors with several channels still show
+  one net per channel row (`N1`, `N2`, …).
 - **Wires** — orthogonal links between ports on the same electrical net,
   each labelled once above the link. Real return nets meet a horizontal
   rail below the diagram, terminated by a schematic **GND** symbol

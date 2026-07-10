@@ -67,7 +67,7 @@
 <text x="272" y="153" fill="#ffffff" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">SERIES</text>
 <text x="384" y="153" fill="#ffffff" text-anchor="end" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">D1</text>
 <circle cx="264" cy="177" r="5" fill="#1a7a3c" stroke="#555555" stroke-width="1"/>
-<text x="272" y="180" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3</text>
+<text x="272" y="180" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3_PWR</text>
 <circle cx="392" cy="177" r="5" fill="#1a7a3c" stroke="#555555" stroke-width="1"/>
 <text x="384" y="180" text-anchor="end" fill="#909090" font-family="Consolas,monospace" font-size="8">LED_R</text>
 <circle cx="392" cy="195" r="5" fill="#1a7a3c" stroke="#555555" stroke-width="1"/>
@@ -91,7 +91,7 @@
 <text x="752" y="51" fill="#ffffff" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">SINK</text>
 <text x="864" y="51" fill="#ffffff" text-anchor="end" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">U1</text>
 <circle cx="744" cy="75" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
-<text x="752" y="78" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3</text>
+<text x="752" y="78" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3_PWR</text>
 <circle cx="744" cy="93" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
 <text x="752" y="96" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">GND</text>
 <rect class="topo-hit" data-label="U3" x="744" y="138" width="128" height="92" rx="6" fill="#333333" stroke="#555555" stroke-width="1"/>
@@ -102,7 +102,7 @@
 <circle cx="744" cy="177" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
 <text x="752" y="180" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_1V8</text>
 <circle cx="744" cy="195" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
-<text x="752" y="198" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3</text>
+<text x="752" y="198" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3_PWR</text>
 <circle cx="744" cy="213" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
 <text x="752" y="216" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">GND</text>
 <rect class="topo-hit" data-label="U4" x="744" y="258" width="128" height="128" rx="6" fill="#333333" stroke="#555555" stroke-width="1"/>
@@ -117,7 +117,7 @@
 <circle cx="744" cy="333" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
 <text x="752" y="336" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">LED_B</text>
 <circle cx="744" cy="351" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
-<text x="752" y="354" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3</text>
+<text x="752" y="354" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3_PWR</text>
 <circle cx="744" cy="369" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
 <text x="752" y="372" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">GND</text>
 <rect x="559.1" y="327" width="31" height="12" fill="#2b2b2b" fill-opacity="0.5" stroke="none" rx="2"/>
@@ -128,8 +128,10 @@
 <text x="592" y="297" text-anchor="middle" dominant-baseline="middle" fill="#e6e6e6" font-family="Segoe UI,sans-serif" font-size="8">LED_R</text>
 <rect x="666.7" y="171" width="41.8" height="12" fill="#2b2b2b" fill-opacity="0.5" stroke="none" rx="2"/>
 <text x="687.6" y="177" text-anchor="middle" dominant-baseline="middle" fill="#e6e6e6" font-family="Segoe UI,sans-serif" font-size="8">VDD_1V8</text>
-<rect x="408.7" y="122" width="41.8" height="12" fill="#2b2b2b" fill-opacity="0.5" stroke="none" rx="2"/>
-<text x="429.6" y="128" text-anchor="middle" dominant-baseline="middle" fill="#e6e6e6" font-family="Segoe UI,sans-serif" font-size="8">VDD_3V3</text>
+<g transform="translate(708,213)">
+<rect x="-8" y="-29.7" width="16" height="59.4" fill="#2b2b2b" fill-opacity="0.5" stroke="none" rx="2"/>
+<text transform="rotate(-90)" text-anchor="middle" dominant-baseline="middle" fill="#e6e6e6" font-family="Segoe UI,sans-serif" font-size="8">VDD_3V3_PWR</text>
+</g>
 <rect x="12" y="462" width="10" height="10" rx="2" fill="#ff3030"/>
 <text x="26" y="472" fill="#909090" font-family="Segoe UI,sans-serif" font-size="10">SOURCE</text>
 <rect x="90" y="462" width="10" height="10" rx="2" fill="#3aa8ff"/>
