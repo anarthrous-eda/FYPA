@@ -241,6 +241,12 @@ def _channel_number(directive: DirectiveDict, position: int) -> int:
 
 
 def _suffix_for_channel(index: int, *, multi: bool, base: str) -> str:
+    """Suffix passive/SINK channel ports (``P1``, ``N2``, …).
+
+    Names must stay ``{P|N}<digit>`` when ``multi`` — see
+    ``_PASSIVE_CHANNEL_PORT`` in :mod:`fypa.topology.metadata.nets`
+    (hub gutter rows show one net per channel, not every pad net).
+    """
     if not multi:
         return base
     return f"{base}{index}"

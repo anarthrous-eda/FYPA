@@ -55,7 +55,7 @@
 <text x="500" y="51" fill="#ffffff" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">SERIES</text>
 <text x="612" y="51" fill="#ffffff" text-anchor="end" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">R1</text>
 <circle cx="492" cy="75" r="5" fill="#1a7a3c" stroke="#555555" stroke-width="1"/>
-<text x="500" y="78" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3</text>
+<text x="500" y="78" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3_PWR</text>
 <circle cx="620" cy="75" r="5" fill="#1a7a3c" stroke="#555555" stroke-width="1"/>
 <text x="612" y="78" text-anchor="end" fill="#909090" font-family="Consolas,monospace" font-size="8">LED_R</text>
 <rect class="topo-hit" data-label="U1" x="720" y="36" width="128" height="74" rx="6" fill="#333333" stroke="#555555" stroke-width="1"/>
@@ -64,7 +64,7 @@
 <text x="728" y="51" fill="#ffffff" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">SINK</text>
 <text x="840" y="51" fill="#ffffff" text-anchor="end" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">U1</text>
 <circle cx="720" cy="75" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
-<text x="728" y="78" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3</text>
+<text x="728" y="78" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3_PWR</text>
 <circle cx="720" cy="93" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
 <text x="728" y="96" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">GND</text>
 <rect x="211" y="69" width="22" height="12" fill="#2b2b2b" fill-opacity="0.5" stroke="none" rx="2"/>
