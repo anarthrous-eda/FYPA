@@ -35,6 +35,7 @@ import math
 import os
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -288,6 +289,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressDialog,
     QPushButton,
@@ -4187,6 +4189,87 @@ class _StageTimer:
         self._log.info("  %8.2fs  100.0%%  TOTAL", total)
 
 
+class _CapLoopWorker(QThread):
+    """Background worker for the Tier-2 / Tier-3 capacitor loop-inductance
+    solve.
+
+    Each cavity is a single-layer FEM domain and every solve after the first
+    reuses the cached mesh + Laplacian, so this is far cheaper than a board
+    solve — but a rail with dozens of caps still runs for seconds, which is
+    long enough to freeze the GUI. Kept in-process (unlike
+    :mod:`fypa.solve_subprocess`) because the cavity problems are small and
+    the extracted design is already in this process's memory.
+    """
+
+    progress = Signal(str)
+    # (results: dict[designator, Tier2Result], matrices: list[CavityMatrix],
+    #  tier3: dict[designator, Tier3Result | None])
+    finished_ok = Signal(object, object, object)
+    failed = Signal(str)
+
+    def __init__(self, extracted, caps, net_layer_shapes, rail_to_members,
+                 settings, mesher_config=None, parent=None) -> None:
+        super().__init__(parent)
+        self._extracted = extracted
+        self._caps = caps
+        self._shapes = net_layer_shapes
+        self._rail_to_members = rail_to_members
+        self._settings = settings
+        self._mesher_config = mesher_config
+        self._cancel = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel.set()
+
+    def run(self) -> None:
+        try:
+            from fypa.altium.loader import _layer_z_centers_mm
+            from fypa.caploop.tier1 import mounted_inductance
+            from fypa.caploop.tier2_fem import run_tier2
+            from fypa.caploop.tier3 import build_ic_geometry, total_loop
+
+            results, matrices = run_tier2(
+                self._extracted, self._caps, self._shapes,
+                self._rail_to_members, self._settings,
+                mesher_config=self._mesher_config,
+                progress_cb=self.progress.emit,
+                cancel_event=self._cancel,
+            )
+
+            self.progress.emit("Assembling cap→plane→IC loop totals…")
+            enabled = self._extracted.enabled_copper_layer_ids()
+            z_centers = _layer_z_centers_mm(self._extracted, enabled)
+            net_index = {n.name: i
+                         for i, n in enumerate(self._extracted.nets)}
+
+            tier3: dict[str, object] = {}
+            for cap in self._caps:
+                res = results.get(cap.designator)
+                if res is None or res.spread_h is None:
+                    tier3[cap.designator] = None
+                    continue
+                rail_members = self._rail_to_members.get(
+                    cap.rail_group, [cap.rail_group])
+                rail_idx = {net_index[m] for m in rail_members
+                            if m in net_index}
+                return_idx = {net_index[cap.return_net]} \
+                    if cap.return_net in net_index else set()
+                ic = build_ic_geometry(
+                    self._extracted, cap, rail_idx, return_idx, enabled,
+                    z_centers, self._settings)
+                tier3[cap.designator] = total_loop(
+                    cap, mounted_inductance(cap, self._settings),
+                    res.spread_h, ic, self._settings)
+            self.finished_ok.emit(results, matrices, tier3)
+        except Exception as e:  # noqa: BLE001 — surfaced to the user
+            if self._cancel.is_set():
+                self.failed.emit("Cancelled.")
+            else:
+                logging.getLogger(__name__).exception(
+                    "Capacitor loop-inductance solve failed")
+                self.failed.emit(f"{type(e).__name__}: {e}")
+
+
 class _SolveWorker(QThread):
     """Background worker that re-runs the FEM solve off the GUI thread.
 
@@ -5460,6 +5543,65 @@ class _SettingsTabMixin:
          "and let the rest of the board use the full colour scale."),
     )
 
+    # Capacitor loop-inductance knobs (Capacitors tab; no re-solve —
+    # applied by the group's "Re-run Capacitor Check" button). Keys map
+    # 1:1 onto fypa.caploop.constants.CapLoopSettings fields.
+    _SETTINGS_CAPLOOP_FIELDS: tuple[tuple[str, str, str, str], ...] = (
+        ("escape_via_search_mm",
+         "Escape-via search radius",
+         "mm",
+         "Radius around a capacitor pad searched for candidate same-net "
+         "escape vias."),
+        ("escape_via_max_dist_mm",
+         "Escape-via cluster limit",
+         "mm",
+         "Vias beyond this distance don't join the local escape cluster; "
+         "if nothing is closer, the single nearest via (within the search "
+         "radius) is used and the cap is flagged long-escape."),
+        ("escape_cluster_slack",
+         "Escape-cluster slack factor",
+         "×",
+         "Cluster membership window as a multiple of the nearest "
+         "candidate's distance — rejects stitching fields that fall inside "
+         "the search radius."),
+        ("mutual_coupling_factor",
+         "Via mutual-coupling factor k",
+         "",
+         "Derating for N parallel via pairs: L = L_single · k / N. "
+         "k = 1 would mean fully independent pairs; real adjacent pairs "
+         "share flux (≈ 0.8)."),
+        ("tier1_r_far_default_mm",
+         "Default spreading radius",
+         "mm",
+         "Closed-form spreading-term outer radius used when a capacitor "
+         "has no target device."),
+        ("fallback_via_loop_nh",
+         "Fallback loop inductance",
+         "nH",
+         "Assigned when geometry is too degenerate for the closed forms "
+         "(no escape via / no reference cavity). Shown with a ~ prefix."),
+        ("long_escape_warn_mm",
+         "Long-escape warning distance",
+         "mm",
+         "Pad-to-via escape runs longer than this raise the long-escape "
+         "flag."),
+        ("far_plane_warn_mm",
+         "Far-plane warning depth",
+         "mm",
+         "Mounting-surface → nearest-reference-plane depth beyond which "
+         "the far-plane flag is raised."),
+        ("cap_l_warn_nh",
+         "Loop inductance warning level",
+         "nH",
+         "Capacitors whose best-available loop inductance is at or above "
+         "this are highlighted red and counted in the tab-title badge."),
+        ("plane_antipad_clearance_mm",
+         "Cavity anti-pad clearance",
+         "mm",
+         "Extra clearance punched around via bores in the Tier-2 cavity "
+         "sheet when the extraction didn't already perforate the plane."),
+    )
+
     def _build_settings_tab(self) -> QWidget:
         """Build the Settings tab — tunable physics + mesh + display knobs
         and a Re-run Solver button.
@@ -5616,6 +5758,31 @@ class _SettingsTabMixin:
             attr_prefix="settings_edit_",
         )
         outer.addWidget(display_box)
+
+        # ----- Capacitor loop-inductance group (design-specific) -----
+        # Analysis knobs for the Capacitors tab — no FEM re-solve; the
+        # group's own button re-runs identification + Tier 1 in place.
+        if not launcher:
+            caploop_box = self._make_settings_group(
+                "Capacitor loop inductance (applied by Re-run "
+                "Capacitor Check)",
+                self._SETTINGS_CAPLOOP_FIELDS,
+                source=self._caploop_settings(),
+                attr_prefix="settings_edit_cl_",
+            )
+            _cl_layout = caploop_box.layout()
+            if _cl_layout is not None:
+                cl_btn = QPushButton("Re-run Capacitor Check")
+                cl_btn.setToolTip(
+                    "Apply the values above to the Capacitors tab — "
+                    "re-identifies escape vias / cavities and recomputes "
+                    "the Tier-1 inductances. No FEM re-solve.")
+                cl_btn.clicked.connect(self._on_rerun_cap_check)
+                cl_row = QHBoxLayout()
+                cl_row.addWidget(cl_btn)
+                cl_row.addStretch(1)
+                _cl_layout.addRow(cl_row)
+            outer.addWidget(caploop_box)
 
         # ----- General options group -----
         # App-behaviour preferences, persisted immediately (not part of the
@@ -5889,10 +6056,14 @@ class _SettingsTabMixin:
         from dataclasses import fields as _dc_fields
         defaults = _SolveSettings()
         # The display-only fields aren't in SolveSettings — fall back to
-        # the module-level constants for their default-value hint.
+        # the module-level constants for their default-value hint. The
+        # caploop fields likewise hint from their own dataclass defaults.
+        from fypa.caploop.constants import CapLoopSettings as _CapLoopSettings
+        import dataclasses as _dc
         display_defaults = {
             "via_current_warn_a": _VIA_CURRENT_WARN_A,
             "display_percentile_high": _DISPLAY_PERCENTILE_HIGH,
+            **_dc.asdict(_CapLoopSettings()),
         }
         defaults_attrs = {f.name for f in _dc_fields(defaults)}
 
@@ -7084,6 +7255,43 @@ class _MessagesSortItem(QTableWidgetItem):
 # correct after the user re-sorts the table by clicking a column header.
 _NET_TABLE_ROW_ROLE = int(Qt.UserRole) + 1
 
+# Item-data role carrying the Capacitors table's original row index. It can't
+# live on Qt.UserRole because :class:`_MessagesSortItem` reads that role as
+# the numeric sort key — the Go / Use cells need both a sort key and a row
+# identity that survives the user re-sorting the table.
+_CAPS_TABLE_ROW_ROLE = int(Qt.UserRole) + 2
+
+# Columns of the Capacitors-tab table: (display label, numeric?). Defined at
+# module scope so the label→index map below can be built from it (a class-body
+# comprehension can't see other class-body names).
+_CAPS_TABLE_COLUMNS: tuple[tuple[str, bool], ...] = (
+    ("",            False),
+    ("Use",         False),
+    ("Designator",  False),
+    ("Rail",        False),
+    ("C (µF)",      True),
+    # Part parasitics for the impedance model: the package sets the defaults,
+    # a per-part override wins. Both are editable in place.
+    ("Pkg",         False),
+    ("ESL (nH)",    True),
+    ("ESR (mΩ)",    True),
+    ("Part V",      True),
+    ("Design V",    True),
+    ("Target",      False),
+    ("Pins",        True),
+    ("Vias",        False),
+    ("s (mm)",      True),
+    ("Escape (mm)", True),
+    ("Cavity",      False),
+    ("L1 (nH)",     True),
+    ("L2 (nH)",     True),
+    ("L3 (nH)",     True),
+    ("Flags",       False),
+)
+_CAPS_COL: dict[str, int] = {
+    label: i for i, (label, _numeric) in enumerate(_CAPS_TABLE_COLUMNS)
+}
+
 _TOPOLOGY_ZOOM_STEP = 1.2
 _TOPOLOGY_MIN_SCALE = 0.05
 _TOPOLOGY_MAX_SCALE = 32.0
@@ -8162,6 +8370,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             self._vias_table_populated = False
             self._vias_warn_init_scheduled = False
             self._nodes_warn_init_scheduled = False
+            # Capacitor rows derive from the (re)loaded extracted design +
+            # directives — drop the identification and copper shapes with
+            # them, and recompute on next tab activation.
+            self._caps_table_populated = False
+            self._invalidate_caps_cache(repopulate=False, heavy=True)
+            self._caps_shapes_cache = None
+            self._impedance_populated = False
             if self._project is not None:
                 self._update_pending_rails()
 
@@ -8195,6 +8410,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             if cur_tab in (
                 getattr(self, "_nodes_tab_index", -1),
                 getattr(self, "_vias_tab_index", -1),
+                getattr(self, "_caps_tab_index", -1),
             ):
                 self._on_tabs_current_changed(cur_tab)
 
@@ -8841,6 +9057,29 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._vias_table_populated = False
         self._vias_tab_index = self.tabs.addTab(self._build_vias_tab(), "Vias")
         self._init_log.info("PdnViewer init: Vias tab (%.2fs)", time.monotonic() - _t)
+
+        # Capacitors tab — decoupling-cap loop-inductance analysis. Same
+        # lazy-populate treatment; unlike Nodes/Vias there's no deferred
+        # warning-count init either, because the row build includes a
+        # per-net copper-shape union (seconds on a big board) that we don't
+        # want to pay invisibly at startup — the ⚠ badge appears after the
+        # first tab open.
+        _t = time.monotonic()
+        self._caps_table_populated = False
+        self._caps_tab_index = self.tabs.addTab(
+            self._build_capacitors_tab(), "Capacitors")
+        self._init_log.info("PdnViewer init: Capacitors tab (%.2fs)",
+                            time.monotonic() - _t)
+
+        # Impedance tab — per-rail Z(f) against a target mask, built on the
+        # loop inductances the Capacitors tab extracts. Same lazy populate:
+        # the plot needs those rows.
+        _t = time.monotonic()
+        self._impedance_populated = False
+        self._impedance_tab_index = self.tabs.addTab(
+            self._build_impedance_tab(), "Impedance")
+        self._init_log.info("PdnViewer init: Impedance tab (%.2fs)",
+                            time.monotonic() - _t)
 
         # Messages tab — sortable, filterable view of every log record
         # captured since the process started (see fypa.log_buffer). Lets
@@ -9966,6 +10205,80 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         a = _transparency_alpha(st["both"].get("alpha_step", 0))
         return {"top": a, "bottom": a}
 
+    def _caps_overlay_signature(self) -> tuple:
+        """Snapshot of the capacitor-overlay inputs, for
+        :meth:`_overlay_geom_signature`'s identity-skip. Empty when the
+        overlay is off, so toggling it always forces a rebuild."""
+        box = getattr(self, "caps_overlay_box", None)
+        if box is None or not box.isChecked():
+            return ()
+        rows = getattr(self, "_caps_rows_cache", None) or []
+        return tuple(
+            (r["designator"], round(self._cap_l_best_nh(r) or -1.0, 5))
+            for r in rows if r.get("included", True)
+        )
+
+    def _emit_cap_inductance_overlay(self, _emit, labels, in_2d,
+                                     feature_z) -> None:
+        """Colour every included capacitor's pads by its loop inductance.
+
+        Uses the best available tier (L3 > L2 > L1) on a log scale, because
+        mounted inductance spans a decade across a board and a linear ramp
+        would flatten everything but the worst offender. Silent no-op when
+        the overlay is off, the rows were never computed, or the design
+        info isn't loaded."""
+        box = getattr(self, "caps_overlay_box", None)
+        if box is None or not box.isChecked():
+            return
+        rows = [r for r in (getattr(self, "_caps_rows_cache", None) or [])
+                if r.get("included", True)
+                and self._cap_l_best_nh(r) is not None]
+        if not rows:
+            return
+        loaded = getattr(self, "_loaded_project", None)
+        extracted = getattr(loaded, "extracted", None)
+        if extracted is None:
+            return
+
+        from fypa.altium_geometry import _pad_polygon
+
+        values = [self._cap_l_best_nh(r) for r in rows]
+        lo, hi = min(values), max(values)
+        log_lo, log_hi = math.log10(max(lo, 1e-4)), math.log10(max(hi, 1e-3))
+        span = max(log_hi - log_lo, 1e-6)
+        cmap = matplotlib.colormaps["inferno"]
+
+        for row, value in zip(rows, values):
+            cap = row["cap"]
+            t = (math.log10(max(value, 1e-4)) - log_lo) / span
+            rgb = cmap(float(np.clip(t, 0.0, 1.0)))[:3]
+            side = "bottom" if cap.mount_layer_id == 32 else "top"
+            z = feature_z[side]
+            for pi in cap.pads_rail + cap.pads_return:
+                poly = _pad_polygon(extracted.pads[pi], cap.mount_layer_id)
+                if poly is None or poly.is_empty:
+                    continue
+                # A through-hole pad's polygon can carry its bore as an
+                # interior ring, or come back as a MultiPolygon; the fan
+                # fill wants one convex outer ring, so take each part's
+                # exterior and let the bore paint over.
+                parts = ([poly] if poly.geom_type == "Polygon"
+                         else list(getattr(poly, "geoms", [])))
+                for part in parts:
+                    if part.geom_type != "Polygon" or part.is_empty:
+                        continue
+                    ring = np.asarray(part.exterior.coords, dtype=np.float64)
+                    _emit(_overlay_fan_tris(ring), z, rgb,
+                          top=in_2d and side == "top", alpha=0.85)
+            labels.append({
+                "x": cap.center_xy[0],
+                "y": cap.center_xy[1],
+                "z": z,
+                "text": f"{cap.designator} {value:.2f} nH",
+                "color": "#ffffff",
+                "height_mm": 0.4,
+            })
+
     def _overlay_geom_signature(self, rails) -> tuple:
         """A hashable snapshot of every input :meth:`_refresh_overlay_geometry`
         reads to build the overlay-fill batch + labels. When two successive
@@ -10023,6 +10336,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             via_span,
             tuple(rows),
             tuple(ac),
+            self._caps_overlay_signature(),
         )
 
     def _refresh_overlay_geometry(self, rails) -> None:
@@ -10514,6 +10828,12 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                     _overlay_outline_tris(seg, 0.15, closed=False),
                     z, (1.0, 1.0, 0.0), alpha=1.0, **bucket,
                 )
+
+        # Capacitor loop-inductance overlay (Capacitors tab → "Show on
+        # heatmap"). A feature overlay like the via cylinders — it colours
+        # cap footprints by their loop L and does NOT touch the heatmap's
+        # own scalar field or its ScaleController.
+        self._emit_cap_inductance_overlay(_emit, labels, in_2d, feature_z)
 
         # Concatenate under-mesh chunks first so the GL viewer can draw
         # that leading slice before the heatmap mesh.
@@ -21158,6 +21478,19 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             self._build_vias_tab(), "Vias",
         )
         self._update_vias_tab_title(getattr(self, "_vias_warn_count", 0))
+        self._caps_tab_index = self.tabs.addTab(
+            self._build_capacitors_tab(), "Capacitors",
+        )
+        # Rebuilding replaced the table widget — force a fresh populate on
+        # next activation (rows cache is kept; only the Qt items are gone).
+        self._caps_table_populated = False
+        self._caps_click_handler_wired = False
+        self._update_caps_tab_title(getattr(self, "_caps_warn_count", 0))
+        self._impedance_tab_index = self.tabs.addTab(
+            self._build_impedance_tab(), "Impedance",
+        )
+        # The figure and its axes were destroyed with the old tab widget.
+        self._impedance_populated = False
         # The previous Messages-tab listener is dropped on tab teardown
         # below (the QObject signaller is destroyed with its parent);
         # rebuilding here re-installs a fresh listener against the same
@@ -21179,6 +21512,12 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             ) or (
                 current_tab_text.startswith("Nodes")
                 and label.startswith("Nodes")
+            ) or (
+                current_tab_text.startswith("Capacitors")
+                and label.startswith("Capacitors")
+            ) or (
+                current_tab_text.startswith("Impedance")
+                and label.startswith("Impedance")
             ):
                 self.tabs.setCurrentIndex(i)
                 break
@@ -22038,14 +22377,24 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
 
     def _store_viewer_settings(self, proj) -> None:
         """Fold persistable viewer state into ``proj.viewer_settings`` so the
-        next :meth:`fypa.project_file.ProjectFile.save` writes it. Currently
-        just the Board Features overlay colours.
+        next :meth:`fypa.project_file.ProjectFile.save` writes it: the
+        capacitor loop-inductance knobs and the Board Features overlay
+        colours.
 
         Each entry is ``{"primary": [r, g, b]}``, stored in full so a
         reopened project shows exactly the colours the user left even if a
         built-in default later changes. A ``"bottom"`` key is added only
         when the user pinned a distinct Bottom-side colour for a split
         layer — i.e. the bottom colour is written only once changed."""
+        # Capacitor loop-inductance knobs — persisted whenever they've been
+        # materialised (reading them is what the Capacitors tab / Settings
+        # group does on first use). Stored before the overlay-colour early
+        # return below so they survive on viewers that never customised a
+        # colour.
+        caploop = getattr(self, "_caploop_settings_obj", None)
+        if caploop is not None:
+            proj.viewer_settings["caploop"] = caploop.to_dict()
+
         colors = getattr(self, "_overlay_colors", None)
         if not colors:
             return
@@ -23098,6 +23447,20 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 self._populate_vias_table()
             finally:
                 QApplication.restoreOverrideCursor()
+        elif (index == getattr(self, "_caps_tab_index", -1)
+                and not getattr(self, "_caps_table_populated", True)):
+            # The row build is seconds of geometry work — run it behind a busy
+            # dialog rather than freezing on the GUI thread. The populated flag
+            # is set by the continuation, so a build that fails or is re-entered
+            # doesn't leave the tab permanently blank.
+            def _populate() -> None:
+                self._caps_table_populated = True
+                self._populate_caps_table()
+            self._ensure_cap_rows_async(_populate)
+        elif (index == getattr(self, "_impedance_tab_index", -1)
+                and not getattr(self, "_impedance_populated", True)):
+            self._impedance_populated = True
+            self._populate_impedance_tab()
         elif index == getattr(self, "_topology_tab_index", -1):
             if not getattr(self, "_topology_populated", True):
                 self._topology_populated = True
@@ -24156,6 +24519,1744 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self.tabs.setCurrentIndex(self._heatmap_tab_index)
         self._render()
         self._gl_viewer.set_view_center_scale(float(x), float(y), mm_per_pixel)
+
+    # --- Capacitors tab ------------------------------------------------------
+
+    # Columns of the Capacitors-tab table. (display label, numeric?)
+    # Column 0 is the per-row "Go" jump cell, column 1 the include
+    # checkbox; the rest are data. Same no-setCellWidget discipline as the
+    # Vias tab — see _populate_vias_table for the perf rationale.
+    _CAPS_TABLE_COLUMNS: tuple[tuple[str, bool], ...] = _CAPS_TABLE_COLUMNS
+    # Column indexes, derived from the labels above rather than hand-counted,
+    # so inserting a column can't silently mis-address the click dispatcher.
+    _CAPS_ACTION_COL = _CAPS_COL[""]
+    _CAPS_USE_COL = _CAPS_COL["Use"]
+    _CAPS_RAIL_COL = _CAPS_COL["Rail"]
+    _CAPS_ESL_COL = _CAPS_COL["ESL (nH)"]
+    _CAPS_ESR_COL = _CAPS_COL["ESR (mΩ)"]
+    _CAPS_TARGET_COL = _CAPS_COL["Target"]
+    _CAPS_FLAGS_COL = _CAPS_COL["Flags"]
+
+    def _caploop_settings(self):
+        """The active :class:`~fypa.caploop.constants.CapLoopSettings` —
+        project-file values when present, defaults otherwise. Cached;
+        cleared by the Settings-tab apply (_on_rerun_cap_check)."""
+        obj = getattr(self, "_caploop_settings_obj", None)
+        if obj is None:
+            from fypa.caploop.constants import CapLoopSettings
+            stored = {}
+            if getattr(self, "_project", None) is not None:
+                stored = self._project.viewer_settings.get("caploop") or {}
+            obj = CapLoopSettings.from_dict(stored)
+            self._caploop_settings_obj = obj
+        return obj
+
+    def _build_capacitors_tab(self) -> QWidget:
+        """Build the Capacitors tab — a sortable table of every decoupling
+        capacitor with its Tier-1 mounted loop inductance, informational
+        part values, and per-cap include / target overrides. Rows populate
+        on first tab activation (identification walks the whole extracted
+        design and builds per-net copper shapes — seconds on a big board)."""
+        widget = QWidget(self.tabs)
+        outer = QVBoxLayout(widget)
+        outer.setContentsMargins(8, 8, 8, 8)
+
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("Rail:"))
+        self.caps_rail_combo = QComboBox()
+        self.caps_rail_combo.addItem("All rails")
+        for r in self._rails:
+            self.caps_rail_combo.addItem(r)
+        self.caps_rail_combo.setToolTip(
+            "Filter rows to capacitors whose power side is on the selected "
+            "rail group."
+        )
+        self.caps_rail_combo.currentTextChanged.connect(self._apply_caps_filter)
+        filter_row.addWidget(self.caps_rail_combo)
+
+        filter_row.addSpacing(12)
+        self.caps_flagged_only_box = QCheckBox("Show only flagged")
+        self.caps_flagged_only_box.setToolTip(
+            "Show only capacitors with a geometry flag (single via, long "
+            "escape, far reference plane…) or a loop inductance at or above "
+            "the warning threshold."
+        )
+        self.caps_flagged_only_box.toggled.connect(self._apply_caps_filter)
+        filter_row.addWidget(self.caps_flagged_only_box)
+
+        self.caps_included_only_box = QCheckBox("Included only")
+        self.caps_included_only_box.setToolTip(
+            "Hide capacitors excluded from the analysis via the Use column."
+        )
+        self.caps_included_only_box.toggled.connect(self._apply_caps_filter)
+        filter_row.addWidget(self.caps_included_only_box)
+
+        self.caps_overlay_box = QCheckBox("Show on heatmap")
+        self.caps_overlay_box.setToolTip(
+            "Colour each included capacitor's pads on the Heatmap tab by its "
+            "loop inductance (best available tier), on a log scale from the "
+            "lowest to the highest on the board."
+        )
+        self.caps_overlay_box.toggled.connect(self._on_caps_overlay_toggled)
+        filter_row.addWidget(self.caps_overlay_box)
+
+        filter_row.addSpacing(12)
+        self.caps_tier23_btn = QPushButton("Compute Tier 2/3")
+        self.caps_tier23_btn.setToolTip(
+            "Solve the plane-pair spreading inductance for every included "
+            "capacitor with the 2-D FEM (Tier 2), then assemble the full "
+            "cap→plane→IC loop (Tier 3). Accurate on split and perforated "
+            "planes, where the Tier-1 closed form is not."
+        )
+        self.caps_tier23_btn.clicked.connect(self._on_compute_cap_tier23)
+        filter_row.addWidget(self.caps_tier23_btn)
+
+        self.caps_progress_label = QLabel("")
+        self.caps_progress_label.setStyleSheet(
+            f"QLabel {{ color: {_T()['accent']}; }}"
+        )
+        filter_row.addWidget(self.caps_progress_label)
+
+        filter_row.addStretch(1)
+        self.caps_summary_label = QLabel("")
+        self.caps_summary_label.setStyleSheet(
+            f"QLabel {{ color: {_T()['fg_muted']}; }}"
+        )
+        filter_row.addWidget(self.caps_summary_label)
+        outer.addLayout(filter_row)
+
+        self.caps_table = QTableWidget()
+        cols = self._CAPS_TABLE_COLUMNS
+        self.caps_table.setColumnCount(len(cols))
+        self.caps_table.setHorizontalHeaderLabels([c[0] for c in cols])
+        self.caps_table.setSortingEnabled(True)
+        self.caps_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.caps_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.caps_table.setAlternatingRowColors(True)
+        self.caps_table.verticalHeader().setVisible(False)
+        self.caps_table.horizontalHeader().setStretchLastSection(True)
+        self.caps_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.Interactive)
+        _t = _T()
+        self.caps_table.setStyleSheet(
+            f"QTableWidget {{ background-color: {_t['bg']}; color: {_t['fg']};"
+            f"               gridline-color: {_t['gridline']};"
+            f"               alternate-background-color: {_t['bg_alt']}; }}"
+            f"QHeaderView::section {{ background-color: {_t['bg_header']}; color: {_t['fg_strong']};"
+            f"                       padding: 4px; border: 1px solid {_t['border']}; }}"
+            f"QTableWidget::item:selected {{ background-color: {_t['bg_selection']}; }}"
+        )
+        outer.addWidget(self.caps_table, 1)
+        return widget
+
+    def _caploop_package_library(self):
+        """The editable SMD package library (typical ESL / ESR per case size),
+        seeded from the project file. Cached; rebuilt when the user edits it."""
+        lib = getattr(self, "_caploop_package_lib", None)
+        if lib is None:
+            from fypa.caploop.packages import PackageLibrary
+            stored = {}
+            if getattr(self, "_project", None) is not None:
+                stored = self._project.viewer_settings.get(
+                    "caploop_packages") or {}
+            lib = PackageLibrary.from_dict(stored)
+            self._caploop_package_lib = lib
+        return lib
+
+    # Per-rail impedance-model inputs, defaulted so a rail the user has never
+    # configured still plots something honest.
+    _CAPLOOP_RAIL_DEFAULTS = {
+        "ripple_pct": 5.0,
+        "transient_current_a": 1.0,
+        "f_max_hz": 40e6,
+        "vrm_r_ohm": 0.002,
+        "vrm_l_h": 5e-9,
+    }
+
+    def _caploop_rail_config(self, rail: str) -> dict:
+        """Target-mask and VRM parameters for one rail, from the project file
+        with the defaults filled in."""
+        stored = {}
+        if getattr(self, "_project", None) is not None:
+            stored = (self._project.viewer_settings.get("caploop_rails")
+                      or {}).get(rail) or {}
+        cfg = dict(self._CAPLOOP_RAIL_DEFAULTS)
+        for key in cfg:
+            if key in stored:
+                try:
+                    cfg[key] = float(stored[key])
+                except (TypeError, ValueError):
+                    pass
+        return cfg
+
+    def _set_caploop_rail_config(self, rail: str, cfg: dict) -> None:
+        proj = self._ensure_project()
+        rails = proj.viewer_settings.setdefault("caploop_rails", {})
+        rails[rail] = {k: float(v) for k, v in cfg.items()}
+        self._display_dirty = True
+
+    def _cap_net_layer_shapes(self, extracted):
+        """Per-(layer, net) copper shapes for the capacitor analysis, cached
+        for the lifetime of one extracted design.
+
+        This union is the expensive part of the whole feature — 5–11 s on a
+        real board — and both the Capacitors table and the Tier-2/3 solve need
+        exactly the same shapes. Keying the cache on the extracted project
+        object (held by reference, so its identity can't be recycled by the
+        GC) means a Reload Design Info / re-solve naturally misses, while a
+        settings or override change — which invalidates the *rows*, not the
+        geometry — reuses it. Qt-free, so it is safe to call from a worker
+        thread.
+        """
+        from fypa.altium_geometry import build_net_layer_shapes
+
+        cached = getattr(self, "_caps_shapes_cache", None)
+        if cached is not None and cached[0] is extracted:
+            return cached[1]
+        _t0 = time.monotonic()
+        shapes = build_net_layer_shapes(
+            extracted, extracted.enabled_copper_layer_ids())
+        logging.getLogger(__name__).info(
+            "Caps: net-layer shapes %.2fs (%d buckets)",
+            time.monotonic() - _t0, len(shapes))
+        self._caps_shapes_cache = (extracted, shapes)
+        return shapes
+
+    def _compute_cap_report(self) -> list[dict]:
+        """One row dict per detected decoupling capacitor: identification
+        bundle + Tier-1 mounted inductance. Pure geometry over the loaded
+        design — no solve needed, so this works right after Reload Design
+        Info. Returns [] (with an explanatory summary message stashed on
+        ``self._caps_empty_reason``) when the design data isn't available.
+
+        Touches no Qt widgets: :meth:`_ensure_cap_rows_async` runs it on a
+        worker thread so the several seconds it takes don't freeze the GUI.
+        """
+        log = logging.getLogger(__name__)
+        self._caps_empty_reason = ""
+        loaded = getattr(self, "_loaded_project", None)
+        extracted = getattr(loaded, "extracted", None)
+        if extracted is None:
+            self._caps_empty_reason = (
+                "Capacitor analysis needs the design info — use "
+                "Reload Design Info, then reopen this tab.")
+            return []
+        if not extracted.pcb_components:
+            self._caps_empty_reason = (
+                "Capacitor analysis needs component data, which Gerber "
+                "imports don't carry — import the Altium design instead.")
+            return []
+
+        from fypa.caploop.identify import (
+            apply_cap_overrides,
+            identify_capacitors,
+        )
+        from fypa.caploop.tier1 import mounted_inductance
+
+        settings = self._caploop_settings()
+        includes, targets = ({}, {})
+        esl_over, esr_over = ({}, {})
+        if getattr(self, "_project", None) is not None:
+            includes, targets = self._project.cap_override_maps()
+            esl_over, esr_over = self._project.cap_parasitic_overrides()
+        library = self._caploop_package_library()
+        directives = (self.metadata or {}).get("directives") or []
+
+        shapes = self._cap_net_layer_shapes(extracted)
+
+        # Identification is the slow half (copper-coverage tests per cap), and
+        # it depends only on the board, the analysis settings, and which caps
+        # are force-included — never on an exclude or a retargeting. Cache it
+        # so toggling a checkbox is a millisecond, not a five-second freeze.
+        _t1 = time.monotonic()
+        forced = frozenset(d for d, v in includes.items() if v)
+        cached = getattr(self, "_caps_identity_cache", None)
+        if (cached is not None and cached[0] is extracted
+                and cached[1] == settings and cached[2] == forced):
+            base = cached[3]
+        else:
+            base = identify_capacitors(
+                extracted, self._rail_to_members,
+                metadata_directives=directives,
+                settings=settings,
+                net_layer_shapes=shapes,
+                include_overrides={d: True for d in forced},
+            )
+            self._caps_identity_cache = (extracted, settings, forced, base)
+            log.info("Caps report: identify %.2fs (%d caps)",
+                     time.monotonic() - _t1, len(base))
+        caps = apply_cap_overrides(
+            base, self._rail_to_members, directives, includes, targets)
+        rows: list[dict] = []
+        for cap in caps:
+            t1 = mounted_inductance(cap, settings)
+            # Part parasitics: the package library supplies the default, an
+            # explicit per-part override wins. A part the library can't
+            # classify has neither until the user supplies one.
+            model = library.get(cap.package)
+            esl_h = esl_over.get(cap.designator,
+                                 model.esl_h if model else None)
+            esr_ohm = esr_over.get(cap.designator,
+                                   model.esr_ohm if model else None)
+            rows.append({
+                "cap": cap,
+                "designator": cap.designator,
+                "rail": cap.rail_group,
+                "rail_net": cap.rail_net,
+                "return_net": cap.return_net,
+                "capacitance_f": cap.capacitance_f,
+                "package": cap.package,
+                "esl_h": esl_h,
+                "esr_ohm": esr_ohm,
+                "esl_is_override": cap.designator in esl_over,
+                "esr_is_override": cap.designator in esr_over,
+                "voltage_rating_v": cap.voltage_rating_v,
+                "design_voltage_v": cap.design_voltage_v,
+                "target_label": cap.target_label,
+                "target_is_override": cap.target_is_override,
+                "target_pin_count": len(cap.target_pins),
+                "vias_str": f"{len(cap.vias_rail)}+{len(cap.vias_return)}",
+                "s_mm": t1.s_mm if not t1.is_fallback else None,
+                # The worse of the two sides' shortest pad-edge→via runs —
+                # the same measure the long-escape flag uses, so the column
+                # and the flag can never disagree.
+                "escape_mm": max(
+                    (min(e.escape_mm for e in side)
+                     for side in (cap.vias_rail, cap.vias_return) if side),
+                    default=None),
+                "cavity_str": (
+                    f"{cap.cavity.name_rail} ↔ {cap.cavity.name_return}"
+                    if cap.cavity is not None else None),
+                "tier1": t1,
+                "l1_nh": t1.total_h * 1e9,
+                "l1_is_fallback": t1.is_fallback,
+                "l2_nh": None,   # filled by the Tier-2/3 worker (phase 4/5)
+                "l3_nh": None,
+                "flags": cap.flags,
+                "included": cap.included,
+                "auto_detected": cap.auto_detected,
+                "x_mm": cap.center_xy[0],
+                "y_mm": cap.center_xy[1],
+                "layer_id": cap.mount_layer_id,
+            })
+        log.info("Caps report: rows built %.2fs (%d caps)",
+                 time.monotonic() - _t1, len(rows))
+        if not rows:
+            self._caps_empty_reason = (
+                "No decoupling capacitors found — detection needs "
+                "C-designator two-pin parts across annotated power rails "
+                "(GND counts as a rail).")
+        return rows
+
+    def _get_or_compute_cap_rows(self) -> list[dict]:
+        """Run :meth:`_compute_cap_report` at most once per viewer and cache
+        the result. Mirrors :meth:`_get_or_compute_via_rows`; invalidated by
+        override edits and Settings-tab apply via
+        :meth:`_invalidate_caps_cache`.
+
+        Synchronous. Every *first* build goes through
+        :meth:`_ensure_cap_rows_async` instead, so by the time this is called
+        the cache is warm and it returns immediately. It stays synchronous for
+        the recompute-after-an-override path, which reuses the cached copper
+        shapes and takes milliseconds.
+        """
+        cached = getattr(self, "_caps_rows_cache", None)
+        if cached is None:
+            cached = self._compute_cap_report()
+            self._caps_rows_cache = cached
+        return cached
+
+    def _ensure_cap_rows_async(self, then) -> None:
+        """Make sure the capacitor rows exist, then call ``then()``.
+
+        The first build unions every (layer, net) copper shape and walks every
+        component — seconds on a real board, and previously all of it on the
+        GUI thread, which is what made the tab look hung. Run it on a worker
+        behind a modal busy dialog instead; the event loop keeps turning so
+        the window repaints. Already-cached rows skip the thread entirely and
+        call ``then()`` inline, so a re-entered tab stays instant.
+
+        Callers that arrive while a build is in flight are *queued*, not
+        dropped: the Capacitors tab, the heatmap overlay and the Impedance tab
+        all want the same rows, and whichever asks second must still get its
+        continuation run, or its view stays permanently blank.
+        """
+        if getattr(self, "_caps_rows_cache", None) is not None:
+            then()
+            return
+
+        waiters = getattr(self, "_caps_rows_waiters", None)
+        if waiters is None:
+            waiters = self._caps_rows_waiters = []
+        waiters.append(then)
+        if getattr(self, "_caps_rows_pending", False):
+            return
+        self._caps_rows_pending = True
+
+        def _work():
+            # Worker thread: _compute_cap_report touches no Qt.
+            return self._compute_cap_report()
+
+        def _flush() -> None:
+            self._caps_rows_pending = False
+            pending, self._caps_rows_waiters = self._caps_rows_waiters, []
+            for waiter in pending:
+                waiter()
+
+        def _ok(rows) -> None:
+            self._caps_rows_cache = rows
+            _flush()
+
+        def _fail(exc_type: str, message: str) -> None:
+            self._caps_rows_cache = []
+            self._caps_empty_reason = (
+                f"Capacitor analysis failed: {exc_type}: {message}")
+            logging.getLogger(__name__).error(
+                "Capacitor report failed: %s: %s", exc_type, message)
+            _flush()
+
+        _run_background_load(
+            self, _work, _ok, _fail,
+            title="Capacitors",
+            label="Analysing decoupling capacitors…\n"
+                  "Building copper geometry and finding escape vias.",
+        )
+
+    def _invalidate_caps_cache(self, *, repopulate: bool = True,
+                              heavy: bool = False) -> None:
+        """Drop the cached cap rows and re-populate the table if it was
+        already built. Tier-2/3 results living in the rows are dropped too —
+        they were computed against the old geometry/overrides and would be
+        stale.
+
+        ``heavy`` also drops the cached *identification* (and with it the
+        copper shapes), which only a design reload or a settings change can
+        invalidate. A plain override edit leaves both caches warm, so the
+        rebuild is a millisecond and can run inline; a heavy rebuild is
+        seconds and goes through the busy dialog.
+        """
+        self._caps_rows_cache = None
+        self._caploop_matrices = []
+        self._caploop_rollup = {}
+        # The rebuilt rows carry no Tier-2/3 values, so the set of designators
+        # the last solve was given no longer describes them.
+        self._caploop_requested = None
+        if heavy:
+            self._caps_identity_cache = None
+            # The plane-pair capacitance depends on the cavity geometry.
+            self._imp_plane_cache = {}
+        if hasattr(self, "caps_progress_label"):
+            self.caps_progress_label.setText("")
+        if not (repopulate and getattr(self, "_caps_table_populated", False)):
+            return
+        if heavy:
+            self._ensure_cap_rows_async(self._populate_caps_table)
+        else:
+            self._populate_caps_table()
+
+    def _on_rerun_cap_check(self) -> None:
+        """Settings-tab apply for the capacitor loop-inductance knobs:
+        gather the ``settings_edit_cl_*`` fields into a fresh
+        CapLoopSettings, persist it with the viewer state, and recompute
+        the Capacitors tab in place. No FEM re-solve."""
+        import dataclasses as _dc
+        from fypa.caploop.constants import CapLoopSettings
+        values = {}
+        for f in _dc.fields(CapLoopSettings):
+            edit = getattr(self, f"settings_edit_cl_{f.name}", None)
+            if edit is None:
+                continue
+            try:
+                values[f.name] = float(edit.text().strip())
+            except ValueError:
+                self._settings_status_label.setText(
+                    f"<span style='color:{_T()['warn_fg']};'>"
+                    f"Capacitor check: {f.name} is not a number "
+                    f"({edit.text().strip()!r})</span>")
+                return
+        # Replace onto the *current* settings, not onto fresh defaults: the
+        # fields with no Settings-tab editor (the plane-detection knobs) would
+        # otherwise be silently reset to their defaults on every apply.
+        self._caploop_settings_obj = _dc.replace(
+            self._caploop_settings(), **values)
+        # Persist alongside the other viewer state on next project save.
+        if getattr(self, "_project", None) is not None:
+            self._project.viewer_settings["caploop"] = \
+                self._caploop_settings_obj.to_dict()
+            self._display_dirty = True
+        # Settings feed escape-via clustering and cavity selection, so the
+        # identification itself has to be redone — that's the slow path.
+        self._invalidate_caps_cache(heavy=True)
+        self._settings_status_label.setText(
+            f"<span style='color:{_T()['accent']};'>Capacitor check "
+            f"re-run with the new settings.</span>")
+
+    # What each capacitor flag means, keyed by its base token. The
+    # side-specific ones carry the offending pad's net in parentheses.
+    _CAP_FLAG_HELP: dict[str, str] = {
+        "no-escape-via":
+            "No via within the search radius reaches this pad's own layer, "
+            "so its current leaves the pad over surface copper. The named "
+            "net is the pad with no via.",
+        "single-via":
+            "Only one escape via on the named pad. Halving the via count "
+            "roughly doubles that side's loop inductance — usually the "
+            "cheapest thing to fix.",
+        "long-escape":
+            "The run from the named pad's edge to its nearest via exceeds "
+            "the warning distance. Via-in-pad escapes in 0 mm.",
+        "far-plane":
+            "The reference plane pair sits deeper below the mounting "
+            "surface than the warning depth, so the loop reaches further "
+            "into the stack than it needs to.",
+        "no-cavity":
+            "No reachable plane pair, so the closed forms can't model this "
+            "capacitor. Its L1 is a fallback estimate (shown with a ~) and "
+            "Tier 2 will skip it.",
+        "no-target":
+            "No SINK directive on this rail, so the loop has no far end to "
+            "be measured to. Pick a device in the Target column.",
+    }
+
+    def _cap_flags_tooltip(self, row: dict) -> str:
+        """Spell out this row's flags. Thresholds live in the Settings tab, so
+        quote the ones that were actually applied rather than the defaults."""
+        flags = row.get("flags", ())
+        if not flags:
+            return "No geometry concerns for this capacitor."
+        settings = self._caploop_settings()
+        limits = {
+            "long-escape": f" (over {settings.long_escape_warn_mm:g} mm)",
+            "far-plane": f" (deeper than {settings.far_plane_warn_mm:g} mm)",
+            "no-escape-via": f" (within {settings.escape_via_search_mm:g} mm)",
+        }
+        lines = []
+        for flag in flags:
+            token = flag.split(" (", 1)[0]
+            help_text = self._CAP_FLAG_HELP.get(token, "")
+            lines.append(f"• {flag}{limits.get(token, '')}\n    {help_text}")
+        return "\n".join(lines)
+
+    def _cap_l_best_nh(self, row: dict) -> float | None:
+        """Best-available loop inductance: Tier 3 > Tier 2 > Tier 1."""
+        for key in ("l3_nh", "l2_nh", "l1_nh"):
+            if row.get(key) is not None:
+                return row[key]
+        return None
+
+    def _cap_row_is_warn(self, row: dict) -> bool:
+        if not row.get("included", True):
+            return False
+        if row.get("flags"):
+            return True
+        l_best = self._cap_l_best_nh(row)
+        return (l_best is not None
+                and l_best >= self._caploop_settings().cap_l_warn_nh)
+
+    def _populate_caps_table(self) -> None:
+        """Fill the Capacitors table from the cached cap report. Same
+        plain-cell + single click-dispatcher pattern as the Vias table."""
+        log = logging.getLogger(__name__)
+        _t0 = time.monotonic()
+        rows = self._get_or_compute_cap_rows()
+        self._caps_rows = rows
+        cols = self._CAPS_TABLE_COLUMNS
+        _t = _T()
+        warn_bg = QBrush(QColor(_t["warn_bg"]))
+        warn_fg = QBrush(QColor(_t["warn_fg"]))
+        action_fg = QBrush(QColor(_t["accent"]))
+        muted_fg = QBrush(QColor(_t["fg_muted"]))
+
+        # itemChanged fires for every setItem during populate — guard the
+        # include-toggle handler with a populating flag.
+        self._caps_populating = True
+        self.caps_table.setSortingEnabled(False)
+        self.caps_table.setRowCount(len(rows))
+        warn_count = 0
+        for r, row in enumerate(rows):
+            is_warn = self._cap_row_is_warn(row)
+            if is_warn:
+                warn_count += 1
+            included = row.get("included", True)
+
+            # Sort keys go on Qt.UserRole (read by _MessagesSortItem.__lt__);
+            # the display text and the row identity would both be destroyed by
+            # the usual setData(Qt.EditRole, ...) pattern, because
+            # QTableWidgetItem aliases EditRole to DisplayRole.
+            action_item = _MessagesSortItem("Go ▶")
+            action_item.setData(Qt.UserRole, float(r))
+            action_item.setData(_CAPS_TABLE_ROW_ROLE, r)
+            action_item.setForeground(action_fg)
+            action_item.setTextAlignment(Qt.AlignCenter)
+            action_item.setToolTip(
+                "Click to jump to this capacitor in the Heatmap tab.")
+            self.caps_table.setItem(r, self._CAPS_ACTION_COL, action_item)
+
+            use_item = _MessagesSortItem("")
+            use_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable
+                              | Qt.ItemIsUserCheckable)
+            use_item.setCheckState(Qt.Checked if included else Qt.Unchecked)
+            use_item.setData(_CAPS_TABLE_ROW_ROLE, r)
+            # Sort key: included rows first when sorting this column.
+            use_item.setData(Qt.UserRole, 0.0 if included else 1.0)
+            use_item.setToolTip(
+                "Include this capacitor in the loop-inductance analysis. "
+                "The choice persists in the .fypa project file.")
+            self.caps_table.setItem(r, self._CAPS_USE_COL, use_item)
+
+            t1 = row["tier1"]
+            t1_tip = (
+                "Tier-1 breakdown:\n"
+                f"  escape (rail): {t1.escape_rail_h * 1e9:.3g} nH\n"
+                f"  escape (return): {t1.escape_return_h * 1e9:.3g} nH\n"
+                f"  via pair ×{t1.n_pairs}: {t1.via_loop_h * 1e9:.3g} nH\n"
+                f"  spreading (closed form): {t1.spread_cf_h * 1e9:.3g} nH"
+                if not t1.is_fallback else
+                "Geometry too degenerate for the closed forms (no escape "
+                "via or no reference cavity) — settings fallback value.")
+
+            target_text = row.get("target_label") or "—"
+            if row.get("target_is_override"):
+                target_text += " ✎"
+
+            cells = (
+                None,  # action
+                None,  # use checkbox — set above
+                row["designator"],
+                row["rail"],
+                None if row.get("capacitance_f") is None
+                else row["capacitance_f"] * 1e6,
+                row.get("package") or "—",
+                None if row.get("esl_h") is None else row["esl_h"] * 1e9,
+                None if row.get("esr_ohm") is None else row["esr_ohm"] * 1e3,
+                row.get("voltage_rating_v"),
+                row.get("design_voltage_v"),
+                target_text,
+                row.get("target_pin_count") or None,
+                row.get("vias_str", ""),
+                row.get("s_mm"),
+                row.get("escape_mm"),
+                row.get("cavity_str") or "—",
+                row.get("l1_nh"),
+                row.get("l2_nh"),
+                row.get("l3_nh"),
+                ", ".join(row.get("flags", ())) or "—",
+            )
+            for c, (col_label, is_numeric) in enumerate(cols):
+                if c in (self._CAPS_ACTION_COL, self._CAPS_USE_COL):
+                    continue
+                value = cells[c]
+                if value is None:
+                    item = QTableWidgetItem("—")
+                elif is_numeric and isinstance(value, (int, float)):
+                    item = _MessagesSortItem(
+                        f"{value:d}" if isinstance(value, int)
+                        else f"{value:.4g}")
+                    item.setData(Qt.UserRole, float(value))
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                else:
+                    item = QTableWidgetItem(str(value))
+                if col_label == "L1 (nH)":
+                    item.setToolTip(t1_tip)
+                    if row.get("l1_is_fallback"):
+                        item.setText(f"~{item.text()}")
+                if col_label == "L2 (nH)":
+                    if row.get("l2_nh") is None:
+                        tip = (row.get("l2_reason")
+                               or "Press Compute Tier 2/3 to solve.")
+                    else:
+                        tip = ("FEM plane-pair spreading inductance between "
+                               "this capacitor's vias and its target's vias.")
+                        # A solved value can still come with a caveat — e.g. a
+                        # zero because the cap sits on the target's own via.
+                        if row.get("l2_reason"):
+                            tip += f"\n\n{row['l2_reason']}"
+                    item.setToolTip(tip)
+                if col_label == "L3 (nH)":
+                    t3 = row.get("tier3")
+                    if t3 is not None:
+                        item.setToolTip(
+                            "Full cap→plane→IC loop:\n"
+                            f"  escape (both pads): {t3.escape_h * 1e9:.3g} nH\n"
+                            f"  cap via pair: {t3.via_loop_cap_h * 1e9:.3g} nH\n"
+                            f"  cavity spreading (FEM): {t3.spread_h * 1e9:.3g} nH\n"
+                            f"  IC via pair ×{t3.ic_pairs}: "
+                            f"{t3.via_loop_ic_h * 1e9:.3g} nH"
+                            + (f"\n\nPartial: {t3.reason} — the total is a "
+                               "lower bound." if t3.is_partial else ""))
+                        if t3.is_partial:
+                            item.setText(f"≥{item.text()}")
+                    else:
+                        # No total without a spreading term. Once a solve has
+                        # run, the L2 reason *is* the reason there is no L3.
+                        item.setToolTip(
+                            f"No cap→plane→IC total: {row['l2_reason']}"
+                            if row.get("l2_reason") else
+                            "Needs a Tier-2 spreading term — "
+                            "press Compute Tier 2/3.")
+                if col_label == "Flags":
+                    item.setToolTip(self._cap_flags_tooltip(row))
+                if col_label == "Pkg":
+                    item.setToolTip(
+                        f"SMD case size parsed from the footprint "
+                        f"{row['cap'].footprint!r}. It selects the default "
+                        f"ESL / ESR from the package library."
+                        if row.get("package") else
+                        f"{row['cap'].footprint!r} is not a recognised SMD "
+                        "chip package. Set ESL and ESR on this part to "
+                        "include it in the impedance model.")
+                if col_label in ("ESL (nH)", "ESR (mΩ)"):
+                    is_esl = col_label.startswith("ESL")
+                    overridden = row.get(
+                        "esl_is_override" if is_esl else "esr_is_override")
+                    what = "inductance" if is_esl else "resistance"
+                    if row.get("esl_h" if is_esl else "esr_ohm") is None:
+                        item.setToolTip(
+                            f"No equivalent series {what} — the package is "
+                            "unrecognised. Double-click to set it.")
+                    elif overridden:
+                        item.setToolTip(
+                            f"Per-part override. Double-click to change, or "
+                            f"clear the field to fall back to the "
+                            f"{row['package']} package default.")
+                        item.setForeground(action_fg)
+                    else:
+                        item.setToolTip(
+                            f"Typical equivalent series {what} for a "
+                            f"{row['package']} package. Double-click to "
+                            "override this part.")
+                        item.setForeground(muted_fg)
+                if col_label == "Target":
+                    item.setToolTip(
+                        "The loop-measurement endpoint (defaults to the "
+                        "largest-current SINK on the rail). Click to pick a "
+                        "different directive; persists in the .fypa.")
+                    item.setForeground(action_fg)
+                if is_warn and col_label in ("L1 (nH)", "L2 (nH)",
+                                             "L3 (nH)", "Flags"):
+                    if col_label == "Flags" and not row.get("flags"):
+                        pass
+                    else:
+                        item.setBackground(warn_bg)
+                        item.setForeground(warn_fg)
+                if not included:
+                    item.setForeground(muted_fg)
+                self.caps_table.setItem(r, c, item)
+        self.caps_table.setSortingEnabled(True)
+        # Default sort: L1 descending — worst mounts on top.
+        l1_col = next(i for i, (n, _) in enumerate(cols) if n == "L1 (nH)")
+        self.caps_table.sortByColumn(l1_col, Qt.DescendingOrder)
+        self.caps_table.resizeColumnsToContents()
+        self._caps_populating = False
+        if not getattr(self, "_caps_click_handler_wired", False):
+            self.caps_table.cellClicked.connect(self._on_caps_cell_clicked)
+            self.caps_table.cellDoubleClicked.connect(
+                self._on_caps_cell_double_clicked)
+            self.caps_table.itemChanged.connect(self._on_caps_item_changed)
+            self._caps_click_handler_wired = True
+        self._caps_warn_count = warn_count
+        self._update_caps_tab_title(warn_count)
+        self._apply_caps_filter()
+        log.info("Caps populate: TOTAL %.2fs (%d rows)",
+                 time.monotonic() - _t0, len(rows))
+
+    def _on_caps_item_changed(self, item) -> None:
+        """Include-checkbox edits → persist as a CapOverride and recompute.
+        Guarded against populate-time setItem noise."""
+        if getattr(self, "_caps_populating", False):
+            return
+        if item.column() != self._CAPS_USE_COL:
+            return
+        orig_idx = item.data(_CAPS_TABLE_ROW_ROLE)
+        if not (isinstance(orig_idx, int)
+                and 0 <= orig_idx < len(getattr(self, "_caps_rows", []))):
+            return
+        row = self._caps_rows[orig_idx]
+        include = item.checkState() == Qt.Checked
+        # Persist only a *deviation* from auto-detection: re-checking a cap
+        # that detection found on its own clears the override. A cap that
+        # only a force-include admitted must keep ``include=True`` — clearing
+        # it there would drop the cap from the list entirely.
+        if include:
+            new_include = None if row.get("auto_detected", True) else True
+        else:
+            new_include = False
+        self._set_cap_override(row["designator"], include=new_include)
+
+    def _on_caps_cell_clicked(self, row: int, col: int) -> None:
+        """Single dispatcher for the Go ▶ (jump) and Target (picker) cells."""
+        item = self.caps_table.item(row, col)
+        if item is None:
+            return
+        if col == self._CAPS_ACTION_COL:
+            orig_idx = item.data(_CAPS_TABLE_ROW_ROLE)
+            if (isinstance(orig_idx, int)
+                    and 0 <= orig_idx < len(getattr(self, "_caps_rows", []))):
+                r = self._caps_rows[orig_idx]
+                self._jump_to_xy(r.get("x_mm"), r.get("y_mm"),
+                                 [r.get("layer_id")])
+        elif col == self._CAPS_TARGET_COL:
+            # Row identity comes from the action cell (this cell carries text
+            # only), and survives the user re-sorting the table.
+            action_item = self.caps_table.item(row, self._CAPS_ACTION_COL)
+            orig_idx = (action_item.data(_CAPS_TABLE_ROW_ROLE)
+                        if action_item is not None else None)
+            if (isinstance(orig_idx, int)
+                    and 0 <= orig_idx < len(getattr(self, "_caps_rows", []))):
+                self._show_cap_target_menu(self._caps_rows[orig_idx])
+
+    def _caps_row_at(self, table_row: int) -> dict | None:
+        """The row dict behind a visual table row — recovered through the
+        action cell's stashed index, so it survives re-sorting."""
+        action_item = self.caps_table.item(table_row, self._CAPS_ACTION_COL)
+        orig_idx = (action_item.data(_CAPS_TABLE_ROW_ROLE)
+                    if action_item is not None else None)
+        rows = getattr(self, "_caps_rows", [])
+        if isinstance(orig_idx, int) and 0 <= orig_idx < len(rows):
+            return rows[orig_idx]
+        return None
+
+    def _on_caps_cell_double_clicked(self, row: int, col: int) -> None:
+        """Edit a capacitor's own ESL / ESR — the parasitics the impedance
+        model needs and the board geometry can't supply.
+
+        An empty input clears the override and falls back to the package
+        library, which is the only way back for a part the user has pinned.
+        """
+        if col not in (self._CAPS_ESL_COL, self._CAPS_ESR_COL):
+            return
+        data = self._caps_row_at(row)
+        if data is None:
+            return
+
+        is_esl = col == self._CAPS_ESL_COL
+        if is_esl:
+            title, unit, scale = "Equivalent series inductance", "nH", 1e-9
+            current, key = data.get("esl_h"), "esl_h"
+        else:
+            title, unit, scale = "Equivalent series resistance", "mΩ", 1e-3
+            current, key = data.get("esr_ohm"), "esr_ohm"
+
+        package = data.get("package")
+        default_note = (
+            f"Leave empty to use the {package} package default."
+            if package else
+            "This part's package is unrecognised, so there is no default to "
+            "fall back on.")
+        text, ok = QInputDialog.getText(
+            self, f"{title} — {data['designator']}",
+            f"{title} ({unit}):\n{default_note}",
+            text="" if current is None else f"{current / scale:.4g}")
+        if not ok:
+            return
+
+        text = text.strip()
+        if not text:
+            self._set_cap_override(data["designator"], **{key: None})
+            return
+        try:
+            value = float(text)
+        except ValueError:
+            QMessageBox.warning(self, "Not a number",
+                                f"{text!r} is not a number.")
+            return
+        if value < 0.0:
+            QMessageBox.warning(self, "Out of range",
+                                f"{title} must be zero or positive.")
+            return
+        self._set_cap_override(data["designator"], **{key: value * scale})
+
+    def _show_cap_target_menu(self, row: dict) -> None:
+        """Popup listing every eligible target directive for the cap's rail
+        plus an "(automatic)" reset. Chosen value persists as a CapOverride."""
+        from fypa.caploop.identify import eligible_target_labels
+        directives = (self.metadata or {}).get("directives") or []
+        members = set(self._rail_to_members.get(row["rail"], [row["rail"]]))
+        labels = eligible_target_labels(members, directives)
+        menu = QMenu(self)
+        auto = menu.addAction("(automatic — largest-current sink)")
+        auto.setCheckable(True)
+        auto.setChecked(not row.get("target_is_override"))
+        menu.addSeparator()
+        for label in labels:
+            act = menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(bool(row.get("target_is_override"))
+                           and row.get("target_label") == label)
+        chosen = menu.exec(QCursor.pos())
+        if chosen is None:
+            return
+        if chosen is auto:
+            self._set_cap_override(row["designator"], target_label=None)
+        else:
+            self._set_cap_override(row["designator"],
+                                   target_label=chosen.text())
+
+    def _set_cap_override(self, designator: str, *, include=...,
+                          target_label=..., esl_h=..., esr_ohm=...) -> None:
+        """Write one override into the project file (created on first edit),
+        mark the display dirty (no re-solve — analysis state only), and
+        rebuild the cap rows so every derived value reflects the change."""
+        proj = self._ensure_project()
+        proj.upsert_cap_override(designator, include=include,
+                                 target_label=target_label,
+                                 esl_h=esl_h, esr_ohm=esr_ohm)
+        # Display-dirty, not project-dirty: an include/target choice never
+        # stales the FEM solve, it only changes this tab's analysis.
+        self._display_dirty = True
+        self._invalidate_caps_cache()
+
+    def _update_caps_tab_title(self, warn_count: int) -> None:
+        idx = getattr(self, "_caps_tab_index", -1)
+        if idx < 0:
+            return
+        title = ("Capacitors" if warn_count == 0
+                 else f"Capacitors ⚠ {warn_count}")
+        self.tabs.setTabText(idx, title)
+
+    def _on_caps_overlay_toggled(self, checked: bool) -> None:
+        """Re-render the heatmap so the cap overlay appears / clears. The
+        rows must exist first — the overlay reads the same cache the table
+        does, and the tab may never have been opened, so this can be the
+        build that pays for the geometry."""
+        if checked:
+            self._ensure_cap_rows_async(self._render)
+        else:
+            self._render()
+
+    # --- Capacitors tab: Tier-2 / Tier-3 solve -------------------------------
+
+    def _on_compute_cap_tier23(self) -> None:
+        """Kick off the background cavity solve for every included cap.
+
+        The rows (and with them the cached copper geometry the solve needs)
+        may not exist yet if the user pressed the button on a freshly-opened
+        tab, so build them behind their own busy dialog first."""
+        if getattr(self, "_caploop_worker", None) is not None:
+            return
+        self._ensure_cap_rows_async(self._start_cap_tier23)
+
+    def _start_cap_tier23(self) -> None:
+        """Launch the Tier-2/3 worker behind a cancellable progress dialog."""
+        if getattr(self, "_caploop_worker", None) is not None:
+            return
+        rows = self._get_or_compute_cap_rows()
+        caps = [r["cap"] for r in rows if r.get("included", True)]
+        if not caps:
+            QMessageBox.information(
+                self, "Nothing to compute",
+                "No capacitors are included in the analysis."
+                if rows else
+                (getattr(self, "_caps_empty_reason", "")
+                 or "No decoupling capacitors were found."))
+            return
+        loaded = getattr(self, "_loaded_project", None)
+        extracted = getattr(loaded, "extracted", None)
+        if extracted is None:
+            return
+
+        from pdnsolver import mesh as _pdn_mesh
+
+        # Already unioned by the row build (same cache), so this is a lookup,
+        # not the 5–11 s geometry pass it used to be on the GUI thread.
+        shapes = self._cap_net_layer_shapes(extracted)
+
+        # Cavity domains are a single layer, so the board's mesh size is
+        # affordable here. ``mesh_max_size_mm = 0`` means "no cap" on the
+        # solve path; Config is frozen and takes a plain float, so fall back
+        # to its own default rather than passing None through.
+        _cfg_kwargs = {"minimum_angle": self._solve_settings.mesh_min_angle_deg}
+        if self._solve_settings.mesh_max_size_mm > 0:
+            _cfg_kwargs["maximum_size"] = self._solve_settings.mesh_max_size_mm
+        mesher_config = _pdn_mesh.Mesher.Config(**_cfg_kwargs)
+
+        self.caps_tier23_btn.setEnabled(False)
+        self.caps_progress_label.setText("Starting cavity solve…")
+        # Only the *included* capacitors are handed to the worker, so the
+        # completion handler must not report the excluded ones as "skipped" —
+        # they were never asked for.
+        self._caploop_requested = {c.designator for c in caps}
+
+        worker = _CapLoopWorker(
+            extracted, caps, shapes, self._rail_to_members,
+            self._caploop_settings(), mesher_config, parent=self)
+
+        # One FEM solve per capacitor, so the bar can be determinate. The
+        # dialog's Cancel sets the worker's flag; run_tier2 checks it between
+        # solves and unwinds.
+        dlg = QProgressDialog(
+            f"Solving plane-pair spreading inductance for "
+            f"{len(caps)} capacitor(s)…", "Cancel", 0, len(caps), self)
+        dlg.setWindowTitle("Capacitor loop inductance")
+        dlg.setWindowModality(Qt.ApplicationModal)
+        dlg.setMinimumDuration(0)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        dlg.setValue(0)
+        dlg.canceled.connect(worker.cancel)
+        self._caploop_progress_dlg = dlg
+
+        def _on_progress(message: str) -> None:
+            self.caps_progress_label.setText(message)
+            dlg.setLabelText(message)
+            # Worker messages read "Cavity solve 3/12: C41" — advance the bar
+            # on the cap index rather than inventing a second counter.
+            m = re.match(r"Cavity solve (\d+)/", message)
+            if m:
+                dlg.setValue(int(m.group(1)) - 1)
+
+        worker.progress.connect(_on_progress)
+        worker.finished_ok.connect(self._on_cap_tier23_done)
+        worker.failed.connect(self._on_cap_tier23_failed)
+        worker.finished.connect(self._on_cap_tier23_cleanup)
+        self._caploop_worker = worker
+        worker.start()
+
+    def _on_cap_tier23_done(self, results, matrices, tier3) -> None:
+        """Merge the solved Tier-2/3 values into the cached rows.
+
+        Every row ends up with an ``l2_reason``, because the progress line
+        tells the user to hover the L2 cell for it. A row the worker was never
+        given (an excluded capacitor) says so, rather than falling through to
+        the pre-solve "press Compute Tier 2/3" hint — and is not counted as
+        skipped, because nothing was skipped: it wasn't asked for.
+
+        The matrices are kept whole (not just their diagonals): a later
+        PDN-impedance analysis needs the cap↔cap mutual terms, and they
+        cannot be recovered from the per-cap scalars."""
+        rows = getattr(self, "_caps_rows_cache", None) or []
+        requested = getattr(self, "_caploop_requested", None)
+        self._caploop_matrices = matrices
+        solved = skipped = 0
+        skip_reasons: dict[str, int] = {}
+        for row in rows:
+            designator = row["designator"]
+            if requested is not None and designator not in requested:
+                row["l2_nh"] = row["l3_nh"] = None
+                row["tier3"] = None
+                row["l3_is_partial"] = False
+                row["l2_reason"] = (
+                    "Excluded from the analysis — tick Use to include this "
+                    "capacitor, then compute again.")
+                continue
+
+            res = results.get(designator)
+            row["l2_nh"] = (None if res is None or res.spread_h is None
+                            else res.spread_h * 1e9)
+            row["l2_reason"] = (
+                res.reason if res is not None
+                else "The cavity solve returned no result for this capacitor.")
+            t3 = tier3.get(designator)
+            row["l3_nh"] = None if t3 is None else t3.total_h * 1e9
+            row["l3_is_partial"] = bool(t3 is not None and t3.is_partial)
+            row["tier3"] = t3
+            if row["l2_nh"] is not None:
+                solved += 1
+            else:
+                skipped += 1
+                reason = row["l2_reason"]
+                skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+
+        # Per-rail rollup: what each IC sees with its caps in parallel.
+        from fypa.caploop.tier3 import rail_rollup
+        self._caploop_rollup = rail_rollup([
+            (r["rail"], r["designator"], (r["l3_nh"] or 0.0) * 1e-9)
+            for r in rows
+            if r.get("included", True) and r.get("l3_nh")
+        ])
+
+        msg = f"Tier 2/3 complete — {solved} capacitor(s) solved"
+        if skipped:
+            # Name the reasons here rather than only in a tooltip: a user
+            # reading "N skipped" shouldn't have to go hunting for why.
+            top = sorted(skip_reasons.items(), key=lambda kv: -kv[1])[:2]
+            detail = "; ".join(f"{count}× {reason.rstrip('.')}"
+                               for reason, count in top)
+            if len(skip_reasons) > 2:
+                detail += f"; +{len(skip_reasons) - 2} other reason(s)"
+            msg += f", {skipped} skipped ({detail})"
+        self.caps_progress_label.setText(msg)
+        self.caps_progress_label.setToolTip(
+            "Hover a capacitor's L2 cell for its individual reason."
+            if skipped else "")
+        if getattr(self, "_caps_table_populated", False):
+            self._populate_caps_table()
+        # The overlay colours by the best available tier, which just changed.
+        if getattr(self, "caps_overlay_box", None) is not None \
+                and self.caps_overlay_box.isChecked():
+            self._render()
+        # Every capacitor's series resonance moves with its mounted L, so the
+        # impedance plot is now stale — redraw it if it has ever been built.
+        if getattr(self, "_impedance_populated", False):
+            self._replot_impedance()
+
+    def _on_cap_tier23_failed(self, message: str) -> None:
+        self.caps_progress_label.setText("")
+        if message == "Cancelled.":
+            return
+        QMessageBox.warning(
+            self, "Capacitor loop-inductance solve failed",
+            f"The Tier-2/3 solve did not complete:\n\n{message}\n\n"
+            "The Tier-1 estimates in the table are unaffected.")
+
+    def _on_cap_tier23_cleanup(self) -> None:
+        # QProgressDialog.close() routes through reject() → cancel(), which
+        # would re-emit ``canceled`` into a worker that has already finished.
+        # Disconnect first, then close, or a completed solve looks cancelled.
+        dlg = getattr(self, "_caploop_progress_dlg", None)
+        if dlg is not None:
+            try:
+                dlg.canceled.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            dlg.close()
+            dlg.deleteLater()
+        self._caploop_progress_dlg = None
+        worker = getattr(self, "_caploop_worker", None)
+        if worker is not None:
+            worker.deleteLater()
+        self._caploop_worker = None
+        if hasattr(self, "caps_tier23_btn"):
+            self.caps_tier23_btn.setEnabled(True)
+
+    def _apply_caps_filter(self, *_args) -> None:
+        """Hide rows failing the Rail / flagged-only / included-only
+        filters, and refresh the summary line (which doubles as the
+        empty-state explanation when there are no rows at all)."""
+        if not hasattr(self, "caps_table"):
+            return
+        rows = getattr(self, "_caps_rows", [])
+        if not rows:
+            self.caps_summary_label.setText(
+                getattr(self, "_caps_empty_reason", "") or "")
+            return
+        rail_choice = (self.caps_rail_combo.currentText()
+                       if hasattr(self, "caps_rail_combo") else "All rails")
+        flagged_only = (self.caps_flagged_only_box.isChecked()
+                        if hasattr(self, "caps_flagged_only_box") else False)
+        included_only = (self.caps_included_only_box.isChecked()
+                         if hasattr(self, "caps_included_only_box") else False)
+
+        visible = 0
+        warn_visible = 0
+        for tr in range(self.caps_table.rowCount()):
+            action_item = self.caps_table.item(tr, self._CAPS_ACTION_COL)
+            orig_idx = (action_item.data(_CAPS_TABLE_ROW_ROLE)
+                        if action_item is not None else None)
+            row = (rows[orig_idx]
+                   if isinstance(orig_idx, int) and 0 <= orig_idx < len(rows)
+                   else {})
+            rail_ok = (rail_choice == "All rails"
+                       or row.get("rail") == rail_choice)
+            is_warn = self._cap_row_is_warn(row)
+            warn_ok = (not flagged_only) or is_warn
+            incl_ok = (not included_only) or row.get("included", True)
+            hide = not (rail_ok and warn_ok and incl_ok)
+            self.caps_table.setRowHidden(tr, hide)
+            if not hide:
+                visible += 1
+                if is_warn:
+                    warn_visible += 1
+        included_total = sum(1 for r in rows if r.get("included", True))
+        text = (f"{visible} of {len(rows)} capacitor(s) shown — "
+                f"{included_total} included, {warn_visible} flagged")
+        # Once Tier 3 has run, append what the IC actually sees: every
+        # included cap's loop, in parallel. This is the headline number, so
+        # it must not hide behind the rail filter — with "All rails" selected
+        # we list the rails compactly rather than showing nothing.
+        rollup = getattr(self, "_caploop_rollup", None)
+        if rollup:
+            if rail_choice in rollup:
+                shown = [rollup[rail_choice]]
+                more = 0
+            else:
+                ordered = sorted(rollup.values(),
+                                 key=lambda s: -s.parallel_h)
+                shown, more = ordered[:3], max(0, len(ordered) - 3)
+            parts = [
+                f"{s.rail}: {s.cap_count} cap(s) in parallel = "
+                f"{s.parallel_h * 1e9:.3g} nH (best {s.min_h * 1e9:.3g} nH)"
+                for s in shown
+            ]
+            if more:
+                parts.append(f"+{more} more rail(s)")
+            text += " · " + " · ".join(parts)
+        self.caps_summary_label.setText(text)
+
+    # --- Impedance tab -----------------------------------------------------
+    #
+    # Per-rail PDN impedance Z(f) against a target mask (TI SWPA222A §4). The
+    # capacitor loop inductances the Capacitors tab extracts are what make this
+    # more than a spreadsheet: every branch's series resonance sits where its
+    # *mounted* L puts it, not where its datasheet ESL alone would.
+
+    def _build_impedance_tab(self) -> QWidget:
+        """Setup panel (rail, target mask, VRM, package library) beside an
+        embedded matplotlib canvas showing |Z(f)|."""
+        from matplotlib.backends.backend_qtagg import (
+            FigureCanvasQTAgg,
+            NavigationToolbar2QT,
+        )
+        from matplotlib.figure import Figure
+
+        widget = QWidget(self.tabs)
+        outer = QHBoxLayout(widget)
+        outer.setContentsMargins(8, 8, 8, 8)
+        t = _T()
+
+        # ----- left: setup -----
+        side = QVBoxLayout()
+        side.setSpacing(8)
+
+        rail_row = QHBoxLayout()
+        rail_row.addWidget(QLabel("Rail:"))
+        self.imp_rail_combo = QComboBox()
+        self.imp_rail_combo.setToolTip(
+            "Rails carrying at least one included decoupling capacitor.")
+        self.imp_rail_combo.currentTextChanged.connect(
+            self._on_impedance_rail_changed)
+        rail_row.addWidget(self.imp_rail_combo, 1)
+        side.addLayout(rail_row)
+
+        # Target mask — Z_target = V · ripple% / I_transient (TI §4).
+        mask_box = QGroupBox("Target impedance (TI SWPA222A §4)")
+        mask_form = QFormLayout(mask_box)
+        self.imp_ripple_edit = QLineEdit()
+        self.imp_ripple_edit.setToolTip(
+            "Allowed rail ripple as a percentage of the nominal voltage.")
+        self.imp_itran_edit = QLineEdit()
+        self.imp_itran_edit.setToolTip(
+            "Transient (step) current the device draws. Z_target = "
+            "V · ripple% / I_transient.")
+        self.imp_fmax_edit = QLineEdit()
+        self.imp_fmax_edit.setToolTip(
+            "F_MAX — the frequency up to which the mask must be met. Beyond "
+            "it, plane spreading and package inductance dominate and adding "
+            "capacitors no longer helps.")
+        for e in (self.imp_ripple_edit, self.imp_itran_edit,
+                  self.imp_fmax_edit):
+            e.setValidator(QDoubleValidator(0.0, 1e12, 6, self))
+            e.setMaximumWidth(120)
+        mask_form.addRow("Ripple (%)", self.imp_ripple_edit)
+        mask_form.addRow("Transient current (A)", self.imp_itran_edit)
+        mask_form.addRow("F_MAX (MHz)", self.imp_fmax_edit)
+        self.imp_ztarget_label = QLabel("—")
+        self.imp_ztarget_label.setStyleSheet(
+            f"QLabel {{ color: {t['fg_muted']}; }}")
+        mask_form.addRow("Z_target", self.imp_ztarget_label)
+        side.addWidget(mask_box)
+
+        # VRM — sets the low-frequency floor.
+        vrm_box = QGroupBox("Voltage regulator")
+        vrm_form = QFormLayout(vrm_box)
+        self.imp_vrm_r_edit = QLineEdit()
+        self.imp_vrm_r_edit.setToolTip(
+            "Closed-loop output resistance of the regulator. This is the "
+            "floor |Z| settles to at DC.")
+        self.imp_vrm_l_edit = QLineEdit()
+        self.imp_vrm_l_edit.setToolTip(
+            "Output inductance of the regulator including its path to the "
+            "plane. It makes the VRM branch give up above its bandwidth.")
+        for e in (self.imp_vrm_r_edit, self.imp_vrm_l_edit):
+            e.setValidator(QDoubleValidator(0.0, 1e12, 6, self))
+            e.setMaximumWidth(120)
+        vrm_form.addRow("R (mΩ)", self.imp_vrm_r_edit)
+        vrm_form.addRow("L (nH)", self.imp_vrm_l_edit)
+        side.addWidget(vrm_box)
+
+        # Plane-pair capacitance — the only thing holding the rail down above
+        # the last capacitor's self-resonance.
+        plane_box = QGroupBox("Plane-pair capacitance")
+        plane_layout = QVBoxLayout(plane_box)
+        self.imp_plane_check = QCheckBox("Include in the model")
+        self.imp_plane_check.setChecked(True)
+        self.imp_plane_check.setToolTip(
+            "ε0·εr·A/h over the rail's reference cavity, using the stackup's "
+            "extracted Dk. Small, but it sets the high-frequency tail.")
+        self.imp_plane_check.toggled.connect(self._replot_impedance)
+        plane_layout.addWidget(self.imp_plane_check)
+        self.imp_plane_label = QLabel("—")
+        self.imp_plane_label.setStyleSheet(
+            f"QLabel {{ color: {t['fg_muted']}; }}")
+        self.imp_plane_label.setWordWrap(True)
+        plane_layout.addWidget(self.imp_plane_label)
+        side.addWidget(plane_box)
+
+        self.imp_show_branches = QCheckBox("Show individual capacitors")
+        self.imp_show_branches.setToolTip(
+            "Draw each capacitor's own |Z| faintly, so you can see which one "
+            "is responsible for each dip and which pair forms each peak.")
+        self.imp_show_branches.toggled.connect(self._replot_impedance)
+        side.addWidget(self.imp_show_branches)
+
+        apply_btn = QPushButton("Apply && Recompute")
+        apply_btn.setToolTip(
+            "Apply the mask and VRM values above and redraw. They persist in "
+            "the .fypa project file, per rail.")
+        apply_btn.clicked.connect(self._on_impedance_apply)
+        side.addWidget(apply_btn)
+
+        side.addWidget(self._build_package_library_box())
+        side.addStretch(1)
+
+        side_wrap = QWidget()
+        side_wrap.setLayout(side)
+        side_wrap.setMaximumWidth(380)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(side_wrap)
+        scroll.setMaximumWidth(400)
+        outer.addWidget(scroll)
+
+        # ----- right: the plot -----
+        right = QVBoxLayout()
+        self._imp_figure = Figure(figsize=(7, 5), layout="constrained")
+        self._imp_canvas = FigureCanvasQTAgg(self._imp_figure)
+        self._imp_axes = self._imp_figure.add_subplot(111)
+        right.addWidget(NavigationToolbar2QT(self._imp_canvas, widget))
+        right.addWidget(self._imp_canvas, 1)
+
+        self.imp_summary_label = QLabel("")
+        self.imp_summary_label.setWordWrap(True)
+        self.imp_summary_label.setTextInteractionFlags(
+            Qt.TextSelectableByMouse)
+        right.addWidget(self.imp_summary_label)
+        outer.addLayout(right, 1)
+        return widget
+
+    def _build_package_library_box(self) -> QWidget:
+        """The editable SMD case-size table: typical ESL / ESR per package.
+
+        Read by every capacitor whose footprint carries a recognisable case
+        code; a per-part override on the Capacitors tab beats it. Only SMD chip
+        packages are listed, because they are the only ones whose parasitics a
+        case size predicts."""
+        box = QGroupBox("SMD package library (typical values)")
+        layout = QVBoxLayout(box)
+        note = QLabel(
+            "Defaults for X5R/X7R MLCCs. Edit a cell to change every "
+            "capacitor of that case size; override a single part on the "
+            "Capacitors tab. Non-SMD parts have no entry here and need a "
+            "per-part override to be modelled at all.")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"QLabel {{ color: {_T()['fg_muted']}; }}")
+        layout.addWidget(note)
+
+        self.imp_pkg_table = QTableWidget()
+        self.imp_pkg_table.setColumnCount(3)
+        self.imp_pkg_table.setHorizontalHeaderLabels(
+            ["Package", "ESL (nH)", "ESR (mΩ)"])
+        self.imp_pkg_table.verticalHeader().setVisible(False)
+        self.imp_pkg_table.setAlternatingRowColors(True)
+        self.imp_pkg_table.horizontalHeader().setStretchLastSection(True)
+        self.imp_pkg_table.setEditTriggers(
+            QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
+        self.imp_pkg_table.setMinimumHeight(220)
+        self._populate_package_table()
+        self.imp_pkg_table.itemChanged.connect(self._on_package_item_changed)
+        layout.addWidget(self.imp_pkg_table)
+
+        reset = QPushButton("Reset to defaults")
+        reset.clicked.connect(self._on_package_reset)
+        layout.addWidget(reset)
+        return box
+
+    def _populate_package_table(self) -> None:
+        lib = self._caploop_package_library()
+        table = self.imp_pkg_table
+        self._imp_pkg_populating = True
+        table.setRowCount(len(lib))
+        for r, model in enumerate(lib):
+            name = QTableWidgetItem(model.name)
+            name.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            table.setItem(r, 0, name)
+            for c, value in ((1, model.esl_nh), (2, model.esr_mohm)):
+                item = QTableWidgetItem(f"{value:.4g}")
+                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                table.setItem(r, c, item)
+        table.resizeColumnsToContents()
+        self._imp_pkg_populating = False
+
+    def _on_package_item_changed(self, item) -> None:
+        """Commit an edited ESL / ESR back to the library, persist it, and
+        recompute every capacitor that uses that package."""
+        if getattr(self, "_imp_pkg_populating", False) or item.column() == 0:
+            return
+        table = self.imp_pkg_table
+        package = table.item(item.row(), 0).text()
+        lib = self._caploop_package_library()
+        model = lib.get(package)
+        try:
+            value = float(item.text())
+            if value < 0.0:
+                raise ValueError
+        except ValueError:
+            self._imp_pkg_populating = True
+            item.setText(f"{(model.esl_nh if item.column() == 1 else model.esr_mohm):.4g}")
+            self._imp_pkg_populating = False
+            return
+        esl_h = value * 1e-9 if item.column() == 1 else model.esl_h
+        esr_ohm = value * 1e-3 if item.column() == 2 else model.esr_ohm
+        lib.set_values(package, esl_h, esr_ohm)
+
+        proj = self._ensure_project()
+        proj.viewer_settings["caploop_packages"] = lib.to_dict()
+        self._display_dirty = True
+        # Package parasitics are per-part inputs, not geometry: the cheap
+        # invalidation is enough.
+        self._invalidate_caps_cache()
+        self._replot_impedance()
+
+    def _on_package_reset(self) -> None:
+        lib = self._caploop_package_library()
+        lib.reset()
+        proj = self._ensure_project()
+        proj.viewer_settings["caploop_packages"] = lib.to_dict()
+        self._display_dirty = True
+        self._populate_package_table()
+        self._invalidate_caps_cache()
+        self._replot_impedance()
+
+    # --- rail model ---------------------------------------------------------
+
+    def _impedance_rails(self) -> list[str]:
+        rows = getattr(self, "_caps_rows_cache", None) or []
+        seen: list[str] = []
+        for row in rows:
+            if row.get("included", True) and row["rail"] not in seen:
+                seen.append(row["rail"])
+        return seen
+
+    def _rail_plane_capacitance_f(self, rail: str) -> tuple[float, str]:
+        """(C_plane, explanation) for the rail's dominant reference cavity.
+
+        Cached per rail — it needs one shapely intersection of two plane
+        sheets, which is not free on a big board.
+        """
+        cache = getattr(self, "_imp_plane_cache", None)
+        if cache is None:
+            cache = self._imp_plane_cache = {}
+        if rail in cache:
+            return cache[rail]
+
+        from fypa.caploop.impedance import DEFAULT_DK, plane_capacitance_f
+        from fypa.caploop.tier2_fem import Tier2Error, build_cavity_sheet
+
+        rows = [r for r in (getattr(self, "_caps_rows_cache", None) or [])
+                if r["rail"] == rail and r.get("included", True)
+                and r["cap"].cavity is not None]
+        extracted = getattr(getattr(self, "_loaded_project", None),
+                            "extracted", None)
+        if not rows or extracted is None:
+            cache[rail] = (0.0, "No reference cavity on this rail.")
+            return cache[rail]
+
+        # The cavity most of the rail's capacitors actually reference.
+        counts: dict[tuple[int, int], int] = {}
+        for r in rows:
+            cav = r["cap"].cavity
+            key = (cav.layer_rail, cav.layer_return)
+            counts[key] = counts.get(key, 0) + 1
+        (layer_rail, layer_return) = max(counts, key=counts.get)
+        cap = next(r["cap"] for r in rows
+                   if (r["cap"].cavity.layer_rail,
+                       r["cap"].cavity.layer_return) == (layer_rail,
+                                                         layer_return))
+        cav = cap.cavity
+
+        net_index = {n.name: i for i, n in enumerate(extracted.nets)}
+        members = self._rail_to_members.get(rail, [rail])
+        rail_idx = {net_index[m] for m in members if m in net_index}
+        return_idx = ({net_index[cap.return_net]}
+                      if cap.return_net in net_index else set())
+        try:
+            sheet = build_cavity_sheet(
+                layer_rail, layer_return, rail_idx, return_idx,
+                self._cap_net_layer_shapes(extracted), cav.h_cav_mm, "plane")
+        except Tier2Error as e:
+            cache[rail] = (0.0, f"No plane-pair capacitance: {e}.")
+            return cache[rail]
+
+        # Dk of the gap: it belongs to the upper of the two copper layers.
+        stackup = {s.layer_id: s for s in extracted.stackup}
+        upper = (layer_rail if cav.z_rail_mm <= cav.z_return_mm
+                 else layer_return)
+        dk = getattr(stackup.get(upper), "dielectric_dk", None)
+        area = sheet.shape.area
+        c = plane_capacitance_f(area, cav.h_cav_mm, dk)
+        note = (
+            f"{c * 1e9:.3g} nF — {cav.name_rail} ↔ {cav.name_return}, "
+            f"{area:.0f} mm² at {cav.h_cav_mm:.3f} mm, "
+            f"Dk {dk:.2f}" if dk else
+            f"{c * 1e9:.3g} nF — {cav.name_rail} ↔ {cav.name_return}, "
+            f"{area:.0f} mm² at {cav.h_cav_mm:.3f} mm, "
+            f"Dk {DEFAULT_DK} (not in the stackup)")
+        cache[rail] = (c, note)
+        return cache[rail]
+
+    def _compute_rail_impedance(self, rail: str):
+        """Assemble and solve Z(f) for one rail from the capacitor rows."""
+        from fypa.caploop.impedance import (
+            RailTarget,
+            VrmModel,
+            cap_branch,
+            log_freqs,
+            rail_impedance,
+        )
+
+        rows = [r for r in (getattr(self, "_caps_rows_cache", None) or [])
+                if r["rail"] == rail and r.get("included", True)]
+        library = self._caploop_package_library()
+        cfg = self._caploop_rail_config(rail)
+
+        voltage = next((r["design_voltage_v"] for r in rows
+                        if r.get("design_voltage_v")), None)
+        branches, skipped = [], []
+        for row in rows:
+            l_mount_nh = self._cap_l_best_nh(row)
+            branch, reason = cap_branch(
+                row["designator"], row.get("capacitance_f"),
+                None if l_mount_nh is None else l_mount_nh * 1e-9,
+                row.get("package"), library,
+                esr_override=(row["esr_ohm"] if row.get("esr_is_override")
+                              else None),
+                esl_override=(row["esl_h"] if row.get("esl_is_override")
+                              else None),
+            )
+            if branch is None:
+                skipped.append((row["designator"], reason))
+            else:
+                branches.append(branch)
+
+        target = RailTarget(
+            rail=rail, voltage_v=voltage or 0.0,
+            ripple_pct=cfg["ripple_pct"],
+            transient_current_a=cfg["transient_current_a"],
+            f_max_hz=cfg["f_max_hz"])
+        vrm = VrmModel(r_ohm=cfg["vrm_r_ohm"], l_h=cfg["vrm_l_h"])
+
+        c_plane = 0.0
+        if getattr(self, "imp_plane_check", None) is None \
+                or self.imp_plane_check.isChecked():
+            c_plane = self._rail_plane_capacitance_f(rail)[0]
+
+        return rail_impedance(rail, log_freqs(), branches, target, vrm,
+                              c_plane, skipped)
+
+    # --- tab lifecycle ------------------------------------------------------
+
+    def _populate_impedance_tab(self) -> None:
+        """First activation: make sure the capacitor rows exist (they carry
+        the mounted inductances), then fill the rail list and plot."""
+        def _ready() -> None:
+            rails = self._impedance_rails()
+            combo = self.imp_rail_combo
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItems(rails)
+            combo.blockSignals(False)
+            if rails:
+                self._load_impedance_rail_config(rails[0])
+            self._replot_impedance()
+
+        self._ensure_cap_rows_async(_ready)
+
+    def _load_impedance_rail_config(self, rail: str) -> None:
+        cfg = self._caploop_rail_config(rail)
+        self.imp_ripple_edit.setText(f"{cfg['ripple_pct']:g}")
+        self.imp_itran_edit.setText(f"{cfg['transient_current_a']:g}")
+        self.imp_fmax_edit.setText(f"{cfg['f_max_hz'] / 1e6:g}")
+        self.imp_vrm_r_edit.setText(f"{cfg['vrm_r_ohm'] * 1e3:g}")
+        self.imp_vrm_l_edit.setText(f"{cfg['vrm_l_h'] * 1e9:g}")
+
+    def _on_impedance_rail_changed(self, rail: str) -> None:
+        if not rail:
+            return
+        self._load_impedance_rail_config(rail)
+        self._replot_impedance()
+
+    def _on_impedance_apply(self) -> None:
+        """Read the setup fields, persist them for this rail, and redraw."""
+        rail = self.imp_rail_combo.currentText()
+        if not rail:
+            return
+
+        def _f(edit, name, scale=1.0):
+            text = edit.text().strip()
+            try:
+                value = float(text)
+            except ValueError:
+                raise ValueError(f"{name}: {text!r} is not a number")
+            if value < 0.0:
+                raise ValueError(f"{name} must be zero or positive")
+            return value * scale
+
+        try:
+            cfg = {
+                "ripple_pct": _f(self.imp_ripple_edit, "Ripple"),
+                "transient_current_a": _f(self.imp_itran_edit,
+                                          "Transient current"),
+                "f_max_hz": _f(self.imp_fmax_edit, "F_MAX", 1e6),
+                "vrm_r_ohm": _f(self.imp_vrm_r_edit, "VRM R", 1e-3),
+                "vrm_l_h": _f(self.imp_vrm_l_edit, "VRM L", 1e-9),
+            }
+        except ValueError as e:
+            QMessageBox.warning(self, "Invalid value", str(e))
+            return
+        self._set_caploop_rail_config(rail, cfg)
+        self._replot_impedance()
+
+    def _impedance_empty_reason(self) -> str:
+        """Why there is no rail to plot.
+
+        The rail list is derived from the capacitor rows, so an empty list has
+        three quite different causes and only one of them is "no rail". Saying
+        "no rail carries an included decoupling capacitor" to someone who
+        imported Gerbers — which carry no component data at all — sends them
+        looking for a capacitor that was never going to be found.
+        """
+        rows = getattr(self, "_caps_rows_cache", None)
+        if rows is None:
+            return ("Open the Capacitors tab to analyse this design, then "
+                    "come back to plot its impedance.")
+        if not rows:
+            # The Capacitors tab already worked out exactly why (no design
+            # info, a Gerber import, no capacitors detected) — reuse it rather
+            # than guess.
+            return (getattr(self, "_caps_empty_reason", "")
+                    or "No decoupling capacitors were found on this design.")
+        return (f"All {len(rows)} detected capacitor(s) are excluded from the "
+                f"analysis.\nTick Use on the Capacitors tab to include one.")
+
+    def _replot_impedance(self, *_args) -> None:
+        """Redraw |Z(f)| for the selected rail."""
+        if getattr(self, "_imp_axes", None) is None:
+            return
+        rail = self.imp_rail_combo.currentText()
+        ax = self._imp_axes
+        ax.clear()
+        t = _T()
+
+        if not rail:
+            ax.set_axis_off()
+            # Style before drawing: an unstyled axes is white with black text,
+            # which is invisible-adjacent on the dark theme.
+            self._style_impedance_axes(ax)
+            ax.text(0.5, 0.5, self._impedance_empty_reason(),
+                    ha="center", va="center", transform=ax.transAxes,
+                    color=t["fg"], fontsize=9, wrap=True)
+            self.imp_summary_label.setText("")
+            self.imp_ztarget_label.setText("—")
+            self.imp_plane_label.setText("—")
+            self._imp_canvas.draw_idle()
+            return
+
+        result = self._compute_rail_impedance(rail)
+        self.imp_ztarget_label.setText(
+            "—" if not math.isfinite(result.target.z_target_ohm)
+            else f"{result.target.z_target_ohm * 1e3:.4g} mΩ")
+        self.imp_plane_label.setText(self._rail_plane_capacitance_f(rail)[1])
+
+        freqs = result.freqs_hz
+        if self.imp_show_branches.isChecked():
+            from fypa.caploop.impedance import branch_impedance
+            omega = 2.0 * math.pi * freqs
+            for branch in result.branches:
+                ax.loglog(freqs, np.abs(branch_impedance(branch, omega)),
+                          lw=0.6, alpha=0.35, color=t["fg_muted"])
+
+        ax.loglog(freqs, result.z_mag, lw=1.8, color=t["accent"],
+                  label=f"|Z| — {rail}", zorder=3)
+
+        z_t = result.target.z_target_ohm
+        if math.isfinite(z_t):
+            f_max = result.target.f_max_hz
+            ax.hlines(z_t, freqs[0], f_max, colors=t["err"], linestyles="--",
+                      lw=1.4, zorder=4,
+                      label=f"Z_target {z_t * 1e3:.3g} mΩ to "
+                            f"{f_max / 1e6:.3g} MHz")
+            ax.axvline(f_max, color=t["err"], ls=":", lw=1.0, alpha=0.6)
+
+        peaks = [a for a in result.antiresonances
+                 if a.freq_hz <= result.target.f_max_hz]
+        # Only the worst few, or a busy rail buries the plot in markers.
+        for peak in sorted(peaks, key=lambda a: -a.z_ohm)[:3]:
+            ax.plot([peak.freq_hz], [peak.z_ohm], "v", ms=7, zorder=5,
+                    color=t["err"] if peak.exceeds_target else t["warn_fg"])
+            ax.annotate(f"{peak.freq_hz / 1e6:.3g} MHz\n"
+                        f"{peak.z_ohm * 1e3:.3g} mΩ",
+                        (peak.freq_hz, peak.z_ohm),
+                        textcoords="offset points", xytext=(6, 6),
+                        fontsize=7, color=t["fg"])
+
+        ax.set_xlabel("Frequency (Hz)")
+        ax.set_ylabel("|Z| (Ω)")
+        ax.set_title(f"PDN impedance — {rail}")
+        # The F_MAX rule and the target mask both stop short of the sweep's
+        # ends, and matplotlib would autoscale to their extents — pin the axis
+        # to the swept band instead of leaving dead space beside the trace.
+        ax.set_xlim(freqs[0], freqs[-1])
+        ax.grid(True, which="both", alpha=0.25)
+        ax.legend(loc="upper left", fontsize=8)
+        self._style_impedance_axes(ax)
+        self._imp_canvas.draw_idle()
+        self.imp_summary_label.setText(self._impedance_summary_html(result))
+
+    def _style_impedance_axes(self, ax) -> None:
+        """Match the plot to the app theme (matplotlib defaults are light)."""
+        t = _T()
+        self._imp_figure.set_facecolor(t["bg"])
+        ax.set_facecolor(t["bg"])
+        for spine in ax.spines.values():
+            spine.set_color(t["border"])
+        ax.tick_params(colors=t["fg"], which="both")
+        ax.xaxis.label.set_color(t["fg"])
+        ax.yaxis.label.set_color(t["fg"])
+        ax.title.set_color(t["fg_strong"])
+
+    def _impedance_summary_html(self, result) -> str:
+        t = _T()
+        parts: list[str] = []
+        if not result.branches:
+            parts.append(
+                f"<span style='color:{t['warn_fg']};'>No capacitor on this "
+                f"rail could be modelled.</span>")
+        elif not math.isfinite(result.target.z_target_ohm):
+            parts.append(
+                f"<span style='color:{t['fg_muted']};'>Set a transient "
+                f"current to get a target mask.</span>")
+        elif result.meets_target():
+            parts.append(
+                f"<span style='color:{t['ok']};'><b>Meets target</b></span> — "
+                f"|Z| stays below {result.target.z_target_ohm * 1e3:.3g} mΩ "
+                f"to {result.target.f_max_hz / 1e6:.3g} MHz.")
+        else:
+            reached = result.reached_frequency_hz()
+            parts.append(
+                f"<span style='color:{t['err']};'><b>Misses target</b></span> "
+                f"— |Z| first breaches "
+                f"{result.target.z_target_ohm * 1e3:.3g} mΩ at "
+                f"{reached / 1e6:.3g} MHz "
+                f"(needed to {result.target.f_max_hz / 1e6:.3g} MHz).")
+
+        peak = result.worst_peak
+        if peak is not None:
+            parts.append(
+                f"Worst anti-resonance {peak.z_ohm * 1e3:.3g} mΩ at "
+                f"{peak.freq_hz / 1e6:.3g} MHz.")
+        parts.append(f"{len(result.branches)} capacitor(s) modelled"
+                     + (f", plane-pair {result.c_plane_f * 1e9:.3g} nF"
+                        if result.c_plane_f > 0 else ""))
+        if result.skipped:
+            shown = "; ".join(f"{d} ({r})" for d, r in result.skipped[:3])
+            more = (f" +{len(result.skipped) - 3} more"
+                    if len(result.skipped) > 3 else "")
+            parts.append(
+                f"<span style='color:{t['warn_fg']};'>Excluded: "
+                f"{_esc(shown)}{more}.</span>")
+        return "<br>".join(parts)
 
     # --- Messages tab ------------------------------------------------------
 

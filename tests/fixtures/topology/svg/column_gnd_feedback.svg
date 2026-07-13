@@ -63,7 +63,7 @@
 <text x="500" y="51" fill="#ffffff" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">SINK</text>
 <text x="612" y="51" fill="#ffffff" text-anchor="end" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">U1</text>
 <circle cx="492" cy="75" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
-<text x="500" y="78" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3</text>
+<text x="500" y="78" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3_PWR</text>
 <circle cx="492" cy="93" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
 <text x="500" y="96" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">GND</text>
 <rect class="topo-hit" data-label="U3" x="492" y="138" width="128" height="74" rx="6" fill="#333333" stroke="#555555" stroke-width="1"/>
@@ -72,7 +72,7 @@
 <text x="500" y="153" fill="#ffffff" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">SINK</text>
 <text x="612" y="153" fill="#ffffff" text-anchor="end" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">U3</text>
 <circle cx="492" cy="177" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
-<text x="500" y="180" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3</text>
+<text x="500" y="180" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3_PWR</text>
 <circle cx="492" cy="195" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
 <text x="500" y="198" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">GND</text>
 <rect class="topo-hit" data-label="U4" x="492" y="240" width="128" height="74" rx="6" fill="#333333" stroke="#555555" stroke-width="1"/>
@@ -81,7 +81,7 @@
 <text x="500" y="255" fill="#ffffff" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">SINK</text>
 <text x="612" y="255" fill="#ffffff" text-anchor="end" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">U4</text>
 <circle cx="492" cy="279" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
-<text x="500" y="282" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3</text>
+<text x="500" y="282" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3_PWR</text>
 <circle cx="492" cy="297" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
 <text x="500" y="300" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">GND</text>
 <rect x="211" y="69" width="22" height="12" fill="#2b2b2b" fill-opacity="0.5" stroke="none" rx="2"/>

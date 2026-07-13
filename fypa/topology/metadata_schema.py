@@ -83,6 +83,10 @@ class NodeSpec(TypedDict):
     resolved_ports: NotRequired[dict[str, ResolvedPort]]
     sections: NotRequired[list[RoleSection]]
     port_roles: NotRequired[dict[str, str]]
+    # Ports that are one channel row of a multi-channel component, i.e. they
+    # have sibling rows on the same terminal. Their pad set spans the whole
+    # part, so the label shows the row's own net rather than every pad net.
+    channel_ports: NotRequired[list[str]]
 
 
 class TopologyMetadata(TypedDict, total=False):

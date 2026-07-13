@@ -120,6 +120,19 @@ Once a SERIES directive is in place:
 > Editor SERIES is component-bound only (it bridges two real pads on
 > the same part) and uses an SI-units value (`0.01` for 10 mΩ).
 
+## 3.4 Repeated sheets and local net names
+
+On hierarchical designs with **repeated sheet symbols** (Altium
+`REPEAT(...)`), use the **local** net label from the child sheet in
+`PDN_P_NET` / `PDN_N_NET` — not the flattened PCB name (`VCC_EFUSE.4`).
+FYPA maps each PCB instance to its slot net via schematic pin
+connectivity. See [Section 1.5 — Local net names](01-sources-and-sinks.md#local-net-names-hierarchical--reused-sheets)
+for the full explanation, VIP example, and troubleshooting table.
+
+Auto-inference of P/N nets on 2-pin SERIES parts (Section 3.2) works per
+PCB instance the same way: each repeated `R63.N` infers from its own
+pads.
+
 ## 3.5 Troubleshooting
 
 | Message or symptom                                       | Likely cause                                                                | Fix                                                                          |
@@ -127,7 +140,8 @@ Once a SERIES directive is in place:
 | `PDN_R must be positive`                                  | `PDN_R = 0` or a negative value.                                            | Enter a small positive resistance (milliohms is fine).                       |
 | `SERIES on R7: ambiguous nets — please set PDN_P_NET / PDN_N_NET` | A 3+ pin part with auto-inference, or a 2-pin part with both pads on the same net. | Add `PDN_P_NET` and `PDN_N_NET` explicitly.                                  |
 | `multi-channel SERIES requires explicit PDNn_P_NET / …` | Two or more `PDNn_R` channels without per-channel nets or pin overrides. | Add `PDNn_P_NET` / `PDNn_N_NET` or `PDNn_P_PINS` / `PDNn_N_PINS` for each channel. |
-| `component … has no pad on net …` on a `SERIES` part | `PDN_P_NET` / `PDN_N_NET` name a net none of this part's pads sit on. | Match the parameter to the PCB net on each pad (see [1.8](01-sources-and-sinks.md#18-troubleshooting)). |
+| `component … has no pad on net …` on a `SERIES` part | `PDN_P_NET` / `PDN_N_NET` name a net none of this part's pads sit on. | Match the parameter to the PCB net on each pad, or use a [local net name](01-sources-and-sinks.md#local-net-names-hierarchical--reused-sheets) on repeated sheets. |
+| `net … could not be resolved as a local schematic net` on a repeated sheet | Flattened PCB name used instead of the local child-sheet label. | Use the local name (e.g. `VCC_EFUSE`, not `VCC_EFUSE.4`). |
 | The two nets are still not connected in the solve         | The SERIES part was placed on the schematic but does not actually bridge the two nets on the PCB. | Check the PCB netlist: each pad of the SERIES part must be on the corresponding net. |
 
 ## Next steps

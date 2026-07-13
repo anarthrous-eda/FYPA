@@ -185,6 +185,71 @@ class CopperName:
 
 
 @dataclass
+class CapOverride:
+    """Per-capacitor user override for the Capacitors (loop inductance) tab.
+
+    Keyed by the physical (PCB) designator — unique per board, stable across
+    re-extractions. ``include`` overrides the auto-detection verdict
+    (``True`` forces a structurally-valid cap into the analysis, ``False``
+    drops a detected one); ``None`` leaves detection alone. ``target_label``
+    repoints the loop-measurement endpoint at another directive's label
+    ("U5" / "U5#1"); ``None`` keeps the default (largest-current SINK on the
+    cap's rail).
+
+    ``esl_h`` / ``esr_ohm`` override the part's own parasitics for the
+    impedance model, which otherwise reads them from the SMD package library
+    by case size. They are the only way to model a capacitor whose footprint
+    carries no case-size code — a tantalum brick, an electrolytic — since no
+    table can predict those.
+
+    An override with every field ``None`` is meaningless and is dropped on
+    upsert.
+    """
+
+    designator: str
+    include: bool | None = None
+    target_label: str | None = None
+    esl_h: float | None = None
+    esr_ohm: float | None = None
+    id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+
+    def is_empty(self) -> bool:
+        return (self.include is None and self.target_label is None
+                and self.esl_h is None and self.esr_ohm is None)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "designator": self.designator,
+            "include": self.include,
+            "target_label": self.target_label,
+            "esl_h": self.esl_h,
+            "esr_ohm": self.esr_ohm,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> CapOverride:
+        def _float(key: str) -> float | None:
+            v = d.get(key)
+            if v is None:
+                return None
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+
+        return cls(
+            id=str(d.get("id") or uuid.uuid4().hex[:12]),
+            designator=str(d["designator"]),
+            include=(None if d.get("include") is None else bool(d["include"])),
+            target_label=(None if d.get("target_label") is None
+                          else str(d["target_label"])),
+            esl_h=_float("esl_h"),
+            esr_ohm=_float("esr_ohm"),
+        )
+
+
+@dataclass
 class ProjectFile:
     """In-memory model of a ``.fypa`` document.
 
@@ -198,6 +263,7 @@ class ProjectFile:
     solve_pickle: str | None = None
     editor_directives: list[EditorDirective] = field(default_factory=list)
     copper_names: list[CopperName] = field(default_factory=list)
+    cap_overrides: list[CapOverride] = field(default_factory=list)
     net_renames: dict[str, str] = field(default_factory=dict)   # reserved
     viewer_settings: dict[str, Any] = field(default_factory=dict)
 
@@ -237,6 +303,7 @@ class ProjectFile:
             "solve_pickle": _rel(self.solve_pickle, base),
             "editor_directives": [d.to_dict() for d in self.editor_directives],
             "copper_names": [c.to_dict() for c in self.copper_names],
+            "cap_overrides": [c.to_dict() for c in self.cap_overrides],
             "net_renames": dict(self.net_renames),
             "viewer_settings": dict(self.viewer_settings),
             "source_kind": self.source_kind,
@@ -278,6 +345,12 @@ class ProjectFile:
             copper_names=[
                 CopperName.from_dict(c)
                 for c in doc.get("copper_names", [])
+            ],
+            # Additive (older files simply lack the key), so the schema
+            # version is unchanged.
+            cap_overrides=[
+                CapOverride.from_dict(c)
+                for c in doc.get("cap_overrides", [])
             ],
             net_renames=dict(doc.get("net_renames", {})),
             viewer_settings=dict(doc.get("viewer_settings", {})),
@@ -348,6 +421,77 @@ class ProjectFile:
             c for c in self.copper_names if c.id != copper_name_id
         ]
         return len(self.copper_names) != before
+
+    # ------------------------------------------------------------------
+    # Capacitor-override helpers
+    # ------------------------------------------------------------------
+
+    def cap_override_for(self, designator: str) -> CapOverride | None:
+        for c in self.cap_overrides:
+            if c.designator == designator:
+                return c
+        return None
+
+    def upsert_cap_override(
+        self,
+        designator: str,
+        *,
+        include: bool | None = ...,
+        target_label: str | None = ...,
+        esl_h: float | None = ...,
+        esr_ohm: float | None = ...,
+    ) -> None:
+        """Merge the given fields into the designator's override (one
+        override per designator). A field passed as the ``...`` sentinel is
+        left untouched, so the include toggle, the target picker and the two
+        parasitic editors each update their own part independently. An
+        override whose fields are all back at ``None`` is removed entirely —
+        the .fypa doesn't accumulate no-op entries."""
+        existing = self.cap_override_for(designator)
+        merged = existing or CapOverride(designator=designator)
+        if include is not ...:
+            merged.include = include
+        if target_label is not ...:
+            merged.target_label = target_label
+        if esl_h is not ...:
+            merged.esl_h = esl_h
+        if esr_ohm is not ...:
+            merged.esr_ohm = esr_ohm
+        if merged.is_empty():
+            if existing is not None:
+                self.cap_overrides = [
+                    c for c in self.cap_overrides
+                    if c.designator != designator
+                ]
+            return
+        if existing is None:
+            self.cap_overrides.append(merged)
+
+    def cap_override_maps(self) -> tuple[dict[str, bool], dict[str, str]]:
+        """(include_overrides, target_overrides) in the shape
+        :func:`fypa.caploop.identify.identify_capacitors` consumes."""
+        includes: dict[str, bool] = {}
+        targets: dict[str, str] = {}
+        for c in self.cap_overrides:
+            if c.include is not None:
+                includes[c.designator] = c.include
+            if c.target_label is not None:
+                targets[c.designator] = c.target_label
+        return includes, targets
+
+    def cap_parasitic_overrides(
+        self,
+    ) -> tuple[dict[str, float], dict[str, float]]:
+        """(esl_overrides, esr_overrides) keyed by designator, for the
+        impedance model's per-part parasitics."""
+        esls: dict[str, float] = {}
+        esrs: dict[str, float] = {}
+        for c in self.cap_overrides:
+            if c.esl_h is not None:
+                esls[c.designator] = c.esl_h
+            if c.esr_ohm is not None:
+                esrs[c.designator] = c.esr_ohm
+        return esls, esrs
 
 
 # --- path helpers -------------------------------------------------------------

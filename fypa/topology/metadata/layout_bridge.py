@@ -428,6 +428,9 @@ def _column_net(
     bridged downstream nets (VDD_MCU, LED_R, …) do not collapse onto the
     upstream rail.  Other roles keep rail-canonical names so parallel loads
     on a shared rail stay aligned.
+
+    Port labels use :func:`~fypa.topology.metadata.nets.port_display_net`
+    (physical names) — not this function.
     """
     if not term or is_ideal_return(term):
         return None
@@ -827,22 +830,30 @@ def specs_by_column(
     return by_col, max_col
 
 
-def _enrich_resolved_ports(spec: NodeSpec, net_to_rail: dict[str, str]) -> None:
+def _enrich_resolved_ports(spec: NodeSpec) -> None:
+    """Resolve wire net (``wnet``) and display label (``plabel``) per port.
+
+    ``wnet`` always comes from :func:`terminal_net` (first pin when pads
+    disagree) so routing stays on one gutter/bus per connector row.
+    ``plabel`` may list every pad net on multi-pin terminals — see
+    :func:`port_display_net`. The tooltip keeps the full list even when the
+    drawn label is truncated to fit.
+    """
     resolved: dict[str, ResolvedPort] = {}
     port_directives = spec.get("port_directives") or {}
+    channel_ports = set(spec.get("channel_ports") or ())
     terms = spec.get("terms") or {}
     for pname, _, _ in spec["port_defs"]:
         term = terms.get(pname)
         raw = terminal_net(term)
-        cnet = canonical_net(raw, net_to_rail) or "?"
         wnet = wire_net(raw)
         if not wnet:
             continue
-        plabel = truncate_label(port_display_net(term, cnet))
+        label = port_display_net(term, raw, channel_row=pname in channel_ports)
         resolved[pname] = ResolvedPort(
             wnet=wnet,
-            plabel=plabel,
-            tooltip=port_tooltip(plabel, port_directives.get(pname), pname),
+            plabel=truncate_label(label),
+            tooltip=port_tooltip(label, port_directives.get(pname), pname),
         )
     spec["resolved_ports"] = resolved
 
@@ -863,7 +874,7 @@ def parse_topology_directives(metadata: TopologyMetadata) -> ParsedLayoutInput:
     node_specs = directives_to_component_specs(directives, errors, net_to_rail)
     needs_gnd = False
     for spec in node_specs:
-        _enrich_resolved_ports(spec, net_to_rail)
+        _enrich_resolved_ports(spec)
         for pname, _, _ in spec["port_defs"]:
             term = (spec["terms"] or {}).get(pname)
             if canonical_net(terminal_net(term), net_to_rail) == GND_NET:

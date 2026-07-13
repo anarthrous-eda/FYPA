@@ -235,6 +235,11 @@ For `SERIES`, auto-inferred P/N nets (2-pin parts) apply only when the
 part carries a single channel; multi-channel SERIES requires explicit
 `PDNn_P_NET` / `PDNn_N_NET` or `PDNn_P_PINS` / `PDNn_N_PINS` per channel.
 
+On **repeated schematic sheets** (Altium `REPEAT`), `PDN_*_NET` may use
+the local child-sheet net label; FYPA maps each PCB instance to its slot
+net via pin connectivity (not via `ChannelDesignatorFormatString`). See
+[User guide — Local net names](docs/user-guide/01-sources-and-sinks.md#local-net-names-hierarchical--reused-sheets).
+
 ### Mixed-role parts (a source and a sink on one component)
 
 `PDN_ROLE` is the part-wide **default** role, but any channel may override
