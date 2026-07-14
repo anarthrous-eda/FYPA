@@ -1591,22 +1591,48 @@ def _gil_yield(i: int, every: int = 4096) -> None:
         time.sleep(0.001)
 
 
-def build_net_canonical_map(netlist) -> dict[str, str]:
+def build_net_canonical_map(
+    netlist,
+    *,
+    pcb_net_names: set[str] | frozenset[str] | None = None,
+) -> dict[str, str]:
     """Map every schematic net label (``Net.name`` or alias) to ``Net.name``.
 
     Altium's compiled netlist stores the top-level / flattened name in
     ``Net.name`` and local or cross-sheet labels in ``aliases``. The viewer
     uses this map so rail lists show the canonical name rather than a local
     sheet label from ``PDN_*_NET``.
+
+    An alias is **not** mapped when another netlist entry (or, when provided,
+    a distinct PCB net) already owns that label as its primary name. The
+    schematic netlist compiler can emit spurious aliases in multi-sheet
+    designs — e.g. two regulator outputs that only meet again at a multi-rail
+    sink may appear as ``Net(name='VDD_1V25A', aliases=['VDD_1V25D'])`` while
+    ``Net(name='VDD_1V25D')`` also exists. Folding that alias would hide one
+    rail and mis-attribute copper even though the nets were never merged.
     """
     if netlist is None:
         return {}
+    nets = list(getattr(netlist, "nets", ()) or ())
+    primary_upper = {
+        net.name.upper()
+        for net in nets
+        if getattr(net, "name", None)
+    }
+    pcb_upper = {n.upper() for n in (pcb_net_names or ()) if n}
     out: dict[str, str] = {}
-    for net in getattr(netlist, "nets", ()) or ():
+    for net in nets:
         canonical = net.name
+        canon_upper = canonical.upper()
         for label in (canonical, *getattr(net, "aliases", ())):
-            if label:
-                out[label.upper()] = canonical
+            if not label:
+                continue
+            key = label.upper()
+            if key != canon_upper and (
+                key in primary_upper or key in pcb_upper
+            ):
+                continue
+            out[key] = canonical
     return out
 
 
@@ -2461,7 +2487,10 @@ def build_solve_metadata(
             ),
         },
         "directives": directives,
-        "net_canonical": build_net_canonical_map(proj.compiled_netlist),
+        "net_canonical": build_net_canonical_map(
+            proj.compiled_netlist,
+            pcb_net_names={n.name for n in proj.nets},
+        ),
         "active_nets": active_nets,
         "vias": vias,
         "pths": pths,
