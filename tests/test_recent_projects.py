@@ -20,12 +20,19 @@ from fypa.altium_viewer import (
 
 @pytest.fixture(autouse=True)
 def _isolated_qsettings(tmp_path: Path) -> None:
+    # setPath(IniFormat, ...) alone is NOT enough: QSettings(org, app) uses
+    # NativeFormat — the registry on Windows — so without forcing the default
+    # format to INI these tests would read/wipe the developer's real
+    # recent-projects list.
+    prev_format = QSettings.defaultFormat()
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
     QSettings.setPath(
         QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path),
     )
     clear_recent_projects()
     yield
     clear_recent_projects()
+    QSettings.setDefaultFormat(prev_format)
 
 
 def test_record_and_load_fypa_entry(tmp_path: Path) -> None:
@@ -422,7 +429,8 @@ def test_confirm_replace_project_save_cancelled() -> None:
     viewer._save_project.assert_not_called()
 
 
-def test_open_recent_altium_uses_clean_import(tmp_path: Path) -> None:
+def test_open_recent_altium_uses_cached_import_by_default(
+        tmp_path: Path) -> None:
     from unittest.mock import MagicMock, patch
 
     from fypa.altium_viewer import _open_recent_project
@@ -438,5 +446,31 @@ def test_open_recent_altium_uses_clean_import(tmp_path: Path) -> None:
     with patch("fypa.altium_viewer._open_altium_project_at") as mock_open:
         _open_recent_project(window, entry)
     mock_open.assert_called_once_with(
-        window, prjpcb, pcbdoc, clean=True, from_recent=True,
+        window, prjpcb, pcbdoc, clean=False, from_recent=True,
     )
+
+
+def test_open_recent_altium_honours_clean_preference(tmp_path: Path) -> None:
+    from unittest.mock import MagicMock, patch
+
+    from fypa.altium_viewer import (
+        _open_recent_project,
+        load_recent_open_clean,
+        save_recent_open_clean,
+    )
+
+    assert load_recent_open_clean() is False
+    save_recent_open_clean(True)
+    assert load_recent_open_clean() is True
+
+    prjpcb = tmp_path / "board.PrjPcb"
+    entry = {"kind": "altium", "prjpcb_path": str(prjpcb)}
+    window = MagicMock()
+    try:
+        with patch("fypa.altium_viewer._open_altium_project_at") as mock_open:
+            _open_recent_project(window, entry)
+        mock_open.assert_called_once_with(
+            window, prjpcb, None, clean=True, from_recent=True,
+        )
+    finally:
+        save_recent_open_clean(False)

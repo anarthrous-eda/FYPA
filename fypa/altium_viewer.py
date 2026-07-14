@@ -437,6 +437,10 @@ _MINRES_BUDGET_QS_KEY = "perf/minres_budget_s"
 # Recent File > Recent Projects list (``.fypa`` and ``.PrjPcb`` imports).
 _RECENT_PROJECTS_QS_KEY = "projects/recent"
 _MAX_RECENT_PROJECTS = 10
+# Whether re-opening an Altium entry from Recent Projects ignores the design
+# and solve caches (a "clean" import). Off by default — recents are the fast
+# path, so reuse the caches like File > Import Altium Design does.
+_RECENT_OPEN_CLEAN_QS_KEY = "projects/recent_open_clean"
 
 _current_theme_mode: str = "dark"
 
@@ -503,7 +507,9 @@ def _normalize_recent_path(path: str | None) -> str | None:
         return None
     try:
         return str(Path(path).resolve())
-    except OSError:
+    except (OSError, ValueError):
+        # ValueError: malformed path from corrupt settings (e.g. embedded
+        # NUL) — keep the raw string rather than crash menu population.
         return path
 
 
@@ -725,6 +731,41 @@ def save_auto_solve_on_import(enabled: bool) -> None:
     except Exception as e:
         logging.getLogger(__name__).debug(
             "Could not persist auto-solve-on-import preference (%s); ignoring.",
+            e,
+        )
+
+
+def load_recent_open_clean() -> bool:
+    """Read whether Recent Projects re-imports Altium entries clean.
+
+    Defaults to ``False`` — reuse the design / solve caches so a recent
+    project opens as fast as File > Import Altium Design would."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        val = qs.value(_RECENT_OPEN_CLEAN_QS_KEY, False)
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            return val.strip().lower() in ("1", "true", "yes", "on")
+        return bool(int(val))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not read recent-open-clean preference (%s); using "
+            "default.", e,
+        )
+    return False
+
+
+def save_recent_open_clean(enabled: bool) -> None:
+    """Persist the recent-projects-open-clean preference for next launch."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        qs.setValue(_RECENT_OPEN_CLEAN_QS_KEY, bool(enabled))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not persist recent-open-clean preference (%s); ignoring.",
             e,
         )
 
@@ -2711,9 +2752,13 @@ def _run_background_load(parent, work, on_success, on_error, *,
     The dialog is application-modal with no cancel button — the load is one
     synchronous unpickle that can't be interrupted mid-flight — but the event
     loop keeps running, so the window stays responsive (marquee animating)
-    instead of freezing for the 5 s–1 min a large solution pickle takes."""
-    if _reject_if_background_load_running(parent):
-        return
+    instead of freezing for the 5 s–1 min a large solution pickle takes.
+
+    Callers that must not overlap another load are responsible for checking
+    :func:`_reject_if_background_load_running` *before* calling this — the
+    check must NOT live here, because :meth:`PdnViewer._ensure_caps_rows`
+    relies on its continuation always running (a dropped continuation leaves
+    ``_caps_rows_pending`` stuck and the Capacitors tab permanently blank)."""
     dlg = QProgressDialog(label, "", 0, 0, parent)
     dlg.setWindowTitle(title)
     dlg.setCancelButton(None)
@@ -2828,9 +2873,9 @@ def _confirm_replace_project(viewer) -> bool:
         "The current project has unsaved changes.\n"
         "Save before opening another project?"
     )
-    save_btn = box.addButton("Save", QMessageBox.AcceptRole)
-    discard_btn = box.addButton("Discard", QMessageBox.DestructiveRole)
-    cancel_btn = box.addButton("Cancel", QMessageBox.RejectRole)
+    save_btn = box.addButton("Save", QMessageBox.ButtonRole.AcceptRole)
+    discard_btn = box.addButton("Discard", QMessageBox.ButtonRole.DestructiveRole)
+    cancel_btn = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
     box.setDefaultButton(save_btn)
     box.exec()
     clicked = box.clickedButton()
@@ -5762,13 +5807,12 @@ def _open_project_file_at(window, path: Path, *, from_recent: bool = False) -> N
     def _drop_failed_fypa_recent() -> None:
         _drop_failed_fypa_recent_entry(path, from_recent=from_recent)
 
-    if not hasattr(window, "_open_viewer_and_close"):
-        if _reject_if_solve_running(window, title="Load already running"):
-            return
-        if _reject_if_background_load_running(window, title="Load already running"):
-            return
-        if not _confirm_replace_project(window):
-            return
+    if _reject_if_solve_running(window, title="Load already running"):
+        return
+    if _reject_if_background_load_running(window, title="Load already running"):
+        return
+    if not _confirm_replace_project(window):
+        return
 
     if not path.exists():
         QMessageBox.critical(
@@ -5837,13 +5881,12 @@ def _open_project_file_at(window, path: Path, *, from_recent: bool = False) -> N
 
 def _open_solution_at(window, path: Path) -> None:
     """Open a solution ``.pkl`` at *path* without a file dialog."""
-    if not hasattr(window, "_open_viewer_and_close"):
-        if _reject_if_solve_running(window, title="Load already running"):
-            return
-        if _reject_if_background_load_running(window, title="Load already running"):
-            return
-        if not _confirm_replace_project(window):
-            return
+    if _reject_if_solve_running(window, title="Load already running"):
+        return
+    if _reject_if_background_load_running(window, title="Load already running"):
+        return
+    if not _confirm_replace_project(window):
+        return
 
     if not path.exists():
         QMessageBox.critical(
@@ -5861,15 +5904,13 @@ def _open_solution_at(window, path: Path) -> None:
         if hasattr(window, "_open_viewer_and_close"):
             window._open_viewer_and_close(solution, metadata)
             return
-        ok = window._apply_solve_result(
+        window._apply_solve_result(
             solution, metadata, None,
             window._solve_settings,
             window._via_current_warn_a, window._display_percentile_high,
             is_import=True,
             status_done="Solution loaded.",
         )
-        if not ok:
-            return
 
     def _err(exc_type, message):
         QMessageBox.critical(
@@ -5967,9 +6008,8 @@ def _open_altium_project_at(
     if selected_pcbdoc is not None and not selected_pcbdoc.exists():
         selected_pcbdoc = None
     if selected_pcbdoc is None:
-        default = pcbdoc_path if pcbdoc_path is not None else None
         proceed, selected_pcbdoc = _choose_pcbdoc(
-            window, prjpcb_path, default=default,
+            window, prjpcb_path, default=pcbdoc_path,
         )
         if not proceed:
             return
@@ -6015,7 +6055,7 @@ def _open_recent_project(window, entry: dict) -> None:
             window,
             Path(entry["prjpcb_path"]),
             Path(pcbdoc) if pcbdoc else None,
-            clean=True,
+            clean=load_recent_open_clean(),
             from_recent=True,
         )
 
@@ -6026,20 +6066,26 @@ def _build_recent_projects_menu(file_menu, window) -> None:
 
     def _populate() -> None:
         recent_menu.clear()
-        entries = prune_missing_recent_projects()
+        # No existence pruning here: Path.exists() on a dead network share
+        # can block for seconds, and this runs on the GUI thread every time
+        # the menu opens. Stale entries are dropped when opening them fails.
+        entries = load_recent_projects()
         if not entries:
             empty = recent_menu.addAction("(none)")
             empty.setEnabled(False)
             return
         for entry in entries:
-            act = QAction(recent_project_label(entry), window)
+            # Parent to the menu, not the window — QMenu.clear() only
+            # deletes actions it owns, so window-parented actions would
+            # accumulate on every menu open.
+            act = QAction(recent_project_label(entry), recent_menu)
             act.setStatusTip(recent_project_tooltip(entry))
             act.triggered.connect(
                 lambda checked=False, e=entry: _open_recent_project(window, e)
             )
             recent_menu.addAction(act)
         recent_menu.addSeparator()
-        clear_act = QAction("Clear Recent Projects", window)
+        clear_act = QAction("Clear Recent Projects", recent_menu)
         clear_act.triggered.connect(lambda: (clear_recent_projects(), _populate()))
         recent_menu.addAction(clear_act)
 
@@ -6417,6 +6463,20 @@ class _SettingsTabMixin:
         self._settings_auto_solve_check.toggled.connect(
             lambda checked: save_auto_solve_on_import(bool(checked)))
         gen_layout.addWidget(self._settings_auto_solve_check)
+
+        self._settings_recent_clean_check = QCheckBox(
+            "Load recent projects clean")
+        self._settings_recent_clean_check.setChecked(load_recent_open_clean())
+        self._settings_recent_clean_check.setToolTip(
+            "When checked, re-opening an Altium project from File > Recent "
+            "Projects ignores the design and solve caches and re-extracts "
+            "from the Altium files (slower, but picks up edits made in "
+            "Altium). When unchecked, the caches are reused — same as "
+            "File > Import Altium Design. Persists across launches."
+        )
+        self._settings_recent_clean_check.toggled.connect(
+            lambda checked: save_recent_open_clean(bool(checked)))
+        gen_layout.addWidget(self._settings_recent_clean_check)
 
         # No-current via opacity — fade level (3D) of via-barrel sections that
         # carry no current on the selected rail. Persisted immediately and
