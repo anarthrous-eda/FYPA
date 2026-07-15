@@ -52,7 +52,7 @@ dependencies = [
     "matplotlib==3.10.9",
 
     # --- ParaView VTU export (File > Export > ParaView, and `FYPA paraview` CLI) ---
-    "lxml==5.3.0",
+    "lxml==6.0.2",
 
     # --- Gerber + Excellon import (File > Import Gerber Files…) ---
     # Pure-Python RS-274X / NC-drill parser. Pulls flask / quart / h2 as
@@ -90,7 +90,7 @@ package = false
 [tool.uv.sources]
 # altium_monkey is fetched directly from the upstream repo at a pinned tag.
 # To bump: edit the tag, then `uv lock --upgrade-package altium-monkey`.
-altium-monkey = { git = "https://github.com/wavenumber-eng/altium_monkey", tag = "v2026.5.20" }
+altium-monkey = { git = "https://github.com/wavenumber-eng/altium_monkey", tag = "v2026.7.9" }
 
 [tool.pytest.ini_options]
 # Tests import `pdnsolver` (and, for regression tests, shell out to FYPA.py),
