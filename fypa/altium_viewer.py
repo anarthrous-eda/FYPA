@@ -1394,6 +1394,11 @@ class EyeButton(QToolButton):
     """Altium-style eye-icon toggle for layer visibility."""
 
     toggled_visible = Signal(bool)
+    shift_clicked = Signal()
+
+    _SHIFT_TIP = (
+        "\nShift+Click: show only this item; again to invert (hide this, show others)"
+    )
 
     def __init__(self, parent=None, *, visible: bool = True,
                  icon_size: int = 16,
@@ -1405,7 +1410,11 @@ class EyeButton(QToolButton):
         self._icon_size = icon_size
         self._tip_show = tip_show
         self._tip_hide = tip_hide
-        self._tip_partial = "Some subnet nets visible — click to show all"
+        self._tip_partial = (
+            "Some subnet nets visible — click to show all"
+            + self._SHIFT_TIP
+        )
+        self._press_mods: Qt.KeyboardModifiers = Qt.NoModifier
         self.setAutoRaise(True)
         self.setCursor(Qt.PointingHandCursor)
         self.setIconSize(QSize(icon_size, icon_size))
@@ -1440,9 +1449,21 @@ class EyeButton(QToolButton):
         if self._partial:
             self.setToolTip(self._tip_partial)
         else:
-            self.setToolTip(self._tip_hide if self._visible else self._tip_show)
+            base = self._tip_hide if self._visible else self._tip_show
+            self.setToolTip(base + self._SHIFT_TIP)
+
+    def mousePressEvent(self, event) -> None:
+        # Capture modifiers at press time — clicked fires on release and
+        # QApplication.keyboardModifiers() may already be cleared.
+        self._press_mods = event.modifiers()
+        super().mousePressEvent(event)
 
     def _on_clicked(self) -> None:
+        mods = self._press_mods
+        self._press_mods = Qt.NoModifier
+        if mods & Qt.ShiftModifier:
+            self.shift_clicked.emit()
+            return
         if self._partial:
             self.setVisibleState(True, partial=False)
         else:
@@ -8770,12 +8791,18 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 tip_hide="Hide this layer's analysed rails (rail copper only)",
             )
             eye.toggled_visible.connect(self._on_layer_eye_toggled)
+            eye.shift_clicked.connect(
+                lambda p=phys: self._on_layer_eye_shift_clicked(p),
+            )
             eye2 = EyeButton(
                 visible=False,
                 tip_show="Show all copper on this layer",
                 tip_hide="Hide all copper on this layer",
             )
             eye2.toggled_visible.connect(self._on_layer_eye2_toggled)
+            eye2.shift_clicked.connect(
+                lambda p=phys: self._on_layer_eye2_shift_clicked(p),
+            )
             fill = FillToggleButton(solid=True)
             fill.toggled_fill.connect(self._on_layer_fill_toggled)
             transp = TransparencyButton(step=0)
@@ -9199,12 +9226,18 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 tip_hide="Hide this layer's analysed rails (rail copper only)",
             )
             eye.toggled_visible.connect(self._on_layer_eye_toggled)
+            eye.shift_clicked.connect(
+                lambda p=phys: self._on_layer_eye_shift_clicked(p),
+            )
             eye2 = EyeButton(
                 visible=False,
                 tip_show="Show all copper on this layer",
                 tip_hide="Hide all copper on this layer",
             )
             eye2.toggled_visible.connect(self._on_layer_eye2_toggled)
+            eye2.shift_clicked.connect(
+                lambda p=phys: self._on_layer_eye2_shift_clicked(p),
+            )
             fill = FillToggleButton(solid=True)
             fill.toggled_fill.connect(self._on_layer_fill_toggled)
             transp = TransparencyButton(step=0)
@@ -9991,6 +10024,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             eye.toggled_visible.connect(
                 lambda on, r=rail: self._on_rail_eye_toggled(r, on),
             )
+            eye.shift_clicked.connect(
+                lambda r=rail: self._on_rail_eye_shift_clicked(r),
+            )
 
             expand_btn = None
             expanded = bool(self._rail_expanded.get(rail, False))
@@ -10038,6 +10074,11 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                     subnet_eye.toggled_visible.connect(
                         lambda on, r=rail, n=net: self._on_subnet_eye_toggled(
                             r, n, on,
+                        ),
+                    )
+                    subnet_eye.shift_clicked.connect(
+                        lambda r=rail, n=net: self._on_subnet_eye_shift_clicked(
+                            r, n,
                         ),
                     )
                     self._subnet_eye_buttons[rail][net] = subnet_eye
@@ -10161,6 +10202,111 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._sync_all_rails_eye()
         self._sync_rail_only_visibility()
         self._render_with_busy_popup()
+
+    def _apply_eye_isolate_or_invert(
+        self,
+        items: list[tuple[str, EyeButton]],
+        target: str,
+    ) -> None:
+        """Show only *target*, or invert when it is already the sole visible item."""
+        alive = [
+            (name, eye) for name, eye in items
+            if _qt_widget_alive(eye)
+        ]
+        if not alive:
+            return
+        visible = [name for name, eye in alive if eye.isVisibleState()]
+        isolated = len(visible) == 1 and visible[0] == target
+        for name, eye in alive:
+            if isolated:
+                eye.setVisibleState(name != target, partial=False, emit=False)
+            else:
+                eye.setVisibleState(name == target, partial=False, emit=False)
+
+    def _iter_rail_visibility_entries(
+        self,
+    ) -> list[tuple[str, str | None, EyeButton]]:
+        """Return (rail, net_or_none, eye) for every isolatable rail/subnet eye."""
+        entries: list[tuple[str, str | None, EyeButton]] = []
+        for rail, eye in self._rail_eye_buttons:
+            if not _qt_widget_alive(eye):
+                continue
+            subnets = self._subnet_eye_buttons.get(rail, {})
+            if subnets:
+                for net, seye in subnets.items():
+                    if _qt_widget_alive(seye):
+                        entries.append((rail, net, seye))
+            else:
+                entries.append((rail, None, eye))
+        return entries
+
+    def _is_rail_group_isolated(self, rail: str) -> bool:
+        """True when only nets belonging to *rail* are visible."""
+        any_target = False
+        for r, _net, eye in self._iter_rail_visibility_entries():
+            if not eye.isVisibleState():
+                continue
+            if r != rail:
+                return False
+            any_target = True
+        return any_target
+
+    def _apply_rail_group_isolate_or_invert(self, rail: str) -> None:
+        """Isolate a rail (all its subnets) or invert when already sole group."""
+        if self._is_rail_group_isolated(rail):
+            for r, _net, eye in self._iter_rail_visibility_entries():
+                eye.setVisibleState(r != rail, partial=False, emit=False)
+        else:
+            for r, _net, eye in self._iter_rail_visibility_entries():
+                eye.setVisibleState(r == rail, partial=False, emit=False)
+        for r in self._subnet_eye_buttons:
+            self._sync_rail_eye_from_subnets(r)
+        self._sync_all_rails_eye()
+        self._sync_rail_only_visibility()
+        self._render_with_busy_popup()
+
+    def _apply_rail_entry_isolate_or_invert(
+        self, rail: str, net: str | None,
+    ) -> None:
+        """Isolate one rail or subnet entry, or invert when already sole visible."""
+        entries = self._iter_rail_visibility_entries()
+        visible = [
+            (r, n) for r, n, eye in entries if eye.isVisibleState()
+        ]
+        isolated = len(visible) == 1 and visible[0] == (rail, net)
+        for r, n, eye in entries:
+            if isolated:
+                on = (r, n) != (rail, net)
+            else:
+                on = (r, n) == (rail, net)
+            eye.setVisibleState(on, partial=False, emit=False)
+        for r in self._subnet_eye_buttons:
+            self._sync_rail_eye_from_subnets(r)
+        self._sync_all_rails_eye()
+        self._sync_rail_only_visibility()
+        self._render_with_busy_popup()
+
+    def _on_layer_eye_shift_clicked(self, phys: str) -> None:
+        self._apply_eye_isolate_or_invert(self._layer_eye_buttons, phys)
+        self._sync_all_layers_eye()
+        self._on_layer_visibility_changed()
+
+    def _on_layer_eye2_shift_clicked(self, phys: str) -> None:
+        self._apply_eye_isolate_or_invert(self._layer_eye2_buttons, phys)
+        self._sync_all_layers_eye2()
+        rails = self._visible_rails()
+        self._run_with_busy_popup(
+            lambda: self._refresh_after_copper_eye(rails))
+
+    def _on_rail_eye_shift_clicked(self, rail: str) -> None:
+        members = self._rail_to_members.get(rail, [rail])
+        if len(members) > 1:
+            self._apply_rail_group_isolate_or_invert(rail)
+        else:
+            self._apply_rail_entry_isolate_or_invert(rail, None)
+
+    def _on_subnet_eye_shift_clicked(self, rail: str, net: str) -> None:
+        self._apply_rail_entry_isolate_or_invert(rail, net)
 
     def _on_layer_eye_toggled(self, _on: bool) -> None:
         """An individual layer's eye was clicked."""
