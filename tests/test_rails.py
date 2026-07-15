@@ -23,6 +23,47 @@ def test_build_net_canonical_map_maps_aliases_to_name():
     assert m["GND"] == "GND"
 
 
+def test_rail_groups_keep_split_pcb_nets_for_parallel_regulator_outputs():
+    """Two regulator outputs on distinct PCB nets stay separate rails."""
+    metadata = {
+        "net_canonical": {
+            "VDD_RAIL_A": "VDD_RAIL_A",
+            "VDD_RAIL_D": "VDD_RAIL_D",
+        },
+        "directives": [
+            {
+                "role": "REGULATOR",
+                "terminals": {
+                    "OUT_P": {
+                        "requested_net": "VDD_RAIL_D",
+                        "pins": [{"net": "VDD_RAIL_D"}],
+                    },
+                    "OUT_N": {"requested_net": "GND", "pins": [{"net": "GND"}]},
+                    "IN_P": {"requested_net": "VDD_12V", "pins": [{"net": "VDD_12V"}]},
+                    "IN_N": {"requested_net": "GND", "pins": [{"net": "GND"}]},
+                },
+            },
+            {
+                "role": "REGULATOR",
+                "terminals": {
+                    "OUT_P": {
+                        "requested_net": "VDD_RAIL_A",
+                        "pins": [{"net": "VDD_RAIL_A"}],
+                    },
+                    "OUT_N": {"requested_net": "GND", "pins": [{"net": "GND"}]},
+                    "IN_P": {"requested_net": "VDD_12V", "pins": [{"net": "VDD_12V"}]},
+                    "IN_N": {"requested_net": "GND", "pins": [{"net": "GND"}]},
+                },
+            },
+        ],
+    }
+    names, members = compute_rail_groups(metadata)
+    assert "VDD_RAIL_D" in names
+    assert "VDD_RAIL_A" in names
+    assert members["VDD_RAIL_D"] == ["VDD_RAIL_D"]
+    assert members["VDD_RAIL_A"] == ["VDD_RAIL_A"]
+
+
 def test_rail_groups_use_canonical_name_for_local_net_label():
     metadata = {
         "net_canonical": {
