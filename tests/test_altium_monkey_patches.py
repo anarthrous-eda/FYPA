@@ -27,3 +27,23 @@ def test_apply_altium_monkey_patches_is_idempotent(monkeypatch):
     patches.apply_altium_monkey_patches()
     second = AltiumNetlistSingleSheetCompiler._extract_sheet_entries
     assert first is second
+
+
+def test_connection_tolerance_enforces_minimum_without_explicit_value():
+    """A compiler built without a tolerance must not use exact-match (0).
+
+    Newer altium_monkey defaults the single-sheet tolerance to 0, which drops
+    the one-unit integer gap between truncated port and wire connection points.
+    The shim raises that to ``MIN_CONNECTION_TOLERANCE`` so port-wired connector
+    pins stay attached to their rail.
+    """
+    patches.apply_altium_monkey_patches()
+    compiler = AltiumNetlistSingleSheetCompiler(object())
+    assert compiler.tolerance >= patches.MIN_CONNECTION_TOLERANCE
+
+
+def test_connection_tolerance_preserves_explicit_larger_value():
+    """An explicit tolerance above the minimum is left untouched."""
+    patches.apply_altium_monkey_patches()
+    compiler = AltiumNetlistSingleSheetCompiler(object(), tolerance=5)
+    assert compiler.tolerance == 5

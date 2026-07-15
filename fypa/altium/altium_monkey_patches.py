@@ -1,12 +1,28 @@
-"""Runtime shim for altium_monkey sheet-entry hotspot geometry.
+"""Runtime shims for altium_monkey netlist connectivity.
 
-Upstream ``_extract_sheet_entries()`` computes entry connection hotspots as
-``entry.distance_from_top * 10``, which drops the fractional
-``distance_from_top_frac1`` component. Under the compiler's default tolerance
-the misplaced hotspot can snap onto an adjacent net's wire and merge two
-electrically distinct rails.
+Two independent upstream defects are patched here:
 
-Remove this module once the pinned altium_monkey release includes the fix.
+1. Sheet-entry hotspot geometry. ``_extract_sheet_entries()`` computes entry
+   connection hotspots as ``entry.distance_from_top * 10``, which drops the
+   fractional ``distance_from_top_frac1`` component. Under a non-zero
+   connection tolerance the misplaced hotspot can snap onto an adjacent net's
+   wire and merge two electrically distinct rails.
+
+2. Connection tolerance. ``AltiumNetlistSingleSheetCompiler`` defaults its
+   connection tolerance to ``0`` (exact match), and the multi-sheet compiler
+   constructs its per-sheet compilers without passing one. Port and wire
+   connection points are stored as truncated integers, so a port whose real
+   right edge sits at e.g. ``x=495.57`` reports ``495`` while the wire it
+   touches starts at ``496.06`` -> ``496``. With an exact-match tolerance the
+   one-unit integer gap no longer bridges and every port-wired pin detaches
+   into an auto-named net (e.g. ``NetJ1_7``) instead of its rail (e.g.
+   ``VBUS``). Earlier altium_monkey releases used a non-zero default, so this
+   regressed silently on the version bump. Restoring a minimal tolerance
+   re-bridges the truncation gap without merging genuinely separate rails
+   (adjacent wires are many units apart).
+
+Remove the relevant shim once the pinned altium_monkey release includes each
+fix.
 """
 from __future__ import annotations
 
@@ -16,6 +32,14 @@ import logging
 log = logging.getLogger(__name__)
 
 _APPLIED = False
+
+# Minimum per-axis connection tolerance (in parsed 10-mil coordinate units).
+# Integer truncation of port/wire connection points loses < 1 unit per axis, so
+# a genuine connection can present at most a 1-unit integer gap. ``1`` bridges
+# that gap; adjacent-but-distinct wires on real sheets are several units apart,
+# so it does not introduce cross-connections. ``_points_connected`` uses a
+# per-axis (Chebyshev) comparison, so this also covers diagonal truncation.
+MIN_CONNECTION_TOLERANCE = 1
 
 
 def _needs_sheet_entry_hotspot_patch() -> bool:
@@ -45,17 +69,40 @@ def _needs_harness_entry_hotspot_patch() -> bool:
     return "entry.distance_from_top * 10" in source
 
 
+def _needs_connection_tolerance_patch() -> bool:
+    """True when the single-sheet compiler defaults to an exact-match tolerance.
+
+    Older altium_monkey releases used a non-zero default that bridged the
+    integer-truncation gap between port and wire connection points; the current
+    pin defaults to ``0``, which drops those connections.
+    """
+    from altium_monkey.altium_netlist_single_sheet import (
+        AltiumNetlistSingleSheetCompiler,
+    )
+
+    try:
+        default = inspect.signature(
+            AltiumNetlistSingleSheetCompiler.__init__
+        ).parameters["tolerance"].default
+    except (ValueError, KeyError, TypeError):
+        return False
+    if not isinstance(default, int):
+        return False
+    return default < MIN_CONNECTION_TOLERANCE
+
+
 def apply_altium_monkey_patches() -> None:
-    """Apply upstream geometry shims once per process (no-op when already fixed)."""
+    """Apply upstream connectivity shims once per process (no-op when fixed)."""
     global _APPLIED
     if _APPLIED:
         return
 
     patch_sheet = _needs_sheet_entry_hotspot_patch()
     patch_harness = _needs_harness_entry_hotspot_patch()
-    if not patch_sheet and not patch_harness:
+    patch_tolerance = _needs_connection_tolerance_patch()
+    if not patch_sheet and not patch_harness and not patch_tolerance:
         _APPLIED = True
-        log.debug("altium_monkey sheet-entry hotspot patch not needed (upstream fixed).")
+        log.debug("altium_monkey connectivity patches not needed (upstream fixed).")
         return
 
     if patch_sheet:
@@ -169,9 +216,29 @@ def apply_altium_monkey_patches() -> None:
 
         _Multi._expand_harness_entries = _expand_harness_entries  # type: ignore[method-assign]
 
+    if patch_tolerance:
+        from altium_monkey.altium_netlist_single_sheet import (
+            AltiumNetlistSingleSheetCompiler as _SingleTol,
+        )
+
+        _orig_init = _SingleTol.__init__
+        _init_sig = inspect.signature(_orig_init)
+
+        def _init_with_min_tolerance(self, *args, **kwargs):
+            bound = _init_sig.bind(self, *args, **kwargs)
+            bound.apply_defaults()
+            tol = bound.arguments.get("tolerance")
+            if tol is None or tol < MIN_CONNECTION_TOLERANCE:
+                bound.arguments["tolerance"] = MIN_CONNECTION_TOLERANCE
+            _orig_init(*bound.args, **bound.kwargs)
+
+        _SingleTol.__init__ = _init_with_min_tolerance  # type: ignore[method-assign]
+
     _APPLIED = True
     log.info(
-        "Applied altium_monkey hotspot patch (sheet=%s, harness=%s).",
+        "Applied altium_monkey connectivity patches "
+        "(sheet=%s, harness=%s, tolerance=%s).",
         patch_sheet,
         patch_harness,
+        patch_tolerance,
     )
