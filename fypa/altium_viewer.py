@@ -434,6 +434,13 @@ _SOLVE_SUBPROCESS_QS_KEY = "solve/use_subprocess"
 _FUSE_BACKEND_QS_KEY = "perf/fuse_backend"
 _MESH_WORKERS_QS_KEY = "perf/mesh_max_workers"
 _MINRES_BUDGET_QS_KEY = "perf/minres_budget_s"
+# Recent File > Recent Projects list (``.fypa`` and ``.PrjPcb`` imports).
+_RECENT_PROJECTS_QS_KEY = "projects/recent"
+_MAX_RECENT_PROJECTS = 10
+# Whether re-opening an Altium entry from Recent Projects ignores the design
+# and solve caches (a "clean" import). Off by default — recents are the fast
+# path, so reuse the caches like File > Import Altium Design does.
+_RECENT_OPEN_CLEAN_QS_KEY = "projects/recent_open_clean"
 
 _current_theme_mode: str = "dark"
 
@@ -485,6 +492,176 @@ def save_theme_mode(mode: str) -> None:
         logging.getLogger(__name__).debug(
             "Could not persist theme preference (%s); ignoring.", e,
         )
+
+
+def _recent_settings():
+    from PySide6.QtCore import QSettings
+    return QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+
+
+def _normalize_recent_path(path: str | None) -> str | None:
+    if not path or not isinstance(path, str):
+        return None
+    path = path.strip()
+    if not path:
+        return None
+    try:
+        return str(Path(path).resolve())
+    except (OSError, ValueError):
+        # ValueError: malformed path from corrupt settings (e.g. embedded
+        # NUL) — keep the raw string rather than crash menu population.
+        return path
+
+
+def _normalize_recent_entry(entry: dict) -> dict | None:
+    kind = entry.get("kind")
+    if kind == "fypa":
+        path = _normalize_recent_path(entry.get("path"))
+        if not path:
+            return None
+        return {"kind": "fypa", "path": path}
+    if kind == "altium":
+        prjpcb = _normalize_recent_path(entry.get("prjpcb_path"))
+        if not prjpcb:
+            return None
+        out: dict[str, str] = {"kind": "altium", "prjpcb_path": prjpcb}
+        pcbdoc = _normalize_recent_path(entry.get("pcbdoc_path"))
+        if pcbdoc:
+            out["pcbdoc_path"] = pcbdoc
+        return out
+    return None
+
+
+def _recent_entry_key(entry: dict) -> tuple:
+    kind = entry.get("kind")
+    if kind == "fypa":
+        return ("fypa", entry.get("path"))
+    if kind == "altium":
+        return ("altium", entry.get("prjpcb_path"))
+    return (kind,)
+
+
+def _save_recent_projects(entries: list[dict]) -> None:
+    import json
+    try:
+        qs = _recent_settings()
+        qs.setValue(_RECENT_PROJECTS_QS_KEY, json.dumps(entries))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not persist recent projects (%s); ignoring.", e,
+        )
+
+
+def load_recent_projects() -> list[dict]:
+    """Return the persisted recent-project list (newest first)."""
+    import json
+    try:
+        qs = _recent_settings()
+        raw = qs.value(_RECENT_PROJECTS_QS_KEY, "[]")
+        if not isinstance(raw, str):
+            return []
+        data = json.loads(raw)
+        if not isinstance(data, list):
+            return []
+        out: list[dict] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            norm = _normalize_recent_entry(item)
+            if norm is not None:
+                out.append(norm)
+        return out[:_MAX_RECENT_PROJECTS]
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not read recent projects (%s); using empty list.", e,
+        )
+    return []
+
+
+def record_recent_project(entry: dict) -> None:
+    """Push *entry* to the front of the recent list, deduplicating by path."""
+    norm = _normalize_recent_entry(entry)
+    if norm is None:
+        return
+    entries = load_recent_projects()
+    key = _recent_entry_key(norm)
+    entries = [e for e in entries if _recent_entry_key(e) != key]
+    entries.insert(0, norm)
+    _save_recent_projects(entries[:_MAX_RECENT_PROJECTS])
+
+
+def clear_recent_projects() -> None:
+    _save_recent_projects([])
+
+
+def _recent_entry_exists(entry: dict) -> bool:
+    kind = entry.get("kind")
+    if kind == "fypa":
+        return Path(entry["path"]).exists()
+    if kind == "altium":
+        return Path(entry["prjpcb_path"]).exists()
+    return False
+
+
+def prune_missing_recent_projects() -> list[dict]:
+    """Drop entries whose files no longer exist; persist the trimmed list."""
+    entries = load_recent_projects()
+    kept = [e for e in entries if _recent_entry_exists(e)]
+    if len(kept) != len(entries):
+        _save_recent_projects(kept)
+    return kept
+
+
+def _remove_recent_project_entry(entry: dict) -> None:
+    norm = _normalize_recent_entry(entry)
+    if norm is None:
+        return
+    key = _recent_entry_key(norm)
+    kept = [e for e in load_recent_projects() if _recent_entry_key(e) != key]
+    _save_recent_projects(kept)
+
+
+def recent_project_label(entry: dict) -> str:
+    kind = entry.get("kind")
+    if kind == "fypa":
+        p = Path(entry["path"])
+        parent = p.parent.name
+        return f"{p.name} — {parent}" if parent else p.name
+    if kind == "altium":
+        p = Path(entry["prjpcb_path"])
+        parent = p.parent.name
+        label = f"{p.name} — {parent}" if parent else p.name
+        pcbdoc = entry.get("pcbdoc_path")
+        if pcbdoc:
+            label += f" [{Path(pcbdoc).name}]"
+        return label
+    return "?"
+
+
+def recent_project_tooltip(entry: dict) -> str:
+    kind = entry.get("kind")
+    if kind == "fypa":
+        return entry["path"]
+    if kind == "altium":
+        parts = [entry["prjpcb_path"]]
+        pcbdoc = entry.get("pcbdoc_path")
+        if pcbdoc:
+            parts.append(pcbdoc)
+        return "\n".join(parts)
+    return ""
+
+
+def _record_recent_altium_from_metadata(metadata: dict | None) -> None:
+    if not metadata:
+        return
+    prjpcb = metadata.get("prjpcb_path")
+    if not prjpcb:
+        return
+    entry: dict[str, str] = {"kind": "altium", "prjpcb_path": str(prjpcb)}
+    pcbdoc = metadata.get("pcbdoc_path")
+    if pcbdoc:
+        entry["pcbdoc_path"] = str(pcbdoc)
+    record_recent_project(entry)
 
 
 def load_supersampling_enabled() -> bool:
@@ -554,6 +731,41 @@ def save_auto_solve_on_import(enabled: bool) -> None:
     except Exception as e:
         logging.getLogger(__name__).debug(
             "Could not persist auto-solve-on-import preference (%s); ignoring.",
+            e,
+        )
+
+
+def load_recent_open_clean() -> bool:
+    """Read whether Recent Projects re-imports Altium entries clean.
+
+    Defaults to ``False`` — reuse the design / solve caches so a recent
+    project opens as fast as File > Import Altium Design would."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        val = qs.value(_RECENT_OPEN_CLEAN_QS_KEY, False)
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            return val.strip().lower() in ("1", "true", "yes", "on")
+        return bool(int(val))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not read recent-open-clean preference (%s); using "
+            "default.", e,
+        )
+    return False
+
+
+def save_recent_open_clean(enabled: bool) -> None:
+    """Persist the recent-projects-open-clean preference for next launch."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        qs.setValue(_RECENT_OPEN_CLEAN_QS_KEY, bool(enabled))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not persist recent-open-clean preference (%s); ignoring.",
             e,
         )
 
@@ -2540,7 +2752,13 @@ def _run_background_load(parent, work, on_success, on_error, *,
     The dialog is application-modal with no cancel button — the load is one
     synchronous unpickle that can't be interrupted mid-flight — but the event
     loop keeps running, so the window stays responsive (marquee animating)
-    instead of freezing for the 5 s–1 min a large solution pickle takes."""
+    instead of freezing for the 5 s–1 min a large solution pickle takes.
+
+    Callers that must not overlap another load are responsible for checking
+    :func:`_reject_if_background_load_running` *before* calling this — the
+    check must NOT live here, because :meth:`PdnViewer._ensure_caps_rows`
+    relies on its continuation always running (a dropped continuation leaves
+    ``_caps_rows_pending`` stuck and the Capacitors tab permanently blank)."""
     dlg = QProgressDialog(label, "", 0, 0, parent)
     dlg.setWindowTitle(title)
     dlg.setCancelButton(None)
@@ -2585,6 +2803,139 @@ def _any_gerber_import_running() -> bool:
         except RuntimeError:
             _ORPHANED_THREADS.discard(w)
     return False
+
+
+def _any_solve_running(owner) -> bool:
+    """True if *owner* has an in-flight :class:`_SolveWorker`."""
+    worker = getattr(owner, "_solve_worker", None)
+    if worker is None:
+        return False
+    try:
+        return worker.isRunning()
+    except RuntimeError:
+        return False
+
+
+def _reject_if_solve_running(owner, *, title: str = "Import already running") -> bool:
+    """Show a modal and return True when an Altium import/solve is busy."""
+    if not _any_solve_running(owner):
+        return False
+    QMessageBox.information(
+        owner, title,
+        "An Altium import or solve is already in progress. "
+        "Please wait for it to finish before starting another.",
+    )
+    return True
+
+
+def _reject_if_background_load_running(
+    owner, *, title: str = "Load already running",
+) -> bool:
+    """Show a modal and return True when a pickle load is already in flight."""
+    for worker in list(_BACKGROUND_LOADERS):
+        try:
+            if worker.isRunning():
+                QMessageBox.information(
+                    owner, title,
+                    "A project or solution is still loading in the "
+                    "background. Please wait for it to finish before "
+                    "starting another.",
+                )
+                return True
+        except RuntimeError:
+            _BACKGROUND_LOADERS.discard(worker)
+    return False
+
+
+def _viewer_has_unsaved_changes(viewer) -> bool:
+    """True when *viewer* is a :class:`PdnViewer` with unsaved edits."""
+    if not hasattr(viewer, "_apply_solve_result"):
+        return False
+    return bool(
+        getattr(viewer, "_project_dirty", False)
+        or getattr(viewer, "_display_dirty", False)
+        or getattr(viewer, "_settings_dirty", False)
+        or getattr(viewer, "_solved_since_save", False)
+    )
+
+
+def _confirm_replace_project(viewer) -> bool:
+    """Ask before replacing the loaded project in-place.
+
+    Returns ``True`` when the caller should proceed (no unsaved state, user
+    chose Discard, or Save succeeded). ``False`` on Cancel or a failed save."""
+    if not _viewer_has_unsaved_changes(viewer):
+        return True
+    box = QMessageBox(viewer)
+    box.setIcon(QMessageBox.Icon.Warning)
+    box.setWindowTitle("Replace current project?")
+    box.setText(
+        "The current project has unsaved changes.\n"
+        "Save before opening another project?"
+    )
+    save_btn = box.addButton("Save", QMessageBox.ButtonRole.AcceptRole)
+    discard_btn = box.addButton("Discard", QMessageBox.ButtonRole.DestructiveRole)
+    cancel_btn = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+    box.setDefaultButton(save_btn)
+    box.exec()
+    clicked = box.clickedButton()
+    if clicked == cancel_btn:
+        return False
+    if clicked == discard_btn:
+        return True
+    if clicked == save_btn:
+        dlg = _ProjectSaveDialog(
+            viewer, allow_all=getattr(viewer, "_solved_since_save", False),
+        )
+        if dlg.exec() != QDialog.Accepted or dlg.choice is None:
+            return False
+        if dlg.choice == "all" and getattr(viewer, "_solved_since_save", False):
+            return bool(viewer._save_project_and_solution())
+        return bool(viewer._save_project())
+    return False
+
+
+def _drop_failed_fypa_recent_entry(path: Path, *, from_recent: bool) -> None:
+    """Remove a stale ``.fypa`` recent entry after a failed open."""
+    if from_recent:
+        _remove_recent_project_entry({"kind": "fypa", "path": str(path)})
+
+
+def _stash_pending_altium_recent(
+    window, prjpcb_path: Path, pcbdoc_path: Path | None,
+    *, from_recent: bool = False,
+) -> None:
+    """Remember which Altium project is being opened.
+
+    ``from_recent`` gates whether a later solve failure should drop the
+    matching File > Recent Projects entry (menu imports must not)."""
+    prjpcb_s = _normalize_recent_path(str(prjpcb_path)) or str(prjpcb_path)
+    entry: dict[str, str] = {
+        "kind": "altium", "prjpcb_path": prjpcb_s,
+    }
+    if pcbdoc_path is not None:
+        pcbdoc_s = _normalize_recent_path(str(pcbdoc_path))
+        if pcbdoc_s:
+            entry["pcbdoc_path"] = pcbdoc_s
+    window._pending_altium_recent_entry = entry
+    window._pending_altium_from_recent = bool(from_recent)
+
+
+def _clear_pending_altium_recent(window) -> None:
+    if hasattr(window, "_pending_altium_recent_entry"):
+        window._pending_altium_recent_entry = None
+    if hasattr(window, "_pending_altium_from_recent"):
+        window._pending_altium_from_recent = False
+
+
+def _drop_pending_altium_recent(window) -> None:
+    if not getattr(window, "_pending_altium_from_recent", False):
+        _clear_pending_altium_recent(window)
+        return
+    pending = getattr(window, "_pending_altium_recent_entry", None)
+    if pending:
+        _remove_recent_project_entry(pending)
+    _clear_pending_altium_recent(window)
 
 
 def _register_viewer(win: QMainWindow) -> None:
@@ -5430,6 +5781,317 @@ def _show_about_dialog(parent: QWidget) -> None:
     dlg.exec()
 
 
+def _resolve_project_solution_path(proj) -> str | None:
+    """Return a readable solution-pickle path for *proj*, or ``None``."""
+    sol_path = proj.solve_pickle
+    if not sol_path or not Path(sol_path).exists():
+        sol_path = None
+        if proj.prjpcb_path:
+            try:
+                from fypa.cli import _solve_cache_path
+                cand = _solve_cache_path(
+                    Path(proj.prjpcb_path),
+                    Path(proj.pcbdoc_path) if proj.pcbdoc_path else None,
+                )
+                if cand.exists():
+                    sol_path = str(cand)
+            except Exception:
+                sol_path = None
+    return sol_path
+
+
+def _open_project_file_at(window, path: Path, *, from_recent: bool = False) -> None:
+    """Open a ``.fypa`` at *path* without a file dialog."""
+    from fypa.project_file import ProjectFile
+
+    def _drop_failed_fypa_recent() -> None:
+        _drop_failed_fypa_recent_entry(path, from_recent=from_recent)
+
+    if _reject_if_solve_running(window, title="Load already running"):
+        return
+    if _reject_if_background_load_running(window, title="Load already running"):
+        return
+    if not _confirm_replace_project(window):
+        return
+
+    if not path.exists():
+        QMessageBox.critical(
+            window, "Couldn't open project",
+            f"Project file not found:\n{path}",
+        )
+        _drop_failed_fypa_recent()
+        return
+    try:
+        proj = ProjectFile.load(path)
+    except Exception as e:
+        QMessageBox.critical(
+            window, "Couldn't open project",
+            f"Failed to load {path}:\n\n{type(e).__name__}: {e}",
+        )
+        _drop_failed_fypa_recent()
+        return
+    _restore_bundled_design_info(proj)
+    sol_path = _resolve_project_solution_path(proj)
+    if not sol_path:
+        QMessageBox.critical(
+            window, "Couldn't open project",
+            "The project file doesn't point to a readable solution "
+            "pickle, and no cached solve was found.",
+        )
+        _drop_failed_fypa_recent()
+        return
+
+    def _work():
+        from fypa.cli import _load_solution_pickle
+        return _load_solution_pickle(Path(sol_path))
+
+    def _ok(result):
+        solution, metadata = result
+        if hasattr(window, "_open_viewer_and_close"):
+            new_win = window._open_viewer_and_close(
+                solution, metadata, project=proj, project_path=path,
+            )
+            if new_win is not None:
+                record_recent_project({"kind": "fypa", "path": str(path)})
+            _maybe_warn_open_loop_rails(new_win or window, metadata)
+            _maybe_warn_connectivity_breaks(new_win or window, metadata)
+            return
+        ok = window._apply_solve_result(
+            solution, metadata, None,
+            window._solve_settings,
+            window._via_current_warn_a, window._display_percentile_high,
+            project=proj, project_path=path,
+        )
+        if ok:
+            record_recent_project({"kind": "fypa", "path": str(path)})
+
+    def _err(exc_type, message):
+        QMessageBox.critical(
+            window, "Couldn't open project",
+            f"Failed to load the linked solution {sol_path}:\n\n"
+            f"{exc_type}: {message}",
+        )
+        _drop_failed_fypa_recent()
+
+    _run_background_load(
+        window, _work, _ok, _err,
+        title="Loading", label="Loading solution…",
+    )
+
+
+def _open_solution_at(window, path: Path) -> None:
+    """Open a solution ``.pkl`` at *path* without a file dialog."""
+    if _reject_if_solve_running(window, title="Load already running"):
+        return
+    if _reject_if_background_load_running(window, title="Load already running"):
+        return
+    if not _confirm_replace_project(window):
+        return
+
+    if not path.exists():
+        QMessageBox.critical(
+            window, "Couldn't open solution",
+            f"Solution file not found:\n{path}",
+        )
+        return
+
+    def _work():
+        from fypa.cli import _load_solution_pickle
+        return _load_solution_pickle(path)
+
+    def _ok(result):
+        solution, metadata = result
+        if hasattr(window, "_open_viewer_and_close"):
+            window._open_viewer_and_close(solution, metadata)
+            return
+        window._apply_solve_result(
+            solution, metadata, None,
+            window._solve_settings,
+            window._via_current_warn_a, window._display_percentile_high,
+            is_import=True,
+            status_done="Solution loaded.",
+        )
+
+    def _err(exc_type, message):
+        QMessageBox.critical(
+            window, "Couldn't open solution",
+            f"Failed to load {path}:\n\n{exc_type}: {message}",
+        )
+
+    _run_background_load(
+        window, _work, _ok, _err,
+        title="Loading", label="Loading solution…",
+    )
+
+
+def _start_launcher_altium_solve(
+    window, prjpcb_path: Path, pcbdoc_path: Path | None, *, clean: bool,
+    from_recent: bool = False,
+) -> None:
+    """Launcher-only: run :class:`_SolveWorker` for an Altium import."""
+    if _reject_if_solve_running(window):
+        return
+    if _reject_if_background_load_running(window):
+        return
+    from fypa.altium.loader import SolveSettings
+
+    settings = SolveSettings()
+    settings.apply_to_modules()
+    imp = _altium_import_worker_options(
+        prjpcb_path.name, clean=clean,
+        auto_solve=load_auto_solve_on_import(),
+    )
+    dlg = QProgressDialog(imp["dialog_text"], "Cancel", 0, 0, window)
+    dlg.setWindowTitle(imp["dialog_title"])
+    dlg.setWindowModality(Qt.ApplicationModal)
+    dlg.setMinimumDuration(0)
+    dlg.setAutoClose(False)
+    dlg.setAutoReset(False)
+    dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+    dlg.canceled.connect(window._on_solve_cancelled)
+    dlg.show()
+    QApplication.processEvents()
+    _sz = dlg.size()
+    dlg.setFixedSize(int(_sz.width() * 1.44), _sz.height())
+
+    worker = _SolveWorker(
+        prjpcb_path, settings,
+        pcbdoc_selector=str(pcbdoc_path) if pcbdoc_path else None,
+        use_design_cache=imp["use_design_cache"],
+        try_solve_cache_first=imp["try_solve_cache_first"],
+        load_only=imp["load_only"],
+        parent=window,
+    )
+    _stash_pending_altium_recent(
+        window, prjpcb_path, pcbdoc_path, from_recent=from_recent,
+    )
+    window._solve_worker = worker
+    window._solve_progress_dlg = dlg
+    window._solve_progress_updater = _SolveProgressUpdater(dlg, worker, window)
+    worker.finished_ok.connect(
+        lambda sol, meta, loaded: window._on_solve_finished(
+            sol, meta, loaded, settings,
+        )
+    )
+    worker.failed.connect(window._on_solve_failed)
+    worker.finished.connect(window._cleanup_solve_worker)
+    worker.start()
+
+
+def _open_altium_project_at(
+    window,
+    prjpcb_path: Path,
+    pcbdoc_path: Path | None = None,
+    *,
+    clean: bool = False,
+    from_recent: bool = False,
+) -> None:
+    """Import an Altium ``.PrjPcb`` without a file dialog when possible."""
+    if _reject_if_solve_running(window):
+        return
+    if _reject_if_background_load_running(window):
+        return
+    if not prjpcb_path.exists():
+        QMessageBox.critical(
+            window, "Couldn't open project",
+            f"Project file not found:\n{prjpcb_path}",
+        )
+        entry: dict[str, str] = {
+            "kind": "altium", "prjpcb_path": str(prjpcb_path),
+        }
+        if pcbdoc_path is not None:
+            entry["pcbdoc_path"] = str(pcbdoc_path)
+        _remove_recent_project_entry(entry)
+        return
+
+    selected_pcbdoc = pcbdoc_path
+    if selected_pcbdoc is not None and not selected_pcbdoc.exists():
+        selected_pcbdoc = None
+    if selected_pcbdoc is None:
+        proceed, selected_pcbdoc = _choose_pcbdoc(
+            window, prjpcb_path, default=pcbdoc_path,
+        )
+        if not proceed:
+            return
+
+    if hasattr(window, "_open_viewer_and_close"):
+        _start_launcher_altium_solve(
+            window, prjpcb_path, selected_pcbdoc, clean=clean,
+            from_recent=from_recent,
+        )
+        return
+
+    if not _confirm_replace_project(window):
+        return
+
+    window._solve_settings.apply_to_modules()
+    imp = _altium_import_worker_options(
+        prjpcb_path.name, clean=clean,
+        auto_solve=load_auto_solve_on_import(),
+    )
+    window._start_solve_worker(
+        prjpcb_path, window._solve_settings,
+        window._via_current_warn_a, window._display_percentile_high,
+        pcbdoc_selector=str(selected_pcbdoc) if selected_pcbdoc else None,
+        use_design_cache=imp["use_design_cache"],
+        try_solve_cache_first=imp["try_solve_cache_first"],
+        load_only=imp["load_only"],
+        is_import=True,
+        dialog_title=imp["dialog_title"],
+        dialog_text=imp["dialog_text"],
+        pending_altium_recent_pcbdoc=selected_pcbdoc,
+        pending_altium_from_recent=from_recent,
+    )
+
+
+def _open_recent_project(window, entry: dict) -> None:
+    """Re-open a persisted recent-project entry."""
+    kind = entry.get("kind")
+    if kind == "fypa":
+        _open_project_file_at(window, Path(entry["path"]), from_recent=True)
+    elif kind == "altium":
+        pcbdoc = entry.get("pcbdoc_path")
+        _open_altium_project_at(
+            window,
+            Path(entry["prjpcb_path"]),
+            Path(pcbdoc) if pcbdoc else None,
+            clean=load_recent_open_clean(),
+            from_recent=True,
+        )
+
+
+def _build_recent_projects_menu(file_menu, window) -> None:
+    """Add File > Recent Projects to *file_menu* (shared by launcher + viewer)."""
+    recent_menu = file_menu.addMenu("Recent &Projects")
+
+    def _populate() -> None:
+        recent_menu.clear()
+        # No existence pruning here: Path.exists() on a dead network share
+        # can block for seconds, and this runs on the GUI thread every time
+        # the menu opens. Stale entries are dropped when opening them fails.
+        entries = load_recent_projects()
+        if not entries:
+            empty = recent_menu.addAction("(none)")
+            empty.setEnabled(False)
+            return
+        for entry in entries:
+            # Parent to the menu, not the window — QMenu.clear() only
+            # deletes actions it owns, so window-parented actions would
+            # accumulate on every menu open.
+            act = QAction(recent_project_label(entry), recent_menu)
+            act.setStatusTip(recent_project_tooltip(entry))
+            act.triggered.connect(
+                lambda checked=False, e=entry: _open_recent_project(window, e)
+            )
+            recent_menu.addAction(act)
+        recent_menu.addSeparator()
+        clear_act = QAction("Clear Recent Projects", recent_menu)
+        clear_act.triggered.connect(lambda: (clear_recent_projects(), _populate()))
+        recent_menu.addAction(clear_act)
+
+    recent_menu.aboutToShow.connect(_populate)
+
+
 def _build_help_menu(window) -> None:
     """Add a Help menu (Open Log / About) to *window*'s menu bar.
 
@@ -5801,6 +6463,20 @@ class _SettingsTabMixin:
         self._settings_auto_solve_check.toggled.connect(
             lambda checked: save_auto_solve_on_import(bool(checked)))
         gen_layout.addWidget(self._settings_auto_solve_check)
+
+        self._settings_recent_clean_check = QCheckBox(
+            "Load recent projects clean")
+        self._settings_recent_clean_check.setChecked(load_recent_open_clean())
+        self._settings_recent_clean_check.setToolTip(
+            "When checked, re-opening an Altium project from File > Recent "
+            "Projects ignores the design and solve caches and re-extracts "
+            "from the Altium files (slower, but picks up edits made in "
+            "Altium). When unchecked, the caches are reused — same as "
+            "File > Import Altium Design. Persists across launches."
+        )
+        self._settings_recent_clean_check.toggled.connect(
+            lambda checked: save_recent_open_clean(bool(checked)))
+        gen_layout.addWidget(self._settings_recent_clean_check)
 
         # No-current via opacity — fade level (3D) of via-barrel sections that
         # carry no current on the selected rail. Persisted immediately and
@@ -6778,6 +7454,8 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         open_projfile.triggered.connect(self._on_menu_open_project_file)
         file_menu.addAction(open_projfile)
 
+        _build_recent_projects_menu(file_menu, self)
+
         file_menu.addSeparator()
 
         open_sol = QAction("&Load Solution…", self)
@@ -6913,60 +7591,13 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         )
         if not path_str:
             return
-        prjpcb_path = Path(path_str)
-        proceed, pcbdoc_path = _choose_pcbdoc(self, prjpcb_path)
-        if not proceed:
-            return
-        from fypa.altium.loader import SolveSettings
-        settings = SolveSettings()
-        settings.apply_to_modules()
-
-        imp = _altium_import_worker_options(
-            prjpcb_path.name, clean=clean,
-            auto_solve=load_auto_solve_on_import(),
-        )
-        dlg = QProgressDialog(imp["dialog_text"], "Cancel", 0, 0, self)
-        dlg.setWindowTitle(imp["dialog_title"])
-        dlg.setWindowModality(Qt.ApplicationModal)
-        dlg.setMinimumDuration(0)
-        dlg.setAutoClose(False)
-        dlg.setAutoReset(False)
-        dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-        dlg.canceled.connect(self._on_solve_cancelled)
-        dlg.show()
-        QApplication.processEvents()
-        # 44% wider than Qt's auto-sized width so the longer per-stage
-        # status messages ("Packaging solution: building metadata…",
-        # "Opening viewer…", etc.) aren't truncated.
-        _sz = dlg.size()
-        dlg.setFixedSize(int(_sz.width() * 1.44), _sz.height())
-
-        worker = _SolveWorker(
-            prjpcb_path, settings,
-            pcbdoc_selector=str(pcbdoc_path) if pcbdoc_path else None,
-            use_design_cache=imp["use_design_cache"],
-            try_solve_cache_first=imp["try_solve_cache_first"],
-            load_only=imp["load_only"],
-            parent=self,
-        )
-        self._solve_worker = worker
-        self._solve_progress_dlg = dlg
-        # Wires stage_changed / substage_changed to the dialog, with a
-        # live elapsed-time counter for the current stage.
-        self._solve_progress_updater = _SolveProgressUpdater(dlg, worker, self)
-        worker.finished_ok.connect(
-            lambda sol, meta, loaded: self._on_solve_finished(
-                sol, meta, loaded, settings,
-            )
-        )
-        worker.failed.connect(self._on_solve_failed)
-        worker.finished.connect(self._cleanup_solve_worker)
-        worker.start()
+        _open_altium_project_at(self, Path(path_str), None, clean=clean)
 
     def _on_solve_cancelled(self) -> None:
         """User clicked Cancel on the solve progress dialog. Forcibly kill
         the worker — the launcher is already the "home" state, so just stay
         here once the dialog is gone."""
+        _clear_pending_altium_recent(self)
         _abort_solve_worker(self)
 
     def _cleanup_solve_worker(self) -> None:
@@ -6992,6 +7623,7 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
 
     def _on_solve_failed(self, message: str) -> None:
         logging.getLogger(__name__).error("Solve failed: %s", message)
+        _drop_pending_altium_recent(self)
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Critical)
         box.setWindowTitle("Solve failed")
@@ -7010,6 +7642,9 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
             initial_settings=new_settings,
             loaded_project=loaded_project,
         )
+        if new_win is not None:
+            _record_recent_altium_from_metadata(metadata)
+        _clear_pending_altium_recent(self)
         # An Altium project with no SOURCE/REGULATOR loads as an editor-mode
         # stub instead of failing — let the user know it's set up for manual
         # marker placement rather than a finished solve.
@@ -7029,30 +7664,11 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         )
         if not path_str:
             return
-
-        def _work():
-            from fypa.cli import _load_solution_pickle
-            return _load_solution_pickle(Path(path_str))
-
-        def _ok(result):
-            solution, metadata = result
-            self._open_viewer_and_close(solution, metadata)
-
-        def _err(exc_type, message):
-            QMessageBox.critical(
-                self, "Couldn't open solution",
-                f"Failed to load {path_str}:\n\n{exc_type}: {message}",
-            )
-
-        _run_background_load(
-            self, _work, _ok, _err,
-            title="Loading", label="Loading solution…",
-        )
+        _open_solution_at(self, Path(path_str))
 
     def _on_menu_open_project_file(self) -> None:
         """File > Open Project File… → load a ``.fypa`` and open a viewer
         bound to it (its linked solution + editor directives)."""
-        from fypa.project_file import ProjectFile
         path_str, _ = QFileDialog.getOpenFileName(
             self, "Open project file", "",
             "FYPA project (*.fypa);;All files (*)",
@@ -7060,61 +7676,7 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         )
         if not path_str:
             return
-        try:
-            proj = ProjectFile.load(Path(path_str))
-        except Exception as e:
-            QMessageBox.critical(
-                self, "Couldn't open project",
-                f"Failed to load {path_str}:\n\n{type(e).__name__}: {e}",
-            )
-            return
-        _restore_bundled_design_info(proj)
-        sol_path = proj.solve_pickle
-        if not sol_path or not Path(sol_path).exists():
-            sol_path = None
-            if proj.prjpcb_path:
-                try:
-                    from fypa.cli import _solve_cache_path
-                    cand = _solve_cache_path(
-                        Path(proj.prjpcb_path),
-                        Path(proj.pcbdoc_path) if proj.pcbdoc_path else None,
-                    )
-                    if cand.exists():
-                        sol_path = str(cand)
-                except Exception:
-                    sol_path = None
-        if not sol_path:
-            QMessageBox.critical(
-                self, "Couldn't open project",
-                "The project file doesn't point to a readable solution "
-                "pickle, and no cached solve was found.",
-            )
-            return
-        def _work():
-            from fypa.cli import _load_solution_pickle
-            return _load_solution_pickle(Path(sol_path))
-
-        def _ok(result):
-            solution, metadata = result
-            new_win = self._open_viewer_and_close(
-                solution, metadata, project=proj, project_path=Path(path_str),
-            )
-            # Surface any skipped single-type rails recorded in the metadata.
-            _maybe_warn_open_loop_rails(new_win or self, metadata)
-            # Nets whose source & sink landed on disconnected copper.
-            _maybe_warn_connectivity_breaks(new_win or self, metadata)
-
-        def _err(exc_type, message):
-            QMessageBox.critical(
-                self, "Couldn't open project",
-                f"Failed to load the linked solution {sol_path}:\n\n"
-                f"{exc_type}: {message}",
-            )
-
-        _run_background_load(
-            self, _work, _ok, _err,
-            title="Loading", label="Loading solution…",
-        )
+        _open_project_file_at(self, Path(path_str))
 
     def _open_viewer_and_close(self, solution, metadata: dict | None,
                                *, initial_settings=None,
@@ -8282,7 +8844,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         *,
         mark_solved_since_save: bool = False,
         is_import: bool = False,
-    ) -> None:
+        project: object | None = None,
+        project_path: object | None = None,
+        status_done: str | None = None,
+    ) -> bool:
         """Swap in a freshly-solved result without replacing the window.
 
         Rebuilds solution-derived indices, clears render caches, refreshes
@@ -8292,7 +8857,11 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         ``is_import`` marks the File > Import Altium Design path, which can
         load a *different* project into this window: it resets the previous
         project's editor session, refreshes the title, and re-fits the view
-        instead of inheriting the old pan / zoom."""
+        instead of inheriting the old pan / zoom.
+
+        When ``project`` / ``project_path`` are supplied (File > Open Project
+        File), the viewer binds to that ``.fypa`` in place instead of opening
+        a new window. Returns ``True`` when the in-place refresh succeeded."""
         log = logging.getLogger(__name__)
         try:
             self.solution = new_solution
@@ -8327,18 +8896,38 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             if mark_solved_since_save:
                 self._solved_since_save = True
 
-            if is_import:
-                # Importing a different project must not leave the previous
-                # design's editor session / path bound to the new solution,
-                # or its name in the title bar. _project is rebuilt lazily
-                # from the new metadata when the user next edits.
-                self._project = None
-                self._project_path = None
-                project_name = (
-                    getattr(new_solution.problem, "project_name", None)
-                    or "unknown"
-                )
-                self.setWindowTitle(f"FYPA -- {project_name}")
+            project_swap = is_import or project is not None
+            if project_swap:
+                if self._editor_mode:
+                    self._on_editor_mode_toggled(False)
+                if project is not None:
+                    self._project = project
+                    self._project_path = project_path
+                    self._loaded_project = None
+                    self._solved_since_save = False
+                    self._display_dirty = False
+                    self._init_overlay_state()
+                    title = (
+                        Path(project_path).stem if project_path is not None
+                        else getattr(new_solution.problem, "project_name", None)
+                        or "unknown"
+                    )
+                    if getattr(project, "editor_directives", None):
+                        self._initial_solve_stale = True
+                else:
+                    # Importing a different project must not leave the previous
+                    # design's editor session / path bound to the new solution,
+                    # or its name in the title bar. _project is rebuilt lazily
+                    # from the new metadata when the user next edits.
+                    self._project = None
+                    self._project_path = None
+                    self._display_dirty = False
+                    self._init_overlay_state()
+                    title = (
+                        getattr(new_solution.problem, "project_name", None)
+                        or "unknown"
+                    )
+                self.setWindowTitle(f"FYPA -- {title}")
                 # New board → re-fit rather than inherit the old framing.
                 self._need_initial_fit = True
                 # The Overlays (Board Features) list is filtered by source kind
@@ -8355,7 +8944,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             # re-solve, but fall back to fresh defaults when importing a
             # different project or when leaving the unsolved-stub state
             # (whose rails were all hidden) so the solved rails actually show.
-            preserve = not is_import and not (was_awaiting and not is_stub)
+            preserve = (not project_swap and not (was_awaiting and not is_stub))
             self._rebuild_layer_rail_lists(preserve_visibility=preserve)
 
             if getattr(self, "setup_browser", None) is not None:
@@ -8414,9 +9003,19 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             ):
                 self._on_tabs_current_changed(cur_tab)
 
+            if status_done is None:
+                if project is not None:
+                    status_done = "Project loaded."
+                elif is_import:
+                    status_done = "Import complete."
+                else:
+                    status_done = "Solve complete."
             self._settings_status_label.setText(
-                f"<span style='color:{_T()['ok']};'>Solve complete.</span>"
+                f"<span style='color:{_T()['ok']};'>"
+                f"{_esc(status_done)}"
+                "</span>"
             )
+            return True
         except Exception as e:
             log.exception("Failed to apply solve result in place")
             _t = _T()
@@ -8433,6 +9032,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 f"The solve finished but updating this window failed:\n\n"
                 f"{type(e).__name__}: {e}",
             )
+            return False
 
     # --- Rail-group computation ---------------------------------------------
 
@@ -9847,6 +10447,39 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             for key in _OVERLAY_DEFAULT_COLORS
         }
         self._load_overlay_colors_from_project()
+        self._load_overlay_visibility_from_project()
+
+    def _load_overlay_visibility_from_project(self) -> None:
+        """Restore overlay visibility from ``viewer_settings["overlay_state"]``."""
+        proj = getattr(self, "_project", None)
+        if proj is None:
+            return
+        saved = (getattr(proj, "viewer_settings", None) or {}).get(
+            "overlay_state")
+        if not isinstance(saved, dict):
+            return
+        valid_vis = {None, "rails", "all"}
+        for key, st in saved.items():
+            if key not in self._overlay_state or not isinstance(st, dict):
+                continue
+            if "split" in st:
+                self._overlay_state[key]["split"] = bool(st["split"])
+            for variant in ("both", "top", "bottom"):
+                src = st.get(variant)
+                if variant not in self._overlay_state[key] or not isinstance(
+                        src, dict):
+                    continue
+                dst = self._overlay_state[key][variant]
+                vis = src.get("vis")
+                if vis in valid_vis:
+                    dst["vis"] = vis
+                if "solid" in src:
+                    dst["solid"] = bool(src["solid"])
+                if "alpha_step" in src:
+                    try:
+                        dst["alpha_step"] = int(src["alpha_step"])
+                    except (TypeError, ValueError):
+                        pass
 
     def _load_overlay_colors_from_project(self) -> None:
         """Override the built-in overlay colours with any saved in the open
@@ -21890,6 +22523,8 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         open_projfile.triggered.connect(self._on_menu_open_project_file)
         file_menu.addAction(open_projfile)
 
+        _build_recent_projects_menu(file_menu, self)
+
         file_menu.addSeparator()
 
         save_proj = QAction("Save &Project", self)
@@ -22208,28 +22843,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         )
         if not path_str:
             return
-        prjpcb_path = Path(path_str)
-        proceed, pcbdoc_path = _choose_pcbdoc(self, prjpcb_path)
-        if not proceed:
-            return
-        # Apply the current physics settings to module globals before the
-        # worker starts, mirroring the Re-run path's main-thread ordering.
-        self._solve_settings.apply_to_modules()
-        imp = _altium_import_worker_options(
-            prjpcb_path.name, clean=clean,
-            auto_solve=load_auto_solve_on_import(),
-        )
-        self._start_solve_worker(
-            prjpcb_path, self._solve_settings,
-            self._via_current_warn_a, self._display_percentile_high,
-            pcbdoc_selector=str(pcbdoc_path) if pcbdoc_path else None,
-            use_design_cache=imp["use_design_cache"],
-            try_solve_cache_first=imp["try_solve_cache_first"],
-            load_only=imp["load_only"],
-            is_import=True,
-            dialog_title=imp["dialog_title"],
-            dialog_text=imp["dialog_text"],
-        )
+        _open_altium_project_at(self, Path(path_str), None, clean=clean)
 
     def _on_menu_save_solution(self) -> None:
         """File > Save Solution…  →  prompt for a path (defaulting to this
@@ -22379,7 +22993,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         """Fold persistable viewer state into ``proj.viewer_settings`` so the
         next :meth:`fypa.project_file.ProjectFile.save` writes it: the
         capacitor loop-inductance knobs and the Board Features overlay
-        colours.
+        colours and visibility.
 
         Each entry is ``{"primary": [r, g, b]}``, stored in full so a
         reopened project shows exactly the colours the user left even if a
@@ -22388,12 +23002,31 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         layer — i.e. the bottom colour is written only once changed."""
         # Capacitor loop-inductance knobs — persisted whenever they've been
         # materialised (reading them is what the Capacitors tab / Settings
-        # group does on first use). Stored before the overlay-colour early
-        # return below so they survive on viewers that never customised a
-        # colour.
+        # group does on first use). Overlay visibility is stored even when
+        # overlay colours are not yet initialised.
         caploop = getattr(self, "_caploop_settings_obj", None)
         if caploop is not None:
             proj.viewer_settings["caploop"] = caploop.to_dict()
+
+        overlay_state = getattr(self, "_overlay_state", None)
+        if overlay_state:
+            proj.viewer_settings["overlay_state"] = {
+                key: {
+                    "split": bool(st.get("split", False)),
+                    **{
+                        variant: {
+                            "vis": sub.get("vis"),
+                            "solid": bool(sub.get("solid", False)),
+                            "alpha_step": int(sub.get("alpha_step", 0)),
+                        }
+                        for variant, sub in st.items()
+                        if variant in ("both", "top", "bottom")
+                        and isinstance(sub, dict)
+                    },
+                }
+                for key, st in overlay_state.items()
+                if isinstance(st, dict)
+            }
 
         colors = getattr(self, "_overlay_colors", None)
         if not colors:
@@ -22548,7 +23181,6 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
     def _on_menu_open_project_file(self) -> None:
         """File > Open Project File… → load a ``.fypa`` and open a viewer
         bound to it (its linked solution + editor directives)."""
-        from fypa.project_file import ProjectFile
         start = self._menu_start_dir()
         path_str, _ = QFileDialog.getOpenFileName(
             self, "Open project file", start,
@@ -22557,80 +23189,11 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         )
         if not path_str:
             return
-        try:
-            proj = ProjectFile.load(Path(path_str))
-        except Exception as e:
-            QMessageBox.critical(
-                self, "Couldn't open project",
-                f"Failed to load {path_str}:\n\n{type(e).__name__}: {e}",
-            )
-            return
-        _restore_bundled_design_info(proj)
-        # Resolve the solution pickle: the project's own, else the design
-        # cache's solve.pkl for the linked project.
-        sol_path = proj.solve_pickle
-        if not sol_path or not Path(sol_path).exists():
-            sol_path = None
-            if proj.prjpcb_path:
-                try:
-                    from fypa.cli import _solve_cache_path
-                    cand = _solve_cache_path(
-                        Path(proj.prjpcb_path),
-                        Path(proj.pcbdoc_path) if proj.pcbdoc_path else None,
-                    )
-                    if cand.exists():
-                        sol_path = str(cand)
-                except Exception:
-                    sol_path = None
-        if not sol_path:
-            QMessageBox.critical(
-                self, "Couldn't open project",
-                "The project file doesn't point to a readable solution "
-                "pickle, and no cached solve was found.",
-            )
-            return
-        def _work():
-            from fypa.cli import _load_solution_pickle
-            return _load_solution_pickle(Path(sol_path))
-
-        def _ok(result):
-            solution, metadata = result
-            try:
-                new_win = PdnViewer(
-                    solution, metadata=metadata,
-                    project=proj, project_path=Path(path_str),
-                )
-                # Editor directives present but possibly not reflected by the
-                # loaded solve — offer the resolve button so the user can bring
-                # the heatmap up to date.
-                if proj.editor_directives:
-                    new_win._set_solve_stale(True)
-                _register_viewer(new_win)
-                new_win.show()
-                _force_native_window_icon(new_win)
-                _set_window_aumid(new_win)
-            except Exception as e:
-                QMessageBox.critical(
-                    self, "Couldn't open viewer",
-                    f"Project loaded but the viewer failed to open:\n\n"
-                    f"{type(e).__name__}: {e}",
-                )
-
-        def _err(exc_type, message):
-            QMessageBox.critical(
-                self, "Couldn't open project",
-                f"Failed to load the linked solution {sol_path}:\n\n"
-                f"{exc_type}: {message}",
-            )
-
-        _run_background_load(
-            self, _work, _ok, _err,
-            title="Loading", label="Loading solution…",
-        )
+        _open_project_file_at(self, Path(path_str))
 
     def _on_menu_open_solution(self) -> None:
         """File > Load Solution…  →  load a pickled LeanSolution + metadata
-        and open a fresh viewer bound to it. No solve runs."""
+        in place (no re-solve)."""
         start_dir = self._project_cache_dir_str() or self._menu_start_dir()
         path_str, _ = QFileDialog.getOpenFileName(
             self, "Open solution pickle",
@@ -22640,36 +23203,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         )
         if not path_str:
             return
-
-        def _work():
-            from fypa.cli import _load_solution_pickle
-            return _load_solution_pickle(Path(path_str))
-
-        def _ok(result):
-            solution, metadata = result
-            try:
-                new_win = PdnViewer(solution, metadata=metadata)
-                _register_viewer(new_win)
-                new_win.show()
-                _force_native_window_icon(new_win)
-                _set_window_aumid(new_win)
-            except Exception as e:
-                QMessageBox.critical(
-                    self, "Couldn't open viewer",
-                    f"Solution loaded but the viewer failed to open:\n\n"
-                    f"{type(e).__name__}: {e}",
-                )
-
-        def _err(exc_type, message):
-            QMessageBox.critical(
-                self, "Couldn't open solution",
-                f"Failed to load {path_str}:\n\n{exc_type}: {message}",
-            )
-
-        _run_background_load(
-            self, _work, _ok, _err,
-            title="Loading", label="Loading solution…",
-        )
+        _open_solution_at(self, Path(path_str))
 
     def _on_menu_close_project(self) -> None:
         """File > Close Project  →  open a fresh launcher window and close
@@ -22831,6 +23365,8 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         dialog_title: str = "Running solver",
         dialog_text: str | None = None,
         dialog_width_scale: float = 1.44,
+        pending_altium_recent_pcbdoc: Path | None = None,
+        pending_altium_from_recent: bool = False,
     ) -> None:
         """Show an indeterminate progress dialog and run :class:`_SolveWorker`
         off-thread; on success, refresh this viewer in place via
@@ -22838,6 +23374,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         Settings-tab form values) and by File > Import Altium Design (with
         defaults from the current viewer). Set ``use_design_cache=False`` for
         the "Clean" / Reload Design Info flows that must re-extract."""
+        if _reject_if_solve_running(self):
+            return
+        if _reject_if_background_load_running(self):
+            return
         if dialog_text is None:
             dialog_text = (f"Loading {prjpcb_path.name} and solving…\n"
                            "This can take 10–60 s depending on board size "
@@ -22878,6 +23418,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             adaptive_regulator_gain=adaptive_regulator_gain,
             parent=self,
         )
+        if is_import:
+            pcbdoc = pending_altium_recent_pcbdoc
+            if pcbdoc is None and pcbdoc_selector:
+                pcbdoc = Path(pcbdoc_selector)
+            _stash_pending_altium_recent(
+                self, prjpcb_path, pcbdoc, from_recent=pending_altium_from_recent,
+            )
         self._solve_worker = worker
         self._solve_progress_dlg = dlg
         # Wires stage_changed / substage_changed to the dialog, with a
@@ -22952,6 +23499,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         # packaging case). That MUST happen before self.close() below —
         # otherwise destroying the viewer with the QThread still parented and
         # running would qFatal the process.
+        _clear_pending_altium_recent(self)
         _abort_solve_worker(self)
         app = QApplication.instance()
         launcher = LauncherWindow()
@@ -22970,6 +23518,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         """Worker emitted ``failed``. Show the error inline in the Settings
         tab + as a modal dialog so the user can't miss it."""
         logging.getLogger(__name__).error("Solve failed: %s", message)
+        _drop_pending_altium_recent(self)
         # Compact one-line version for the status label; full traceback
         # in the dialog for copy-pasting.
         first_line = message.splitlines()[0] if message else "Solve failed"
@@ -22997,10 +23546,14 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         *, is_import: bool = False,
     ) -> None:
         """Worker emitted ``finished_ok`` — refresh this viewer in place."""
-        self._apply_solve_result(
+        ok = self._apply_solve_result(
             new_solution, metadata, loaded_project, new_settings,
             warn_a, pct, is_import=is_import,
         )
+        if is_import:
+            if ok:
+                _record_recent_altium_from_metadata(metadata)
+            _clear_pending_altium_recent(self)
 
     def _on_resolve_finished(
         self, new_solution, metadata: dict, loaded_project,
