@@ -1377,6 +1377,10 @@ def _compile_schematic_netlist(design: AltiumDesign) -> Netlist | None:
         from altium_monkey.altium_netlist_compilation import compile_netlist
         from altium_monkey.altium_netlist_options import NetlistOptions
 
+        from fypa.altium.altium_monkey_patches import apply_altium_monkey_patches
+
+        apply_altium_monkey_patches()
+
         options = (
             NetlistOptions.from_prjpcb(design.project)
             if design.project is not None
