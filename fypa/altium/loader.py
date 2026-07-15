@@ -1591,30 +1591,59 @@ def _gil_yield(i: int, every: int = 4096) -> None:
         time.sleep(0.001)
 
 
-def build_net_canonical_map(netlist) -> dict[str, str]:
+def build_net_canonical_map(
+    netlist,
+    *,
+    pcb_net_names: set[str] | frozenset[str] | None = None,
+) -> dict[str, str]:
     """Map every schematic net label (``Net.name`` or alias) to ``Net.name``.
 
     Altium's compiled netlist stores the top-level / flattened name in
     ``Net.name`` and local or cross-sheet labels in ``aliases``. The viewer
     uses this map so rail lists show the canonical name rather than a local
     sheet label from ``PDN_*_NET``.
+
+    An alias is **not** mapped when another netlist entry (or, when provided,
+    a distinct PCB net) already owns that label as its primary name. The
+    schematic netlist compiler can emit spurious aliases in multi-sheet
+    designs — e.g. two regulator outputs that only meet again at a multi-rail
+    sink may appear as ``Net(name='VDD_1V25A', aliases=['VDD_1V25D'])`` while
+    ``Net(name='VDD_1V25D')`` also exists. Folding that alias would hide one
+    rail and mis-attribute copper even though the nets were never merged.
     """
     if netlist is None:
         return {}
+    nets = list(getattr(netlist, "nets", ()) or ())
+    primary_upper = {
+        net.name.upper()
+        for net in nets
+        if getattr(net, "name", None)
+    }
+    pcb_upper = {n.upper() for n in (pcb_net_names or ()) if n}
     out: dict[str, str] = {}
-    for net in getattr(netlist, "nets", ()) or ():
+    for net in nets:
         canonical = net.name
+        canon_upper = canonical.upper()
         for label in (canonical, *getattr(net, "aliases", ())):
-            if label:
-                out[label.upper()] = canonical
+            if not label:
+                continue
+            key = label.upper()
+            if key != canon_upper and (
+                key in primary_upper or key in pcb_upper
+            ):
+                continue
+            out[key] = canonical
     return out
 
 
 # --- adaptive SMPS regulator gain (optional fixed-point iteration) ------------
 
-_ADAPTIVE_GAIN_MAX_ITERATIONS: int = 8
+_ADAPTIVE_GAIN_MAX_ITERATIONS: int = 12
 _ADAPTIVE_GAIN_REL_TOL: float = 1e-3
 _ADAPTIVE_GAIN_VIN_FLOOR_V: float = 0.1
+# Blend toward the measured-Vin target gain each iteration (1 = full step).
+# Values < 1 stabilise coupled SMPS rails that share a SERIES upstream path.
+_ADAPTIVE_GAIN_BLEND: float = 0.65
 
 
 def has_adaptive_smps_regulators(loaded: LoadedProject) -> bool:
@@ -1745,6 +1774,11 @@ def solve_problem_adaptive(
         bool(adaptive_regulator_gain)
         and has_adaptive_smps_regulators(loaded)
     )
+    n_adaptive = sum(
+        1 for d in loaded.annotations.directives
+        if isinstance(d, RegulatorSpec) and d.adaptive_gain_eligible
+    )
+    gain_blend = _ADAPTIVE_GAIN_BLEND if n_adaptive > 1 else 1.0
 
     problem, via_segment_records, stub_pieces_by_pair, per_net_layers = (
         build_problem(loaded)
@@ -1806,7 +1840,8 @@ def solve_problem_adaptive(
                 new_gain = d.gain
             else:
                 any_vin_sampled = True
-                new_gain = d.voltage / (vin * d.efficiency)
+                target_gain = d.voltage / (vin * d.efficiency)
+                new_gain = (1.0 - gain_blend) * d.gain + gain_blend * target_gain
             if d.gain != 0.0:
                 max_rel_change = max(
                     max_rel_change,
@@ -2452,7 +2487,10 @@ def build_solve_metadata(
             ),
         },
         "directives": directives,
-        "net_canonical": build_net_canonical_map(proj.compiled_netlist),
+        "net_canonical": build_net_canonical_map(
+            proj.compiled_netlist,
+            pcb_net_names={n.name for n in proj.nets},
+        ),
         "active_nets": active_nets,
         "vias": vias,
         "pths": pths,

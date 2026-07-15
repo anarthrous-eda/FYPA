@@ -58,3 +58,4 @@ ExampleDesigns/Sandbox/*
 sanitize_sandbox.ps1
 wiring.json
 scripts/test-*.ps1
+FYPA.code-workspace

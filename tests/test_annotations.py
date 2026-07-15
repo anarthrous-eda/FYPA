@@ -1599,11 +1599,209 @@ def test_regulator_explicit_gain_overrides_type():
     assert any("overrides" in w for w in result.warnings)
 
 
-def test_lookup_inferred_vin_ignores_series_bridge_groups():
-    """Sense paths through GND must not make Vin ambiguous (project_a / PDN5_R)."""
+def test_lookup_inferred_vin_exact_match_without_series_walk():
+    """Without series_upstream, only direct supply_map hits resolve."""
     supply_map = {"VDD_48V": 48.0, "VDD_12V": 12.0}
-    assert _lookup_inferred_vin("VDD_48V", supply_map) == 48.0
-    assert _lookup_inferred_vin("VDD_12V", supply_map) == 12.0
+    assert _lookup_inferred_vin("VDD_48V", supply_map) == (48.0, None)
+    assert _lookup_inferred_vin("VDD_12V", supply_map) == (12.0, None)
+    assert _lookup_inferred_vin("VDD_48V_RP", supply_map) == (None, None)
+
+
+def test_lookup_inferred_vin_walks_series_upstream():
+    supply_map = {"VDD_48V_IN": 48.0}
+    upstream = {"VDD_48V_RP": "VDD_48V", "VDD_48V": "VDD_48V_IN"}
+    assert _lookup_inferred_vin(
+        "VDD_48V_RP", supply_map, series_upstream=upstream,
+    ) == (48.0, None)
+
+
+def test_lookup_inferred_vin_series_ambiguous_and_cycle():
+    supply_map = {"VDD_48V_IN": 48.0}
+    assert _lookup_inferred_vin(
+        "VDD_48V_RP", supply_map, ambiguous_downstream=frozenset({"VDD_48V_RP"}),
+    ) == (None, "ambiguous")
+    assert _lookup_inferred_vin(
+        "VDD_48V_RP", supply_map,
+        series_upstream={"VDD_48V_RP": "VDD_48V", "VDD_48V": "VDD_48V_RP"},
+    ) == (None, "cycle")
+
+
+def test_regulator_smps_vin_through_series_chain():
+    """VIP-style: SOURCE -> SERIES -> SERIES -> SMPS on downstream net."""
+    proj = _minimal_proj(
+        nets=(
+            RawNet("GND"), RawNet("VDD_48V_IN"), RawNet("VDD_48V"),
+            RawNet("VDD_48V_RP"), RawNet("VDD_12V"),
+        ),
+        sch_components=(
+            RawSchComponent(
+                designator="J7", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SOURCE",
+                    "PDN_V": "48",
+                    "PDN_P_NET": "VDD_48V_IN",
+                    "PDN_N_NET": "GND",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="J8", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SERIES",
+                    "PDN_R": "50m",
+                    "PDN_P_NET": "VDD_48V_IN",
+                    "PDN_N_NET": "VDD_48V",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="Q3", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SERIES",
+                    "PDN_R": "300m",
+                    "PDN_P_NET": "VDD_48V",
+                    "PDN_N_NET": "VDD_48V_RP",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="U5", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "REGULATOR",
+                    "PDN_REGULATOR_TYPE": "SMPS",
+                    "PDN_REGULATOR_EFFICIENCY": "0.8",
+                    "PDN_V": "12",
+                    "PDN_OUT_P_NET": "VDD_12V",
+                    "PDN_OUT_N_NET": "GND",
+                    "PDN_IN_P_NET": "VDD_48V_RP",
+                    "PDN_IN_N_NET": "GND",
+                },
+                pin_designators=("1", "2", "3", "4"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="J7", center=Pt2D(-15, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="CONN", source_designator="J7",
+            ),
+            RawPcbComponent(
+                designator="J8", center=Pt2D(-10, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="FUSE", source_designator="J8",
+            ),
+            RawPcbComponent(
+                designator="Q3", center=Pt2D(-5, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="SOT", source_designator="Q3",
+            ),
+            RawPcbComponent(
+                designator="U5", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="SOT", source_designator="U5",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, -15), _pad(0, "2", 0, -14),
+            _pad(1, "1", 1, -10), _pad(1, "2", 2, -9),
+            _pad(2, "1", 2, -5), _pad(2, "2", 3, -4),
+            _pad(3, "1", 4, 0), _pad(3, "2", 0, 1),
+            _pad(3, "3", 3, 2), _pad(3, "4", 0, 3),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    reg = next(d for d in result.directives if d.designator == "U5")
+    assert isinstance(reg, RegulatorSpec)
+    assert reg.regulator_type == "SMPS"
+    assert abs(reg.gain - (12.0 / (48.0 * 0.8))) < 1e-6
+    assert not any("cannot infer input voltage" in e for e in result.errors)
+
+
+def test_regulator_smps_vin_series_ambiguous_fork():
+    proj = _minimal_proj(
+        nets=(
+            RawNet("GND"), RawNet("VDD_48V_IN"), RawNet("VDD_48V"),
+            RawNet("VDD_48V_RP"), RawNet("VDD_12V"), RawNet("ALT_48V"),
+        ),
+        sch_components=(
+            RawSchComponent(
+                designator="J7", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SOURCE", "PDN_V": "48",
+                    "PDN_P_NET": "VDD_48V_IN", "PDN_N_NET": "GND",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="J8", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SERIES", "PDN_R": "50m",
+                    "PDN_P_NET": "VDD_48V_IN", "PDN_N_NET": "VDD_48V",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="Q3a", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SERIES", "PDN_R": "100m",
+                    "PDN_P_NET": "VDD_48V", "PDN_N_NET": "VDD_48V_RP",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="Q3b", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SERIES", "PDN_R": "200m",
+                    "PDN_P_NET": "ALT_48V", "PDN_N_NET": "VDD_48V_RP",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="U5", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "REGULATOR",
+                    "PDN_REGULATOR_TYPE": "SMPS",
+                    "PDN_REGULATOR_EFFICIENCY": "0.8",
+                    "PDN_V": "12",
+                    "PDN_OUT_P_NET": "VDD_12V",
+                    "PDN_OUT_N_NET": "GND",
+                    "PDN_IN_P_NET": "VDD_48V_RP",
+                    "PDN_IN_N_NET": "GND",
+                },
+                pin_designators=("1", "2", "3", "4"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="J7", center=Pt2D(-15, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="CONN", source_designator="J7",
+            ),
+            RawPcbComponent(
+                designator="J8", center=Pt2D(-10, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="FUSE", source_designator="J8",
+            ),
+            RawPcbComponent(
+                designator="Q3a", center=Pt2D(-5, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="SOT", source_designator="Q3a",
+            ),
+            RawPcbComponent(
+                designator="Q3b", center=Pt2D(-4, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="SOT", source_designator="Q3b",
+            ),
+            RawPcbComponent(
+                designator="U5", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="SOT", source_designator="U5",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, -15), _pad(0, "2", 0, -14),
+            _pad(1, "1", 1, -10), _pad(1, "2", 2, -9),
+            _pad(2, "1", 2, -5), _pad(2, "2", 3, -4),
+            _pad(3, "1", 5, -4), _pad(3, "2", 3, -3),
+            _pad(4, "1", 4, 0), _pad(4, "2", 0, 1),
+            _pad(4, "3", 3, 2), _pad(4, "4", 0, 3),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert not result.ok
+    assert any("ambiguous SERIES upstream" in e for e in result.errors)
 
 
 def test_regulator_smps_vin_not_ambiguous_through_sense_bridges():
