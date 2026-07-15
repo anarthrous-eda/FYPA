@@ -484,8 +484,13 @@ def test_a_pad_sized_copper_island_is_not_a_reference_plane():
 
 @pytest.mark.parametrize("params,expect_c,expect_v", [
     ({"Capacitance": "100nF"}, 1e-7, None),
+    ({"Value": "100 nF"}, 1e-7, None),
+    ({"Value": "2.2 \u00b5F"}, 2.2e-6, None),   # micro sign (Altium default)
+    ({"Value": "2.2 uF"}, 2.2e-6, None),
     ({"Value": "0.1uF/16V"}, 1e-7, 16.0),
+    ({"Value": "0.1 uF / 16 V"}, 1e-7, 16.0),
     ({"Comment": "CAP CER 100NF 25V X7R 0402"}, 1e-7, 25.0),
+    ({"Comment": "CAP CER 100 nF 25V X7R"}, 1e-7, 25.0),
     ({"Comment": "4u7", "Voltage": "6V3"}, 4.7e-6, 6.3),
     ({"Value": "10k"}, None, None),          # a resistor value — out of band
     ({"Comment": "0.1"}, None, None),        # bare number — unit-ambiguous

@@ -23,7 +23,7 @@ from dataclasses import dataclass
 import shapely.geometry
 import shapely.geometry.base
 
-from fypa.altium.annotations import parse_si_value
+from fypa.altium.annotations import _normalize_si_text, parse_si_value
 from fypa.altium.extract import (
     NO_NET,
     ExtractedProject,
@@ -179,16 +179,24 @@ def _parse_banded_tokens(
     doesn't land in band, retry lower-cased. The band makes this safe: the
     only case-folding hazard is M(ega)→m(illi), and no plausible band
     contains both readings of the same token.
+
+    Altium ``Value`` fields often separate magnitude and unit (``100 nF``,
+    ``2.2 µF``). :func:`_normalize_si_text` collapses that spacing; bare
+    numeric tokens are also merged with the following token before parsing.
     """
     lo, hi = band
-    for token in _TOKEN_SPLIT_RE.split(text):
-        if not token or not any(c.isalpha() for c in token):
-            continue
+    text = str(text).strip()
+    if not text:
+        return None
+
+    def _try_token(token: str) -> float | None:
+        if not token:
+            return None
         token_l = token.lower()
         if require_char is not None and require_char not in token_l:
-            continue
+            return None
         if exclude_char is not None and exclude_char in token_l:
-            continue
+            return None
         for candidate in (token, token_l):
             try:
                 value = parse_si_value(candidate)
@@ -196,6 +204,23 @@ def _parse_banded_tokens(
                 continue
             if lo <= value <= hi:
                 return value
+        return None
+
+    normalized = _normalize_si_text(text)
+    hit = _try_token(normalized)
+    if hit is not None and (normalized != text or any(c.isalpha() for c in text)):
+        return hit
+
+    tokens = [t for t in _TOKEN_SPLIT_RE.split(text) if t]
+    for i, token in enumerate(tokens):
+        if not any(c.isalpha() for c in token) and i + 1 < len(tokens):
+            hit = _try_token(_normalize_si_text(f"{token} {tokens[i + 1]}"))
+            if hit is not None:
+                return hit
+        if any(c.isalpha() for c in token):
+            hit = _try_token(token)
+            if hit is not None:
+                return hit
     return None
 
 
