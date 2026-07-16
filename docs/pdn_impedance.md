@@ -101,11 +101,20 @@ vendor's model.
 
 ### Package detection, and what "SMD only" means
 
-The case size is parsed from the footprint name, handling the three conventions
-seen in the wild: a bare imperial code (`C_0402_SL`), an explicit metric one
-(`C_0402_1005Metric`), and IPC-7351 land names (`CAPC1608X90N`, whose digits
-are always metric). Note that `0603` is both an imperial code *and* the metric
-code for an 0201; the metric reading is taken only when the name says so.
+The case size is parsed from the footprint name. FYPA recognises:
+
+* a bare imperial code (`C_0402_SL`, `0603`);
+* a bare metric code with optional suffix letters (`1005B`, `1608C`, `1608C-HD`);
+* an explicit metric suffix (`C_0402_1005Metric`);
+* IPC-7351 land names (`CAPC1608X90N`, whose digits are always metric).
+
+Note that `0603` is both an imperial code *and* the metric code for an 0201.
+Unambiguous metric codes (1005, 1608, …) are always read as metric. For the
+ambiguous pair `0402` / `0603`, the **Case size convention** setting on the
+Impedance tab chooses imperial (default in Auto) or metric.
+
+Pad geometry from the layout is always in millimetres — only the **name**
+convention affects classification and how the Pkg column is labelled.
 
 **Only SMD chip packages are supported.** A tantalum D-case brick, an
 electrolytic, anything through-hole — none has a case-size code, and none has an

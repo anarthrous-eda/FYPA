@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Literal
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +83,16 @@ _METRIC_TO_IMPERIAL: dict[str, str] = {
     "5750": "2220",
 }
 
+# Imperial codes that are also valid metric codes for a *different* body size.
+_AMBIGUOUS_CODES = frozenset({"0402", "0603"})
+
+_IMPERIAL_TO_METRIC: dict[str, str] = {
+    imperial: metric for metric, imperial in _METRIC_TO_IMPERIAL.items()
+}
+
+FootprintConvention = Literal["auto", "metric", "imperial"]
+FOOTPRINT_CONVENTIONS: tuple[str, ...] = ("auto", "metric", "imperial")
+
 # IPC-7351 chip-capacitor land names, e.g. "CAPC1608X90N" — the digits are
 # always metric.
 _IPC_RE = re.compile(r"CAPC(\d{4})X\d+", re.IGNORECASE)
@@ -91,18 +102,74 @@ _METRIC_RE = re.compile(r"(\d{4})\s*metric", re.IGNORECASE)
 _CODE_RE = re.compile(r"(?<!\d)(\d{4,5})(?!\d)")
 
 
-def detect_package(footprint: str) -> str | None:
+def normalize_footprint_convention(convention: str) -> FootprintConvention:
+    """Return a valid convention name, defaulting to ``auto``."""
+    if convention in FOOTPRINT_CONVENTIONS:
+        return convention  # type: ignore[return-value]
+    return "auto"
+
+
+def format_package_label(
+    package: str | None,
+    convention: str = "imperial",
+) -> str:
+    """Display label for a canonical (imperial-keyed) package name."""
+    if not package:
+        return "—"
+    conv = normalize_footprint_convention(convention)
+    if conv == "metric":
+        return _IMPERIAL_TO_METRIC.get(package, package)
+    return package
+
+
+def package_detection_tooltip(
+    footprint: str,
+    package: str | None,
+) -> str:
+    """Tooltip for the Capacitors-tab Pkg column."""
+    if not package:
+        return (
+            f"{footprint!r} is not a recognised SMD chip package. "
+            "Set ESL and ESR on this part to include it in the "
+            "impedance model.")
+    imperial_label = format_package_label(package, "imperial")
+    metric = _IMPERIAL_TO_METRIC.get(package)
+    if metric:
+        body = (
+            f"SMD case size parsed from footprint {footprint!r} → "
+            f"{imperial_label} ({metric} metric).")
+    else:
+        body = (
+            f"SMD case size parsed from footprint {footprint!r} → "
+            f"{imperial_label}.")
+    return body + " It selects the default ESL / ESR from the package library."
+
+
+def detect_package(
+    footprint: str,
+    *,
+    convention: str = "auto",
+) -> str | None:
     """Imperial case code for an SMD footprint name, or ``None``.
 
-    Handles the three conventions seen in the wild — a bare imperial code
-    (``C_0402_SL``, ``0603``), an explicit metric one (``C_0402_1005Metric``),
-    and IPC-7351 land names (``CAPC1608X90N``) whose digits are always metric.
+    Handles the conventions seen in the wild — a bare imperial code
+    (``C_0402_SL``, ``0603``), a bare metric one (``1005B``, ``1608C``),
+    an explicit metric suffix (``C_0402_1005Metric``), and IPC-7351 land
+    names (``CAPC1608X90N``) whose digits are always metric.
+
+    The return value is always the **imperial canonical key** used by
+    :class:`PackageLibrary`, regardless of ``convention``. ``convention``
+    only disambiguates bare ``0402`` / ``0603`` codes that exist in both
+    systems.
+
     Returns ``None`` for anything else, which is the signal that the part is
     not an SMD chip capacitor and needs a per-part override to take part in the
     impedance model.
     """
     if not footprint:
         return None
+
+    conv = normalize_footprint_convention(convention)
 
     ipc = _IPC_RE.search(footprint)
     if ipc:
@@ -114,8 +181,14 @@ def detect_package(footprint: str) -> str | None:
 
     for match in _CODE_RE.finditer(footprint):
         code = match.group(1)
+        if code in _AMBIGUOUS_CODES:
+            if conv == "metric":
+                return _METRIC_TO_IMPERIAL.get(code)
+            return code
         if code in DEFAULT_PACKAGE_MODELS:
             return code
+        if code in _METRIC_TO_IMPERIAL:
+            return _METRIC_TO_IMPERIAL[code]
     return None
 
 
