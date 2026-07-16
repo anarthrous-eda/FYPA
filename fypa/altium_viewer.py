@@ -25130,17 +25130,37 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         proj.viewer_settings["footprint_convention"] = conv
         self._display_dirty = True
 
+    def _build_footprint_convention_combo(self) -> QComboBox:
+        """Case-size naming convention — shared by Capacitors and Impedance tabs."""
+        combo = QComboBox()
+        for value, label in (
+            ("auto", "Auto"),
+            ("metric", "Metric"),
+            ("imperial", "Imperial"),
+        ):
+            combo.addItem(label, value)
+        current = self._footprint_convention()
+        idx = combo.findData(current)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+        combo.setToolTip(
+            "How bare case-size codes in footprint names are read and "
+            "shown. Auto recognises unambiguous metric codes (1005, 1608) "
+            "and treats bare 0402 / 0603 as imperial.")
+        combo.currentIndexChanged.connect(self._on_footprint_convention_changed)
+        return combo
+
     def _sync_footprint_convention_ui(self) -> None:
-        """Refresh the Impedance-tab convention combo and package labels from
-        the active project — needed after an in-place project swap."""
-        combo = getattr(self, "imp_footprint_conv_combo", None)
-        if combo is not None:
-            current = self._footprint_convention()
-            combo.blockSignals(True)
-            idx = combo.findData(current)
-            if idx >= 0:
-                combo.setCurrentIndex(idx)
-            combo.blockSignals(False)
+        """Refresh convention combos and package labels from the active project."""
+        current = self._footprint_convention()
+        for attr in ("caps_footprint_conv_combo", "imp_footprint_conv_combo"):
+            combo = getattr(self, attr, None)
+            if combo is not None:
+                combo.blockSignals(True)
+                idx = combo.findData(current)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+                combo.blockSignals(False)
         if getattr(self, "imp_pkg_table", None) is not None:
             self._populate_package_table()
 
@@ -25192,6 +25212,11 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         )
         self.caps_overlay_box.toggled.connect(self._on_caps_overlay_toggled)
         filter_row.addWidget(self.caps_overlay_box)
+
+        filter_row.addSpacing(12)
+        filter_row.addWidget(QLabel("Footprints:"))
+        self.caps_footprint_conv_combo = self._build_footprint_convention_combo()
+        filter_row.addWidget(self.caps_footprint_conv_combo)
 
         filter_row.addSpacing(12)
         self.caps_tier23_btn = QPushButton("Compute Tier 2/3")
@@ -26447,23 +26472,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
 
         conv_row = QHBoxLayout()
         conv_row.addWidget(QLabel("Case size convention:"))
-        self.imp_footprint_conv_combo = QComboBox()
-        for value, label in (
-            ("auto", "Auto"),
-            ("metric", "Metric"),
-            ("imperial", "Imperial"),
-        ):
-            self.imp_footprint_conv_combo.addItem(label, value)
-        current = self._footprint_convention()
-        idx = self.imp_footprint_conv_combo.findData(current)
-        if idx >= 0:
-            self.imp_footprint_conv_combo.setCurrentIndex(idx)
-        self.imp_footprint_conv_combo.setToolTip(
-            "How bare case-size codes in footprint names are read and "
-            "shown. Auto recognises unambiguous metric codes (1005, 1608) "
-            "and treats bare 0402 / 0603 as imperial.")
-        self.imp_footprint_conv_combo.currentIndexChanged.connect(
-            self._on_footprint_convention_changed)
+        self.imp_footprint_conv_combo = self._build_footprint_convention_combo()
         conv_row.addWidget(self.imp_footprint_conv_combo, 1)
         layout.addLayout(conv_row)
 
@@ -26508,14 +26517,25 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._imp_pkg_populating = False
 
     def _on_footprint_convention_changed(self, _index: int = 0) -> None:
-        combo = getattr(self, "imp_footprint_conv_combo", None)
-        if combo is None:
-            return
-        value = combo.currentData()
+        sender = self.sender()
+        if isinstance(sender, QComboBox):
+            value = sender.currentData()
+        else:
+            combo = getattr(self, "imp_footprint_conv_combo", None)
+            value = combo.currentData() if combo else None
         if not value:
             return
         self._set_footprint_convention(str(value))
-        self._populate_package_table()
+        for attr in ("caps_footprint_conv_combo", "imp_footprint_conv_combo"):
+            combo = getattr(self, attr, None)
+            if combo is not None and combo is not sender:
+                combo.blockSignals(True)
+                idx = combo.findData(value)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+                combo.blockSignals(False)
+        if getattr(self, "imp_pkg_table", None) is not None:
+            self._populate_package_table()
         self._invalidate_caps_cache(heavy=True)
 
     def _on_package_item_changed(self, item) -> None:
