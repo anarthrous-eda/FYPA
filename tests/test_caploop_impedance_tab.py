@@ -295,6 +295,38 @@ def test_resetting_the_library_restores_the_defaults(viewer):
     assert viewer._project.viewer_settings["caploop_packages"] == {}
 
 
+def test_metric_convention_shows_metric_package_labels(viewer):
+    viewer._set_footprint_convention("metric")
+    viewer._sync_footprint_convention_ui()
+    table = viewer.imp_pkg_table
+    row = next(r for r in range(table.rowCount())
+               if table.item(r, 0).data(av._PKG_CANONICAL_ROLE) == "0402")
+    assert table.item(row, 0).text() == "1005"
+    assert viewer.imp_footprint_conv_combo.currentData() == "metric"
+
+
+def test_sync_footprint_convention_ui_reads_saved_project_setting(viewer):
+    viewer._project.viewer_settings["footprint_convention"] = "imperial"
+    viewer._sync_footprint_convention_ui()
+    assert viewer.imp_footprint_conv_combo.currentData() == "imperial"
+    row = next(r for r in range(viewer.imp_pkg_table.rowCount())
+               if viewer.imp_pkg_table.item(r, 0).data(
+                   av._PKG_CANONICAL_ROLE) == "0402")
+    assert viewer.imp_pkg_table.item(row, 0).text() == "0402"
+
+
+def test_editing_a_package_under_metric_labels_uses_canonical_key(viewer):
+    viewer._set_footprint_convention("metric")
+    viewer._sync_footprint_convention_ui()
+    table = viewer.imp_pkg_table
+    row = next(r for r in range(table.rowCount())
+               if table.item(r, 0).data(av._PKG_CANONICAL_ROLE) == "0402")
+    assert table.item(row, 0).text() == "1005"
+    table.item(row, 1).setText("1.5")
+    assert viewer._project.viewer_settings["caploop_packages"]["0402"][
+        "esl_h"] == pytest.approx(1.5e-9)
+
+
 # --- per-part overrides feed the model ------------------------------------------------
 
 

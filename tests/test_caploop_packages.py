@@ -42,10 +42,22 @@ def test_detect_package(footprint, expected):
 @pytest.mark.parametrize("footprint,expected", [
     ("0603", "0201"),
     ("0402", "01005"),
-    ("C_0603_SL", "0201"),
 ])
 def test_detect_package_metric_convention(footprint, expected):
     assert detect_package(footprint, convention="metric") == expected
+
+
+@pytest.mark.parametrize("footprint,expected", [
+    ("C_0603_SL", "0603"),
+    ("C_0402_SL", "0402"),
+])
+def test_explicit_imperial_names_ignore_metric_convention(footprint, expected):
+    assert detect_package(footprint, convention="metric") == expected
+
+
+def test_unambiguous_metric_code_wins_over_ambiguous_imperial():
+    """When several bare codes appear, prefer the unambiguous metric one."""
+    assert detect_package("0603_1005") == "0402"
 
 
 def test_format_package_label():

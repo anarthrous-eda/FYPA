@@ -102,6 +102,50 @@ _METRIC_RE = re.compile(r"(\d{4})\s*metric", re.IGNORECASE)
 _CODE_RE = re.compile(r"(?<!\d)(\d{4,5})(?!\d)")
 
 
+def _has_explicit_imperial_marker(footprint: str, code: str) -> bool:
+    """True when *footprint* names an imperial land pattern, not a bare code."""
+    if code not in _AMBIGUOUS_CODES:
+        return False
+    # Underscore-delimited land name: C_0402_SL, FOOT_0603_X
+    if re.search(rf'[_/\-]{re.escape(code)}(?:[_/\-]|$)', footprint, re.I):
+        return True
+    # Component prefix: C0402, C_0402, R0603
+    if re.search(
+            rf'(?:^|[_/\-])[CRLD](?:[_\-]?){re.escape(code)}\b',
+            footprint, re.I):
+        return True
+    return False
+
+
+def _code_match_priority(code: str) -> int:
+    """Higher = more confident. Used to pick among several bare codes."""
+    if code in _METRIC_TO_IMPERIAL and code not in DEFAULT_PACKAGE_MODELS:
+        return 3
+    if code in DEFAULT_PACKAGE_MODELS and code not in _AMBIGUOUS_CODES:
+        return 2
+    if code in _AMBIGUOUS_CODES:
+        return 1
+    return 0
+
+
+def _resolve_bare_code(
+    code: str,
+    conv: FootprintConvention,
+    footprint: str,
+) -> str | None:
+    if code in _AMBIGUOUS_CODES:
+        if _has_explicit_imperial_marker(footprint, code):
+            return code
+        if conv == "metric":
+            return _METRIC_TO_IMPERIAL.get(code)
+        return code
+    if code in DEFAULT_PACKAGE_MODELS:
+        return code
+    if code in _METRIC_TO_IMPERIAL:
+        return _METRIC_TO_IMPERIAL[code]
+    return None
+
+
 def normalize_footprint_convention(convention: str) -> FootprintConvention:
     """Return a valid convention name, defaulting to ``auto``."""
     if convention in FOOTPRINT_CONVENTIONS:
@@ -179,17 +223,16 @@ def detect_package(
     if metric:
         return _METRIC_TO_IMPERIAL.get(metric.group(1))
 
+    best: tuple[int, int, str] | None = None
     for match in _CODE_RE.finditer(footprint):
         code = match.group(1)
-        if code in _AMBIGUOUS_CODES:
-            if conv == "metric":
-                return _METRIC_TO_IMPERIAL.get(code)
-            return code
-        if code in DEFAULT_PACKAGE_MODELS:
-            return code
-        if code in _METRIC_TO_IMPERIAL:
-            return _METRIC_TO_IMPERIAL[code]
-    return None
+        pkg = _resolve_bare_code(code, conv, footprint)
+        if pkg is None:
+            continue
+        key = (_code_match_priority(code), -match.start(), pkg)
+        if best is None or key > best:
+            best = key
+    return best[2] if best is not None else None
 
 
 class PackageLibrary:

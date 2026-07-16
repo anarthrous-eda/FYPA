@@ -8970,6 +8970,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             self._invalidate_caps_cache(repopulate=False, heavy=True)
             self._caps_shapes_cache = None
             self._impedance_populated = False
+            self._sync_footprint_convention_ui()
             if self._project is not None:
                 self._update_pending_rails()
 
@@ -25129,6 +25130,20 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         proj.viewer_settings["footprint_convention"] = conv
         self._display_dirty = True
 
+    def _sync_footprint_convention_ui(self) -> None:
+        """Refresh the Impedance-tab convention combo and package labels from
+        the active project — needed after an in-place project swap."""
+        combo = getattr(self, "imp_footprint_conv_combo", None)
+        if combo is not None:
+            current = self._footprint_convention()
+            combo.blockSignals(True)
+            idx = combo.findData(current)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+            combo.blockSignals(False)
+        if getattr(self, "imp_pkg_table", None) is not None:
+            self._populate_package_table()
+
     def _build_capacitors_tab(self) -> QWidget:
         """Build the Capacitors tab — a sortable table of every decoupling
         capacitor with its Tier-1 mounted loop inductance, informational
@@ -26447,10 +26462,8 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             "How bare case-size codes in footprint names are read and "
             "shown. Auto recognises unambiguous metric codes (1005, 1608) "
             "and treats bare 0402 / 0603 as imperial.")
-        self._footprint_conv_populating = True
         self.imp_footprint_conv_combo.currentIndexChanged.connect(
             self._on_footprint_convention_changed)
-        self._footprint_conv_populating = False
         conv_row.addWidget(self.imp_footprint_conv_combo, 1)
         layout.addLayout(conv_row)
 
@@ -26495,8 +26508,6 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._imp_pkg_populating = False
 
     def _on_footprint_convention_changed(self, _index: int = 0) -> None:
-        if getattr(self, "_footprint_conv_populating", False):
-            return
         combo = getattr(self, "imp_footprint_conv_combo", None)
         if combo is None:
             return
@@ -26690,6 +26701,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             combo.blockSignals(False)
             if rails:
                 self._load_impedance_rail_config(rails[0])
+            self._sync_footprint_convention_ui()
             self._replot_impedance()
 
         self._ensure_cap_rows_async(_ready)

@@ -111,7 +111,9 @@ The case size is parsed from the footprint name. FYPA recognises:
 Note that `0603` is both an imperial code *and* the metric code for an 0201.
 Unambiguous metric codes (1005, 1608, …) are always read as metric. For the
 ambiguous pair `0402` / `0603`, the **Case size convention** setting on the
-Impedance tab chooses imperial (default in Auto) or metric.
+Impedance tab chooses imperial (default in Auto) or metric. Names that spell
+out an imperial land pattern (`C_0402_SL`) stay imperial even when the
+project convention is metric.
 
 Pad geometry from the layout is always in millimetres — only the **name**
 convention affects classification and how the Pkg column is labelled.
