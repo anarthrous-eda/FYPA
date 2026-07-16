@@ -55,9 +55,17 @@ def test_explicit_imperial_names_ignore_metric_convention(footprint, expected):
     assert detect_package(footprint, convention="metric") == expected
 
 
-def test_unambiguous_metric_code_wins_over_ambiguous_imperial():
-    """When several bare codes appear, prefer the unambiguous metric one."""
+def test_unambiguous_metric_code_wins_over_bare_ambiguous_imperial():
+    """Bare 0603 without a land-pattern marker loses to 1005."""
     assert detect_package("0603_1005") == "0402"
+
+
+@pytest.mark.parametrize("footprint,expected", [
+    ("C_0603_1005", "0603"),
+    ("C_0402_1005", "0402"),
+])
+def test_explicit_imperial_marker_wins_over_metric_code(footprint, expected):
+    assert detect_package(footprint) == expected
 
 
 def test_format_package_label():

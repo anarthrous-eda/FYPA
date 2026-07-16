@@ -117,8 +117,11 @@ def _has_explicit_imperial_marker(footprint: str, code: str) -> bool:
     return False
 
 
-def _code_match_priority(code: str) -> int:
+def _code_match_priority(code: str, footprint: str) -> int:
     """Higher = more confident. Used to pick among several bare codes."""
+    if (code in _AMBIGUOUS_CODES
+            and _has_explicit_imperial_marker(footprint, code)):
+        return 4
     if code in _METRIC_TO_IMPERIAL and code not in DEFAULT_PACKAGE_MODELS:
         return 3
     if code in DEFAULT_PACKAGE_MODELS and code not in _AMBIGUOUS_CODES:
@@ -229,7 +232,7 @@ def detect_package(
         pkg = _resolve_bare_code(code, conv, footprint)
         if pkg is None:
             continue
-        key = (_code_match_priority(code), -match.start(), pkg)
+        key = (_code_match_priority(code, footprint), -match.start(), pkg)
         if best is None or key > best:
             best = key
     return best[2] if best is not None else None
