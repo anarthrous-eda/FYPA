@@ -173,6 +173,46 @@ def test_showing_individual_branches_adds_a_curve_per_capacitor(viewer):
     assert len(viewer._imp_axes.lines) > before
 
 
+def test_showing_individual_branches_labels_each_capacitor(viewer):
+    viewer.imp_show_branches.setChecked(True)
+    viewer._replot_impedance()
+    legend_labels = viewer._imp_axes.get_legend_handles_labels()[1]
+    assert "C1" in legend_labels
+    assert viewer._imp_branch_artists
+    assert viewer._imp_branch_artists[0][1] == "C1"
+    designator_annotations = [
+        artist.get_text()
+        for artist in viewer._imp_axes.texts
+        if artist.get_text() in {"C1", "C2"}
+    ]
+    assert designator_annotations == []
+
+
+def test_hovering_a_branch_highlights_it_and_shows_tooltip(viewer):
+    viewer.imp_show_branches.setChecked(True)
+    viewer._replot_impedance()
+    line, designator, freqs, z = viewer._imp_branch_artists[0]
+    mid = len(freqs) // 2
+    display = viewer._imp_axes.transData.transform((freqs[mid], z[mid]))
+    inv = viewer._imp_axes.transData.inverted()
+    data = inv.transform(display)
+    class _Event:
+        inaxes = viewer._imp_axes
+        xdata = float(data[0])
+        ydata = float(data[1])
+        x = float(display[0])
+        y = float(display[1])
+    event = _Event()
+    hit, _info = line.contains(event)
+    assert hit
+    viewer._on_imp_branch_hover(event)
+    assert viewer._imp_branch_highlighted == designator
+    assert line.get_linewidth() > 1.0
+    tooltip = viewer._ensure_imp_branch_tooltip()
+    assert tooltip.isVisible()
+    assert designator in tooltip.text()
+
+
 def _empty_plot(v) -> str:
     v._replot_impedance()          # no rail selected
     assert v._imp_axes.texts

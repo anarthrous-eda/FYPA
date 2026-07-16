@@ -26338,8 +26338,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
 
         self.imp_show_branches = QCheckBox("Show individual capacitors")
         self.imp_show_branches.setToolTip(
-            "Draw each capacitor's own |Z| faintly, so you can see which one "
-            "is responsible for each dip and which pair forms each peak.")
+            "Draw each capacitor's own |Z| faintly. Hover a trace to "
+            "highlight it and show its designator; the legend lists all "
+            "included parts.")
         self.imp_show_branches.toggled.connect(self._replot_impedance)
         side.addWidget(self.imp_show_branches)
 
@@ -26368,6 +26369,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._imp_figure = Figure(figsize=(7, 5), layout="constrained")
         self._imp_canvas = FigureCanvasQTAgg(self._imp_figure)
         self._imp_axes = self._imp_figure.add_subplot(111)
+        self._imp_branch_artists: list[tuple] = []
+        self._imp_branch_highlighted: str | None = None
+        self._imp_canvas.mpl_connect(
+            "motion_notify_event", self._on_imp_branch_hover)
         right.addWidget(NavigationToolbar2QT(self._imp_canvas, widget))
         right.addWidget(self._imp_canvas, 1)
 
@@ -26683,6 +26688,117 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         return (f"All {len(rows)} detected capacitor(s) are excluded from the "
                 f"analysis.\nTick Use on the Capacitors tab to include one.")
 
+    def _ensure_imp_branch_tooltip(self) -> QLabel:
+        """Floating label for the capacitor trace under the cursor."""
+        label = getattr(self, "_imp_branch_tooltip", None)
+        if label is not None:
+            return label
+        label = QLabel(self._imp_canvas)
+        label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        label.setFocusPolicy(Qt.NoFocus)
+        t = _T()
+        label.setStyleSheet(
+            "QLabel {"
+            f" background-color: {t['bg']};"
+            f" color: {t['fg']};"
+            f" border: 1px solid {t['border']};"
+            " padding: 3px 6px;"
+            " font-size: 8pt;"
+            "}"
+        )
+        label.hide()
+        self._imp_branch_tooltip = label
+        return label
+
+    def _hide_imp_branch_tooltip(self) -> None:
+        label = getattr(self, "_imp_branch_tooltip", None)
+        if label is not None and label.isVisible():
+            label.hide()
+
+    def _reset_imp_branch_highlight(self) -> None:
+        t = _T()
+        for line, _designator, _freqs, _z in self._imp_branch_artists:
+            line.set_linewidth(0.6)
+            line.set_alpha(0.35)
+            line.set_color(t["fg_muted"])
+            line.set_zorder(2)
+        self._imp_branch_highlighted = None
+        self._hide_imp_branch_tooltip()
+
+    def _pick_impedance_branch(self, event):
+        """Return the branch trace nearest the cursor, in log-log space."""
+        if (event.inaxes is not self._imp_axes
+                or event.xdata is None or event.ydata is None
+                or not self._imp_branch_artists):
+            return None
+        try:
+            ex = math.log10(event.xdata)
+            ey = math.log10(event.ydata)
+        except ValueError:
+            return None
+        best = None
+        best_d2 = float("inf")
+        for entry in self._imp_branch_artists:
+            line, designator, freqs, z = entry
+            hit, info = line.contains(event)
+            if not hit:
+                continue
+            ind = int(info["ind"][0])
+            try:
+                lx = math.log10(freqs[ind])
+                ly = math.log10(z[ind])
+            except (ValueError, IndexError):
+                continue
+            d2 = (lx - ex) ** 2 + (ly - ey) ** 2
+            if d2 < best_d2:
+                best_d2 = d2
+                best = entry
+        return best
+
+    def _highlight_impedance_branch(self, entry, event) -> None:
+        line, designator, freqs, z = entry
+        restyle = self._imp_branch_highlighted != designator
+        if restyle:
+            self._reset_imp_branch_highlight()
+            t = _T()
+            line.set_linewidth(2.2)
+            line.set_alpha(1.0)
+            line.set_color(t["accent"])
+            line.set_zorder(6)
+            self._imp_branch_highlighted = designator
+
+        idx = int(np.argmin(np.abs(np.log10(freqs) - math.log10(event.xdata))))
+        label = self._ensure_imp_branch_tooltip()
+        label.setText(
+            f"{designator}  |Z|={z[idx] * 1e3:.3g} mΩ @ "
+            f"{freqs[idx] / 1e6:.3g} MHz")
+        label.adjustSize()
+        x = int(event.x) + 12
+        y = int(event.y) + 12
+        max_x = max(0, self._imp_canvas.width() - label.width() - 4)
+        max_y = max(0, self._imp_canvas.height() - label.height() - 4)
+        label.move(min(x, max_x), min(y, max_y))
+        label.show()
+        label.raise_()
+        if restyle:
+            self._imp_canvas.draw_idle()
+
+    def _on_imp_branch_hover(self, event) -> None:
+        if not getattr(self, "imp_show_branches", None):
+            return
+        if not self.imp_show_branches.isChecked():
+            if self._imp_branch_highlighted is not None:
+                self._reset_imp_branch_highlight()
+                self._imp_canvas.draw_idle()
+            return
+        entry = self._pick_impedance_branch(event)
+        if entry is None:
+            if self._imp_branch_highlighted is not None:
+                self._reset_imp_branch_highlight()
+                self._imp_canvas.draw_idle()
+            return
+        self._highlight_impedance_branch(entry, event)
+
     def _replot_impedance(self, *_args) -> None:
         """Redraw |Z(f)| for the selected rail."""
         if getattr(self, "_imp_axes", None) is None:
@@ -26690,6 +26806,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         rail = self.imp_rail_combo.currentText()
         ax = self._imp_axes
         ax.clear()
+        self._imp_branch_artists = []
+        self._imp_branch_highlighted = None
+        self._hide_imp_branch_tooltip()
         t = _T()
 
         if not rail:
@@ -26717,8 +26836,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             from fypa.caploop.impedance import branch_impedance
             omega = 2.0 * math.pi * freqs
             for branch in result.branches:
-                ax.loglog(freqs, np.abs(branch_impedance(branch, omega)),
-                          lw=0.6, alpha=0.35, color=t["fg_muted"])
+                z_branch = np.abs(branch_impedance(branch, omega))
+                (line,) = ax.loglog(
+                    freqs, z_branch, lw=0.6, alpha=0.35,
+                    color=t["fg_muted"], label=branch.designator, zorder=2)
+                line.set_picker(8)
+                self._imp_branch_artists.append(
+                    (line, branch.designator, freqs, z_branch))
 
         ax.loglog(freqs, result.z_mag, lw=1.8, color=t["accent"],
                   label=f"|Z| — {rail}", zorder=3)
@@ -26752,7 +26876,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         # to the swept band instead of leaving dead space beside the trace.
         ax.set_xlim(freqs[0], freqs[-1])
         ax.grid(True, which="both", alpha=0.25)
-        ax.legend(loc="upper left", fontsize=8)
+        legend_ncol = 1
+        if self.imp_show_branches.isChecked() and len(result.branches) > 5:
+            legend_ncol = 2
+        ax.legend(loc="upper left", fontsize=8, ncol=legend_ncol)
         self._style_impedance_axes(ax)
         self._imp_canvas.draw_idle()
         self.imp_summary_label.setText(self._impedance_summary_html(result))
