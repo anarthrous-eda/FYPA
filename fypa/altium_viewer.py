@@ -7110,6 +7110,15 @@ class _SettingsTabMixin:
         # %g picks fixed or scientific automatically; clamp to 6 sig figs.
         return f"{f:.6g}"
 
+    @staticmethod
+    def _parse_settings_value(text: str) -> float:
+        """Parse a numeric QLineEdit value independent of the system locale.
+
+        Impedance and Settings fields always use dot decimals in the
+        validator; tolerate a comma decimal from pasted locale-formatted
+        input (e.g. ``5,00E-01``)."""
+        return float(text.strip().replace(",", "."))
+
     def _on_settings_reset(self) -> None:
         """Restore every Settings-tab field to its built-in default. The
         user still has to press Re-run Solver to commit."""
@@ -26289,7 +26298,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             "capacitors no longer helps.")
         for e in (self.imp_ripple_edit, self.imp_itran_edit,
                   self.imp_fmax_edit):
-            e.setValidator(QDoubleValidator(0.0, 1e12, 6, self))
+            validator = QDoubleValidator(0.0, 1e12, 6, self)
+            validator.setNotation(QDoubleValidator.StandardNotation)
+            e.setValidator(validator)
             e.setMaximumWidth(120)
         mask_form.addRow("Ripple (%)", self.imp_ripple_edit)
         mask_form.addRow("Transient current (A)", self.imp_itran_edit)
@@ -26312,7 +26323,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             "Output inductance of the regulator including its path to the "
             "plane. It makes the VRM branch give up above its bandwidth.")
         for e in (self.imp_vrm_r_edit, self.imp_vrm_l_edit):
-            e.setValidator(QDoubleValidator(0.0, 1e12, 6, self))
+            validator = QDoubleValidator(0.0, 1e12, 6, self)
+            validator.setNotation(QDoubleValidator.StandardNotation)
+            e.setValidator(validator)
             e.setMaximumWidth(120)
         vrm_form.addRow("R (mΩ)", self.imp_vrm_r_edit)
         vrm_form.addRow("L (nH)", self.imp_vrm_l_edit)
@@ -26618,11 +26631,16 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
 
     def _load_impedance_rail_config(self, rail: str) -> None:
         cfg = self._caploop_rail_config(rail)
-        self.imp_ripple_edit.setText(f"{cfg['ripple_pct']:g}")
-        self.imp_itran_edit.setText(f"{cfg['transient_current_a']:g}")
-        self.imp_fmax_edit.setText(f"{cfg['f_max_hz'] / 1e6:g}")
-        self.imp_vrm_r_edit.setText(f"{cfg['vrm_r_ohm'] * 1e3:g}")
-        self.imp_vrm_l_edit.setText(f"{cfg['vrm_l_h'] * 1e9:g}")
+        self.imp_ripple_edit.setText(
+            self._fmt_settings_value(cfg["ripple_pct"]))
+        self.imp_itran_edit.setText(
+            self._fmt_settings_value(cfg["transient_current_a"]))
+        self.imp_fmax_edit.setText(
+            self._fmt_settings_value(cfg["f_max_hz"] / 1e6))
+        self.imp_vrm_r_edit.setText(
+            self._fmt_settings_value(cfg["vrm_r_ohm"] * 1e3))
+        self.imp_vrm_l_edit.setText(
+            self._fmt_settings_value(cfg["vrm_l_h"] * 1e9))
 
     def _on_impedance_rail_changed(self, rail: str) -> None:
         if not rail:
@@ -26639,7 +26657,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         def _f(edit, name, scale=1.0):
             text = edit.text().strip()
             try:
-                value = float(text)
+                value = self._parse_settings_value(text)
             except ValueError:
                 raise ValueError(f"{name}: {text!r} is not a number")
             if value < 0.0:
