@@ -173,6 +173,19 @@ def test_showing_individual_branches_adds_a_curve_per_capacitor(viewer):
     assert len(viewer._imp_axes.lines) > before
 
 
+def test_showing_individual_branches_labels_each_capacitor(viewer):
+    viewer.imp_show_branches.setChecked(True)
+    viewer._replot_impedance()
+    legend_labels = viewer._imp_axes.get_legend_handles_labels()[1]
+    assert "C1" in legend_labels
+    annotation_texts = [
+        artist.get_text()
+        for artist in viewer._imp_axes.texts
+        if artist.get_text()
+    ]
+    assert "C1" in annotation_texts
+
+
 def _empty_plot(v) -> str:
     v._replot_impedance()          # no rail selected
     assert v._imp_axes.texts

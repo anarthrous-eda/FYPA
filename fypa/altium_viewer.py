@@ -26338,8 +26338,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
 
         self.imp_show_branches = QCheckBox("Show individual capacitors")
         self.imp_show_branches.setToolTip(
-            "Draw each capacitor's own |Z| faintly, so you can see which one "
-            "is responsible for each dip and which pair forms each peak.")
+            "Draw each capacitor's own |Z| faintly, labelled by designator "
+            "in the legend and at its series-resonance dip, so you can see "
+            "which one is responsible for each dip and which pair forms "
+            "each peak.")
         self.imp_show_branches.toggled.connect(self._replot_impedance)
         side.addWidget(self.imp_show_branches)
 
@@ -26717,8 +26719,16 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             from fypa.caploop.impedance import branch_impedance
             omega = 2.0 * math.pi * freqs
             for branch in result.branches:
-                ax.loglog(freqs, np.abs(branch_impedance(branch, omega)),
-                          lw=0.6, alpha=0.35, color=t["fg_muted"])
+                z_branch = np.abs(branch_impedance(branch, omega))
+                ax.loglog(freqs, z_branch, lw=0.6, alpha=0.35,
+                          color=t["fg_muted"], label=branch.designator)
+                dip_idx = int(np.argmin(z_branch))
+                ax.annotate(
+                    branch.designator,
+                    (freqs[dip_idx], z_branch[dip_idx]),
+                    textcoords="offset points", xytext=(4, 4),
+                    fontsize=7, color=t["fg_muted"], alpha=0.85,
+                    clip_on=True)
 
         ax.loglog(freqs, result.z_mag, lw=1.8, color=t["accent"],
                   label=f"|Z| — {rail}", zorder=3)
@@ -26752,7 +26762,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         # to the swept band instead of leaving dead space beside the trace.
         ax.set_xlim(freqs[0], freqs[-1])
         ax.grid(True, which="both", alpha=0.25)
-        ax.legend(loc="upper left", fontsize=8)
+        legend_ncol = 1
+        if self.imp_show_branches.isChecked() and len(result.branches) > 5:
+            legend_ncol = 2
+        ax.legend(loc="upper left", fontsize=8, ncol=legend_ncol)
         self._style_impedance_axes(ax)
         self._imp_canvas.draw_idle()
         self.imp_summary_label.setText(self._impedance_summary_html(result))
