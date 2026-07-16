@@ -57,4 +57,8 @@ ExampleDesigns/Sandbox/*
 # would re-leak exactly what it removes. Run it before each commit.
 sanitize_sandbox.ps1
 wiring.json
-scripts/test-*.ps1
+# Local override for test-combined (team config is on team/local branch)
+scripts/test-combined.json
+# Fork-local team config (team/test-combined.json is tracked on team/local only)
+team/*
+!team/test-combined.json
