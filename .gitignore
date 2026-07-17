@@ -59,6 +59,7 @@ sanitize_sandbox.ps1
 wiring.json
 # Local override for test-combined (team config is on team/local branch)
 scripts/test-combined.json
+scripts/py314.local.json
 # Fork-local team config (team/test-combined.json is tracked on team/local only)
 team/*
 !team/test-combined.json

@@ -10,6 +10,7 @@
 #   pwsh scripts/test-combined.ps1
 #   pwsh scripts/test-combined.ps1 --local-only
 #   pwsh scripts/test-combined.ps1 -ConfigPath scripts/test-combined.json
+#   pwsh scripts/test-combined.ps1 -PrjPcb path\to\YourBoard.PrjPcb
 #
 # By default baseBranch and extraFeatureBranches are fetched from origin and merged
 # via origin/<branch>. Pass --local-only to use local branches only.
@@ -30,7 +31,8 @@ param(
     [string] $BaseBranch,
     [string] $TestBranch,
     [string[]] $ExtraFeatureBranches,
-    [bool] $DeleteTestBranchFirst
+    [bool] $DeleteTestBranchFirst,
+    [string] $PrjPcb
 )
 
 $ErrorActionPreference = "Stop"
@@ -341,6 +343,14 @@ else {
     $false
 }
 
+$PrjPcbPath = $null
+if ($PrjPcb) {
+    if (-not (Test-Path -LiteralPath $PrjPcb)) {
+        throw "PrjPcb not found: $PrjPcb"
+    }
+    $PrjPcbPath = (Resolve-Path -LiteralPath $PrjPcb).Path
+}
+
 if (-not $BaseBranch) { throw "baseBranch is empty." }
 if (-not $TestBranch) { throw "testBranch is empty." }
 
@@ -434,7 +444,13 @@ try {
     }
 
     Write-Host "==> uv run FYPA.py"
-    & uv run --extra spacemouse FYPA.py
+    if ($PrjPcbPath) {
+        Write-Host "    Project: $PrjPcbPath"
+        & uv run --extra spacemouse FYPA.py gui $PrjPcbPath
+    }
+    else {
+        & uv run --extra spacemouse FYPA.py
+    }
     $FypaExit = $LASTEXITCODE
 }
 catch {
