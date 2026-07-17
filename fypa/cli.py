@@ -1044,6 +1044,10 @@ def _try_load_cached_design_info(
         log.info("Design-info cache: fingerprint mismatch — re-extracting.")
         return None
     log.info("Design-info cache hit — reusing the design extract.")
+    # Same as extract_project: drop resolvers memoized against a prior
+    # ExtractedProject identity so a cache hit cannot reuse stale state.
+    from fypa.altium.annotations import clear_annotation_caches
+    clear_annotation_caches()
     return blob.get("loaded")
 
 

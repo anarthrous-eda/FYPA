@@ -878,6 +878,81 @@ def test_sheet_name_matches_full_path_not_basename_collision():
         "Power.SchDoc",
         ["SubB/Power.SchDoc"],
     )
+    # Path-qualified annotation vs basename-only netlist provenance.
+    assert _sheet_name_matches(
+        "mod/Child.SchDoc",
+        ["Child.SchDoc"],
+    )
+    assert _sheet_name_matches(
+        "mod/Child.SchDoc",
+        ["child.schdoc"],
+    )
+
+
+def test_resolve_local_net_relative_schdoc_with_basename_source_sheets():
+    """Nested relative schdoc_name must still hit project-netlist pins."""
+    netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="RAIL",
+            aliases=["VIN_LOCAL"],
+            source_sheets=["Child.SchDoc"],  # basename only
+            terminals=[_FakeTerminal("R1", "1")],
+        ),
+    ])
+    proj = _minimal_proj(
+        nets=(RawNet("VIN_GROUP"),),
+        pcb_components=(
+            RawPcbComponent(
+                designator="R1.1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="1005R", source_designator="R1",
+            ),
+        ),
+        sch_components=(
+            RawSchComponent(
+                designator="R1", schdoc_name="mod/Child.SchDoc",
+                parameters={}, pin_designators=("1", "2"),
+            ),
+        ),
+        pads=(_pad(0, "1", 0),),
+        compiled_netlist=netlist,
+        schdoc_paths={"mod/child.schdoc": r"C:\proj\mod\Child.SchDoc"},
+        sheet_netlists={},
+    )
+    # Must resolve via project netlist (not require child-sheet compile).
+    with patch(
+        "fypa.altium.annotations._compile_sheet_netlist_at_path",
+    ) as compile_mock:
+        spec, err = _resolve_terminal(
+            proj, 0, "VIN_LOCAL", None, [1], "SERIES P",
+            sch_lookup_designator="R1", schdoc_name="mod/Child.SchDoc",
+        )
+    assert not err and spec is not None
+    assert spec.pins[0].net_index == 0
+    compile_mock.assert_not_called()
+
+
+def test_netlist_options_for_project_does_not_cache_load_failure():
+    from fypa.altium.annotations import (
+        _netlist_options_for_project,
+        clear_annotation_caches,
+    )
+
+    clear_annotation_caches()
+    proj = _minimal_proj(prjpcb_path=Path("C:/proj/board.PrjPcb"))
+    sentinel = object()
+    with patch(
+        "altium_monkey.altium_prjpcb.AltiumPrjPcb",
+        side_effect=[RuntimeError("locked"), object()],
+    ):
+        with patch(
+            "altium_monkey.altium_netlist_options.NetlistOptions.from_prjpcb",
+            return_value=sentinel,
+        ) as from_prj:
+            first = _netlist_options_for_project(proj)
+            second = _netlist_options_for_project(proj)
+    assert first is not sentinel  # defaults after failure
+    assert second is sentinel
+    assert from_prj.call_count == 1
 
 
 def test_pcb_sourced_local_net_scoped_per_instance():
@@ -1054,6 +1129,358 @@ def test_resolve_local_net_pins_dot_channel_alias_scoped():
         pcb_designator="J3.4",
     )
     assert pins == []
+
+
+def test_resolve_terminal_child_sheet_fallback_when_project_netlist_incomplete():
+    """Nested REPEAT: project netlist may omit R1.3 while R1.1 exists."""
+    full_netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="RAIL_A",
+            aliases=["VIN_LOCAL.1"],
+            source_sheets=["Child.SchDoc"],
+            terminals=[_FakeTerminal("R1.1", "1")],
+        ),
+        _FakeNet(
+            name="RAIL_B",
+            aliases=["VOUT.1"],
+            source_sheets=["Child.SchDoc"],
+            terminals=[_FakeTerminal("R1.1", "2")],
+        ),
+    ])
+    child_netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="VIN_LOCAL",
+            source_sheets=["Child.SchDoc"],
+            terminals=[_FakeTerminal("R1", "1")],
+        ),
+        _FakeNet(
+            name="VOUT",
+            source_sheets=["Child.SchDoc"],
+            terminals=[_FakeTerminal("R1", "2")],
+        ),
+    ])
+    proj = _minimal_proj(
+        nets=(RawNet("VIN_GROUP.2"), RawNet("VOUT.3")),
+        pcb_components=(
+            RawPcbComponent(
+                designator="R1.3", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="1005R", source_designator="R1",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 0),
+            _pad(0, "2", 1),
+        ),
+        compiled_netlist=full_netlist,
+        sheet_netlists={"child.schdoc": child_netlist},
+    )
+    p_spec, p_err = _resolve_terminal(
+        proj, 0, "VIN_LOCAL", None, [1], "SERIES P",
+        sch_lookup_designator="R1", schdoc_name="Child.SchDoc",
+    )
+    n_spec, n_err = _resolve_terminal(
+        proj, 0, "VOUT", None, [1], "SERIES N",
+        sch_lookup_designator="R1", schdoc_name="Child.SchDoc",
+    )
+    assert not p_err and not n_err
+    assert p_spec is not None and n_spec is not None
+    assert p_spec.pins[0].net_index == 0
+    assert n_spec.pins[0].net_index == 1
+
+
+def test_expand_net_names_child_sheet_fallback():
+    """expand_net_names must use sheet_netlists when project netlist omits the instance."""
+    full_netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="RAIL_A",
+            aliases=["VIN_LOCAL.1"],
+            source_sheets=["Child.SchDoc"],
+            terminals=[_FakeTerminal("R1.1", "1")],
+        ),
+    ])
+    child_netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="VIN_LOCAL",
+            source_sheets=["Child.SchDoc"],
+            terminals=[_FakeTerminal("R1", "1")],
+        ),
+    ])
+    proj = _minimal_proj(
+        nets=(RawNet("VIN_GROUP.2"),),
+        pcb_components=(
+            RawPcbComponent(
+                designator="R1.3", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="1005R", source_designator="R1",
+            ),
+        ),
+        sch_components=(
+            RawSchComponent(
+                designator="R1", schdoc_name="Child.SchDoc",
+                parameters={}, pin_designators=("1", "2"),
+            ),
+        ),
+        pads=(_pad(0, "1", 0),),
+        compiled_netlist=full_netlist,
+        sheet_netlists={"child.schdoc": child_netlist},
+    )
+    names = _instance_resolver(proj).expand_net_names("VIN_LOCAL", 0)
+    assert "VIN_GROUP.2" in names
+    assert "VIN_LOCAL" in names
+
+
+def test_resolve_local_net_pins_child_sheet_direct():
+    child_netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="VIN_LOCAL",
+            terminals=[_FakeTerminal("R1", "1")],
+        ),
+    ])
+    proj = _minimal_proj(sheet_netlists={"child.schdoc": child_netlist})
+    from fypa.altium.annotations import _resolve_local_net_pins_child_sheet
+    pins = _resolve_local_net_pins_child_sheet(
+        proj, "R1", "Child.SchDoc", "VIN_LOCAL",
+        routed_pin_keys={"1"},
+    )
+    assert pins == ["1"]
+    assert _resolve_local_net_pins_child_sheet(
+        proj, "R1", "Child.SchDoc", "VIN_LOCAL",
+        routed_pin_keys={"2"},
+    ) == []
+
+
+def test_base_sch_designator_strips_numeric_channel():
+    from fypa.altium.annotations import _base_sch_designator
+    assert _base_sch_designator("R1.3") == "R1"
+    assert _base_sch_designator("R1") == "R1"
+    assert _base_sch_designator("J3_SL8M7") == "J3_SL8M7"
+    assert _base_sch_designator("U1.A") == "U1.A"
+
+
+def test_child_sheet_resolves_channel_designator_without_source_designator():
+    """PCB designator R1.3 with no source_designator still matches child R1."""
+    full_netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="RAIL_A",
+            aliases=["VIN_LOCAL.1"],
+            source_sheets=["Child.SchDoc"],
+            terminals=[_FakeTerminal("R1.1", "1")],
+        ),
+    ])
+    child_netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="VIN_LOCAL",
+            source_sheets=["Child.SchDoc"],
+            terminals=[_FakeTerminal("R1", "1")],
+        ),
+    ])
+    proj = _minimal_proj(
+        nets=(RawNet("VIN_GROUP.2"),),
+        pcb_components=(
+            RawPcbComponent(
+                designator="R1.3", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="1005R",
+                source_designator="",  # missing — lookup falls back to R1.3
+            ),
+        ),
+        sch_components=(
+            RawSchComponent(
+                designator="R1", schdoc_name="Child.SchDoc",
+                parameters={}, pin_designators=("1", "2"),
+            ),
+        ),
+        pads=(_pad(0, "1", 0),),
+        compiled_netlist=full_netlist,
+        sheet_netlists={"child.schdoc": child_netlist},
+    )
+    spec, err = _resolve_terminal(
+        proj, 0, "VIN_LOCAL", None, [1], "SERIES P",
+        sch_lookup_designator="R1.3", schdoc_name="Child.SchDoc",
+    )
+    assert not err and spec is not None
+    assert spec.pins[0].net_index == 0
+    names = _instance_resolver(proj).expand_net_names("VIN_LOCAL", 0)
+    assert "VIN_GROUP.2" in names
+
+
+def test_schdoc_path_key_prefers_relative_path_on_basename_collision():
+    from fypa.altium.annotations import _get_child_sheet_netlist, _schdoc_path_key
+
+    nl_a = _FakeNetlist(nets=[
+        _FakeNet(name="VIN", terminals=[_FakeTerminal("R1", "1")]),
+    ])
+    nl_b = _FakeNetlist(nets=[
+        _FakeNet(name="VOUT", terminals=[_FakeTerminal("R1", "1")]),
+    ])
+    # Collision: same basename, no basename alias — only relative keys.
+    proj = _minimal_proj(
+        schdoc_paths={
+            "mod_a/child.schdoc": r"C:\proj\mod_a\Child.SchDoc",
+            "mod_b/child.schdoc": r"C:\proj\mod_b\Child.SchDoc",
+        },
+        sheet_netlists={
+            "mod_a/child.schdoc": nl_a,
+            "mod_b/child.schdoc": nl_b,
+        },
+    )
+    assert _schdoc_path_key(proj, "mod_a/Child.SchDoc") == "mod_a/child.schdoc"
+    assert _schdoc_path_key(proj, "mod_b/Child.SchDoc") == "mod_b/child.schdoc"
+    assert _get_child_sheet_netlist(proj, "mod_a/Child.SchDoc") is nl_a
+    assert _get_child_sheet_netlist(proj, "mod_b/Child.SchDoc") is nl_b
+
+
+def test_schdoc_path_key_refuses_ambiguous_basename_only():
+    """Basename-only lookup must not guess when two sheets share the name."""
+    from fypa.altium.annotations import _get_child_sheet_netlist, _schdoc_path_key
+
+    nl_a = _FakeNetlist(nets=[
+        _FakeNet(name="VIN", terminals=[_FakeTerminal("R1", "1")]),
+    ])
+    proj = _minimal_proj(
+        schdoc_paths={
+            "mod_a/child.schdoc": r"C:\proj\mod_a\Child.SchDoc",
+            "mod_b/child.schdoc": r"C:\proj\mod_b\Child.SchDoc",
+        },
+        sheet_netlists={
+            "mod_a/child.schdoc": nl_a,
+            "child.schdoc": nl_a,  # must not be used under ambiguity
+        },
+    )
+    assert _schdoc_path_key(proj, "Child.SchDoc") is None
+    assert _get_child_sheet_netlist(proj, "Child.SchDoc") is None
+
+
+def test_get_child_sheet_netlist_lazy_compile_memoizes():
+    from fypa.altium.annotations import _get_child_sheet_netlist
+
+    child_nl = _FakeNetlist(nets=[
+        _FakeNet(name="VIN", terminals=[_FakeTerminal("R1", "1")]),
+    ])
+    proj = _minimal_proj(
+        schdoc_paths={"child.schdoc": r"C:\proj\Child.SchDoc"},
+        sheet_netlists={},
+    )
+    with patch(
+        "fypa.altium.annotations._compile_sheet_netlist_at_path",
+        return_value=child_nl,
+    ) as compile_mock:
+        first = _get_child_sheet_netlist(proj, "Child.SchDoc")
+        second = _get_child_sheet_netlist(proj, "Child.SchDoc")
+    assert first is child_nl
+    assert second is child_nl
+    assert compile_mock.call_count == 1
+    assert proj.sheet_netlists.get("child.schdoc") is child_nl
+
+
+def test_get_child_sheet_netlist_does_not_cache_failed_compile():
+    from fypa.altium.annotations import _get_child_sheet_netlist
+
+    child_nl = _FakeNetlist(nets=[
+        _FakeNet(name="VIN", terminals=[_FakeTerminal("R1", "1")]),
+    ])
+    proj = _minimal_proj(
+        schdoc_paths={"child.schdoc": r"C:\proj\Child.SchDoc"},
+        sheet_netlists={},
+    )
+    with patch(
+        "fypa.altium.annotations._compile_sheet_netlist_at_path",
+        side_effect=[None, child_nl],
+    ) as compile_mock:
+        assert _get_child_sheet_netlist(proj, "Child.SchDoc") is None
+        assert "child.schdoc" not in proj.sheet_netlists
+        assert _get_child_sheet_netlist(proj, "Child.SchDoc") is child_nl
+    assert compile_mock.call_count == 2
+
+
+def test_compile_sheet_netlist_uses_project_netlist_options():
+    from fypa.altium.annotations import (
+        _compile_sheet_netlist_at_path,
+        clear_annotation_caches,
+    )
+
+    clear_annotation_caches()
+    proj = _minimal_proj(prjpcb_path=Path("C:/proj/board.PrjPcb"))
+    sentinel = object()
+    with (
+        patch(
+            "fypa.altium.annotations._netlist_options_for_project",
+            return_value=sentinel,
+        ) as opts_mock,
+        patch("altium_monkey.altium_schdoc.AltiumSchDoc") as sch_cls,
+        patch(
+            "altium_monkey.altium_netlist_compilation.compile_netlist",
+            return_value="NL",
+        ) as compile_mock,
+    ):
+        sch_cls.return_value = object()
+        assert _compile_sheet_netlist_at_path(r"C:\proj\Child.SchDoc", proj) == "NL"
+    opts_mock.assert_called_once_with(proj)
+    assert compile_mock.call_args.args[2] is sentinel
+
+
+def test_collect_schdoc_paths_unique_basename_alias_only():
+    from fypa.altium.extract import _collect_schdoc_paths
+
+    @dataclass
+    class _Sch:
+        filepath: str
+
+    @dataclass
+    class _Design:
+        schdocs: list
+
+    root = Path("C:/proj")
+    design = _Design(schdocs=[
+        _Sch(filepath=str(root / "Power.SchDoc")),
+        _Sch(filepath=str(root / "mod_a" / "Child.SchDoc")),
+        _Sch(filepath=str(root / "mod_b" / "Child.SchDoc")),
+    ])
+    paths = _collect_schdoc_paths(design, root / "board.PrjPcb")
+    assert paths["power.schdoc"].lower().endswith("power.schdoc")
+    assert "child.schdoc" not in paths  # basename collision — no alias
+    assert "mod_a/child.schdoc" in paths
+    assert "mod_b/child.schdoc" in paths
+
+
+def test_collect_schdoc_paths_outside_root_uses_absolute_key():
+    from fypa.altium.extract import (
+        _collect_schdoc_paths,
+        _schdoc_display_path,
+        _schdoc_storage_key,
+    )
+
+    @dataclass
+    class _Sch:
+        filepath: str
+
+    @dataclass
+    class _Design:
+        schdocs: list
+
+    root = Path("C:/proj")
+    outside_a = Path("D:/libs/Shared.SchDoc")
+    outside_b = Path("E:/other/Shared.SchDoc")
+    design = _Design(schdocs=[
+        _Sch(filepath=str(outside_a)),
+        _Sch(filepath=str(outside_b)),
+    ])
+    paths = _collect_schdoc_paths(design, root / "board.PrjPcb")
+    key_a = _schdoc_storage_key(outside_a, root)
+    key_b = _schdoc_storage_key(outside_b, root)
+    assert key_a != key_b
+    assert key_a == _schdoc_display_path(outside_a, root).lower()
+    assert "shared.schdoc" not in paths  # colliding basenames — no alias
+    assert paths[key_a].lower().endswith("shared.schdoc")
+    assert paths[key_b].lower().endswith("shared.schdoc")
+
+
+def test_schdoc_display_path_preserves_casing():
+    from fypa.altium.extract import _schdoc_display_path, _schdoc_storage_key
+
+    root = Path("C:/proj")
+    abs_path = root / "mod" / "Child.SchDoc"
+    display = _schdoc_display_path(abs_path, root)
+    assert display == "mod/Child.SchDoc"
+    assert _schdoc_storage_key(abs_path, root) == "mod/child.schdoc"
 
 
 def test_schdoc_inference_pin_centric_without_net_name_match():

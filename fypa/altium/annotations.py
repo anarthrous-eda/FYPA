@@ -721,6 +721,17 @@ class InstanceLocalNetResolver:
         ]
         if len(sch_matches) == 1:
             return sch_matches[0]
+        # Channel-qualified PCB designators (``R1.3``) without SourceDesignator
+        # still need the child sheet for local-net fallback; match the base
+        # schematic designator on sch_components.
+        base_des = _base_sch_designator(lookup_des)
+        if base_des.upper() != lookup_des.upper():
+            base_matches = [
+                c.schdoc_name for c in self.proj.sch_components
+                if c.designator.upper() == base_des.upper()
+            ]
+            if len(base_matches) == 1:
+                return base_matches[0]
         return ""
 
     def expand_net_names(
@@ -739,15 +750,16 @@ class InstanceLocalNetResolver:
 
         names = {local_name.upper()}
 
-        if self.proj.compiled_netlist is not None:
-            pads_by = self.pads_index()
-            pcb = self.proj.pcb_components[pcb_index]
-            lookup_des = pcb.source_designator or pcb.designator
-            schdoc = self.infer_schdoc(
-                pcb_index, lookup_des, pads_by_component=pads_by,
-            )
-            routed = pads_by.get(pcb_index, {})
-            if routed:
+        pads_by = self.pads_index()
+        pcb = self.proj.pcb_components[pcb_index]
+        lookup_des = pcb.source_designator or pcb.designator
+        schdoc = self.infer_schdoc(
+            pcb_index, lookup_des, pads_by_component=pads_by,
+        )
+        routed = pads_by.get(pcb_index, {})
+        if routed:
+            local_pins: list[str] = []
+            if self.proj.compiled_netlist is not None:
                 local_pins = _resolve_local_net_pins(
                     self.proj.compiled_netlist,
                     lookup_des,
@@ -756,10 +768,18 @@ class InstanceLocalNetResolver:
                     routed_pin_keys=set(routed),
                     pcb_designator=pcb.designator,
                 )
-                wanted = {p.upper() for p in local_pins}
-                for pin_key, pad in routed.items():
-                    if pin_key in wanted and pad.net_index != NO_NET:
-                        names.add(self.proj.nets[pad.net_index].name.upper())
+            if not local_pins and schdoc:
+                local_pins = _resolve_local_net_pins_child_sheet(
+                    self.proj,
+                    lookup_des,
+                    schdoc,
+                    local_name,
+                    routed_pin_keys=set(routed),
+                )
+            wanted = {p.upper() for p in local_pins}
+            for pin_key, pad in routed.items():
+                if pin_key in wanted and pad.net_index != NO_NET:
+                    names.add(self.proj.nets[pad.net_index].name.upper())
 
         result = tuple(sorted(names))
         self._expanded_cache[cache_key] = result
@@ -767,6 +787,13 @@ class InstanceLocalNetResolver:
 
 
 _resolver_cache: dict[int, tuple[ExtractedProject, InstanceLocalNetResolver]] = {}
+_netlist_options_cache: dict[str, object] = {}
+
+
+def clear_annotation_caches() -> None:
+    """Drop memoized resolvers / netlist options. Call on project (re)load."""
+    _resolver_cache.clear()
+    _netlist_options_cache.clear()
 
 
 def _instance_resolver(proj: ExtractedProject) -> InstanceLocalNetResolver:
@@ -847,9 +874,192 @@ def _sheet_name_matches(schdoc_name: str, source_sheets: list[str]) -> bool:
         s = sheet.replace("\\", "/").lower()
         if s == target_full:
             return True
-        if not has_dir and Path(sheet).name.lower() == target_base:
+        sheet_base = Path(sheet).name.lower()
+        if sheet_base != target_base:
+            continue
+        # Basename-only annotation: accept any path-qualified provenance.
+        if not has_dir:
+            return True
+        # Path-qualified annotation + basename-only netlist sheet (common from
+        # altium_monkey): same basename is enough; path-vs-path mismatches
+        # already failed the equality check above.
+        if "/" not in s:
             return True
     return False
+
+
+def _base_sch_designator(designator: str) -> str:
+    """Strip a numeric channel suffix (``R1.3`` → ``R1``) for child-sheet lookup.
+
+    Child-sheet netlists use the schematic base designator. Non-numeric tails
+    (``J3_SL8M7``) are left unchanged — those sheets key terminals flattened.
+    """
+    if "." not in designator:
+        return designator
+    base, suffix = designator.rsplit(".", 1)
+    return base if suffix.isdigit() and base else designator
+
+
+def _schdoc_path_key(proj: ExtractedProject, schdoc_name: str) -> str | None:
+    """Resolve ``schdoc_name`` to a key in :attr:`ExtractedProject.schdoc_paths`.
+
+    Returns ``None`` when the basename is ambiguous and ``schdoc_name`` carries
+    no path hint — callers must not guess a sheet (wrong pin→net mapping).
+    """
+    paths = getattr(proj, "schdoc_paths", None) or {}
+    if not paths:
+        return None
+    full = schdoc_name.replace("\\", "/").lower()
+    base = Path(schdoc_name).name.lower()
+    if full in paths:
+        return full
+    if base in paths:
+        return base
+    matches = sorted(k for k in paths if Path(k).name.lower() == base)
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        # Basename-only names are never a path hint (``"child.schdoc" in
+        # "mod_a/child.schdoc"`` would false-positive every match).
+        if "/" in full:
+            for k in matches:
+                if k == full or k.endswith("/" + full) or full.endswith("/" + k):
+                    return k
+        log.warning(
+            "Ambiguous SchDoc basename %r matches %s; refusing child-sheet "
+            "fallback without a path hint",
+            base, matches,
+        )
+        return None
+    return None
+
+
+def _basename_sheet_cache_ok(paths: dict[str, str], base: str) -> bool:
+    """True when a basename-only ``sheet_netlists`` entry is unambiguous."""
+    if not paths:
+        return True  # tests / legacy extracts without schdoc_paths
+    if base in paths:
+        return True
+    return sum(1 for k in paths if Path(k).name.lower() == base) <= 1
+
+
+def _netlist_options_for_project(proj: ExtractedProject):
+    """Project netlist options (same source as the full-project compile)."""
+    from altium_monkey.altium_netlist_options import NetlistOptions
+
+    prj = getattr(proj, "prjpcb_path", None)
+    if prj is None:
+        return NetlistOptions()
+    cache_key = str(Path(prj).resolve())
+    cached = _netlist_options_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        from altium_monkey.altium_prjpcb import AltiumPrjPcb
+
+        opts = NetlistOptions.from_prjpcb(AltiumPrjPcb(prj))
+    except Exception as exc:
+        log.debug(
+            "Could not load NetlistOptions from %s (%s); using defaults",
+            prj, exc,
+        )
+        # Do not cache failures — a transient PrjPcb read must be retryable.
+        return NetlistOptions()
+    _netlist_options_cache[cache_key] = opts
+    return opts
+
+
+def _compile_sheet_netlist_at_path(path: str, proj: ExtractedProject | None = None):
+    """Compile an isolated netlist for one SchDoc file. Returns None on failure."""
+    try:
+        from altium_monkey.altium_netlist_compilation import compile_netlist
+        from altium_monkey.altium_netlist_options import NetlistOptions
+        from altium_monkey.altium_schdoc import AltiumSchDoc
+
+        options = (
+            _netlist_options_for_project(proj)
+            if proj is not None
+            else NetlistOptions()
+        )
+        sch = AltiumSchDoc(path)
+        return compile_netlist([sch], None, options)
+    except Exception as exc:
+        log.warning("Could not compile child-sheet netlist for %s: %s", path, exc)
+        return None
+
+
+def _get_child_sheet_netlist(proj: ExtractedProject, schdoc_name: str):
+    """Return (and lazily compile) an isolated netlist for one child sheet.
+
+    Deeply nested REPEAT hierarchies sometimes omit flattened channel instances
+    from the project-wide netlist (e.g. ``R1.3`` missing while ``R1.1`` is
+    present). Pin→local-net wiring on the child sheet is identical for every
+    channel instance, so a single-sheet compile is sufficient.
+    """
+    if not schdoc_name:
+        return None
+    key = _schdoc_path_key(proj, schdoc_name)
+    sheets = getattr(proj, "sheet_netlists", None)
+    if sheets is None:
+        return None
+    if key is not None and key in sheets:
+        return sheets[key]
+
+    paths = getattr(proj, "schdoc_paths", None) or {}
+    base = Path(schdoc_name).name.lower()
+    # Tests / legacy: pre-populated basename entries, only if unambiguous.
+    if base in sheets and _basename_sheet_cache_ok(paths, base):
+        return sheets[base]
+
+    path = paths.get(key) if key else None
+    if not path:
+        return None
+    nl = _compile_sheet_netlist_at_path(path, proj)
+    if nl is None:
+        # Do not memoize failures — a transient I/O error must be retryable.
+        return None
+    sheets[key] = nl
+    if base in paths and paths[base] == path:
+        sheets[base] = nl
+    return nl
+
+
+def _resolve_local_net_pins_child_sheet(
+    proj: ExtractedProject,
+    sch_designator: str,
+    schdoc_name: str,
+    local_net_name: str,
+    *,
+    routed_pin_keys: set[str] | None = None,
+) -> list[str]:
+    """Resolve pins via a child-sheet-only netlist (base schematic designator)."""
+    netlist = _get_child_sheet_netlist(proj, schdoc_name)
+    if netlist is None:
+        return []
+    # Child-sheet terminals use the base schematic designator (``R1``), not
+    # the flattened PCB form (``R1.3``).
+    base_des = _base_sch_designator(sch_designator).upper()
+    des_candidates = {base_des}
+    pins: list[str] = []
+    seen: set[str] = set()
+    for net in netlist.nets:
+        names = [net.name, *getattr(net, "aliases", ())]
+        if not any(
+            _local_net_label_matches(n, local_net_name, des_candidates)
+            for n in names
+        ):
+            continue
+        for term in net.terminals:
+            if term.designator.upper() != base_des:
+                continue
+            pin = str(term.pin)
+            key = pin.upper()
+            if routed_pin_keys is not None and key not in routed_pin_keys:
+                continue
+            if key not in seen:
+                seen.add(key)
+                pins.append(pin)
+    return pins
 
 
 def _resolve_local_net_pins(
@@ -1046,6 +1256,16 @@ def _resolve_terminal(
                 routed_pin_keys=routed_pin_keys or None,
                 pcb_designator=designator,
             )
+            child_sheet_pins = False
+            if not local_pins and schdoc_name:
+                local_pins = _resolve_local_net_pins_child_sheet(
+                    proj,
+                    sch_lookup_designator,
+                    schdoc_name,
+                    net_name,
+                    routed_pin_keys=routed_pin_keys or None,
+                )
+                child_sheet_pins = bool(local_pins)
             if local_pins:
                 wanted_pins = {pin.upper() for pin in local_pins}
                 matched = [
@@ -1062,9 +1282,14 @@ def _resolve_terminal(
                             if p.net_index != NO_NET
                         })
                         nets_text = ", ".join(pcb_net_names) if pcb_net_names else "?"
+                        via = (
+                            "child-sheet schematic pins"
+                            if child_sheet_pins
+                            else "schematic pins"
+                        )
                         warnings.append(
                             f"{role_diagnostic}: resolved local net "
-                            f"{net_name!r} via schematic pins "
+                            f"{net_name!r} via {via} "
                             f"{sorted(local_pins)} → PCB net(s) {nets_text}"
                         )
 
