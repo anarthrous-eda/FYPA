@@ -1373,6 +1373,13 @@ def _sheet_ignored_pins_by_component(
 
     Builds a sheet-wide pin-index → (component index, designator) map, then
     scans parameters once instead of re-scanning the sheet per component.
+
+    Pin-owned ``PDN_IGNORE`` is discovered two ways (both match altium_monkey
+    SchDoc layout): ``pin.pin_parameters`` when the library attached them, and
+    sheet ``all_objects`` parameters whose ``owner_index`` equals the pin's
+    ``_record_index``. Component-owned parameters (owner → component record)
+    are ignored here — use ``PDN_IGNORE_PINS`` on the part when pin-level
+    ownership cannot be resolved.
     """
     ignored: list[set[str]] = [set() for _ in components]
     pin_index_to_comp_des: dict[int, tuple[int, str]] = {}

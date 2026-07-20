@@ -11,8 +11,11 @@ Every directive lives on a single Altium component as a set of parameters whose
 names begin with ``PDN_``. ``PDN_ROLE`` selects the role; the other parameters
 supply the value and the rail/return nets. Pin sets are auto-resolved by
 finding the named component's pads that sit on the named net; explicit pin
-overrides are honoured if supplied. Pins can be excluded with a pin-level
-``PDN_IGNORE`` parameter or a component ``PDN_IGNORE_PINS`` list.
+overrides are honoured if supplied. A part-wide ``PDN_PINS_ONLY`` allowlist
+(optional ``PDN_EXTRA_PINS`` union) restricts which pads may join any
+rail before net matching — preferred in the SchLib for multi-rail parts.
+Pins can still be excluded with a pin-level ``PDN_IGNORE`` or
+``PDN_IGNORE_PINS`` (fine-tuning after the allowlist).
 
 ============   =============================   ==================================================
 Role           Value params                    Net / pin params
@@ -177,9 +180,14 @@ _RESISTOR_LIKE_ROLES: frozenset[str] = frozenset({"SERIES"})
 
 VALID_ROLES: frozenset[str] = frozenset({"SOURCE", "SINK", "REGULATOR"}) | _RESISTOR_LIKE_ROLES
 
+# Part-wide only (unindexed): restrict which pads may enter net matching.
+# Channel indices belong to nets / per-terminal overrides, not this list.
+_PART_WIDE_PIN_FILTER_SUFFIXES: frozenset[str] = frozenset({
+    "PINS_ONLY", "EXTRA_PINS",
+})
 _COMMON_TERMINAL_SUFFIXES: frozenset[str] = frozenset({
     "NET", "PINS", "P_NET", "N_NET", "P_PINS", "N_PINS", "IGNORE_PINS",
-})
+}) | _PART_WIDE_PIN_FILTER_SUFFIXES
 _KNOWN_SUFFIXES_BY_ROLE: dict[str, frozenset[str]] = {
     "SOURCE": _COMMON_TERMINAL_SUFFIXES | frozenset({"V"}),
     "SINK": _COMMON_TERMINAL_SUFFIXES | frozenset({"I", "MIN_V"}),
@@ -188,8 +196,10 @@ _KNOWN_SUFFIXES_BY_ROLE: dict[str, frozenset[str]] = {
         "OUT_P_NET", "OUT_N_NET", "OUT_P_PINS", "OUT_N_PINS",
         "IN_P_NET", "IN_N_NET", "IN_P_PINS", "IN_N_PINS",
         "IGNORE_PINS",
-    }),
-    "SERIES": frozenset({"R", "P_NET", "N_NET", "P_PINS", "N_PINS", "IGNORE_PINS"}),
+    }) | _PART_WIDE_PIN_FILTER_SUFFIXES,
+    "SERIES": frozenset({
+        "R", "P_NET", "N_NET", "P_PINS", "N_PINS", "IGNORE_PINS",
+    }) | _PART_WIDE_PIN_FILTER_SUFFIXES,
 }
 
 
@@ -441,6 +451,31 @@ def _ignore_pins_for_channel(
         if ch:
             ignored.update(p.upper() for p in ch)
     return frozenset(ignored)
+
+
+def _allow_pins_for_part(params: dict[str, str]) -> frozenset[str] | None:
+    """Part-wide pin allowlist from ``PDN_PINS_ONLY`` ∪ ``PDN_EXTRA_PINS``.
+
+    Returns ``None`` when neither parameter is set (unrestricted — every pad
+    on the named net may join). ``PDN_EXTRA_PINS`` is always unioned in; when
+    it is set without ``PDN_PINS_ONLY``, it alone forms the allowlist (not
+    “all pads plus EXTRA”). Indexed ``PDNn_PINS_ONLY`` / ``PDNn_EXTRA_PINS``
+    are not read here (see :func:`_warn_unknown_pdn_params`).
+    """
+    only = _split_pin_list(
+        _ci_get(params, _channel_key("PINS_ONLY", None)),
+    )
+    extra = _split_pin_list(
+        _ci_get(params, _channel_key("EXTRA_PINS", None)),
+    )
+    if only is None and extra is None:
+        return None
+    out: set[str] = set()
+    if only:
+        out.update(p.upper() for p in only)
+    if extra:
+        out.update(p.upper() for p in extra)
+    return frozenset(out)
 
 
 def _channel_key(suffix: str, index: int | None) -> str:
@@ -1268,6 +1303,7 @@ def _resolve_terminal(
     sch_lookup_designator: str | None = None,
     schdoc_name: str | None = None,
     ignore_pins: frozenset[str] | None = None,
+    allow_pins: frozenset[str] | None = None,
 ) -> tuple[TerminalSpec | None, list[str]]:
     """Resolve a terminal to its participating pads.
 
@@ -1280,6 +1316,10 @@ def _resolve_terminal(
     local-net fallback) matches the named net directly. SERIES bridge
     equivalence classes are *not* consulted here — those belong to the
     solver's net graph, not terminal pin selection.
+
+    When ``allow_pins`` is set and ``override_pins`` is not, only pads in that
+    allowlist (``PDN_PINS_ONLY`` ∪ ``PDN_EXTRA_PINS``) are candidates for net
+    matching. Explicit ``*_PINS`` overrides bypass the allowlist.
 
     ``ignore_pins`` (upper-cased designators) are removed after matching —
     including when an include override listed them — so enable / signal ties
@@ -1309,6 +1349,33 @@ def _resolve_terminal(
         if not matched:
             return None, errors
     else:
+        pool = component_pads
+        if allow_pins is not None:
+            pool = [
+                p for p in component_pads
+                if p.designator.upper() in allow_pins
+            ]
+            missing_pcb = allow_pins - {
+                p.designator.upper() for p in component_pads
+            }
+            # One warning per designator (not per P/N/IN/OUT terminal).
+            if missing_pcb and warnings is not None:
+                miss_msg = (
+                    f"{designator}: PDN_PINS_ONLY / PDN_EXTRA_PINS "
+                    f"name pin(s) not on the PCB: {sorted(missing_pcb)}"
+                )
+                if miss_msg not in warnings:
+                    warnings.append(miss_msg)
+            if not pool:
+                # Designator-stable text so P/N/IN/OUT do not each append a
+                # duplicate when the allowlist matches nothing on the PCB.
+                empty_msg = (
+                    f"{designator}: no pads match "
+                    f"PDN_PINS_ONLY / PDN_EXTRA_PINS"
+                )
+                if empty_msg not in errors:
+                    errors.append(empty_msg)
+                return None, errors
         if not net_name:
             errors.append(
                 f"{role_diagnostic}: neither a net nor pin overrides supplied"
@@ -1316,6 +1383,7 @@ def _resolve_terminal(
             return None, errors
         net_indices = _net_indices_by_name(proj, net_name)
         matched: list[RawPad] = []
+        wanted_nets: set[int] | None = None
         if net_indices:
             # Apply the loader's net-merge remap so user annotations naming
             # EITHER side of an absorbed SERIES bridge (e.g. both "0V" and
@@ -1328,12 +1396,12 @@ def _resolve_terminal(
             # component sits in exactly one channel, so matching its own pads
             # against the whole name-class still selects only its channel's net.
             wanted_nets = set(net_indices)
-            matched = [p for p in component_pads if p.net_index in wanted_nets]
+            matched = [p for p in pool if p.net_index in wanted_nets]
 
         if not matched and sch_lookup_designator:
             routed_pin_keys = {
                 p.designator.upper()
-                for p in component_pads
+                for p in pool
                 if p.net_index != NO_NET
             }
             local_pins = _resolve_local_net_pins(
@@ -1357,7 +1425,7 @@ def _resolve_terminal(
             if local_pins:
                 wanted_pins = {pin.upper() for pin in local_pins}
                 matched = [
-                    p for p in component_pads
+                    p for p in pool
                     if p.designator.upper() in wanted_pins
                     and p.net_index != NO_NET
                 ]
@@ -1388,7 +1456,7 @@ def _resolve_terminal(
         ):
             alias_matched = _resolve_alias_fallback_pads(
                 proj,
-                component_pads,
+                pool,
                 net_name,
                 sch_lookup_designator,
                 schdoc_name or "",
@@ -1420,7 +1488,7 @@ def _resolve_terminal(
                         net_remap.get(ix, ix) for ix in candidate_indices
                     ]
                 wanted_nets = set(candidate_indices)
-                matched = [p for p in component_pads if p.net_index in wanted_nets]
+                matched = [p for p in pool if p.net_index in wanted_nets]
                 if matched:
                     if warnings is not None:
                         warnings.append(
@@ -1458,6 +1526,22 @@ def _resolve_terminal(
             # user can either correct PDN_*_NET or realise the directive is on
             # the wrong component. Buck regulator outputs commonly trip this
             # (pin sits on switching node, rail appears after the inductor).
+            # When an allowlist is active, pads on the named net may exist but
+            # be excluded — call that out so it is not mistaken for a net typo.
+            if allow_pins is not None and wanted_nets is not None:
+                excluded_on_net = sorted({
+                    p.designator for p in component_pads
+                    if p.net_index in wanted_nets
+                    and p.designator.upper() not in allow_pins
+                })
+                if excluded_on_net:
+                    errors.append(
+                        f"{role_diagnostic}: no allowlisted pad on net "
+                        f"{net_name!r} (PDN_PINS_ONLY / PDN_EXTRA_PINS). "
+                        f"Pads on that net outside the allowlist: "
+                        f"{excluded_on_net}"
+                    )
+                    return None, errors
             pad_nets = sorted({
                 proj.nets[p.net_index].name
                 for p in component_pads
@@ -1877,6 +1961,7 @@ def _resolve_two_terminal(
     sch_lookup_designator: str | None = None,
     schdoc_name: str | None = None,
     ignore_pins: frozenset[str] | None = None,
+    allow_pins: frozenset[str] | None = None,
 ) -> tuple[TerminalSpec, TerminalSpec] | None:
     p_net = _ci_get(params, p_net_key)
     n_net = _ci_get(params, n_net_key)
@@ -1898,6 +1983,7 @@ def _resolve_two_terminal(
         sch_lookup_designator=sch_lookup_designator,
         schdoc_name=schdoc_name,
         ignore_pins=ignore_pins,
+        allow_pins=allow_pins,
     )
     n_spec, n_err = _resolve_terminal(
         proj, pcb_index, n_net, n_pins, enabled_layers,
@@ -1907,9 +1993,9 @@ def _resolve_two_terminal(
         sch_lookup_designator=sch_lookup_designator,
         schdoc_name=schdoc_name,
         ignore_pins=ignore_pins,
+        allow_pins=allow_pins,
     )
-    result.errors.extend(p_err)
-    result.errors.extend(n_err)
+    result.errors.extend(e for e in (*p_err, *n_err) if e not in result.errors)
     if p_spec is None or n_spec is None:
         return None
     return p_spec, n_spec
@@ -1979,6 +2065,7 @@ def _resolve_single_terminal(
     sch_lookup_designator: str | None = None,
     schdoc_name: str | None = None,
     ignore_pins: frozenset[str] | None = None,
+    allow_pins: frozenset[str] | None = None,
 ) -> TerminalSpec | None:
     """Resolve the single PCB terminal of a single-net SOURCE/SINK directive.
 
@@ -1995,8 +2082,9 @@ def _resolve_single_terminal(
         sch_lookup_designator=sch_lookup_designator,
         schdoc_name=schdoc_name,
         ignore_pins=ignore_pins,
+        allow_pins=allow_pins,
     )
-    result.errors.extend(errs)
+    result.errors.extend(e for e in errs if e not in result.errors)
     return spec
 
 
@@ -2063,6 +2151,7 @@ def _parse_source(comp, proj, enabled_layers, result,
             comp.parameters, idx,
             _sch_ignored_pins(proj, comp.lookup_designator, comp.schdoc_name),
         )
+        allow_pins = _allow_pins_for_part(comp.parameters)
         for pcb_idx in pcb_indices:
             pcb_des = proj.pcb_components[pcb_idx].designator
             inst_diag = (
@@ -2078,6 +2167,7 @@ def _parse_source(comp, proj, enabled_layers, result,
                     sch_lookup_designator=comp.lookup_designator,
                     schdoc_name=comp.schdoc_name,
                     ignore_pins=ignore_pins,
+                    allow_pins=allow_pins,
                 )
                 if p is None:
                     continue
@@ -2095,6 +2185,7 @@ def _parse_source(comp, proj, enabled_layers, result,
                 sch_lookup_designator=comp.lookup_designator,
                 schdoc_name=comp.schdoc_name,
                 ignore_pins=ignore_pins,
+                allow_pins=allow_pins,
             )
             if pair is None:
                 continue
@@ -2148,6 +2239,7 @@ def _parse_sink(comp, proj, enabled_layers, result,
             comp.parameters, idx,
             _sch_ignored_pins(proj, comp.lookup_designator, comp.schdoc_name),
         )
+        allow_pins = _allow_pins_for_part(comp.parameters)
         for pcb_idx in pcb_indices:
             pcb_des = proj.pcb_components[pcb_idx].designator
             inst_diag = (
@@ -2163,6 +2255,7 @@ def _parse_sink(comp, proj, enabled_layers, result,
                     sch_lookup_designator=comp.lookup_designator,
                     schdoc_name=comp.schdoc_name,
                     ignore_pins=ignore_pins,
+                    allow_pins=allow_pins,
                 )
                 if p is None:
                     continue
@@ -2181,6 +2274,7 @@ def _parse_sink(comp, proj, enabled_layers, result,
                 sch_lookup_designator=comp.lookup_designator,
                 schdoc_name=comp.schdoc_name,
                 ignore_pins=ignore_pins,
+                allow_pins=allow_pins,
             )
             if pair is None:
                 continue
@@ -2247,6 +2341,7 @@ def _parse_resistance(comp, proj, enabled_layers, result,
             comp.parameters, idx,
             _sch_ignored_pins(proj, comp.lookup_designator, comp.schdoc_name),
         )
+        allow_pins = _allow_pins_for_part(comp.parameters)
         for pcb_idx in pcb_indices:
             pcb_des = proj.pcb_components[pcb_idx].designator
             inst_diag = (
@@ -2296,6 +2391,7 @@ def _parse_resistance(comp, proj, enabled_layers, result,
                 sch_lookup_designator=comp.lookup_designator,
                 schdoc_name=comp.schdoc_name,
                 ignore_pins=ignore_pins,
+                allow_pins=allow_pins,
             )
             if pair is None:
                 continue
@@ -2524,6 +2620,7 @@ def _parse_regulator(comp, proj, enabled_layers, result,
             comp.parameters, idx,
             _sch_ignored_pins(proj, comp.lookup_designator, comp.schdoc_name),
         )
+        allow_pins = _allow_pins_for_part(comp.parameters)
         for pcb_idx in pcb_indices:
             pcb_des = proj.pcb_components[pcb_idx].designator
             inst_diag = (
@@ -2539,6 +2636,7 @@ def _parse_regulator(comp, proj, enabled_layers, result,
                 sch_lookup_designator=comp.lookup_designator,
                 schdoc_name=comp.schdoc_name,
                 ignore_pins=ignore_pins,
+                allow_pins=allow_pins,
             )
             in_ = _resolve_two_terminal(
                 proj, pcb_idx, comp.parameters,
@@ -2549,6 +2647,7 @@ def _parse_regulator(comp, proj, enabled_layers, result,
                 sch_lookup_designator=comp.lookup_designator,
                 schdoc_name=comp.schdoc_name,
                 ignore_pins=ignore_pins,
+                allow_pins=allow_pins,
             )
             if out is None or in_ is None:
                 continue
@@ -2727,9 +2826,15 @@ def _warn_unknown_pdn_params(
             # errors on it; don't pile on per-parameter "unknown" noise.
             continue
         allowed = _KNOWN_SUFFIXES_BY_ROLE.get(eff_role, frozenset())
+        ch = f"#{idx}" if idx is not None else ""
+        if suffix_u in _PART_WIDE_PIN_FILTER_SUFFIXES and idx is not None:
+            result.warnings.append(
+                f"{diag}{ch}: {key!r} is ignored — pin allowlists are "
+                f"part-wide; use PDN_{suffix_u} (no channel index)"
+            )
+            continue
         if suffix_u in allowed:
             continue
-        ch = f"#{idx}" if idx is not None else ""
         if suffix_u == "PIN":
             suggest = _channel_key("P_PINS", idx)
             result.warnings.append(

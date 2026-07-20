@@ -2955,7 +2955,370 @@ def test_format_solve_blockers_lists_errors():
     assert "fypa.log" in text
 
 
-# --- PDN_IGNORE / PDN_IGNORE_PINS --------------------------------------------
+# --- PDN_PINS_ONLY / PDN_EXTRA_PINS / PDN_IGNORE ------------------------------
+
+def test_allow_pins_for_part_union_and_none():
+    from fypa.altium.annotations import _allow_pins_for_part
+
+    assert _allow_pins_for_part({}) is None
+    assert _allow_pins_for_part({"PDN_PINS_ONLY": "1, EP"}) == frozenset({"1", "EP"})
+    assert _allow_pins_for_part({"PDN_EXTRA_PINS": "SNS"}) == frozenset({"SNS"})
+    assert _allow_pins_for_part({
+        "PDN_PINS_ONLY": "1,2",
+        "PDN_EXTRA_PINS": "EP",
+    }) == frozenset({"1", "2", "EP"})
+
+
+def test_resolve_terminal_honours_pins_only_allowlist():
+    proj = _minimal_proj(
+        nets=(RawNet("VIN"), RawNet("GND")),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 0, 0.0),
+            _pad(0, "EN", 0, 1.0),
+            _pad(0, "GND", 1, 2.0),
+        ),
+    )
+    warnings: list[str] = []
+    spec, errs = _resolve_terminal(
+        proj, 0, "VIN", None, [1], "SINK P",
+        warnings=warnings, allow_pins=frozenset({"1", "GND"}),
+    )
+    assert not errs and spec is not None
+    assert [p.pad_designator for p in spec.pins] == ["1"]
+
+
+def test_resolve_terminal_extra_pins_extends_allowlist():
+    from fypa.altium.annotations import _allow_pins_for_part
+
+    allow = _allow_pins_for_part({
+        "PDN_PINS_ONLY": "1",
+        "PDN_EXTRA_PINS": "EP",
+    })
+    proj = _minimal_proj(
+        nets=(RawNet("GND"),),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 0, 0.0),
+            _pad(0, "EP", 0, 1.0),
+            _pad(0, "EN", 0, 2.0),
+        ),
+    )
+    spec, errs = _resolve_terminal(
+        proj, 0, "GND", None, [1], "SINK N",
+        allow_pins=allow,
+    )
+    assert not errs and spec is not None
+    assert sorted(p.pad_designator for p in spec.pins) == ["1", "EP"]
+
+
+def test_resolve_terminal_override_pins_bypass_allowlist():
+    proj = _minimal_proj(
+        nets=(RawNet("VIN"),),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 0, 0.0),
+            _pad(0, "EN", 0, 1.0),
+        ),
+    )
+    spec, errs = _resolve_terminal(
+        proj, 0, "VIN", ["EN"], [1], "SINK P",
+        allow_pins=frozenset({"1"}),
+    )
+    assert not errs and spec is not None
+    assert [p.pad_designator for p in spec.pins] == ["EN"]
+
+
+def test_parse_sink_pins_only_keeps_en_off_rail():
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+3V3")),
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SINK",
+                    "PDN_I": "500mA",
+                    "PDN_P_NET": "+3V3",
+                    "PDN_N_NET": "GND",
+                    "PDN_PINS_ONLY": "1,GND",
+                },
+                pin_designators=("1", "EN", "GND"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, 0.0),
+            _pad(0, "EN", 1, 1.0),
+            _pad(0, "GND", 0, 2.0),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert not result.errors
+    sink = next(d for d in result.directives if isinstance(d, SinkSpec))
+    assert sorted(p.pad_designator for p in sink.p.pins) == ["1"]
+    assert sorted(p.pad_designator for p in sink.n.pins) == ["GND"]
+
+
+def test_allowlist_empty_pool_errors_once_for_two_terminals():
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+3V3")),
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SINK",
+                    "PDN_I": "100mA",
+                    "PDN_P_NET": "+3V3",
+                    "PDN_N_NET": "GND",
+                    "PDN_PINS_ONLY": "NOSUCH",
+                },
+                pin_designators=("1", "GND"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, 0.0),
+            _pad(0, "GND", 0, 1.0),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    empty = [
+        e for e in result.errors
+        if "no pads match PDN_PINS_ONLY" in e
+    ]
+    assert len(empty) == 1
+    assert empty[0].startswith("U1:")
+
+
+def test_allowlist_missing_pin_warns_once_for_two_terminals():
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+3V3")),
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SINK",
+                    "PDN_I": "100mA",
+                    "PDN_P_NET": "+3V3",
+                    "PDN_N_NET": "GND",
+                    "PDN_PINS_ONLY": "1,GND,MISSING",
+                },
+                pin_designators=("1", "GND"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, 0.0),
+            _pad(0, "GND", 0, 1.0),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    miss = [
+        w for w in result.warnings
+        if "not on the PCB" in w and "MISSING" in w
+    ]
+    assert len(miss) == 1
+
+
+def test_resolve_terminal_allowlist_error_names_excluded_net_pads():
+    proj = _minimal_proj(
+        nets=(RawNet("VIN"), RawNet("GND")),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, 0.0),   # on GND — in allowlist
+            _pad(0, "EN", 0, 1.0),  # on VIN — outside allowlist
+        ),
+    )
+    spec, errs = _resolve_terminal(
+        proj, 0, "VIN", None, [1], "SINK P",
+        allow_pins=frozenset({"1"}),
+    )
+    assert spec is None
+    assert errs
+    assert "no allowlisted pad on net" in errs[0]
+    assert "EN" in errs[0]
+    assert "PDN_PINS_ONLY" in errs[0]
+
+
+def test_parse_sink_pins_only_partitions_multi_channel_rails():
+    # Nets: 0=GND, 1=+3V3, 2=+1V8 — EN hard-tied to +3V3 must stay off both.
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+3V3"), RawNet("+1V8")),
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SINK",
+                    "PDN_I": "500mA",
+                    "PDN_P_NET": "+3V3",
+                    "PDN_N_NET": "GND",
+                    "PDN1_I": "250mA",
+                    "PDN1_P_NET": "+1V8",
+                    "PDN1_N_NET": "GND",
+                    "PDN_PINS_ONLY": "A1,A2,GND",
+                },
+                pin_designators=("A1", "A2", "EN", "GND"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="BGA", source_designator="U1",
+            ),
+        ),
+        pads=(
+            _pad(0, "A1", 1, 0.0),
+            _pad(0, "A2", 2, 1.0),
+            _pad(0, "EN", 1, 2.0),
+            _pad(0, "GND", 0, 3.0),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert not result.errors
+    sinks = [d for d in result.directives if isinstance(d, SinkSpec)]
+    assert len(sinks) == 2
+    by_ch = {d.channel_index: d for d in sinks}
+    assert sorted(p.pad_designator for p in by_ch[None].p.pins) == ["A1"]
+    assert sorted(p.pad_designator for p in by_ch[1].p.pins) == ["A2"]
+    for s in sinks:
+        assert sorted(p.pad_designator for p in s.n.pins) == ["GND"]
+
+
+def test_parse_regulator_honours_pins_only_on_in_and_out():
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+5V"), RawNet("+3V3")),
+        sch_components=(
+            RawSchComponent(
+                designator="U2", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "REGULATOR",
+                    "PDN_V": "3.3",
+                    "PDN_GAIN": "0.9",
+                    "PDN_OUT_P_NET": "+3V3",
+                    "PDN_OUT_N_NET": "GND",
+                    "PDN_IN_P_NET": "+5V",
+                    "PDN_IN_N_NET": "GND",
+                    "PDN_PINS_ONLY": "IN,OUT,GND",
+                },
+                pin_designators=("IN", "OUT", "EN", "GND"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U2", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="SOT", source_designator="U2",
+            ),
+        ),
+        pads=(
+            _pad(0, "IN", 1, 0.0),
+            _pad(0, "OUT", 2, 1.0),
+            _pad(0, "EN", 1, 2.0),  # on +5V, must not join IN
+            _pad(0, "GND", 0, 3.0),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert not result.errors
+    reg = next(d for d in result.directives if isinstance(d, RegulatorSpec))
+    assert sorted(p.pad_designator for p in reg.in_p.pins) == ["IN"]
+    assert sorted(p.pad_designator for p in reg.out_p.pins) == ["OUT"]
+    assert sorted(p.pad_designator for p in reg.in_n.pins) == ["GND"]
+    assert sorted(p.pad_designator for p in reg.out_n.pins) == ["GND"]
+
+
+def test_resolve_terminal_allowlist_then_ignore():
+    proj = _minimal_proj(
+        nets=(RawNet("VIN"),),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 0, 0.0),
+            _pad(0, "2", 0, 1.0),
+            _pad(0, "EN", 0, 2.0),
+        ),
+    )
+    warnings: list[str] = []
+    spec, errs = _resolve_terminal(
+        proj, 0, "VIN", None, [1], "SINK P",
+        warnings=warnings,
+        allow_pins=frozenset({"1", "2"}),
+        ignore_pins=frozenset({"2"}),
+    )
+    assert not errs and spec is not None
+    assert [p.pad_designator for p in spec.pins] == ["1"]
+    assert any("ignoring pin" in w and "2" in w for w in warnings)
+
+
+def test_warn_unknown_flags_indexed_pins_only():
+    result = AnnotationResult()
+    comp = PdnParameterSource(
+        designator="U1", schdoc_name="Pwr.SchDoc",
+        parameters={
+            "PDN_ROLE": "SINK",
+            "PDN_I": "100mA",
+            "PDN_P_NET": "+3V3",
+            "PDN_N_NET": "GND",
+            "PDN1_PINS_ONLY": "1,2",
+        },
+    )
+    _warn_unknown_pdn_params(comp, "SINK", result)
+    assert any("PDN1_PINS_ONLY" in w and "part-wide" in w for w in result.warnings)
+
+
+def test_warn_unknown_does_not_flag_pins_only():
+    result = AnnotationResult()
+    comp = PdnParameterSource(
+        designator="U1", schdoc_name="Pwr.SchDoc",
+        parameters={
+            "PDN_ROLE": "SINK",
+            "PDN_I": "100mA",
+            "PDN_P_NET": "+3V3",
+            "PDN_N_NET": "GND",
+            "PDN_PINS_ONLY": "1,GND",
+            "PDN_EXTRA_PINS": "EP",
+        },
+    )
+    _warn_unknown_pdn_params(comp, "SINK", result)
+    assert not any("PINS_ONLY" in w or "EXTRA_PINS" in w for w in result.warnings)
+
 
 def test_resolve_terminal_excludes_ignore_pins_from_net_match():
     from fypa.altium.annotations import _ignore_pins_for_channel
