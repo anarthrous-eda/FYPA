@@ -169,26 +169,52 @@ directive bridges those nets elsewhere on the board. Name the net that
 the pad actually sits on in the PCB netlist (see 1.8 if the pin is on
 a switching node or pre-inductor net).
 
-To override the inferred pad set (e.g. to exclude a thermal pad), use
-the `PDN_P_PINS` / `PDN_N_PINS` parameters documented in the
-[main README](../../README.md).
+To override the inferred pad set for one terminal (e.g. a single rail on
+a simple part), use `PDN_P_PINS` / `PDN_N_PINS` as documented in the
+[main README](../../README.md). For multi-rail ICs those lists are awkward
+in a SchLib because channel indices (`PDN` / `PDN1` / …) are board-specific.
 
-### Excluding non-current pins
+### Restricting which pins may join (allowlist)
 
-Enable pins hard-tied to the supply, or signal pins pulled to GND, sit on
-the same net as the power pads but do not carry load current. Listing
-every *included* pin in `PDN_P_PINS` gets long on a BGA. Prefer an
-**exclude** instead:
+Enable pins hard-tied to a supply, or signal pins pulled to GND, sit on
+the same net as the power pads but should not carry load current. Prefer a
+**part-wide allowlist** in the library — independent of channel indices —
+then let net matching partition pins across rails:
 
-1. **Pin parameter (preferred)** — on the schematic pin (Pin Properties →
-   Parameters), add `PDN_IGNORE` = `1` (also `TRUE` / `YES` / `IGNORE`).
-   Alias: name `PDN`, value `IGNORE`. Works in the library symbol so every
-   placement inherits it.
-2. **Component list** — `PDN_IGNORE_PINS` (or `PDNn_IGNORE_PINS` for one
-   channel) with a short comma-separated list of pin designators.
+1. **`PDN_PINS_ONLY`** (preferred in the SchLib) — comma/whitespace list of
+   pin designators that may join any SOURCE/SINK/SERIES/REGULATOR terminal.
+   Pads not on the list are never considered, even when they sit on
+   `PDN_P_NET` / `PDN_N_NET`.
+2. **`PDN_EXTRA_PINS`** — always **unioned** into the allowlist. Typical use:
+   library sets `PDN_PINS_ONLY`, the schematic instance adds one forgotten
+   pin via `PDN_EXTRA_PINS` without retyping the list. If **only**
+   `PDN_EXTRA_PINS` is set (no `PDN_PINS_ONLY`), that list **is** the full
+   allowlist — it does *not* mean “all pads plus these”.
+3. **Per-terminal override** — `PDN[_n]_P_PINS` / `PDN[_n]_N_PINS` (or
+   single-net `PDN[_n]_PINS`) bypasses the allowlist for that terminal.
+4. **Exclude (fine-tuning)** — pin parameter `PDN_IGNORE` = `1` (also
+   `TRUE` / `YES` / `IGNORE`; alias name `PDN` value `IGNORE`), or
+   component `PDN_IGNORE_PINS` / `PDNn_IGNORE_PINS`, removes pins after
+   matching (including from an explicit include list). Prefer
+   `PDN_IGNORE_PINS` on the part when pin-owned parameters are not visible
+   to FYPA (unusual SchLib hierarchy); the pin-level form needs the
+   parameter's OwnerIndex to point at the pin record.
 
-Ignored pins are removed after net or include matching, so they never
-join the SOURCE/SINK terminal — including on GND/return.
+`PDN_PINS_ONLY` / `PDN_EXTRA_PINS` are **unindexed** (part-wide). Indexed
+forms such as `PDN1_PINS_ONLY` are ignored with a warning.
+
+Example — multi-rail IC in the SchLib with power pins `1`–`4` and `EP`,
+enable pin `EN` hard-tied to `+3V3` on the board:
+
+| Name | Value |
+|------|-------|
+| `PDN_PINS_ONLY` | `1,2,3,4,EP` |
+| `PDN_ROLE` | `SINK` |
+| `PDN_I` | `500mA` | `PDN_P_NET` = `+3V3`, `PDN_N_NET` = `GND` |
+| `PDN1_I` | `250mA` | `PDN1_P_NET` = `+1V8`, `PDN1_N_NET` = `GND` |
+
+`EN` never joins the `+3V3` terminal. On one board, add a forgotten sense
+pin with `PDN_EXTRA_PINS=SNS` on the placed part.
 
 ### Area-weighted multi-pin coupling
 
@@ -200,8 +226,10 @@ coupling by pad area**. Coupling resistance then scales as
 access is similar. Off by default.
 
 Marker hover text uses the same area weights as a quick estimate
-(`I · A_i / ΣA`). The FEM can still shift current when copper access to
-the pads differs — the hover value is not a guaranteed pin current.
+(`I · A_i / ΣA`). Areas come from each pin's pad outline polygon on its
+terminal layer (not a multi-layer copper volume). The FEM can still shift
+current when copper access to the pads differs — the hover value is not a
+guaranteed pin current.
 
 ### Several rails on one part (multi-channel)
 
