@@ -173,6 +173,36 @@ To override the inferred pad set (e.g. to exclude a thermal pad), use
 the `PDN_P_PINS` / `PDN_N_PINS` parameters documented in the
 [main README](../../README.md).
 
+### Excluding non-current pins
+
+Enable pins hard-tied to the supply, or signal pins pulled to GND, sit on
+the same net as the power pads but do not carry load current. Listing
+every *included* pin in `PDN_P_PINS` gets long on a BGA. Prefer an
+**exclude** instead:
+
+1. **Pin parameter (preferred)** — on the schematic pin (Pin Properties →
+   Parameters), add `PDN_IGNORE` = `1` (also `TRUE` / `YES` / `IGNORE`).
+   Alias: name `PDN`, value `IGNORE`. Works in the library symbol so every
+   placement inherits it.
+2. **Component list** — `PDN_IGNORE_PINS` (or `PDNn_IGNORE_PINS` for one
+   channel) with a short comma-separated list of pin designators.
+
+Ignored pins are removed after net or include matching, so they never
+join the SOURCE/SINK terminal — including on GND/return.
+
+### Area-weighted multi-pin coupling
+
+By default each pin of a multi-pin terminal couples through the same
+star resistance. For parts with differently sized power pads (or a large
+QFN thermal pad on GND), open **Settings** and enable **Weight multi-pin
+coupling by pad area**. Coupling resistance then scales as
+`R ∝ 1/A`, so larger pads take a larger share of current when copper
+access is similar. Off by default.
+
+Marker hover text uses the same area weights as a quick estimate
+(`I · A_i / ΣA`). The FEM can still shift current when copper access to
+the pads differs — the hover value is not a guaranteed pin current.
+
 ### Several rails on one part (multi-channel)
 
 An IC that draws from more than one supply rail is a single part with

@@ -143,6 +143,12 @@ COUPLING_RESISTANCE_OHM: float = 100.0e-3
 # the coupling to equalise — at any value).
 SOURCE_COUPLING_RESISTANCE_OHM: float = 1.0e-6
 
+# When True, multi-pin star coupling resistances are scaled inversely with
+# each pin's pad area (R_i = R_base * A_mean / A_i) so larger pads take a
+# larger share of terminal current when copper potentials are similar.
+# Off by default — equal R per pin matches historical behaviour.
+AREA_WEIGHTED_PIN_COUPLING: bool = False
+
 
 log = logging.getLogger(__name__)
 
@@ -192,6 +198,8 @@ class SolveSettings:
     # Conductive-fill override: "auto" (per-via from Altium IPC-4761 data),
     # "all" (force every via filled), or "none" (force none filled).
     conductive_fill_mode: str = CONDUCTIVE_FILL_MODE
+    # Scale multi-pin star coupling R inversely with pad area.
+    area_weighted_pin_coupling: bool = AREA_WEIGHTED_PIN_COUPLING
     # Meshing
     mesh_min_angle_deg: float = 20.0
     mesh_max_size_mm: float = 0.6
@@ -234,6 +242,9 @@ class SolveSettings:
             self.conductive_fill_resistivity_ohm_mm
         )
         globals()["CONDUCTIVE_FILL_MODE"] = self.conductive_fill_mode
+        globals()["AREA_WEIGHTED_PIN_COUPLING"] = bool(
+            self.area_weighted_pin_coupling
+        )
 
     @classmethod
     def from_metadata(cls, metadata: dict | None) -> SolveSettings:
@@ -271,6 +282,10 @@ class SolveSettings:
         mode = phys.get("conductive_fill_mode")
         if isinstance(mode, str) and mode in ("auto", "all", "none"):
             s.conductive_fill_mode = mode
+        if "area_weighted_pin_coupling" in phys:
+            s.area_weighted_pin_coupling = bool(
+                phys["area_weighted_pin_coupling"]
+            )
         if "temperature_c" in phys:
             s.temperature_c = float(phys["temperature_c"])
         if "copper_temp_coefficient_per_c" in phys:
@@ -551,6 +566,49 @@ def _collect_active_nets(directives, extracted: ExtractedProject) -> set[int]:
     return active
 
 
+def _pin_coupling_resistances(
+    areas_mm2: list[float],
+    r_base: float,
+    *,
+    area_weighted: bool | None = None,
+) -> list[float]:
+    """Per-pin star coupling resistances for a multi-pin terminal.
+
+    When ``area_weighted`` is False (default module flag), every pin gets
+    ``r_base``. When True, ``R_i = r_base * A_mean / A_i`` so conductance
+    scales with pad area. Degenerate / missing areas are replaced by the
+    mean of the valid areas in the terminal; if none are valid, every pin
+    keeps ``r_base`` (equal share).
+    """
+    if area_weighted is None:
+        area_weighted = AREA_WEIGHTED_PIN_COUPLING
+    n = len(areas_mm2)
+    if n == 0:
+        return []
+    if not area_weighted or n == 1:
+        return [float(r_base)] * n
+
+    valid = [a for a in areas_mm2 if a is not None and a > 0.0]
+    if not valid:
+        return [float(r_base)] * n
+    a_mean = sum(valid) / len(valid)
+    out: list[float] = []
+    for a in areas_mm2:
+        ai = a if (a is not None and a > 0.0) else a_mean
+        out.append(float(r_base) * (a_mean / ai))
+    return out
+
+
+def _pin_area_mm2(pin: TerminalPin) -> float:
+    poly = pin.pad_polygon
+    if poly is None or getattr(poly, "is_empty", False):
+        return 0.0
+    try:
+        return float(poly.area)
+    except Exception:
+        return 0.0
+
+
 def _terminal_connections(
     term: TerminalSpec,
     main_node: _pp.NodeID,
@@ -575,6 +633,10 @@ def _terminal_connections(
     :data:`SOURCE_COUPLING_RESISTANCE_OHM` for VOLTAGE-forcing terminals so
     high-current sources don't see a ~1 V drop per pin to their virtual
     hub.
+
+    When :data:`AREA_WEIGHTED_PIN_COUPLING` is on, each star resistor is
+    scaled inversely with that pin's pad area (see
+    :func:`_pin_coupling_resistances`).
 
     Pins whose ``(layer, net)`` pair has no padne Layer (e.g. internal planes
     pending implementation, or a net with no extracted copper on that layer)
@@ -602,9 +664,13 @@ def _terminal_connections(
             region=pin.pad_polygon,
         )], []
 
+    areas = [_pin_area_mm2(pin) for _layer, pin in valid]
+    resistances = _pin_coupling_resistances(
+        areas, coupling_resistance_ohm,
+    )
     conns: list[_pp.Connection] = []
     aux: list[_pp.BaseLumped] = []
-    for layer, pin in valid:
+    for (layer, pin), r_pin in zip(valid, resistances):
         pin_node = _pp.NodeID()
         conns.append(_pp.Connection(
             layer=layer,
@@ -613,7 +679,7 @@ def _terminal_connections(
             region=pin.pad_polygon,
         ))
         aux.append(_pp.Resistor(
-            a=pin_node, b=main_node, resistance=coupling_resistance_ohm,
+            a=pin_node, b=main_node, resistance=r_pin,
         ))
     return conns, aux
 
@@ -2431,6 +2497,7 @@ def build_solve_metadata(
             "plating_thickness_mm": PLATING_THICKNESS_MM,
             "fallback_via_resistance_ohm": FALLBACK_VIA_RESISTANCE_OHM,
             "coupling_resistance_ohm": COUPLING_RESISTANCE_OHM,
+            "area_weighted_pin_coupling": AREA_WEIGHTED_PIN_COUPLING,
             "conductive_fill_resistivity_ohm_mm":
                 CONDUCTIVE_FILL_RESISTIVITY_OHM_MM,
             "conductive_fill_mode": CONDUCTIVE_FILL_MODE,
@@ -2448,7 +2515,10 @@ def build_solve_metadata(
             "note_coupling_resistance": (
                 "When a directive terminal has multiple pins, each pin attaches "
                 "to a per-pin NodeID coupled back to the main terminal NodeID "
-                "via this resistance (padne star-coupling convention)."
+                "via this resistance (padne star-coupling convention). When "
+                "area_weighted_pin_coupling is true, each pin's resistance is "
+                "scaled as R_i = R * A_mean / A_i so larger pads take more "
+                "current at equal copper potential."
             ),
         },
         "directives": directives,
@@ -2519,12 +2589,20 @@ def _terminal_summary(term, nets) -> dict:
     for pin in term.pins:
         net_name = (nets[pin.net_index].name
                     if 0 <= pin.net_index < len(nets) else "(none)")
+        area = 0.0
+        poly = pin.pad_polygon
+        if poly is not None and not getattr(poly, "is_empty", False):
+            try:
+                area = float(poly.area)
+            except Exception:
+                area = 0.0
         pins.append({
             "pad": pin.pad_designator,
             "layer_id": pin.layer_id,
             "net": net_name,
             "x_mm": pin.point.x,
             "y_mm": pin.point.y,
+            "area_mm2": area,
         })
     return {
         "pin_count": len(pins),
