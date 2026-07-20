@@ -2953,3 +2953,318 @@ def test_format_solve_blockers_lists_errors():
     assert "PDN2_PIN" in text
     assert "no SOURCE or REGULATOR" in text
     assert "fypa.log" in text
+
+
+# --- PDN_IGNORE / PDN_IGNORE_PINS --------------------------------------------
+
+def test_resolve_terminal_excludes_ignore_pins_from_net_match():
+    from fypa.altium.annotations import _ignore_pins_for_channel
+
+    proj = _minimal_proj(
+        nets=(RawNet("VIN"), RawNet("GND")),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 0, 0.0),
+            _pad(0, "2", 0, 1.0),   # enable hard-tied to VIN
+            _pad(0, "3", 1, 2.0),
+        ),
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="Pwr.SchDoc",
+                parameters={"Comment": "IC"},
+                pin_designators=("1", "2", "3"),
+                ignored_pins=frozenset({"2"}),
+            ),
+        ),
+    )
+    warnings: list[str] = []
+    ign = _ignore_pins_for_channel(
+        {}, None, frozenset({"2"}),
+    )
+    spec, errs = _resolve_terminal(
+        proj, 0, "VIN", None, [1], "SINK P",
+        warnings=warnings, ignore_pins=ign,
+    )
+    assert not errs and spec is not None
+    assert [p.pad_designator for p in spec.pins] == ["1"]
+    assert any("ignoring pin" in w and "2" in w for w in warnings)
+
+
+def test_resolve_terminal_ignore_wins_over_include_list():
+    proj = _minimal_proj(
+        nets=(RawNet("VIN"),),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 0, 0.0),
+            _pad(0, "EN", 0, 1.0),
+        ),
+    )
+    warnings: list[str] = []
+    spec, errs = _resolve_terminal(
+        proj, 0, "VIN", ["1", "EN"], [1], "SINK P",
+        warnings=warnings, ignore_pins=frozenset({"EN"}),
+    )
+    assert not errs and spec is not None
+    assert [p.pad_designator for p in spec.pins] == ["1"]
+
+
+def test_parse_sink_honours_pdn_ignore_pins_list():
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+3V3")),
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SINK",
+                    "PDN_I": "500mA",
+                    "PDN_P_NET": "+3V3",
+                    "PDN_N_NET": "GND",
+                    "PDN_IGNORE_PINS": "EN",
+                },
+                pin_designators=("1", "EN", "GND"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, 0.0),
+            _pad(0, "EN", 1, 1.0),
+            _pad(0, "GND", 0, 2.0),
+        ),
+    )
+    result = parse_annotations(proj)
+    assert not result.errors, result.errors
+    assert len(result.directives) == 1
+    sink = result.directives[0]
+    assert isinstance(sink, SinkSpec)
+    assert [p.pad_designator for p in sink.p.pins] == ["1"]
+    assert any("IGNORE" in w for w in result.warnings)
+
+
+def test_parse_sink_channel_ignore_pins():
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("AVDD"), RawNet("DVDD")),
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SINK",
+                    "PDN_I": "10mA",
+                    "PDN_P_NET": "AVDD",
+                    "PDN_N_NET": "GND",
+                    "PDN1_I": "20mA",
+                    "PDN1_P_NET": "DVDD",
+                    "PDN1_N_NET": "GND",
+                    "PDN1_IGNORE_PINS": "4",
+                },
+                pin_designators=("1", "2", "3", "4"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, 0.0),  # AVDD
+            _pad(0, "2", 0, 1.0),  # GND
+            _pad(0, "3", 2, 2.0),  # DVDD
+            _pad(0, "4", 2, 3.0),  # DVDD enable-like
+        ),
+    )
+    result = parse_annotations(proj)
+    assert not result.errors, result.errors
+    sinks = [d for d in result.directives if isinstance(d, SinkSpec)]
+    assert len(sinks) == 2
+    by_ch = {d.channel_index: d for d in sinks}
+    assert [p.pad_designator for p in by_ch[None].p.pins] == ["1"]
+    assert [p.pad_designator for p in by_ch[1].p.pins] == ["3"]
+
+
+def test_is_pdn_ignore_param_alias():
+    from fypa.altium.extract import _is_pdn_ignore_param
+
+    assert _is_pdn_ignore_param("PDN_IGNORE", "1")
+    assert _is_pdn_ignore_param("PDN_IGNORE", "TRUE")
+    assert _is_pdn_ignore_param("PDN", "IGNORE")
+    assert not _is_pdn_ignore_param("PDN_IGNORE", "")
+    assert not _is_pdn_ignore_param("PDN", "1")
+    assert not _is_pdn_ignore_param("OTHER", "IGNORE")
+
+
+def test_ignored_pins_from_sch_component_owner_index():
+    from types import SimpleNamespace
+
+    from fypa.altium.extract import _ignored_pins_from_sch_component
+
+    pin = SimpleNamespace(
+        designator="EN",
+        _record_index=42,
+        pin_parameters=[],
+    )
+    comp = SimpleNamespace(pins=[pin], children=[])
+    param = SimpleNamespace(
+        name="PDN_IGNORE", text="1", owner_index=42,
+    )
+    assert _ignored_pins_from_sch_component(comp, [param]) == frozenset({"EN"})
+
+
+def test_warn_unknown_does_not_flag_ignore_pins():
+    result = AnnotationResult()
+    comp = PdnParameterSource(
+        designator="U1", schdoc_name="Pwr.SchDoc",
+        parameters={
+            "PDN_ROLE": "SINK",
+            "PDN_I": "100mA",
+            "PDN_P_NET": "+3V3",
+            "PDN_N_NET": "GND",
+            "PDN_IGNORE_PINS": "EN",
+        },
+    )
+    _warn_unknown_pdn_params(comp, "SINK", result)
+    assert not any("IGNORE_PINS" in w for w in result.warnings)
+def test_parse_annotations_honours_sch_ignored_pins():
+    """End-to-end: pin-level ignored_pins on RawSchComponent reach the sink."""
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+3V3")),
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SINK",
+                    "PDN_I": "500mA",
+                    "PDN_P_NET": "+3V3",
+                    "PDN_N_NET": "GND",
+                },
+                pin_designators=("1", "EN", "GND"),
+                ignored_pins=frozenset({"EN"}),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, 0.0),
+            _pad(0, "EN", 1, 1.0),
+            _pad(0, "GND", 0, 2.0),
+        ),
+    )
+    result = parse_annotations(proj)
+    assert not result.errors, result.errors
+    sink = result.directives[0]
+    assert isinstance(sink, SinkSpec)
+    assert [p.pad_designator for p in sink.p.pins] == ["1"]
+    assert any("IGNORE" in w for w in result.warnings)
+
+
+def test_sch_ignored_pins_empty_sheet_match_does_not_import_other_sheet():
+    """Matching sheet with no ignores must not fall back to another sheet."""
+    from fypa.altium.annotations import _sch_ignored_pins
+
+    proj = _minimal_proj(
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="Pwr.SchDoc",
+                parameters={}, pin_designators=("1", "EN"),
+                ignored_pins=frozenset(),
+            ),
+            RawSchComponent(
+                designator="U1", schdoc_name="Other.SchDoc",
+                parameters={}, pin_designators=("1", "EN"),
+                ignored_pins=frozenset({"EN"}),
+            ),
+        ),
+    )
+    assert _sch_ignored_pins(proj, "U1", "Pwr.SchDoc") == frozenset()
+
+
+def test_sch_ignored_pins_fallback_when_sheet_missing():
+    from fypa.altium.annotations import _sch_ignored_pins
+
+    proj = _minimal_proj(
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="Pwr.SchDoc",
+                parameters={}, pin_designators=("1", "EN"),
+                ignored_pins=frozenset({"EN"}),
+            ),
+        ),
+    )
+    assert _sch_ignored_pins(proj, "U1", "Missing.SchDoc") == frozenset({"EN"})
+
+
+def test_sch_ignored_pins_blank_sheet_does_not_union_ambiguous():
+    """Blank/None schdoc must not merge ignores across same designators."""
+    from fypa.altium.annotations import _sch_ignored_pins
+
+    proj = _minimal_proj(
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="Pwr.SchDoc",
+                parameters={}, pin_designators=("1", "EN"),
+                ignored_pins=frozenset(),
+            ),
+            RawSchComponent(
+                designator="U1", schdoc_name="Other.SchDoc",
+                parameters={}, pin_designators=("1", "EN"),
+                ignored_pins=frozenset({"EN"}),
+            ),
+        ),
+    )
+    assert _sch_ignored_pins(proj, "U1", "") == frozenset()
+    assert _sch_ignored_pins(proj, "U1", None) == frozenset()
+
+
+def test_sch_ignored_pins_blank_sheet_unique_placement_ok():
+    from fypa.altium.annotations import _sch_ignored_pins
+
+    proj = _minimal_proj(
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="Pwr.SchDoc",
+                parameters={}, pin_designators=("1", "EN"),
+                ignored_pins=frozenset({"EN"}),
+            ),
+        ),
+    )
+    assert _sch_ignored_pins(proj, "U1", "") == frozenset({"EN"})
+    assert _sch_ignored_pins(proj, "U1", None) == frozenset({"EN"})
+
+
+def test_sch_ignored_pins_missing_sheet_ambiguous_no_fallback_union():
+    """Mismatched sheet + multiple placements → empty, not a cross-sheet union."""
+    from fypa.altium.annotations import _sch_ignored_pins
+
+    proj = _minimal_proj(
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="Pwr.SchDoc",
+                parameters={}, pin_designators=("1",),
+                ignored_pins=frozenset({"1"}),
+            ),
+            RawSchComponent(
+                designator="U1", schdoc_name="Other.SchDoc",
+                parameters={}, pin_designators=("EN",),
+                ignored_pins=frozenset({"EN"}),
+            ),
+        ),
+    )
+    assert _sch_ignored_pins(proj, "U1", "Missing.SchDoc") == frozenset()

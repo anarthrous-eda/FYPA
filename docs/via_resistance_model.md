@@ -319,6 +319,7 @@ does not trigger an immediate re-solve; press **Re-run Solver** to apply.
 | Fallback via resistance                | 1.0 mΩ           | Per-hop R substituted when geometry is missing                        |
 | Conductive fill resistivity            | 5×10⁻³ Ω·mm      | `ρ_fill` for the parallel rod inside conductively-filled vias        |
 | Multi-pin coupling resistance          | 100 mΩ           | Star-couples pins within one terminal; not part of the barrel model  |
+| Weight multi-pin coupling by pad area  | off              | When on, each star R scales as `R ∝ 1/A` (supply and GND terminals) |
 
 Solver-side constants (`PLATING_THICKNESS_MM`, `COPPER_RESISTIVITY_OHM_MM`,
 `FALLBACK_VIA_RESISTANCE_OHM`) are patched in

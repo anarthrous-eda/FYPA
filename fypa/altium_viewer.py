@@ -6364,9 +6364,23 @@ class _SettingsTabMixin:
         )
         self._settings_adaptive_check.toggled.connect(
             self._on_settings_field_changed)
+        self._settings_area_weighted_check = QCheckBox(
+            "Weight multi-pin coupling by pad area")
+        self._settings_area_weighted_check.setChecked(
+            bool(getattr(
+                self._solve_settings, "area_weighted_pin_coupling", False)))
+        self._settings_area_weighted_check.setToolTip(
+            "Scale each multi-pin star coupling resistor inversely with that "
+            "pin's pad area (R ∝ 1/A), so larger pads — including QFN thermal "
+            "pads on GND — take a larger share of supply and return current "
+            "when copper access is similar. Off = equal R per pin (default)."
+        )
+        self._settings_area_weighted_check.toggled.connect(
+            self._on_settings_field_changed)
         _solve_layout = solve_box.layout()
         if _solve_layout is not None:
             _solve_layout.addRow(self._settings_adaptive_check)
+            _solve_layout.addRow(self._settings_area_weighted_check)
         # Adaptive SMPS regulator-gain iteration — moved here from the editor
         # canvas overlay. Same attribute name + handler as before, so the
         # solve-time reads and resolve-enable logic are unchanged. Enabled only
@@ -7122,6 +7136,9 @@ class _SettingsTabMixin:
         chk = getattr(self, "_settings_adaptive_check", None)
         if chk is not None:
             chk.setChecked(bool(defaults.adaptive_mesh))
+        aw = getattr(self, "_settings_area_weighted_check", None)
+        if aw is not None:
+            aw.setChecked(bool(defaults.area_weighted_pin_coupling))
         mode_combo = getattr(self, "_fill_mode_combo", None)
         if mode_combo is not None:
             idx = mode_combo.findData(defaults.conductive_fill_mode)
@@ -7187,6 +7204,14 @@ class _SettingsTabMixin:
             dirty = bool(chk.isChecked()) != bool(
                 getattr(self._solve_settings, "adaptive_mesh", False))
             mark(chk, dirty)
+            any_dirty = any_dirty or dirty
+
+        aw = getattr(self, "_settings_area_weighted_check", None)
+        if aw is not None:
+            dirty = bool(aw.isChecked()) != bool(
+                getattr(
+                    self._solve_settings, "area_weighted_pin_coupling", False))
+            mark(aw, dirty)
             any_dirty = any_dirty or dirty
 
         mode_combo = getattr(self, "_fill_mode_combo", None)
@@ -15296,23 +15321,48 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 for term_name, term in (d.get("terminals") or {}).items():
                     term_pins = term.get("pins") or []
                     is_n_side = term_name in _N_SIDE_TERMINALS
-                    # Per-pin current = directive total / pins in THIS
-                    # terminal. The lumped element couples to each pin in
-                    # a terminal through equal-valued star resistors, so
-                    # with similar copper potentials at the pins the
-                    # current splits evenly. A terminal with no pins
-                    # (multi-channel directives can have empty terminals)
-                    # contributes no markers, so the divisor is never 0.
+                    # Per-pin current estimate for hover. Equal split when
+                    # area weighting is off; I * A_i / ΣA when the solve used
+                    # area-weighted star coupling (physics_constants flag).
+                    # Same equal-potential approximation as the star model —
+                    # FEM pin currents can still differ when copper access
+                    # to the pads is unequal.
                     n_pins = len(term_pins)
+                    area_weighted = bool(
+                        ((self.metadata or {}).get("physics_constants") or {})
+                        .get("area_weighted_pin_coupling")
+                    )
+                    per_pin_currents: list[float | None]
                     if (directive_current is not None
                             and np.isfinite(directive_current)
                             and n_pins > 0):
-                        per_pin_current: float | None = (
-                            directive_current / n_pins
-                        )
+                        if area_weighted:
+                            areas = [
+                                float(p.get("area_mm2") or 0.0)
+                                for p in term_pins
+                            ]
+                            positive = [a for a in areas if a > 0.0]
+                            if positive:
+                                a_mean = sum(positive) / len(positive)
+                                weights = [
+                                    a if a > 0.0 else a_mean for a in areas
+                                ]
+                                wsum = sum(weights) or 1.0
+                                per_pin_currents = [
+                                    directive_current * w / wsum
+                                    for w in weights
+                                ]
+                            else:
+                                per_pin_currents = [
+                                    directive_current / n_pins
+                                ] * n_pins
+                        else:
+                            per_pin_currents = [
+                                directive_current / n_pins
+                            ] * n_pins
                     else:
-                        per_pin_current = None
-                    for pin in term_pins:
+                        per_pin_currents = [None] * n_pins
+                    for pin_i, pin in enumerate(term_pins):
                         lid = pin.get("layer_id")
                         if lid not in target_layer_ids:
                             continue
@@ -15346,7 +15396,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                                 "terminal": term_name,
                                 "net": pin.get("net", ""),
                                 "physical": phys_for_pin or "",
-                                "current_a": per_pin_current,
+                                "current_a": per_pin_currents[pin_i],
                                 "directive_current_a": directive_current,
                                 "terminal_pin_count": n_pins,
                                 "size_px": int(
@@ -22441,6 +22491,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         chk = getattr(self, "_settings_adaptive_check", None)
         if chk is not None:
             kwargs["adaptive_mesh"] = chk.isChecked()
+        aw = getattr(self, "_settings_area_weighted_check", None)
+        if aw is not None:
+            kwargs["area_weighted_pin_coupling"] = aw.isChecked()
         mode_combo = getattr(self, "_fill_mode_combo", None)
         if mode_combo is not None:
             data = mode_combo.currentData()
@@ -28503,6 +28556,12 @@ def _format_setup_html(solution, metadata: dict | None,
                      f"<tr><th>Multi-pin coupling resistance</th>"
                      f"<td class='num'>{phys.get('coupling_resistance_ohm', 0)*1000:.3f} mΩ</td>"
                      f"<td class='muted'>{_esc(phys.get('note_coupling_resistance', ''))}</td></tr>"
+                     f"<tr><th>Area-weighted pin coupling</th>"
+                     f"<td class='num'>"
+                     f"{'on' if phys.get('area_weighted_pin_coupling') else 'off'}"
+                     f"</td>"
+                     f"<td class='muted'>When on, each multi-pin star R scales "
+                     f"as R ∝ 1/pad area (supply and GND).</td></tr>"
                      "</table>")
 
     # Directives — each heading is a clickable toggle (collapsed by default).

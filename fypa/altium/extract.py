@@ -404,6 +404,9 @@ class RawSchComponent:
     schdoc_name: str
     parameters: dict[str, str]  # name -> text (case-preserved keys)
     pin_designators: tuple[str, ...]
+    # Pin designators (upper-cased) marked PDN_IGNORE on the schematic pin
+    # itself. Empty when no pin-level ignore parameters were found.
+    ignored_pins: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1317,11 +1320,124 @@ def _splice_plane_layers(
     return rebuilt
 
 
-def _extract_sch_component(comp, schdoc_name: str) -> RawSchComponent | None:
+def _is_pdn_ignore_param(name: str | None, text: str | None) -> bool:
+    """True when a schematic pin parameter means "exclude from PDN terminals".
+
+    Accepts ``PDN_IGNORE`` with a truthy value (``1`` / ``TRUE`` / ``YES`` /
+    ``IGNORE``) or the alias name ``PDN`` with value ``IGNORE``. Empty values
+    do not count.
+    """
+    if name is None:
+        return False
+    n = str(name).strip().upper()
+    v = str(text).strip().upper() if text is not None else ""
+    if not v:
+        return False
+    if n == "PDN_IGNORE":
+        return v in ("1", "TRUE", "YES", "IGNORE")
+    if n == "PDN":
+        return v == "IGNORE"
+    return False
+
+
+def _sch_component_pins(comp) -> list:
+    """Typed pin objects for a schematic component (``pins`` or children)."""
+    pins = list(getattr(comp, "pins", ()) or ())
+    if pins:
+        return pins
+    return [
+        c for c in (getattr(comp, "children", ()) or ())
+        if type(c).__name__ == "AltiumSchPin"
+    ]
+
+
+def _is_pin_owned_parameter(obj) -> bool:
+    """True for AltiumSchParameter or a duck-typed name/text/owner_index object."""
+    cls = type(obj).__name__
+    if cls == "AltiumSchPin":
+        return False
+    if cls == "AltiumSchParameter":
+        return True
+    return (
+        hasattr(obj, "name")
+        and hasattr(obj, "text")
+        and hasattr(obj, "owner_index")
+    )
+
+
+def _sheet_ignored_pins_by_component(
+    components: list,
+    all_objects,
+) -> list[frozenset[str]]:
+    """One pass over ``all_objects``: ignored pin sets parallel to ``components``.
+
+    Builds a sheet-wide pin-index → (component index, designator) map, then
+    scans parameters once instead of re-scanning the sheet per component.
+    """
+    ignored: list[set[str]] = [set() for _ in components]
+    pin_index_to_comp_des: dict[int, tuple[int, str]] = {}
+
+    for ci, comp in enumerate(components):
+        for pin in _sch_component_pins(comp):
+            des = getattr(pin, "designator", None)
+            if not des:
+                continue
+            des_s = str(des)
+            idx = getattr(pin, "_record_index", None)
+            if idx is not None:
+                try:
+                    pin_index_to_comp_des[int(idx)] = (ci, des_s)
+                except (TypeError, ValueError):
+                    pass
+            for param in getattr(pin, "pin_parameters", ()) or ():
+                if _is_pdn_ignore_param(
+                    getattr(param, "name", None), getattr(param, "text", None),
+                ):
+                    ignored[ci].add(des_s.upper())
+
+    if pin_index_to_comp_des:
+        for obj in all_objects or ():
+            if not _is_pin_owned_parameter(obj):
+                continue
+            owner = getattr(obj, "owner_index", None)
+            if owner is None:
+                continue
+            try:
+                owner_i = int(owner)
+            except (TypeError, ValueError):
+                continue
+            hit = pin_index_to_comp_des.get(owner_i)
+            if hit is None:
+                continue
+            if _is_pdn_ignore_param(
+                getattr(obj, "name", None), getattr(obj, "text", None),
+            ):
+                ci, des_s = hit
+                ignored[ci].add(des_s.upper())
+
+    return [frozenset(s) for s in ignored]
+
+
+def _ignored_pins_from_sch_component(comp, all_objects) -> frozenset[str]:
+    """Collect pin designators with a pin-owned PDN_IGNORE parameter.
+
+    Thin wrapper around :func:`_sheet_ignored_pins_by_component` for a single
+    component (unit tests and callers that already have one part).
+    """
+    return _sheet_ignored_pins_by_component([comp], all_objects)[0]
+
+
+def _extract_sch_component(
+    comp, schdoc_name: str, ignored_pins: frozenset[str] | None = None,
+) -> RawSchComponent | None:
     """Extract one component's designator + parameters + pin list from its children.
 
     Returns None if the component has no AltiumSchDesignator child (rare; usually
     means a non-instantiated symbol — safe to skip for PDN purposes).
+
+    ``ignored_pins`` comes from the sheet-level batch in
+    :func:`_extract_sch_components`; when omitted, pin-owned ignores are not
+    resolved here (callers must pass them or use the batch path).
     """
     designator: str | None = None
     parameters: dict[str, str] = {}
@@ -1341,11 +1457,19 @@ def _extract_sch_component(comp, schdoc_name: str) -> RawSchComponent | None:
                 pins.append(str(pin_designator))
     if designator is None:
         return None
+    # Prefer pin list from the typed ``pins`` collection when children
+    # enumeration missed some (OwnerIndex hierarchy).
+    if not pins:
+        for pin in getattr(comp, "pins", ()) or ():
+            des = getattr(pin, "designator", None)
+            if des:
+                pins.append(str(des))
     return RawSchComponent(
         designator=designator,
         schdoc_name=schdoc_name,
         parameters=parameters,
         pin_designators=tuple(pins),
+        ignored_pins=ignored_pins if ignored_pins is not None else frozenset(),
     )
 
 
@@ -1380,8 +1504,11 @@ def _extract_sch_components(
             continue
         # Preserve casing for diagnostics; lookups lower-case on compare.
         schdoc_name = _schdoc_display_path(Path(sd.filepath), root)
-        for comp in sd.components:
-            rec = _extract_sch_component(comp, schdoc_name)
+        all_objects = getattr(sd, "all_objects", None) or ()
+        components = list(sd.components)
+        ignored_sets = _sheet_ignored_pins_by_component(components, all_objects)
+        for comp, ignored in zip(components, ignored_sets):
+            rec = _extract_sch_component(comp, schdoc_name, ignored)
             if rec is not None:
                 out.append(rec)
     return tuple(out)
