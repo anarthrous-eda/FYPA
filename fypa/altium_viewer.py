@@ -5162,6 +5162,11 @@ class _SolveWorker(QThread):
                     "Solve cache NOT written: pcbdoc_resolved is None "
                     "(see earlier warning from _resolve_pcbdoc).",
                 )
+            elif (metadata or {}).get("mesh_failures"):
+                _cache_log.info(
+                    "Solve cache NOT written: meshing failed "
+                    "(stub with mesh_failures only).",
+                )
             elif (self._stackup_overrides or self._sink_overrides
                     or self._editor_directives
                     or self._adaptive_regulator_gain):
@@ -5282,35 +5287,20 @@ class _SolveWorker(QThread):
                     stage_callback=self.stage_changed.emit,
                 )
             except _pdn_mesh.MeshingException as mesh_exc:
-                from fypa.altium.loader import build_mesh_failure_records
+                from fypa.altium.loader import package_mesh_failure
 
-                # solve_problem_adaptive built the Problem before meshing
-                # failed and attaches it to the exception — reuse it instead
-                # of rebuilding the whole geometry a second time. Fall back to
-                # a rebuild only if the artifacts are absent (e.g. the failure
-                # came from a path that did not attach them).
-                problem = getattr(mesh_exc, "built_problem", None)
-                per_net_layers = getattr(mesh_exc, "built_per_net_layers", None)
-                stub_pieces_by_pair = getattr(
-                    mesh_exc, "built_stub_pieces_by_pair", None,
-                )
-                if problem is None or per_net_layers is None:
-                    from fypa.altium.loader import build_problem
-                    (problem, _via_segment_records,
-                     stub_pieces_by_pair, per_net_layers) = build_problem(
-                        loaded,
-                    )
-                mesh_failures = build_mesh_failure_records(
-                    mesh_exc, problem, loaded, per_net_layers,
-                )
+                # Same stub packaging as CLI ``gui <PrjPcb>`` (Altium launcher):
+                # open the board with mesh-failure markers instead of dying.
                 if pristine_loaded is not None:
-                    self._emit_stub_and_finish(
-                        loaded, pristine_loaded, _timer,
-                        mesh_failures=mesh_failures,
-                        stub_pieces_by_pair=stub_pieces_by_pair,
-                        per_net_layers=per_net_layers,
-                        stage_message="Meshing failed — opening design…",
+                    # Emit first so the progress dialog updates before the
+                    # (potentially slow) stub + metadata packaging.
+                    self.stage_changed.emit("Meshing failed — opening design…")
+                    stub, fail_md = package_mesh_failure(
+                        loaded, mesh_exc, mesher_config,
+                        settings=self._settings,
                     )
+                    _timer.log_breakdown()
+                    self.finished_ok.emit(stub, fail_md, pristine_loaded)
                     return None
                 raise
             finally:
@@ -5928,14 +5918,22 @@ def _start_launcher_altium_solve(
     window, prjpcb_path: Path, pcbdoc_path: Path | None, *, clean: bool,
     from_recent: bool = False,
 ) -> None:
-    """Launcher-only: run :class:`_SolveWorker` for an Altium import."""
+    """Launcher-only: run :class:`_SolveWorker` for an Altium import.
+
+    Uses the launcher's :attr:`_solve_settings` (Settings tab / CLI ``gui``
+    overrides) and the persisted adaptive-gain preference — same inputs as
+    File > Import from an already-open viewer.
+    """
     if _reject_if_solve_running(window):
         return
     if _reject_if_background_load_running(window):
         return
     from fypa.altium.loader import SolveSettings
 
-    settings = SolveSettings()
+    settings = getattr(window, "_solve_settings", None)
+    if settings is None:
+        settings = SolveSettings()
+        window._solve_settings = settings
     settings.apply_to_modules()
     imp = _altium_import_worker_options(
         prjpcb_path.name, clean=clean,
@@ -5954,12 +5952,17 @@ def _start_launcher_altium_solve(
     _sz = dlg.size()
     dlg.setFixedSize(int(_sz.width() * 1.44), _sz.height())
 
+    adaptive = getattr(window, "_cli_adaptive_regulator_gain", None)
+    if adaptive is None:
+        adaptive = load_adaptive_regulator_gain()
+
     worker = _SolveWorker(
         prjpcb_path, settings,
         pcbdoc_selector=str(pcbdoc_path) if pcbdoc_path else None,
         use_design_cache=imp["use_design_cache"],
         try_solve_cache_first=imp["try_solve_cache_first"],
         load_only=imp["load_only"],
+        adaptive_regulator_gain=bool(adaptive),
         parent=window,
     )
     _stash_pending_altium_recent(
@@ -5976,6 +5979,26 @@ def _start_launcher_altium_solve(
     worker.failed.connect(window._on_solve_failed)
     worker.finished.connect(window._cleanup_solve_worker)
     worker.start()
+
+
+def _schedule_cli_altium_import(window, target: dict) -> None:
+    """Apply CLI ``gui`` overrides, then import like File > Import Altium."""
+    settings = getattr(window, "_solve_settings", None)
+    if settings is not None:
+        if target.get("mesh_min_angle_deg") is not None:
+            settings.mesh_min_angle_deg = float(target["mesh_min_angle_deg"])
+        if target.get("mesh_max_size_mm") is not None:
+            settings.mesh_max_size_mm = float(target["mesh_max_size_mm"])
+    adaptive = target.get("adaptive_regulator_gain")
+    if adaptive is not None:
+        window._cli_adaptive_regulator_gain = bool(adaptive)
+    pcbdoc = target.get("pcbdoc_path")
+    _open_altium_project_at(
+        window,
+        Path(target["prjpcb_path"]),
+        Path(pcbdoc) if pcbdoc else None,
+        clean=bool(target.get("clean", False)),
+    )
 
 
 def _open_altium_project_at(
@@ -6036,6 +6059,7 @@ def _open_altium_project_at(
         use_design_cache=imp["use_design_cache"],
         try_solve_cache_first=imp["try_solve_cache_first"],
         load_only=imp["load_only"],
+        adaptive_regulator_gain=load_adaptive_regulator_gain(),
         is_import=True,
         dialog_title=imp["dialog_title"],
         dialog_text=imp["dialog_text"],
@@ -27859,63 +27883,22 @@ def _maybe_warn_connectivity_breaks(parent_win, metadata) -> None:
 
 
 def _build_stub_lean_solution_from_loaded(loaded):
-    """Create a minimal :class:`LeanSolution` from a Gerber-derived
-    LoadedProject so the viewer can open BEFORE the user has added any
-    editor directives or pressed Resolve.
+    """Create a minimal :class:`LeanSolution` from a LoadedProject.
 
-    The stub carries one :class:`LeanLayer` per copper layer with the
-    real geometry + conductance, and empty per-layer solution arrays.
-    Pre-solve there is no potentials field to interpolate, so we don't
-    pay for constrained-Delaunay triangulation here — the viewer
-    renders copper from ``metadata['all_copper']`` outline rings (the
-    same overlay the per-layer eye icon drives) until the user adds
-    directives and runs Resolve, at which point the FEM solver does
-    its own seeded triangulation.
-
-    ``solver_info`` carries the ``"stub": True`` sentinel so the viewer
-    can pick the right pre-solve messaging and overlay defaults; legacy
-    "all zeroes" fields are preserved for any code that still checks
-    them.
+    Thin wrapper around
+    :func:`fypa.altium.loader.build_stub_lean_solution_from_loaded` (shared
+    with the CLI ``gui`` path so mesh-failure recovery stays in sync).
     """
-    from fypa.lean_solution import (
-        LeanLayer,
-        LeanLayerSolution,
-        LeanProblem,
-        LeanSolution,
-    )
+    from fypa.altium.loader import build_stub_lean_solution_from_loaded
     log = logging.getLogger(__name__)
-    lean_layers: list[LeanLayer] = []
     t_geom0 = time.monotonic()
-    geom = loaded.geometry
-    log.info("Gerber stub: loaded.geometry access took %.2fs (%d layer(s))",
-             time.monotonic() - t_geom0, len(geom))
-    for L in geom:
-        lean_layers.append(LeanLayer(
-            name=f"{L.name}|(none)",
-            conductance=L.conductance,
-            shape=L.shape,
-            layer_id=L.layer_id,
-            is_plane=L.is_plane,
-            plane_net_name=None,
-        ))
-    lean_solutions = [
-        LeanLayerSolution(
-            vertex_xys=[], triangles=[], potentials=[], power_densities=[],
-        )
-        for _ in geom
-    ]
-    return LeanSolution(
-        problem=LeanProblem(
-            layers=lean_layers,
-            project_name=loaded.project_name,
-        ),
-        layer_solutions=lean_solutions,
-        solver_info={
-            "stub": True,
-            "ground_node_current": 0.0,
-            "residual_norm": 0.0,
-        },
+    stub = build_stub_lean_solution_from_loaded(loaded)
+    log.info(
+        "Stub solution: loaded.geometry access took %.2fs (%d layer(s))",
+        time.monotonic() - t_geom0,
+        len(stub.problem.layers),
     )
+    return stub
 
 
 class _GerberImportCancelled(Exception):
@@ -28284,7 +28267,7 @@ def _perform_gerber_import(parent_window) -> tuple | None:
 
 
 def main(solution, warnings_list=None, metadata=None,
-         gerber_import_target=None) -> int:
+         gerber_import_target=None, altium_import_target=None) -> int:
     """CLI entry — show the viewer for the given Solution and run the Qt
     event loop. Returns the QApplication exit code.
 
@@ -28295,6 +28278,12 @@ def main(solution, warnings_list=None, metadata=None,
     the launcher window opens, then immediately triggers the Gerber-import
     flow. Pass a folder Path or a saved ``.fypa`` Path; pass any non-None
     value to open the file picker without pre-selection.
+
+    ``altium_import_target`` (CLI ``FYPA gui <PrjPcb>``): dict with at least
+    ``prjpcb_path`` and a resolved ``pcbdoc_path`` (silent first-board /
+    ``--pcbdoc`` selection — no multi-board picker). Optional ``clean`` and
+    mesh overrides (only when the user passed ``--mesh-*``). Starts the same
+    File > Import Altium Design worker path after the launcher is shown.
     """
     # Route Python warnings.warn() (e.g. padne's SolverWarning) into the
     # logging system for the whole process. Set once here at startup rather
@@ -28328,6 +28317,12 @@ def main(solution, warnings_list=None, metadata=None,
             # pops over it.
             from PySide6.QtCore import QTimer
             QTimer.singleShot(0, win._on_menu_import_gerber)
+        elif altium_import_target is not None:
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(
+                0,
+                lambda: _schedule_cli_altium_import(win, altium_import_target),
+            )
     else:
         win = PdnViewer(solution, metadata=metadata)
     win.show()
@@ -28336,6 +28331,13 @@ def main(solution, warnings_list=None, metadata=None,
     # to the window so Windows uses our icon for the taskbar grouping.
     _force_native_window_icon(win)
     _set_window_aumid(win)
+    # ``show`` / a direct solution open: still pop the mesh-failure notice
+    # (launcher import uses ``_on_solve_finished`` instead).
+    if solution is not None and (metadata or {}).get("mesh_failures"):
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(
+            0, lambda: _maybe_show_mesh_failures(win, metadata),
+        )
     if owns_app:
         return app.exec()
     return 0
