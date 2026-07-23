@@ -51,6 +51,56 @@ def test_child_failure_surfaces_as_error():
     assert "Traceback" in str(exc.value) or "Error" in str(exc.value)
 
 
+def test_child_entry_mesh_failure_returns_stub(monkeypatch):
+    """MeshingException in the child becomes an ok stub, not a fail message."""
+    from types import SimpleNamespace
+
+    from fypa.altium.loader import SolveSettings
+    from fypa.lean_solution import LeanProblem, LeanSolution
+    from pdnsolver import mesh as _pdn_mesh
+    from pdnsolver.mesh import MeshingException
+
+    stub = LeanSolution(
+        problem=LeanProblem(layers=[], project_name="example"),
+        layer_solutions=[],
+        solver_info={"stub": True},
+    )
+    fail_md = {"mesh_failures": [{"summary": "bad copper"}]}
+
+    def _boom(*_a, **_k):
+        raise MeshingException("triangle aborted", layer_name="Top|VIN")
+
+    monkeypatch.setattr(
+        "fypa.altium.loader.solve_problem_adaptive", _boom,
+    )
+    monkeypatch.setattr(
+        "fypa.altium.loader.package_mesh_failure",
+        lambda *_a, **_k: (stub, fail_md),
+    )
+
+    msgs: list = []
+
+    class _Q:
+        def put(self, msg) -> None:
+            msgs.append(msg)
+
+    job = S.SolveJob(
+        loaded=SimpleNamespace(),
+        mesher_config=_pdn_mesh.Mesher.Config(
+            minimum_angle=20.0, maximum_size=1.0,
+        ),
+        settings=SolveSettings(),
+    )
+    S._child_entry(job, _Q())
+    kinds = [m[0] for m in msgs]
+    assert "fail" not in kinds
+    assert ("ok", stub, fail_md) in msgs
+    assert any(
+        m[0] == "stage" and "Meshing failed" in m[1] for m in msgs
+    )
+
+
+
 def test_cancel_returns_none_and_kills_child():
     """Cancelling mid-run terminates the child and returns None."""
     if not SANDBOX.exists():

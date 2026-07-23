@@ -108,6 +108,20 @@ def _child_entry(job: SolveJob, q: mp.Queue) -> None:
                 adaptive_regulator_gain=job.adaptive_regulator_gain,
                 stage_callback=lambda m: q.put(("stage", m)),
             )
+        except Exception as exc:
+            # Mesh failures must open the same stub + markers as the in-process
+            # worker — not a raw fail traceback.
+            from pdnsolver import mesh as _pdn_mesh
+            if not isinstance(exc, _pdn_mesh.MeshingException):
+                raise
+            from fypa.altium.loader import package_mesh_failure
+            q.put(("stage", "Meshing failed — opening design…"))
+            stub, fail_md = package_mesh_failure(
+                job.loaded, exc, job.mesher_config,
+                settings=job.settings,
+            )
+            q.put(("ok", stub, fail_md))
+            return
         finally:
             for lg in loggers:
                 lg.removeHandler(handler)
@@ -143,7 +157,8 @@ def run_solve_in_subprocess(
 ) -> tuple[object, object] | None:
     """Run ``job`` in a spawned child, forwarding progress to the callbacks.
 
-    Returns ``(lean_solution, metadata)`` on success, or ``None`` if the caller
+    Returns ``(lean_solution, metadata)`` on success (including a mesh-failure
+    stub with ``metadata["mesh_failures"]``), or ``None`` if the caller
     asked to cancel (``is_cancelled()`` went True) — in which case the child is
     terminated. Raises :class:`SolveSubprocessError` if the child fails or dies
     without a result.

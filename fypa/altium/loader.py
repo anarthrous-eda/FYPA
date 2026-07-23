@@ -2829,6 +2829,89 @@ def build_mesh_failure_records(
     return [stub]
 
 
+def build_stub_lean_solution_from_loaded(loaded: LoadedProject):
+    """Minimal :class:`~fypa.lean_solution.LeanSolution` so the viewer can open
+    without a successful FEM solve (load-only, mesh failure, missing
+    directives).
+
+    One :class:`~fypa.lean_solution.LeanLayer` per copper layer with real
+    geometry; empty per-layer solution arrays. ``solver_info["stub"]`` is the
+    viewer sentinel for pre-solve messaging.
+    """
+    from fypa.lean_solution import (
+        LeanLayer,
+        LeanLayerSolution,
+        LeanProblem,
+        LeanSolution,
+    )
+
+    geom = loaded.geometry
+    lean_layers = [
+        LeanLayer(
+            name=f"{L.name}|(none)",
+            conductance=L.conductance,
+            shape=L.shape,
+            layer_id=L.layer_id,
+            is_plane=L.is_plane,
+            plane_net_name=None,
+        )
+        for L in geom
+    ]
+    lean_solutions = [
+        LeanLayerSolution(
+            vertex_xys=[], triangles=[], potentials=[], power_densities=[],
+        )
+        for _ in geom
+    ]
+    return LeanSolution(
+        problem=LeanProblem(
+            layers=lean_layers,
+            project_name=loaded.project_name,
+        ),
+        layer_solutions=lean_solutions,
+        solver_info={
+            "stub": True,
+            "ground_node_current": 0.0,
+            "residual_norm": 0.0,
+        },
+    )
+
+
+def package_mesh_failure(
+    loaded: LoadedProject,
+    mesh_exc,
+    mesher_config=None,
+    settings: SolveSettings | None = None,
+) -> tuple[object, dict]:
+    """Turn a :class:`~pdnsolver.mesh.MeshingException` into a viewer-ready stub.
+
+    Used by the GUI :class:`~fypa.altium_viewer._SolveWorker` and the headless
+    CLI ``solve`` path so a bad copper island opens (or pickles) with markers
+    instead of aborting. CLI ``gui`` reaches this via the same solve worker.
+    """
+    problem = getattr(mesh_exc, "built_problem", None)
+    via_segment_records = getattr(mesh_exc, "built_via_segment_records", None)
+    stub_pieces_by_pair = getattr(mesh_exc, "built_stub_pieces_by_pair", None)
+    per_net_layers = getattr(mesh_exc, "built_per_net_layers", None)
+    if problem is None or per_net_layers is None:
+        (problem, via_segment_records,
+         stub_pieces_by_pair, per_net_layers) = build_problem(loaded)
+    mesh_failures = build_mesh_failure_records(
+        mesh_exc, problem, loaded, per_net_layers,
+    )
+    stub = build_stub_lean_solution_from_loaded(loaded)
+    metadata = build_solve_metadata(
+        loaded, problem,
+        mesher_config=mesher_config,
+        settings=settings,
+        via_segment_records=via_segment_records or [],
+        stub_pieces_by_pair=stub_pieces_by_pair,
+        per_net_layers=per_net_layers,
+        mesh_failures=mesh_failures,
+    )
+    return stub, metadata
+
+
 def _drop_unreachable_layers(
     pp_layers: list[_pp.Layer],
     layer_by_layer_and_net: dict[tuple[int, int], _pp.Layer],
