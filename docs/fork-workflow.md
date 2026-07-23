@@ -13,7 +13,7 @@ Daily development can use `team/local` or feature branches. **Do not merge `team
 
 ## Combined local test
 
-`scripts/test-combined.ps1` builds a throwaway branch, merges configured feature branches, runs topology tests and FYPA, then returns to your previous branch. Run it from **any** branch — config is read from `team/local` via `git show` when the file is not in your working tree.
+`scripts/test-combined.ps1` builds a throwaway branch, merges configured feature branches, optionally runs topology tests and FYPA, then returns to your previous branch. Run it from **any** branch — config is read from `team/local` via `git show` when the file is not in your working tree.
 
 Config lives in `team/test-combined.json` on the `team/local` branch:
 
@@ -26,13 +26,17 @@ Config lives in `team/test-combined.json` on the `team/local` branch:
 }
 ```
 
-- `deleteTestBranchFirst`: when `true`, delete `testBranch` before recreating it (clean slate).
-- By default, `baseBranch` and `extraFeatureBranches` are **fetched from `origin`** and merged via `origin/<branch>`. Use `--local-only` to use local branches only.
+- `deleteTestBranchFirst`: when `true`, delete `testBranch` before recreating it (clean slate). Only applies when the branch is rebuilt, not when it is reused.
+- By default, `baseBranch` and `extraFeatureBranches` are **soft-fetched from `origin`** and merged via `origin/<branch>`. If fetch fails (offline), local refs are used instead. Use `--local-only` to skip fetch entirely.
+- When the existing `testBranch` tip has a matching stamp (input SHAs + config identity stored as a git note), the branch is **reused** instead of rebuilt. Pass `-Rebuild` to force a clean recreate.
+- Topology pytest runs by default. Pass `-SkipTests` to skip them (the Altium launcher always passes `-SkipTests`).
 - Override any field on the command line, e.g. `-DeleteTestBranchFirst:$false`.
 
 ```powershell
 pwsh scripts/test-combined.ps1
 pwsh scripts/test-combined.ps1 --local-only
+pwsh scripts/test-combined.ps1 -Rebuild
+pwsh scripts/test-combined.ps1 -SkipTests
 ```
 
 Resolution order: `scripts/test-combined.json` (local override) → `team/test-combined.json` → `team/local:team/test-combined.json` → example file.

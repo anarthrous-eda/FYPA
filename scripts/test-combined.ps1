@@ -9,17 +9,23 @@
 # Usage (from repo root, any branch):
 #   pwsh scripts/test-combined.ps1
 #   pwsh scripts/test-combined.ps1 --local-only
+#   pwsh scripts/test-combined.ps1 -Rebuild
+#   pwsh scripts/test-combined.ps1 -SkipTests
 #   pwsh scripts/test-combined.ps1 -ConfigPath scripts/test-combined.json
 #   pwsh scripts/test-combined.ps1 -PrjPcb path\to\YourBoard.PrjPcb
 #
-# By default baseBranch and extraFeatureBranches are fetched from origin and merged
-# via origin/<branch>. Pass --local-only to use local branches only.
+# By default baseBranch and extraFeatureBranches are soft-fetched from origin and
+# merged via origin/<branch>. If fetch fails (offline), local refs are used.
+# When input SHAs match the stamp on an existing test branch, that branch is
+# reused instead of rebuilt. Pass -Rebuild to force a clean recreate.
+# Pass --local-only to skip fetch and use local branches only.
 #
 # Workflow:
 #   1. Remember current branch
-#   2. Optionally delete the test branch, then recreate it from the base branch
-#   3. Merge every extra feature branch (.gitignore conflicts auto-resolved with --ours)
-#   4. Run pytest topology suite, then uv run FYPA.py
+#   2. Soft-fetch inputs (or local-only); reuse test branch if stamp matches
+#   3. Otherwise optionally delete, recreate from base, merge feature branches
+#      (.gitignore conflicts auto-resolved with --ours); write stamp note
+#   4. Optionally run pytest topology suite (-SkipTests to skip), then uv run FYPA.py
 #   5. Return to the branch you started on (even if a step exits with an error)
 
 [CmdletBinding()]
@@ -28,6 +34,8 @@ param(
     [string] $TeamConfigRef = "team/local",
     [string] $Remote = "origin",
     [switch] $LocalOnly,
+    [switch] $Rebuild,
+    [switch] $SkipTests,
     [string] $BaseBranch,
     [string] $TestBranch,
     [string[]] $ExtraFeatureBranches,
@@ -140,7 +148,78 @@ function Sync-RemoteBranches {
     }
 
     Write-Host "==> Fetch $RemoteName $($UniqueBranches -join ', ')"
-    Invoke-Git @(@('fetch', $RemoteName) + $UniqueBranches)
+    # git writes progress to stderr; don't surface it as PowerShell warnings.
+    $Result = Invoke-GitCore -Quiet @(@('fetch', $RemoteName) + $UniqueBranches)
+    if ($Result.ExitCode -ne 0) {
+        $Detail = ($Result.Output -join "`n").Trim()
+        if ($Detail) {
+            throw "git fetch $RemoteName failed (exit $($Result.ExitCode)): $Detail"
+        }
+        throw "git fetch $RemoteName failed (exit $($Result.ExitCode))"
+    }
+}
+
+function Get-RefSha {
+    param([string] $Ref)
+    $Sha = ([string] (& git.exe rev-parse --verify "$Ref^{commit}" 2>$null)).Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $Sha) {
+        return $null
+    }
+    return $Sha
+}
+
+function Get-InputStamp {
+    param(
+        [string] $ConfigIdentity,
+        [string] $BaseName,
+        [string] $BaseSha,
+        [string[]] $ExtraPairs
+    )
+
+    # Single-line stamp: PowerShell [string] casts of multi-line git output join
+    # with spaces and would break equality checks if we used newlines.
+    $Parts = [System.Collections.Generic.List[string]]::new()
+    $Parts.Add("config=$ConfigIdentity")
+    $Parts.Add("base=$BaseName=$BaseSha")
+    foreach ($Pair in $ExtraPairs) {
+        if ($Pair) { $Parts.Add("extra=$Pair") }
+    }
+    return ($Parts -join '|')
+}
+
+function Get-TestCombinedStamp {
+    param([string] $Commit)
+    if (-not $Commit) { return $null }
+    $Lines = @(& git.exe notes --ref=test-combined show $Commit 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        return $null
+    }
+    # Join exactly as written; Trim only outer whitespace.
+    return (($Lines -join "`n").Trim())
+}
+
+function Set-TestCombinedStamp {
+    param(
+        [string] $Commit,
+        [string] $Stamp
+    )
+    $ExitCode = Invoke-GitSoft @(
+        'notes', '--ref=test-combined', 'add', '-f', '-m', $Stamp, $Commit
+    )
+    if ($ExitCode -ne 0) {
+        Write-Warning "Could not write test-combined stamp note on $Commit"
+    }
+}
+
+function ConvertTo-NormalizedStamp {
+    param([string] $Stamp)
+    if (-not $Stamp) { return $null }
+    # Accept legacy multiline notes (joined with `n) and new single-line (`|`) form.
+    $Normalized = $Stamp.Trim() -replace "`r`n", "`n" -replace "`r", "`n"
+    if ($Normalized.Contains("`n")) {
+        $Normalized = (($Normalized -split "`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join '|'
+    }
+    return $Normalized
 }
 
 function Test-MergeInProgress {
@@ -359,7 +438,7 @@ if ($UseLocalOnly) {
     Write-Host "==> Branch source: local only"
 }
 else {
-    Write-Host "==> Branch source: $Remote (fetch + merge remote-tracking refs)"
+    Write-Host "==> Branch source: $Remote (soft-fetch + merge remote-tracking refs)"
 }
 
 $ReturnBranch = Get-CurrentBranch
@@ -373,13 +452,87 @@ if ($UseLocalOnly) {
     }
 }
 else {
-    Sync-RemoteBranches -RemoteName $Remote -Branches (@($BaseBranch) + $ExtraFeatureBranches)
-    if (-not (Test-BranchAvailable -Branch $BaseBranch -RemoteName $Remote -UseLocalOnly $false)) {
-        throw "Remote branch '$Remote/$BaseBranch' not found after fetch."
+    try {
+        Sync-RemoteBranches -RemoteName $Remote -Branches (@($BaseBranch) + $ExtraFeatureBranches)
+        if (-not (Test-BranchAvailable -Branch $BaseBranch -RemoteName $Remote -UseLocalOnly $false)) {
+            throw "Remote branch '$Remote/$BaseBranch' not found after fetch."
+        }
+    }
+    catch {
+        Write-Warning "Fetch from $Remote failed or remote base missing; falling back to local refs."
+        Write-Warning "$_"
+        $UseLocalOnly = $true
+        if (-not (Test-BranchAvailable -Branch $BaseBranch -RemoteName $Remote -UseLocalOnly $true)) {
+            throw "Base branch '$BaseBranch' not found locally after soft-fetch fallback."
+        }
+        Write-Host "==> Branch source: local only (fallback)"
     }
 }
 
 $BaseRef = Get-BranchMergeRef -Branch $BaseBranch -RemoteName $Remote -UseLocalOnly $UseLocalOnly
+$BaseSha = Get-RefSha -Ref $BaseRef
+if (-not $BaseSha) {
+    throw "Could not resolve SHA for base ref '$BaseRef'."
+}
+
+$ExtraStampPairs = [System.Collections.Generic.List[string]]::new()
+$ResolvedExtras = [System.Collections.Generic.List[hashtable]]::new()
+foreach ($ExtraBranch in $ExtraFeatureBranches) {
+    if (-not $ExtraBranch) { continue }
+    $MergeRef = Get-BranchMergeRef -Branch $ExtraBranch -RemoteName $Remote -UseLocalOnly $UseLocalOnly
+    if (Test-BranchAvailable -Branch $ExtraBranch -RemoteName $Remote -UseLocalOnly $UseLocalOnly) {
+        $ExtraSha = Get-RefSha -Ref $MergeRef
+        if (-not $ExtraSha) {
+            Write-Warning "Could not resolve SHA for '$MergeRef' — continuing without it."
+            continue
+        }
+        $ExtraStampPairs.Add("$ExtraBranch=$ExtraSha")
+        $ResolvedExtras.Add(@{
+            Branch   = $ExtraBranch
+            MergeRef = $MergeRef
+        })
+    }
+    else {
+        $Label = if ($UseLocalOnly) { "local branch" } else { "remote branch" }
+        Write-Warning "Extra feature $Label '$ExtraBranch' not found — continuing without it."
+    }
+}
+
+$ConfigIdentity = @(
+    "base=$BaseBranch",
+    "test=$TestBranch",
+    "deleteFirst=$DeleteTestBranchFirst",
+    "extras=$($ExtraFeatureBranches -join ',')"
+) -join ';'
+
+$DesiredStamp = ConvertTo-NormalizedStamp (Get-InputStamp `
+    -ConfigIdentity $ConfigIdentity `
+    -BaseName $BaseBranch `
+    -BaseSha $BaseSha `
+    -ExtraPairs @($ExtraStampPairs))
+
+$TestBranchExists = Test-GitRef "refs/heads/$TestBranch"
+$ExistingTip = if ($TestBranchExists) { Get-RefSha -Ref $TestBranch } else { $null }
+$ExistingStampRaw = $null
+if ($ExistingTip) {
+    $ExistingStampRaw = Get-TestCombinedStamp -Commit $ExistingTip
+}
+$ExistingStamp = ConvertTo-NormalizedStamp $ExistingStampRaw
+$CanReuse = (
+    -not $Rebuild -and
+    $TestBranchExists -and
+    $ExistingStamp -and
+    ($ExistingStamp -eq $DesiredStamp)
+)
+
+if (-not $CanReuse -and $TestBranchExists -and -not $Rebuild) {
+    if (-not $ExistingStamp) {
+        Write-Host "==> No reuse stamp on $TestBranch — will rebuild"
+    }
+    else {
+        Write-Host "==> Stamp mismatch on $TestBranch — will rebuild"
+    }
+}
 
 $IgnoredPaths = @('.gitignore', 'FYPA.code-workspace')
 $Status = @(Invoke-Git @('status', '--porcelain'))
@@ -399,48 +552,68 @@ Commit or stash them before running the test script.
 $Returned = $false
 $FypaExit = 0
 try {
-    if ($DeleteTestBranchFirst -and (Test-GitRef "refs/heads/$TestBranch")) {
-        Write-Host "==> Delete $TestBranch"
-        if (Get-CurrentBranch -eq $TestBranch) {
-            Invoke-Git @('checkout', $ReturnBranch)
+    if ($CanReuse) {
+        Write-Host "==> Reuse $TestBranch (inputs unchanged)"
+        if ((Get-CurrentBranch) -ne $TestBranch) {
+            Invoke-Git @('checkout', $TestBranch)
         }
-        Invoke-Git @('branch', '-D', $TestBranch)
-    }
-
-    if (Test-GitRef "refs/heads/$TestBranch") {
-        Write-Host "==> Recreate $TestBranch from $BaseRef"
-        Invoke-Git @('branch', '-f', $TestBranch, $BaseRef)
-        Invoke-Git @('checkout', $TestBranch)
     }
     else {
-        Write-Host "==> Create $TestBranch from $BaseRef"
-        Invoke-Git @('checkout', '-b', $TestBranch, $BaseRef)
-    }
-
-    foreach ($ExtraBranch in $ExtraFeatureBranches) {
-        if (-not $ExtraBranch) { continue }
-
-        $MergeRef = Get-BranchMergeRef -Branch $ExtraBranch -RemoteName $Remote -UseLocalOnly $UseLocalOnly
-        if (Test-BranchAvailable -Branch $ExtraBranch -RemoteName $Remote -UseLocalOnly $UseLocalOnly) {
-            Write-Host "==> Merge $MergeRef into $TestBranch"
-            Merge-FeatureBranch -MergeRef $MergeRef -ExtraBranch $ExtraBranch -IgnoredPaths $IgnoredPaths
+        if ($Rebuild) {
+            Write-Host "==> Rebuild requested — recreating $TestBranch"
+        }
+        elseif (-not $TestBranchExists) {
+            Write-Host "==> $TestBranch missing — creating from $BaseRef"
         }
         else {
-            $Label = if ($UseLocalOnly) { "local branch" } else { "remote branch" }
-            Write-Warning "Extra feature $Label '$ExtraBranch' not found — continuing without it."
+            Write-Host "==> Inputs changed — recreating $TestBranch from $BaseRef"
+        }
+
+        if ($DeleteTestBranchFirst -and (Test-GitRef "refs/heads/$TestBranch")) {
+            Write-Host "==> Delete $TestBranch"
+            if ((Get-CurrentBranch) -eq $TestBranch) {
+                Invoke-Git @('checkout', $ReturnBranch)
+            }
+            Invoke-Git @('branch', '-D', $TestBranch)
+        }
+
+        if (Test-GitRef "refs/heads/$TestBranch") {
+            Write-Host "==> Recreate $TestBranch from $BaseRef"
+            Invoke-Git @('branch', '-f', $TestBranch, $BaseRef)
+            Invoke-Git @('checkout', $TestBranch)
+        }
+        else {
+            Write-Host "==> Create $TestBranch from $BaseRef"
+            Invoke-Git @('checkout', '-b', $TestBranch, $BaseRef)
+        }
+
+        foreach ($Extra in $ResolvedExtras) {
+            Write-Host "==> Merge $($Extra.MergeRef) into $TestBranch"
+            Merge-FeatureBranch -MergeRef $Extra.MergeRef -ExtraBranch $Extra.Branch -IgnoredPaths $IgnoredPaths
+        }
+
+        $NewTip = Get-RefSha -Ref 'HEAD'
+        if ($NewTip) {
+            Set-TestCombinedStamp -Commit $NewTip -Stamp $DesiredStamp
+            Write-Host "==> Stamp written for $TestBranch"
         }
     }
 
-    Write-Host "==> pytest topology tests"
-    & uv run python -m pytest `
-        tests/test_topology_invariants.py `
-        tests/test_topology_regressions.py `
-        tests/test_topology_layout.py `
-        tests/test_topology_geometry.py `
-        tests/test_topology_labels.py `
-        tests/test_pdn_topology.py -q
-    if ($LASTEXITCODE -ne 0) {
-        throw "pytest failed (exit $LASTEXITCODE)"
+    if ($SkipTests) {
+        Write-Host "==> Skip pytest (-SkipTests)"
+    }
+    else {
+        Write-Host "==> pytest topology tests"
+        & uv run python -m pytest `
+            tests/test_topology_invariants.py `
+            tests/test_topology_regressions.py `
+            tests/test_topology_layout.py `
+            tests/test_topology_geometry.py `
+            tests/test_topology_labels.py `
+            tests/test_pdn_topology.py -q
+        if ($LASTEXITCODE -ne 0) {
+            throw "pytest failed (exit $LASTEXITCODE)"
+        }
     }
 
     Write-Host "==> uv run FYPA.py"
