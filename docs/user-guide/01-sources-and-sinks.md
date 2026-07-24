@@ -341,6 +341,12 @@ placing them on every symbol:
 4. Launch FYPA — it reads the `PDN_*` values from the **PCB component
    parameters** (not from the blanket graphic itself).
 
+A SchLib symbol may already carry part-wide pin filters such as
+`PDN_PINS_ONLY` without a `PDN_ROLE`. That is normal: after ECO the role
+and values live on the PCB instance, and FYPA does not warn about the
+symbol-side pin filter alone. If the PCB still has no role (ECO not
+applied), FYPA logs an informational note so the missing sync is visible.
+
 ### Local net names (hierarchical / reused sheets)
 
 `PDN_P_NET`, `PDN_N_NET`, and `PDN_NET` may use the **local net name
