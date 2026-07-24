@@ -14,15 +14,19 @@
 #   pwsh scripts/test-combined.ps1 -ConfigPath scripts/test-combined.json
 #   pwsh scripts/test-combined.ps1 -PrjPcb path\to\YourBoard.PrjPcb
 #
-# By default baseBranch and extraFeatureBranches are soft-fetched from origin and
-# merged via origin/<branch>. If fetch fails (offline), local refs are used.
-# When input SHAs match the stamp on an existing test branch, that branch is
-# reused instead of rebuilt. Pass -Rebuild to force a clean recreate.
+# By default baseBranch and extraFeatureBranches are soft-fetched from origin.
+# Each input is resolved to the tip that includes local work: if the local branch
+# is ahead of (or diverged from) origin/<branch>, the local tip is merged; if
+# local is behind, origin/<branch> is used; local-only or remote-only branches
+# are accepted either way. If fetch fails (offline), existing refs are resolved
+# the same way. When input SHAs match the stamp on an existing test branch, that
+# branch is reused instead of rebuilt. Pass -Rebuild to force a clean recreate.
 # Pass --local-only to skip fetch and use local branches only.
 #
 # Workflow:
 #   1. Remember current branch
-#   2. Soft-fetch inputs (or local-only); reuse test branch if stamp matches
+#   2. Soft-fetch inputs (or local-only); resolve tips (prefer local when ahead);
+#      reuse test branch if stamp matches
 #   3. Otherwise optionally delete, recreate from base, merge feature branches
 #      (.gitignore conflicts auto-resolved with --ours); write stamp note
 #   4. Optionally run pytest topology suite (-SkipTests to skip), then uv run FYPA.py
@@ -110,30 +114,120 @@ function Test-GitRef {
     return $LASTEXITCODE -eq 0
 }
 
-function Get-BranchMergeRef {
+function Test-GitAncestor {
     param(
-        [string] $Branch,
-        [string] $RemoteName,
-        [bool] $UseLocalOnly
+        [string] $Ancestor,
+        [string] $Descendant
     )
-
-    if ($UseLocalOnly) {
-        return $Branch
-    }
-    return "$RemoteName/$Branch"
+    & git.exe merge-base --is-ancestor $Ancestor $Descendant 2>$null | Out-Null
+    return $LASTEXITCODE -eq 0
 }
 
-function Test-BranchAvailable {
+function Resolve-BranchMergeTarget {
     param(
         [string] $Branch,
         [string] $RemoteName,
         [bool] $UseLocalOnly
     )
 
+    $LocalRef = $Branch
+    $RemoteRef = "$RemoteName/$Branch"
+    $HasLocal = Test-GitRef "refs/heads/$Branch"
+    $HasRemote = Test-GitRef "refs/remotes/$RemoteName/$Branch"
+
     if ($UseLocalOnly) {
-        return Test-GitRef "refs/heads/$Branch"
+        if (-not $HasLocal) { return $null }
+        $Sha = Get-RefSha -Ref $LocalRef
+        if (-not $Sha) { return $null }
+        return @{
+            Branch   = $Branch
+            MergeRef = $LocalRef
+            Sha      = $Sha
+            Source   = 'local'
+        }
     }
-    return Test-GitRef "refs/remotes/$RemoteName/$Branch"
+
+    if ($HasLocal -and $HasRemote) {
+        $LocalSha = Get-RefSha -Ref $LocalRef
+        $RemoteSha = Get-RefSha -Ref $RemoteRef
+        if (-not $LocalSha -and -not $RemoteSha) { return $null }
+        if (-not $LocalSha) {
+            return @{
+                Branch   = $Branch
+                MergeRef = $RemoteRef
+                Sha      = $RemoteSha
+                Source   = 'remote'
+            }
+        }
+        if (-not $RemoteSha) {
+            return @{
+                Branch   = $Branch
+                MergeRef = $LocalRef
+                Sha      = $LocalSha
+                Source   = 'local'
+            }
+        }
+        if ($LocalSha -eq $RemoteSha) {
+            return @{
+                Branch   = $Branch
+                MergeRef = $LocalRef
+                Sha      = $LocalSha
+                Source   = 'local'
+            }
+        }
+        # Local contains remote → unpushed local commits; keep them.
+        if (Test-GitAncestor -Ancestor $RemoteSha -Descendant $LocalSha) {
+            Write-Host "==> ${Branch}: using local (ahead of $RemoteRef)"
+            return @{
+                Branch   = $Branch
+                MergeRef = $LocalRef
+                Sha      = $LocalSha
+                Source   = 'local'
+            }
+        }
+        # Remote contains local → local checkout is stale; take remote.
+        if (Test-GitAncestor -Ancestor $LocalSha -Descendant $RemoteSha) {
+            return @{
+                Branch   = $Branch
+                MergeRef = $RemoteRef
+                Sha      = $RemoteSha
+                Source   = 'remote'
+            }
+        }
+        # Diverged: never drop local work.
+        Write-Warning "${Branch}: local and $RemoteRef have diverged — using local tip"
+        return @{
+            Branch   = $Branch
+            MergeRef = $LocalRef
+            Sha      = $LocalSha
+            Source   = 'local'
+        }
+    }
+
+    if ($HasLocal) {
+        $Sha = Get-RefSha -Ref $LocalRef
+        if (-not $Sha) { return $null }
+        Write-Host "==> ${Branch}: no $RemoteRef — using local"
+        return @{
+            Branch   = $Branch
+            MergeRef = $LocalRef
+            Sha      = $Sha
+            Source   = 'local'
+        }
+    }
+
+    if ($HasRemote) {
+        $Sha = Get-RefSha -Ref $RemoteRef
+        if (-not $Sha) { return $null }
+        return @{
+            Branch   = $Branch
+            MergeRef = $RemoteRef
+            Sha      = $Sha
+            Source   = 'remote'
+        }
+    }
+
+    return $null
 }
 
 function Sync-RemoteBranches {
@@ -438,7 +532,7 @@ if ($UseLocalOnly) {
     Write-Host "==> Branch source: local only"
 }
 else {
-    Write-Host "==> Branch source: $Remote (soft-fetch + merge remote-tracking refs)"
+    Write-Host "==> Branch source: $Remote (soft-fetch; prefer local when ahead/diverged)"
 }
 
 $ReturnBranch = Get-CurrentBranch
@@ -446,56 +540,42 @@ if (-not $ReturnBranch) {
     throw "Could not determine the current branch."
 }
 
-if ($UseLocalOnly) {
-    if (-not (Test-BranchAvailable -Branch $BaseBranch -RemoteName $Remote -UseLocalOnly $true)) {
-        throw "Base branch '$BaseBranch' not found locally."
-    }
-}
-else {
+if (-not $UseLocalOnly) {
     try {
         Sync-RemoteBranches -RemoteName $Remote -Branches (@($BaseBranch) + $ExtraFeatureBranches)
-        if (-not (Test-BranchAvailable -Branch $BaseBranch -RemoteName $Remote -UseLocalOnly $false)) {
-            throw "Remote branch '$Remote/$BaseBranch' not found after fetch."
-        }
     }
     catch {
-        Write-Warning "Fetch from $Remote failed or remote base missing; falling back to local refs."
+        Write-Warning "Fetch from $Remote failed; resolving from existing local/remote-tracking refs."
         Write-Warning "$_"
-        $UseLocalOnly = $true
-        if (-not (Test-BranchAvailable -Branch $BaseBranch -RemoteName $Remote -UseLocalOnly $true)) {
-            throw "Base branch '$BaseBranch' not found locally after soft-fetch fallback."
-        }
-        Write-Host "==> Branch source: local only (fallback)"
     }
 }
 
-$BaseRef = Get-BranchMergeRef -Branch $BaseBranch -RemoteName $Remote -UseLocalOnly $UseLocalOnly
-$BaseSha = Get-RefSha -Ref $BaseRef
-if (-not $BaseSha) {
-    throw "Could not resolve SHA for base ref '$BaseRef'."
+$BaseTarget = Resolve-BranchMergeTarget -Branch $BaseBranch -RemoteName $Remote -UseLocalOnly $UseLocalOnly
+if (-not $BaseTarget) {
+    $Where = if ($UseLocalOnly) { "locally" } else { "locally or as $Remote/$BaseBranch" }
+    throw "Base branch '$BaseBranch' not found $Where."
 }
+
+$BaseRef = $BaseTarget.MergeRef
+$BaseSha = $BaseTarget.Sha
+Write-Host "==> Base: $BaseRef ($($BaseTarget.Source))"
 
 $ExtraStampPairs = [System.Collections.Generic.List[string]]::new()
 $ResolvedExtras = [System.Collections.Generic.List[hashtable]]::new()
 foreach ($ExtraBranch in $ExtraFeatureBranches) {
     if (-not $ExtraBranch) { continue }
-    $MergeRef = Get-BranchMergeRef -Branch $ExtraBranch -RemoteName $Remote -UseLocalOnly $UseLocalOnly
-    if (Test-BranchAvailable -Branch $ExtraBranch -RemoteName $Remote -UseLocalOnly $UseLocalOnly) {
-        $ExtraSha = Get-RefSha -Ref $MergeRef
-        if (-not $ExtraSha) {
-            Write-Warning "Could not resolve SHA for '$MergeRef' — continuing without it."
-            continue
-        }
-        $ExtraStampPairs.Add("$ExtraBranch=$ExtraSha")
-        $ResolvedExtras.Add(@{
-            Branch   = $ExtraBranch
-            MergeRef = $MergeRef
-        })
+    $ExtraTarget = Resolve-BranchMergeTarget -Branch $ExtraBranch -RemoteName $Remote -UseLocalOnly $UseLocalOnly
+    if (-not $ExtraTarget) {
+        $Where = if ($UseLocalOnly) { "locally" } else { "locally or on $Remote" }
+        Write-Warning "Extra feature branch '$ExtraBranch' not found $Where — continuing without it."
+        continue
     }
-    else {
-        $Label = if ($UseLocalOnly) { "local branch" } else { "remote branch" }
-        Write-Warning "Extra feature $Label '$ExtraBranch' not found — continuing without it."
-    }
+    Write-Host "==> Extra: $($ExtraTarget.MergeRef) ($($ExtraTarget.Source))"
+    $ExtraStampPairs.Add("$ExtraBranch=$($ExtraTarget.Sha)")
+    $ResolvedExtras.Add(@{
+        Branch   = $ExtraTarget.Branch
+        MergeRef = $ExtraTarget.MergeRef
+    })
 }
 
 $ConfigIdentity = @(

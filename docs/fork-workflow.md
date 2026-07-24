@@ -27,7 +27,7 @@ Config lives in `team/test-combined.json` on the `team/local` branch:
 ```
 
 - `deleteTestBranchFirst`: when `true`, delete `testBranch` before recreating it (clean slate). Only applies when the branch is rebuilt, not when it is reused.
-- By default, `baseBranch` and `extraFeatureBranches` are **soft-fetched from `origin`** and merged via `origin/<branch>`. If fetch fails (offline), local refs are used instead. Use `--local-only` to skip fetch entirely.
+- By default, `baseBranch` and `extraFeatureBranches` are **soft-fetched from `origin`**. Each input tip is resolved so **local work is never dropped**: if the local branch is ahead of or diverged from `origin/<branch>`, the local tip is used; if local is behind, `origin/<branch>` is used; branches that exist only locally or only on the remote are accepted either way. If fetch fails (offline), the same resolution runs against existing refs. Use `--local-only` to skip fetch and use local branches only.
 - When the existing `testBranch` tip has a matching stamp (input SHAs + config identity stored as a git note), the branch is **reused** instead of rebuilt. Pass `-Rebuild` to force a clean recreate.
 - Topology pytest runs by default. Pass `-SkipTests` to skip them (the Altium launcher always passes `-SkipTests`).
 - Override any field on the command line, e.g. `-DeleteTestBranchFirst:$false`.
