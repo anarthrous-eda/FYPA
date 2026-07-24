@@ -169,9 +169,67 @@ directive bridges those nets elsewhere on the board. Name the net that
 the pad actually sits on in the PCB netlist (see 1.8 if the pin is on
 a switching node or pre-inductor net).
 
-To override the inferred pad set (e.g. to exclude a thermal pad), use
-the `PDN_P_PINS` / `PDN_N_PINS` parameters documented in the
-[main README](../../README.md).
+To override the inferred pad set for one terminal (e.g. a single rail on
+a simple part), use `PDN_P_PINS` / `PDN_N_PINS` as documented in the
+[main README](../../README.md). For multi-rail ICs those lists are awkward
+in a SchLib because channel indices (`PDN` / `PDN1` / …) are board-specific.
+
+### Restricting which pins may join (allowlist)
+
+Enable pins hard-tied to a supply, or signal pins pulled to GND, sit on
+the same net as the power pads but should not carry load current. Prefer a
+**part-wide allowlist** in the library — independent of channel indices —
+then let net matching partition pins across rails:
+
+1. **`PDN_PINS_ONLY`** (preferred in the SchLib) — comma/whitespace list of
+   pin designators that may join any SOURCE/SINK/SERIES/REGULATOR terminal.
+   Pads not on the list are never considered, even when they sit on
+   `PDN_P_NET` / `PDN_N_NET`.
+2. **`PDN_EXTRA_PINS`** — always **unioned** into the allowlist. Typical use:
+   library sets `PDN_PINS_ONLY`, the schematic instance adds one forgotten
+   pin via `PDN_EXTRA_PINS` without retyping the list. If **only**
+   `PDN_EXTRA_PINS` is set (no `PDN_PINS_ONLY`), that list **is** the full
+   allowlist — it does *not* mean “all pads plus these”.
+3. **Per-terminal override** — `PDN[_n]_P_PINS` / `PDN[_n]_N_PINS` (or
+   single-net `PDN[_n]_PINS`) bypasses the allowlist for that terminal.
+4. **Exclude (fine-tuning)** — pin parameter `PDN_IGNORE` = `1` (also
+   `TRUE` / `YES` / `IGNORE`; alias name `PDN` value `IGNORE`), or
+   component `PDN_IGNORE_PINS` / `PDNn_IGNORE_PINS`, removes pins after
+   matching (including from an explicit include list). Prefer
+   `PDN_IGNORE_PINS` on the part when pin-owned parameters are not visible
+   to FYPA (unusual SchLib hierarchy); the pin-level form needs the
+   parameter's OwnerIndex to point at the pin record.
+
+`PDN_PINS_ONLY` / `PDN_EXTRA_PINS` are **unindexed** (part-wide). Indexed
+forms such as `PDN1_PINS_ONLY` are ignored with a warning.
+
+Example — multi-rail IC in the SchLib with power pins `1`–`4` and `EP`,
+enable pin `EN` hard-tied to `+3V3` on the board:
+
+| Name | Value |
+|------|-------|
+| `PDN_PINS_ONLY` | `1,2,3,4,EP` |
+| `PDN_ROLE` | `SINK` |
+| `PDN_I` | `500mA` | `PDN_P_NET` = `+3V3`, `PDN_N_NET` = `GND` |
+| `PDN1_I` | `250mA` | `PDN1_P_NET` = `+1V8`, `PDN1_N_NET` = `GND` |
+
+`EN` never joins the `+3V3` terminal. On one board, add a forgotten sense
+pin with `PDN_EXTRA_PINS=SNS` on the placed part.
+
+### Area-weighted multi-pin coupling
+
+By default each pin of a multi-pin terminal couples through the same
+star resistance. For parts with differently sized power pads (or a large
+QFN thermal pad on GND), open **Settings** and enable **Weight multi-pin
+coupling by pad area**. Coupling resistance then scales as
+`R ∝ 1/A`, so larger pads take a larger share of current when copper
+access is similar. Off by default.
+
+Marker hover text uses the same area weights as a quick estimate
+(`I · A_i / ΣA`). Areas come from each pin's pad outline polygon on its
+terminal layer (not a multi-layer copper volume). The FEM can still shift
+current when copper access to the pads differs — the hover value is not a
+guaranteed pin current.
 
 ### Several rails on one part (multi-channel)
 
@@ -282,6 +340,12 @@ placing them on every symbol:
    Project`, then apply the ECO).
 4. Launch FYPA — it reads the `PDN_*` values from the **PCB component
    parameters** (not from the blanket graphic itself).
+
+A SchLib symbol may already carry part-wide pin filters such as
+`PDN_PINS_ONLY` without a `PDN_ROLE`. That is normal: after ECO the role
+and values live on the PCB instance, and FYPA does not warn about the
+symbol-side pin filter alone. If the PCB still has no role (ECO not
+applied), FYPA logs an informational note so the missing sync is visible.
 
 ### Local net names (hierarchical / reused sheets)
 

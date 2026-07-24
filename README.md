@@ -128,6 +128,15 @@ Add `PDN_ROLE` on the component (e.g. `PDN_ROLE=SOURCE`) and the required parame
 For 2-pin parts the tool can auto-infer `PDN_P_NET` /
 `PDN_N_NET` from connectivity; for ICs you'll need to set them explicitly.
 
+Pads on a rail net are collected automatically. To keep enable/signal ties
+off the terminal — especially on multi-rail ICs in a SchLib — set part-wide
+`PDN_PINS_ONLY` (optional `PDN_EXTRA_PINS` adds to that list on the instance;
+EXTRA alone is the full allowlist). Per-terminal `PDN_P_PINS` / `PDN_N_PINS`
+still override one terminal; `PDN_IGNORE` / `PDN_IGNORE_PINS` fine-tune
+exclusions. See
+[Restricting which pins may join](docs/user-guide/01-sources-and-sinks.md#restricting-which-pins-may-join-allowlist)
+in the user guide.
+
 ### `SINK` — minimum-voltage check (`PDN_MIN_V`)
 
 A `SINK` can carry an optional `PDN_MIN_V` parameter giving the **minimum
