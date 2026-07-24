@@ -424,6 +424,10 @@ class LoadedProject:
             lines.append(f"  Warnings ({len(self.annotations.warnings)}):")
             for w in self.annotations.warnings:
                 lines.append(f"    ! {w}")
+        if self.annotations.infos:
+            lines.append(f"  Infos ({len(self.annotations.infos)}):")
+            for i in self.annotations.infos:
+                lines.append(f"    i {i}")
         if self.annotations.errors:
             lines.append(f"  Errors ({len(self.annotations.errors)}):")
             for e in self.annotations.errors:
@@ -524,6 +528,7 @@ def clone_loaded_for_edit(loaded: LoadedProject) -> LoadedProject:
     new_annotations.directives = list(loaded.annotations.directives)
     new_annotations.warnings = list(loaded.annotations.warnings)
     new_annotations.errors = list(loaded.annotations.errors)
+    new_annotations.infos = list(getattr(loaded.annotations, "infos", []))
     new_annotations.open_loop_rails = list(
         getattr(loaded.annotations, "open_loop_rails", [])
     )
@@ -4095,6 +4100,8 @@ def load_project(prjpcb_path: str | Path,
         log.warning("Annotation: %s", w)
     for e in annotations.errors:
         log.error("Annotation error: %s", e)
+    for i in getattr(annotations, "infos", []):
+        log.info("Annotation: %s", i)
 
     return LoadedProject(
         extracted=extracted,

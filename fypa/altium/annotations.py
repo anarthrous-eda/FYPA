@@ -185,6 +185,12 @@ VALID_ROLES: frozenset[str] = frozenset({"SOURCE", "SINK", "REGULATOR"}) | _RESI
 _PART_WIDE_PIN_FILTER_SUFFIXES: frozenset[str] = frozenset({
     "PINS_ONLY", "EXTRA_PINS",
 })
+# Pin-filter modifiers that may legitimately hang on a symbol / instance
+# without a PDN_ROLE (SchLib allowlist, EXTRA_PINS / IGNORE_PINS fine-tuning).
+# Alone they are not a directive attempt — see parse_annotations stray check.
+_PIN_FILTER_MODIFIER_SUFFIXES: frozenset[str] = (
+    _PART_WIDE_PIN_FILTER_SUFFIXES | frozenset({"IGNORE_PINS"})
+)
 _COMMON_TERMINAL_SUFFIXES: frozenset[str] = frozenset({
     "NET", "PINS", "P_NET", "N_NET", "P_PINS", "N_PINS", "IGNORE_PINS",
 }) | _PART_WIDE_PIN_FILTER_SUFFIXES
@@ -560,6 +566,73 @@ def _is_pdn_annotated(params: dict[str, str]) -> bool:
     if _ci_get(params, ROLE_KEY) is not None:
         return True
     return _has_indexed_role_params(params)
+
+
+def _stray_pdn_suffixes(params: dict[str, str]) -> list[tuple[str, str]]:
+    """Return ``(key, uppercased_suffix)`` for every ``PDN[_n]_*`` parameter.
+
+    Keys that do not match :data:`_INDEXED_KEY_RE` (malformed ``PDN_*`` names)
+    keep the upper-cased key as the ``suffix`` so they still count as non-
+    modifier strays.
+    """
+    out: list[tuple[str, str]] = []
+    for k in params:
+        if not k.upper().startswith(PARAM_PREFIX):
+            continue
+        m = _INDEXED_KEY_RE.match(k.strip())
+        if m is None:
+            out.append((k, k.upper()))
+        else:
+            out.append((k, m.group(2).upper()))
+    return out
+
+
+def _record_unannotated_pdn_params(
+    result: AnnotationResult,
+    *,
+    where: str,
+    params: dict[str, str],
+    suppress_info: bool = False,
+    info_dedupe_key: tuple[str, str] | None = None,
+    seen_info_keys: set[tuple[str, str]] | None = None,
+) -> None:
+    """Classify PDN_* params without a role as INFO or WARNING.
+
+    Pin-filter modifiers alone (``PINS_ONLY`` / ``EXTRA_PINS`` /
+    ``IGNORE_PINS``) are informational when no role exists anywhere —
+    they often live on a SchLib symbol while ``PDN_ROLE`` and values sit
+    on the PCB after Blanket/ECO sync. Pass ``suppress_info=True`` when
+    that PCB (or another) source already carries a role for the same
+    designator so the expected workflow stays quiet. Multipart symbols
+    share one INFO via ``info_dedupe_key`` / ``seen_info_keys``.
+
+    Any other ``PDN_*`` key without a role is treated as a forgotten
+    directive (WARNING).
+    """
+    strays = _stray_pdn_suffixes(params)
+    if not strays or _is_pdn_annotated(params):
+        return
+    names = ", ".join(k for k, _ in strays)
+    modifiers_only = all(
+        sfx in _PIN_FILTER_MODIFIER_SUFFIXES for _, sfx in strays
+    )
+    if modifiers_only:
+        if suppress_info:
+            return
+        if info_dedupe_key is not None and seen_info_keys is not None:
+            if info_dedupe_key in seen_info_keys:
+                return
+            seen_info_keys.add(info_dedupe_key)
+        result.infos.append(
+            f"{where}: carries only PDN_* pin-filter parameter(s) ({names}) "
+            f"and no PDN_ROLE or PDN<n>_ROLE — no directive from this source "
+            f"(role/values expected elsewhere, e.g. the PCB instance)"
+        )
+    else:
+        result.warnings.append(
+            f"{where}: has {len(strays)} PDN_* parameter(s) but no "
+            f"PDN_ROLE or PDN<n>_ROLE — directive ignored (add PDN_ROLE)"
+        )
 
 
 def _part_role_default(params: dict[str, str]) -> str:
@@ -1880,6 +1953,10 @@ class AnnotationResult:
     directives: list[DirectiveSpec] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    # Non-actionable notes (e.g. symbol-only PDN_PINS_ONLY without a role —
+    # role/values are expected on the PCB instance). Logged at INFO, not
+    # treated as a problem for solveability / GUI warning dialogs.
+    infos: list[str] = field(default_factory=list)
     # Per-rail "won't be solved" notices for single-type rails (only sources
     # or only sinks). A subset of ``warnings`` (also shown in the Setup tab),
     # kept separately so the GUI can pop them as an active dialog on load /
@@ -1906,6 +1983,10 @@ class AnnotationResult:
         lines = [f"Annotation result: {len(self.directives)} directive(s)"]
         for kind, designators in sorted(by_kind.items()):
             lines.append(f"  {kind:<14} {len(designators):>3}  on: {', '.join(designators)}")
+        if self.infos:
+            lines.append(f"  infos: {len(self.infos)}")
+            for i in self.infos:
+                lines.append(f"    - {i}")
         if self.warnings:
             lines.append(f"  warnings: {len(self.warnings)}")
             for w in self.warnings:
@@ -2959,23 +3040,33 @@ def parse_annotations(proj: ExtractedProject,
     seen_designators: set[str] = set()
     skip_set: set[str] = {d.upper() for d in (skip_designators or set())}
 
+    # Designators that already carry a role on the PCB (Blanket/ECO path).
+    # SchLib pin-filter-only symbols for those parts are the expected
+    # workflow — do not INFO about a "missing" sch-side directive.
+    pcb_annotated_designators: set[str] = {
+        (pcb.source_designator or pcb.designator).upper()
+        for pcb in proj.pcb_components
+        if _is_pdn_annotated(pcb.parameters)
+    }
+    seen_info_keys: set[tuple[str, str]] = set()
+
     for comp in proj.sch_components:
-        stray = [k for k in comp.parameters if k.upper().startswith(PARAM_PREFIX)]
-        if stray and not _is_pdn_annotated(comp.parameters):
-            result.warnings.append(
-                f"{comp.designator} ({comp.schdoc_name}): has {len(stray)} "
-                f"PDN_* parameter(s) but no PDN_ROLE or PDN<n>_ROLE — "
-                f"directive ignored"
-            )
+        des_u = comp.designator.upper()
+        _record_unannotated_pdn_params(
+            result,
+            where=f"{comp.designator} ({comp.schdoc_name})",
+            params=comp.parameters,
+            suppress_info=des_u in pcb_annotated_designators,
+            info_dedupe_key=(des_u, Path(comp.schdoc_name).name.lower()),
+            seen_info_keys=seen_info_keys,
+        )
     for pcb in proj.pcb_components:
-        stray = [k for k in pcb.parameters if k.upper().startswith(PARAM_PREFIX)]
-        if stray and not _is_pdn_annotated(pcb.parameters):
-            lookup = pcb.source_designator or pcb.designator
-            result.warnings.append(
-                f"{pcb.designator} (PCB, from {lookup}): has {len(stray)} "
-                f"PDN_* parameter(s) but no PDN_ROLE or PDN<n>_ROLE — "
-                f"directive ignored"
-            )
+        lookup = pcb.source_designator or pcb.designator
+        _record_unannotated_pdn_params(
+            result,
+            where=f"{pcb.designator} (PCB, from {lookup})",
+            params=pcb.parameters,
+        )
 
     parameter_sources = _iter_pdn_parameter_sources(proj)
 

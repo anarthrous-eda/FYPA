@@ -2844,6 +2844,85 @@ def test_stray_pdn_params_without_any_role_warns():
     result = parse_annotations(proj, enabled_layers=[1])
     assert not result.directives
     assert any("no PDN_ROLE or PDN<n>_ROLE" in w for w in result.warnings)
+    assert not result.infos
+
+
+def test_pin_filter_sch_with_pcb_role_emits_no_info():
+    # Expected Blanket/ECO workflow: SchLib carries PDN_PINS_ONLY only;
+    # role+values live on the PCB. Suppress the pin-filter INFO.
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+3V3")),
+        sch_components=(
+            RawSchComponent(
+                designator="U2", schdoc_name="Mcu.SchDoc",
+                parameters={
+                    "PDN_PINS_ONLY": "1,2,TP",
+                    "PDN_EXTRA_PINS": "EP",
+                    "PDN_IGNORE_PINS": "NC",
+                },
+                pin_designators=("1", "2", "TP", "EP", "NC"),
+            ),
+            # Multipart twin — same designator, still no INFO spam.
+            RawSchComponent(
+                designator="U2", schdoc_name="Mcu.SchDoc",
+                parameters={"PDN_PINS_ONLY": "1,2,TP"},
+                pin_designators=("1", "2", "TP"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U2", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U2",
+                parameters={
+                    "PDN_ROLE": "SINK",
+                    "PDN_I": "10mA",
+                    "PDN_P_NET": "+3V3",
+                    "PDN_N_NET": "GND",
+                    "PDN_PINS_ONLY": "1,2,TP",
+                },
+            ),
+        ),
+        pads=(_pad(0, "1", 1, 0), _pad(0, "2", 0, 1)),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert not any("pin-filter parameter" in i for i in result.infos)
+    assert not any("U2" in w and "no PDN_ROLE" in w for w in result.warnings)
+    assert any(isinstance(d, SinkSpec) and d.designator == "U2"
+               for d in result.directives)
+
+
+def test_pin_filter_only_without_pcb_role_is_info_once():
+    # Pin-filter on the symbol with no role anywhere → INFO (forgotten ECO),
+    # but only once per designator even with multiple schematic parts.
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+3V3")),
+        sch_components=(
+            RawSchComponent(
+                designator="U2", schdoc_name="Mcu.SchDoc",
+                parameters={"PDN_PINS_ONLY": "1,2"},
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="U2", schdoc_name="Mcu.SchDoc",
+                parameters={"PDN_PINS_ONLY": "1,2"},
+                pin_designators=("1", "2"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U2", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U2",
+            ),
+        ),
+        pads=(_pad(0, "1", 1, 0), _pad(0, "2", 0, 1)),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    pin_filter_infos = [
+        i for i in result.infos if "pin-filter parameter" in i and "U2" in i
+    ]
+    assert len(pin_filter_infos) == 1
+    assert not result.directives
+    assert not any("no PDN_ROLE" in w for w in result.warnings)
 
 
 def test_indexed_roles_only_source_channel_contributes_supply_voltage():
