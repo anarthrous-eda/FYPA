@@ -89,11 +89,9 @@ dependency — including `altium_monkey`, which uv pulls from
 [upstream](https://github.com/wavenumber-eng/altium_monkey) at the tag pinned
 in `pyproject.toml`'s `[tool.uv.sources]`.
 
-> **Python version: 3.11 or 3.12 only.** The `altium_monkey` upstream pins
-> `requires-python = ">=3.11,<3.13"`, and its `numpy==2.2.3` dependency
-> does not yet ship wheels for 3.13/3.14. `.python-version` pins 3.12, which
-> uv fetches automatically; to use 3.11 instead, edit that file before
-> running `uv sync`.
+> **Python version: 3.12 only.** Both FYPA and `altium_monkey` pin
+> `requires-python = ">=3.12,<3.13"`. `.python-version` selects 3.12, which
+> uv fetches automatically.
 
 Day-to-day commands:
 

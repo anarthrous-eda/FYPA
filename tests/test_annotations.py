@@ -880,6 +880,55 @@ def test_sheet_name_matches_full_path_not_basename_collision():
     )
 
 
+def test_sheet_name_matches_physical_page_id_via_map():
+    """altium_monkey ≥ 2026.7 emits physical page ids in source_sheets."""
+    physical = (
+        "physical:0:logical:0:main.SchDoc:child:1:sheet_symbol:U_PWR"
+        ":sheet:power.SchDoc"
+    )
+    proj = _minimal_proj(
+        physical_sheet_names=((physical, "Power.SchDoc"),),
+    )
+    assert _sheet_name_matches(
+        "Power.SchDoc", [physical], proj=proj,
+    )
+    assert not _sheet_name_matches(
+        "Other.SchDoc", [physical], proj=proj,
+    )
+
+
+def test_sheet_name_matches_physical_page_id_without_map():
+    """Embedded ``*.SchDoc`` leaf is recovered when the compile map is absent."""
+    physical = (
+        "physical:0:logical:0:Power.SchDoc:child:1:sheet_symbol:X"
+    )
+    assert _sheet_name_matches("Power.SchDoc", [physical])
+    assert not _sheet_name_matches("Other.SchDoc", [physical])
+
+
+def test_resolve_local_net_pins_physical_source_sheet():
+    physical = (
+        "physical:0:logical:0:main.SchDoc:child:1:sheet_symbol:U_PWR"
+        ":sheet:power.SchDoc"
+    )
+    netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="Sheet1_+3V3",
+            aliases=["+3V3"],
+            source_sheets=[physical],
+            terminals=[_FakeTerminal("U1", "14"), _FakeTerminal("C1", "1")],
+        ),
+    ])
+    proj = _minimal_proj(
+        physical_sheet_names=((physical, "Power.SchDoc"),),
+        compiled_netlist=netlist,
+    )
+    pins = _resolve_local_net_pins(
+        netlist, "U1", "Power.SchDoc", "+3V3", proj=proj,
+    )
+    assert pins == ["14"]
+
+
 def test_pcb_sourced_local_net_scoped_per_instance():
     """Blanket/ECO PCB parameters resolve local net names per pcb_index."""
     netlist = _FakeNetlist(nets=[
