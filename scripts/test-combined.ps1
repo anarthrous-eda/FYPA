@@ -8,7 +8,7 @@
 #
 # Usage (from repo root, any branch):
 #   pwsh scripts/test-combined.ps1
-#   pwsh scripts/test-combined.ps1 --local-only
+#   pwsh scripts/test-combined.ps1 -LocalOnly
 #   pwsh scripts/test-combined.ps1 -Rebuild
 #   pwsh scripts/test-combined.ps1 -SkipTests
 #   pwsh scripts/test-combined.ps1 -ConfigPath scripts/test-combined.json
@@ -21,7 +21,7 @@
 # are accepted either way. If fetch fails (offline), existing refs are resolved
 # the same way. When input SHAs match the stamp on an existing test branch, that
 # branch is reused instead of rebuilt. Pass -Rebuild to force a clean recreate.
-# Pass --local-only to skip fetch and use local branches only.
+# Pass -LocalOnly to skip fetch and use local branches only.
 #
 # Workflow:
 #   1. Remember current branch
