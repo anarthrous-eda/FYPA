@@ -23,11 +23,16 @@ from fypa.altium.annotations import (
     SourceSpec,
     TerminalPin,
     TerminalSpec,
+    _LOCAL_NET_TIER_ALIAS,
+    _LOCAL_NET_TIER_NAME,
+    _LOCAL_NET_TIER_PCB,
+    _arbitrate_overlapping_terminals,
     _collect_supply_voltages_by_net,
     _iter_pdn_parameter_sources,
     _iter_series_bridge_pairs,
     _union_series_bridge_net_indices,
     _lookup_inferred_vin,
+    _local_net_label_matches,
     _require_value,
     _resolve_local_net_pins,
     _resolve_terminal,
@@ -369,7 +374,7 @@ def test_resolve_local_net_pins_finds_alias_on_sheet():
             terminals=[_FakeTerminal("U1", "14"), _FakeTerminal("C1", "1")],
         ),
     ])
-    pins = _resolve_local_net_pins(netlist, "U1", "Power.SchDoc", "+3V3")
+    pins, _tier = _resolve_local_net_pins(netlist, "U1", "Power.SchDoc", "+3V3")
     assert pins == ["14"]
 
 
@@ -393,7 +398,7 @@ def test_resolve_local_net_pins_matches_multichannel_mangled_alias():
             ],
         ),
     ])
-    pins = _resolve_local_net_pins(
+    pins, _tier = _resolve_local_net_pins(
         netlist, "J3", "SL8_Module.SchDoc", "S00A",
         pcb_designator="J3_SL8M7",
     )
@@ -412,7 +417,7 @@ def test_resolve_local_net_pins_mangled_alias_is_channel_scoped():
             terminals=[_FakeTerminal("J3_SL8M7", "29")],
         ),
     ])
-    pins = _resolve_local_net_pins(
+    pins, _tier = _resolve_local_net_pins(
         netlist, "J3", "SL8_Module.SchDoc", "S00A",
         pcb_designator="J3_SL8M7",
     )
@@ -457,12 +462,12 @@ def test_resolve_terminal_local_net_per_channel_instance():
         compiled_netlist=netlist,
     )
     warnings: list[str] = []
-    spec0, err0 = _resolve_terminal(
+    spec0, err0, _t0 = _resolve_terminal(
         proj, 0, "+3V3", None, [1], "SINK P",
         warnings=warnings,
         sch_lookup_designator="U1", schdoc_name="Child.SchDoc",
     )
-    spec1, err1 = _resolve_terminal(
+    spec1, err1, _t1 = _resolve_terminal(
         proj, 1, "+3V3", None, [1], "SINK P",
         warnings=warnings,
         sch_lookup_designator="U1", schdoc_name="Child.SchDoc",
@@ -1033,7 +1038,7 @@ def test_resolve_local_net_pins_dot_channel_alias():
             ],
         ),
     ])
-    pins = _resolve_local_net_pins(
+    pins, _tier = _resolve_local_net_pins(
         netlist, "J3", "Child.SchDoc", "S00A",
         pcb_designator="J3.4",
     )
@@ -1049,7 +1054,7 @@ def test_resolve_local_net_pins_dot_channel_alias_scoped():
             terminals=[_FakeTerminal("J3.4", "29")],
         ),
     ])
-    pins = _resolve_local_net_pins(
+    pins, _tier = _resolve_local_net_pins(
         netlist, "J3", "Child.SchDoc", "S00A",
         pcb_designator="J3.4",
     )
@@ -1143,7 +1148,7 @@ def test_variant_alias_pattern_via_pad_netlist():
         pads=(_pad(0, "1", 0, 0), _pad(0, "2", 1, 1)),
         compiled_netlist=netlist,
     )
-    spec, errors = _resolve_terminal(
+    spec, errors, _tier = _resolve_terminal(
         proj, 0, "MDI.TD_P", None, [1], "SERIES P",
         sch_lookup_designator="R1", schdoc_name="eth.schdoc",
     )
@@ -1188,9 +1193,9 @@ def test_alias_fallback_no_cross_channel_family_leak():
     )
     with patch(
         "fypa.altium.annotations._resolve_local_net_pins",
-        return_value=[],
+        return_value=([], 2),
     ):
-        spec, errors = _resolve_terminal(
+        spec, errors, _tier = _resolve_terminal(
             proj, 0, "+3V3", None, [1], "SINK P",
             sch_lookup_designator="U1", schdoc_name="child2.schdoc",
         )
@@ -1224,9 +1229,9 @@ def test_alias_fallback_flattened_terminal_designator():
     )
     with patch(
         "fypa.altium.annotations._resolve_local_net_pins",
-        return_value=[],
+        return_value=([], 2),
     ):
-        spec, errors = _resolve_terminal(
+        spec, errors, _tier = _resolve_terminal(
             proj, 0, "S00A", None, [1], "SINK P",
             sch_lookup_designator="J3", schdoc_name="Child.SchDoc",
         )
@@ -1434,7 +1439,7 @@ def test_resolve_terminal_no_double_suffix_on_qualified_net():
         pads=(_pad(0, "2", 0, 0),),
         compiled_netlist=None,
     )
-    spec, errors = _resolve_terminal(
+    spec, errors, _tier = _resolve_terminal(
         proj, 0, "VCC_EFUSE.4", None, [1], "SERIES N",
     )
     assert not errors
@@ -1456,7 +1461,7 @@ def test_resolve_terminal_degraded_suffix_guess_warns():
         compiled_netlist=None,
     )
     warnings: list[str] = []
-    spec, errors = _resolve_terminal(
+    spec, errors, _tier = _resolve_terminal(
         proj, 0, "VCC_EFUSE", None, [1], "SERIES N", warnings=warnings,
     )
     assert not errors
@@ -1496,7 +1501,7 @@ def test_local_fallback_skips_no_net_pad():
         ),
         compiled_netlist=netlist,
     )
-    spec, errors = _resolve_terminal(
+    spec, errors, _tier = _resolve_terminal(
         proj, 0, "+3V3", None, [1], "SINK P",
         sch_lookup_designator="U1", schdoc_name="Power.SchDoc",
     )
@@ -1505,6 +1510,167 @@ def test_local_fallback_skips_no_net_pad():
     assert len(spec.pins) == 1
     assert spec.pins[0].pad_designator == "2"
     assert spec.pins[0].net_index == 1
+
+
+def test_local_net_label_matches_separator_agnostic_channel_token():
+    """Net VIN_1 must match local VIN on designator R1.1 (._ separators differ)."""
+    assert _local_net_label_matches("VIN_1", "VIN", {"R1", "R1.1"})
+    assert _local_net_label_matches("VIN.1", "VIN", {"R1", "R1_1"})
+    assert not _local_net_label_matches("VIN_L.1", "VIN", {"R1", "R1.1"})
+    assert _local_net_label_matches("VIN_L.1", "VIN_L", {"R1", "R1.1"})
+
+
+def test_resolve_local_net_pins_prefers_name_over_shared_alias():
+    """Two nets sharing bare alias VIN: keep only the channel name-level match.
+
+    Models the multi-channel case where both sides of a SERIES element carry
+    the same local alias in the compiled netlist. The P label VIN must resolve
+    to pin 2 (net VIN_1) and not also claim pin 1 (net VIN_L.1).
+    """
+    netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="VIN_1",
+            aliases=["VIN", "VIN.1"],
+            source_sheets=["Supply.SchDoc"],
+            terminals=[_FakeTerminal("R1.1", "2")],
+        ),
+        _FakeNet(
+            name="VIN_L.1",
+            aliases=["VIN", "VIN.1", "VIN.2"],
+            source_sheets=["Supply.SchDoc"],
+            terminals=[_FakeTerminal("R1.1", "1")],
+        ),
+    ])
+    pins, tier = _resolve_local_net_pins(
+        netlist, "R1", "Supply.SchDoc", "VIN",
+        pcb_designator="R1.1",
+        routed_pin_keys={"1", "2"},
+    )
+    assert pins == ["2"]
+    assert tier == _LOCAL_NET_TIER_NAME
+
+    n_pins, n_tier = _resolve_local_net_pins(
+        netlist, "R1", "Supply.SchDoc", "VIN_L",
+        pcb_designator="R1.1",
+        routed_pin_keys={"1", "2"},
+    )
+    assert n_pins == ["1"]
+    assert n_tier == _LOCAL_NET_TIER_NAME
+
+
+def test_resolve_local_net_pins_pcb_confirmed_beats_name():
+    """When PCB net confirms a row, prefer that tier over bare name matches."""
+    netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="OTHER",
+            aliases=["VIN"],
+            source_sheets=["Supply.SchDoc"],
+            terminals=[_FakeTerminal("R1.1", "2")],
+        ),
+        _FakeNet(
+            name="VIN_1",
+            aliases=["VIN"],
+            source_sheets=["Supply.SchDoc"],
+            terminals=[_FakeTerminal("R1.1", "1")],
+        ),
+    ])
+    pins, tier = _resolve_local_net_pins(
+        netlist, "R1", "Supply.SchDoc", "VIN",
+        pcb_designator="R1.1",
+        routed_pin_keys={"1", "2"},
+        pcb_net_by_pin={"1": "VIN_1", "2": "VOUT"},
+    )
+    # Pin 1 is PCB-confirmed (VIN_1 on the row); pin 2 is alias-only → drop it.
+    assert pins == ["1"]
+    assert tier == _LOCAL_NET_TIER_PCB
+
+
+def test_series_shared_alias_resolves_disjoint_p_n():
+    """SERIES with local VIN / VIN_L must not short both pads of a 2-pin part."""
+    netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="VIN_1",
+            aliases=["VIN", "VIN.1"],
+            source_sheets=["Supply.SchDoc"],
+            terminals=[_FakeTerminal("R1.1", "2")],
+        ),
+        _FakeNet(
+            name="VIN_L.1",
+            aliases=["VIN", "VIN.1"],
+            source_sheets=["Supply.SchDoc"],
+            terminals=[_FakeTerminal("R1.1", "1")],
+        ),
+    ])
+    proj = _minimal_proj(
+        nets=(RawNet("VIN_1"), RawNet("VIN_L.1")),
+        pcb_components=(
+            RawPcbComponent(
+                designator="R1.1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="1005R", source_designator="R1",
+                parameters={
+                    "PDN_ROLE": "SERIES",
+                    "PDN_R": "10m",
+                    "PDN_P_NET": "VIN",
+                    "PDN_N_NET": "VIN_L",
+                },
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, 0),  # VIN_L.1
+            _pad(0, "2", 0, 1),  # VIN_1
+        ),
+        compiled_netlist=netlist,
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    series = [d for d in result.directives if isinstance(d, ResistorSpec)]
+    assert len(series) == 1
+    r = series[0]
+    p_nets = {p.net_index for p in r.p.pins}
+    n_nets = {p.net_index for p in r.n.pins}
+    assert p_nets == {0}
+    assert n_nets == {1}
+    assert p_nets.isdisjoint(n_nets)
+
+
+def test_arbitrate_overlapping_terminals_drops_weaker_side():
+    p = TerminalSpec(
+        pins=(TerminalPin("1", 1, 0, Pt2D(0, 0)),
+              TerminalPin("2", 1, 1, Pt2D(1, 0))),
+        requested_net="VIN",
+        resolved_via_local=True,
+    )
+    n = TerminalSpec(
+        pins=(TerminalPin("1", 1, 0, Pt2D(0, 0)),),
+        requested_net="VIN_L",
+        resolved_via_local=True,
+    )
+    result = AnnotationResult()
+    p2, n2 = _arbitrate_overlapping_terminals(
+        p, n, _LOCAL_NET_TIER_ALIAS, _LOCAL_NET_TIER_NAME, "SERIES on R1.1", result,
+    )
+    assert p2 is not None and n2 is not None
+    assert {pin.pad_designator for pin in p2.pins} == {"2"}
+    assert {pin.pad_designator for pin in n2.pins} == {"1"}
+    assert any("overlap" in w for w in result.warnings)
+    assert not result.errors
+
+
+def test_arbitrate_overlapping_terminals_equal_tier_errors():
+    p = TerminalSpec(
+        pins=(TerminalPin("1", 1, 0, Pt2D(0, 0)),),
+        requested_net="VIN",
+    )
+    n = TerminalSpec(
+        pins=(TerminalPin("1", 1, 0, Pt2D(0, 0)),),
+        requested_net="VIN_L",
+    )
+    result = AnnotationResult()
+    p2, n2 = _arbitrate_overlapping_terminals(
+        p, n, _LOCAL_NET_TIER_ALIAS, _LOCAL_NET_TIER_ALIAS, "SERIES on R1", result,
+    )
+    assert p2 is None and n2 is None
+    assert any("PDN_P_PINS" in e for e in result.errors)
 
 
 def _regulator_proj_with_source(**extra_regulator_params):
