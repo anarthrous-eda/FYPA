@@ -1,36 +1,112 @@
-# Build a local combined test branch from a base branch + feature branches, run tests/FYPA, then switch back.
-#
-# Config (first match wins):
-#   scripts/test-combined.json          local override (gitignored)
-#   team/test-combined.json             working tree
-#   team/local:team/test-combined.json  from team/local branch via git show (no checkout)
-#   scripts/test-combined.example.json  fallback
-#
-# Usage (from repo root, any branch):
-#   pwsh scripts/test-combined.ps1
-#   pwsh scripts/test-combined.ps1 -LocalOnly
-#   pwsh scripts/test-combined.ps1 -Rebuild
-#   pwsh scripts/test-combined.ps1 -SkipTests
-#   pwsh scripts/test-combined.ps1 -ConfigPath scripts/test-combined.json
-#   pwsh scripts/test-combined.ps1 -PrjPcb path\to\YourBoard.PrjPcb
-#
-# By default baseBranch and extraFeatureBranches are soft-fetched from origin.
-# Each input is resolved to the tip that includes local work: if the local branch
-# is ahead of (or diverged from) origin/<branch>, the local tip is merged; if
-# local is behind, origin/<branch> is used; local-only or remote-only branches
-# are accepted either way. If fetch fails (offline), existing refs are resolved
-# the same way. When input SHAs match the stamp on an existing test branch, that
-# branch is reused instead of rebuilt. Pass -Rebuild to force a clean recreate.
-# Pass -LocalOnly to skip fetch and use local branches only.
-#
-# Workflow:
-#   1. Remember current branch
-#   2. Soft-fetch inputs (or local-only); resolve tips (prefer local when ahead);
-#      reuse test branch if stamp matches
-#   3. Otherwise optionally delete, recreate from base, merge feature branches
-#      (.gitignore conflicts auto-resolved with --ours); write stamp note
-#   4. Optionally run pytest topology suite (-SkipTests to skip), then uv run FYPA.py
-#   5. Return to the branch you started on (even if a step exits with an error)
+<#
+.SYNOPSIS
+    Build a local combined test branch, run tests/FYPA, then switch back.
+
+.DESCRIPTION
+    Merges a base branch plus feature branches into a disposable test branch,
+    optionally runs the pytest topology suite and FYPA.py, then returns to the
+    branch you started on (even if a step exits with an error).
+
+    Config resolution (first match wins):
+      scripts/test-combined.json          local override (gitignored)
+      team/test-combined.json             working tree
+      team/local:team/test-combined.json  from team/local via git show (no checkout)
+      scripts/test-combined.example.json  fallback
+
+    By default baseBranch and extraFeatureBranches are soft-fetched from origin.
+    Each input is resolved to the tip that includes local work: if the local
+    branch is ahead of (or diverged from) origin/<branch>, the local tip is
+    merged; if local is behind, origin/<branch> is used; local-only or
+    remote-only branches are accepted either way. If fetch fails (offline),
+    existing refs are resolved the same way.
+
+    When input SHAs match the stamp on an existing test branch, that branch is
+    reused instead of rebuilt. Pass -Rebuild to force a clean recreate.
+    Pass -LocalOnly to skip fetch and use local branches only.
+
+    Workflow:
+      1. Remember current branch
+      2. Soft-fetch inputs (or local-only); resolve tips (prefer local when ahead);
+         reuse test branch if stamp matches
+      3. Otherwise optionally delete, recreate from base, merge feature branches
+         (.gitignore conflicts auto-resolved with --ours); write stamp note
+      4. Optionally run pytest topology suite (-SkipTests to skip), then uv run FYPA.py
+      5. Return to the starting branch
+
+.PARAMETER ConfigPath
+    Path to a JSON config file. Overrides the default config search order.
+
+.PARAMETER TeamConfigRef
+    Git ref used when reading team/test-combined.json via git show.
+    Default: team/local
+
+.PARAMETER Remote
+    Remote name used for soft-fetch and tip resolution. Default: origin
+
+.PARAMETER LocalOnly
+    Skip fetch; resolve and merge local branches only.
+
+.PARAMETER Rebuild
+    Force delete/recreate of the test branch even when the stamp matches.
+
+.PARAMETER SkipTests
+    Skip the pytest topology suite; still runs FYPA.py unless the script exits earlier.
+
+.PARAMETER BaseBranch
+    Override config baseBranch (branch the test branch is created from).
+
+.PARAMETER TestBranch
+    Override config testBranch (name of the disposable combined branch).
+
+.PARAMETER ExtraFeatureBranches
+    Override config extraFeatureBranches (branches merged onto the base).
+
+.PARAMETER DeleteTestBranchFirst
+    Override config deleteTestBranchFirst. When true, delete the existing test
+    branch before recreating it.
+
+.PARAMETER PrjPcb
+    Path to a .PrjPcb passed through to FYPA.py.
+
+.EXAMPLE
+    pwsh scripts/test-combined.ps1
+
+    Use default config resolution, soft-fetch, reuse or rebuild the test branch,
+    run tests and FYPA, then switch back.
+
+.EXAMPLE
+    pwsh scripts/test-combined.ps1 -LocalOnly
+
+    Skip remote fetch; use local branch tips only.
+
+.EXAMPLE
+    pwsh scripts/test-combined.ps1 -Rebuild
+
+    Force a clean recreate of the test branch.
+
+.EXAMPLE
+    pwsh scripts/test-combined.ps1 -SkipTests
+
+    Build/reuse the test branch and run FYPA without pytest.
+
+.EXAMPLE
+    pwsh scripts/test-combined.ps1 -ConfigPath scripts/test-combined.json
+
+    Use an explicit local config file.
+
+.EXAMPLE
+    pwsh scripts/test-combined.ps1 -PrjPcb path\to\YourBoard.PrjPcb
+
+    Pass a project file through to FYPA.py.
+
+.EXAMPLE
+    Get-Help .\scripts\test-combined.ps1 -Full
+
+    Show this help. Equivalent: pwsh scripts/test-combined.ps1 -?
+
+.NOTES
+    Run from the repo root (or any branch); the script cds to the repo root itself.
+#>
 
 [CmdletBinding()]
 param(
