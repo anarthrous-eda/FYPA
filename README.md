@@ -242,6 +242,8 @@ net via pin connectivity (not via `ChannelDesignatorFormatString`). See
 Different values per placement use sheet-symbol parameters
 `PDN_<Designator>_*` (e.g. `PDN_J1_I`) — see
 [Per-instance overrides on sheet symbols](docs/user-guide/01-sources-and-sinks.md#per-instance-overrides-on-sheet-symbols).
+The same overrides apply when the shared role/nets live only on the PCB
+(Blanket / ECO) and the per-instance value is on the sheet symbol.
 
 ### Mixed-role parts (a source and a sink on one component)
 

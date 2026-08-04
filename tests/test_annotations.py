@@ -3680,14 +3680,92 @@ def test_sheet_symbol_only_partial_coverage_warns():
     )
     result = parse_annotations(proj, enabled_layers=[1])
     assert any(
-        "sheet-symbol-only PDN directive covers" in w
-        and "J1.1" in w
-        and "J1.2" in w
+        "PDN covers" in w
+        and "J1.1 (sheet symbol)" in w
+        and "but not J1.2" in w
         for w in result.warnings
     )
     sinks = [d for d in result.directives if isinstance(d, SinkSpec)]
     assert len(sinks) == 1
     assert sinks[0].designator == "J1.1"
+
+
+def test_partial_coverage_warning_labels_pcb_eco_separately():
+    """Mixed PCB-ECO + sheet-only partial coverage names sources explicitly."""
+    pcb_pdn = {
+        "PDN_ROLE": "SINK",
+        "PDN_I": "1A",
+        "PDN_P_NET": "+5V",
+        "PDN_N_NET": "GND",
+    }
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+5V")),
+        sch_components=(
+            RawSchComponent(
+                designator="J1", schdoc_name="Port.SchDoc",
+                parameters={"Comment": "USB"},
+                pin_designators=("1", "2"),
+            ),
+        ),
+        sch_sheet_symbols=(
+            RawSchSheetSymbol(
+                parent_schdoc="Main.SchDoc",
+                sheet_name="CON-A",
+                child_filename="Port.SchDoc",
+                unique_id="SYMA",
+                parameters={},
+            ),
+            RawSchSheetSymbol(
+                parent_schdoc="Main.SchDoc",
+                sheet_name="CON-B",
+                child_filename="Port.SchDoc",
+                unique_id="SYMB",
+                parameters={
+                    "PDN_J1_ROLE": "SINK",
+                    "PDN_J1_I": "2A",
+                    "PDN_J1_P_NET": "+5V",
+                    "PDN_J1_N_NET": "GND",
+                },
+            ),
+            RawSchSheetSymbol(
+                parent_schdoc="Main.SchDoc",
+                sheet_name="CON-C",
+                child_filename="Port.SchDoc",
+                unique_id="SYMC",
+                parameters={},
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="J1.1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="USB", source_designator="J1",
+                source_unique_id=r"\SYMA\COMP",
+                parameters=dict(pcb_pdn),
+            ),
+            RawPcbComponent(
+                designator="J1.2", center=Pt2D(10, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="USB", source_designator="J1",
+                source_unique_id=r"\SYMB\COMP",
+            ),
+            RawPcbComponent(
+                designator="J1.3", center=Pt2D(20, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="USB", source_designator="J1",
+                source_unique_id=r"\SYMC\COMP",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1), _pad(0, "2", 0, 1),
+            _pad(1, "1", 1, 10), _pad(1, "2", 0, 11),
+            _pad(2, "1", 1, 20), _pad(2, "2", 0, 21),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert any(
+        "J1.2 (sheet symbol)" in w
+        and "J1.1 (PCB-ECO)" in w
+        and "but not J1.3" in w
+        for w in result.warnings
+    )
 
 
 def test_hierpath_skips_root_sheet_segment():
@@ -3939,3 +4017,292 @@ def test_sheet_override_role_strips_regulator_terminal_keys():
     sinks = [d for d in result.directives if isinstance(d, SinkSpec)]
     assert len(sinks) == 1
     assert sinks[0].current == pytest.approx(0.5)
+
+
+def test_sheet_override_pdn_v_on_pcb_eco_regulator():
+    """PCB-ECO REGULATOR without PDN_V still takes PDN_<Des>_V from sheet symbol.
+
+    Matches the common pattern where ROLE/nets were ECO'd to the PCB and only
+    the per-instance output voltage lives on the parent sheet symbol.
+    """
+    pcb_pdn = {
+        "PDN_ROLE": "REGULATOR",
+        "PDN_GAIN": "1",
+        "PDN_OUT_P_NET": "VOUT",
+        "PDN_OUT_N_NET": "GND",
+        "PDN_IN_P_NET": "VIN",
+        "PDN_IN_N_NET": "GND",
+    }
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("VIN"), RawNet("VOUT.1"), RawNet("VOUT.2")),
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="Pwr.SchDoc",
+                parameters={"Comment": "buck"},
+                pin_designators=("1", "2", "3", "4"),
+            ),
+        ),
+        sch_sheet_symbols=(
+            RawSchSheetSymbol(
+                parent_schdoc="Main.SchDoc",
+                sheet_name="PWR_5V",
+                child_filename="Pwr.SchDoc",
+                unique_id="SYM5V",
+                parameters={"PDN_U1_V": "5V"},
+            ),
+            RawSchSheetSymbol(
+                parent_schdoc="Main.SchDoc",
+                sheet_name="PWR_12V",
+                child_filename="Pwr.SchDoc",
+                unique_id="SYM12V",
+                parameters={"PDN_U1_V": "12 V"},
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1.1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+                source_unique_id=r"\SYM5V\COMP",
+                parameters=dict(pcb_pdn),
+            ),
+            RawPcbComponent(
+                designator="U1.2", center=Pt2D(10, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+                source_unique_id=r"\SYM12V\COMP",
+                parameters=dict(pcb_pdn),
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 2), _pad(0, "2", 0, 1),
+            _pad(0, "3", 1, 2), _pad(0, "4", 0, 3),
+            _pad(1, "1", 3, 10), _pad(1, "2", 0, 11),
+            _pad(1, "3", 1, 12), _pad(1, "4", 0, 13),
+        ),
+        compiled_netlist=_FakeNetlist(nets=[
+            _FakeNet(
+                name="VOUT.1", aliases=["VOUT"],
+                source_sheets=["pwr.schdoc"],
+                terminals=[_FakeTerminal("U1.1", "1")],
+            ),
+            _FakeNet(
+                name="VOUT.2", aliases=["VOUT"],
+                source_sheets=["pwr.schdoc"],
+                terminals=[_FakeTerminal("U1.2", "1")],
+            ),
+            _FakeNet(
+                name="VIN",
+                source_sheets=["pwr.schdoc"],
+                terminals=[
+                    _FakeTerminal("U1.1", "3"),
+                    _FakeTerminal("U1.2", "3"),
+                ],
+            ),
+            _FakeNet(
+                name="GND",
+                source_sheets=["pwr.schdoc"],
+                terminals=[
+                    _FakeTerminal("U1.1", "2"),
+                    _FakeTerminal("U1.1", "4"),
+                    _FakeTerminal("U1.2", "2"),
+                    _FakeTerminal("U1.2", "4"),
+                ],
+            ),
+        ]),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    regs = {
+        d.designator: d
+        for d in result.directives if isinstance(d, RegulatorSpec)
+    }
+    assert set(regs) == {"U1.1", "U1.2"}
+    assert regs["U1.1"].voltage == pytest.approx(5.0)
+    assert regs["U1.2"].voltage == pytest.approx(12.0)
+
+
+def test_pcb_eco_and_full_sheet_directive_deduped():
+    """PCB-ECO ROLE + full sheet-symbol ROLE must not double-parse one placement."""
+    pcb_pdn = {
+        "PDN_ROLE": "REGULATOR",
+        "PDN_GAIN": "1",
+        "PDN_OUT_P_NET": "VOUT",
+        "PDN_OUT_N_NET": "GND",
+        "PDN_IN_P_NET": "VIN",
+        "PDN_IN_N_NET": "GND",
+    }
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("VIN"), RawNet("VOUT")),
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="Pwr.SchDoc",
+                parameters={"Comment": "buck"},
+                pin_designators=("1", "2", "3", "4"),
+            ),
+        ),
+        sch_sheet_symbols=(
+            RawSchSheetSymbol(
+                parent_schdoc="Main.SchDoc",
+                sheet_name="PWR",
+                child_filename="Pwr.SchDoc",
+                unique_id="SYM",
+                parameters={
+                    "PDN_U1_ROLE": "REGULATOR",
+                    "PDN_U1_V": "5V",
+                    "PDN_U1_GAIN": "1",
+                    "PDN_U1_OUT_P_NET": "VOUT",
+                    "PDN_U1_OUT_N_NET": "GND",
+                    "PDN_U1_IN_P_NET": "VIN",
+                    "PDN_U1_IN_N_NET": "GND",
+                },
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1.1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+                source_unique_id=r"\SYM\COMP",
+                parameters=dict(pcb_pdn),
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 2), _pad(0, "2", 0, 1),
+            _pad(0, "3", 1, 2), _pad(0, "4", 0, 3),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    regs = [d for d in result.directives if isinstance(d, RegulatorSpec)]
+    assert len(regs) == 1
+    assert regs[0].designator == "U1.1"
+    assert regs[0].voltage == pytest.approx(5.0)
+
+
+def test_pcb_eco_counts_toward_sheet_only_partial_coverage():
+    """Sibling covered by PCB-ECO is not flagged as missing sheet-only ROLE."""
+    pcb_pdn = {
+        "PDN_ROLE": "SINK",
+        "PDN_I": "100mA",
+        "PDN_P_NET": "+5V",
+        "PDN_N_NET": "GND",
+    }
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+5V")),
+        sch_components=(
+            RawSchComponent(
+                designator="J1", schdoc_name="Port.SchDoc",
+                parameters={"Comment": "USB"},
+                pin_designators=("1", "2"),
+            ),
+        ),
+        sch_sheet_symbols=(
+            RawSchSheetSymbol(
+                parent_schdoc="Main.SchDoc",
+                sheet_name="CON-A",
+                child_filename="Port.SchDoc",
+                unique_id="SYMA",
+                parameters={
+                    # Value-only override on the PCB-ECO instance.
+                    "PDN_J1_I": "1.5A",
+                },
+            ),
+            RawSchSheetSymbol(
+                parent_schdoc="Main.SchDoc",
+                sheet_name="CON-B",
+                child_filename="Port.SchDoc",
+                unique_id="SYMB",
+                parameters={
+                    "PDN_J1_ROLE": "SINK",
+                    "PDN_J1_I": "2A",
+                    "PDN_J1_P_NET": "+5V",
+                    "PDN_J1_N_NET": "GND",
+                },
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="J1.1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="USB", source_designator="J1",
+                source_unique_id=r"\SYMA\COMP",
+                parameters=dict(pcb_pdn),
+            ),
+            RawPcbComponent(
+                designator="J1.2", center=Pt2D(10, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="USB", source_designator="J1",
+                source_unique_id=r"\SYMB\COMP",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1), _pad(0, "2", 0, 1),
+            _pad(1, "1", 1, 10), _pad(1, "2", 0, 11),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    assert not any("PDN covers" in w and "but not" in w for w in result.warnings)
+    sinks = {
+        d.designator: d
+        for d in result.directives if isinstance(d, SinkSpec)
+    }
+    assert set(sinks) == {"J1.1", "J1.2"}
+    assert sinks["J1.1"].current == pytest.approx(1.5)
+    assert sinks["J1.2"].current == pytest.approx(2.0)
+
+
+def test_pcb_eco_value_override_no_false_partial_coverage_warning():
+    """PCB-ECO + value-only sheet override must not warn about a bare sibling."""
+    pcb_pdn = {
+        "PDN_ROLE": "SINK",
+        "PDN_I": "100mA",
+        "PDN_P_NET": "+5V",
+        "PDN_N_NET": "GND",
+    }
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+5V")),
+        sch_components=(
+            RawSchComponent(
+                designator="J1", schdoc_name="Port.SchDoc",
+                parameters={"Comment": "USB"},
+                pin_designators=("1", "2"),
+            ),
+        ),
+        sch_sheet_symbols=(
+            RawSchSheetSymbol(
+                parent_schdoc="Main.SchDoc",
+                sheet_name="CON-A",
+                child_filename="Port.SchDoc",
+                unique_id="SYMA",
+                parameters={"PDN_J1_I": "1.5A"},
+            ),
+            RawSchSheetSymbol(
+                parent_schdoc="Main.SchDoc",
+                sheet_name="CON-B",
+                child_filename="Port.SchDoc",
+                unique_id="SYMB",
+                parameters={},
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="J1.1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="USB", source_designator="J1",
+                source_unique_id=r"\SYMA\COMP",
+                parameters=dict(pcb_pdn),
+            ),
+            RawPcbComponent(
+                designator="J1.2", center=Pt2D(10, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="USB", source_designator="J1",
+                source_unique_id=r"\SYMB\COMP",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1), _pad(0, "2", 0, 1),
+            _pad(1, "1", 1, 10), _pad(1, "2", 0, 11),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    assert not any("PDN covers" in w and "but not" in w for w in result.warnings)
+    sinks = [d for d in result.directives if isinstance(d, SinkSpec)]
+    assert len(sinks) == 1
+    assert sinks[0].designator == "J1.1"
+    assert sinks[0].current == pytest.approx(1.5)

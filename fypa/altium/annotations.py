@@ -953,7 +953,9 @@ def _expand_sheet_bound_parameter_sources(
 
     Each clone carries that placement's merged parameters (child + sheet
     overrides), including a possible per-instance ``PDN_ROLE``. Sources that
-    already pin ``pcb_index`` (PCB-ECO / sheet-symbol-only) are left as-is.
+    already pin ``pcb_index`` (PCB-ECO / sheet-symbol-only) stay single-
+    placement, but still receive sheet-symbol overrides so keys like
+    ``PDN_U17_V`` fill ``PDN_V`` for channel discovery.
 
     Only the first schematic source per logical designator is expanded; later
     duplicates (same designator in another SchDoc) are skipped with the same
@@ -965,7 +967,10 @@ def _expand_sheet_bound_parameter_sources(
     expanded_logical: set[str] = set()
     for comp in sources:
         if comp.pcb_index is not None:
-            out.append(comp)
+            params = _instance_pdn_params(
+                comp, proj, comp.pcb_index, result=result,
+            )
+            out.append(replace(comp, parameters=params))
             continue
         if not _bound_sheet_symbols_for_designator(proj, comp.lookup_designator):
             out.append(comp)
@@ -1293,12 +1298,17 @@ def _iter_pdn_parameter_sources(
 
     Also synthesises per-placement sources when ``PDN_<Des>_*`` overrides on
     sheet symbols fully define a directive and the child component itself
-    carries no ``PDN_ROLE``. When only some PCB placements of such a
-    designator get a complete sheet-only directive, a warning is recorded
-    if ``result`` is provided.
+    carries no ``PDN_ROLE``. When a PCB placement already has a PCB-ECO
+    source, sheet-symbol-only synthesis skips that ``pcb_index`` (overrides
+    are merged later in :func:`_expand_sheet_bound_parameter_sources`) so the
+    same placement is not parsed twice. When at least one sheet-only source
+    is synthesised and some sibling placement is still uncovered (PCB-ECO
+    placements count as covered), a warning is recorded if ``result`` is
+    provided.
     """
     sources: list[PdnParameterSource] = []
     sch_with_role: set[str] = set()
+    occupied_pcb_indices: set[int] = set()
 
     for comp in proj.sch_components:
         if not _is_pdn_annotated(comp.parameters):
@@ -1337,6 +1347,7 @@ def _iter_pdn_parameter_sources(
             pcb_index=idx,
             sch_lookup_designator=lookup_des,
         ))
+        occupied_pcb_indices.add(idx)
 
     # Sheet-symbol-only directives (child has no PDN_ROLE).
     override_designators: set[str] = set()
@@ -1351,8 +1362,13 @@ def _iter_pdn_parameter_sources(
         pcb_indices = _find_pcb_instances(proj, des)
         if not pcb_indices:
             continue
-        covered: list[int] = []
+        sheet_only_covered: list[int] = []
+        pcb_eco_for_des = occupied_pcb_indices & set(pcb_indices)
         for pcb_idx in pcb_indices:
+            if pcb_idx in occupied_pcb_indices:
+                # PCB-ECO already owns this placement; sheet overrides merge
+                # in expand — do not synthesise a second source.
+                continue
             overrides = _overrides_from_sheet_symbols(proj, pcb_idx, des)
             if not overrides:
                 continue
@@ -1381,27 +1397,37 @@ def _iter_pdn_parameter_sources(
                 pcb_index=pcb_idx,
                 sch_lookup_designator=des,
             ))
-            covered.append(pcb_idx)
-        if (
-            result is not None
-            and covered
-            and len(covered) < len(pcb_indices)
-        ):
-            covered_set = set(covered)
-            covered_names = ", ".join(
-                proj.pcb_components[i].designator for i in covered
-            )
-            missing_names = ", ".join(
-                proj.pcb_components[i].designator
-                for i in pcb_indices if i not in covered_set
-            )
-            _append_warning_once(
-                result,
-                f"{des}: sheet-symbol-only PDN directive covers "
-                f"{covered_names} but not {missing_names} — add "
-                f"PDN_{des}_ROLE (and value/nets) on those sheet symbols "
-                f"or annotate the child component",
-            )
+            occupied_pcb_indices.add(pcb_idx)
+            sheet_only_covered.append(pcb_idx)
+        # Warn only when at least one sheet-only source was synthesised and
+        # some sibling placement is still uncovered (PCB-ECO counts as
+        # covered so mixed ECO + sheet-only does not false-alarm).
+        if result is not None and sheet_only_covered:
+            covered_set = set(sheet_only_covered) | pcb_eco_for_des
+            if len(covered_set) < len(pcb_indices):
+                def _names(indices: set[int] | list[int]) -> str:
+                    return ", ".join(
+                        proj.pcb_components[i].designator
+                        for i in sorted(indices)
+                    )
+
+                covered_parts: list[str] = [
+                    f"{_names(sheet_only_covered)} (sheet symbol)",
+                ]
+                if pcb_eco_for_des:
+                    covered_parts.append(
+                        f"{_names(pcb_eco_for_des)} (PCB-ECO)",
+                    )
+                missing_names = _names(
+                    [i for i in pcb_indices if i not in covered_set],
+                )
+                _append_warning_once(
+                    result,
+                    f"{des}: PDN covers {' and '.join(covered_parts)} "
+                    f"but not {missing_names} — add "
+                    f"PDN_{des}_ROLE (and value/nets) on those sheet symbols "
+                    f"or annotate the child component / PCB",
+                )
     return sources
 
 

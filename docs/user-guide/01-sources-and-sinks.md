@@ -385,11 +385,28 @@ You can also place a **full** directive on the sheet symbol alone
 A sheet-symbol `PDN_<Des>_ROLE` may also override the child's role for
 that placement only.
 
+Sheet overrides also apply when the shared `PDN_*` parameters live only on
+the **PCB** (Blanket / ECO) and the per-instance value is on the sheet
+symbol — e.g. PCB has `PDN_ROLE=REGULATOR` and nets, sheet symbol has
+`PDN_U1_V=5V`. FYPA merges those into one directive per placement (it does
+not create a second source when both PCB-ECO and a full sheet-symbol
+directive target the same instance).
+
+A *partial coverage* warning (`PDN covers … (sheet symbol) … but not …`)
+is issued only when FYPA synthesises at least one full sheet-symbol-only
+directive and another placement of the same designator still has neither
+PCB-ECO/`PDN_ROLE` nor a complete sheet-symbol directive. Covered
+placements are labelled `(sheet symbol)` or `(PCB-ECO)` in the message.
+Value-only overrides on an ECO'd placement do not trigger that warning for
+bare siblings.
+
 #### PCB-only parameters (Blanket / ECO)
 
 When `PDN_*` parameters are pushed to the PCB only (Blanket rule or ECO),
 FYPA infers the originating schematic sheet from pad ↔ netlist
 connectivity so local-net resolution stays scoped to that instance.
+Combine with sheet-symbol `PDN_<Des>_*` overrides as above when values
+must differ per placement.
 
 #### Troubleshooting local nets
 
