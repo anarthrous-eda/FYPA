@@ -236,6 +236,9 @@ On **repeated schematic sheets** (Altium `REPEAT`), `PDN_*_NET` may use
 the local child-sheet net label; FYPA maps each PCB instance to its slot
 net via pin connectivity (not via `ChannelDesignatorFormatString`). See
 [User guide — Local net names](docs/user-guide/01-sources-and-sinks.md#local-net-names-hierarchical--reused-sheets).
+Different values per placement use sheet-symbol parameters
+`PDN_<Designator>_*` (e.g. `PDN_J1_I`) — see
+[Per-instance overrides on sheet symbols](docs/user-guide/01-sources-and-sinks.md#per-instance-overrides-on-sheet-symbols).
 
 ### Mixed-role parts (a source and a sink on one component)
 
