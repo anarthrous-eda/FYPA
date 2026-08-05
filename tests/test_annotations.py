@@ -5561,4 +5561,196 @@ def test_series_supply_flow_uses_primary_net_not_alias_cross_product():
     edges = list(_iter_series_supply_flow_edges(
         _iter_pdn_parameter_sources(proj), proj,
     ))
-    assert edges == [("LX.2", "VDD_12V")]
+    assert edges == [(True, "LX.2", "VDD_12V")]
+
+def test_smps_vin_expands_local_in_p_net_per_instance():
+    """Local PDN_IN_P_NET (VDD_OUT) must resolve via instance expansion to Vin."""
+    from fypa.altium.annotations import _expand_sheet_bound_parameter_sources
+
+    reg_params = {
+        "PDN_ROLE": "REGULATOR",
+        "PDN_REGULATOR_TYPE": "SMPS",
+        "PDN_REGULATOR_EFFICIENCY": "0.8",
+        "PDN_OUT_P_NET": "LX",
+        "PDN_OUT_N_NET": "GND",
+        "PDN_IN_P_NET": "VIN",
+        "PDN_IN_N_NET": "GND",
+    }
+    proj = _minimal_proj(
+        nets=(
+            RawNet("GND"), RawNet("VIN"),
+            RawNet("LX.2"), RawNet("VDD_12V"), RawNet("VDD_3V3"),
+        ),
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="Pwr.SchDoc",
+                parameters={**reg_params, "PDN_V": "12V"},
+                pin_designators=("1", "2", "3", "4"),
+            ),
+            RawSchComponent(
+                designator="L1", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SERIES",
+                    "PDN_R": "6m",
+                    "PDN_P_NET": "LX",
+                    "PDN_N_NET": "VDD_OUT",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="U2", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "REGULATOR",
+                    "PDN_V": "3.3",
+                    "PDN_REGULATOR_TYPE": "SMPS",
+                    "PDN_REGULATOR_EFFICIENCY": "0.85",
+                    "PDN_OUT_P_NET": "VDD_3V3",
+                    "PDN_OUT_N_NET": "GND",
+                    # Local child-sheet label — must expand to VDD_12V for Vin.
+                    "PDN_IN_P_NET": "VDD_OUT",
+                    "PDN_IN_N_NET": "GND",
+                },
+                pin_designators=("1", "2", "3", "4"),
+            ),
+            RawSchComponent(
+                designator="J1", schdoc_name="Main.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SOURCE",
+                    "PDN_V": "24",
+                    "PDN_P_NET": "VIN",
+                    "PDN_N_NET": "GND",
+                },
+                pin_designators=("1", "2"),
+            ),
+        ),
+        sch_sheet_symbols=(
+            RawSchSheetSymbol(
+                parent_schdoc="Main.SchDoc",
+                sheet_name="PWR_12V",
+                child_filename="Pwr.SchDoc",
+                unique_id="SYM12",
+                parameters={"PDN_U1_V": "12 V"},
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1.2", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+                source_unique_id=r"\SYM12\COMP",
+                parameters=dict(reg_params),
+            ),
+            RawPcbComponent(
+                designator="L1.2", center=Pt2D(5, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="IND", source_designator="L1",
+                source_unique_id=r"\SYM12\L",
+            ),
+            RawPcbComponent(
+                designator="U2.2", center=Pt2D(10, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U2",
+                source_unique_id=r"\SYM12\U2",
+            ),
+            RawPcbComponent(
+                designator="J1", center=Pt2D(-10, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="CONN", source_designator="J1",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 2), _pad(0, "2", 0, 1),
+            _pad(0, "3", 1, 2), _pad(0, "4", 0, 3),
+            _pad(1, "1", 2, 5), _pad(1, "2", 3, 6),
+            _pad(2, "1", 4, 10), _pad(2, "2", 0, 11),
+            _pad(2, "3", 3, 12), _pad(2, "4", 0, 13),
+            _pad(3, "1", 1, -10), _pad(3, "2", 0, -9),
+        ),
+        compiled_netlist=_FakeNetlist(nets=[
+            _FakeNet(
+                name="LX.2", aliases=["LX"],
+                source_sheets=["pwr.schdoc"],
+                terminals=[_FakeTerminal("U1.2", "1"), _FakeTerminal("L1.2", "1")],
+            ),
+            _FakeNet(
+                name="VDD_12V", aliases=["VDD_OUT"],
+                source_sheets=["pwr.schdoc"],
+                terminals=[
+                    _FakeTerminal("L1.2", "2"), _FakeTerminal("U2.2", "3"),
+                ],
+            ),
+        ]),
+    )
+    ann = parse_annotations(proj, enabled_layers=[1])
+    assert ann.ok, ann.errors
+    assert not any("cannot infer input voltage" in e for e in ann.errors)
+    regs = {
+        d.designator: d
+        for d in ann.directives if isinstance(d, RegulatorSpec)
+    }
+    assert "U2.2" in regs
+    assert regs["U2.2"].gain == pytest.approx(3.3 / (12.0 * 0.85))
+
+def test_autoinfer_series_vin_ignores_reversed_pad_order():
+    """Autoinfer SERIES copies Vin even when pad0 is the downstream net."""
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("VIN"), RawNet("VIN_L"), RawNet("VOUT")),
+        sch_components=(
+            RawSchComponent(
+                designator="J1", schdoc_name="Main.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SOURCE",
+                    "PDN_V": "12",
+                    "PDN_P_NET": "VIN",
+                    "PDN_N_NET": "GND",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="L1", schdoc_name="Main.SchDoc",
+                parameters={"PDN_ROLE": "SERIES", "PDN_R": "5m"},
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="U1", schdoc_name="Main.SchDoc",
+                parameters={
+                    "PDN_ROLE": "REGULATOR",
+                    "PDN_V": "3.3",
+                    "PDN_REGULATOR_TYPE": "SMPS",
+                    "PDN_REGULATOR_EFFICIENCY": "0.9",
+                    "PDN_OUT_P_NET": "VOUT",
+                    "PDN_OUT_N_NET": "GND",
+                    "PDN_IN_P_NET": "VIN_L",
+                    "PDN_IN_N_NET": "GND",
+                },
+                pin_designators=("1", "2", "3", "4"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="J1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="CONN", source_designator="J1",
+            ),
+            RawPcbComponent(
+                designator="L1", center=Pt2D(5, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="IND", source_designator="L1",
+            ),
+            RawPcbComponent(
+                designator="U1", center=Pt2D(10, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1), _pad(0, "2", 0, 1),
+            # Reversed vs power flow: pad1=VIN_L (downstream), pad2=VIN (upstream)
+            _pad(1, "1", 2, 5), _pad(1, "2", 1, 6),
+            _pad(2, "1", 3, 10), _pad(2, "2", 0, 11),
+            _pad(2, "3", 2, 12), _pad(2, "4", 0, 13),
+        ),
+    )
+    supply_map = _collect_supply_voltages_by_net(
+        _iter_pdn_parameter_sources(proj), proj,
+    )
+    assert supply_map.get("VIN") == pytest.approx(12.0)
+    assert supply_map.get("VIN_L") == pytest.approx(12.0)
+
+    ann = parse_annotations(proj, enabled_layers=[1])
+    assert ann.ok, ann.errors
+    reg = next(d for d in ann.directives if isinstance(d, RegulatorSpec))
+    assert reg.gain == pytest.approx(3.3 / (12.0 * 0.9))
