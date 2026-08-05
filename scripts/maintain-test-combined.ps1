@@ -4,8 +4,13 @@
 
 .DESCRIPTION
     Reads team/test-combined.json (team/local by default), fetches base + extras
-    from origin, recreates the disposable test branch using remote tips only,
+    from origin, updates the disposable test branch using remote tips only,
     and optionally force-pushes with lease.
+
+    Default (no -Rebuild): if origin/test/combined exists, check it out and
+    merge only extras whose tips are not already ancestors of HEAD
+    (incremental — keeps prior conflict resolutions). Pass -Rebuild for a
+    clean recreate from baseBranch (expect conflicts again).
 
     Local unpushed commits are never merged — tips are always origin/<branch>.
     Missing remote extras abort the run.
@@ -26,20 +31,34 @@
     Remote name. Default: origin
 
 .PARAMETER Rebuild
-    Force recreate even when the stamp on the existing local test branch matches.
+    Delete/recreate from baseBranch even when a published tip exists.
+    Prefer incremental updates without this switch.
+
+.PARAMETER Abort
+    Abort a stuck merge: hard-reset local test/combined to origin/test/combined
+    (if present), clear merge/rebase state, and check out the starting branch.
+    Does not push.
 
 .PARAMETER Push
-    After a successful rebuild (or reuse), push --force-with-lease to Remote.
+    After a successful update (or reuse), push --force-with-lease to Remote.
 
 .PARAMETER BaseBranch / TestBranch / ExtraFeatureBranches / DeleteTestBranchFirst
     Override individual config fields.
 
 .EXAMPLE
-    pwsh scripts/maintain-test-combined.ps1 -Rebuild -Push
+    pwsh scripts/maintain-test-combined.ps1 -Push
+
+    Incremental update from origin/test/combined, then publish.
 
 .EXAMPLE
-    pwsh scripts/maintain-test-combined.ps1
-    Build locally without pushing (e.g. to resolve merge conflicts).
+    pwsh scripts/maintain-test-combined.ps1 -Rebuild -Push
+
+    Clean recreate from main (resolves conflicts from scratch).
+
+.EXAMPLE
+    pwsh scripts/maintain-test-combined.ps1 -Abort
+
+    Escape a mid-merge worktree and return to the previous branch.
 #>
 
 [CmdletBinding()]
@@ -48,6 +67,7 @@ param(
     [string] $TeamConfigRef = "team/local",
     [string] $Remote = "origin",
     [switch] $Rebuild,
+    [switch] $Abort,
     [switch] $Push,
     [string] $BaseBranch,
     [string] $TestBranch,
@@ -119,6 +139,15 @@ function Invoke-GitSoft {
 function Test-GitRef {
     param([string] $Ref)
     & git show-ref --verify --quiet $Ref
+    return $LASTEXITCODE -eq 0
+}
+
+function Test-GitAncestor {
+    param(
+        [string] $Ancestor,
+        [string] $Descendant
+    )
+    & git.exe merge-base --is-ancestor $Ancestor $Descendant 2>$null | Out-Null
     return $LASTEXITCODE -eq 0
 }
 
@@ -397,8 +426,76 @@ function Read-TestCombinedConfig {
     return $Config
 }
 
+function Clear-TestCombinedUpstream {
+    param([string] $Branch)
+    # Creating from origin/main sets upstream to main — confusing ("ahead of main").
+    & git.exe branch --unset-upstream $Branch 2>$null | Out-Null
+}
+
 if (-not (Test-Path "FYPA.py")) {
     throw "FYPA.py not found in $RepoRoot — run this script from the FYPA repo."
+}
+
+$ReturnBranch = Get-CurrentBranch
+if (-not $ReturnBranch) {
+    throw "Could not determine the current branch (detached HEAD?). Check out a branch first."
+}
+
+if ($Abort) {
+    $AbortTestBranch = if ($PSBoundParameters.ContainsKey("TestBranch") -and $TestBranch) {
+        $TestBranch
+    }
+    else {
+        "test/combined"
+    }
+    Write-Host "==> Abort: clear merge/rebase state and reset $AbortTestBranch"
+    $onAbortBranch = ((Get-CurrentBranch) -eq $AbortTestBranch)
+    if ($onAbortBranch) {
+        & git merge --abort 2>$null | Out-Null
+        & git rebase --abort 2>$null | Out-Null
+        & git reset --merge 2>$null | Out-Null
+    }
+    try {
+        Sync-RemoteBranches -RemoteName $Remote -Branches @($AbortTestBranch)
+    }
+    catch {
+        Write-Warning "Fetch $Remote/$AbortTestBranch failed — using existing refs if present."
+    }
+    $RemoteAbortRef = "$Remote/$AbortTestBranch"
+    if (Test-GitRef "refs/remotes/$Remote/$AbortTestBranch") {
+        if ($onAbortBranch) {
+            Invoke-Git @('reset', '--hard', $RemoteAbortRef)
+            Clear-TestCombinedUpstream -Branch $AbortTestBranch
+            Write-Host "==> $AbortTestBranch reset to $RemoteAbortRef"
+            if ($ReturnBranch -ne $AbortTestBranch) {
+                Write-Host "==> Return to $ReturnBranch"
+                Restore-DevBranch -Branch $ReturnBranch
+            }
+        }
+        else {
+            # Update the local branch tip without checking it out (worktree may be dirty).
+            if (Test-GitRef "refs/heads/$AbortTestBranch") {
+                Invoke-Git @('branch', '-f', $AbortTestBranch, $RemoteAbortRef)
+            }
+            else {
+                Invoke-Git @('branch', $AbortTestBranch, $RemoteAbortRef)
+            }
+            Clear-TestCombinedUpstream -Branch $AbortTestBranch
+            Write-Host "==> Local $AbortTestBranch forced to $RemoteAbortRef (no checkout)"
+        }
+    }
+    elseif ($onAbortBranch) {
+        Write-Host "==> No $RemoteAbortRef — checking out $ReturnBranch and deleting local tip"
+        Restore-DevBranch -Branch $ReturnBranch
+        if (Test-GitRef "refs/heads/$AbortTestBranch") {
+            Invoke-Git @('branch', '-D', $AbortTestBranch)
+        }
+    }
+    else {
+        Write-Host "==> No local/remote $AbortTestBranch to reset"
+    }
+    Write-Host "==> Abort done — on $(Get-CurrentBranch)"
+    exit 0
 }
 
 # Soft-fetch team config ref so git show origin/team/local:... works.
@@ -439,11 +536,6 @@ if (-not $TestBranch) { throw "testBranch is empty." }
 
 Write-Host "==> Branch source: $Remote tips only (no local-ahead merge)"
 
-$ReturnBranch = Get-CurrentBranch
-if (-not $ReturnBranch) {
-    throw "Could not determine the current branch (detached HEAD?). Check out a branch first."
-}
-
 Sync-RemoteBranches -RemoteName $Remote -Branches (@($BaseBranch) + $ExtraFeatureBranches)
 # test/combined may not exist yet on first publish — soft-fetch only.
 try {
@@ -477,6 +569,7 @@ foreach ($ExtraBranch in $ExtraFeatureBranches) {
     $ResolvedExtras.Add(@{
         Branch   = $ExtraTarget.Branch
         MergeRef = $ExtraTarget.MergeRef
+        Sha      = $ExtraTarget.Sha
     })
 }
 
@@ -500,23 +593,34 @@ $DesiredStamp = ConvertTo-NormalizedStamp (Get-InputStamp `
     -BaseSha $BaseSha `
     -ExtraPairs @($ExtraStampPairs))
 
-$TestBranchExists = Test-GitRef "refs/heads/$TestBranch"
-$ExistingTip = if ($TestBranchExists) { Get-RefSha -Ref $TestBranch } else { $null }
-$ExistingStamp = ConvertTo-NormalizedStamp (Get-TestCombinedStamp -Commit $ExistingTip)
+$RemoteTestRef = "$Remote/$TestBranch"
+$HasRemoteTest = Test-GitRef "refs/remotes/$Remote/$TestBranch"
+$RemoteTestSha = if ($HasRemoteTest) { Get-RefSha -Ref $RemoteTestRef } else { $null }
+$RemoteStamp = ConvertTo-NormalizedStamp (Get-TestCombinedStamp -Commit $RemoteTestSha)
+
 $CanReuse = (
     -not $Rebuild -and
-    $TestBranchExists -and
-    $ExistingStamp -and
-    ($ExistingStamp -eq $DesiredStamp)
+    $RemoteStamp -and
+    ($RemoteStamp -eq $DesiredStamp)
 )
 
-if (-not $CanReuse -and $TestBranchExists -and -not $Rebuild) {
-    if (-not $ExistingStamp) {
-        Write-Host "==> No reuse stamp on $TestBranch — will rebuild"
-    }
-    else {
-        Write-Host "==> Stamp mismatch on $TestBranch — will rebuild"
-    }
+$UseIncremental = (
+    -not $Rebuild -and
+    -not $CanReuse -and
+    $HasRemoteTest
+)
+
+if ($CanReuse) {
+    Write-Host "==> Stamp matches $RemoteTestRef — reuse"
+}
+elseif ($UseIncremental) {
+    Write-Host "==> Incremental update from $RemoteTestRef (pass -Rebuild for clean recreate)"
+}
+elseif ($Rebuild) {
+    Write-Host "==> -Rebuild: clean recreate from $BaseRef"
+}
+else {
+    Write-Host "==> No $RemoteTestRef yet — first create from $BaseRef"
 }
 
 $IgnoredPaths = @('.gitignore', 'FYPA.code-workspace')
@@ -531,6 +635,7 @@ if ($BlockingStatus.Count -gt 0) {
     throw @"
 Uncommitted changes detected on '$ReturnBranch'.
 Commit or stash them before running maintain-test-combined.
+To escape a stuck merge: pwsh scripts/maintain-test-combined.ps1 -Abort
 "@
 }
 
@@ -538,22 +643,36 @@ $Returned = $false
 $LeaveOnConflict = $false
 try {
     if ($CanReuse) {
-        Write-Host "==> Reuse $TestBranch (inputs unchanged)"
-        if ((Get-CurrentBranch) -ne $TestBranch) {
-            Invoke-Git @('checkout', $TestBranch)
+        Write-Host "==> Checkout $TestBranch @ $RemoteTestRef"
+        Invoke-Git @('checkout', '-B', $TestBranch, $RemoteTestRef)
+        Invoke-Git @('reset', '--hard', $RemoteTestRef)
+        Clear-TestCombinedUpstream -Branch $TestBranch
+    }
+    elseif ($UseIncremental) {
+        Write-Host "==> Checkout $TestBranch @ $RemoteTestRef"
+        Invoke-Git @('checkout', '-B', $TestBranch, $RemoteTestRef)
+        Invoke-Git @('reset', '--hard', $RemoteTestRef)
+        Clear-TestCombinedUpstream -Branch $TestBranch
+
+        $HeadSha = Get-RefSha -Ref 'HEAD'
+        foreach ($Extra in $ResolvedExtras) {
+            if (Test-GitAncestor -Ancestor $Extra.Sha -Descendant $HeadSha) {
+                Write-Host "==> Skip $($Extra.Branch) (already in $TestBranch)"
+                continue
+            }
+            Write-Host "==> Merge $($Extra.MergeRef) into $TestBranch"
+            Merge-FeatureBranch -MergeRef $Extra.MergeRef -ExtraBranch $Extra.Branch -IgnoredPaths $IgnoredPaths
+            $HeadSha = Get-RefSha -Ref 'HEAD'
+        }
+
+        $NewTip = Get-RefSha -Ref 'HEAD'
+        if ($NewTip) {
+            Set-TestCombinedStamp -Commit $NewTip -Stamp $DesiredStamp
+            Write-Host "==> Stamp written for $TestBranch"
         }
     }
     else {
-        if ($Rebuild) {
-            Write-Host "==> Rebuild requested — recreating $TestBranch"
-        }
-        elseif (-not $TestBranchExists) {
-            Write-Host "==> $TestBranch missing — creating from $BaseRef"
-        }
-        else {
-            Write-Host "==> Inputs changed — recreating $TestBranch from $BaseRef"
-        }
-
+        # Full recreate from base (first publish or -Rebuild).
         if ($DeleteTestBranchFirst -and (Test-GitRef "refs/heads/$TestBranch")) {
             Write-Host "==> Delete $TestBranch"
             if ((Get-CurrentBranch) -eq $TestBranch) {
@@ -571,6 +690,7 @@ try {
             Write-Host "==> Create $TestBranch from $BaseRef"
             Invoke-Git @('checkout', '-b', $TestBranch, $BaseRef)
         }
+        Clear-TestCombinedUpstream -Branch $TestBranch
 
         foreach ($Extra in $ResolvedExtras) {
             Write-Host "==> Merge $($Extra.MergeRef) into $TestBranch"
@@ -598,17 +718,21 @@ try {
 }
 catch {
     $msg = "$_"
-    if ($msg -match 'Merge conflict' -and (Test-MergeInProgress)) {
+    if ($msg -match 'Merge conflict' -and (
+            (Test-MergeInProgress) -or ((Get-UnmergedPaths).Count -gt 0)
+        )) {
         $LeaveOnConflict = $true
         Write-Host @"
 
-==> Merge conflict — staying on $TestBranch with the conflict in place.
-Resolve, commit, then:
+==> Merge conflict — still on $TestBranch (do not git switch away).
 
-  git notes --ref=test-combined add -f -m '<stamp>' HEAD   # optional
-  git push --force-with-lease $Remote HEAD:refs/heads/$TestBranch
+Finish:
+  git add -u
+  git commit --no-edit
+  pwsh scripts/maintain-test-combined.ps1 -Push
 
-Or re-run: pwsh scripts/maintain-test-combined.ps1 -Rebuild -Push
+Abort back to published tip + previous branch:
+  pwsh scripts/maintain-test-combined.ps1 -Abort
 "@
     }
     elseif ((Get-CurrentBranch) -ne $ReturnBranch) {
