@@ -4307,6 +4307,186 @@ def test_pcb_eco_value_override_no_false_partial_coverage_warning():
     assert sinks[0].designator == "J1.1"
     assert sinks[0].current == pytest.approx(1.5)
 
+
+def test_multi_instance_lx_supply_map_infers_downstream_smps_vin():
+    """Shared local OUT=LX with different PDN_V must not drop Vin for rails.
+
+    Two regulator placements publish LX.1=5 V / LX.2=12 V; SERIES inductors
+    map LX→VDD_OUT to VDD_5V0 / VDD_12V; a downstream SMPS on VDD_12V infers
+    Vin without an explicit PDN_GAIN.
+    """
+    from fypa.altium.annotations import _expand_sheet_bound_parameter_sources
+
+    reg_params = {
+        "PDN_ROLE": "REGULATOR",
+        "PDN_REGULATOR_TYPE": "SMPS",
+        "PDN_REGULATOR_EFFICIENCY": "0.8",
+        "PDN_OUT_P_NET": "LX",
+        "PDN_OUT_N_NET": "GND",
+        "PDN_IN_P_NET": "VIN",
+        "PDN_IN_N_NET": "GND",
+    }
+    # nets: 0 GND, 1 VIN, 2 LX.1, 3 LX.2, 4 VDD_5V0, 5 VDD_12V, 6 VDD_3V3
+    proj = _minimal_proj(
+        nets=(
+            RawNet("GND"), RawNet("VIN"),
+            RawNet("LX.1"), RawNet("LX.2"),
+            RawNet("VDD_5V0"), RawNet("VDD_12V"), RawNet("VDD_3V3"),
+        ),
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="Pwr.SchDoc",
+                parameters={**reg_params, "PDN_V": "5V"},
+                pin_designators=("1", "2", "3", "4"),
+            ),
+            RawSchComponent(
+                designator="L1", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SERIES",
+                    "PDN_R": "6m",
+                    "PDN_P_NET": "LX",
+                    "PDN_N_NET": "VDD_OUT",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="U2", schdoc_name="Load.SchDoc",
+                parameters={
+                    "PDN_ROLE": "REGULATOR",
+                    "PDN_V": "3.3",
+                    "PDN_REGULATOR_TYPE": "SMPS",
+                    "PDN_REGULATOR_EFFICIENCY": "0.85",
+                    "PDN_OUT_P_NET": "VDD_3V3",
+                    "PDN_OUT_N_NET": "GND",
+                    "PDN_IN_P_NET": "VDD_12V",
+                    "PDN_IN_N_NET": "GND",
+                },
+                pin_designators=("1", "2", "3", "4"),
+            ),
+            RawSchComponent(
+                designator="J1", schdoc_name="Main.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SOURCE",
+                    "PDN_V": "24",
+                    "PDN_P_NET": "VIN",
+                    "PDN_N_NET": "GND",
+                },
+                pin_designators=("1", "2"),
+            ),
+        ),
+        sch_sheet_symbols=(
+            RawSchSheetSymbol(
+                parent_schdoc="Main.SchDoc",
+                sheet_name="PWR_5V",
+                child_filename="Pwr.SchDoc",
+                unique_id="SYM5",
+                parameters={"PDN_U1_V": "5V"},
+            ),
+            RawSchSheetSymbol(
+                parent_schdoc="Main.SchDoc",
+                sheet_name="PWR_12V",
+                child_filename="Pwr.SchDoc",
+                unique_id="SYM12",
+                parameters={"PDN_U1_V": "12 V"},
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1.1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+                source_unique_id=r"\SYM5\COMP",
+                parameters=dict(reg_params),
+            ),
+            RawPcbComponent(
+                designator="U1.2", center=Pt2D(20, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+                source_unique_id=r"\SYM12\COMP",
+                parameters=dict(reg_params),
+            ),
+            RawPcbComponent(
+                designator="L1.1", center=Pt2D(5, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="IND", source_designator="L1",
+                source_unique_id=r"\SYM5\L",
+            ),
+            RawPcbComponent(
+                designator="L1.2", center=Pt2D(25, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="IND", source_designator="L1",
+                source_unique_id=r"\SYM12\L",
+            ),
+            RawPcbComponent(
+                designator="U2", center=Pt2D(40, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U2",
+            ),
+            RawPcbComponent(
+                designator="J1", center=Pt2D(-10, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="CONN", source_designator="J1",
+            ),
+        ),
+        pads=(
+            # U1.1: OUT on LX.1 (net 2), IN on VIN (1), GND (0)
+            _pad(0, "1", 2), _pad(0, "2", 0, 1),
+            _pad(0, "3", 1, 2), _pad(0, "4", 0, 3),
+            # U1.2: OUT on LX.2 (net 3)
+            _pad(1, "1", 3, 20), _pad(1, "2", 0, 21),
+            _pad(1, "3", 1, 22), _pad(1, "4", 0, 23),
+            # L1.1: LX.1 — VDD_5V0
+            _pad(2, "1", 2, 5), _pad(2, "2", 4, 6),
+            # L1.2: LX.2 — VDD_12V
+            _pad(3, "1", 3, 25), _pad(3, "2", 5, 26),
+            # U2: OUT VDD_3V3, IN VDD_12V
+            _pad(4, "1", 6, 40), _pad(4, "2", 0, 41),
+            _pad(4, "3", 5, 42), _pad(4, "4", 0, 43),
+            # J1 SOURCE
+            _pad(5, "1", 1, -10), _pad(5, "2", 0, -9),
+        ),
+        compiled_netlist=_FakeNetlist(nets=[
+            _FakeNet(
+                name="LX.1", aliases=["LX"],
+                source_sheets=["pwr.schdoc"],
+                terminals=[_FakeTerminal("U1.1", "1"), _FakeTerminal("L1.1", "1")],
+            ),
+            _FakeNet(
+                name="LX.2", aliases=["LX"],
+                source_sheets=["pwr.schdoc"],
+                terminals=[_FakeTerminal("U1.2", "1"), _FakeTerminal("L1.2", "1")],
+            ),
+            _FakeNet(
+                name="VDD_5V0", aliases=["VDD_OUT"],
+                source_sheets=["pwr.schdoc"],
+                terminals=[_FakeTerminal("L1.1", "2")],
+            ),
+            _FakeNet(
+                name="VDD_12V", aliases=["VDD_OUT"],
+                source_sheets=["pwr.schdoc"],
+                terminals=[_FakeTerminal("L1.2", "2")],
+            ),
+        ]),
+    )
+    result = AnnotationResult()
+    sources = _expand_sheet_bound_parameter_sources(
+        proj, _iter_pdn_parameter_sources(proj, result), result,
+    )
+    supply_map = _collect_supply_voltages_by_net(sources, proj)
+    assert "LX" not in supply_map  # ambiguous shared local dropped
+    assert supply_map.get("LX.1") == pytest.approx(5.0)
+    assert supply_map.get("LX.2") == pytest.approx(12.0)
+    assert supply_map.get("VDD_5V0") == pytest.approx(5.0)
+    assert supply_map.get("VDD_12V") == pytest.approx(12.0)
+
+    ann = parse_annotations(proj, enabled_layers=[1])
+    assert ann.ok, ann.errors
+    assert not any("cannot infer input voltage" in e for e in ann.errors)
+    regs = {
+        d.designator: d
+        for d in ann.directives if isinstance(d, RegulatorSpec)
+    }
+    assert "U2" in regs
+    # Vin=12, Vout=3.3, eta=0.85 -> gain = 3.3/(12*0.85)
+    assert regs["U2"].gain == pytest.approx(3.3 / (12.0 * 0.85))
+
+# --- retained from main/rebase base ---
+
+
 # --- retained from main/rebase base ---
 
 
@@ -4347,6 +4527,14 @@ def test_a_failed_page_map_does_not_discard_a_good_netlist():
 # --- P/N arbitration follow-ups ------------------------------------------------
 
 
+
+# --- P/N arbitration follow-ups ------------------------------------------------
+
+
+
+# --- P/N arbitration follow-ups ------------------------------------------------
+
+
 def test_alias_fallback_does_not_outrank_a_name_level_match():
     """"The pad's PCB net is on the row" is the criterion the PCB tier
     explicitly rejects, so an alias-only hit must not be stamped tier 0 and
@@ -4356,6 +4544,7 @@ def test_alias_fallback_does_not_outrank_a_name_level_match():
     )
 
     assert _LOCAL_NET_TIER_ALIAS > _LOCAL_NET_TIER_NAME > _LOCAL_NET_TIER_PCB
+
 
 
 
@@ -4387,6 +4576,7 @@ def test_arbitrate_overlapping_terminals_drops_weaker_side():
 
 
 
+
 def test_arbitrate_overlapping_terminals_equal_tier_errors():
     p = TerminalSpec(
         pins=(TerminalPin("1", 1, 0, Pt2D(0, 0)),),
@@ -4402,6 +4592,7 @@ def test_arbitrate_overlapping_terminals_equal_tier_errors():
     )
     assert p2 is None and n2 is None
     assert any("PDN_P_PINS" in e for e in result.errors)
+
 
 
 
@@ -4429,6 +4620,7 @@ def test_arbitrate_overlapping_terminals_ignores_same_pad_on_other_parts():
 
 
 
+
 def test_channel_token_must_come_from_flattening():
     """A part merely NAMED FB_2 is not channel 2 of FB, so an unrelated
     repeated sheet's VIN.2 must not match it."""
@@ -4441,6 +4633,11 @@ def test_channel_token_must_come_from_flattening():
     assert not _local_net_label_matches("VIN_3", "VIN", {"SW_3"})
     # An exact label still matches regardless.
     assert _local_net_label_matches("VIN", "VIN", {"FB_2"})
+
+# --- Sheet-symbol per-instance overrides ---
+
+# --- Sheet-symbol per-instance overrides --------------------------------------
+
 
 # --- Sheet-symbol per-instance overrides ---
 
@@ -4473,6 +4670,7 @@ def test_compile_falls_back_to_to_netlist_with_the_designs_own_options():
 
 
 
+
 def test_empty_side_errors_without_a_contradictory_warning():
     """Warning that pins were "dropped from N" and then that N is empty and
     the directive discarded reads as two contradictory log lines."""
@@ -4490,6 +4688,7 @@ def test_empty_side_errors_without_a_contradictory_warning():
 
 
 
+
 def test_equal_tier_error_points_at_the_remedy_that_works():
     shared = TerminalPin("1", 1, 0, Pt2D(0, 0))
     p = TerminalSpec(pins=(shared,), requested_net="VIN")
@@ -4504,6 +4703,7 @@ def test_equal_tier_error_points_at_the_remedy_that_works():
 
 
 
+
 def test_explicit_pin_override_outranks_a_net_name_match():
     """The overlap error tells the user to set PDN_*_PINS. That advice only
     works if an explicit pin list actually breaks the tie."""
@@ -4512,6 +4712,7 @@ def test_explicit_pin_override_outranks_a_net_name_match():
     )
 
     assert _LOCAL_NET_TIER_OVERRIDE < _LOCAL_NET_TIER_DIRECT
+
 
 
 
@@ -4526,6 +4727,7 @@ def test_harvest_falls_back_to_file_name_when_source_path_is_absent():
     assert _harvest_physical_sheet_names(compiled) == (
         ("physical:0", "Power.SchDoc"),
     )
+
 
 
 
@@ -4544,6 +4746,11 @@ def test_harvest_is_empty_on_a_release_without_physical_documents():
         SimpleNamespace(id=None, source_path="A.SchDoc"),
         SimpleNamespace(id="physical:0", source_path=None, file_name=None),
     ])) == ()
+
+
+
+# --- physical-page-map harvesting ---------------------------------------------
+
 
 
 
@@ -4570,12 +4777,14 @@ def test_harvest_prefers_source_path_over_bare_file_name():
 
 
 
+
 def test_local_net_label_matches_separator_agnostic_channel_token():
     """Net VIN_1 must match local VIN on designator R1.1 (._ separators differ)."""
     assert _local_net_label_matches("VIN_1", "VIN", {"R1", "R1.1"})
     assert _local_net_label_matches("VIN.1", "VIN", {"R1", "R1_1"})
     assert not _local_net_label_matches("VIN_L.1", "VIN", {"R1", "R1.1"})
     assert _local_net_label_matches("VIN_L.1", "VIN_L", {"R1", "R1.1"})
+
 
 
 
@@ -4587,6 +4796,7 @@ def test_lookup_inferred_vin_bounds_chain_length():
     )
     assert vin is None
     assert failure == "too_deep"
+
 
 
 
@@ -4612,6 +4822,7 @@ def test_lookup_inferred_vin_crosses_single_undirected_link():
 
 
 
+
 def test_lookup_inferred_vin_declared_rail_beats_series_ambiguity():
     """A rail whose voltage is declared resolves even when SERIES links to it
     disagree — parallel ferrites / ORing FETs / fuse+bypass all land here."""
@@ -4622,12 +4833,14 @@ def test_lookup_inferred_vin_declared_rail_beats_series_ambiguity():
 
 
 
+
 def test_lookup_inferred_vin_exact_match_without_series_walk():
     """Without a SERIES graph, only direct supply_map hits resolve."""
     supply_map = {"VDD_48V": 48.0, "VDD_12V": 12.0}
     assert _lookup_inferred_vin("VDD_48V", supply_map) == (48.0, None, 0)
     assert _lookup_inferred_vin("VDD_12V", supply_map) == (12.0, None, 0)
     assert _lookup_inferred_vin("VDD_48V_RP", supply_map) == (None, None, 0)
+
 
 
 
@@ -4646,6 +4859,7 @@ def test_lookup_inferred_vin_series_ambiguous_and_cycle():
 
 
 
+
 def test_lookup_inferred_vin_walks_series_upstream():
     supply_map = {"VDD_48V_IN": 48.0}
     graph = _SeriesVinGraph(
@@ -4655,6 +4869,7 @@ def test_lookup_inferred_vin_walks_series_upstream():
     assert _lookup_inferred_vin(
         "VDD_48V_RP", supply_map, graph=graph,
     ) == (48.0, None, 2)
+
 
 
 
@@ -4681,10 +4896,12 @@ def test_overlap_messages_name_pads_not_arbitration_keys():
 
 
 
+
 def test_plain_sheet_names_are_unaffected_by_the_page_id_path():
     assert _sheet_name_matches("Power.SchDoc", ["Power.SchDoc"])
     assert _sheet_name_matches("Power.SchDoc", ["SubA/Power.SchDoc"])
     assert not _sheet_name_matches("SubA/Power.SchDoc", ["SubB/Power.SchDoc"])
+
 
 
 
@@ -4698,6 +4915,7 @@ def test_regulator_smps_vin_does_not_warn_on_directly_declared_rail():
     )
     result = parse_annotations(proj, enabled_layers=[1])
     assert not any("SERIES hop(s) upstream" in w for w in result.warnings)
+
 
 
 
@@ -4715,6 +4933,7 @@ def test_regulator_smps_vin_resolves_under_merged_net_name():
     result = parse_annotations(proj, enabled_layers=[1], net_remap={4: 2})
     reg = next(d for d in result.directives if d.designator == "U5")
     assert abs(reg.gain - (12.0 / (48.0 * 0.8))) < 1e-6, result.errors
+
 
 
 
@@ -4816,6 +5035,7 @@ _SERIES_VIN_NETS = {
 
 
 
+
 def test_regulator_smps_vin_through_series_chain():
     """VIP-style: SOURCE -> SERIES -> SERIES -> SMPS on downstream net."""
     proj = _minimal_proj(
@@ -4905,6 +5125,7 @@ def test_regulator_smps_vin_through_series_chain():
 
 
 
+
 def test_regulator_smps_vin_warns_when_inferred_through_series_chain():
     """Vin taken from a walked chain is a guess about which leg is the power
     path — a sense or bleed resistor produces a silently wrong gain, so say so."""
@@ -4916,6 +5137,7 @@ def test_regulator_smps_vin_warns_when_inferred_through_series_chain():
     assert any(
         "was inferred 1 SERIES hop(s) upstream" in w for w in result.warnings
     ), result.warnings
+
 
 
 
@@ -4947,6 +5169,7 @@ def test_resolve_local_net_pins_pcb_confirmed_beats_name():
 
 
 
+
 def test_resolve_local_net_pins_physical_source_sheet():
     physical = (
         "physical:0:logical:0:main.SchDoc:child:1:sheet_symbol:U_PWR"
@@ -4968,6 +5191,7 @@ def test_resolve_local_net_pins_physical_source_sheet():
         netlist, "U1", "Power.SchDoc", "+3V3", sheet_map=_sheet_map(proj),
     )
     assert pins == ["14"]
+
 
 
 
@@ -5007,6 +5231,7 @@ def test_resolve_local_net_pins_prefers_name_over_shared_alias():
     )
     assert n_pins == ["1"]
     assert n_tier == _LOCAL_NET_TIER_NAME
+
 
 
 
@@ -5059,6 +5284,7 @@ def test_series_shared_alias_resolves_disjoint_p_n():
 
 
 
+
 def test_series_upstream_map_auto_inferred_link_is_direction_agnostic():
     """_autoinfer_2pin_nets takes P/N from raw pad order, so the Vin result must
     not change when the two RawPad entries are swapped."""
@@ -5079,6 +5305,7 @@ def test_series_upstream_map_auto_inferred_link_is_direction_agnostic():
 
 
 
+
 def test_series_upstream_map_reads_indexed_role_only_channels():
     """A part whose SERIES channels come only from PDN<n>_ROLE overrides still
     contributes its links — _is_pdn_annotated admits it, so the graph must too."""
@@ -5092,6 +5319,7 @@ def test_series_upstream_map_reads_indexed_role_only_channels():
     assert graph.upstream == {
         "VDD_48V": "VDD_48V_IN", "VDD_12V": "VDD_48V",
     }
+
 
 
 
@@ -5112,6 +5340,7 @@ def test_series_upstream_map_reads_pin_specified_channels():
     result = parse_annotations(proj, enabled_layers=[1])
     reg = next(d for d in result.directives if d.designator == "U5")
     assert abs(reg.gain - (12.0 / (48.0 * 0.8))) < 1e-6
+
 
 
 
@@ -5146,6 +5375,7 @@ def test_series_upstream_map_skips_merged_short_self_edges():
 
 
 
+
 def test_sheet_map_keeps_same_named_sheets_in_different_directories_apart():
     """Harvesting the bare leaf would collapse these onto one name, which is
     the collision _sheet_name_matches exists to prevent."""
@@ -5161,6 +5391,7 @@ def test_sheet_map_keeps_same_named_sheets_in_different_directories_apart():
 
 
 
+
 def test_sheet_name_matches_physical_page_id_via_map():
     """altium_monkey ≥ 2026.7 emits physical page ids in source_sheets."""
     physical = (
@@ -5173,6 +5404,7 @@ def test_sheet_name_matches_physical_page_id_via_map():
     smap = _sheet_map(proj)
     assert _sheet_name_matches("Power.SchDoc", [physical], sheet_map=smap)
     assert not _sheet_name_matches("Other.SchDoc", [physical], sheet_map=smap)
+
 
 
 

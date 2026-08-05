@@ -3033,6 +3033,39 @@ def _parse_resistance(comp, proj, enabled_layers, result,
     return specs
 
 
+
+def _expanded_supply_net_names(
+    proj: ExtractedProject,
+    local_name: str,
+    pcb_index: int,
+) -> tuple[str, ...]:
+    """PCB / local labels for a supply net on one placement.
+
+    Starts from :meth:`InstanceLocalNetResolver.expand_net_names`, then adds a
+    channel-suffixed candidate (``LX`` + designator ``U1.2`` → ``LX.2``) when
+    that net exists on the PCB — needed when the compiled netlist is missing
+    and pin-driven expansion cannot run.
+    """
+    if not local_name or not str(local_name).strip():
+        return ()
+    local_u = local_name.strip().upper()
+    names: list[str] = list(
+        _instance_resolver(proj).expand_net_names(local_u, pcb_index=pcb_index),
+    )
+    pcb = proj.pcb_components[pcb_index]
+    suffix = _channel_suffix_from_pcb_designator(pcb.designator)
+    if suffix:
+        slotted = f"{local_u}.{suffix}"
+        if _net_indices_by_name(proj, slotted) and slotted not in names:
+            names.append(slotted)
+    # Prefer instance-specific labels when present so multi-channel locals
+    # (shared ``LX``) do not collapse to one ambiguous supply-map key.
+    preferred = tuple(n for n in names if n != local_u)
+    if preferred:
+        return preferred
+    return (local_u,)
+
+
 def _collect_supply_voltages_by_net(
     parameter_sources: list[PdnParameterSource],
     proj: ExtractedProject,
@@ -3045,6 +3078,10 @@ def _collect_supply_voltages_by_net(
     :func:`_collect_series_upstream_map`, and the ``IN_P_NET`` a regulator is
     looked up by are all keyed the same way. Without that, any design the
     loader's net-merge pre-pass renamed a rail in would find no Vin at all.
+
+    When placements exist, each instance expands local OUT / P net names
+    (e.g. ``LX`` → ``LX.2``) so multi-channel regulators with different
+    ``PDN_V`` do not collide on the shared child-sheet label.
     """
     raw: dict[str, set[float]] = {}
 
@@ -3061,6 +3098,18 @@ def _collect_supply_voltages_by_net(
         } or {_canonical_supply_net_name(proj, net, net_remap)}
         for key in keys:
             raw.setdefault(key, set()).add(float(voltage))
+
+    def _register_local(comp: PdnParameterSource, local_net: str | None,
+                        voltage: float) -> None:
+        if local_net is None or not str(local_net).strip():
+            return
+        pcb_indices = _pcb_indices_for_source(comp, proj)
+        if not pcb_indices:
+            _register(local_net, voltage, [])
+            return
+        for pcb_idx in pcb_indices:
+            for name in _expanded_supply_net_names(proj, local_net, pcb_idx):
+                _register(name, voltage, [pcb_idx])
 
     for comp in parameter_sources:
         part_role = _part_role_default(comp.parameters)
@@ -3082,14 +3131,42 @@ def _collect_supply_voltages_by_net(
             if eff == "SOURCE":
                 p_net = _ci_get(comp.parameters, _channel_key("P_NET", idx))
                 single_net = _ci_get(comp.parameters, _channel_key("NET", idx))
-                _register(p_net or single_net, v, pcb_indices)
+                _register_local(comp, p_net or single_net, v)
             else:  # REGULATOR
                 out_net = _ci_get(comp.parameters, _channel_key("OUT_P_NET", idx))
-                _register(out_net, v, pcb_indices)
+                _register_local(comp, out_net, v)
     out: dict[str, float] = {}
     for net, voltages in raw.items():
         if len(voltages) == 1:
             out[net] = next(iter(voltages))
+    if proj is not None:
+        # Copy unique voltages across SERIES P→N (e.g. LX.2 → VDD_12V through
+        # a filter inductor) so exact Vin lookup finds the rail without a walk.
+        for comp in parameter_sources:
+            part_role_raw = _ci_get(comp.parameters, ROLE_KEY)
+            if part_role_raw is None:
+                continue
+            part_role = part_role_raw.strip().upper()
+            for idx in _discover_channel_indices(comp.parameters, "R"):
+                if _effective_role(comp.parameters, idx, part_role) not in _RESISTOR_LIKE_ROLES:
+                    continue
+                p_net = _ci_get(comp.parameters, _channel_key("P_NET", idx))
+                n_net = _ci_get(comp.parameters, _channel_key("N_NET", idx))
+                if not p_net or not n_net:
+                    continue
+                for pcb_idx in _pcb_indices_for_source(comp, proj):
+                    for up in _expanded_supply_net_names(proj, p_net, pcb_idx):
+                        v = out.get(up)
+                        if v is None:
+                            continue
+                        for dn in _expanded_supply_net_names(proj, n_net, pcb_idx):
+                            if dn == up:
+                                continue
+                            existing = out.get(dn)
+                            if existing is None:
+                                out[dn] = v
+                            elif existing != v:
+                                out.pop(dn, None)
     return out
 
 
@@ -3222,7 +3299,6 @@ def _collect_series_upstream_map(
 # (fuse, ORing FET, filter, sense resistor); anything longer is far more likely
 # to be a sense/bleed path stitched into a chain than a power path.
 _SERIES_VIN_MAX_HOPS: int = 8
-
 
 def _lookup_inferred_vin(
     in_p_net: str | None,
