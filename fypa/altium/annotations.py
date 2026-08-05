@@ -3143,13 +3143,7 @@ def _collect_supply_voltages_by_net(
         # Copy unique voltages across SERIES P→N (e.g. LX.2 → VDD_12V through
         # a filter inductor) so exact Vin lookup finds the rail without a walk.
         for comp in parameter_sources:
-            part_role_raw = _ci_get(comp.parameters, ROLE_KEY)
-            if part_role_raw is None:
-                continue
-            part_role = part_role_raw.strip().upper()
-            for idx in _discover_channel_indices(comp.parameters, "R"):
-                if _effective_role(comp.parameters, idx, part_role) not in _RESISTOR_LIKE_ROLES:
-                    continue
+            for idx in _series_channel_indices(comp):
                 p_net = _ci_get(comp.parameters, _channel_key("P_NET", idx))
                 n_net = _ci_get(comp.parameters, _channel_key("N_NET", idx))
                 if not p_net or not n_net:
