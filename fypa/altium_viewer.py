@@ -9069,27 +9069,56 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
 
         Merges solved-metadata RESISTOR directives with unresolved editor
         SERIES bridges so pending rails get the same spanning-tree shape.
+        Editor SERIES pairs already present as RESISTOR pin bridges are skipped.
         """
         directives: list[dict] = []
+        seen_bridges: set[frozenset[str]] = set()
         meta = self.metadata if isinstance(self.metadata, dict) else {}
+
+        def _bridge_key(d: dict) -> frozenset[str] | None:
+            terms = d.get("terminals") or {}
+            nets_per_term: list[set[str]] = []
+            for t in terms.values():
+                nets = {p.get("net") for p in t.get("pins", []) if p.get("net")}
+                if nets:
+                    nets_per_term.append(nets)
+            if len(nets_per_term) != 2:
+                return None
+            # One representative net per side for dedupe of simple 1:1 bridges.
+            a = next(iter(nets_per_term[0]))
+            b = next(iter(nets_per_term[1]))
+            if not a or not b:
+                return None
+            return frozenset((a, b))
+
         for d in meta.get("directives", []) or []:
-            if d.get("role") == "RESISTOR":
-                directives.append(d)
+            if d.get("role") != "RESISTOR":
+                continue
+            directives.append(d)
+            key = _bridge_key(d)
+            if key is not None and len(key) == 2:
+                seen_bridges.add(key)
         project = getattr(self, "_project", None)
         if project is not None:
             for ed in getattr(project, "editor_directives", []) or []:
                 if (
-                    getattr(ed, "role", None) == "SERIES"
-                    and getattr(ed, "p_net", None)
-                    and getattr(ed, "n_net", None)
+                    getattr(ed, "role", None) != "SERIES"
+                    or not getattr(ed, "p_net", None)
+                    or not getattr(ed, "n_net", None)
                 ):
-                    directives.append({
-                        "role": "RESISTOR",
-                        "terminals": {
-                            "P": {"pins": [{"net": ed.p_net}]},
-                            "N": {"pins": [{"net": ed.n_net}]},
-                        },
-                    })
+                    continue
+                key = frozenset((ed.p_net, ed.n_net))
+                if len(key) == 2 and key in seen_bridges:
+                    continue
+                if len(key) == 2:
+                    seen_bridges.add(key)
+                directives.append({
+                    "role": "RESISTOR",
+                    "terminals": {
+                        "P": {"pins": [{"net": ed.p_net}]},
+                        "N": {"pins": [{"net": ed.n_net}]},
+                    },
+                })
         out = dict(meta)
         out["directives"] = directives
         return out

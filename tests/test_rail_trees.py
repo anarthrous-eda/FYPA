@@ -147,6 +147,79 @@ def test_rail_tree_orphan_attaches_under_primary():
     assert all(c.children == () for c in tree.children)
 
 
+def test_rail_tree_local_label_series_nests_via_alias():
+    """SERIES on a local label still nests under the canonical primary."""
+    metadata = {
+        "net_canonical": {
+            "VIN_LOCAL": "VIN",
+            "VIN": "VIN",
+        },
+        "directives": [
+            {
+                "role": "SOURCE",
+                "terminals": {
+                    "P": {
+                        "requested_net": "VIN_LOCAL",
+                        "resolved_via_local": True,
+                        "pins": [{"net": "VIN"}],
+                    },
+                    "N": {
+                        "requested_net": "GND",
+                        "pins": [{"net": "GND"}],
+                    },
+                },
+            },
+            {
+                "role": "RESISTOR",
+                "terminals": {
+                    "P": {
+                        "requested_net": "VIN_LOCAL",
+                        "pins": [{"net": "VIN_LOCAL"}],
+                    },
+                    "N": {"pins": [{"net": "VOUT"}]},
+                },
+            },
+            _resistor("VOUT", "VOUT_FB"),
+        ],
+    }
+    _, members = compute_rail_groups(metadata)
+    assert flatten_rail_tree(build_rail_trees(metadata, members)["VIN"]) == [
+        ("VIN", 1),
+        ("VIN_LOCAL", 2),
+        ("VOUT", 3),
+        ("VOUT_FB", 4),
+    ]
+
+
+def test_rail_tree_orphan_component_keeps_series_nesting():
+    """SERIES chain unreachable from primary stays nested under an orphan root."""
+    # No alias edge from PRIMARY to the chain — only UF membership via a
+    # shared requested_net union that we simulate by listing all members
+    # explicitly after grouping would have merged them. Build the tree
+    # directly so the adjacency has SERIES only among the orphan chain.
+    from fypa.rail_groups import _rail_tree_adjacency, _spanning_tree_from_primary
+
+    metadata = {
+        "directives": [
+            _resistor("X", "Y"),
+            _resistor("Y", "Z"),
+        ],
+    }
+    adj = _rail_tree_adjacency(metadata)
+    # PRIMARY is in the member set but has no SERIES/alias edge to X/Y/Z.
+    tree = _spanning_tree_from_primary(
+        "PRIMARY",
+        ["PRIMARY", "X", "Y", "Z"],
+        adj,
+    )
+    assert flatten_rail_tree(tree) == [
+        ("PRIMARY", 1),
+        ("X", 2),
+        ("Y", 3),
+        ("Z", 4),
+    ]
+
+
 def test_build_rail_trees_empty_input():
     assert build_rail_trees(None, {}) == {}
     assert build_rail_trees({"directives": []}, {}) == {}

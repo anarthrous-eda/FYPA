@@ -169,31 +169,82 @@ def compute_rail_groups(
     return rail_names, rail_to_members
 
 
-def _series_adjacency(
+def _add_undirected_edge(adj: dict[str, set[str]], a: str, b: str) -> None:
+    if not a or not b or a == b:
+        return
+    adj.setdefault(a, set()).add(b)
+    adj.setdefault(b, set()).add(a)
+
+
+def _rail_tree_adjacency(
     metadata: TopologyMetadata | None,
 ) -> dict[str, set[str]]:
-    """Undirected SERIES/RESISTOR edges between terminal pin nets."""
+    """Undirected graph for rail subnet trees.
+
+    Includes:
+
+    * **RESISTOR/SERIES** pin-to-pin bridges
+    * **Alias** edges: ``requested_net`` ↔ pin nets (same unions the
+      rail grouper uses), plus each name ↔ its ``net_canonical`` form
+
+    Alias edges let BFS start at the primary and still walk bridges that
+    were annotated only on a local label.
+    """
     adj: dict[str, set[str]] = {}
     if metadata is None:
         return adj
+    canon_map: dict[str, str] = metadata.get("net_canonical") or {}
+
+    def _canonical(net: str) -> str:
+        if not net:
+            return net
+        return canon_map.get(net.upper(), net)
+
+    def _note_aliases(*nets: str) -> None:
+        for net in nets:
+            if not net:
+                continue
+            _add_undirected_edge(adj, net, _canonical(net))
+
     for d in metadata.get("directives", []):
-        if d.get("role") != "RESISTOR":
-            continue
+        role = d.get("role", "")
         terms = d.get("terminals") or {}
         nets_per_term: list[set[str]] = []
         for t in terms.values():
             nets = {p.get("net") for p in t.get("pins", []) if p.get("net")}
+            req = t.get("requested_net")
             if nets:
                 nets_per_term.append(nets)
-        if len(nets_per_term) != 2:
-            continue
-        for a in nets_per_term[0]:
-            for b in nets_per_term[1]:
-                if not a or not b or a == b:
-                    continue
-                adj.setdefault(a, set()).add(b)
-                adj.setdefault(b, set()).add(a)
+            _note_aliases(*(nets or set()), req or "")
+            if req:
+                for n in nets:
+                    _add_undirected_edge(adj, req, n)
+        if role == "RESISTOR" and len(nets_per_term) == 2:
+            for a in nets_per_term[0]:
+                for b in nets_per_term[1]:
+                    _add_undirected_edge(adj, a, b)
     return adj
+
+
+def _bfs_attach_children(
+    root: str,
+    *,
+    allowed: set[str],
+    adj: dict[str, set[str]],
+    visited: set[str],
+    children_of: dict[str, list[str]],
+) -> None:
+    """BFS from ``root`` through ``allowed`` nets; record tree edges."""
+    queue: deque[str] = deque([root])
+    while queue:
+        u = queue.popleft()
+        for v in sorted(adj.get(u, set()) & allowed):
+            if v in visited:
+                continue
+            visited.add(v)
+            children_of.setdefault(u, []).append(v)
+            children_of.setdefault(v, [])
+            queue.append(v)
 
 
 def _spanning_tree_from_primary(
@@ -201,10 +252,12 @@ def _spanning_tree_from_primary(
     members: list[str],
     adj: dict[str, set[str]],
 ) -> RailTreeNode:
-    """BFS spanning tree of ``members`` rooted at ``primary`` via SERIES edges.
+    """BFS spanning tree of ``members`` rooted at ``primary``.
 
-    Members with no SERIES path to the primary become direct children of the
-    primary (alias / requested-net unions that never got a bridge edge).
+    Walks SERIES and alias edges. Any remaining connected components (nets
+    with no path to the primary) are attached under the primary as their
+    own BFS subtrees — not flattened — so SERIES chains among orphans keep
+    their nesting.
     """
     member_set = set(members)
     if not member_set:
@@ -216,22 +269,29 @@ def _spanning_tree_from_primary(
         children_of[root] = []
 
     visited: set[str] = {root}
-    queue: deque[str] = deque([root])
-    while queue:
-        u = queue.popleft()
-        for v in sorted(adj.get(u, set()) & member_set):
-            if v in visited:
-                continue
-            visited.add(v)
-            children_of.setdefault(u, []).append(v)
-            children_of.setdefault(v, [])
-            queue.append(v)
+    _bfs_attach_children(
+        root,
+        allowed=member_set,
+        adj=adj,
+        visited=visited,
+        children_of=children_of,
+    )
 
-    for n in sorted(member_set):
-        if n not in visited:
-            children_of.setdefault(root, []).append(n)
-            children_of.setdefault(n, [])
-            visited.add(n)
+    while True:
+        remaining = member_set - visited
+        if not remaining:
+            break
+        seed = sorted(remaining)[0]
+        visited.add(seed)
+        children_of.setdefault(root, []).append(seed)
+        children_of.setdefault(seed, [])
+        _bfs_attach_children(
+            seed,
+            allowed=remaining,
+            adj=adj,
+            visited=visited,
+            children_of=children_of,
+        )
 
     for parent, kids in list(children_of.items()):
         children_of[parent] = sorted(kids)
@@ -257,7 +317,7 @@ def build_rail_trees(
     """
     if not rail_to_members:
         return {}
-    adj = _series_adjacency(metadata)
+    adj = _rail_tree_adjacency(metadata)
     return {
         primary: _spanning_tree_from_primary(primary, members, adj)
         for primary, members in rail_to_members.items()
