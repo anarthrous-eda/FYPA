@@ -3123,15 +3123,7 @@ def _iter_series_supply_flow_edges(
             continue
         pcb_indices = _pcb_indices_for_source(comp, proj)
         if not pcb_indices:
-            for idx in indices:
-                p_net = _ci_get(comp.parameters, _channel_key("P_NET", idx))
-                n_net = _ci_get(comp.parameters, _channel_key("N_NET", idx))
-                if not p_net or not n_net:
-                    continue
-                up = p_net.strip().upper()
-                dn = n_net.strip().upper()
-                if up != dn:
-                    yield True, up, dn
+            # Unplaced / DNI SERIES must not invent global Vin edges.
             continue
         for idx in indices:
             explicit = (

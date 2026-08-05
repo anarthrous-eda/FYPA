@@ -5754,3 +5754,71 @@ def test_autoinfer_series_vin_ignores_reversed_pad_order():
     assert ann.ok, ann.errors
     reg = next(d for d in ann.directives if isinstance(d, RegulatorSpec))
     assert reg.gain == pytest.approx(3.3 / (12.0 * 0.9))
+
+
+def test_unplaced_series_does_not_emit_global_supply_edges():
+    """SERIES without a PCB instance must not copy voltages between rails."""
+    from fypa.altium.annotations import _iter_series_supply_flow_edges
+
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("VIN"), RawNet("VOUT")),
+        sch_components=(
+            RawSchComponent(
+                designator="J1", schdoc_name="Main.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SOURCE",
+                    "PDN_V": "12",
+                    "PDN_P_NET": "VIN",
+                    "PDN_N_NET": "GND",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="L99", schdoc_name="Main.SchDoc",
+                # Explicit nets, but no PCB placement for L99.
+                parameters={
+                    "PDN_ROLE": "SERIES",
+                    "PDN_R": "5m",
+                    "PDN_P_NET": "VIN",
+                    "PDN_N_NET": "VOUT",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="U1", schdoc_name="Main.SchDoc",
+                parameters={
+                    "PDN_ROLE": "REGULATOR",
+                    "PDN_V": "3.3",
+                    "PDN_REGULATOR_TYPE": "SMPS",
+                    "PDN_REGULATOR_EFFICIENCY": "1",
+                    "PDN_OUT_P_NET": "VOUT",
+                    "PDN_OUT_N_NET": "GND",
+                    "PDN_IN_P_NET": "VIN",
+                    "PDN_IN_N_NET": "GND",
+                    "PDN_GAIN": "0.5",
+                },
+                pin_designators=("1", "2", "3", "4"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="J1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="CONN", source_designator="J1",
+            ),
+            RawPcbComponent(
+                designator="U1", center=Pt2D(10, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1), _pad(0, "2", 0, 1),
+            _pad(1, "1", 2, 10), _pad(1, "2", 0, 11),
+            _pad(1, "3", 1, 12), _pad(1, "4", 0, 13),
+        ),
+    )
+    sources = _iter_pdn_parameter_sources(proj)
+    assert list(_iter_series_supply_flow_edges(sources, proj)) == []
+    supply_map = _collect_supply_voltages_by_net(sources, proj)
+    assert supply_map.get("VIN") == pytest.approx(12.0)
+    # Must not inherit 12 V from the unplaced SERIES VIN→VOUT edge.
+    assert supply_map.get("VOUT") == pytest.approx(3.3)
