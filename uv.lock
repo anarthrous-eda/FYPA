@@ -22,8 +22,8 @@ wheels = [
 
 [[package]]
 name = "altium-monkey"
-version = "2026.7.29"
-source = { git = "https://github.com/wavenumber-eng/altium_monkey?tag=v2026.7.29#dbed1f835e235bbbcd67ab657234fbca4f0d8c1a" }
+version = "2026.8.1"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "freetype-py" },
     { name = "lxml" },
@@ -31,6 +31,10 @@ dependencies = [
     { name = "pillow" },
     { name = "uharfbuzz" },
     { name = "wn-geometer" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/26/38/16a5b3b4b72a10f60bf4abc7aaae442cdd15d4097a95f9584c0cf094d494/altium_monkey-2026.8.1.tar.gz", hash = "sha256:05ef7fc029f828d7a98f82c5e3a512a39a1bb4267fd6515ff7dd6e0a57a81dcf", size = 4230841, upload-time = "2026-08-01T21:14:32.934Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ae/93/43de7ba26cd6542b252077ed6dd3f6fdd29543604c175d1426ab82b42609/altium_monkey-2026.8.1-py3-none-any.whl", hash = "sha256:e61fedac8cc2c8a461964e81158eae69f6198f5bc6e4721753a8e9c8b9b77f00", size = 4325456, upload-time = "2026-08-01T21:14:30.465Z" },
 ]
 
 [[package]]
@@ -178,7 +182,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "altium-monkey", git = "https://github.com/wavenumber-eng/altium_monkey?tag=v2026.7.29" },
+    { name = "altium-monkey", specifier = "==2026.8.1" },
     { name = "gerbonara", specifier = "==1.5.0" },
     { name = "lxml", specifier = "==6.0.2" },
     { name = "matplotlib", specifier = "==3.10.9" },
