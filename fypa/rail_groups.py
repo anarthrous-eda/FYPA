@@ -407,6 +407,43 @@ def build_rail_trees(
     }
 
 
+def visible_rail_tree_rows(
+    rail: str,
+    members: list[str],
+    tree: RailTreeNode | None,
+    node_expanded: dict[tuple[str, str], bool] | None = None,
+) -> list[tuple[str, int, bool]]:
+    """Visible subnet rows as ``(net, depth, has_children)``.
+
+    Walks ``tree`` but only descends into nodes marked expanded in
+    ``node_expanded``. Missing keys default to expanded only for the
+    primary (``net == rail``) so the first level of children appears
+    without exploding deep SERIES chains. Flat fallback when ``tree``
+    is ``None``.
+    """
+    expanded_map = node_expanded if node_expanded is not None else {}
+    if tree is None:
+        return [(net, 1, False) for net in members]
+
+    rows: list[tuple[str, int, bool]] = []
+
+    def _is_expanded(net: str) -> bool:
+        key = (rail, net)
+        if key in expanded_map:
+            return bool(expanded_map[key])
+        return net == rail
+
+    def _walk(node: RailTreeNode, depth: int) -> None:
+        has_children = bool(node.children)
+        rows.append((node.name, depth, has_children))
+        if has_children and _is_expanded(node.name):
+            for child in node.children:
+                _walk(child, depth + 1)
+
+    _walk(tree, 1)
+    return rows
+
+
 def flatten_rail_tree(
     root: RailTreeNode,
     *,

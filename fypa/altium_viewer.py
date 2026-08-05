@@ -2458,6 +2458,9 @@ class SidebarToggleButton(QToolButton):
         if collapsed == self._collapsed:
             return
         self._collapsed = collapsed
+        self.setCursor(
+            Qt.PointingHandCursor if collapsed else Qt.SizeHorCursor,
+        )
         self.update()
 
     def isCollapsed(self) -> bool:
@@ -8954,6 +8957,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                     self._solved_since_save = False
                     self._display_dirty = False
                     self._init_overlay_state()
+                    self._load_sidebar_width_from_project()
                     title = (
                         Path(project_path).stem if project_path is not None
                         else getattr(new_solution.problem, "project_name", None)
@@ -9131,37 +9135,12 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         *,
         node_expanded: dict | None = None,
     ) -> list[tuple[str, int, bool]]:
-        """Visible subnet rows as ``(net, depth, has_children)``.
-
-        Walks the SERIES tree but only descends into nodes marked expanded
-        in ``node_expanded`` (defaults: primary expanded, others collapsed).
-        Flat fallback when no tree is available.
-        """
-        from fypa.rail_groups import RailTreeNode
-        expanded_map = node_expanded if node_expanded is not None else {}
+        """Visible subnet rows as ``(net, depth, has_children)``."""
+        from fypa.rail_groups import visible_rail_tree_rows
         tree = (trees or {}).get(rail)
-        if tree is None:
-            return [(net, 1, False) for net in members]
-
-        rows: list[tuple[str, int, bool]] = []
-
-        def _is_expanded(net: str) -> bool:
-            key = (rail, net)
-            if key in expanded_map:
-                return bool(expanded_map[key])
-            # First open: reveal the primary's children; deeper levels stay
-            # collapsed so long SERIES chains don't explode the list.
-            return net == rail
-
-        def _walk(node: RailTreeNode, depth: int) -> None:
-            has_children = bool(node.children)
-            rows.append((node.name, depth, has_children))
-            if has_children and _is_expanded(node.name):
-                for child in node.children:
-                    _walk(child, depth + 1)
-
-        _walk(tree, 1)
-        return rows
+        return visible_rail_tree_rows(
+            rail, members, tree, node_expanded=node_expanded,
+        )
 
     def showEvent(self, event) -> None:
         """Apply the deferred ``showMaximized`` once Qt has actually shown the
@@ -9635,6 +9614,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._sidebar_toggle_btn.resizedBy.connect(self._on_sidebar_resized_by)
         self._sidebar_toggle_btn.pressed.connect(self._on_sidebar_resize_press)
         outer.addWidget(self._sidebar_toggle_btn)
+        self._load_sidebar_width_from_project()
 
         # Plot area — custom QOpenGLWidget rendering the FEM mesh directly
         # via shaders (per-vertex colour interpolation, MVP transform on
@@ -10334,6 +10314,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         btn = self._subnet_expand_buttons.get((rail, net))
         if btn is not None and _qt_widget_alive(btn):
             btn.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        # Defer rebuild: this slot runs on the expand button's toggled
+        # signal, and rebuilding destroys that button.
+        QTimer.singleShot(
+            0, lambda r=rail: self._rebuild_rail_subnet_rows(r),
+        )
+
+    def _rebuild_rail_subnet_rows(self, rail: str) -> None:
         parent_item = self._rail_list_items.get(rail)
         if parent_item is None or not self._rail_expanded.get(rail):
             return
@@ -16312,6 +16299,17 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         widget.setFixedWidth(w)
         scroll.setFixedWidth(w + self._SIDEBAR_SCROLLBAR_W)
 
+    def _load_sidebar_width_from_project(self) -> None:
+        """Restore left side-panel width from ``viewer_settings``."""
+        proj = getattr(self, "_project", None)
+        if proj is None:
+            return
+        saved = (getattr(proj, "viewer_settings", None) or {}).get(
+            "sidebar_content_w",
+        )
+        if isinstance(saved, (int, float)) and saved > 0:
+            self._apply_sidebar_content_width(int(saved))
+
     def _hotkey_2d_mode(self) -> None:
         self.view_3d_box.setChecked(False)
 
@@ -20728,6 +20726,11 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         btn = self._pending_subnet_expand_buttons.get((rail, net))
         if btn is not None and _qt_widget_alive(btn):
             btn.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        QTimer.singleShot(
+            0, lambda r=rail: self._rebuild_pending_subnet_rows(r),
+        )
+
+    def _rebuild_pending_subnet_rows(self, rail: str) -> None:
         parent_item = self._pending_rail_list_items.get(rail)
         if parent_item is None or not self._pending_rail_expanded.get(rail):
             return
@@ -23268,6 +23271,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         caploop = getattr(self, "_caploop_settings_obj", None)
         if caploop is not None:
             proj.viewer_settings["caploop"] = caploop.to_dict()
+
+        sidebar_w = getattr(self, "_sidebar_content_w", None)
+        if isinstance(sidebar_w, int) and sidebar_w > 0:
+            proj.viewer_settings["sidebar_content_w"] = int(sidebar_w)
 
         overlay_state = getattr(self, "_overlay_state", None)
         if overlay_state:

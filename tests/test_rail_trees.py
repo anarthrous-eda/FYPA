@@ -8,6 +8,7 @@ from fypa.rail_groups import (
     flatten_rail_tree,
     merge_rail_tree_metadata,
     resistor_bridge_pairs,
+    visible_rail_tree_rows,
 )
 
 
@@ -322,6 +323,54 @@ def test_resistor_bridge_pairs_covers_bipartite_terminals():
         frozenset(("VIN", "LED_G")),
         frozenset(("VIN", "LED_R")),
     }
+
+
+def test_visible_rail_tree_rows_respects_node_expanded():
+    """Primary defaults open; deeper nodes stay collapsed until expanded."""
+    tree = RailTreeNode(
+        name="A",
+        children=(
+            RailTreeNode(
+                name="A.1",
+                children=(
+                    RailTreeNode(name="A.1.1"),
+                    RailTreeNode(name="A.1.2"),
+                ),
+            ),
+            RailTreeNode(name="A.2"),
+        ),
+    )
+    members = ["A", "A.1", "A.1.1", "A.1.2", "A.2"]
+    # Default: primary expanded → children visible, grandchildren hidden.
+    assert visible_rail_tree_rows("A", members, tree) == [
+        ("A", 1, True),
+        ("A.1", 2, True),
+        ("A.2", 2, False),
+    ]
+    # Expand A.1 → grandchildren appear.
+    assert visible_rail_tree_rows(
+        "A", members, tree,
+        node_expanded={("A", "A"): True, ("A", "A.1"): True},
+    ) == [
+        ("A", 1, True),
+        ("A.1", 2, True),
+        ("A.1.1", 3, False),
+        ("A.1.2", 3, False),
+        ("A.2", 2, False),
+    ]
+    # Collapse primary → only the primary row.
+    assert visible_rail_tree_rows(
+        "A", members, tree,
+        node_expanded={("A", "A"): False},
+    ) == [
+        ("A", 1, True),
+    ]
+
+
+def test_visible_rail_tree_rows_flat_fallback():
+    assert visible_rail_tree_rows(
+        "A", ["A", "B"], None,
+    ) == [("A", 1, False), ("B", 1, False)]
 
 
 def test_build_rail_trees_empty_input():
