@@ -4306,3 +4306,180 @@ def test_pcb_eco_value_override_no_false_partial_coverage_warning():
     assert len(sinks) == 1
     assert sinks[0].designator == "J1.1"
     assert sinks[0].current == pytest.approx(1.5)
+
+
+def test_multi_instance_lx_supply_map_infers_downstream_smps_vin():
+    """Shared local OUT=LX with different PDN_V must not drop Vin for rails.
+
+    Two regulator placements publish LX.1=5 V / LX.2=12 V; SERIES inductors
+    map LX→VDD_OUT to VDD_5V0 / VDD_12V; a downstream SMPS on VDD_12V infers
+    Vin without an explicit PDN_GAIN.
+    """
+    from fypa.altium.annotations import _expand_sheet_bound_parameter_sources
+
+    reg_params = {
+        "PDN_ROLE": "REGULATOR",
+        "PDN_REGULATOR_TYPE": "SMPS",
+        "PDN_REGULATOR_EFFICIENCY": "0.8",
+        "PDN_OUT_P_NET": "LX",
+        "PDN_OUT_N_NET": "GND",
+        "PDN_IN_P_NET": "VIN",
+        "PDN_IN_N_NET": "GND",
+    }
+    # nets: 0 GND, 1 VIN, 2 LX.1, 3 LX.2, 4 VDD_5V0, 5 VDD_12V, 6 VDD_3V3
+    proj = _minimal_proj(
+        nets=(
+            RawNet("GND"), RawNet("VIN"),
+            RawNet("LX.1"), RawNet("LX.2"),
+            RawNet("VDD_5V0"), RawNet("VDD_12V"), RawNet("VDD_3V3"),
+        ),
+        sch_components=(
+            RawSchComponent(
+                designator="U1", schdoc_name="Pwr.SchDoc",
+                parameters={**reg_params, "PDN_V": "5V"},
+                pin_designators=("1", "2", "3", "4"),
+            ),
+            RawSchComponent(
+                designator="L1", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SERIES",
+                    "PDN_R": "6m",
+                    "PDN_P_NET": "LX",
+                    "PDN_N_NET": "VDD_OUT",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="U2", schdoc_name="Load.SchDoc",
+                parameters={
+                    "PDN_ROLE": "REGULATOR",
+                    "PDN_V": "3.3",
+                    "PDN_REGULATOR_TYPE": "SMPS",
+                    "PDN_REGULATOR_EFFICIENCY": "0.85",
+                    "PDN_OUT_P_NET": "VDD_3V3",
+                    "PDN_OUT_N_NET": "GND",
+                    "PDN_IN_P_NET": "VDD_12V",
+                    "PDN_IN_N_NET": "GND",
+                },
+                pin_designators=("1", "2", "3", "4"),
+            ),
+            RawSchComponent(
+                designator="J1", schdoc_name="Main.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SOURCE",
+                    "PDN_V": "24",
+                    "PDN_P_NET": "VIN",
+                    "PDN_N_NET": "GND",
+                },
+                pin_designators=("1", "2"),
+            ),
+        ),
+        sch_sheet_symbols=(
+            RawSchSheetSymbol(
+                parent_schdoc="Main.SchDoc",
+                sheet_name="PWR_5V",
+                child_filename="Pwr.SchDoc",
+                unique_id="SYM5",
+                parameters={"PDN_U1_V": "5V"},
+            ),
+            RawSchSheetSymbol(
+                parent_schdoc="Main.SchDoc",
+                sheet_name="PWR_12V",
+                child_filename="Pwr.SchDoc",
+                unique_id="SYM12",
+                parameters={"PDN_U1_V": "12 V"},
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U1.1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+                source_unique_id=r"\SYM5\COMP",
+                parameters=dict(reg_params),
+            ),
+            RawPcbComponent(
+                designator="U1.2", center=Pt2D(20, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+                source_unique_id=r"\SYM12\COMP",
+                parameters=dict(reg_params),
+            ),
+            RawPcbComponent(
+                designator="L1.1", center=Pt2D(5, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="IND", source_designator="L1",
+                source_unique_id=r"\SYM5\L",
+            ),
+            RawPcbComponent(
+                designator="L1.2", center=Pt2D(25, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="IND", source_designator="L1",
+                source_unique_id=r"\SYM12\L",
+            ),
+            RawPcbComponent(
+                designator="U2", center=Pt2D(40, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U2",
+            ),
+            RawPcbComponent(
+                designator="J1", center=Pt2D(-10, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="CONN", source_designator="J1",
+            ),
+        ),
+        pads=(
+            # U1.1: OUT on LX.1 (net 2), IN on VIN (1), GND (0)
+            _pad(0, "1", 2), _pad(0, "2", 0, 1),
+            _pad(0, "3", 1, 2), _pad(0, "4", 0, 3),
+            # U1.2: OUT on LX.2 (net 3)
+            _pad(1, "1", 3, 20), _pad(1, "2", 0, 21),
+            _pad(1, "3", 1, 22), _pad(1, "4", 0, 23),
+            # L1.1: LX.1 — VDD_5V0
+            _pad(2, "1", 2, 5), _pad(2, "2", 4, 6),
+            # L1.2: LX.2 — VDD_12V
+            _pad(3, "1", 3, 25), _pad(3, "2", 5, 26),
+            # U2: OUT VDD_3V3, IN VDD_12V
+            _pad(4, "1", 6, 40), _pad(4, "2", 0, 41),
+            _pad(4, "3", 5, 42), _pad(4, "4", 0, 43),
+            # J1 SOURCE
+            _pad(5, "1", 1, -10), _pad(5, "2", 0, -9),
+        ),
+        compiled_netlist=_FakeNetlist(nets=[
+            _FakeNet(
+                name="LX.1", aliases=["LX"],
+                source_sheets=["pwr.schdoc"],
+                terminals=[_FakeTerminal("U1.1", "1"), _FakeTerminal("L1.1", "1")],
+            ),
+            _FakeNet(
+                name="LX.2", aliases=["LX"],
+                source_sheets=["pwr.schdoc"],
+                terminals=[_FakeTerminal("U1.2", "1"), _FakeTerminal("L1.2", "1")],
+            ),
+            _FakeNet(
+                name="VDD_5V0", aliases=["VDD_OUT"],
+                source_sheets=["pwr.schdoc"],
+                terminals=[_FakeTerminal("L1.1", "2")],
+            ),
+            _FakeNet(
+                name="VDD_12V", aliases=["VDD_OUT"],
+                source_sheets=["pwr.schdoc"],
+                terminals=[_FakeTerminal("L1.2", "2")],
+            ),
+        ]),
+    )
+    result = AnnotationResult()
+    sources = _expand_sheet_bound_parameter_sources(
+        proj, _iter_pdn_parameter_sources(proj, result), result,
+    )
+    supply_map = _collect_supply_voltages_by_net(sources, proj)
+    assert "LX" not in supply_map  # ambiguous shared local dropped
+    assert supply_map.get("LX.1") == pytest.approx(5.0)
+    assert supply_map.get("LX.2") == pytest.approx(12.0)
+    assert supply_map.get("VDD_5V0") == pytest.approx(5.0)
+    assert supply_map.get("VDD_12V") == pytest.approx(12.0)
+
+    ann = parse_annotations(proj, enabled_layers=[1])
+    assert ann.ok, ann.errors
+    assert not any("cannot infer input voltage" in e for e in ann.errors)
+    regs = {
+        d.designator: d
+        for d in ann.directives if isinstance(d, RegulatorSpec)
+    }
+    assert "U2" in regs
+    # Vin=12, Vout=3.3, eta=0.85 -> gain = 3.3/(12*0.85)
+    assert regs["U2"].gain == pytest.approx(3.3 / (12.0 * 0.85))

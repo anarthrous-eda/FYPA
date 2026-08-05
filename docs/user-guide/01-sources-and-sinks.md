@@ -390,7 +390,9 @@ the **PCB** (Blanket / ECO) and the per-instance value is on the sheet
 symbol — e.g. PCB has `PDN_ROLE=REGULATOR` and nets, sheet symbol has
 `PDN_U1_V=5V`. FYPA merges those into one directive per placement (it does
 not create a second source when both PCB-ECO and a full sheet-symbol
-directive target the same instance).
+directive target the same instance). Different `PDN_<Des>_V` values on
+repeated regulator sheets also feed SMPS Vin inference under the
+instance-expanded output nets (see [Section 4](04-regulators.md)).
 
 A *partial coverage* warning (`PDN covers … (sheet symbol) … but not …`)
 is issued only when FYPA synthesises at least one full sheet-symbol-only
