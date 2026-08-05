@@ -535,6 +535,7 @@ Commit or stash them before running maintain-test-combined.
 }
 
 $Returned = $false
+$LeaveOnConflict = $false
 try {
     if ($CanReuse) {
         Write-Host "==> Reuse $TestBranch (inputs unchanged)"
@@ -596,22 +597,40 @@ try {
     }
 }
 catch {
-    if ((Get-CurrentBranch) -ne $ReturnBranch) {
+    $msg = "$_"
+    if ($msg -match 'Merge conflict' -and (Test-MergeInProgress)) {
+        $LeaveOnConflict = $true
+        Write-Host @"
+
+==> Merge conflict — staying on $TestBranch with the conflict in place.
+Resolve, commit, then:
+
+  git notes --ref=test-combined add -f -m '<stamp>' HEAD   # optional
+  git push --force-with-lease $Remote HEAD:refs/heads/$TestBranch
+
+Or re-run: pwsh scripts/maintain-test-combined.ps1 -Rebuild -Push
+"@
+    }
+    elseif ((Get-CurrentBranch) -ne $ReturnBranch) {
         & git merge --abort 2>$null | Out-Null
         & git rebase --abort 2>$null | Out-Null
     }
     throw
 }
 finally {
-    $Current = Get-CurrentBranch
-    if ($Current -ne $ReturnBranch) {
-        Write-Host "==> Return to $ReturnBranch"
-        Restore-DevBranch -Branch $ReturnBranch
-        $Returned = $true
+    if (-not $LeaveOnConflict) {
+        $Current = Get-CurrentBranch
+        if ($Current -ne $ReturnBranch) {
+            Write-Host "==> Return to $ReturnBranch"
+            Restore-DevBranch -Branch $ReturnBranch
+            $Returned = $true
+        }
     }
 }
 
-if (-not $Returned) {
-    Write-Host "==> Return to $ReturnBranch"
-    Restore-DevBranch -Branch $ReturnBranch
+if (-not $LeaveOnConflict) {
+    if (-not $Returned) {
+        Write-Host "==> Return to $ReturnBranch"
+        Restore-DevBranch -Branch $ReturnBranch
+    }
 }
