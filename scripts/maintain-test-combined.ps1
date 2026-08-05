@@ -444,7 +444,14 @@ if (-not $ReturnBranch) {
     throw "Could not determine the current branch (detached HEAD?). Check out a branch first."
 }
 
-Sync-RemoteBranches -RemoteName $Remote -Branches (@($BaseBranch) + $ExtraFeatureBranches + @($TestBranch))
+Sync-RemoteBranches -RemoteName $Remote -Branches (@($BaseBranch) + $ExtraFeatureBranches)
+# test/combined may not exist yet on first publish — soft-fetch only.
+try {
+    Sync-RemoteBranches -RemoteName $Remote -Branches @($TestBranch)
+}
+catch {
+    Write-Host "==> $Remote/$TestBranch not fetched yet (ok on first publish)"
+}
 
 $BaseTarget = Resolve-RemoteTip -Branch $BaseBranch -RemoteName $Remote
 if (-not $BaseTarget) {
