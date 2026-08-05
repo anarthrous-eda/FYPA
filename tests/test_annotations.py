@@ -4341,11 +4341,13 @@ def test_multi_instance_lx_supply_map_infers_downstream_smps_vin():
             ),
             RawSchComponent(
                 designator="L1", schdoc_name="Pwr.SchDoc",
+                # Indexed-only SERIES (no part-wide PDN_ROLE) must still
+                # propagate Vin across the filter inductor.
                 parameters={
-                    "PDN_ROLE": "SERIES",
-                    "PDN_R": "6m",
-                    "PDN_P_NET": "LX",
-                    "PDN_N_NET": "VDD_OUT",
+                    "PDN1_ROLE": "SERIES",
+                    "PDN1_R": "6m",
+                    "PDN1_P_NET": "LX",
+                    "PDN1_N_NET": "VDD_OUT",
                 },
                 pin_designators=("1", "2"),
             ),
