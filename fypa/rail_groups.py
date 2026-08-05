@@ -184,6 +184,11 @@ def filter_directives_for_rail_trees(
     ]
 
 
+def bridge_pair_key(a: str, b: str) -> frozenset[str]:
+    """Case-insensitive undirected key for a SERIES/RESISTOR pin pair."""
+    return frozenset((a.upper(), b.upper()))
+
+
 def resistor_bridge_pairs(directive: dict) -> list[frozenset[str]]:
     """All undirected pin-net pairs from a RESISTOR's two terminals."""
     if directive.get("role") != "RESISTOR":
@@ -202,6 +207,44 @@ def resistor_bridge_pairs(directive: dict) -> list[frozenset[str]]:
             if a and b and a != b:
                 pairs.append(frozenset((a, b)))
     return pairs
+
+
+def merge_rail_tree_metadata(
+    metadata: TopologyMetadata | None,
+    editor_series: list[tuple[str, str]] | None = None,
+) -> dict:
+    """Build metadata for :func:`build_rail_trees` (pending / editor rails).
+
+    Keeps SOURCE/SINK/REGULATOR (alias edges) and RESISTOR (SERIES bridges)
+    from ``metadata``, then appends editor SERIES ``(p_net, n_net)`` pairs
+    whose bridges are not already covered (case-insensitive; all bipartite
+    RESISTOR pin pairs counted).
+    """
+    meta = dict(metadata) if isinstance(metadata, dict) else {}
+    directives = filter_directives_for_rail_trees(meta.get("directives"))
+    seen_bridges: set[frozenset[str]] = set()
+    for d in directives:
+        for pair in resistor_bridge_pairs(d):
+            if len(pair) == 2:
+                a, b = tuple(pair)
+                seen_bridges.add(bridge_pair_key(a, b))
+    for p_net, n_net in editor_series or ():
+        if not p_net or not n_net:
+            continue
+        key = bridge_pair_key(p_net, n_net)
+        if len(key) != 2 or key in seen_bridges:
+            continue
+        seen_bridges.add(key)
+        directives.append({
+            "role": "RESISTOR",
+            "terminals": {
+                "P": {"pins": [{"net": p_net}]},
+                "N": {"pins": [{"net": n_net}]},
+            },
+        })
+    out = dict(meta)
+    out["directives"] = directives
+    return out
 
 
 def _add_undirected_edge(adj: dict[str, set[str]], a: str, b: str) -> None:

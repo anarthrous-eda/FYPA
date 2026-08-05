@@ -9064,45 +9064,21 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         from fypa.rail_groups import compute_rail_groups
         return compute_rail_groups(metadata)
 
-    def _series_bridge_metadata(self) -> dict:
-        """Metadata for :func:`build_rail_trees` on pending / editor rails.
-
-        Keeps SOURCE/SINK/REGULATOR (alias edges) and RESISTOR (SERIES bridges)
-        from solved metadata, then appends unresolved editor SERIES whose pin
-        pairs are not already covered (all bipartite RESISTOR pairs counted).
-        """
-        from fypa.rail_groups import (
-            filter_directives_for_rail_trees,
-            resistor_bridge_pairs,
-        )
+    def _rail_tree_metadata(self) -> dict:
+        """Metadata for :func:`build_rail_trees` on pending / editor rails."""
+        from fypa.rail_groups import merge_rail_tree_metadata
         meta = self.metadata if isinstance(self.metadata, dict) else {}
-        directives = filter_directives_for_rail_trees(meta.get("directives"))
-        seen_bridges: set[frozenset[str]] = set()
-        for d in directives:
-            seen_bridges.update(resistor_bridge_pairs(d))
+        editor_series: list[tuple[str, str]] = []
         project = getattr(self, "_project", None)
         if project is not None:
             for ed in getattr(project, "editor_directives", []) or []:
                 if (
-                    getattr(ed, "role", None) != "SERIES"
-                    or not getattr(ed, "p_net", None)
-                    or not getattr(ed, "n_net", None)
+                    getattr(ed, "role", None) == "SERIES"
+                    and getattr(ed, "p_net", None)
+                    and getattr(ed, "n_net", None)
                 ):
-                    continue
-                key = frozenset((ed.p_net, ed.n_net))
-                if len(key) != 2 or key in seen_bridges:
-                    continue
-                seen_bridges.add(key)
-                directives.append({
-                    "role": "RESISTOR",
-                    "terminals": {
-                        "P": {"pins": [{"net": ed.p_net}]},
-                        "N": {"pins": [{"net": ed.n_net}]},
-                    },
-                })
-        out = dict(meta)
-        out["directives"] = directives
-        return out
+                    editor_series.append((ed.p_net, ed.n_net))
+        return merge_rail_tree_metadata(meta, editor_series)
 
     def _subnet_rows_for_rail(
         self,
@@ -20437,7 +20413,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._pending_rails = self._editor_pending_rails()
         from fypa.rail_groups import build_rail_trees
         self._pending_rail_trees = build_rail_trees(
-            self._series_bridge_metadata(),
+            self._rail_tree_metadata(),
             self._pending_rails,
         )
         t = _T()

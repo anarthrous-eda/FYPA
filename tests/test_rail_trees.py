@@ -2,10 +2,11 @@
 
 from fypa.rail_groups import (
     RailTreeNode,
+    bridge_pair_key,
     build_rail_trees,
     compute_rail_groups,
-    filter_directives_for_rail_trees,
     flatten_rail_tree,
+    merge_rail_tree_metadata,
     resistor_bridge_pairs,
 )
 
@@ -247,11 +248,9 @@ def test_rail_tree_pending_style_metadata_keeps_source_aliases():
             _resistor("VOUT", "VOUT_FB"),
         ],
     }
-    tree_meta = {
-        **metadata,
-        "directives": filter_directives_for_rail_trees(metadata["directives"]),
-    }
+    tree_meta = merge_rail_tree_metadata(metadata)
     assert all(d.get("role") != "OTHER" for d in tree_meta["directives"])
+    assert any(d.get("role") == "SOURCE" for d in tree_meta["directives"])
     members = {"VIN": ["VIN", "VIN_LOCAL", "VOUT", "VOUT_FB"]}
     assert flatten_rail_tree(build_rail_trees(tree_meta, members)["VIN"]) == [
         ("VIN", 1),
@@ -259,6 +258,54 @@ def test_rail_tree_pending_style_metadata_keeps_source_aliases():
         ("VOUT", 3),
         ("VOUT_FB", 4),
     ]
+
+
+def test_merge_rail_tree_metadata_dedupes_editor_series_case_insensitive():
+    """Editor SERIES matching an existing RESISTOR pair (any case) is skipped."""
+    metadata = {
+        "directives": [
+            {
+                "role": "RESISTOR",
+                "terminals": {
+                    "P": {"pins": [{"net": "VIN"}]},
+                    "N": {
+                        "pins": [
+                            {"net": "LED_B"},
+                            {"net": "LED_G"},
+                            {"net": "LED_R"},
+                        ],
+                    },
+                },
+            },
+            {"role": "OTHER", "terminals": {}},
+        ],
+    }
+    merged = merge_rail_tree_metadata(
+        metadata,
+        editor_series=[
+            ("vin", "led_r"),       # already covered (case-insensitive)
+            ("VIN", "VOUT_EXTRA"),  # new bridge
+            ("VIN", "VOUT_EXTRA"),  # duplicate of the new bridge
+        ],
+    )
+    roles = [d.get("role") for d in merged["directives"]]
+    assert "OTHER" not in roles
+    assert roles.count("RESISTOR") == 2  # original + one editor
+    added = [
+        d for d in merged["directives"]
+        if d.get("role") == "RESISTOR"
+        and any(
+            p.get("net") == "VOUT_EXTRA"
+            for t in (d.get("terminals") or {}).values()
+            for p in t.get("pins", [])
+        )
+    ]
+    assert len(added) == 1
+
+
+def test_bridge_pair_key_is_case_insensitive():
+    assert bridge_pair_key("Vin", "gnd") == bridge_pair_key("VIN", "GND")
+    assert bridge_pair_key("A", "B") == bridge_pair_key("B", "A")
 
 
 def test_resistor_bridge_pairs_covers_bipartite_terminals():
