@@ -9065,39 +9065,21 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         return compute_rail_groups(metadata)
 
     def _series_bridge_metadata(self) -> dict:
-        """Metadata shaped for :func:`build_rail_trees` (RESISTOR edges only).
+        """Metadata for :func:`build_rail_trees` on pending / editor rails.
 
-        Merges solved-metadata RESISTOR directives with unresolved editor
-        SERIES bridges so pending rails get the same spanning-tree shape.
-        Editor SERIES pairs already present as RESISTOR pin bridges are skipped.
+        Keeps SOURCE/SINK/REGULATOR (alias edges) and RESISTOR (SERIES bridges)
+        from solved metadata, then appends unresolved editor SERIES whose pin
+        pairs are not already covered (all bipartite RESISTOR pairs counted).
         """
-        directives: list[dict] = []
-        seen_bridges: set[frozenset[str]] = set()
+        from fypa.rail_groups import (
+            filter_directives_for_rail_trees,
+            resistor_bridge_pairs,
+        )
         meta = self.metadata if isinstance(self.metadata, dict) else {}
-
-        def _bridge_key(d: dict) -> frozenset[str] | None:
-            terms = d.get("terminals") or {}
-            nets_per_term: list[set[str]] = []
-            for t in terms.values():
-                nets = {p.get("net") for p in t.get("pins", []) if p.get("net")}
-                if nets:
-                    nets_per_term.append(nets)
-            if len(nets_per_term) != 2:
-                return None
-            # One representative net per side for dedupe of simple 1:1 bridges.
-            a = next(iter(nets_per_term[0]))
-            b = next(iter(nets_per_term[1]))
-            if not a or not b:
-                return None
-            return frozenset((a, b))
-
-        for d in meta.get("directives", []) or []:
-            if d.get("role") != "RESISTOR":
-                continue
-            directives.append(d)
-            key = _bridge_key(d)
-            if key is not None and len(key) == 2:
-                seen_bridges.add(key)
+        directives = filter_directives_for_rail_trees(meta.get("directives"))
+        seen_bridges: set[frozenset[str]] = set()
+        for d in directives:
+            seen_bridges.update(resistor_bridge_pairs(d))
         project = getattr(self, "_project", None)
         if project is not None:
             for ed in getattr(project, "editor_directives", []) or []:
@@ -9108,10 +9090,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 ):
                     continue
                 key = frozenset((ed.p_net, ed.n_net))
-                if len(key) == 2 and key in seen_bridges:
+                if len(key) != 2 or key in seen_bridges:
                     continue
-                if len(key) == 2:
-                    seen_bridges.add(key)
+                seen_bridges.add(key)
                 directives.append({
                     "role": "RESISTOR",
                     "terminals": {

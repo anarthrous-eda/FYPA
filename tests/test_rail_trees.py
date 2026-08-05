@@ -4,7 +4,9 @@ from fypa.rail_groups import (
     RailTreeNode,
     build_rail_trees,
     compute_rail_groups,
+    filter_directives_for_rail_trees,
     flatten_rail_tree,
+    resistor_bridge_pairs,
 )
 
 
@@ -193,31 +195,86 @@ def test_rail_tree_local_label_series_nests_via_alias():
 
 def test_rail_tree_orphan_component_keeps_series_nesting():
     """SERIES chain unreachable from primary stays nested under an orphan root."""
-    # No alias edge from PRIMARY to the chain — only UF membership via a
-    # shared requested_net union that we simulate by listing all members
-    # explicitly after grouping would have merged them. Build the tree
-    # directly so the adjacency has SERIES only among the orphan chain.
-    from fypa.rail_groups import _rail_tree_adjacency, _spanning_tree_from_primary
-
+    # Explicit membership (not from compute_rail_groups): PRIMARY shares the
+    # member list but has no SERIES/alias edge to the X—Y—Z chain.
     metadata = {
         "directives": [
             _resistor("X", "Y"),
             _resistor("Y", "Z"),
         ],
     }
-    adj = _rail_tree_adjacency(metadata)
-    # PRIMARY is in the member set but has no SERIES/alias edge to X/Y/Z.
-    tree = _spanning_tree_from_primary(
-        "PRIMARY",
-        ["PRIMARY", "X", "Y", "Z"],
-        adj,
-    )
+    tree = build_rail_trees(
+        metadata,
+        {"PRIMARY": ["PRIMARY", "X", "Y", "Z"]},
+    )["PRIMARY"]
     assert flatten_rail_tree(tree) == [
         ("PRIMARY", 1),
         ("X", 2),
         ("Y", 3),
         ("Z", 4),
     ]
+
+
+def test_rail_tree_pending_style_metadata_keeps_source_aliases():
+    """SOURCE aliases in filtered tree metadata attach local-label SERIES."""
+    metadata = {
+        "directives": [
+            {
+                "role": "SOURCE",
+                "terminals": {
+                    "P": {
+                        "requested_net": "VIN_LOCAL",
+                        "resolved_via_local": True,
+                        "pins": [{"net": "VIN"}],
+                    },
+                    "N": {
+                        "requested_net": "GND",
+                        "pins": [{"net": "GND"}],
+                    },
+                },
+            },
+            {
+                "role": "RESISTOR",
+                "terminals": {
+                    "P": {
+                        "requested_net": "VIN_LOCAL",
+                        "pins": [{"net": "VIN_LOCAL"}],
+                    },
+                    "N": {"pins": [{"net": "VOUT"}]},
+                },
+            },
+            {"role": "OTHER", "terminals": {}},
+            _resistor("VOUT", "VOUT_FB"),
+        ],
+    }
+    tree_meta = {
+        **metadata,
+        "directives": filter_directives_for_rail_trees(metadata["directives"]),
+    }
+    assert all(d.get("role") != "OTHER" for d in tree_meta["directives"])
+    members = {"VIN": ["VIN", "VIN_LOCAL", "VOUT", "VOUT_FB"]}
+    assert flatten_rail_tree(build_rail_trees(tree_meta, members)["VIN"]) == [
+        ("VIN", 1),
+        ("VIN_LOCAL", 2),
+        ("VOUT", 3),
+        ("VOUT_FB", 4),
+    ]
+
+
+def test_resistor_bridge_pairs_covers_bipartite_terminals():
+    d = {
+        "role": "RESISTOR",
+        "terminals": {
+            "P": {"pins": [{"net": "VIN"}]},
+            "N": {"pins": [{"net": "LED_B"}, {"net": "LED_G"}, {"net": "LED_R"}]},
+        },
+    }
+    pairs = set(resistor_bridge_pairs(d))
+    assert pairs == {
+        frozenset(("VIN", "LED_B")),
+        frozenset(("VIN", "LED_G")),
+        frozenset(("VIN", "LED_R")),
+    }
 
 
 def test_build_rail_trees_empty_input():

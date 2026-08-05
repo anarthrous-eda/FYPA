@@ -169,6 +169,41 @@ def compute_rail_groups(
     return rail_names, rail_to_members
 
 
+TREE_DIRECTIVE_ROLES = frozenset({
+    "RESISTOR", "SOURCE", "SINK", "REGULATOR",
+})
+
+
+def filter_directives_for_rail_trees(
+    directives: list[dict] | None,
+) -> list[dict]:
+    """Keep directives that contribute SERIES or alias edges for rail trees."""
+    return [
+        d for d in (directives or [])
+        if d.get("role") in TREE_DIRECTIVE_ROLES
+    ]
+
+
+def resistor_bridge_pairs(directive: dict) -> list[frozenset[str]]:
+    """All undirected pin-net pairs from a RESISTOR's two terminals."""
+    if directive.get("role") != "RESISTOR":
+        return []
+    terms = directive.get("terminals") or {}
+    nets_per_term: list[set[str]] = []
+    for t in terms.values():
+        nets = {p.get("net") for p in t.get("pins", []) if p.get("net")}
+        if nets:
+            nets_per_term.append(nets)
+    if len(nets_per_term) != 2:
+        return []
+    pairs: list[frozenset[str]] = []
+    for a in nets_per_term[0]:
+        for b in nets_per_term[1]:
+            if a and b and a != b:
+                pairs.append(frozenset((a, b)))
+    return pairs
+
+
 def _add_undirected_edge(adj: dict[str, set[str]], a: str, b: str) -> None:
     if not a or not b or a == b:
         return
@@ -314,6 +349,11 @@ def build_rail_trees(
     ``rail_to_members`` stays the flat membership used for copper / eyes;
     this returns the nested display shape only. Rails with a single member
     yield a leaf root. Missing or empty input yields ``{}``.
+
+    Members listed under a primary but with no SERIES/alias path to that
+    primary are attached as BFS subtrees under the primary (orphan
+    components), so callers may pass an explicit membership map to exercise
+    that path without going through :func:`compute_rail_groups`.
     """
     if not rail_to_members:
         return {}
