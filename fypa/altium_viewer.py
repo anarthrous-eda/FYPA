@@ -8616,6 +8616,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._rail_names, self._rail_to_members = self._compute_rail_groups(
             metadata,
         )
+        from fypa.rail_groups import build_rail_trees
+        self._rail_to_trees = build_rail_trees(
+            metadata, self._rail_to_members,
+        )
 
         _stackup_pos = {
             row["name"]: i
@@ -9059,6 +9063,49 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         """
         from fypa.rail_groups import compute_rail_groups
         return compute_rail_groups(metadata)
+
+    def _series_bridge_metadata(self) -> dict:
+        """Metadata shaped for :func:`build_rail_trees` (RESISTOR edges only).
+
+        Merges solved-metadata RESISTOR directives with unresolved editor
+        SERIES bridges so pending rails get the same spanning-tree shape.
+        """
+        directives: list[dict] = []
+        meta = self.metadata if isinstance(self.metadata, dict) else {}
+        for d in meta.get("directives", []) or []:
+            if d.get("role") == "RESISTOR":
+                directives.append(d)
+        project = getattr(self, "_project", None)
+        if project is not None:
+            for ed in getattr(project, "editor_directives", []) or []:
+                if (
+                    getattr(ed, "role", None) == "SERIES"
+                    and getattr(ed, "p_net", None)
+                    and getattr(ed, "n_net", None)
+                ):
+                    directives.append({
+                        "role": "RESISTOR",
+                        "terminals": {
+                            "P": {"pins": [{"net": ed.p_net}]},
+                            "N": {"pins": [{"net": ed.n_net}]},
+                        },
+                    })
+        out = dict(meta)
+        out["directives"] = directives
+        return out
+
+    def _subnet_rows_for_rail(
+        self,
+        rail: str,
+        members: list[str],
+        trees: dict | None,
+    ) -> list[tuple[str, int]]:
+        """DFS ``(net, depth)`` rows for an expanded rail; flat fallback."""
+        from fypa.rail_groups import flatten_rail_tree
+        tree = (trees or {}).get(rail)
+        if tree is not None:
+            return flatten_rail_tree(tree)
+        return [(net, 1) for net in members]
 
     def showEvent(self, event) -> None:
         """Apply the deferred ``showMaximized`` once Qt has actually shown the
@@ -9884,11 +9931,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._rail_subnet_items: dict[str, list[QListWidgetItem]] = {}
         self._rail_expanded: dict[str, bool] = {}
         self._rail_list_items: dict[str, QListWidgetItem] = {}
+        self._rail_to_trees: dict = getattr(self, "_rail_to_trees", {})
         self._pending_rail_items: list = []
         self._pending_rail_list_items: dict[str, QListWidgetItem] = {}
         self._pending_rail_expand_buttons: dict[str, QToolButton] = {}
         self._pending_rail_subnet_items: dict[str, list[QListWidgetItem]] = {}
         self._pending_rail_expanded: dict[str, bool] = {}
+        self._pending_rail_trees: dict = {}
 
     def _ground_rail_names(self) -> set[str]:
         return {"0v", "gnd", "ground", "vss"}
@@ -10073,7 +10122,8 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         subnets = self._subnet_eye_buttons.get(rail, {})
         items: list[QListWidgetItem] = []
         row_idx = self.rail_list.row(after_item) + 1
-        for net in members:
+        trees = getattr(self, "_rail_to_trees", {})
+        for net, depth in self._subnet_rows_for_rail(rail, members, trees):
             eye = subnets.get(net)
             if eye is None or not _qt_widget_alive(eye):
                 continue
@@ -10082,7 +10132,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 eye,
                 label_text=net,
                 bold=is_primary,
-                indent=18,
+                indent=18 * depth,
             )
             if is_primary:
                 tip = f"Primary net of rail {rail}"
@@ -20375,6 +20425,11 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._pending_rail_expand_buttons = {}
         self._pending_rail_subnet_items = {}
         self._pending_rails = self._editor_pending_rails()
+        from fypa.rail_groups import build_rail_trees
+        self._pending_rail_trees = build_rail_trees(
+            self._series_bridge_metadata(),
+            self._pending_rails,
+        )
         t = _T()
         for name in sorted(self._pending_rails):
             members = self._pending_rails[name]
@@ -20432,7 +20487,8 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         items: list[QListWidgetItem] = []
         row_idx = self.rail_list.row(after_item) + 1
         t = _T()
-        for net in members:
+        trees = getattr(self, "_pending_rail_trees", {})
+        for net, depth in self._subnet_rows_for_rail(rail, members, trees):
             eye = EyeButton(visible=False)
             eye.setEnabled(False)
             is_primary = net == rail
@@ -20440,7 +20496,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 eye,
                 label_text=net,
                 bold=is_primary,
-                indent=18,
+                indent=18 * depth,
             )
             subnet_row.setStyleSheet(
                 f"color: {t['fg_muted']}; font-style: italic;"

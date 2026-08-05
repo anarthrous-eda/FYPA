@@ -2,8 +2,19 @@
 
 from __future__ import annotations
 
+from collections import deque
+from dataclasses import dataclass
+
 from fypa.topology.net_aliases import is_gnd_alias
 from fypa.topology.metadata_schema import TopologyMetadata
+
+
+@dataclass(frozen=True)
+class RailTreeNode:
+    """One net in a rail's SERIES spanning tree (root = primary)."""
+
+    name: str
+    children: tuple[RailTreeNode, ...] = ()
 
 
 def compute_rail_groups(
@@ -156,6 +167,113 @@ def compute_rail_groups(
 
     rail_names = sorted(rail_to_members.keys(), key=_rail_sort_key)
     return rail_names, rail_to_members
+
+
+def _series_adjacency(
+    metadata: TopologyMetadata | None,
+) -> dict[str, set[str]]:
+    """Undirected SERIES/RESISTOR edges between terminal pin nets."""
+    adj: dict[str, set[str]] = {}
+    if metadata is None:
+        return adj
+    for d in metadata.get("directives", []):
+        if d.get("role") != "RESISTOR":
+            continue
+        terms = d.get("terminals") or {}
+        nets_per_term: list[set[str]] = []
+        for t in terms.values():
+            nets = {p.get("net") for p in t.get("pins", []) if p.get("net")}
+            if nets:
+                nets_per_term.append(nets)
+        if len(nets_per_term) != 2:
+            continue
+        for a in nets_per_term[0]:
+            for b in nets_per_term[1]:
+                if not a or not b or a == b:
+                    continue
+                adj.setdefault(a, set()).add(b)
+                adj.setdefault(b, set()).add(a)
+    return adj
+
+
+def _spanning_tree_from_primary(
+    primary: str,
+    members: list[str],
+    adj: dict[str, set[str]],
+) -> RailTreeNode:
+    """BFS spanning tree of ``members`` rooted at ``primary`` via SERIES edges.
+
+    Members with no SERIES path to the primary become direct children of the
+    primary (alias / requested-net unions that never got a bridge edge).
+    """
+    member_set = set(members)
+    if not member_set:
+        return RailTreeNode(name=primary)
+
+    root = primary if primary in member_set else sorted(member_set)[0]
+    children_of: dict[str, list[str]] = {n: [] for n in member_set}
+    if root not in children_of:
+        children_of[root] = []
+
+    visited: set[str] = {root}
+    queue: deque[str] = deque([root])
+    while queue:
+        u = queue.popleft()
+        for v in sorted(adj.get(u, set()) & member_set):
+            if v in visited:
+                continue
+            visited.add(v)
+            children_of.setdefault(u, []).append(v)
+            children_of.setdefault(v, [])
+            queue.append(v)
+
+    for n in sorted(member_set):
+        if n not in visited:
+            children_of.setdefault(root, []).append(n)
+            children_of.setdefault(n, [])
+            visited.add(n)
+
+    for parent, kids in list(children_of.items()):
+        children_of[parent] = sorted(kids)
+
+    def _node(name: str) -> RailTreeNode:
+        return RailTreeNode(
+            name=name,
+            children=tuple(_node(c) for c in children_of.get(name, ())),
+        )
+
+    return _node(root)
+
+
+def build_rail_trees(
+    metadata: TopologyMetadata | None,
+    rail_to_members: dict[str, list[str]],
+) -> dict[str, RailTreeNode]:
+    """Build a SERIES spanning tree per rail (BFS from each primary).
+
+    ``rail_to_members`` stays the flat membership used for copper / eyes;
+    this returns the nested display shape only. Rails with a single member
+    yield a leaf root. Missing or empty input yields ``{}``.
+    """
+    if not rail_to_members:
+        return {}
+    adj = _series_adjacency(metadata)
+    return {
+        primary: _spanning_tree_from_primary(primary, members, adj)
+        for primary, members in rail_to_members.items()
+    }
+
+
+def flatten_rail_tree(
+    root: RailTreeNode,
+    *,
+    depth: int = 1,
+) -> list[tuple[str, int]]:
+    """DFS preorder ``(net_name, depth)`` rows for the Rails list indent."""
+    rows: list[tuple[str, int]] = [(root.name, depth)]
+    for child in root.children:
+        rows.extend(flatten_rail_tree(child, depth=depth + 1))
+    return rows
 
 
 def resolve_rail_member_nets(
