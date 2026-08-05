@@ -2652,38 +2652,69 @@ def _primary_supply_net_name(
     return names[0]
 
 
+def _supply_net_lookup_aliases(
+    proj: ExtractedProject | None,
+    local_name: str | None,
+    pcb_index: int | None,
+) -> tuple[str, ...]:
+    """Net names to try for Vin lookup (instance expansions, then bare label)."""
+    if local_name is None or not str(local_name).strip():
+        return ()
+    raw = local_name.strip().upper()
+    if proj is None or pcb_index is None:
+        return (raw,)
+    seen: list[str] = []
+    for name in _expanded_supply_net_names(proj, raw, pcb_index):
+        if name not in seen:
+            seen.append(name)
+    if raw not in seen:
+        seen.append(raw)
+    return tuple(seen)
+
+
 def _iter_series_supply_flow_edges(
     parameter_sources: list[PdnParameterSource],
     proj: ExtractedProject,
-) -> Iterator[tuple[str, str]]:
-    """Directed SERIES power-flow edges ``(upstream_P, downstream_N)``.
+) -> Iterator[tuple[bool, str, str]]:
+    """SERIES supply-flow edges as ``(directed, net_a, net_b)``.
 
-    Covers explicit ``P_NET``/``N_NET`` and single-channel 2-pin autoinfer via
-    :func:`_iter_series_bridge_pairs`, expanding each side to one primary
-    instance label so multi-channel locals do not fan out into a cross-product.
+    Explicit ``P_NET``/``N_NET`` yield directed ``(True, upstream_P, downstream_N)``.
+    Single-channel 2-pin autoinfer (pad order is not power-flow) yields
+    undirected ``(False, net_a, net_b)`` so voltage can copy either way.
+    Each side is expanded to one primary instance label (no alias cross-product).
     """
-    for pcb_idx, p_net, n_net in _iter_series_bridge_pairs(
-        parameter_sources, proj,
-    ):
-        up = _primary_supply_net_name(proj, p_net, pcb_idx)
-        dn = _primary_supply_net_name(proj, n_net, pcb_idx)
-        if up is None or dn is None or up == dn:
-            continue
-        yield up, dn
-    # Sch-only SERIES (no PCB instance yet): keep bare names for unit tests.
     for comp in parameter_sources:
-        if _pcb_indices_for_source(comp, proj):
-            continue
         indices = _series_channel_indices(comp)
+        if not indices:
+            continue
+        pcb_indices = _pcb_indices_for_source(comp, proj)
+        if not pcb_indices:
+            for idx in indices:
+                p_net = _ci_get(comp.parameters, _channel_key("P_NET", idx))
+                n_net = _ci_get(comp.parameters, _channel_key("N_NET", idx))
+                if not p_net or not n_net:
+                    continue
+                up = p_net.strip().upper()
+                dn = n_net.strip().upper()
+                if up != dn:
+                    yield True, up, dn
+            continue
         for idx in indices:
-            p_net = _ci_get(comp.parameters, _channel_key("P_NET", idx))
-            n_net = _ci_get(comp.parameters, _channel_key("N_NET", idx))
-            if not p_net or not n_net:
-                continue
-            up = p_net.strip().upper()
-            dn = n_net.strip().upper()
-            if up != dn:
-                yield up, dn
+            explicit = (
+                _ci_get(comp.parameters, _channel_key("P_NET", idx)) is not None
+                and _ci_get(comp.parameters, _channel_key("N_NET", idx)) is not None
+            )
+            for pcb_idx in pcb_indices:
+                pair = _resolve_series_channel_nets(
+                    comp, proj, idx, pcb_idx, indices,
+                )
+                if pair is None:
+                    continue
+                a = _primary_supply_net_name(proj, pair[0], pcb_idx)
+                b = _primary_supply_net_name(proj, pair[1], pcb_idx)
+                if a is None or b is None or a == b:
+                    continue
+                yield explicit, a, b
 
 
 def _propagate_series_supply_voltages(
@@ -2691,11 +2722,12 @@ def _propagate_series_supply_voltages(
     parameter_sources: list[PdnParameterSource],
     proj: ExtractedProject,
 ) -> None:
-    """Copy unique voltages along SERIES P→N until fixpoint (in-place).
+    """Copy unique voltages along SERIES edges until fixpoint (in-place).
 
-    Multi-hop chains (``LX.2 → VDD_12V → VDD_12V_S``) resolve regardless of
-    SERIES directive order. Conflicting voltages on one downstream net are
-    dropped (ambiguous).
+    Directed edges copy P→N. Undirected autoinfer edges copy whichever side
+    already has a unique voltage onto the other (pad order is not power-flow).
+    Multi-hop chains resolve regardless of SERIES directive order. Conflicting
+    directed voltages on one downstream net are dropped (ambiguous).
     """
     edges = list(_iter_series_supply_flow_edges(parameter_sources, proj))
     if not edges:
@@ -2704,20 +2736,33 @@ def _propagate_series_supply_voltages(
     changed = True
     while changed:
         changed = False
-        for up, dn in edges:
-            if dn in ambiguous:
-                continue
-            v = supply_map.get(up)
-            if v is None:
-                continue
-            existing = supply_map.get(dn)
-            if existing is None:
-                supply_map[dn] = v
-                changed = True
-            elif existing != v:
-                supply_map.pop(dn, None)
-                ambiguous.add(dn)
-                changed = True
+        for directed, a, b in edges:
+            if directed:
+                up, dn = a, b
+                if dn in ambiguous:
+                    continue
+                v = supply_map.get(up)
+                if v is None:
+                    continue
+                existing = supply_map.get(dn)
+                if existing is None:
+                    supply_map[dn] = v
+                    changed = True
+                elif existing != v:
+                    supply_map.pop(dn, None)
+                    ambiguous.add(dn)
+                    changed = True
+            else:
+                if a in ambiguous or b in ambiguous:
+                    continue
+                va = supply_map.get(a)
+                vb = supply_map.get(b)
+                if va is not None and vb is None:
+                    supply_map[b] = va
+                    changed = True
+                elif vb is not None and va is None:
+                    supply_map[a] = vb
+                    changed = True
 
 
 def _collect_supply_voltages_by_net(
@@ -2730,7 +2775,7 @@ def _collect_supply_voltages_by_net(
     When ``proj`` is provided, each placement expands local OUT / P net names
     (e.g. ``LX`` → ``LX.2``) so multi-channel regulators with different
     ``PDN_V`` do not collide on the shared child-sheet label. Unique voltages
-    then propagate along directed SERIES edges to fixpoint.
+    then propagate along SERIES edges to fixpoint.
     """
     raw: dict[str, set[float]] = {}
 
@@ -2813,6 +2858,9 @@ def _resolve_regulator_gain(
     supply_map: dict[str, float],
     role_diag: str,
     result: AnnotationResult,
+    *,
+    proj: ExtractedProject | None = None,
+    pcb_index: int | None = None,
 ) -> tuple[float, str | None, float, bool] | None:
     """Return ``(gain, regulator_type, efficiency, adaptive_gain_eligible)``."""
     gain_key = _channel_key("GAIN", idx)
@@ -2880,7 +2928,11 @@ def _resolve_regulator_gain(
         )
         return None
 
-    vin = _lookup_inferred_vin(in_p_net, supply_map)
+    vin: float | None = None
+    for name in _supply_net_lookup_aliases(proj, in_p_net, pcb_index):
+        vin = _lookup_inferred_vin(name, supply_map)
+        if vin is not None and vin > 0:
+            break
     if vin is None or vin <= 0:
         in_key = _channel_key("IN_P_NET", idx)
         result.errors.append(
@@ -2954,6 +3006,7 @@ def _parse_regulator(comp, proj, enabled_layers, result,
             resolved = _resolve_regulator_gain(
                 params, idx, v, in_p_net,
                 supply_map, value_diag, result,
+                proj=proj, pcb_index=pcb_idx,
             ) if v is not None else None
             if v is None or resolved is None:
                 continue
