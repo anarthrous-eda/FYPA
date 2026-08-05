@@ -3066,6 +3066,94 @@ def _expanded_supply_net_names(
     return (local_u,)
 
 
+def _primary_supply_net_name(
+    proj: ExtractedProject,
+    local_name: str,
+    pcb_index: int,
+) -> str | None:
+    """One canonical label per placement (avoids alias cross-products)."""
+    names = _expanded_supply_net_names(proj, local_name, pcb_index)
+    if not names:
+        return None
+    local_u = local_name.strip().upper()
+    suffix = _channel_suffix_from_pcb_designator(
+        proj.pcb_components[pcb_index].designator,
+    )
+    if suffix:
+        slotted = f"{local_u}.{suffix}"
+        if slotted in names:
+            return slotted
+    return names[0]
+
+
+def _iter_series_supply_flow_edges(
+    parameter_sources: list[PdnParameterSource],
+    proj: ExtractedProject,
+) -> Iterator[tuple[str, str]]:
+    """Directed SERIES power-flow edges ``(upstream_P, downstream_N)``.
+
+    Covers explicit ``P_NET``/``N_NET`` and single-channel 2-pin autoinfer via
+    :func:`_iter_series_bridge_pairs`, expanding each side to one primary
+    instance label so multi-channel locals do not fan out into a cross-product.
+    """
+    for pcb_idx, p_net, n_net in _iter_series_bridge_pairs(
+        parameter_sources, proj,
+    ):
+        up = _primary_supply_net_name(proj, p_net, pcb_idx)
+        dn = _primary_supply_net_name(proj, n_net, pcb_idx)
+        if up is None or dn is None or up == dn:
+            continue
+        yield up, dn
+    # Sch-only SERIES (no PCB instance yet): keep bare names for unit tests.
+    for comp in parameter_sources:
+        if _pcb_indices_for_source(comp, proj):
+            continue
+        indices = _series_channel_indices(comp)
+        for idx in indices:
+            p_net = _ci_get(comp.parameters, _channel_key("P_NET", idx))
+            n_net = _ci_get(comp.parameters, _channel_key("N_NET", idx))
+            if not p_net or not n_net:
+                continue
+            up = p_net.strip().upper()
+            dn = n_net.strip().upper()
+            if up != dn:
+                yield up, dn
+
+
+def _propagate_series_supply_voltages(
+    supply_map: dict[str, float],
+    parameter_sources: list[PdnParameterSource],
+    proj: ExtractedProject,
+) -> None:
+    """Copy unique voltages along SERIES P→N until fixpoint (in-place).
+
+    Multi-hop chains (``LX.2 → VDD_12V → VDD_12V_S``) resolve regardless of
+    SERIES directive order. Conflicting voltages on one downstream net are
+    dropped (ambiguous).
+    """
+    edges = list(_iter_series_supply_flow_edges(parameter_sources, proj))
+    if not edges:
+        return
+    ambiguous: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for up, dn in edges:
+            if dn in ambiguous:
+                continue
+            v = supply_map.get(up)
+            if v is None:
+                continue
+            existing = supply_map.get(dn)
+            if existing is None:
+                supply_map[dn] = v
+                changed = True
+            elif existing != v:
+                supply_map.pop(dn, None)
+                ambiguous.add(dn)
+                changed = True
+
+
 def _collect_supply_voltages_by_net(
     parameter_sources: list[PdnParameterSource],
     proj: ExtractedProject,
@@ -3081,7 +3169,8 @@ def _collect_supply_voltages_by_net(
 
     When placements exist, each instance expands local OUT / P net names
     (e.g. ``LX`` → ``LX.2``) so multi-channel regulators with different
-    ``PDN_V`` do not collide on the shared child-sheet label.
+    ``PDN_V`` do not collide on the shared child-sheet label. Unique voltages
+    then propagate along directed SERIES edges to fixpoint.
     """
     raw: dict[str, set[float]] = {}
 
@@ -3140,27 +3229,7 @@ def _collect_supply_voltages_by_net(
         if len(voltages) == 1:
             out[net] = next(iter(voltages))
     if proj is not None:
-        # Copy unique voltages across SERIES P→N (e.g. LX.2 → VDD_12V through
-        # a filter inductor) so exact Vin lookup finds the rail without a walk.
-        for comp in parameter_sources:
-            for idx in _series_channel_indices(comp):
-                p_net = _ci_get(comp.parameters, _channel_key("P_NET", idx))
-                n_net = _ci_get(comp.parameters, _channel_key("N_NET", idx))
-                if not p_net or not n_net:
-                    continue
-                for pcb_idx in _pcb_indices_for_source(comp, proj):
-                    for up in _expanded_supply_net_names(proj, p_net, pcb_idx):
-                        v = out.get(up)
-                        if v is None:
-                            continue
-                        for dn in _expanded_supply_net_names(proj, n_net, pcb_idx):
-                            if dn == up:
-                                continue
-                            existing = out.get(dn)
-                            if existing is None:
-                                out[dn] = v
-                            elif existing != v:
-                                out.pop(dn, None)
+        _propagate_series_supply_voltages(out, parameter_sources, proj)
     return out
 
 

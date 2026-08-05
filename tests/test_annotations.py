@@ -4312,8 +4312,9 @@ def test_multi_instance_lx_supply_map_infers_downstream_smps_vin():
     """Shared local OUT=LX with different PDN_V must not drop Vin for rails.
 
     Two regulator placements publish LX.1=5 V / LX.2=12 V; SERIES inductors
-    map LX→VDD_OUT to VDD_5V0 / VDD_12V; a downstream SMPS on VDD_12V infers
-    Vin without an explicit PDN_GAIN.
+    map LX→VDD_OUT to VDD_5V0 / VDD_12V; a second SERIES (listed *before* the
+    inductor in the source list) bridges VDD_12V→VDD_12V_S so multi-hop
+    fixpoint propagation still reaches a downstream SMPS on VDD_12V_S.
     """
     from fypa.altium.annotations import _expand_sheet_bound_parameter_sources
 
@@ -4326,14 +4327,27 @@ def test_multi_instance_lx_supply_map_infers_downstream_smps_vin():
         "PDN_IN_P_NET": "VIN",
         "PDN_IN_N_NET": "GND",
     }
-    # nets: 0 GND, 1 VIN, 2 LX.1, 3 LX.2, 4 VDD_5V0, 5 VDD_12V, 6 VDD_3V3
+    # nets: 0 GND, 1 VIN, 2 LX.1, 3 LX.2, 4 VDD_5V0, 5 VDD_12V,
+    #       6 VDD_12V_S, 7 VDD_3V3
     proj = _minimal_proj(
         nets=(
             RawNet("GND"), RawNet("VIN"),
             RawNet("LX.1"), RawNet("LX.2"),
-            RawNet("VDD_5V0"), RawNet("VDD_12V"), RawNet("VDD_3V3"),
+            RawNet("VDD_5V0"), RawNet("VDD_12V"),
+            RawNet("VDD_12V_S"), RawNet("VDD_3V3"),
         ),
         sch_components=(
+            # Q1 before L1: one-pass copy would miss VDD_12V_S; fixpoint must not.
+            RawSchComponent(
+                designator="Q1", schdoc_name="Load.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SERIES",
+                    "PDN_R": "10m",
+                    "PDN_P_NET": "VDD_12V",
+                    "PDN_N_NET": "VDD_12V_S",
+                },
+                pin_designators=("1", "2"),
+            ),
             RawSchComponent(
                 designator="U1", schdoc_name="Pwr.SchDoc",
                 parameters={**reg_params, "PDN_V": "5V"},
@@ -4360,7 +4374,7 @@ def test_multi_instance_lx_supply_map_infers_downstream_smps_vin():
                     "PDN_REGULATOR_EFFICIENCY": "0.85",
                     "PDN_OUT_P_NET": "VDD_3V3",
                     "PDN_OUT_N_NET": "GND",
-                    "PDN_IN_P_NET": "VDD_12V",
+                    "PDN_IN_P_NET": "VDD_12V_S",
                     "PDN_IN_N_NET": "GND",
                 },
                 pin_designators=("1", "2", "3", "4"),
@@ -4416,6 +4430,10 @@ def test_multi_instance_lx_supply_map_infers_downstream_smps_vin():
                 source_unique_id=r"\SYM12\L",
             ),
             RawPcbComponent(
+                designator="Q1", center=Pt2D(35, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="FET", source_designator="Q1",
+            ),
+            RawPcbComponent(
                 designator="U2", center=Pt2D(40, 0), rotation_deg=0.0,
                 layer_name="TOP", footprint="QFN", source_designator="U2",
             ),
@@ -4435,11 +4453,13 @@ def test_multi_instance_lx_supply_map_infers_downstream_smps_vin():
             _pad(2, "1", 2, 5), _pad(2, "2", 4, 6),
             # L1.2: LX.2 — VDD_12V
             _pad(3, "1", 3, 25), _pad(3, "2", 5, 26),
-            # U2: OUT VDD_3V3, IN VDD_12V
-            _pad(4, "1", 6, 40), _pad(4, "2", 0, 41),
-            _pad(4, "3", 5, 42), _pad(4, "4", 0, 43),
+            # Q1: VDD_12V — VDD_12V_S
+            _pad(4, "1", 5, 35), _pad(4, "2", 6, 36),
+            # U2: OUT VDD_3V3, IN VDD_12V_S
+            _pad(5, "1", 7, 40), _pad(5, "2", 0, 41),
+            _pad(5, "3", 6, 42), _pad(5, "4", 0, 43),
             # J1 SOURCE
-            _pad(5, "1", 1, -10), _pad(5, "2", 0, -9),
+            _pad(6, "1", 1, -10), _pad(6, "2", 0, -9),
         ),
         compiled_netlist=_FakeNetlist(nets=[
             _FakeNet(
@@ -4474,6 +4494,7 @@ def test_multi_instance_lx_supply_map_infers_downstream_smps_vin():
     assert supply_map.get("LX.2") == pytest.approx(12.0)
     assert supply_map.get("VDD_5V0") == pytest.approx(5.0)
     assert supply_map.get("VDD_12V") == pytest.approx(12.0)
+    assert supply_map.get("VDD_12V_S") == pytest.approx(12.0)
 
     ann = parse_annotations(proj, enabled_layers=[1])
     assert ann.ok, ann.errors
@@ -4485,14 +4506,6 @@ def test_multi_instance_lx_supply_map_infers_downstream_smps_vin():
     assert "U2" in regs
     # Vin=12, Vout=3.3, eta=0.85 -> gain = 3.3/(12*0.85)
     assert regs["U2"].gain == pytest.approx(3.3 / (12.0 * 0.85))
-
-# --- retained from main/rebase base ---
-
-
-# --- retained from main/rebase base ---
-
-
-
 def test_a_failed_page_map_does_not_discard_a_good_netlist():
 
     from fypa.altium.extract import _compile_schematic_netlist
@@ -5432,3 +5445,120 @@ def test_unmapped_physical_page_id_is_unknown_not_guessed():
     smap = _sheet_map(proj)
     assert _sheet_name_matches("Power.SchDoc", [child], sheet_map=smap)
     assert not _sheet_name_matches("main.SchDoc", [child], sheet_map=smap)
+
+def test_autoinfer_series_propagates_supply_voltage_for_smps_vin():
+    """2-pin SERIES without P/N nets still forwards Vin via pad autoinfer."""
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("VIN"), RawNet("VIN_L"), RawNet("VOUT")),
+        sch_components=(
+            RawSchComponent(
+                designator="J1", schdoc_name="Main.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SOURCE",
+                    "PDN_V": "12",
+                    "PDN_P_NET": "VIN",
+                    "PDN_N_NET": "GND",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="L1", schdoc_name="Main.SchDoc",
+                parameters={"PDN_ROLE": "SERIES", "PDN_R": "5m"},
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="U1", schdoc_name="Main.SchDoc",
+                parameters={
+                    "PDN_ROLE": "REGULATOR",
+                    "PDN_V": "3.3",
+                    "PDN_REGULATOR_TYPE": "SMPS",
+                    "PDN_REGULATOR_EFFICIENCY": "0.9",
+                    "PDN_OUT_P_NET": "VOUT",
+                    "PDN_OUT_N_NET": "GND",
+                    "PDN_IN_P_NET": "VIN_L",
+                    "PDN_IN_N_NET": "GND",
+                },
+                pin_designators=("1", "2", "3", "4"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="J1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="CONN", source_designator="J1",
+            ),
+            RawPcbComponent(
+                designator="L1", center=Pt2D(5, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="IND", source_designator="L1",
+            ),
+            RawPcbComponent(
+                designator="U1", center=Pt2D(10, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U1",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1), _pad(0, "2", 0, 1),
+            # L1 autoinfer: pad1 VIN (upstream), pad2 VIN_L (downstream)
+            _pad(1, "1", 1, 5), _pad(1, "2", 2, 6),
+            _pad(2, "1", 3, 10), _pad(2, "2", 0, 11),
+            _pad(2, "3", 2, 12), _pad(2, "4", 0, 13),
+        ),
+    )
+    supply_map = _collect_supply_voltages_by_net(
+        _iter_pdn_parameter_sources(proj), proj,
+    )
+    assert supply_map.get("VIN") == pytest.approx(12.0)
+    assert supply_map.get("VIN_L") == pytest.approx(12.0)
+
+    ann = parse_annotations(proj, enabled_layers=[1])
+    assert ann.ok, ann.errors
+    reg = next(d for d in ann.directives if isinstance(d, RegulatorSpec))
+    assert reg.gain == pytest.approx(3.3 / (12.0 * 0.9))
+
+def test_series_supply_flow_uses_primary_net_not_alias_cross_product():
+    """SERIES edges pair one primary expand per side (no alias fan-out)."""
+    from fypa.altium.annotations import _iter_series_supply_flow_edges
+
+    proj = _minimal_proj(
+        nets=(
+            RawNet("GND"), RawNet("LX.2"), RawNet("VDD_12V"),
+            # Extra PCB net that also expands from local LX / VDD_OUT aliases
+            # would create a spurious cross edge if all expansions were paired.
+            RawNet("LX_ALT"), RawNet("VDD_ALT"),
+        ),
+        sch_components=(
+            RawSchComponent(
+                designator="L1", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SERIES",
+                    "PDN_R": "6m",
+                    "PDN_P_NET": "LX",
+                    "PDN_N_NET": "VDD_OUT",
+                },
+                pin_designators=("1", "2"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="L1.2", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="IND", source_designator="L1",
+                source_unique_id=r"\SYM12\L",
+            ),
+        ),
+        pads=(_pad(0, "1", 1), _pad(0, "2", 2, 1)),
+        compiled_netlist=_FakeNetlist(nets=[
+            _FakeNet(
+                name="LX.2", aliases=["LX", "LX_ALT"],
+                source_sheets=["pwr.schdoc"],
+                terminals=[_FakeTerminal("L1.2", "1")],
+            ),
+            _FakeNet(
+                name="VDD_12V", aliases=["VDD_OUT", "VDD_ALT"],
+                source_sheets=["pwr.schdoc"],
+                terminals=[_FakeTerminal("L1.2", "2")],
+            ),
+        ]),
+    )
+    edges = list(_iter_series_supply_flow_edges(
+        _iter_pdn_parameter_sources(proj), proj,
+    ))
+    assert edges == [("LX.2", "VDD_12V")]
