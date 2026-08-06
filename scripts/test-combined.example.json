@@ -1,0 +1,9 @@
+{
+  "baseBranch": "main",
+  "testBranch": "test/combined",
+  "deleteTestBranchFirst": true,
+  "extraFeatureBranches": [
+    "feature/example-a",
+    "fix/example-b"
+  ]
+}
