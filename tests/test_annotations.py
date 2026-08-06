@@ -798,6 +798,189 @@ def test_series_auto_infer_single_channel_only():
     assert any("multi-channel SERIES requires explicit" in e for e in bad.errors)
 
 
+def test_series_template_r_with_indexed_nets_multi_pin():
+    """Unindexed PDN_R is a template; indexed nets alone define two channels.
+
+    Multi-pin footprints must still resolve pads from the named nets (no
+    2-pin auto-infer, no legacy '10 pads' error).
+    """
+    # Nets: 0=VIN_A 1=VOUT_A 2=VIN_B 3=VOUT_B 4=CTRL
+    proj = _minimal_proj(
+        nets=(
+            RawNet("VIN_A"), RawNet("VOUT_A"),
+            RawNet("VIN_B"), RawNet("VOUT_B"), RawNet("CTRL"),
+        ),
+        sch_components=(
+            RawSchComponent(
+                designator="SW1", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SERIES",
+                    "PDN_R": "0.05",
+                    "PDN1_P_NET": "VIN_A",
+                    "PDN1_N_NET": "VOUT_A",
+                    "PDN2_P_NET": "VIN_B",
+                    "PDN2_N_NET": "VOUT_B",
+                },
+                pin_designators=("1", "2", "3", "4", "5"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="SW1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="RELAY", source_designator="SW1",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 0),   # VIN_A
+            _pad(0, "2", 1, 1),  # VOUT_A
+            _pad(0, "3", 2, 2),  # VIN_B
+            _pad(0, "4", 3, 3),  # VOUT_B
+            _pad(0, "5", 4, 4),  # CTRL (ignored)
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    series = [d for d in result.directives if isinstance(d, ResistorSpec)]
+    assert len(series) == 2
+    by_ch = {d.channel_index: d for d in series}
+    assert None not in by_ch
+    assert by_ch[1].resistance == 0.05
+    assert by_ch[2].resistance == 0.05
+    assert {p.pad_designator for p in by_ch[1].p.pins} == {"1"}
+    assert {p.pad_designator for p in by_ch[1].n.pins} == {"2"}
+    assert {p.pad_designator for p in by_ch[2].p.pins} == {"3"}
+    assert {p.pad_designator for p in by_ch[2].n.pins} == {"4"}
+
+
+def test_series_template_r_override_on_one_channel():
+    proj = _minimal_proj(
+        nets=(RawNet("A"), RawNet("B"), RawNet("C"), RawNet("D")),
+        sch_components=(
+            RawSchComponent(
+                designator="FB1", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SERIES",
+                    "PDN_R": "0.1",
+                    "PDN1_P_NET": "A", "PDN1_N_NET": "B",
+                    "PDN2_R": "0.2",
+                    "PDN2_P_NET": "C", "PDN2_N_NET": "D",
+                },
+                pin_designators=("1", "2", "3", "4"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="FB1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="1206-4", source_designator="FB1",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 0), _pad(0, "2", 1, 1),
+            _pad(0, "3", 2, 2), _pad(0, "4", 3, 3),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    by_ch = {
+        d.channel_index: d
+        for d in result.directives if isinstance(d, ResistorSpec)
+    }
+    assert by_ch[1].resistance == 0.1
+    assert by_ch[2].resistance == 0.2
+
+
+def test_regulator_template_shared_in_and_voltage():
+    """Shared PDN_V / IN_* / TYPE with per-channel OUT_* only — no legacy channel."""
+    # Nets: 0=GND 1=VIN 2=VOUT_P 3=VOUT_N
+    proj = _minimal_proj(
+        nets=(
+            RawNet("GND"), RawNet("VIN"), RawNet("VOUT_P"), RawNet("VOUT_N"),
+        ),
+        sch_components=(
+            RawSchComponent(
+                designator="U2", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "REGULATOR",
+                    "PDN_V": "3.3",
+                    "PDN_REGULATOR_TYPE": "LDO",
+                    "PDN_QUIESCENT": "390uA",
+                    "PDN_IN_P_NET": "VIN",
+                    "PDN_IN_N_NET": "GND",
+                    "PDN1_OUT_P_NET": "VOUT_P",
+                    "PDN1_OUT_N_NET": "GND",
+                    "PDN2_OUT_P_NET": "GND",
+                    "PDN2_OUT_N_NET": "VOUT_N",
+                },
+                pin_designators=("1", "2", "3", "4", "5"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U2", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="DFN", source_designator="U2",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1),   # VIN
+            _pad(0, "2", 0, 1),  # GND
+            _pad(0, "3", 2, 2),  # VOUT_P
+            _pad(0, "4", 3, 3),  # VOUT_N
+            _pad(0, "5", 0, 4),  # GND again
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    regs = [d for d in result.directives if isinstance(d, RegulatorSpec)]
+    assert len(regs) == 2
+    by_ch = {d.channel_index: d for d in regs}
+    assert None not in by_ch
+    assert by_ch[1].voltage == 3.3
+    assert by_ch[2].voltage == 3.3
+    assert by_ch[1].regulator_type == "LDO"
+    assert by_ch[2].quiescent_current == pytest.approx(390e-6)
+    assert by_ch[1].in_p.requested_net == "VIN"
+    assert by_ch[2].in_p.requested_net == "VIN"
+    assert by_ch[1].out_p.requested_net == "VOUT_P"
+    assert by_ch[2].out_n.requested_net == "VOUT_N"
+
+
+def test_sink_unindexed_plus_indexed_both_real_channels():
+    """Legacy SINK with its own terminals stays a real channel beside PDN1_*."""
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+3V3"), RawNet("+1V8")),
+        sch_components=(
+            RawSchComponent(
+                designator="U7", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SINK",
+                    "PDN_I": "500mA",
+                    "PDN_P_NET": "+3V3",
+                    "PDN_N_NET": "GND",
+                    "PDN1_I": "250mA",
+                    "PDN1_P_NET": "+1V8",
+                    "PDN1_N_NET": "GND",
+                },
+                pin_designators=("1", "2", "3"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U7", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U7",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1),
+            _pad(0, "2", 2, 1),
+            _pad(0, "3", 0, 2),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    sinks = [d for d in result.directives if isinstance(d, SinkSpec)]
+    assert {d.channel_index for d in sinks} == {None, 1}
+
+
 def test_series_nested_pcb_placement_and_indexed_channels():
     proj = _minimal_proj(
         nets=(RawNet("A"), RawNet("B"), RawNet("C"), RawNet("D")),
