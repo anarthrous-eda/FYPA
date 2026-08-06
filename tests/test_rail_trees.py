@@ -433,7 +433,7 @@ def test_rail_tree_node_partial_flags_mixed_descendants():
         "A.1.2": False,
         "A.2": False,
     }
-    # All descendants on → no partials.
+    # Uniform all-on including self → no partials.
     assert rail_tree_node_partial_flags(
         tree,
         {
@@ -450,8 +450,44 @@ def test_rail_tree_node_partial_flags_mixed_descendants():
         "A.1.2": False,
         "A.2": False,
     }
-    # Parent off + all descendants off → not partial; leaf always False.
+    # Parent off + all descendants on → partial (like primary mixed group).
+    assert rail_tree_node_partial_flags(
+        tree,
+        {
+            "A": False,
+            "A.1": True,
+            "A.1.1": True,
+            "A.1.2": True,
+            "A.2": True,
+        },
+    ) == {
+        "A": True,
+        "A.1": False,
+        "A.1.1": False,
+        "A.1.2": False,
+        "A.2": False,
+    }
+    # Parent on + all descendants off → partial.
+    assert rail_tree_node_partial_flags(
+        tree,
+        {
+            "A": True,
+            "A.1": False,
+            "A.1.1": False,
+            "A.1.2": False,
+            "A.2": False,
+        },
+    )["A"] is True
     assert rail_tree_node_partial_flags(None, {}) == {}
     assert rail_tree_node_partial_flags(
         RailTreeNode(name="X"), {"X": True},
     ) == {"X": False}
+
+
+def test_subtree_toggle_target():
+    from fypa.rail_groups import subtree_toggle_target
+
+    assert subtree_toggle_target([]) is True
+    assert subtree_toggle_target([True, True]) is False
+    assert subtree_toggle_target([False, False]) is True
+    assert subtree_toggle_target([True, False]) is True

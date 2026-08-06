@@ -486,16 +486,28 @@ def subtree_net_names(
     return [name for name, _depth in flatten_rail_tree(node, depth=1)]
 
 
+def subtree_toggle_target(states: list[bool]) -> bool:
+    """Ctrl+Click fan-out target for a SERIES subtree.
+
+    Mixed or not-all-on → ``True`` (show all); all on → ``False`` (hide all).
+    Empty ``states`` defaults to show-all.
+    """
+    if not states:
+        return True
+    return not all(states)
+
+
 def rail_tree_node_partial_flags(
     root: RailTreeNode | None,
     visible: dict[str, bool],
 ) -> dict[str, bool]:
     """Map each tree net to whether its eye should show partial.
 
-    Partial is True only when the node has children and descendant nets
-    present in ``visible`` are mixed (some on, some off). Leaves are
-    always False so a stale partial badge cannot linger. Single-pass
-    post-order walk — O(n) in tree size.
+    For nodes with children, partial follows the same mixed rule as the
+    primary rail eye over ``{self} ∪ descendants`` present in ``visible``
+    — so parent-off with all children on is partial (muted open), not a
+    plain closed eye. Leaves are always False so a stale badge cannot
+    linger. Single-pass post-order walk — O(n) in tree size.
     """
     flags: dict[str, bool] = {}
     if root is None:
@@ -513,7 +525,13 @@ def rail_tree_node_partial_flags(
             on_count += d_on
             total += d_total
         if node.children:
-            partial = total > 0 and on_count not in (0, total)
+            group_on = on_count
+            group_total = total
+            if node.name in visible:
+                group_total += 1
+                if visible[node.name]:
+                    group_on += 1
+            partial = group_total > 0 and group_on not in (0, group_total)
         else:
             partial = False
         flags[node.name] = partial

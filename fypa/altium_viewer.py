@@ -10458,7 +10458,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
 
     def _on_subnet_eye_ctrl_clicked(self, rail: str, net: str) -> None:
         """Ctrl+Click: toggle this net and its SERIES subtree together."""
-        from fypa.rail_groups import subtree_net_names
+        from fypa.rail_groups import subtree_net_names, subtree_toggle_target
 
         eye = self._subnet_eye_buttons.get(rail, {}).get(net)
         if eye is None or not _qt_widget_alive(eye):
@@ -10472,10 +10472,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         ]
         if not eyes:
             return
-        # Same rule as EyeButton: mixed/not-all-on → all on; else all off.
-        on_count = sum(e.isVisibleState() for e in eyes)
-        all_on = on_count == len(eyes)
-        target = not all_on
+        target = subtree_toggle_target([e.isVisibleState() for e in eyes])
         self._fan_out_subnet_subtree(rail, net, target)
         self._refresh_rail_visibility_after_subnet_change(rail)
 
