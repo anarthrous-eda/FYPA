@@ -77,11 +77,12 @@ Unindexed template inheritance
 ------------------------------
 Unindexed ``PDN_*`` parameters act as defaults for indexed channels: for
 channel *n*, ``PDNn_X`` wins when set, otherwise ``PDN_X`` is used. When at
-least one indexed channel exists and the unindexed form has **no**
-channel-defining terminals of its own, the legacy ``index=None`` channel is
-*not* emitted — unindexed values are template-only. Channel-defining
-terminals are the P/N (or single-net) nets/pins for SOURCE/SINK/SERIES, and
-**OUT_*** only for REGULATOR (so shared ``PDN_IN_*`` can be a template).
+least one indexed channel exists and the unindexed form does **not** carry a
+*complete* terminal set for its role, the legacy ``index=None`` channel is
+*not* emitted — unindexed values are template-only. A complete set means
+both sides of a two-terminal pair (or ``PDN_NET`` / ``PDN_PINS`` for
+single-net SOURCE/SINK); for REGULATOR, both ``OUT_*`` sides (so shared
+``PDN_IN_*`` / ``PDN_N_NET`` / one SERIES side can be templates).
 
 Example — dual SERIES paths sharing one resistance::
 
@@ -89,6 +90,14 @@ Example — dual SERIES paths sharing one resistance::
     PDN_R      = 0.05
     PDN1_P_NET = VIN_A     PDN1_N_NET = VOUT_A
     PDN2_P_NET = VIN_B     PDN2_N_NET = VOUT_B
+
+Example — dual SERIES with a shared P-side net::
+
+    PDN_ROLE   = SERIES
+    PDN_R      = 0.05
+    PDN_P_NET  = VIN
+    PDN1_N_NET = VOUT_A
+    PDN2_N_NET = VOUT_B
 
 Example — dual REGULATOR outputs sharing Vin / type / voltage::
 
@@ -100,8 +109,9 @@ Example — dual REGULATOR outputs sharing Vin / type / voltage::
     PDN2_OUT_P_NET     = GND       PDN2_OUT_N_NET = VOUT_N
 
 The classic pattern with a real unindexed channel *plus* indexed ones
-(``PDN_I`` + ``PDN_P_NET`` alongside ``PDN1_I`` + …) is unchanged: unindexed
-keeps its own terminals, so it remains a directive.
+(``PDN_I`` + ``PDN_P_NET`` + ``PDN_N_NET`` alongside ``PDN1_I`` + …) is
+unchanged: unindexed keeps a complete terminal pair, so it remains a
+directive.
 
 Values support SI prefixes and units (``500mA``, ``3V3``, ``1.5k``, ``0.1``).
 
@@ -220,18 +230,6 @@ _KNOWN_SUFFIXES_BY_ROLE: dict[str, frozenset[str]] = {
         "IN_P_NET", "IN_N_NET", "IN_P_PINS", "IN_N_PINS",
     }),
     "SERIES": frozenset({"R", "P_NET", "N_NET", "P_PINS", "N_PINS"}),
-}
-
-# Terminals that make the *unindexed* channel a real directive alongside
-# indexed ones (as opposed to template-only defaults). REGULATOR channels
-# are defined by their outputs — shared IN_* may stay on PDN_IN_*.
-_CHANNEL_DEFINING_SUFFIXES_BY_ROLE: dict[str, frozenset[str]] = {
-    "SOURCE": _COMMON_TERMINAL_SUFFIXES,
-    "SINK": _COMMON_TERMINAL_SUFFIXES,
-    "SERIES": frozenset({"P_NET", "N_NET", "P_PINS", "N_PINS"}),
-    "REGULATOR": frozenset({
-        "OUT_P_NET", "OUT_N_NET", "OUT_P_PINS", "OUT_N_PINS",
-    }),
 }
 
 _ALL_INHERITABLE_SUFFIXES: frozenset[str] = frozenset().union(
@@ -464,12 +462,73 @@ def _unindexed_has_defining_terminals(
     params: dict[str, str],
     role: str,
 ) -> bool:
-    """True when the legacy channel carries role-defining terminal params."""
-    suffixes = _CHANNEL_DEFINING_SUFFIXES_BY_ROLE.get(role, frozenset())
-    return any(
-        _ci_get(params, _channel_key(suffix, None)) is not None
-        for suffix in suffixes
-    )
+    """True when the legacy channel has a *complete* terminal set for ``role``.
+
+    A lone shared side (``PDN_N_NET``, ``PDN_P_NET``, ``PDN_IN_*``) is not
+    enough — those stay templates when indexed channels exist. SOURCE/SINK
+    may also be complete via single-net ``PDN_NET`` / ``PDN_PINS``.
+    """
+    if role in ("SOURCE", "SINK"):
+        if (
+            _ci_get(params, _channel_key("NET", None)) is not None
+            or _ci_get(params, _channel_key("PINS", None)) is not None
+        ):
+            return True
+        has_p = (
+            _ci_get(params, _channel_key("P_NET", None)) is not None
+            or _ci_get(params, _channel_key("P_PINS", None)) is not None
+        )
+        has_n = (
+            _ci_get(params, _channel_key("N_NET", None)) is not None
+            or _ci_get(params, _channel_key("N_PINS", None)) is not None
+        )
+        return has_p and has_n
+    if role == "SERIES":
+        has_p = (
+            _ci_get(params, _channel_key("P_NET", None)) is not None
+            or _ci_get(params, _channel_key("P_PINS", None)) is not None
+        )
+        has_n = (
+            _ci_get(params, _channel_key("N_NET", None)) is not None
+            or _ci_get(params, _channel_key("N_PINS", None)) is not None
+        )
+        return has_p and has_n
+    if role == "REGULATOR":
+        has_out_p = (
+            _ci_get(params, _channel_key("OUT_P_NET", None)) is not None
+            or _ci_get(params, _channel_key("OUT_P_PINS", None)) is not None
+        )
+        has_out_n = (
+            _ci_get(params, _channel_key("OUT_N_NET", None)) is not None
+            or _ci_get(params, _channel_key("OUT_N_PINS", None)) is not None
+        )
+        return has_out_p and has_out_n
+    return False
+
+
+def _active_roles_for_discovery(
+    params: dict[str, str],
+    part_role: str,
+) -> set[str]:
+    """Roles whose value/terminal suffixes may mark a channel present.
+
+    Uses the part-wide default plus every valid ``PDNn_ROLE`` override so
+    mixed-role parts still discover SOURCE and SINK channels, while a
+    leftover ``PDN1_R`` on a SINK-only part does not invent a phantom channel.
+    """
+    roles: set[str] = set()
+    if part_role in VALID_ROLES:
+        roles.add(part_role)
+    for idx in _discover_channel_indices(params, "ROLE"):
+        if idx is None:
+            continue
+        raw = _ci_get(params, _channel_key("ROLE", idx))
+        if raw is None:
+            continue
+        role = raw.strip().upper()
+        if role in VALID_ROLES:
+            roles.add(role)
+    return roles
 
 
 def _discover_channel_indices(params: dict[str, str],
@@ -1368,6 +1427,7 @@ def _series_channel_indices(
     scratch = AnnotationResult()
     grouped = _resolve_channel_roles(
         comp.parameters, part_role, comp.designator, scratch,
+        report_errors=False,
     )
     return list(grouped.get("SERIES", []))
 
@@ -2075,6 +2135,7 @@ def _collect_supply_voltages_by_net(
         scratch = AnnotationResult()
         grouped = _resolve_channel_roles(
             comp.parameters, part_role, comp.designator, scratch,
+            report_errors=False,
         )
         for role in ("SOURCE", "REGULATOR"):
             for idx in grouped.get(role, []):
@@ -2501,29 +2562,38 @@ def _resolve_channel_roles(
     part_role: str,
     designator: str,
     result: AnnotationResult,
+    *,
+    report_errors: bool = True,
 ) -> dict[str, list[int | None]]:
     """Group a part's present channels by effective role.
 
     Each channel's effective role is its ``PDN<n>_ROLE`` override (validated
     against :data:`VALID_ROLES`) or the part-wide ``part_role``. A channel is
-    *present* when it carries a value param, a channel-defining terminal
-    param, or an indexed ``PDNn_ROLE`` — the value may be inherited from the
-    unindexed template via :func:`_channel_get`. Returns ``{role: [index,
-    …]}`` in discovery order (unindexed first, then ascending index).
+    *present* when it carries a value param, a terminal param for an *active*
+    role on the part, or an indexed ``PDNn_ROLE`` — the value may be
+    inherited from the unindexed template via :func:`_channel_get`. Returns
+    ``{role: [index, …]}`` in discovery order (unindexed first, then
+    ascending index).
 
-    When indexed channels exist and the unindexed form has no
-    channel-defining terminals for its role, ``None`` is omitted (template-
-    only). A real unindexed channel alongside indexed ones (own terminals)
-    is kept.
+    Discovery is scoped to :func:`_active_roles_for_discovery` so a leftover
+    cross-role value (e.g. ``PDN1_R`` on a SINK-only part) does not invent a
+    phantom channel.
+
+    When indexed channels exist and the unindexed form lacks a *complete*
+    terminal set for its role, ``None`` is omitted (template-only). A real
+    unindexed channel alongside indexed ones (complete terminals) is kept.
 
     A channel that declares a role (or a cross-role value / terminal) but is
     missing the value parameter its role needs — even after template
-    inheritance — produces an error and is dropped.
+    inheritance — produces an error and is dropped when ``report_errors`` is
+    true; dry-run callers (bridge / supply maps) pass ``report_errors=False``
+    to omit invalid channels quietly.
     """
     candidates: set[int | None] = set()
-    marking_suffixes: set[str] = set(_VALUE_SUFFIX_BY_ROLE.values())
-    for role_suffixes in _KNOWN_SUFFIXES_BY_ROLE.values():
-        marking_suffixes |= set(role_suffixes)
+    marking_suffixes: set[str] = set()
+    for role in _active_roles_for_discovery(params, part_role):
+        marking_suffixes.add(_VALUE_SUFFIX_BY_ROLE[role])
+        marking_suffixes |= set(_KNOWN_SUFFIXES_BY_ROLE[role])
     for suffix in marking_suffixes:
         candidates.update(_discover_channel_indices(params, suffix))
     # An indexed PDN<n>_ROLE override also marks its channel present, so a
@@ -2549,33 +2619,37 @@ def _resolve_channel_roles(
         if override_raw is not None:
             eff = override_raw.strip().upper()
             if eff not in VALID_ROLES:
-                result.errors.append(
-                    f"{_channel_label(designator, idx)}: unknown "
-                    f"{_channel_key('ROLE', idx)}={override_raw!r} — must be "
-                    f"one of {sorted(VALID_ROLES)}"
-                )
+                if report_errors:
+                    result.errors.append(
+                        f"{_channel_label(designator, idx)}: unknown "
+                        f"{_channel_key('ROLE', idx)}={override_raw!r} — must be "
+                        f"one of {sorted(VALID_ROLES)}"
+                    )
                 continue
         else:
             if not part_role:
-                result.errors.append(
-                    f"{_channel_label(designator, idx)}: missing "
-                    f"{_channel_key('ROLE', idx)} (no part-wide PDN_ROLE)"
-                )
+                if report_errors:
+                    result.errors.append(
+                        f"{_channel_label(designator, idx)}: missing "
+                        f"{_channel_key('ROLE', idx)} (no part-wide PDN_ROLE)"
+                    )
                 continue
             eff = part_role
         value_suffix = _VALUE_SUFFIX_BY_ROLE[eff]
         if _channel_get(params, value_suffix, idx) is None:
-            value_key = _channel_key(value_suffix, idx)
-            if idx is not None:
-                result.errors.append(
-                    f"{eff} on {_channel_label(designator, idx)}: missing "
-                    f"{value_key} (or template {_channel_key(value_suffix, None)})"
-                )
-            else:
-                result.errors.append(
-                    f"{eff} on {_channel_label(designator, idx)}: missing "
-                    f"{value_key}"
-                )
+            if report_errors:
+                value_key = _channel_key(value_suffix, idx)
+                if idx is not None:
+                    result.errors.append(
+                        f"{eff} on {_channel_label(designator, idx)}: missing "
+                        f"{value_key} (or template "
+                        f"{_channel_key(value_suffix, None)})"
+                    )
+                else:
+                    result.errors.append(
+                        f"{eff} on {_channel_label(designator, idx)}: missing "
+                        f"{value_key}"
+                    )
             continue
         grouped.setdefault(eff, []).append(idx)
     return grouped

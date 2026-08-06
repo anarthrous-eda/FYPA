@@ -199,10 +199,12 @@ role — use `PDN<n>_V` for sources/regulators, `PDN<n>_R` for series parts.
 See the [main README](../../README.md#multi-channel-directives) for the
 full reference.
 
-When indexed channels exist and the unindexed form has **no** terminals of
-its own (`PDN_P_NET` / …), unindexed parameters are template-only — FYPA
-does not also emit a legacy directive. Keep unindexed terminals if you want
-both a legacy channel and indexed ones (as in the table above).
+When indexed channels exist and the unindexed form has **no complete**
+terminal pair of its own (`PDN_P_NET` **and** `PDN_N_NET`, or single-net
+`PDN_NET`), unindexed parameters are template-only — FYPA does not also
+emit a legacy directive. A shared return such as `PDN_N_NET = GND` alone
+is a template. Keep a full unindexed terminal pair if you want both a
+legacy channel and indexed ones (as in the table above).
 
 > You only need channels for **different** rails. An IC with many pins on
 > the *same* rail is still one directive — FYPA already groups every pad

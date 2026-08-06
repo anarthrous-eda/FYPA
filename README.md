@@ -207,10 +207,11 @@ is set; unset indexed params inherit from the matching unindexed
 channel — a channel can override it with `PDN<n>_ROLE` (see [Mixed-role
 parts](#mixed-role-parts-a-source-and-a-sink-on-one-component) below).
 
-**Templates:** when indexed channels exist and the unindexed form has no
-channel-defining terminals (P/N or single-net for SOURCE/SINK/SERIES;
-`OUT_*` only for REGULATOR), unindexed `PDN_*` values are defaults only —
-no legacy directive is emitted. Example — shared SERIES resistance:
+**Templates:** when indexed channels exist and the unindexed form lacks a
+*complete* terminal set (both P and N for SOURCE/SINK/SERIES; both `OUT_*`
+sides for REGULATOR), unindexed `PDN_*` values are defaults only — no
+legacy directive is emitted. A shared `PDN_N_NET = GND` or `PDN_IN_*` alone
+is a template. Example — shared SERIES resistance:
 
 ```text
 SW1:
