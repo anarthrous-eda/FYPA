@@ -81,8 +81,11 @@ least one indexed channel exists and the unindexed form does **not** carry a
 *complete* terminal set for its role, the legacy ``index=None`` channel is
 *not* emitted — unindexed values are template-only. A complete set means
 both sides of a two-terminal pair (or ``PDN_NET`` / ``PDN_PINS`` for
-single-net SOURCE/SINK); for REGULATOR, both ``OUT_*`` sides (so shared
-``PDN_IN_*`` / ``PDN_N_NET`` / one SERIES side can be templates).
+single-net SOURCE/SINK — those keep a real legacy channel when indexed
+channels also exist); for REGULATOR, both ``OUT_*`` sides (so shared
+``PDN_IN_*`` / ``PDN_N_NET`` / one SERIES side can be templates). Parts
+with only ``PDNn_ROLE`` (no part-wide ``PDN_ROLE``) always treat the
+unindexed form as template-only when indexed channels exist.
 
 Example — dual SERIES paths sharing one resistance::
 
@@ -2582,6 +2585,8 @@ def _resolve_channel_roles(
     When indexed channels exist and the unindexed form lacks a *complete*
     terminal set for its role, ``None`` is omitted (template-only). A real
     unindexed channel alongside indexed ones (complete terminals) is kept.
+    Parts with only ``PDNn_ROLE`` (no part-wide ``PDN_ROLE``) always treat
+    the unindexed form as template-only when indexed channels exist.
 
     A channel that declares a role (or a cross-role value / terminal) but is
     missing the value parameter its role needs — even after template
@@ -2606,9 +2611,13 @@ def _resolve_channel_roles(
 
     has_indexed = any(idx is not None for idx in candidates)
     if has_indexed and None in candidates:
-        if part_role in VALID_ROLES and not _unindexed_has_defining_terminals(
-            params, part_role,
-        ):
+        # Drop legacy when it is only a value/meta template. Indexed-only
+        # parts (no part-wide PDN_ROLE) always treat unindexed params as
+        # templates — otherwise PDN_R / PDN_V would error as "missing
+        # PDN_ROLE" while still emitting the indexed directives.
+        if part_role not in VALID_ROLES:
+            candidates.discard(None)
+        elif not _unindexed_has_defining_terminals(params, part_role):
             candidates.discard(None)
 
     ordered = sorted(candidates, key=lambda x: (x is not None, x or 0))

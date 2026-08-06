@@ -206,6 +206,15 @@ emit a legacy directive. A shared return such as `PDN_N_NET = GND` alone
 is a template. Keep a full unindexed terminal pair if you want both a
 legacy channel and indexed ones (as in the table above).
 
+> Unindexed `PDN_NET` / `PDN_PINS` counts as a complete single-net channel.
+> If indexed channels are also present, that legacy single-net directive is
+> kept — there is no "shared `PDN_NET` template only" mode. Put `PDNn_NET`
+> on each indexed channel (or inherit a two-terminal `PDN_N_NET`) instead.
+
+Parts that use only `PDNn_ROLE` (no part-wide `PDN_ROLE`) may still put
+shared values on unindexed `PDN_R` / `PDN_V` / `PDN_I`; those stay
+templates for the indexed channels.
+
 > You only need channels for **different** rails. An IC with many pins on
 > the *same* rail is still one directive — FYPA already groups every pad
 > on `PDN_P_NET` into one terminal (see [Multi-pin parts](#14-multi-pin-parts)

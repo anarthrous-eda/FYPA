@@ -211,7 +211,11 @@ parts](#mixed-role-parts-a-source-and-a-sink-on-one-component) below).
 *complete* terminal set (both P and N for SOURCE/SINK/SERIES; both `OUT_*`
 sides for REGULATOR), unindexed `PDN_*` values are defaults only — no
 legacy directive is emitted. A shared `PDN_N_NET = GND` or `PDN_IN_*` alone
-is a template. Example — shared SERIES resistance:
+is a template. Unindexed `PDN_NET` / `PDN_PINS` is a complete single-net
+channel and is kept alongside indexed channels (not template-only).
+Indexed-only parts (`PDNn_ROLE` without `PDN_ROLE`) always treat unindexed
+values as templates when indexed channels exist. Example — shared SERIES
+resistance:
 
 ```text
 SW1:

@@ -1093,6 +1093,38 @@ def test_cross_role_value_suffix_does_not_create_phantom_channel():
     assert any("PDN1_R" in w for w in result.warnings)
 
 
+def test_indexed_only_role_with_unindexed_value_template():
+    """PDNn_ROLE without part-wide PDN_ROLE may still inherit PDN_R / PDN_V."""
+    proj = _minimal_proj(
+        nets=(RawNet("A"), RawNet("B")),
+        sch_components=(
+            RawSchComponent(
+                designator="R1", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN1_ROLE": "SERIES",
+                    "PDN_R": "0.05",
+                    "PDN1_P_NET": "A",
+                    "PDN1_N_NET": "B",
+                },
+                pin_designators=("1", "2"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="R1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="0402", source_designator="R1",
+            ),
+        ),
+        pads=(_pad(0, "1", 0), _pad(0, "2", 1, 1)),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    series = [d for d in result.directives if isinstance(d, ResistorSpec)]
+    assert len(series) == 1
+    assert series[0].channel_index == 1
+    assert series[0].resistance == 0.05
+
+
 def test_series_nested_pcb_placement_and_indexed_channels():
     proj = _minimal_proj(
         nets=(RawNet("A"), RawNet("B"), RawNet("C"), RawNet("D")),
