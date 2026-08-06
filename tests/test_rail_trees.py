@@ -450,7 +450,7 @@ def test_rail_tree_node_partial_flags_mixed_descendants():
         "A.1.2": False,
         "A.2": False,
     }
-    # Parent off + all descendants on → partial (like primary mixed group).
+    # Parent off + all descendants on → partial (muted open, copper stays off).
     assert rail_tree_node_partial_flags(
         tree,
         {
@@ -467,7 +467,7 @@ def test_rail_tree_node_partial_flags_mixed_descendants():
         "A.1.2": False,
         "A.2": False,
     }
-    # Parent on + all descendants off → partial.
+    # Parent on + all descendants off → not partial (plain click toggles parent).
     assert rail_tree_node_partial_flags(
         tree,
         {
@@ -477,7 +477,7 @@ def test_rail_tree_node_partial_flags_mixed_descendants():
             "A.1.2": False,
             "A.2": False,
         },
-    )["A"] is True
+    )["A"] is False
     assert rail_tree_node_partial_flags(None, {}) == {}
     assert rail_tree_node_partial_flags(
         RailTreeNode(name="X"), {"X": True},

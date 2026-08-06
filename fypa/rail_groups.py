@@ -503,11 +503,15 @@ def rail_tree_node_partial_flags(
 ) -> dict[str, bool]:
     """Map each tree net to whether its eye should show partial.
 
-    For nodes with children, partial follows the same mixed rule as the
-    primary rail eye over ``{self} ∪ descendants`` present in ``visible``
-    — so parent-off with all children on is partial (muted open), not a
-    plain closed eye. Leaves are always False so a stale badge cannot
-    linger. Single-pass post-order walk — O(n) in tree size.
+    For nodes with children:
+
+    * mixed descendants → partial
+    * all descendants on while this net is off → partial (muted open;
+      copper stays off until the user activates)
+    * all descendants off → never partial, even if this net is on, so a
+      plain click still toggles this net instead of fan-out-on
+
+    Leaves are always False. Single-pass post-order — O(n).
     """
     flags: dict[str, bool] = {}
     if root is None:
@@ -524,14 +528,14 @@ def rail_tree_node_partial_flags(
             d_on, d_total = _walk(child)
             on_count += d_on
             total += d_total
-        if node.children:
-            group_on = on_count
-            group_total = total
-            if node.name in visible:
-                group_total += 1
-                if visible[node.name]:
-                    group_on += 1
-            partial = group_total > 0 and group_on not in (0, group_total)
+        if node.children and total > 0:
+            if on_count not in (0, total):
+                partial = True
+            elif on_count == total:
+                # All descendants on: badge only if this net itself is off.
+                partial = node.name in visible and not visible[node.name]
+            else:
+                partial = False
         else:
             partial = False
         flags[node.name] = partial
