@@ -456,6 +456,36 @@ def flatten_rail_tree(
     return rows
 
 
+def find_rail_tree_node(
+    root: RailTreeNode | None,
+    net: str,
+) -> RailTreeNode | None:
+    """Return the node named ``net`` in ``root``, or ``None``."""
+    if root is None:
+        return None
+    if root.name == net:
+        return root
+    for child in root.children:
+        found = find_rail_tree_node(child, net)
+        if found is not None:
+            return found
+    return None
+
+
+def subtree_net_names(
+    root: RailTreeNode | None,
+    net: str,
+) -> list[str]:
+    """DFS preorder names for ``net`` and all SERIES descendants.
+
+    Empty list when ``net`` is not in ``root``. A leaf returns ``[net]``.
+    """
+    node = find_rail_tree_node(root, net)
+    if node is None:
+        return []
+    return [name for name, _depth in flatten_rail_tree(node, depth=1)]
+
+
 def resolve_rail_member_nets(
     rail_names: list[str],
     rail_to_members: dict[str, list[str]],

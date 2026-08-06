@@ -376,3 +376,24 @@ def test_visible_rail_tree_rows_flat_fallback():
 def test_build_rail_trees_empty_input():
     assert build_rail_trees(None, {}) == {}
     assert build_rail_trees({"directives": []}, {}) == {}
+
+
+def test_subtree_net_names_includes_descendants():
+    from fypa.rail_groups import find_rail_tree_node, subtree_net_names
+
+    tree = RailTreeNode(
+        name="A",
+        children=(
+            RailTreeNode(
+                name="A.1",
+                children=(RailTreeNode(name="A.1.1"),),
+            ),
+            RailTreeNode(name="A.2"),
+        ),
+    )
+    assert subtree_net_names(tree, "A") == ["A", "A.1", "A.1.1", "A.2"]
+    assert subtree_net_names(tree, "A.1") == ["A.1", "A.1.1"]
+    assert subtree_net_names(tree, "A.1.1") == ["A.1.1"]
+    assert subtree_net_names(tree, "missing") == []
+    assert find_rail_tree_node(tree, "A.2").children == ()
+    assert find_rail_tree_node(None, "A") is None

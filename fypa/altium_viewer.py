@@ -1394,18 +1394,30 @@ class EyeButton(QToolButton):
     """Altium-style eye-icon toggle for layer visibility."""
 
     toggled_visible = Signal(bool)
+    # Ctrl+Click — rail-tree subnet eyes use this for SERIES-subtree fan-out.
+    # Shift+Click isolate/invert is wired on feature/shift-click-eye-isolate;
+    # do not consume Shift here so a future merge can own that gesture.
+    ctrl_clicked = Signal()
+    # Emitted when a partial eye is clicked (clears partial → fully on).
+    partial_activated = Signal()
 
     def __init__(self, parent=None, *, visible: bool = True,
                  icon_size: int = 16,
                  tip_show: str = "Show layer",
-                 tip_hide: str = "Hide layer") -> None:
+                 tip_hide: str = "Hide layer",
+                 tip_partial: str | None = None) -> None:
         super().__init__(parent)
         self._visible = bool(visible)
         self._partial = False
         self._icon_size = icon_size
         self._tip_show = tip_show
         self._tip_hide = tip_hide
-        self._tip_partial = "Some subnet nets visible — click to show all"
+        self._tip_partial = (
+            tip_partial
+            if tip_partial is not None
+            else "Some subnet nets visible — click to show all"
+        )
+        self._press_mods: Qt.KeyboardModifiers = Qt.NoModifier
         self.setAutoRaise(True)
         self.setCursor(Qt.PointingHandCursor)
         self.setIconSize(QSize(icon_size, icon_size))
@@ -1424,7 +1436,9 @@ class EyeButton(QToolButton):
         self, on: bool, *, partial: bool = False, emit: bool = True,
     ) -> None:
         on = bool(on)
-        partial = bool(partial) and on
+        # Partial may sit on an off eye (parent off, some descendants on)
+        # so the icon can show "mixed subtree" without enabling this net.
+        partial = bool(partial)
         if on == self._visible and partial == self._partial:
             return
         self._visible = on
@@ -1434,19 +1448,35 @@ class EyeButton(QToolButton):
             self.toggled_visible.emit(self._visible)
 
     def _apply_icon(self) -> None:
+        # Partial uses the open-eye silhouette (muted); closed+partial must
+        # not draw the slash or it reads as fully hidden.
         self.setIcon(QIcon(_eye_pixmap(
-            self._visible, self._icon_size, partial=self._partial,
+            self._visible or self._partial,
+            self._icon_size,
+            partial=self._partial,
         )))
         if self._partial:
             self.setToolTip(self._tip_partial)
         else:
             self.setToolTip(self._tip_hide if self._visible else self._tip_show)
 
+    def mousePressEvent(self, event) -> None:
+        # Capture modifiers at press — clicked fires on release and may
+        # already have cleared Ctrl.
+        self._press_mods = event.modifiers()
+        super().mousePressEvent(event)
+
     def _on_clicked(self) -> None:
+        mods = self._press_mods
+        self._press_mods = Qt.NoModifier
+        if mods & Qt.ControlModifier:
+            self.ctrl_clicked.emit()
+            return
         if self._partial:
-            self.setVisibleState(True, partial=False)
-        else:
-            self.setVisibleState(not self._visible, partial=False)
+            self.setVisibleState(True, partial=False, emit=False)
+            self.partial_activated.emit()
+            return
+        self.setVisibleState(not self._visible, partial=False)
 
 
 # --- Wire-mesh / solid fill toggle icons -----------------------------------
@@ -10160,12 +10190,32 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                     subnet_eye = EyeButton(
                         parent=self._subnet_eye_holder,
                         visible=False,
-                        tip_show=f"Show {net} copper",
-                        tip_hide=f"Hide {net} copper",
+                        tip_show=(
+                            f"Show {net} copper\n"
+                            f"Ctrl+Click: include SERIES subtree"
+                        ),
+                        tip_hide=(
+                            f"Hide {net} copper\n"
+                            f"Ctrl+Click: include SERIES subtree"
+                        ),
+                        tip_partial=(
+                            f"Some nets in the {net} SERIES subtree are "
+                            f"visible — click to show all"
+                        ),
                     )
                     subnet_eye.toggled_visible.connect(
                         lambda on, r=rail, n=net: self._on_subnet_eye_toggled(
                             r, n, on,
+                        ),
+                    )
+                    subnet_eye.ctrl_clicked.connect(
+                        lambda r=rail, n=net: self._on_subnet_eye_ctrl_clicked(
+                            r, n,
+                        ),
+                    )
+                    subnet_eye.partial_activated.connect(
+                        lambda r=rail, n=net: (
+                            self._on_subnet_eye_partial_activated(r, n)
                         ),
                     )
                     self._subnet_eye_buttons[rail][net] = subnet_eye
@@ -10178,6 +10228,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                         vis = self._default_rail_visible(rail)
                     subnet_eye.setVisibleState(vis, emit=False)
                 self._sync_rail_eye_from_subnets(rail)
+                self._sync_rail_tree_node_partials(rail)
             else:
                 if preserve_visibility and rail in saved_rails:
                     vis = saved_rails[rail]
@@ -10270,7 +10321,67 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
     def _fan_out_rail_eye_to_subnets(self, rail: str, on: bool) -> None:
         for eye in self._subnet_eye_buttons.get(rail, {}).values():
             if _qt_widget_alive(eye):
-                eye.setVisibleState(on, emit=False)
+                eye.setVisibleState(on, partial=False, emit=False)
+
+    def _subnet_tree_for_rail(self, rail: str):
+        trees = getattr(self, "_rail_to_trees", {}) or {}
+        return trees.get(rail)
+
+    def _fan_out_subnet_subtree(
+        self, rail: str, net: str, on: bool,
+    ) -> None:
+        """Set visibility for ``net`` and all SERIES descendants."""
+        from fypa.rail_groups import subtree_net_names
+
+        tree = self._subnet_tree_for_rail(rail)
+        names = subtree_net_names(tree, net)
+        if not names:
+            names = [net]
+        subnets = self._subnet_eye_buttons.get(rail, {})
+        for name in names:
+            eye = subnets.get(name)
+            if eye is not None and _qt_widget_alive(eye):
+                eye.setVisibleState(on, partial=False, emit=False)
+
+    def _sync_rail_tree_node_partials(self, rail: str) -> None:
+        """Mark intermediate node eyes partial when descendants are mixed.
+
+        Does **not** change each node's own on/off (that is copper for that
+        net). Only the partial badge is derived from descendant visibility.
+        """
+        from fypa.rail_groups import subtree_net_names
+
+        tree = self._subnet_tree_for_rail(rail)
+        if tree is None:
+            return
+        subnets = self._subnet_eye_buttons.get(rail, {})
+        if not subnets:
+            return
+
+        def _walk(node) -> None:
+            node_eye = subnets.get(node.name)
+            if node.children and node_eye is not None and _qt_widget_alive(node_eye):
+                desc = subtree_net_names(tree, node.name)[1:]
+                eyes = [
+                    subnets[n] for n in desc
+                    if n in subnets and _qt_widget_alive(subnets[n])
+                ]
+                if eyes:
+                    on_count = sum(e.isVisibleState() for e in eyes)
+                    all_on = on_count == len(eyes)
+                    all_off = on_count == 0
+                    partial = not all_on and not all_off
+                else:
+                    partial = False
+                node_eye.setVisibleState(
+                    node_eye.isVisibleState(),
+                    partial=partial,
+                    emit=False,
+                )
+            for child in node.children:
+                _walk(child)
+
+        _walk(tree)
 
     def _sync_rail_eye_from_subnets(self, rail: str) -> None:
         subnets = self._subnet_eye_buttons.get(rail, {})
@@ -10292,6 +10403,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                     not all_off, partial=partial, emit=False,
                 )
                 break
+
+    def _refresh_rail_visibility_after_subnet_change(self, rail: str) -> None:
+        self._sync_rail_tree_node_partials(rail)
+        self._sync_rail_eye_from_subnets(rail)
+        self._sync_all_rails_eye()
+        self._sync_rail_only_visibility()
+        self._render_with_busy_popup()
 
     def _on_rail_expand_toggled(self, rail: str, expanded: bool) -> None:
         self._rail_expanded[rail] = expanded
@@ -10332,10 +10450,44 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         eye = self._subnet_eye_buttons.get(rail, {}).get(net)
         if eye is None or not _qt_widget_alive(eye):
             return
-        self._sync_rail_eye_from_subnets(rail)
-        self._sync_all_rails_eye()
-        self._sync_rail_only_visibility()
-        self._render_with_busy_popup()
+        self._refresh_rail_visibility_after_subnet_change(rail)
+
+    def _on_subnet_eye_ctrl_clicked(self, rail: str, net: str) -> None:
+        """Ctrl+Click: toggle this net and its SERIES subtree together."""
+        from fypa.rail_groups import subtree_net_names
+
+        eye = self._subnet_eye_buttons.get(rail, {}).get(net)
+        if eye is None or not _qt_widget_alive(eye):
+            return
+        tree = self._subnet_tree_for_rail(rail)
+        names = subtree_net_names(tree, net) or [net]
+        subnets = self._subnet_eye_buttons.get(rail, {})
+        eyes = [
+            subnets[n] for n in names
+            if n in subnets and _qt_widget_alive(subnets[n])
+        ]
+        if not eyes:
+            return
+        # Same rule as EyeButton: mixed/not-all-on → all on; else all off.
+        on_count = sum(e.isVisibleState() for e in eyes)
+        all_on = on_count == len(eyes)
+        target = not all_on
+        self._fan_out_subnet_subtree(rail, net, target)
+        self._refresh_rail_visibility_after_subnet_change(rail)
+
+    def _on_subnet_eye_partial_activated(self, rail: str, net: str) -> None:
+        """Partial eye click → show entire SERIES subtree (like primary)."""
+        from fypa.rail_groups import find_rail_tree_node
+
+        tree = self._subnet_tree_for_rail(rail)
+        node = find_rail_tree_node(tree, net)
+        if node is not None and node.children:
+            self._fan_out_subnet_subtree(rail, net, True)
+        else:
+            eye = self._subnet_eye_buttons.get(rail, {}).get(net)
+            if eye is not None and _qt_widget_alive(eye):
+                eye.setVisibleState(True, partial=False, emit=False)
+        self._refresh_rail_visibility_after_subnet_change(rail)
 
     def _on_layer_eye_toggled(self, _on: bool) -> None:
         """An individual layer's eye was clicked."""
@@ -10504,10 +10656,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         ):
             return
         self._fan_out_rail_eye_to_subnets(rail, on)
-        self._sync_rail_eye_from_subnets(rail)
-        self._sync_all_rails_eye()
-        self._sync_rail_only_visibility()
-        self._render_with_busy_popup()
+        self._refresh_rail_visibility_after_subnet_change(rail)
 
     def _on_all_rails_toggled(self, on: bool) -> None:
         """The "All Rails" eye was clicked — show or hide every rail."""
@@ -10515,6 +10664,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             if _qt_widget_alive(eye):
                 eye.setVisibleState(on, partial=False, emit=False)
             self._fan_out_rail_eye_to_subnets(name, on)
+            self._sync_rail_tree_node_partials(name)
         self._sync_all_rails_eye()
         self._sync_rail_only_visibility()
         self._render_with_busy_popup()
