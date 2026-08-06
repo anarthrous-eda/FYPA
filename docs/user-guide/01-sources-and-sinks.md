@@ -191,11 +191,18 @@ value and its own P/N nets:
 |             |         | `PDN2_N_NET` | `GND`  |
 
 Each channel becomes its own directive; the viewer labels them `U7`,
-`U7#1`, `U7#2`. A channel exists as soon as its value parameter
-(`PDN<n>_I` here) is set. Indices can be sparse (gaps allowed). The same
-scheme works for every role — use `PDN<n>_V` for sources/regulators,
-`PDN<n>_R` for series parts. See the [main README](../../README.md#multi-channel-directives)
-for the full reference.
+`U7#1`, `U7#2`. A channel exists when its value parameter (`PDN<n>_I`
+here) or a channel-defining terminal param is set; the value may be
+inherited from the unindexed template (`PDN_I` when `PDN1_I` is omitted).
+Indices can be sparse (gaps allowed). The same scheme works for every
+role — use `PDN<n>_V` for sources/regulators, `PDN<n>_R` for series parts.
+See the [main README](../../README.md#multi-channel-directives) for the
+full reference.
+
+When indexed channels exist and the unindexed form has **no** terminals of
+its own (`PDN_P_NET` / …), unindexed parameters are template-only — FYPA
+does not also emit a legacy directive. Keep unindexed terminals if you want
+both a legacy channel and indexed ones (as in the table above).
 
 > You only need channels for **different** rails. An IC with many pins on
 > the *same* rail is still one directive — FYPA already groups every pad

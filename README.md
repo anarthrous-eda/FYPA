@@ -194,16 +194,31 @@ a positive integer to `PDN` in the parameter prefix:
 | 2       | `PDN2_V` | `PDN2_I` | `PDN2_R` | `PDN2_P_NET`, … |
 | …       | … | … | … | … |
 
-REGULATOR channels also require `PDN<n>_GAIN` and the four `PDN<n>_OUT_*` /
-`PDN<n>_IN_*` net (or pin) parameters per channel.
+REGULATOR channels also require the four `PDN<n>_OUT_*` / `PDN<n>_IN_*` net
+(or pin) parameters per channel (IN may be inherited from unindexed
+`PDN_IN_*`; see templates below).
 
-The legacy unindexed channel and any number of indexed channels coexist
-as independent directives. Indices are sparse — gaps are allowed (e.g.
-just `PDN_V` + `PDN2_V`). A channel is "present" iff its value parameter
-is set; the per-channel `*_NET` and `*_PINS` parameters use the matching
-index. The part-wide `PDN_ROLE` is the **default** role for every channel —
-a channel can override it with `PDN<n>_ROLE` (see [Mixed-role
+The legacy unindexed channel and any number of indexed channels can coexist
+as independent directives when the unindexed form has its own terminals.
+Indices are sparse — gaps are allowed (e.g. just `PDN_V` + `PDN2_V`). A
+channel is present when its value parameter or a channel-defining terminal
+is set; unset indexed params inherit from the matching unindexed
+`PDN_*` template. The part-wide `PDN_ROLE` is the **default** role for every
+channel — a channel can override it with `PDN<n>_ROLE` (see [Mixed-role
 parts](#mixed-role-parts-a-source-and-a-sink-on-one-component) below).
+
+**Templates:** when indexed channels exist and the unindexed form has no
+channel-defining terminals (P/N or single-net for SOURCE/SINK/SERIES;
+`OUT_*` only for REGULATOR), unindexed `PDN_*` values are defaults only —
+no legacy directive is emitted. Example — shared SERIES resistance:
+
+```text
+SW1:
+  PDN_ROLE   = SERIES
+  PDN_R      = 0.05
+  PDN1_P_NET = VIN_A     PDN1_N_NET = VOUT_A
+  PDN2_P_NET = VIN_B     PDN2_N_NET = VOUT_B
+```
 
 Example — a SINK with three independent supply rails:
 
