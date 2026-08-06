@@ -10359,10 +10359,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 eye.setVisibleState(on, partial=False, emit=False)
 
     def _sync_rail_tree_node_partials(self, rail: str) -> None:
-        """Mark intermediate node eyes partial when descendants are mixed.
+        """Update intermediate node partial badges from subtree visibility.
 
         Does **not** change each node's own on/off (that is copper for that
-        net). Only the partial badge is derived from descendant visibility.
+        net). Partial is set when descendants are mixed, or when this net
+        is off while all descendants are on (muted open). Parent-on with
+        all descendants off stays a plain eye so a click still toggles
+        this net.
         """
         from fypa.rail_groups import rail_tree_node_partial_flags
 
