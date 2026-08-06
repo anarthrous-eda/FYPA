@@ -486,6 +486,43 @@ def subtree_net_names(
     return [name for name, _depth in flatten_rail_tree(node, depth=1)]
 
 
+def rail_tree_node_partial_flags(
+    root: RailTreeNode | None,
+    visible: dict[str, bool],
+) -> dict[str, bool]:
+    """Map each tree net to whether its eye should show partial.
+
+    Partial is True only when the node has children and descendant nets
+    present in ``visible`` are mixed (some on, some off). Leaves are
+    always False so a stale partial badge cannot linger. Single-pass
+    post-order walk — O(n) in tree size.
+    """
+    flags: dict[str, bool] = {}
+    if root is None:
+        return flags
+
+    def _walk(node: RailTreeNode) -> tuple[int, int]:
+        on_count = 0
+        total = 0
+        for child in node.children:
+            if child.name in visible:
+                total += 1
+                if visible[child.name]:
+                    on_count += 1
+            d_on, d_total = _walk(child)
+            on_count += d_on
+            total += d_total
+        if node.children:
+            partial = total > 0 and on_count not in (0, total)
+        else:
+            partial = False
+        flags[node.name] = partial
+        return on_count, total
+
+    _walk(root)
+    return flags
+
+
 def resolve_rail_member_nets(
     rail_names: list[str],
     rail_to_members: dict[str, list[str]],

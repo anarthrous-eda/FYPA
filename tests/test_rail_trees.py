@@ -397,3 +397,61 @@ def test_subtree_net_names_includes_descendants():
     assert subtree_net_names(tree, "missing") == []
     assert find_rail_tree_node(tree, "A.2").children == ()
     assert find_rail_tree_node(None, "A") is None
+
+
+def test_rail_tree_node_partial_flags_mixed_descendants():
+    from fypa.rail_groups import rail_tree_node_partial_flags
+
+    tree = RailTreeNode(
+        name="A",
+        children=(
+            RailTreeNode(
+                name="A.1",
+                children=(
+                    RailTreeNode(name="A.1.1"),
+                    RailTreeNode(name="A.1.2"),
+                ),
+            ),
+            RailTreeNode(name="A.2"),
+        ),
+    )
+    # A.1.1 on / A.1.2 off → A.1 mixed; A.2 on → A mixed; leaves never partial.
+    flags = rail_tree_node_partial_flags(
+        tree,
+        {
+            "A": False,
+            "A.1": True,
+            "A.1.1": True,
+            "A.1.2": False,
+            "A.2": True,
+        },
+    )
+    assert flags == {
+        "A": True,
+        "A.1": True,
+        "A.1.1": False,
+        "A.1.2": False,
+        "A.2": False,
+    }
+    # All descendants on → no partials.
+    assert rail_tree_node_partial_flags(
+        tree,
+        {
+            "A": True,
+            "A.1": True,
+            "A.1.1": True,
+            "A.1.2": True,
+            "A.2": True,
+        },
+    ) == {
+        "A": False,
+        "A.1": False,
+        "A.1.1": False,
+        "A.1.2": False,
+        "A.2": False,
+    }
+    # Parent off + all descendants off → not partial; leaf always False.
+    assert rail_tree_node_partial_flags(None, {}) == {}
+    assert rail_tree_node_partial_flags(
+        RailTreeNode(name="X"), {"X": True},
+    ) == {"X": False}

@@ -247,7 +247,8 @@ def _load_fypa_text_pixmap(height: int) -> QPixmap | None:
 
 
 from PySide6.QtCore import (
-    QByteArray, QEvent, QObject, QPointF, QRectF, QSize, Qt, QThread, QTimer, QUrl, Signal,
+    QByteArray, QEvent, QMetaMethod, QObject, QPointF, QRectF, QSize, Qt,
+    QThread, QTimer, QUrl, Signal,
 )
 from PySide6.QtGui import (
     QAction,
@@ -1466,15 +1467,29 @@ class EyeButton(QToolButton):
         self._press_mods = event.modifiers()
         super().mousePressEvent(event)
 
+    def _signal_connected(self, signal) -> bool:
+        return self.isSignalConnected(QMetaMethod.fromSignal(signal))
+
     def _on_clicked(self) -> None:
         mods = self._press_mods
         self._press_mods = Qt.NoModifier
-        if mods & Qt.ControlModifier:
+        # Ctrl/partial are opt-in: only subnet eyes wire these signals.
+        # Unwired eyes (rail / layer / All *) keep the default toggle so
+        # Ctrl+Click and partial-clear still work after this branch.
+        # Shift is intentionally unused here (isolate lives on
+        # feature/shift-click-eye-isolate).
+        if (mods & Qt.ControlModifier) and self._signal_connected(
+            self.ctrl_clicked,
+        ):
             self.ctrl_clicked.emit()
             return
         if self._partial:
-            self.setVisibleState(True, partial=False, emit=False)
-            self.partial_activated.emit()
+            if self._signal_connected(self.partial_activated):
+                self.setVisibleState(True, partial=False, emit=False)
+                self.partial_activated.emit()
+                return
+            # Default: clear partial → fully on via toggled_visible.
+            self.setVisibleState(True, partial=False)
             return
         self.setVisibleState(not self._visible, partial=False)
 
@@ -10349,7 +10364,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         Does **not** change each node's own on/off (that is copper for that
         net). Only the partial badge is derived from descendant visibility.
         """
-        from fypa.rail_groups import subtree_net_names
+        from fypa.rail_groups import rail_tree_node_partial_flags
 
         tree = self._subnet_tree_for_rail(rail)
         if tree is None:
@@ -10357,31 +10372,20 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         subnets = self._subnet_eye_buttons.get(rail, {})
         if not subnets:
             return
-
-        def _walk(node) -> None:
-            node_eye = subnets.get(node.name)
-            if node.children and node_eye is not None and _qt_widget_alive(node_eye):
-                desc = subtree_net_names(tree, node.name)[1:]
-                eyes = [
-                    subnets[n] for n in desc
-                    if n in subnets and _qt_widget_alive(subnets[n])
-                ]
-                if eyes:
-                    on_count = sum(e.isVisibleState() for e in eyes)
-                    all_on = on_count == len(eyes)
-                    all_off = on_count == 0
-                    partial = not all_on and not all_off
-                else:
-                    partial = False
-                node_eye.setVisibleState(
-                    node_eye.isVisibleState(),
-                    partial=partial,
-                    emit=False,
-                )
-            for child in node.children:
-                _walk(child)
-
-        _walk(tree)
+        visible = {
+            name: eye.isVisibleState()
+            for name, eye in subnets.items()
+            if _qt_widget_alive(eye)
+        }
+        for name, partial in rail_tree_node_partial_flags(tree, visible).items():
+            eye = subnets.get(name)
+            if eye is None or not _qt_widget_alive(eye):
+                continue
+            eye.setVisibleState(
+                eye.isVisibleState(),
+                partial=partial,
+                emit=False,
+            )
 
     def _sync_rail_eye_from_subnets(self, rail: str) -> None:
         subnets = self._subnet_eye_buttons.get(rail, {})
