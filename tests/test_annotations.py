@@ -981,6 +981,126 @@ def test_sink_unindexed_plus_indexed_both_real_channels():
     assert {d.channel_index for d in sinks} == {None, 1}
 
 
+def test_sink_template_shared_n_net():
+    """Shared PDN_N_NET alone is template-only; each channel needs its P net."""
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+3V3"), RawNet("+1V8")),
+        sch_components=(
+            RawSchComponent(
+                designator="U7", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SINK",
+                    "PDN_I": "100mA",
+                    "PDN_N_NET": "GND",
+                    "PDN1_P_NET": "+3V3",
+                    "PDN2_I": "50mA",
+                    "PDN2_P_NET": "+1V8",
+                },
+                pin_designators=("1", "2", "3"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U7", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U7",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1),
+            _pad(0, "2", 2, 1),
+            _pad(0, "3", 0, 2),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    sinks = [d for d in result.directives if isinstance(d, SinkSpec)]
+    by_ch = {d.channel_index: d for d in sinks}
+    assert None not in by_ch
+    assert by_ch[1].current == pytest.approx(0.1)
+    assert by_ch[2].current == pytest.approx(0.05)
+    assert by_ch[1].n.requested_net == "GND"
+    assert by_ch[2].n.requested_net == "GND"
+
+
+def test_series_template_shared_p_net():
+    """Shared PDN_P_NET alone is template-only with per-channel N nets."""
+    proj = _minimal_proj(
+        nets=(RawNet("VIN"), RawNet("VOUT_A"), RawNet("VOUT_B")),
+        sch_components=(
+            RawSchComponent(
+                designator="SW1", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SERIES",
+                    "PDN_R": "0.05",
+                    "PDN_P_NET": "VIN",
+                    "PDN1_N_NET": "VOUT_A",
+                    "PDN2_N_NET": "VOUT_B",
+                },
+                pin_designators=("1", "2", "3"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="SW1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="RELAY", source_designator="SW1",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 0),
+            _pad(0, "2", 1, 1),
+            _pad(0, "3", 2, 2),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    by_ch = {
+        d.channel_index: d
+        for d in result.directives if isinstance(d, ResistorSpec)
+    }
+    assert None not in by_ch
+    assert by_ch[1].p.requested_net == "VIN"
+    assert by_ch[2].p.requested_net == "VIN"
+    assert by_ch[1].n.requested_net == "VOUT_A"
+    assert by_ch[2].n.requested_net == "VOUT_B"
+
+
+def test_cross_role_value_suffix_does_not_create_phantom_channel():
+    """Leftover PDN1_R alone on a SINK-only part must not invent a channel."""
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+3V3")),
+        sch_components=(
+            RawSchComponent(
+                designator="U7", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SINK",
+                    "PDN_I": "100mA",
+                    "PDN_P_NET": "+3V3",
+                    "PDN_N_NET": "GND",
+                    "PDN1_R": "0.1",
+                },
+                pin_designators=("1", "2"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="U7", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="QFN", source_designator="U7",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1),
+            _pad(0, "2", 0, 1),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    sinks = [d for d in result.directives if isinstance(d, SinkSpec)]
+    assert len(sinks) == 1
+    assert sinks[0].channel_index is None
+    assert not any(isinstance(d, ResistorSpec) for d in result.directives)
+    assert any("PDN1_R" in w for w in result.warnings)
+
+
 def test_series_nested_pcb_placement_and_indexed_channels():
     proj = _minimal_proj(
         nets=(RawNet("A"), RawNet("B"), RawNet("C"), RawNet("D")),
