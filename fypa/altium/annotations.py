@@ -466,6 +466,10 @@ class TerminalPin:
     # equipotential ``region`` so the terminal couples over the whole pad
     # footprint instead of a single point. ``None`` for degenerate pads.
     pad_polygon: shapely.geometry.Polygon | None = None
+    # Owning PCB component when known. Used so P/N overlap arbitration does
+    # not treat pad ``"1"`` on J2 and pad ``"1"`` on J3 as the same pin
+    # (multi-connector / banana-jack sources).
+    component_designator: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1257,6 +1261,7 @@ def _resolve_terminal(
             net_index=p.net_index,
             point=p.center,
             pad_polygon=_pad_polygon(p, _tl),
+            component_designator=designator,
         )
         for p in matched
     )
@@ -1675,6 +1680,19 @@ def _resolve_two_terminal(
     return p_spec, n_spec
 
 
+def _terminal_pin_overlap_key(pin: TerminalPin) -> str:
+    """Identity for P/N overlap arbitration.
+
+    Pads on different components with the same pad designator (typical for
+    single-pin lab jacks) are distinct. Without ``component_designator``,
+    fall back to pad name only — same as the historical same-footprint case.
+    """
+    pad = pin.pad_designator.upper()
+    if pin.component_designator:
+        return f"{pin.component_designator.upper()}:{pad}"
+    return pad
+
+
 def _arbitrate_overlapping_terminals(
     p_spec: TerminalSpec,
     n_spec: TerminalSpec,
@@ -1688,9 +1706,13 @@ def _arbitrate_overlapping_terminals(
     Ambiguous local-net aliases can make a SERIES P-terminal claim both pads
     of a two-pin part (shorting the series element). Prefer the higher-quality
     match tier; when tiers tie, require explicit ``PDN_*_PINS`` overrides.
+
+    Overlap is by component+pad when ``component_designator`` is set, so a
+    multi-connector SOURCE (P on J2 pad 1, N on J3 pad 1) is not treated as
+    a shorted pair.
     """
-    p_keys = {pin.pad_designator.upper() for pin in p_spec.pins}
-    n_keys = {pin.pad_designator.upper() for pin in n_spec.pins}
+    p_keys = {_terminal_pin_overlap_key(pin) for pin in p_spec.pins}
+    n_keys = {_terminal_pin_overlap_key(pin) for pin in n_spec.pins}
     overlap = p_keys & n_keys
     if not overlap:
         return p_spec, n_spec
@@ -1703,7 +1725,7 @@ def _arbitrate_overlapping_terminals(
     if p_tier < n_tier:
         kept = tuple(
             pin for pin in n_spec.pins
-            if pin.pad_designator.upper() not in overlap
+            if _terminal_pin_overlap_key(pin) not in overlap
         )
         result.warnings.append(
             f"{role_diag}: P/N pin overlap on {overlap_text} "
@@ -1727,7 +1749,7 @@ def _arbitrate_overlapping_terminals(
     if n_tier < p_tier:
         kept = tuple(
             pin for pin in p_spec.pins
-            if pin.pad_designator.upper() not in overlap
+            if _terminal_pin_overlap_key(pin) not in overlap
         )
         result.warnings.append(
             f"{role_diag}: P/N pin overlap on {overlap_text} "

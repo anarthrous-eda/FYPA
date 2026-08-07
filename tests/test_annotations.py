@@ -1673,6 +1673,29 @@ def test_arbitrate_overlapping_terminals_equal_tier_errors():
     assert any("PDN_P_PINS" in e for e in result.errors)
 
 
+def test_arbitrate_overlapping_terminals_ignores_same_pad_on_other_parts():
+    """Banana-jack style: pad '1' on J2 vs pad '1' on J3 is not an overlap."""
+    p = TerminalSpec(
+        pins=(TerminalPin(
+            "1", 1, 0, Pt2D(0, 0), component_designator="J2",
+        ),),
+        requested_net="+5V",
+    )
+    n = TerminalSpec(
+        pins=(TerminalPin(
+            "1", 1, 1, Pt2D(10, 0), component_designator="J3",
+        ),),
+        requested_net="GND",
+    )
+    result = AnnotationResult()
+    p2, n2 = _arbitrate_overlapping_terminals(
+        p, n, _LOCAL_NET_TIER_ALIAS, _LOCAL_NET_TIER_ALIAS, "SOURCE on J2", result,
+    )
+    assert p2 is p and n2 is n
+    assert not result.errors
+    assert not result.warnings
+
+
 def _regulator_proj_with_source(**extra_regulator_params):
     """SOURCE J1 @5V + REGULATOR U2 on +5V→+3V3 with two pads each side."""
     reg_params = {
