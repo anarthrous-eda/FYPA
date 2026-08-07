@@ -62,22 +62,32 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
         if nm:
             net_index.setdefault(nm.upper(), i)
 
-    # physical PCB designator -> pcb_components index (exact, then
-    # case-insensitive fallback for multi-DES lists).
-    comp_index: dict[str, int] = {}
-    comp_index_ci: dict[str, int] = {}
-    for i, comp in enumerate(extracted.pcb_components):
-        if comp.designator:
-            comp_index.setdefault(comp.designator, i)
-            comp_index_ci.setdefault(comp.designator.upper(), i)
+    def _comp_indices(designator: str | None) -> list[int]:
+        """All PCB placements matching ``designator``.
+
+        Mirrors schematic :func:`~fypa.altium.annotations._find_pcb_instances`:
+        prefer ``source_designator`` (multi-channel logical name), then fall
+        back to physical ``designator``. Returns every matching index so
+        multi-DES terminals merge pads from all channel placements.
+        """
+        if not designator:
+            return []
+        target = designator.upper()
+        hits = [
+            i for i, c in enumerate(extracted.pcb_components)
+            if getattr(c, "source_designator", None)
+            and str(c.source_designator).upper() == target
+        ]
+        if hits:
+            return hits
+        return [
+            i for i, c in enumerate(extracted.pcb_components)
+            if (getattr(c, "designator", None) or "").upper() == target
+        ]
 
     def _comp_idx(designator: str | None) -> int | None:
-        if not designator:
-            return None
-        hit = comp_index.get(designator)
-        if hit is not None:
-            return hit
-        return comp_index_ci.get(designator.upper())
+        indices = _comp_indices(designator)
+        return indices[0] if indices else None
 
     # --- Per-rail return groups for single-net editor directives ----------
     # Each electrically-connected rail needs its OWN ideal-0 V return node.
@@ -240,19 +250,31 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
 
         all_pins: list = []
         for des in unique:
-            ci = _comp_idx(des)
-            if ci is None:
+            indices = _comp_indices(des)
+            if not indices:
                 return None, (
                     f"{label}: designator {des!r} not found on the board; "
                     "skipped."
                 )
-            des_pins = _pads_on_component(ci, nidx, wanted_pins)
+            des_pins: list = []
+            for ci in indices:
+                des_pins.extend(_pads_on_component(ci, nidx, wanted_pins))
             if not des_pins:
                 return None, (
                     f"{label}: designator {des!r} has no pad on net "
                     f"{net_name!r}; skipped."
                 )
             all_pins.extend(des_pins)
+        # Mirror schematic ``_resolve_terminal_multi``: every *_PINS entry
+        # must appear on at least one listed designator.
+        if wanted_pins and all_pins:
+            found = {p.pad_designator.upper() for p in all_pins}
+            missing = wanted_pins - found
+            if missing:
+                return None, (
+                    f"{label}: pin overrides not found on listed "
+                    f"designators: {sorted(missing)}; skipped."
+                )
         return (
             TerminalSpec(pins=tuple(all_pins), requested_net=net_name),
             None,
