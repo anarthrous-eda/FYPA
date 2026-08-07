@@ -2631,11 +2631,11 @@ def _terminal_summary(term, nets) -> dict:
     for pin in term.pins:
         net_name = (nets[pin.net_index].name
                     if 0 <= pin.net_index < len(nets) else "(none)")
-        pad_label = pin.pad_designator
-        if pin.component_designator:
-            pad_label = f"{pin.component_designator}-{pin.pad_designator}"
+        # Keep ``pad`` as the raw pad designator so Unlock seeding of
+        # PDN_*_PINS fields stays resolvable (``"1"``, not ``"J2-1"``).
+        # ``component`` + ``pad_label`` cover multi-DES display.
         entry = {
-            "pad": pad_label,
+            "pad": pin.pad_designator,
             "layer_id": pin.layer_id,
             "net": net_name,
             "x_mm": pin.point.x,
@@ -2643,6 +2643,9 @@ def _terminal_summary(term, nets) -> dict:
         }
         if pin.component_designator:
             entry["component"] = pin.component_designator
+            entry["pad_label"] = (
+                f"{pin.component_designator}-{pin.pad_designator}"
+            )
         pins.append(entry)
     return {
         "pin_count": len(pins),
