@@ -3256,7 +3256,224 @@ def test_is_solveable_still_false_without_a_source():
     assert not loaded.is_solveable
 
 
+# --- Multi-connector PDN_*_DES ------------------------------------------------
 
+def _banana_source_proj(*, n_des: str | None = "J3,J5,J7",
+                       extra_params: dict | None = None,
+                       omit_j7_gnd: bool = False,
+                       include_sink: bool = True):
+    """SOURCE on J2 (VIN/GND) with optional PDN_N_DES listing return connectors.
+
+    Nets: 0=GND, 1=VIN. Each connector has pin 1 on VIN and pin 2 on GND
+    unless ``omit_j7_gnd`` drops J7's GND pad.
+    """
+    src_params = {
+        "PDN_ROLE": "SOURCE",
+        "PDN_V": "5",
+        "PDN_P_NET": "VIN",
+        "PDN_N_NET": "GND",
+    }
+    if n_des is not None:
+        src_params["PDN_N_DES"] = n_des
+    if extra_params:
+        src_params.update(extra_params)
+
+    sch = [
+        RawSchComponent(
+            designator="J2", schdoc_name="Pwr.SchDoc",
+            parameters=src_params,
+            pin_designators=("1", "2"),
+        ),
+        RawSchComponent(
+            designator="J3", schdoc_name="Pwr.SchDoc",
+            parameters={"Comment": "CONN"}, pin_designators=("1", "2"),
+        ),
+        RawSchComponent(
+            designator="J5", schdoc_name="Pwr.SchDoc",
+            parameters={"Comment": "CONN"}, pin_designators=("1", "2"),
+        ),
+        RawSchComponent(
+            designator="J7", schdoc_name="Pwr.SchDoc",
+            parameters={"Comment": "CONN"}, pin_designators=("1", "2"),
+        ),
+    ]
+    pcb = [
+        RawPcbComponent(
+            designator="J2", center=Pt2D(0, 0), rotation_deg=0.0,
+            layer_name="TOP", footprint="CONN", source_designator="J2",
+        ),
+        RawPcbComponent(
+            designator="J3", center=Pt2D(5, 0), rotation_deg=0.0,
+            layer_name="TOP", footprint="CONN", source_designator="J3",
+        ),
+        RawPcbComponent(
+            designator="J5", center=Pt2D(10, 0), rotation_deg=0.0,
+            layer_name="TOP", footprint="CONN", source_designator="J5",
+        ),
+        RawPcbComponent(
+            designator="J7", center=Pt2D(15, 0), rotation_deg=0.0,
+            layer_name="TOP", footprint="CONN", source_designator="J7",
+        ),
+    ]
+    pads = [
+        _pad(0, "1", 1, 0),   # J2 VIN
+        _pad(0, "2", 0, 1),   # J2 GND
+        _pad(1, "1", 1, 5),   # J3 VIN
+        _pad(1, "2", 0, 6),   # J3 GND
+        _pad(2, "1", 1, 10),  # J5 VIN
+        _pad(2, "2", 0, 11),  # J5 GND
+        _pad(3, "1", 1, 15),  # J7 VIN
+    ]
+    if not omit_j7_gnd:
+        pads.append(_pad(3, "2", 0, 16))  # J7 GND
+
+    if include_sink:
+        sch.append(RawSchComponent(
+            designator="U1", schdoc_name="Pwr.SchDoc",
+            parameters={
+                "PDN_ROLE": "SINK",
+                "PDN_I": "1A",
+                "PDN_P_NET": "VIN",
+                "PDN_N_NET": "GND",
+            },
+            pin_designators=("1", "2"),
+        ))
+        pcb.append(RawPcbComponent(
+            designator="U1", center=Pt2D(20, 0), rotation_deg=0.0,
+            layer_name="TOP", footprint="QFN", source_designator="U1",
+        ))
+        pads.extend([_pad(4, "1", 1, 20), _pad(4, "2", 0, 21)])
+
+    return _minimal_proj(
+        nets=(RawNet("GND"), RawNet("VIN")),
+        sch_components=tuple(sch),
+        pcb_components=tuple(pcb),
+        pads=tuple(pads),
+    )
+
+
+def test_source_n_des_multi_connector():
+    """SOURCE on J2 with PDN_N_DES=J3,J5,J7 → P on J2, N from three connectors."""
+    proj = _banana_source_proj()
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    sources = [d for d in result.directives if isinstance(d, SourceSpec)]
+    assert len(sources) == 1
+    src = sources[0]
+    assert src.designator == "J2"
+    assert {p.pad_designator for p in src.p.pins} == {"1"}
+    assert {p.component_designator for p in src.p.pins} == {"J2"}
+    assert len(src.n.pins) == 3
+    assert {p.component_designator for p in src.n.pins} == {"J3", "J5", "J7"}
+    assert {p.pad_designator for p in src.n.pins} == {"2"}
+    # Host J2 GND pad is NOT auto-included when N_DES is set.
+    assert "J2" not in {p.component_designator for p in src.n.pins}
+
+
+def test_source_n_des_missing_designator_errors():
+    proj = _banana_source_proj(n_des="J3,J99,J5")
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert not result.ok
+    assert any(
+        "J99" in e and "not found" in e for e in result.errors
+    ), result.errors
+
+
+def test_source_n_des_no_pad_on_net_errors():
+    proj = _banana_source_proj(n_des="J3,J5,J7", omit_j7_gnd=True)
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert not result.ok
+    assert any(
+        "J7" in e and "no pad" in e and "GND" in e for e in result.errors
+    ), result.errors
+
+
+def test_source_without_des_backward_compat():
+    """Without *_DES, P and N pads come from the host only."""
+    proj = _banana_source_proj(n_des=None)
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    src = next(d for d in result.directives if isinstance(d, SourceSpec))
+    assert {p.component_designator for p in src.p.pins} == {"J2"}
+    assert {p.component_designator for p in src.n.pins} == {"J2"}
+    assert {p.pad_designator for p in src.p.pins} == {"1"}
+    assert {p.pad_designator for p in src.n.pins} == {"2"}
+
+
+def test_sink_p_des_multi_connector():
+    """Analogous SINK: host J1 draws from +5V; P pads from J2,J3."""
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+5V")),
+        sch_components=(
+            RawSchComponent(
+                designator="J1", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SINK",
+                    "PDN_I": "2A",
+                    "PDN_P_NET": "+5V",
+                    "PDN_N_NET": "GND",
+                    "PDN_P_DES": "J2,J3",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="J2", schdoc_name="Pwr.SchDoc",
+                parameters={"Comment": "CONN"}, pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="J3", schdoc_name="Pwr.SchDoc",
+                parameters={"Comment": "CONN"}, pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="J5", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SOURCE",
+                    "PDN_V": "5",
+                    "PDN_P_NET": "+5V",
+                    "PDN_N_NET": "GND",
+                },
+                pin_designators=("1", "2"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="J1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="CONN", source_designator="J1",
+            ),
+            RawPcbComponent(
+                designator="J2", center=Pt2D(5, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="CONN", source_designator="J2",
+            ),
+            RawPcbComponent(
+                designator="J3", center=Pt2D(10, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="CONN", source_designator="J3",
+            ),
+            RawPcbComponent(
+                designator="J5", center=Pt2D(15, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="CONN", source_designator="J5",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, 0),   # J1 +5V (host — NOT in P when P_DES set)
+            _pad(0, "2", 0, 1),   # J1 GND
+            _pad(1, "1", 1, 5),   # J2 +5V
+            _pad(1, "2", 0, 6),
+            _pad(2, "1", 1, 10),  # J3 +5V
+            _pad(2, "2", 0, 11),
+            _pad(3, "1", 1, 15),  # J5 SOURCE +5V
+            _pad(3, "2", 0, 16),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    sinks = [d for d in result.directives if isinstance(d, SinkSpec)]
+    assert len(sinks) == 1
+    snk = sinks[0]
+    assert snk.designator == "J1"
+    assert len(snk.p.pins) == 2
+    assert {p.component_designator for p in snk.p.pins} == {"J2", "J3"}
+    assert {p.component_designator for p in snk.n.pins} == {"J1"}
+    assert "J1" not in {p.component_designator for p in snk.p.pins}
 
 
 def test_format_solve_blockers_lists_errors():
