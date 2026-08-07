@@ -143,3 +143,119 @@ def test_series_bridge_unions_single_net_source_and_sink_return_groups():
     assert src.return_group == snk.return_group
     # The bridge closed the loop — no open-loop warning for either rail.
     assert not any("open loop" in w for w in warnings)
+
+
+# --- Multi-connector p_des / n_des -------------------------------------------
+
+def _loaded_with_connectors():
+    """Board stand-in: J2 (VIN+GND), J3/J5/J7 (GND return bananas), U1 load."""
+    from fypa.altium.extract import Pt2D
+
+    nets = [SimpleNamespace(name="GND"), SimpleNamespace(name="VIN")]
+    comps = [
+        SimpleNamespace(designator="J2"),
+        SimpleNamespace(designator="J3"),
+        SimpleNamespace(designator="J5"),
+        SimpleNamespace(designator="J7"),
+        SimpleNamespace(designator="U1"),
+    ]
+    pads = [
+        SimpleNamespace(component_index=0, net_index=1, designator="1",
+                        center=Pt2D(0, 0), layer_id=1, is_through_hole=False),
+        SimpleNamespace(component_index=0, net_index=0, designator="2",
+                        center=Pt2D(1, 0), layer_id=1, is_through_hole=False),
+        SimpleNamespace(component_index=1, net_index=0, designator="2",
+                        center=Pt2D(5, 0), layer_id=1, is_through_hole=False),
+        SimpleNamespace(component_index=2, net_index=0, designator="2",
+                        center=Pt2D(10, 0), layer_id=1, is_through_hole=False),
+        SimpleNamespace(component_index=3, net_index=0, designator="2",
+                        center=Pt2D(15, 0), layer_id=1, is_through_hole=False),
+        SimpleNamespace(component_index=4, net_index=1, designator="1",
+                        center=Pt2D(20, 0), layer_id=1, is_through_hole=False),
+        SimpleNamespace(component_index=4, net_index=0, designator="2",
+                        center=Pt2D(21, 0), layer_id=1, is_through_hole=False),
+    ]
+    extracted = SimpleNamespace(
+        nets=nets, pcb_components=comps, pads=pads,
+        enabled_copper_layer_ids=lambda: [1],
+    )
+    return SimpleNamespace(extracted=extracted, annotations=AnnotationResult())
+
+
+def test_editor_source_n_des_multi_connector():
+    loaded = _loaded_with_connectors()
+    eds = [
+        EditorDirective(
+            kind="component", role="SOURCE", designator="J2",
+            single_net=False, p_net="VIN", n_net="GND",
+            n_des=["J3", "J5", "J7"], voltage=5.0,
+        ),
+        EditorDirective(
+            kind="component", role="SINK", designator="U1",
+            single_net=False, p_net="VIN", n_net="GND", current=1.0,
+        ),
+    ]
+    warnings = apply_editor_directives(loaded, eds)
+    assert warnings == [], warnings
+    src = next(s for s in loaded.annotations.directives
+               if isinstance(s, SourceSpec))
+    assert src.designator == "J2"
+    assert {p.component_designator for p in src.p.pins} == {"J2"}
+    assert {p.component_designator for p in src.n.pins} == {"J3", "J5", "J7"}
+    assert "J2" not in {p.component_designator for p in src.n.pins}
+
+
+def test_editor_n_des_missing_designator_skipped():
+    loaded = _loaded_with_connectors()
+    eds = [EditorDirective(
+        kind="component", role="SOURCE", designator="J2",
+        single_net=False, p_net="VIN", n_net="GND",
+        n_des=["J3", "J99"], voltage=5.0,
+    )]
+    warnings = apply_editor_directives(loaded, eds)
+    assert loaded.annotations.directives == []
+    assert any("J99" in w and "not found" in w for w in warnings)
+
+
+def test_editor_n_des_no_pad_on_net_skipped():
+    loaded = _loaded_with_connectors()
+    # J7 has only a GND pad in the fixture; point N_DES at a designator
+    # whose pads are all on VIN instead — drop J3's GND by renaming net.
+    loaded.extracted.pads[2].net_index = 1  # J3 pad now on VIN, not GND
+    eds = [EditorDirective(
+        kind="component", role="SOURCE", designator="J2",
+        single_net=False, p_net="VIN", n_net="GND",
+        n_des=["J3"], voltage=5.0,
+    )]
+    warnings = apply_editor_directives(loaded, eds)
+    assert loaded.annotations.directives == []
+    assert any("J3" in w and "no pad" in w for w in warnings)
+
+
+def test_editor_without_des_backward_compat():
+    loaded = _loaded_with_connectors()
+    eds = [EditorDirective(
+        kind="component", role="SOURCE", designator="J2",
+        single_net=False, p_net="VIN", n_net="GND", voltage=5.0,
+    )]
+    warnings = apply_editor_directives(loaded, eds)
+    assert warnings == []
+    src = loaded.annotations.directives[0]
+    assert isinstance(src, SourceSpec)
+    assert {p.component_designator for p in src.p.pins} == {"J2"}
+    assert {p.component_designator for p in src.n.pins} == {"J2"}
+
+
+def test_editor_directive_p_des_n_des_round_trip():
+    d = EditorDirective(
+        kind="component", role="SOURCE", designator="J2",
+        single_net=False, p_net="VIN", n_net="GND",
+        p_des=["J1"], n_des=["J3", "J5"], voltage=5.0,
+    )
+    restored = EditorDirective.from_dict(d.to_dict())
+    assert restored.p_des == ["J1"]
+    assert restored.n_des == ["J3", "J5"]
+    # Absent keys stay None (backward compatible .fypa files).
+    bare = EditorDirective.from_dict({"role": "SINK", "p_net": "+5V"})
+    assert bare.p_des is None
+    assert bare.n_des is None
