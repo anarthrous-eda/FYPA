@@ -2519,13 +2519,19 @@ def _terminal_summary(term, nets) -> dict:
     for pin in term.pins:
         net_name = (nets[pin.net_index].name
                     if 0 <= pin.net_index < len(nets) else "(none)")
-        pins.append({
-            "pad": pin.pad_designator,
+        pad_label = pin.pad_designator
+        if pin.component_designator:
+            pad_label = f"{pin.component_designator}-{pin.pad_designator}"
+        entry = {
+            "pad": pad_label,
             "layer_id": pin.layer_id,
             "net": net_name,
             "x_mm": pin.point.x,
             "y_mm": pin.point.y,
-        })
+        }
+        if pin.component_designator:
+            entry["component"] = pin.component_designator
+        pins.append(entry)
     return {
         "pin_count": len(pins),
         "pins": pins,
