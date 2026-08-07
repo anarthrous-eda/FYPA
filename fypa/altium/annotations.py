@@ -176,6 +176,18 @@ _RESISTOR_LIKE_ROLES: frozenset[str] = frozenset({"SERIES"})
 
 VALID_ROLES: frozenset[str] = frozenset({"SOURCE", "SINK", "REGULATOR"}) | _RESISTOR_LIKE_ROLES
 
+# Altium ``ComponentKind`` values that are Net Ties (altium_monkey.ComponentKind).
+COMPONENT_KIND_NET_TIE_BOM: int = 3
+COMPONENT_KIND_NET_TIE_NO_BOM: int = 4
+NET_TIE_COMPONENT_KINDS: frozenset[int] = frozenset({
+    COMPONENT_KIND_NET_TIE_BOM,
+    COMPONENT_KIND_NET_TIE_NO_BOM,
+})
+# Synthetic SERIES resistance for auto-detected Net Ties. Must stay below
+# ``fypa.altium.loader.NET_MERGE_RESISTANCE_THRESHOLD_OHM`` (0.9 mΩ) so the
+# loader merges the two nets instead of inserting a fragile lumped short.
+NET_TIE_BRIDGE_RESISTANCE_OHM: float = 0.5e-3
+
 _COMMON_TERMINAL_SUFFIXES: frozenset[str] = frozenset({
     "NET", "PINS", "P_NET", "N_NET", "P_PINS", "N_PINS",
 })
@@ -445,6 +457,11 @@ def _is_pdn_annotated(params: dict[str, str]) -> bool:
     if _ci_get(params, ROLE_KEY) is not None:
         return True
     return _has_indexed_role_params(params)
+
+
+def _has_any_pdn_params(params: dict[str, str]) -> bool:
+    """True when any ``PDN_*`` / ``PDN<n>_*`` parameter key is present."""
+    return any(_INDEXED_KEY_RE.match(k.strip()) for k in params)
 
 
 def _part_role_default(params: dict[str, str]) -> str:
@@ -3129,6 +3146,128 @@ def _resolve_channel_roles(
     return grouped
 
 
+def _is_nettie_component_kind(kind: int) -> bool:
+    return int(kind) in NET_TIE_COMPONENT_KINDS
+
+
+def _nettie_net_names(proj: ExtractedProject, pcb_index: int) -> list[str]:
+    """Distinct connected net names on a PCB placement, pad order preserved."""
+    pads = _pads_by_component_all(proj).get(pcb_index, [])
+    names: list[str] = []
+    seen: set[int] = set()
+    for pad in pads:
+        ni = pad.net_index
+        if ni == NO_NET or ni in seen:
+            continue
+        if not (0 <= ni < len(proj.nets)):
+            continue
+        seen.add(ni)
+        names.append(proj.nets[ni].name)
+    return names
+
+
+def _synth_nettie_bridge_for_instance(
+    proj: ExtractedProject,
+    pcb_index: int,
+    schdoc_name: str,
+    enabled_layers: list[int],
+    result: AnnotationResult,
+    net_remap: dict[int, int] | None,
+) -> list[ResistorSpec]:
+    """Build low-Ω SERIES specs that short every distinct NetTie net together."""
+    pcb_des = proj.pcb_components[pcb_index].designator
+    role_diag = f"NetTie on {pcb_des}"
+    net_names = _nettie_net_names(proj, pcb_index)
+    if len(net_names) < 2:
+        reason = _autoinfer_failure_reason(proj, pcb_index)
+        result.warnings.append(
+            f"{role_diag} ({schdoc_name}): skipped auto-bridge — {reason}"
+        )
+        return []
+
+    specs: list[ResistorSpec] = []
+    # Chain consecutive nets so N nets become N-1 shorts (union-find merge
+    # collapses the whole set). Two-pin NetTies take the single pair path.
+    for p_net, n_net in zip(net_names, net_names[1:]):
+        params = {"PDN_P_NET": p_net, "PDN_N_NET": n_net}
+        pair = _resolve_two_terminal(
+            proj, pcb_index, params,
+            "PDN_P_NET", "PDN_N_NET", "PDN_P_PINS", "PDN_N_PINS",
+            enabled_layers, role_diag, result,
+            net_remap=net_remap,
+            schdoc_name=schdoc_name,
+        )
+        if pair is None:
+            continue
+        specs.append(ResistorSpec(
+            designator=pcb_des,
+            schdoc_name=schdoc_name,
+            resistance=NET_TIE_BRIDGE_RESISTANCE_OHM,
+            p=pair[0],
+            n=pair[1],
+            channel_index=None,
+        ))
+    if specs:
+        result.warnings.append(
+            f"{role_diag} ({schdoc_name}): auto-bridged "
+            f"{' ↔ '.join(net_names)} as low-Ω NetTie short "
+            f"({NET_TIE_BRIDGE_RESISTANCE_OHM * 1e3:.2g} mΩ)"
+        )
+    return specs
+
+
+def _synth_nettie_directives(
+    proj: ExtractedProject,
+    enabled_layers: list[int],
+    result: AnnotationResult,
+    skip_set: set[str],
+    net_remap: dict[int, int] | None = None,
+) -> list[ResistorSpec]:
+    """Emit synthetic SERIES bridges for Altium Net Tie schematic components.
+
+    Components with ``ComponentKind`` Net Tie / Net Tie (No BOM) short their
+    pads by design. Without PDN annotations FYPA would leave those nets
+    disconnected; this pass synthesises a low-Ω SERIES directive per PCB
+    placement so the loader's net-merge path collapses them.
+
+    An explicit ``PDN_ROLE`` on the same part wins — auto-bridge is skipped.
+    """
+    specs: list[ResistorSpec] = []
+    seen_pcb: set[int] = set()
+    for sch in proj.sch_components:
+        if not _is_nettie_component_kind(sch.component_kind):
+            continue
+        # Any schematic PDN_* (even incomplete) opts out of auto-bridge so a
+        # half-finished annotation is not silently replaced by a merge short.
+        if _has_any_pdn_params(sch.parameters):
+            continue
+        if sch.designator.upper() in skip_set:
+            continue
+        pcb_indices = _find_pcb_instances(proj, sch.designator)
+        if not pcb_indices:
+            result.warnings.append(
+                f"NetTie {sch.designator} ({sch.schdoc_name}): no PCB "
+                f"placement found — cannot auto-bridge"
+            )
+            continue
+        for pcb_idx in pcb_indices:
+            if pcb_idx in seen_pcb:
+                continue
+            seen_pcb.add(pcb_idx)
+            pcb = proj.pcb_components[pcb_idx]
+            # PCB Blanket/ECO PDN_* on the placement overrides auto-bridge,
+            # same as schematic PDN_* on the symbol.
+            if _has_any_pdn_params(pcb.parameters):
+                continue
+            if pcb.designator.upper() in skip_set:
+                continue
+            specs.extend(_synth_nettie_bridge_for_instance(
+                proj, pcb_idx, sch.schdoc_name, enabled_layers,
+                result, net_remap,
+            ))
+    return specs
+
+
 # --- public entry -------------------------------------------------------------
 
 def parse_annotations(proj: ExtractedProject,
@@ -3255,6 +3394,13 @@ def parse_annotations(proj: ExtractedProject,
                 # Every parser returns a list — empty if the directive failed
                 # to resolve, one element per resolved channel otherwise.
                 result.directives.extend(specs)
+
+    # Altium Net Ties short their pads by ComponentKind — synthesise low-Ω
+    # SERIES bridges so the loader merge path connects those nets without
+    # requiring a PDN_ROLE=SERIES on every NetTie symbol.
+    result.directives.extend(_synth_nettie_directives(
+        proj, enabled_layers, result, skip_set, net_remap=net_remap,
+    ))
 
     # Cross-directive checks (mode consistency, open-loop) + return grouping.
     _validate_directive_groups(result, proj, parameter_sources)
