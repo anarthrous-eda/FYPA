@@ -1268,7 +1268,10 @@ def _resolve_terminal_multi(
             for ix in indices:
                 pcb_comp = proj.pcb_components[ix]
                 sch_lookup = pcb_comp.source_designator or pcb_comp.designator
-                spec, err = _resolve_terminal(
+                # ``_resolve_terminal`` returns ``(spec, errors)`` on main and
+                # ``(spec, errors, match_tier)`` on stacks that include pad
+                # arbitration (e.g. test/combined). Accept either shape.
+                resolved = _resolve_terminal(
                     proj, ix, net_name, None, enabled_layers,
                     f"{role_diagnostic} ({des})",
                     warnings=warnings,
@@ -1276,6 +1279,7 @@ def _resolve_terminal_multi(
                     sch_lookup_designator=sch_lookup,
                     schdoc_name=schdoc_name,
                 )
+                spec, err = resolved[0], resolved[1]
                 if spec is not None:
                     des_pins.extend(spec.pins)
                     des_local = des_local or spec.resolved_via_local
