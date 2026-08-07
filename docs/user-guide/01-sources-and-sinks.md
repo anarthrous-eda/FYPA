@@ -173,6 +173,29 @@ To override the inferred pad set (e.g. to exclude a thermal pad), use
 the `PDN_P_PINS` / `PDN_N_PINS` parameters documented in the
 [main README](../../README.md).
 
+### Multi-connector / banana-style sources
+
+Some bench setups feed power through one connector and return through
+several others (banana jacks, sense returns, distributed ground posts).
+Annotate the SOURCE on the **host** connector that carries the value /
+role, then list the other designators on the terminal that should pull
+pads from them:
+
+| Name         | Value        |
+|--------------|--------------|
+| `PDN_ROLE`   | `SOURCE`     |
+| `PDN_V`      | `5V`         |
+| `PDN_P_NET`  | `VIN`        |
+| `PDN_N_NET`  | `GND`        |
+| `PDN_N_DES`  | `J3,J5,J7`   |
+
+Here J2 is the host (P pads stay on J2). The N terminal uses **only**
+pads on J3, J5, and J7 that sit on `GND` — the host is not
+auto-included. `PDN_P_DES` works the same way on the P side. Optional
+`PDN_P_PINS` / `PDN_N_PINS` still filter pad numbers across the listed
+parts. Indexed channels use `PDNn_P_DES` / `PDNn_N_DES`. Without
+`*_DES`, behaviour is unchanged (host pads only).
+
 ### Several rails on one part (multi-channel)
 
 An IC that draws from more than one supply rail is a single part with
