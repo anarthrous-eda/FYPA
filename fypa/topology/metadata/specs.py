@@ -199,11 +199,15 @@ def jump_row_for_directive(directive: DirectiveDict) -> JumpRowDict | None:
     for term_name, term in terms.items():
         for pin in term.get("pins") or []:
             if pin.get("x_mm") is not None and pin.get("y_mm") is not None:
+                pad = (pin.get("pad_label")
+                       or (f"{pin['component']}-{pin['pad']}"
+                           if pin.get("component") and pin.get("pad")
+                           else pin.get("pad", "")))
                 return {
                     "designator": str(directive.get("designator") or label),
                     "role": directive.get("role", ""),
                     "terminal": term_name,
-                    "pad": pin.get("pad", ""),
+                    "pad": pad,
                     "net": pin.get("net", ""),
                     "layer_id": pin.get("layer_id"),
                     "x_mm": pin.get("x_mm"),

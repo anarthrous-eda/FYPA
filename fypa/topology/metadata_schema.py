@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 
 class TerminalPinDict(TypedDict, total=False):
     pad: str
+    component: str
     net: str
     layer_id: int
     x_mm: float
