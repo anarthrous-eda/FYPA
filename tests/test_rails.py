@@ -44,6 +44,42 @@ def test_build_net_canonical_map_skips_alias_when_pcb_has_distinct_net():
     assert m["VDD_1V25D"] == "VDD_1V25D"
 
 
+def test_build_net_canonical_map_tolerates_unnamed_netlist_entry():
+    """A netlist entry with no usable name is skipped, not dereferenced."""
+    class _Net:
+        def __init__(self, name, aliases=()):
+            self.name = name
+            self.aliases = list(aliases)
+
+    class _Netlist:
+        nets = [_Net(None), _Net("VDD_5V", aliases=["VDD_5V_LOCAL"])]
+
+    m = build_net_canonical_map(_Netlist())
+    assert m == {"VDD_5V": "VDD_5V", "VDD_5V_LOCAL": "VDD_5V"}
+
+
+def test_build_net_canonical_map_folds_alias_of_merged_away_pcb_net():
+    """A net the low-Ω merge folded away is still in ``proj.nets`` but owns no
+    copper, so it must not veto folding the alias that names it."""
+    class _Net:
+        def __init__(self, name, aliases=()):
+            self.name = name
+            self.aliases = list(aliases)
+
+    class _Netlist:
+        nets = [_Net("VDD_5V", aliases=["VDD_5V_F"])]
+
+    # Caller subtracts LoadedProject.merged_net_names before passing these.
+    m = build_net_canonical_map(_Netlist(), pcb_net_names={"VDD_5V"})
+    assert m["VDD_5V_F"] == "VDD_5V"
+
+    # Left in, the stale name blocks the fold — the behaviour being fixed.
+    stale = build_net_canonical_map(
+        _Netlist(), pcb_net_names={"VDD_5V", "VDD_5V_F"},
+    )
+    assert "VDD_5V_F" not in stale
+
+
 def test_rail_groups_keep_split_pcb_nets_when_schematic_aliases_overlap():
     """Two regulator outputs on distinct PCB nets stay separate rails."""
     metadata = {

@@ -23,11 +23,14 @@ from fypa.altium.annotations import (
     SourceSpec,
     TerminalPin,
     TerminalSpec,
+    _collect_series_upstream_map,
     _collect_supply_voltages_by_net,
     _iter_pdn_parameter_sources,
     _iter_series_bridge_pairs,
     _union_series_bridge_net_indices,
     _lookup_inferred_vin,
+    _SeriesVinGraph,
+    _SERIES_VIN_MAX_HOPS,
     _require_value,
     _resolve_local_net_pins,
     _resolve_terminal,
@@ -861,7 +864,10 @@ def test_bridge_pairs_indexed_series_nets():
             ),
         ),
     )
-    pairs = {(p, n) for _idx, p, n in _iter_series_bridge_pairs([source], proj)}
+    pairs = {
+        (p, n) for _idx, p, n, _directed
+        in _iter_series_bridge_pairs([source], proj)
+    }
     assert pairs == {("RAIL_A", "RAIL_B"), ("RAIL_C", "RAIL_D")}
 
 
@@ -1600,30 +1606,76 @@ def test_regulator_explicit_gain_overrides_type():
 
 
 def test_lookup_inferred_vin_exact_match_without_series_walk():
-    """Without series_upstream, only direct supply_map hits resolve."""
+    """Without a SERIES graph, only direct supply_map hits resolve."""
     supply_map = {"VDD_48V": 48.0, "VDD_12V": 12.0}
-    assert _lookup_inferred_vin("VDD_48V", supply_map) == (48.0, None)
-    assert _lookup_inferred_vin("VDD_12V", supply_map) == (12.0, None)
-    assert _lookup_inferred_vin("VDD_48V_RP", supply_map) == (None, None)
+    assert _lookup_inferred_vin("VDD_48V", supply_map) == (48.0, None, 0)
+    assert _lookup_inferred_vin("VDD_12V", supply_map) == (12.0, None, 0)
+    assert _lookup_inferred_vin("VDD_48V_RP", supply_map) == (None, None, 0)
 
 
 def test_lookup_inferred_vin_walks_series_upstream():
     supply_map = {"VDD_48V_IN": 48.0}
-    upstream = {"VDD_48V_RP": "VDD_48V", "VDD_48V": "VDD_48V_IN"}
+    graph = _SeriesVinGraph(
+        upstream={"VDD_48V_RP": "VDD_48V", "VDD_48V": "VDD_48V_IN"},
+    )
+    # Two hops from the named rail — the caller warns on any non-zero hop count.
     assert _lookup_inferred_vin(
-        "VDD_48V_RP", supply_map, series_upstream=upstream,
-    ) == (48.0, None)
+        "VDD_48V_RP", supply_map, graph=graph,
+    ) == (48.0, None, 2)
 
 
 def test_lookup_inferred_vin_series_ambiguous_and_cycle():
     supply_map = {"VDD_48V_IN": 48.0}
     assert _lookup_inferred_vin(
-        "VDD_48V_RP", supply_map, ambiguous_downstream=frozenset({"VDD_48V_RP"}),
-    ) == (None, "ambiguous")
+        "VDD_48V_RP", supply_map,
+        graph=_SeriesVinGraph(ambiguous=frozenset({"VDD_48V_RP"})),
+    ) == (None, "ambiguous", 0)
     assert _lookup_inferred_vin(
         "VDD_48V_RP", supply_map,
-        series_upstream={"VDD_48V_RP": "VDD_48V", "VDD_48V": "VDD_48V_RP"},
-    ) == (None, "cycle")
+        graph=_SeriesVinGraph(
+            upstream={"VDD_48V_RP": "VDD_48V", "VDD_48V": "VDD_48V_RP"},
+        ),
+    ) == (None, "cycle", 1)
+
+
+def test_lookup_inferred_vin_declared_rail_beats_series_ambiguity():
+    """A rail whose voltage is declared resolves even when SERIES links to it
+    disagree — parallel ferrites / ORing FETs / fuse+bypass all land here."""
+    assert _lookup_inferred_vin(
+        "VDD_12V", {"VDD_12V": 12.0},
+        graph=_SeriesVinGraph(ambiguous=frozenset({"VDD_12V"})),
+    ) == (12.0, None, 0)
+
+
+def test_lookup_inferred_vin_crosses_single_undirected_link():
+    """An auto-inferred 2-pin element has no P/N direction, so it is crossed
+    only when it is the one unvisited way out of the net."""
+    supply_map = {"VDD_48V_IN": 48.0}
+    one_way = _SeriesVinGraph(
+        undirected={
+            "VDD_48V": frozenset({"VDD_48V_IN"}),
+            "VDD_48V_IN": frozenset({"VDD_48V"}),
+        },
+    )
+    assert _lookup_inferred_vin("VDD_48V", supply_map, graph=one_way) == (
+        48.0, None, 1,
+    )
+    forked = _SeriesVinGraph(
+        undirected={"VDD_48V": frozenset({"VDD_48V_IN", "VDD_SENSE"})},
+    )
+    assert _lookup_inferred_vin("VDD_48V", supply_map, graph=forked) == (
+        None, "undirected", 0,
+    )
+
+
+def test_lookup_inferred_vin_bounds_chain_length():
+    """A chain longer than the hop cap errors instead of walking on."""
+    chain = {f"N{i}": f"N{i + 1}" for i in range(_SERIES_VIN_MAX_HOPS + 3)}
+    vin, failure, _hops = _lookup_inferred_vin(
+        "N0", {"N99": 48.0}, graph=_SeriesVinGraph(upstream=chain),
+    )
+    assert vin is None
+    assert failure == "too_deep"
 
 
 def test_regulator_smps_vin_through_series_chain():
@@ -1802,6 +1854,229 @@ def test_regulator_smps_vin_series_ambiguous_fork():
     result = parse_annotations(proj, enabled_layers=[1])
     assert not result.ok
     assert any("ambiguous SERIES upstream" in e for e in result.errors)
+
+
+# --- SERIES Vin graph construction --------------------------------------------
+
+_SERIES_VIN_NETS = {
+    "GND": 0, "VDD_48V_IN": 1, "VDD_48V": 2, "VDD_12V": 3, "VDD_48V_F": 4,
+}
+
+
+def _series_vin_proj(
+    series_params: dict[str, str],
+    *,
+    in_p_net: str = "VDD_48V",
+    in_p_pad_net: int | None = None,
+    series_pads: tuple[tuple[str, int], ...] = (("1", 1), ("2", 2)),
+    extra_series: dict[str, str] | None = None,
+) -> ExtractedProject:
+    """SOURCE(48 V on VDD_48V_IN) → one SERIES part → SMPS on ``in_p_net``.
+
+    ``series_params`` is the SERIES component's parameter dict, so each test can
+    vary only how that one part declares its two nets. ``series_pads`` is its
+    ``(pin, net_index)`` list *in file order* — the order 2-pin auto-inference
+    reads P/N off. ``in_p_pad_net`` overrides the net the regulator's IN_P pad
+    sits on, modelling the state ``_apply_net_remap`` leaves behind: the pad
+    carries the canonical index while the annotation still names the folded one.
+    """
+    sch = [
+        RawSchComponent(
+            designator="J7", schdoc_name="Pwr.SchDoc",
+            parameters={
+                "PDN_ROLE": "SOURCE", "PDN_V": "48",
+                "PDN_P_NET": "VDD_48V_IN", "PDN_N_NET": "GND",
+            },
+            pin_designators=("1", "2"),
+        ),
+        RawSchComponent(
+            designator="F1", schdoc_name="Pwr.SchDoc",
+            parameters=series_params,
+            pin_designators=("1", "2", "3"),
+        ),
+        RawSchComponent(
+            designator="U5", schdoc_name="Pwr.SchDoc",
+            parameters={
+                "PDN_ROLE": "REGULATOR", "PDN_REGULATOR_TYPE": "SMPS",
+                "PDN_REGULATOR_EFFICIENCY": "0.8", "PDN_V": "12",
+                "PDN_OUT_P_NET": "VDD_12V", "PDN_OUT_N_NET": "GND",
+                "PDN_IN_P_NET": in_p_net, "PDN_IN_N_NET": "GND",
+            },
+            pin_designators=("1", "2", "3", "4"),
+        ),
+    ]
+    pcb = [
+        RawPcbComponent(
+            designator="J7", center=Pt2D(-15, 0), rotation_deg=0.0,
+            layer_name="TOP", footprint="CONN", source_designator="J7",
+        ),
+        RawPcbComponent(
+            designator="F1", center=Pt2D(-10, 0), rotation_deg=0.0,
+            layer_name="TOP", footprint="FUSE", source_designator="F1",
+        ),
+        RawPcbComponent(
+            designator="U5", center=Pt2D(0, 0), rotation_deg=0.0,
+            layer_name="TOP", footprint="SOT", source_designator="U5",
+        ),
+    ]
+    # J7 = pcb 0, F1 = pcb 1, [R9 = pcb 2], U5 last.
+    pads = [_pad(0, "1", 1, -15), _pad(0, "2", 0, -14)]
+    pads += [_pad(1, pin, net, -10) for pin, net in series_pads]
+    u5_index = 2
+    if extra_series is not None:
+        sch.insert(2, RawSchComponent(
+            designator="R9", schdoc_name="Pwr.SchDoc",
+            parameters=extra_series, pin_designators=("1", "2"),
+        ))
+        pcb.insert(2, RawPcbComponent(
+            designator="R9", center=Pt2D(-7, 0), rotation_deg=0.0,
+            layer_name="TOP", footprint="0402", source_designator="R9",
+        ))
+        pads += [_pad(2, "1", 2, -7), _pad(2, "2", 4, -6)]
+        u5_index = 3
+    pads += [
+        _pad(u5_index, "1", 3, 0),                              # OUT_P
+        _pad(u5_index, "2", 0, 1),                              # OUT_N
+        _pad(
+            u5_index, "3",
+            _SERIES_VIN_NETS[in_p_net] if in_p_pad_net is None else in_p_pad_net,
+            2,
+        ),                                                      # IN_P
+        _pad(u5_index, "4", 0, 3),                              # IN_N
+    ]
+    return _minimal_proj(
+        nets=(
+            RawNet("GND"), RawNet("VDD_48V_IN"), RawNet("VDD_48V"),
+            RawNet("VDD_12V"), RawNet("VDD_48V_F"),
+        ),
+        sch_components=tuple(sch),
+        pcb_components=tuple(pcb),
+        pads=tuple(pads),
+    )
+
+
+def test_series_upstream_map_reads_indexed_role_only_channels():
+    """A part whose SERIES channels come only from PDN<n>_ROLE overrides still
+    contributes its links — _is_pdn_annotated admits it, so the graph must too."""
+    proj = _series_vin_proj({
+        "PDN1_ROLE": "SERIES", "PDN1_R": "50m",
+        "PDN1_P_NET": "VDD_48V_IN", "PDN1_N_NET": "VDD_48V",
+        "PDN2_ROLE": "SERIES", "PDN2_R": "50m",
+        "PDN2_P_NET": "VDD_48V", "PDN2_N_NET": "VDD_12V",
+    })
+    graph = _collect_series_upstream_map(_iter_pdn_parameter_sources(proj), proj)
+    assert graph.upstream == {
+        "VDD_48V": "VDD_48V_IN", "VDD_12V": "VDD_48V",
+    }
+
+
+def test_series_upstream_map_reads_pin_specified_channels():
+    """PDN_P_PINS / PDN_N_PINS is a supported way to state a SERIES element's
+    two sides, so it must produce the same edge PDN_P_NET / PDN_N_NET would."""
+    proj = _series_vin_proj(
+        {
+            "PDN_ROLE": "SERIES", "PDN_R": "50m",
+            "PDN_P_PINS": "1", "PDN_N_PINS": "2,3",
+        },
+        # pin 1 on VDD_48V_IN, pins 2+3 both on VDD_48V.
+        series_pads=(("1", 1), ("2", 2), ("3", 2)),
+    )
+    graph = _collect_series_upstream_map(_iter_pdn_parameter_sources(proj), proj)
+    assert graph.upstream == {"VDD_48V": "VDD_48V_IN"}
+
+    result = parse_annotations(proj, enabled_layers=[1])
+    reg = next(d for d in result.directives if d.designator == "U5")
+    assert abs(reg.gain - (12.0 / (48.0 * 0.8))) < 1e-6
+
+
+def test_series_upstream_map_auto_inferred_link_is_direction_agnostic():
+    """_autoinfer_2pin_nets takes P/N from raw pad order, so the Vin result must
+    not change when the two RawPad entries are swapped."""
+    params = {"PDN_ROLE": "SERIES", "PDN_R": "50m"}
+    forward = _series_vin_proj(params, series_pads=(("1", 1), ("2", 2)))
+    reversed_ = _series_vin_proj(params, series_pads=(("2", 2), ("1", 1)))
+    expected = 12.0 / (48.0 * 0.8)
+    for proj in (forward, reversed_):
+        graph = _collect_series_upstream_map(
+            _iter_pdn_parameter_sources(proj), proj,
+        )
+        # Recorded as an undirected pair — pad order states no power flow.
+        assert not graph.upstream
+        assert graph.undirected["VDD_48V"] == frozenset({"VDD_48V_IN"})
+        result = parse_annotations(proj, enabled_layers=[1])
+        reg = next(d for d in result.directives if d.designator == "U5")
+        assert abs(reg.gain - expected) < 1e-6, result.errors
+
+
+def test_series_upstream_map_skips_merged_short_self_edges():
+    """A 0 Ω the merge pre-pass absorbed has both ends on one net now. Neither
+    the skip list nor the self-edge guard may let it shadow the real edge."""
+    proj = _series_vin_proj(
+        {
+            "PDN_ROLE": "SERIES", "PDN_R": "50m",
+            "PDN_P_NET": "VDD_48V_IN", "PDN_N_NET": "VDD_48V",
+        },
+        extra_series={
+            "PDN_ROLE": "SERIES", "PDN_R": "0.001",
+            "PDN_P_NET": "VDD_48V", "PDN_N_NET": "VDD_48V_F",
+        },
+    )
+    # VDD_48V_F (index 4) merged into VDD_48V (index 2).
+    net_remap = {4: 2}
+    graph = _collect_series_upstream_map(
+        _iter_pdn_parameter_sources(proj), proj,
+        net_remap=net_remap, skip_designators={"R9"},
+    )
+    assert graph.upstream == {"VDD_48V": "VDD_48V_IN"}
+    assert not graph.ambiguous
+
+    # Even without the skip list, the self-edge guard must hold the line.
+    unskipped = _collect_series_upstream_map(
+        _iter_pdn_parameter_sources(proj), proj, net_remap=net_remap,
+    )
+    assert unskipped.upstream == {"VDD_48V": "VDD_48V_IN"}
+    assert not unskipped.ambiguous
+
+
+def test_regulator_smps_vin_resolves_under_merged_net_name():
+    """The user may write either merged name. Both the supply map and the
+    lookup key are canonicalised, so IN_P_NET on the folded name still lands."""
+    proj = _series_vin_proj(
+        {
+            "PDN_ROLE": "SERIES", "PDN_R": "50m",
+            "PDN_P_NET": "VDD_48V_IN", "PDN_N_NET": "VDD_48V",
+        },
+        in_p_net="VDD_48V_F",   # the name the user wrote
+        in_p_pad_net=2,         # ...folded into VDD_48V by the merge pre-pass
+    )
+    result = parse_annotations(proj, enabled_layers=[1], net_remap={4: 2})
+    reg = next(d for d in result.directives if d.designator == "U5")
+    assert abs(reg.gain - (12.0 / (48.0 * 0.8))) < 1e-6, result.errors
+
+
+def test_regulator_smps_vin_warns_when_inferred_through_series_chain():
+    """Vin taken from a walked chain is a guess about which leg is the power
+    path — a sense or bleed resistor produces a silently wrong gain, so say so."""
+    proj = _series_vin_proj({
+        "PDN_ROLE": "SERIES", "PDN_R": "50m",
+        "PDN_P_NET": "VDD_48V_IN", "PDN_N_NET": "VDD_48V",
+    })
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert any(
+        "was inferred 1 SERIES hop(s) upstream" in w for w in result.warnings
+    ), result.warnings
+
+
+def test_regulator_smps_vin_does_not_warn_on_directly_declared_rail():
+    proj = _series_vin_proj(
+        {
+            "PDN_ROLE": "SERIES", "PDN_R": "50m",
+            "PDN_P_NET": "VDD_48V_IN", "PDN_N_NET": "VDD_48V",
+        },
+        in_p_net="VDD_48V_IN",
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert not any("SERIES hop(s) upstream" in w for w in result.warnings)
 
 
 def test_regulator_smps_vin_not_ambiguous_through_sense_bridges():
@@ -2660,7 +2935,9 @@ def test_indexed_roles_only_source_channel_contributes_supply_voltage():
     assert sources[0].channel_index == 1
     assert sources[0].voltage == pytest.approx(5.0)
 
-    supply_map = _collect_supply_voltages_by_net(_iter_pdn_parameter_sources(proj))
+    supply_map = _collect_supply_voltages_by_net(
+        _iter_pdn_parameter_sources(proj), proj,
+    )
     assert supply_map == {"+5V": 5.0}
 
 

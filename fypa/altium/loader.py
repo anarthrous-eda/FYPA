@@ -308,6 +308,7 @@ class LoadedProject:
         annotations: AnnotationResult,
         geometry: list[GeometryLayer] | None = None,
         absorbed_bridges: list[_AbsorbedBridge] | None = None,
+        merged_net_names: frozenset[str] | None = None,
     ) -> None:
         self.extracted = extracted
         self.annotations = annotations
@@ -316,6 +317,12 @@ class LoadedProject:
         # locations so the FEM keeps the physical connection between the
         # two formerly-separate-net copper islands.
         self.absorbed_bridges: list[_AbsorbedBridge] = absorbed_bridges or []
+        # Names of nets the low-Ω merge folded away. ``_apply_net_remap``
+        # deliberately leaves ``extracted.nets`` intact so annotations keep
+        # resolving under either name, so these entries survive there while
+        # owning no copper — anything reasoning about "nets that exist" (the
+        # rail list's alias folding, say) has to subtract them.
+        self.merged_net_names: frozenset[str] = merged_net_names or frozenset()
         if geometry is not None:
             # Seed the cached_property's slot so the lazy compute is skipped.
             # Used by altium_viewer._apply_stackup_overrides, which already
@@ -1610,6 +1617,12 @@ def build_net_canonical_map(
     sink may appear as ``Net(name='VDD_1V25A', aliases=['VDD_1V25D'])`` while
     ``Net(name='VDD_1V25D')`` also exists. Folding that alias would hide one
     rail and mis-attribute copper even though the nets were never merged.
+
+    ``pcb_net_names`` must therefore list only nets that still own copper.
+    :func:`_apply_net_remap` leaves ``proj.nets`` untouched, so a merged-away
+    name is still in there and would block a legitimate alias from folding —
+    callers pass the merged names in ``LoadedProject.merged_net_names`` and
+    exclude them.
     """
     if netlist is None:
         return {}
@@ -1622,7 +1635,11 @@ def build_net_canonical_map(
     pcb_upper = {n.upper() for n in (pcb_net_names or ()) if n}
     out: dict[str, str] = {}
     for net in nets:
-        canonical = net.name
+        canonical = getattr(net, "name", None)
+        if not canonical:
+            # Same possibility the ``primary_upper`` guard above allows for:
+            # a netlist entry with no usable name contributes nothing.
+            continue
         canon_upper = canonical.upper()
         for label in (canonical, *getattr(net, "aliases", ())):
             if not label:
@@ -1641,8 +1658,11 @@ def build_net_canonical_map(
 _ADAPTIVE_GAIN_MAX_ITERATIONS: int = 12
 _ADAPTIVE_GAIN_REL_TOL: float = 1e-3
 _ADAPTIVE_GAIN_VIN_FLOOR_V: float = 0.1
-# Blend toward the measured-Vin target gain each iteration (1 = full step).
-# Values < 1 stabilise coupled SMPS rails that share a SERIES upstream path.
+# Blend toward the measured-Vin target gain once oscillation is detected
+# (1 = full step). Values < 1 stabilise coupled SMPS rails that share a SERIES
+# upstream path, at the cost of extra solves — so damping is switched on by an
+# observed sign-alternating residual, never by the mere presence of several
+# regulators, which are usually independent and converge in one full step.
 _ADAPTIVE_GAIN_BLEND: float = 0.65
 
 
@@ -1774,11 +1794,12 @@ def solve_problem_adaptive(
         bool(adaptive_regulator_gain)
         and has_adaptive_smps_regulators(loaded)
     )
-    n_adaptive = sum(
-        1 for d in loaded.annotations.directives
-        if isinstance(d, RegulatorSpec) and d.adaptive_gain_eligible
-    )
-    gain_blend = _ADAPTIVE_GAIN_BLEND if n_adaptive > 1 else 1.0
+    # Full steps until a residual is seen to alternate sign repeatedly — see
+    # ``_ADAPTIVE_GAIN_BLEND``. Latches on once tripped: a design that
+    # oscillated is not going to stop part-way through.
+    gain_blend = 1.0
+    residual_sign: dict[tuple[str, int | None], int] = {}
+    flip_streak: dict[tuple[str, int | None], int] = {}
 
     problem, via_segment_records, stub_pieces_by_pair, per_net_layers = (
         build_problem(loaded)
@@ -1824,8 +1845,8 @@ def solve_problem_adaptive(
         solution = _solve_once(msg)
         adaptive_info["iterations"] = iteration + 1
 
-        new_gains: dict[tuple[str, int | None], float] = {}
-        max_rel_change = 0.0
+        # Pass 1 — sample Vin and derive each regulator's undamped target gain.
+        targets: dict[tuple[str, int | None], tuple[RegulatorSpec, float | None]] = {}
         any_vin_sampled = False
         for d in loaded.annotations.directives:
             if not isinstance(d, RegulatorSpec) or not d.adaptive_gain_eligible:
@@ -1837,17 +1858,54 @@ def solve_problem_adaptive(
                     "Adaptive gain: %s Vin=%s — keeping gain=%.4g",
                     label, vin, d.gain,
                 )
-                new_gain = d.gain
+                targets[(d.designator, d.channel_index)] = (d, None)
             else:
                 any_vin_sampled = True
-                target_gain = d.voltage / (vin * d.efficiency)
-                new_gain = (1.0 - gain_blend) * d.gain + gain_blend * target_gain
-            if d.gain != 0.0:
-                max_rel_change = max(
-                    max_rel_change,
-                    abs(new_gain - d.gain) / abs(d.gain),
+                targets[(d.designator, d.channel_index)] = (
+                    d, d.voltage / (vin * d.efficiency),
                 )
-            new_gains[(d.designator, d.channel_index)] = new_gain
+
+        # Pass 2 — a residual that keeps changing sign means this design
+        # overshoots the fixed point on a full step, so damp from here on. Two
+        # consecutive flips are required: a single one is just a regulator
+        # crossing its target while the whole design converges monotonically,
+        # which damping would only slow down.
+        for key, (d, target) in targets.items():
+            if target is None:
+                continue
+            residual = target - d.gain
+            sign = 1 if residual > 0.0 else -1 if residual < 0.0 else 0
+            if sign == 0:
+                continue
+            previous = residual_sign.get(key)
+            if previous is not None and previous != sign:
+                flip_streak[key] = flip_streak.get(key, 0) + 1
+            else:
+                flip_streak[key] = 0
+            residual_sign[key] = sign
+            if flip_streak[key] >= 2 and gain_blend == 1.0:
+                gain_blend = _ADAPTIVE_GAIN_BLEND
+                log.info(
+                    "Adaptive gain: %s residual is alternating — damping "
+                    "subsequent steps by %.2f",
+                    _channel_label(*key), gain_blend,
+                )
+
+        # Pass 3 — take the (possibly damped) step. Convergence is measured on
+        # the *undamped* residual, so the tolerance means the same thing
+        # whether or not damping is active.
+        new_gains: dict[tuple[str, int | None], float] = {}
+        max_rel_change = 0.0
+        for key, (d, target) in targets.items():
+            if target is None:
+                new_gain = d.gain
+            else:
+                new_gain = (1.0 - gain_blend) * d.gain + gain_blend * target
+            if d.gain != 0.0 and target is not None:
+                max_rel_change = max(
+                    max_rel_change, abs(target - d.gain) / abs(d.gain),
+                )
+            new_gains[key] = new_gain
 
         if not any_vin_sampled:
             # Nothing could be measured — leave ``loaded`` at the gains the
@@ -1918,6 +1976,9 @@ def build_solve_metadata(
     import numpy as np
     proj = loaded.extracted
     nets = proj.nets
+    merged_upper = {
+        n.upper() for n in getattr(loaded, "merged_net_names", frozenset())
+    }
     enabled = proj.enabled_copper_layer_ids()
     stackup_by_id = {s.layer_id: s for s in proj.stackup}
 
@@ -2489,7 +2550,12 @@ def build_solve_metadata(
         "directives": directives,
         "net_canonical": build_net_canonical_map(
             proj.compiled_netlist,
-            pcb_net_names={n.name for n in proj.nets},
+            # Merged-away names are still in ``proj.nets`` but own no copper,
+            # so they must not veto a legitimate alias fold.
+            pcb_net_names={
+                n.name for n in proj.nets
+                if n.name.upper() not in merged_upper
+            },
         ),
         "active_nets": active_nets,
         "vias": vias,
@@ -4060,6 +4126,11 @@ def load_project(prjpcb_path: str | Path,
         extracted=extracted,
         annotations=annotations,
         absorbed_bridges=absorbed_bridges if net_remap else [],
+        merged_net_names=frozenset(
+            extracted.nets[old].name
+            for old in net_remap
+            if 0 <= old < len(extracted.nets)
+        ),
     )
 
 
