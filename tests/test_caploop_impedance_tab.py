@@ -23,6 +23,8 @@ import matplotlib  # noqa: E402
 
 matplotlib.use("qtagg")
 
+from PySide6.QtCore import QLocale  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
     QMainWindow,
@@ -140,30 +142,115 @@ def test_invalid_mask_input_is_rejected_without_persisting(viewer, monkeypatch):
     assert "caploop_rails" not in viewer._project.viewer_settings
 
 
-def test_transient_current_loads_with_dot_decimal_notation(viewer):
-    viewer._set_caploop_rail_config("+3V3", {
-        **viewer._caploop_rail_config("+3V3"),
-        "transient_current_a": 0.5,
-    })
-    viewer._load_impedance_rail_config("+3V3")
-    assert viewer.imp_itran_edit.text() == "0.5"
+# --- numeric input, independent of the system locale --------------------------
+#
+# Drive the fields with QTest keystrokes, never setText: setText bypasses
+# QLineEdit validation entirely, so a setText-based test green-lights strings
+# no user can actually produce.
 
 
-def test_transient_current_accepts_comma_decimal_on_apply(viewer):
-    viewer.imp_itran_edit.setText("5,00E-01")
+@pytest.fixture
+def german_locale():
+    """Run a test under a comma-decimal locale, then put the default back."""
+    previous = QLocale()
+    QLocale.setDefault(QLocale(QLocale.German))
+    yield
+    QLocale.setDefault(previous)
+
+
+def _type(edit, text: str) -> str:
+    edit.clear()
+    edit.show()
+    QTest.keyClicks(edit, text)
+    return edit.text()
+
+
+def test_dot_decimal_is_accepted_under_a_comma_locale(viewer, german_locale):
+    """The reported bug: Qt gives the validator the system locale, so on a
+    German system the field rejected '0.5' — the one format the rest of the
+    code can read."""
+    assert _type(viewer.imp_itran_edit, "0.5") == "0.5"
+    assert viewer.imp_itran_edit.hasAcceptableInput()
     viewer._on_impedance_apply()
     assert viewer._caploop_rail_config("+3V3")["transient_current_a"] == 0.5
 
 
-def test_impedance_mask_edits_use_standard_notation_validator(viewer):
-    from PySide6.QtGui import QDoubleValidator
+def test_comma_decimal_is_refused_loudly_not_reinterpreted(
+        viewer, german_locale, monkeypatch):
+    """'0,5' must not commit as 5.0 (comma keystroke silently dropped) or as
+    0.5 (comma rewritten to a dot, which reads '1,234' as 1.234). The comma
+    stays visible and the entry is refused."""
+    warned: list[str] = []
+    monkeypatch.setattr(av.QMessageBox, "warning",
+                        lambda *a, **k: warned.append(a[2]))
 
+    assert _type(viewer.imp_itran_edit, "0,5") == "0,5"
+    assert not viewer.imp_itran_edit.hasAcceptableInput()
+    viewer._on_impedance_apply()
+    assert warned and "not a number" in warned[0]
+    assert "caploop_rails" not in viewer._project.viewer_settings
+
+
+def test_group_separator_is_refused_rather_than_read_as_a_decimal(
+        viewer, monkeypatch):
+    """'1,234' means 1234 to the user who typed it. Reading it as 1.234 is a
+    1000x error on Z_target, so it must be refused, not translated."""
+    warned: list[str] = []
+    monkeypatch.setattr(av.QMessageBox, "warning",
+                        lambda *a, **k: warned.append(a[2]))
+
+    assert _type(viewer.imp_itran_edit, "1,234") == "1,234"
+    viewer._on_impedance_apply()
+    assert warned
+    assert "caploop_rails" not in viewer._project.viewer_settings
+
+
+@pytest.mark.parametrize("typed,expected", [
+    ("1e-3", 1e-3),
+    ("1E6", 1e6),
+    ("0.000005", 5e-6),
+])
+def test_scientific_input_survives_the_keystroke_filter(
+        viewer, typed, expected):
+    """A standard-notation validator drops the 'e' and the '-' per keystroke
+    while letting the digits through, committing '1e-3' as 13."""
+    assert _type(viewer.imp_itran_edit, typed) == typed
+    viewer._on_impedance_apply()
+    assert viewer._caploop_rail_config("+3V3")["transient_current_a"] ==         pytest.approx(expected)
+
+
+def test_formatter_output_is_accepted_by_its_own_validator(viewer):
+    """_load_impedance_rail_config setText()s _fmt_settings_value output
+    straight into these fields, bypassing validation. If the two disagree the
+    field lands permanently un-committable and cannot be retyped."""
+    fmt = av._SettingsTabMixin._fmt_settings_value
+    validator = viewer.imp_itran_edit.validator()
+    for value in (0.5, 5e-06, 0.00393, 1.7241e-5, 0.000123456789, 1234.5678,
+                  1e-12, 0.0):
+        text = fmt(value)
+        assert validator.validate(text, 0)[0] ==             av.QDoubleValidator.Acceptable, f"{value!r} -> {text!r}"
+
+
+def test_small_value_round_trips_through_save_and_reload(viewer):
+    """Type a value the formatter will render in exponent form, apply, then
+    reload the rail — the field must come back readable and committable."""
+    _type(viewer.imp_itran_edit, "0.000005")
+    viewer._on_impedance_apply()
+    viewer._load_impedance_rail_config("+3V3")
+    assert viewer.imp_itran_edit.hasAcceptableInput()
+    assert av._parse_numeric_text(viewer.imp_itran_edit.text()) ==         pytest.approx(5e-6)
+
+
+def test_every_numeric_field_shares_one_locale_pinned_validator(viewer):
     for edit in (viewer.imp_ripple_edit, viewer.imp_itran_edit,
                  viewer.imp_fmax_edit, viewer.imp_vrm_r_edit,
                  viewer.imp_vrm_l_edit):
         validator = edit.validator()
-        assert isinstance(validator, QDoubleValidator)
-        assert validator.notation() == QDoubleValidator.StandardNotation
+        assert isinstance(validator, av._CLocaleDoubleValidator)
+        assert validator.notation() == av.QDoubleValidator.ScientificNotation
+        assert validator.locale().language() == QLocale.Language.C
+        assert validator.locale().numberOptions() & \
+            QLocale.NumberOption.RejectGroupSeparator
 
 
 def test_vrm_resistance_sets_the_dc_floor(viewer):
@@ -303,7 +390,12 @@ def test_editing_a_package_reaches_every_cap_of_that_size(viewer):
         "esl_h"] == pytest.approx(1.5e-9)
 
 
-def test_a_bad_package_edit_reverts_to_the_previous_value(viewer):
+def test_a_bad_package_edit_reverts_and_says_why(viewer, monkeypatch):
+    """Reverting in silence reads as the edit having vanished, so the revert
+    has to be announced — a comma decimal is the likely cause."""
+    warned: list[str] = []
+    monkeypatch.setattr(av.QMessageBox, "warning",
+                        lambda *a, **k: warned.append(a[2]))
     table = viewer.imp_pkg_table
     row = next(r for r in range(table.rowCount())
                if table.item(r, 0).text() == "0402")
@@ -311,6 +403,20 @@ def test_a_bad_package_edit_reverts_to_the_previous_value(viewer):
     lib = viewer._caploop_package_library()
     assert table.item(row, 1).text() == f"{lib.get('0402').esl_nh:.4g}"
     assert lib.is_default("0402")
+    assert warned and "banana" in warned[0]
+
+
+def test_a_comma_package_edit_is_refused_not_reinterpreted(viewer, monkeypatch):
+    warned: list[str] = []
+    monkeypatch.setattr(av.QMessageBox, "warning",
+                        lambda *a, **k: warned.append(a[2]))
+    table = viewer.imp_pkg_table
+    row = next(r for r in range(table.rowCount())
+               if table.item(r, 0).text() == "0402")
+    table.item(row, 1).setText("1,5")
+    lib = viewer._caploop_package_library()
+    assert lib.is_default("0402")           # NOT committed as 1.5 nH
+    assert warned and "1,5" in warned[0]
 
 
 def test_resetting_the_library_restores_the_defaults(viewer):

@@ -247,7 +247,8 @@ def _load_fypa_text_pixmap(height: int) -> QPixmap | None:
 
 
 from PySide6.QtCore import (
-    QByteArray, QEvent, QObject, QPointF, QRectF, QSize, Qt, QThread, QTimer, QUrl, Signal,
+    QByteArray, QEvent, QLocale, QObject, QPointF, QRectF, QSize, Qt, QThread,
+    QTimer, QUrl, Signal,
 )
 from PySide6.QtGui import (
     QAction,
@@ -298,6 +299,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QSpinBox,
+    QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -4208,7 +4210,7 @@ class ScaleController(QWidget):
             f"QLabel {{ color: {_t['fg_muted']}; font-size: 8pt; }}"
         )
         self.min_edit = QLineEdit()
-        self.min_edit.setValidator(QDoubleValidator())
+        self.min_edit.setValidator(_numeric_validator(self, bottom=None))
         self.min_edit.editingFinished.connect(self._on_edits_committed)
         min_col.addWidget(min_lbl)
         min_col.addWidget(self.min_edit)
@@ -4221,7 +4223,7 @@ class ScaleController(QWidget):
             f"QLabel {{ color: {_t['fg_muted']}; font-size: 8pt; }}"
         )
         self.max_edit = QLineEdit()
-        self.max_edit.setValidator(QDoubleValidator())
+        self.max_edit.setValidator(_numeric_validator(self, bottom=None))
         self.max_edit.editingFinished.connect(self._on_edits_committed)
         max_col.addWidget(max_lbl)
         max_col.addWidget(self.max_edit)
@@ -4373,8 +4375,8 @@ class ScaleController(QWidget):
 
     def _on_edits_committed(self) -> None:
         try:
-            low = float(self.min_edit.text())
-            high = float(self.max_edit.text())
+            low = _parse_numeric_text(self.min_edit.text())
+            high = _parse_numeric_text(self.max_edit.text())
         except ValueError:
             return
         if high <= low:
@@ -6169,6 +6171,105 @@ def _build_help_menu(window) -> None:
     help_menu.addAction(about)
 
 
+# Decimal places a numeric field accepts. Must be at least the widest fixed-
+# form output ``_fmt_settings_value``'s ``%.6g`` can produce (9 places, e.g.
+# 0.000123457), or the app writes text its own validator marks Invalid.
+_SETTINGS_VALUE_DECIMALS = 12
+
+
+class _CLocaleDoubleValidator(QDoubleValidator):
+    """QDoubleValidator that keeps a typed comma visible instead of eating it.
+
+    Qt validates the *resulting string* and silently drops any keystroke that
+    would make it Invalid. So a validator that simply refuses the comma turns a
+    German user's ``0,5`` into ``05`` — 5.0, a silent 10x error, which is no
+    improvement on the 1.234 that rewriting the comma to a dot produced.
+
+    Returning Intermediate instead lets the character land: the field still
+    reads ``0,5``, ``hasAcceptableInput()`` is False, and the commit path's
+    :func:`float` raises the ValueError callers already turn into a "not a
+    number" dialog. The entry is refused *loudly*, which is the only outcome
+    that cannot quietly scale a value by 10 or 1000.
+    """
+
+    def validate(self, text, pos):
+        if "," in text:
+            state, _text, _pos = super().validate(text.replace(",", ""), pos)
+            if state == QDoubleValidator.Invalid:
+                return QDoubleValidator.Invalid, text, pos
+            # Typeable, never committable — see the class docstring.
+            return QDoubleValidator.Intermediate, text, pos
+        return super().validate(text, pos)
+
+
+def _numeric_validator(parent=None, *, bottom: float | None = 0.0,
+                       top: float | None = None,
+                       decimals: int = _SETTINGS_VALUE_DECIMALS):
+    """A QDoubleValidator that accepts exactly what this app reads back.
+
+    Qt gives a validator the *system* locale, while ``_fmt_settings_value``
+    and :func:`float` both use the C locale. On a comma-decimal system that
+    inverts the intended behaviour — the field accepts ``0,5`` and rejects
+    ``0.5`` — which is the bug the German-locale report describes. Pinning the
+    validator to C, and refusing the group separator, makes a comma wrong *at
+    the keystroke* instead of silently readable as something else later.
+
+    ``ScientificNotation`` is required, not optional: ``_fmt_settings_value``
+    formats with ``%g`` and emits exponent form for small magnitudes, so a
+    standard-notation validator would reject the app's own output — and would
+    eat the ``e`` and ``-`` out of scientific input the user types, committing
+    ``1e-3`` as 13.
+
+    ``bottom=None`` leaves the field unbounded below (a signed coordinate or
+    scale limit); ``top=None`` leaves it unbounded above.
+    """
+    v = _CLocaleDoubleValidator(parent)
+    v.setNotation(QDoubleValidator.ScientificNotation)
+    if bottom is not None:
+        v.setBottom(bottom)
+    if top is not None:
+        v.setTop(top)
+    v.setDecimals(decimals)
+    loc = QLocale.c()
+    loc.setNumberOptions(QLocale.RejectGroupSeparator)
+    v.setLocale(loc)
+    return v
+
+
+class _NumericCellDelegate(QStyledItemDelegate):
+    """Give an editable table cell the same numeric validator the line edits
+    use, so a comma decimal is caught while typing rather than only on commit.
+    """
+
+    def __init__(self, parent=None, *, bottom: float | None = 0.0,
+                 top: float | None = None):
+        super().__init__(parent)
+        self._bottom = bottom
+        self._top = top
+
+    def createEditor(self, parent, option, index):
+        editor = super().createEditor(parent, option, index)
+        if isinstance(editor, QLineEdit):
+            editor.setValidator(
+                _numeric_validator(editor, bottom=self._bottom, top=self._top),
+            )
+        return editor
+
+
+def _parse_numeric_text(text: str) -> float:
+    """Parse a numeric field's text in the C locale.
+
+    Fields carry :func:`_numeric_validator`, which is pinned to C and rejects
+    the group separator, so text arriving here uses a dot decimal.
+
+    A comma is deliberately *not* translated to a dot. On a comma-grouping
+    system ``1,234`` means one thousand two hundred and thirty-four; reading it
+    as 1.234 would be a silent 1000x error, where :func:`float` raises a
+    ValueError the caller already reports to the user.
+    """
+    return float(text.strip())
+
+
 class _SettingsTabMixin:
     """Shared construction of the Settings tab.
 
@@ -6819,10 +6920,7 @@ class _SettingsTabMixin:
             )
 
             edit = QLineEdit(self._fmt_settings_value(current))
-            validator = QDoubleValidator(self)
-            validator.setNotation(QDoubleValidator.StandardNotation)
-            validator.setBottom(0.0)
-            edit.setValidator(validator)
+            edit.setValidator(_numeric_validator(self))
             edit.setMinimumWidth(110)
             edit.setMaximumWidth(160)
             edit.setToolTip(tooltip)
@@ -7021,7 +7119,7 @@ class _SettingsTabMixin:
         if combo is None or edit is None:
             return
         try:
-            val = float(edit.text().strip())
+            val = self._parse_settings_value(edit.text())
         except ValueError:
             return
         target = len(self._FILL_MATERIAL_PRESETS) - 1   # Custom by default
@@ -7167,14 +7265,7 @@ class _SettingsTabMixin:
         # %g picks fixed or scientific automatically; clamp to 6 sig figs.
         return f"{f:.6g}"
 
-    @staticmethod
-    def _parse_settings_value(text: str) -> float:
-        """Parse a numeric QLineEdit value independent of the system locale.
-
-        Impedance and Settings fields always use dot decimals in the
-        validator; tolerate a comma decimal from pasted locale-formatted
-        input (e.g. ``5,00E-01``)."""
-        return float(text.strip().replace(",", "."))
+    _parse_settings_value = staticmethod(_parse_numeric_text)
 
     def _on_settings_reset(self) -> None:
         """Restore every Settings-tab field to its built-in default. The
@@ -7241,7 +7332,7 @@ class _SettingsTabMixin:
                 mark(edit, False)
                 continue
             try:
-                val = float(edit.text().strip())
+                val = self._parse_settings_value(edit.text())
                 dirty = abs(val - float(baseline)) > 1e-12
             except ValueError:
                 dirty = True
@@ -7270,7 +7361,7 @@ class _SettingsTabMixin:
             if edit is None:
                 continue
             try:
-                val = float(edit.text().strip())
+                val = self._parse_settings_value(edit.text())
                 dirty = abs(val - float(baseline)) > 1e-12
             except ValueError:
                 dirty = True
@@ -7284,7 +7375,7 @@ class _SettingsTabMixin:
                 mark(edit, False)
                 continue
             try:
-                new_um = float(text)
+                new_um = self._parse_settings_value(text)
                 dirty = abs(new_um / 1000.0 - original_mm) > 1.0e-6
             except ValueError:
                 dirty = True
@@ -19231,13 +19322,15 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             form.addRow("Layer", layer_lbl)
 
         self._ef_loc_x = QLineEdit(f"{float(ax):.4f}")
-        self._ef_loc_x.setValidator(QDoubleValidator(-1e9, 1e9, 4))
+        self._ef_loc_x.setValidator(
+            _numeric_validator(self, bottom=-1e9, top=1e9))
         self._ef_loc_x.setToolTip("X position (mm) — must stay on copper")
         self._ef_loc_x.editingFinished.connect(
             self._on_free_marker_coord_edited)
         form.addRow("X (mm)", self._ef_loc_x)
         self._ef_loc_y = QLineEdit(f"{float(ay):.4f}")
-        self._ef_loc_y.setValidator(QDoubleValidator(-1e9, 1e9, 4))
+        self._ef_loc_y.setValidator(
+            _numeric_validator(self, bottom=-1e9, top=1e9))
         self._ef_loc_y.setToolTip("Y position (mm) — must stay on copper")
         self._ef_loc_y.editingFinished.connect(
             self._on_free_marker_coord_edited)
@@ -19499,14 +19592,14 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._ef_role.currentTextChanged.connect(self._on_editor_role_changed)
         form.addRow("PDN role", self._ef_role)
         self._ef_value = QLineEdit()
-        self._ef_value.setValidator(QDoubleValidator(0.0, 1e12, 6))
+        self._ef_value.setValidator(_numeric_validator(self, top=1e12))
         self._ef_value_label = QLabel("Voltage (V)")
         form.addRow(self._ef_value_label, self._ef_value)
         # SINK-only optional minimum acceptable rail voltage (PDN_MIN_V
         # equivalent). Blank disables the per-pin pass/fail check. Visibility
         # is toggled by _on_editor_role_changed below.
         self._ef_min_v = QLineEdit()
-        self._ef_min_v.setValidator(QDoubleValidator(0.0, 1e12, 6))
+        self._ef_min_v.setValidator(_numeric_validator(self, top=1e12))
         self._ef_min_v.setToolTip(
             "Optional: minimum acceptable rail voltage at this sink's pins. "
             "Leave blank to skip the check. Sinks below this voltage are "
@@ -20251,8 +20344,8 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             return
         old_xy = (float(d.anchor_xy[0]), float(d.anchor_xy[1]))
         try:
-            nx = float(self._ef_loc_x.text())
-            ny = float(self._ef_loc_y.text())
+            nx = _parse_numeric_text(self._ef_loc_x.text())
+            ny = _parse_numeric_text(self._ef_loc_y.text())
         except (ValueError, RuntimeError):
             self._sync_free_marker_coord_fields(*old_xy)
             return
@@ -22442,10 +22535,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             is_plane = bool(row.get("is_plane"))
 
             edit = QLineEdit(self._fmt_settings_value(thk_um))
-            validator = QDoubleValidator(self)
-            validator.setNotation(QDoubleValidator.StandardNotation)
-            validator.setBottom(0.0)
-            edit.setValidator(validator)
+            edit.setValidator(_numeric_validator(self))
             edit.setMinimumWidth(110)
             edit.setMaximumWidth(160)
             tooltip = (
@@ -22544,7 +22634,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         if btn is None or edit is None:
             return
         try:
-            val = float(edit.text().strip())
+            val = self._parse_settings_value(edit.text())
         except ValueError:
             btn.setVisible(False)
             return
@@ -22615,7 +22705,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             if not text:
                 continue
             try:
-                new_um = float(text)
+                new_um = self._parse_settings_value(text)
             except ValueError:
                 raise ValueError(
                     f"layer {lid} thickness: not a number ({text!r})"
@@ -22643,7 +22733,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 continue
             text = edit.text().strip()
             try:
-                kwargs[key] = float(text)
+                kwargs[key] = self._parse_settings_value(text)
             except ValueError:
                 raise ValueError(f"{label!r}: not a number ({text!r})")
         chk = getattr(self, "_settings_adaptive_check", None)
@@ -22663,7 +22753,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 return getattr(self, f"_{key}")
             text = edit.text().strip()
             try:
-                return float(text)
+                return self._parse_settings_value(text)
             except ValueError:
                 raise ValueError(f"{label!r}: not a number ({text!r})")
 
@@ -25728,7 +25818,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             if edit is None:
                 continue
             try:
-                values[f.name] = float(edit.text().strip())
+                values[f.name] = self._parse_settings_value(edit.text())
             except ValueError:
                 self._settings_status_label.setText(
                     f"<span style='color:{_T()['warn_fg']};'>"
@@ -26497,9 +26587,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             "capacitors no longer helps.")
         for e in (self.imp_ripple_edit, self.imp_itran_edit,
                   self.imp_fmax_edit):
-            validator = QDoubleValidator(0.0, 1e12, 6, self)
-            validator.setNotation(QDoubleValidator.StandardNotation)
-            e.setValidator(validator)
+            e.setValidator(_numeric_validator(self, top=1e12))
             e.setMaximumWidth(120)
         mask_form.addRow("Ripple (%)", self.imp_ripple_edit)
         mask_form.addRow("Transient current (A)", self.imp_itran_edit)
@@ -26522,9 +26610,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             "Output inductance of the regulator including its path to the "
             "plane. It makes the VRM branch give up above its bandwidth.")
         for e in (self.imp_vrm_r_edit, self.imp_vrm_l_edit):
-            validator = QDoubleValidator(0.0, 1e12, 6, self)
-            validator.setNotation(QDoubleValidator.StandardNotation)
-            e.setValidator(validator)
+            e.setValidator(_numeric_validator(self, top=1e12))
             e.setMaximumWidth(120)
         vrm_form.addRow("R (mΩ)", self.imp_vrm_r_edit)
         vrm_form.addRow("L (nH)", self.imp_vrm_l_edit)
@@ -26620,6 +26706,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
         self.imp_pkg_table.setMinimumHeight(220)
         self._populate_package_table()
+        self.imp_pkg_table.setItemDelegate(_NumericCellDelegate(self.imp_pkg_table))
         self.imp_pkg_table.itemChanged.connect(self._on_package_item_changed)
         layout.addWidget(self.imp_pkg_table)
 
@@ -26654,13 +26741,23 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         lib = self._caploop_package_library()
         model = lib.get(package)
         try:
-            value = float(item.text())
+            value = _parse_numeric_text(item.text())
             if value < 0.0:
                 raise ValueError
         except ValueError:
+            bad = item.text().strip()
             self._imp_pkg_populating = True
             item.setText(f"{(model.esl_nh if item.column() == 1 else model.esr_mohm):.4g}")
             self._imp_pkg_populating = False
+            # Reverting in silence looks like the edit simply vanished. Say
+            # what was rejected — a comma decimal is the likely cause on a
+            # locale that formats numbers that way.
+            QMessageBox.warning(
+                self, "Invalid value",
+                f"{'ESL' if item.column() == 1 else 'ESR'} for {package}: "
+                f"{bad!r} is not a non-negative number. Use a dot decimal "
+                f"separator (0.5, not 0,5)."
+            )
             return
         esl_h = value * 1e-9 if item.column() == 1 else model.esl_h
         esr_ohm = value * 1e-3 if item.column() == 2 else model.esr_ohm
@@ -26854,11 +26951,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             return
 
         def _f(edit, name, scale=1.0):
-            text = edit.text().strip()
+            # Normalisation belongs to _parse_settings_value; keep the raw
+            # text only to quote back what the user actually typed.
+            text = edit.text()
             try:
                 value = self._parse_settings_value(text)
             except ValueError:
-                raise ValueError(f"{name}: {text!r} is not a number")
+                raise ValueError(f"{name}: {text.strip()!r} is not a number")
             if value < 0.0:
                 raise ValueError(f"{name} must be zero or positive")
             return value * scale
