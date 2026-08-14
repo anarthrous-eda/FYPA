@@ -7,13 +7,10 @@ CLI entry point. Subcommands:
   annotations   Parse PDN_* annotations and show resolved terminals.
   load          Full pipeline (extract → geometry → annotations) with a
                 solve-readiness verdict.
-  solve         (Stub) Run FEM solver and save a solution pickle.
-  show          (Stub) Open the interactive solution viewer for a pickled solution.
-  gui           (Stub) Run solver + viewer in one step.
-  paraview      (Stub) Export a pickled solution to ParaView VTK.
-
-The stub subcommands print what blocks them — the C++-replacement mesher port
-is the remaining work.
+  solve         Run the FEM solver and pickle the solution.
+  show          Open the interactive solution viewer for a pickled solution.
+  gui           Open the viewer and import a .PrjPcb (same as File > Import).
+  paraview      Export a pickled solution to ParaView VTK.
 """
 from __future__ import annotations
 
@@ -153,12 +150,28 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Optional path for a per-layer geometry quicklook PNG.")
     _add_pcbdoc_arg(sp)
 
-    def _add_mesh_args(sp_: argparse.ArgumentParser) -> None:
+    def _add_mesh_args(
+        sp_: argparse.ArgumentParser, *, optional: bool = False,
+    ) -> None:
+        """Add ``--mesh-angle`` / ``--mesh-size`` / ``--adaptive-regulator-gain``.
+
+        When ``optional`` is True (CLI ``gui``), mesh size/angle default to
+        ``None`` so the launcher Settings tab is left alone unless the user
+        passes the flags explicitly.
+        """
         default = _pdn_mesh.Mesher.Config()
-        sp_.add_argument("--mesh-angle", type=float, default=default.minimum_angle,
-                         help="Minimum-angle constraint (degrees) for mesh triangles")
-        sp_.add_argument("--mesh-size", type=float, default=default.maximum_size,
-                         help="Maximum edge size for mesh triangles (mm)")
+        sp_.add_argument(
+            "--mesh-angle", type=float,
+            default=(None if optional else default.minimum_angle),
+            help="Minimum-angle constraint (degrees) for mesh triangles"
+                 + (" (default: Settings tab)" if optional else ""),
+        )
+        sp_.add_argument(
+            "--mesh-size", type=float,
+            default=(None if optional else default.maximum_size),
+            help="Maximum edge size for mesh triangles (mm)"
+                 + (" (default: Settings tab)" if optional else ""),
+        )
         sp_.add_argument(
             "--adaptive-regulator-gain", action="store_true",
             help="Iterate SMPS regulator gain from solved input voltage",
@@ -173,13 +186,16 @@ def _build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("show", help="Open the interactive solution viewer")
     sp.add_argument("solution", type=Path)
 
-    sp = sub.add_parser("gui", help="Solve + open the viewer in one step")
+    sp = sub.add_parser(
+        "gui",
+        help="Open the viewer and import a .PrjPcb (same as File > Import)",
+    )
     sp.add_argument("prjpcb", type=Path)
     sp.add_argument("--no-cache", action="store_true",
-                    help="Force a full re-solve even if a matching cached "
-                         "solution exists (default: reuse cache when the "
-                         "project and tool source haven't changed).")
-    _add_mesh_args(sp)
+                    help="Force a clean import (ignore design-info / solve "
+                         "caches) — same as File > Import Altium Design "
+                         "(Clean).")
+    _add_mesh_args(sp, optional=True)
     _add_pcbdoc_arg(sp)
 
     sp = sub.add_parser("paraview", help="Export a pickled solution to ParaView VTK")
@@ -315,23 +331,38 @@ def _solve_loaded(loaded, args) -> tuple[LeanSolution, dict]:
     solution + metadata dict. The padne :class:`Solution` is converted
     to :class:`LeanSolution` immediately so the heavy half-edge mesh
     structures can be garbage-collected before anything downstream
-    touches them — slashes cache pickle size by ~80× on typical boards."""
+    touches them — slashes cache pickle size by ~80× on typical boards.
+
+    On a mesh failure, returns a stub LeanSolution + metadata with
+    ``mesh_failures`` populated (same packaging as the GUI solve worker)
+    so headless ``solve`` can report the bad copper instead of aborting.
+    """
     if not loaded.is_solveable:
         print(loaded.diagnostic_summary(), file=sys.stderr)
         raise SystemExit(1)
+    from fypa.altium.loader import SolveSettings as _SolveSettings
+    settings = _SolveSettings()
+    settings.mesh_min_angle_deg = float(args.mesh_angle)
+    settings.mesh_max_size_mm = float(args.mesh_size)
     mesher_config = _pdn_mesh.Mesher.Config(
-        minimum_angle=args.mesh_angle,
-        maximum_size=args.mesh_size,
+        minimum_angle=settings.mesh_min_angle_deg,
+        maximum_size=settings.mesh_max_size_mm,
     )
     adaptive = bool(getattr(args, "adaptive_regulator_gain", False))
-    (padne_solution, problem, via_segment_records,
-     stub_pieces_by_pair, per_net_layers, adaptive_info) = (
-        solve_problem_adaptive(
-            loaded,
-            mesher_config,
-            adaptive_regulator_gain=adaptive,
+    try:
+        (padne_solution, problem, via_segment_records,
+         stub_pieces_by_pair, per_net_layers, adaptive_info) = (
+            solve_problem_adaptive(
+                loaded,
+                mesher_config,
+                adaptive_regulator_gain=adaptive,
+            )
         )
-    )
+    except _pdn_mesh.MeshingException as mesh_exc:
+        from fypa.altium.loader import package_mesh_failure
+        return package_mesh_failure(
+            loaded, mesh_exc, mesher_config, settings=settings,
+        )
     # Always log the solver diagnostic stats. ground_node_current should be
     # ~0 for a well-posed problem; a large value indicates either an isolated
     # GND copper region (no via path to the chosen reference vertex) or a
@@ -1119,6 +1150,16 @@ def save_solution_file(path: Path, solution, metadata: dict | None) -> None:
 def do_solve(args: argparse.Namespace) -> int:
     loaded = load_project(args.prjpcb, pcbdoc_selector=args.pcbdoc)
     solution, metadata = _solve_loaded(loaded, args)
+    if metadata.get("mesh_failures"):
+        for rec in metadata["mesh_failures"]:
+            summary = rec.get("summary") or "Meshing failed."
+            print(summary, file=sys.stderr)
+        print(
+            "Meshing failed — solution not written. "
+            "Open the project with `gui` to inspect the bad copper.",
+            file=sys.stderr,
+        )
+        return 1
     args.output.parent.mkdir(parents=True, exist_ok=True)
     # HIGHEST_PROTOCOL: pickle protocol 5 (Python 3.8+) gets out-of-band
     # numpy buffer support automatically for ndarray fields inside the
@@ -1140,58 +1181,43 @@ def do_show(args: argparse.Namespace) -> int:
 
 
 def do_gui(args: argparse.Namespace) -> int:
+    """Open the viewer launcher and import ``args.prjpcb`` the same way as
+    File > Import Altium Design (progress dialog, ``_SolveWorker``, mesh-
+    failure stub, caches).
+
+    Respects the persisted "Solve automatically on Altium import" preference
+    — when that is off, the design opens as a stub without meshing (same as
+    File > Import). ``--no-cache`` maps to Import (Clean).
+
+    PcbDoc selection stays non-interactive (first board, or ``--pcbdoc``) so
+    Altium ``Run_FYPA.pas`` / automation never block on a picker. Mesh
+    ``--mesh-angle`` / ``--mesh-size`` are applied only when passed; otherwise
+    the launcher Settings-tab values are used.
+    """
     if not _require_pyside6("gui"):
         return 2
     from fypa import altium_viewer
-    log = logging.getLogger(__name__)
-    pcbdoc_path = _resolve_pcbdoc(args.prjpcb, getattr(args, "pcbdoc", None))
-    log.info("Selected PcbDoc: %s", pcbdoc_path.name)
-    # Two-layer cache check (skip both with --no-cache). The solve fingerprint
-    # captures every input that can change the solve result; the design-info
-    # fingerprint captures only what affects the LoadedProject so an isolated
-    # solver/mesher source edit still reuses the cached extract.
-    from fypa.altium.loader import SolveSettings as _SolveSettings
-    _cli_settings = _SolveSettings()
-    _cli_settings.mesh_min_angle_deg = getattr(
-        args, "mesh_angle", _cli_settings.mesh_min_angle_deg)
-    _cli_settings.mesh_max_size_mm = getattr(
-        args, "mesh_size", _cli_settings.mesh_max_size_mm)
-    solve_fp = _project_fingerprint(args.prjpcb, pcbdoc_path,
-                                    settings=_cli_settings)
-    design_fp = _design_info_fingerprint(args.prjpcb, pcbdoc_path)
-    no_cache = getattr(args, "no_cache", False)
-    if not no_cache:
-        cached = _try_load_cached_solution(args.prjpcb, solve_fp,
-                                            pcbdoc_path=pcbdoc_path)
-        if cached is not None and cached[0] is not None:
-            solution, metadata = cached
-            log.info(
-                "Solve cache hit: reusing solution from %s. Pass --no-cache "
-                "to force a re-solve.",
-                _solve_cache_path(args.prjpcb, pcbdoc_path),
-            )
-            return altium_viewer.main(solution, metadata=metadata) or 0
-        log.info("Solve cache miss; checking design-info cache.")
-    else:
-        log.info("--no-cache: ignoring any cached design info / solution.")
 
-    loaded = None
-    if not no_cache:
-        loaded = _try_load_cached_design_info(args.prjpcb, design_fp,
-                                              pcbdoc_path=pcbdoc_path)
-        if loaded is not None:
-            log.info(
-                "Design-info cache hit: reusing extract from %s.",
-                _design_info_cache_path(args.prjpcb, pcbdoc_path),
-            )
-    if loaded is None:
-        loaded = load_project(args.prjpcb, pcbdoc_selector=str(pcbdoc_path))
-        _save_cached_design_info(args.prjpcb, design_fp, loaded,
-                                  pcbdoc_path=pcbdoc_path)
-    solution, metadata = _solve_loaded(loaded, args)
-    _save_cached_solution(args.prjpcb, solve_fp, solution, metadata,
-                          pcbdoc_path=pcbdoc_path)
-    return altium_viewer.main(solution, metadata=metadata) or 0
+    # Always resolve silently — never open the multi-PcbDoc GUI picker.
+    pcbdoc_path = _resolve_pcbdoc(
+        args.prjpcb, getattr(args, "pcbdoc", None),
+    )
+
+    adaptive = getattr(args, "adaptive_regulator_gain", False)
+    target: dict = {
+        "prjpcb_path": args.prjpcb.resolve(),
+        "pcbdoc_path": pcbdoc_path,
+        "clean": bool(getattr(args, "no_cache", False)),
+        # True only when the flag is passed; otherwise the launcher uses
+        # the persisted Settings-tab preference (same as File > Import).
+        "adaptive_regulator_gain": True if adaptive else None,
+    }
+    # Only override Settings-tab mesh values when the user passed the flags.
+    if getattr(args, "mesh_angle", None) is not None:
+        target["mesh_min_angle_deg"] = float(args.mesh_angle)
+    if getattr(args, "mesh_size", None) is not None:
+        target["mesh_max_size_mm"] = float(args.mesh_size)
+    return altium_viewer.main(None, altium_import_target=target) or 0
 
 
 def do_gerber_gui(args: argparse.Namespace) -> int:
