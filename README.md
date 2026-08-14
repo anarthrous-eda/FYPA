@@ -89,11 +89,9 @@ dependency — including `altium_monkey`, which uv pulls from
 [upstream](https://github.com/wavenumber-eng/altium_monkey) at the tag pinned
 in `pyproject.toml`'s `[tool.uv.sources]`.
 
-> **Python version: 3.11 or 3.12 only.** The `altium_monkey` upstream pins
-> `requires-python = ">=3.11,<3.13"`, and its `numpy==2.2.3` dependency
-> does not yet ship wheels for 3.13/3.14. `.python-version` pins 3.12, which
-> uv fetches automatically; to use 3.11 instead, edit that file before
-> running `uv sync`.
+> **Python version: 3.12 only.** Both FYPA and `altium_monkey` pin
+> `requires-python = ">=3.12,<3.13"`. `.python-version` selects 3.12, which
+> uv fetches automatically.
 
 Day-to-day commands:
 
@@ -127,6 +125,15 @@ tool auto-infers them from the component's pad connectivity.
 Add `PDN_ROLE` on the component (e.g. `PDN_ROLE=SOURCE`) and the required parameters for that role. 
 For 2-pin parts the tool can auto-infer `PDN_P_NET` /
 `PDN_N_NET` from connectivity; for ICs you'll need to set them explicitly.
+
+Pads on a rail net are collected automatically. To keep enable/signal ties
+off the terminal — especially on multi-rail ICs in a SchLib — set part-wide
+`PDN_PINS_ONLY` (optional `PDN_EXTRA_PINS` adds to that list on the instance;
+EXTRA alone is the full allowlist). Per-terminal `PDN_P_PINS` / `PDN_N_PINS`
+still override one terminal; `PDN_IGNORE` / `PDN_IGNORE_PINS` fine-tune
+exclusions. See
+[Restricting which pins may join](docs/user-guide/01-sources-and-sinks.md#restricting-which-pins-may-join-allowlist)
+in the user guide.
 
 ### `SINK` — minimum-voltage check (`PDN_MIN_V`)
 
