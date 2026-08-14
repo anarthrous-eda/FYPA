@@ -172,10 +172,21 @@ def _build_parser() -> argparse.ArgumentParser:
             help="Maximum edge size for mesh triangles (mm)"
                  + (" (default: Settings tab)" if optional else ""),
         )
+        # Tri-state on ``gui``: unset defers to the persisted Settings-tab
+        # preference, so without the negative flag a user whose preference is
+        # ON has no way to turn it off for one run.
         sp_.add_argument(
-            "--adaptive-regulator-gain", action="store_true",
+            "--adaptive-regulator-gain", dest="adaptive_regulator_gain",
+            action="store_true", default=None,
             help="Iterate SMPS regulator gain from solved input voltage",
         )
+        if optional:
+            sp_.add_argument(
+                "--no-adaptive-regulator-gain",
+                dest="adaptive_regulator_gain", action="store_false",
+                help="Force adaptive SMPS gain off for this run, whatever the "
+                     "Settings-tab preference says",
+            )
 
     sp = sub.add_parser("solve", help="Solve the FEM problem and pickle the solution")
     sp.add_argument("prjpcb", type=Path)
@@ -333,9 +344,12 @@ def _solve_loaded(loaded, args) -> tuple[LeanSolution, dict]:
     structures can be garbage-collected before anything downstream
     touches them — slashes cache pickle size by ~80× on typical boards.
 
-    On a mesh failure, returns a stub LeanSolution + metadata with
-    ``mesh_failures`` populated (same packaging as the GUI solve worker)
-    so headless ``solve`` can report the bad copper instead of aborting.
+    On a mesh failure returns ``(None, metadata)`` with ``mesh_failed`` set and
+    ``mesh_failures`` carrying whatever could be localised, so headless
+    ``solve`` can report the bad copper instead of aborting. No stub solution
+    is built: nothing headless writes one, and building it is the expensive
+    part. The GUI worker, which does open a viewer, still uses
+    :func:`package_mesh_failure`.
     """
     if not loaded.is_solveable:
         print(loaded.diagnostic_summary(), file=sys.stderr)
@@ -359,10 +373,20 @@ def _solve_loaded(loaded, args) -> tuple[LeanSolution, dict]:
             )
         )
     except _pdn_mesh.MeshingException as mesh_exc:
-        from fypa.altium.loader import package_mesh_failure
-        return package_mesh_failure(
-            loaded, mesh_exc, mesher_config, settings=settings,
+        # Headless: do NOT go through package_mesh_failure. It re-runs
+        # build_problem over the whole board, builds a stub solution for every
+        # copper layer, and runs build_solve_metadata (primitives, all_copper
+        # rings, per-plane records, per-stub Triangle pre-triangulation,
+        # overlays) — tens of seconds and hundreds of MB on a large board — and
+        # ``do_solve`` uses one summary string from it and writes nothing. The
+        # GUI needs that packaging to open a viewer; this path does not.
+        from fypa.altium.loader import build_mesh_failure_records
+        problem = getattr(mesh_exc, "built_problem", None)
+        per_net_layers = getattr(mesh_exc, "built_per_net_layers", None)
+        records = build_mesh_failure_records(
+            mesh_exc, problem, loaded, per_net_layers,
         )
+        return None, {"mesh_failures": records, "mesh_failed": True}
     # Always log the solver diagnostic stats. ground_node_current should be
     # ~0 for a well-posed problem; a large value indicates either an isolated
     # GND copper region (no via path to the chosen reference vertex) or a
@@ -387,6 +411,7 @@ def _solve_loaded(loaded, args) -> tuple[LeanSolution, dict]:
     metadata = build_solve_metadata(
         loaded, problem,
         mesher_config=mesher_config,
+        settings=settings,
         solver_info=padne_solution.solver_info,
         via_segment_records=via_segment_records,
         stub_pieces_by_pair=stub_pieces_by_pair,
@@ -1150,10 +1175,16 @@ def save_solution_file(path: Path, solution, metadata: dict | None) -> None:
 def do_solve(args: argparse.Namespace) -> int:
     loaded = load_project(args.prjpcb, pcbdoc_selector=args.pcbdoc)
     solution, metadata = _solve_loaded(loaded, args)
-    if metadata.get("mesh_failures"):
-        for rec in metadata["mesh_failures"]:
+    # ``mesh_failed``, not the records list: a failure whose geometry was too
+    # degenerate to record leaves the list empty, and testing that would pickle
+    # an empty stub to args.output and exit 0 as though the board had solved.
+    if metadata.get("mesh_failed"):
+        for rec in metadata.get("mesh_failures") or []:
             summary = rec.get("summary") or "Meshing failed."
             print(summary, file=sys.stderr)
+        if not metadata.get("mesh_failures"):
+            print("Meshing failed; the offending copper could not be "
+                  "localised.", file=sys.stderr)
         print(
             "Meshing failed — solution not written. "
             "Open the project with `gui` to inspect the bad copper.",
@@ -1203,20 +1234,29 @@ def do_gui(args: argparse.Namespace) -> int:
         args.prjpcb, getattr(args, "pcbdoc", None),
     )
 
-    adaptive = getattr(args, "adaptive_regulator_gain", False)
+    adaptive = getattr(args, "adaptive_regulator_gain", None)
     target: dict = {
         "prjpcb_path": args.prjpcb.resolve(),
         "pcbdoc_path": pcbdoc_path,
         "clean": bool(getattr(args, "no_cache", False)),
-        # True only when the flag is passed; otherwise the launcher uses
-        # the persisted Settings-tab preference (same as File > Import).
-        "adaptive_regulator_gain": True if adaptive else None,
+        # None only when neither --adaptive-regulator-gain nor its --no-
+        # counterpart was passed; the launcher then uses the persisted
+        # Settings-tab preference (same as File > Import).
+        "adaptive_regulator_gain": adaptive,
     }
     # Only override Settings-tab mesh values when the user passed the flags.
     if getattr(args, "mesh_angle", None) is not None:
         target["mesh_min_angle_deg"] = float(args.mesh_angle)
     if getattr(args, "mesh_size", None) is not None:
         target["mesh_max_size_mm"] = float(args.mesh_size)
+    # A mesh or adaptive-gain flag means nothing without a solve, so passing
+    # one overrides "Solve automatically on Altium import". Without this the
+    # flags are parsed and silently discarded when that preference is off.
+    target["force_solve"] = bool(
+        target.get("mesh_min_angle_deg") is not None
+        or target.get("mesh_max_size_mm") is not None
+        or adaptive is not None
+    )
     return altium_viewer.main(None, altium_import_target=target) or 0
 
 

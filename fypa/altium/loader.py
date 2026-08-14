@@ -1962,6 +1962,7 @@ def build_solve_metadata(
     per_net_layers: list[GeometryLayer] | None = None,
     regulator_adaptive_gain: dict | None = None,
     mesh_failures: list[dict] | None = None,
+    mesh_failed: bool = False,
 ) -> dict:
     """Collect every input the solve depended on into a serialisable dict.
 
@@ -2587,7 +2588,14 @@ def build_solve_metadata(
         "connectivity_breaks": list(
             getattr(loaded.annotations, "connectivity_breaks", [])
         ),
+        # ``mesh_failures`` carries the records the viewer highlights; it can
+        # legitimately be EMPTY on a real failure, because the degenerate
+        # sliver that makes Triangle abort is the same geometry
+        # ``_build_stub_record`` rejects. Anything asking "did meshing fail?"
+        # must read ``mesh_failed`` — testing the list for truthiness lets a
+        # failed solve pass as a successful one.
         "mesh_failures": list(mesh_failures or []),
+        "mesh_failed": bool(mesh_failed) or bool(mesh_failures),
         "fem_stats": {
             "padne_layer_count": len(problem.layers) if problem is not None else 0,
             "padne_network_count": (
@@ -3012,6 +3020,7 @@ def package_mesh_failure(
         stub_pieces_by_pair=stub_pieces_by_pair,
         per_net_layers=per_net_layers,
         mesh_failures=mesh_failures,
+        mesh_failed=True,
     )
     return stub, metadata
 

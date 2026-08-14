@@ -4889,11 +4889,18 @@ class _SolveWorker(QThread):
         self, loaded, pristine_loaded, _timer,
         *, needs_directives: bool = False,
         stage_message: str | None = None,
-        mesh_failures: list | None = None,
         stub_pieces_by_pair=None,
         per_net_layers=None,
     ) -> None:
-        """Package a stub LeanSolution + metadata and finish the worker."""
+        """Package a stub LeanSolution + metadata and finish the worker.
+
+        For the load-only and needs-directives stubs. A *mesh-failure* stub
+        goes through :func:`~fypa.altium.loader.package_mesh_failure` instead,
+        which additionally records ``mesher_config`` and per-via segment
+        resistances. That difference is deliberate, not drift: nothing was
+        meshed on this path, so there is no mesher run or via segmentation to
+        record, and inventing values would misreport the Setup tab.
+        """
         from fypa.altium.loader import build_solve_metadata
         from fypa.altium_geometry import build_per_net_geometry_layers
 
@@ -4912,7 +4919,6 @@ class _SolveWorker(QThread):
                 settings=self._settings,
                 per_net_layers=per_net_layers,
                 stub_pieces_by_pair=stub_pieces_by_pair,
-                mesh_failures=mesh_failures,
             )
         _timer.log_breakdown()
         self.finished_ok.emit(stub_solution, metadata, pristine_loaded)
@@ -5010,7 +5016,6 @@ class _SolveWorker(QThread):
             # computed against the on-disk project and would be wrong.
             if (self._try_solve_cache_first
                     and not self._load_only
-                    and not self._adaptive_regulator_gain
                     and pcbdoc_resolved is not None
                     and not self._stackup_overrides
                     and not self._sink_overrides
@@ -5024,6 +5029,14 @@ class _SolveWorker(QThread):
                     logging.getLogger(__name__).warning(
                         "Solve-cache check failed (%s: %s); will re-solve.",
                         type(e).__name__, e,
+                    )
+                    cached = None
+                if cached is not None and not _cache_serves_adaptive_request(
+                        cached[1], self._adaptive_regulator_gain):
+                    logging.getLogger(__name__).info(
+                        "Solve cache entry was not solved with adaptive SMPS "
+                        "gain and this design has eligible regulators — "
+                        "re-solving.",
                     )
                     cached = None
                 if cached is not None:
@@ -5165,6 +5178,20 @@ class _SolveWorker(QThread):
             # current, compounding). ``clone_loaded_for_edit`` copies only the
             # annotations (fresh directives list) and shares the override'd
             # extracted/geometry, so the override is preserved.
+            # "Adaptive SMPS gain" is a global preference, so it arrives set on
+            # boards it cannot affect. Collapse it to its effective value now
+            # that the design is loaded: the clone below and the cache-write
+            # guard later must not fire for a flag ``solve_problem_adaptive``
+            # will short-circuit anyway.
+            if self._adaptive_regulator_gain:
+                from fypa.altium.loader import has_adaptive_smps_regulators
+                if not has_adaptive_smps_regulators(loaded):
+                    logging.getLogger(__name__).info(
+                        "Adaptive SMPS gain requested but no regulator is "
+                        "eligible — treating as off (keeps the solve cache).",
+                    )
+                    self._adaptive_regulator_gain = False
+
             if (self._sink_overrides or self._editor_directives
                     or self._copper_names or self._adaptive_regulator_gain):
                 loaded = clone_loaded_for_edit(loaded)
@@ -5299,8 +5326,7 @@ class _SolveWorker(QThread):
                     loaded, mesher_config, _timer)
             else:
                 _packaged = self._solve_and_package_inprocess(
-                    loaded, mesher_config, _timer,
-                    pristine_loaded=pristine_loaded)
+                    loaded, mesher_config, _timer)
             if _packaged is None:
                 return
             new_solution, metadata = _packaged
@@ -5317,10 +5343,10 @@ class _SolveWorker(QThread):
                     "Solve cache NOT written: pcbdoc_resolved is None "
                     "(see earlier warning from _resolve_pcbdoc).",
                 )
-            elif (metadata or {}).get("mesh_failures"):
+            elif (metadata or {}).get("mesh_failed"):
                 _cache_log.info(
                     "Solve cache NOT written: meshing failed "
-                    "(stub with mesh_failures only).",
+                    "(stub only).",
                 )
             elif (self._stackup_overrides or self._sink_overrides
                     or self._editor_directives
@@ -5395,15 +5421,16 @@ class _SolveWorker(QThread):
         can kill it directly on cancel."""
         self._solve_child = proc
 
-    def _solve_and_package_inprocess(self, loaded, mesher_config, _timer, *,
-                                      pristine_loaded=None):
+    def _solve_and_package_inprocess(self, loaded, mesher_config, _timer):
         """Mesh + solve + build metadata + convert to lean, on this thread.
 
         Returns ``(new_solution, metadata)``, or ``None`` if a cancel was
-        requested at a stage boundary or meshing failed (stub viewer opened).
-        This is the original in-process path, unchanged except that the cancel
-        checks return ``None`` (so the caller returns) instead of returning
-        from ``run`` directly."""
+        requested at a stage boundary. A meshing failure also returns a
+        ``(stub, metadata)`` pair — with ``metadata["mesh_failed"]`` set — so
+        the caller's single emit path handles it, exactly as the subprocess
+        path already did. This is the original in-process path, unchanged
+        except that the cancel checks return ``None`` (so the caller returns)
+        instead of returning from ``run`` directly."""
         from fypa.altium.loader import build_solve_metadata, solve_problem_adaptive
         from fypa.lean_solution import to_lean_solution
         from pdnsolver import mesh as _pdn_mesh
@@ -5446,18 +5473,36 @@ class _SolveWorker(QThread):
 
                 # Same stub packaging as CLI ``gui <PrjPcb>`` (Altium launcher):
                 # open the board with mesh-failure markers instead of dying.
-                if pristine_loaded is not None:
-                    # Emit first so the progress dialog updates before the
-                    # (potentially slow) stub + metadata packaging.
-                    self.stage_changed.emit("Meshing failed — opening design…")
-                    stub, fail_md = package_mesh_failure(
-                        loaded, mesh_exc, mesher_config,
-                        settings=self._settings,
-                    )
-                    _timer.log_breakdown()
-                    self.finished_ok.emit(stub, fail_md, pristine_loaded)
+                if self._cancel_requested():
+                    # Every other exit in run() returns without emitting so a
+                    # cancelled solve does not open a stale viewer. Meshing
+                    # failing after Cancel is no different.
                     return None
-                raise
+                # Emit first so the progress dialog updates before the
+                # (potentially slow) stub + metadata packaging.
+                self.stage_changed.emit("Meshing failed — opening design…")
+                # Packaging may re-run build_problem and triangulate every
+                # stub piece — a long pure-Python phase holding the GIL. Mark
+                # it so a Cancel here waits instead of calling
+                # QThread.terminate() and deadlocking the app.
+                self._in_python_packaging = True
+                try:
+                    with _timer.stage("Package mesh failure"):
+                        stub, fail_md = package_mesh_failure(
+                            loaded, mesh_exc, mesher_config,
+                            settings=self._settings,
+                        )
+                finally:
+                    self._in_python_packaging = False
+                if self._cancel_requested():
+                    return None
+                # Return like any other packaged result rather than emitting
+                # here. run()'s tail already skips the cache on mesh_failed,
+                # logs the timing breakdown OUTSIDE the "Mesh + solve" stage
+                # (so the meshing and packaging time is attributed rather than
+                # landing in "(other / untimed)"), and emits with
+                # pristine_loaded.
+                return stub, fail_md
             finally:
                 _solver_log.removeHandler(_substage_handler)
                 _mesh_log.removeHandler(_substage_handler)
@@ -5598,6 +5643,31 @@ class _SolveWorker(QThread):
         """Backward-compatible alias — see :func:`clone_loaded_for_edit`."""
         from fypa.altium.loader import clone_loaded_for_edit
         return clone_loaded_for_edit(loaded)
+
+
+def _cache_serves_adaptive_request(metadata, adaptive_requested: bool) -> bool:
+    """Whether a cached solve may answer a request with this adaptive setting.
+
+    "Adaptive SMPS gain" is persisted *globally*, so a user who ticks it once
+    for one board carries it into every later import. On a design with no
+    eligible regulator the flag is a no-op — ``solve_problem_adaptive``
+    short-circuits on :func:`has_adaptive_smps_regulators` — so refusing the
+    cache there costs a full 10-60 s re-solve on every import for a result
+    that would be bit-identical.
+
+    The cached metadata records ``adaptive_gain_eligible`` per regulator
+    directive, which is exactly what decides whether the flag could have
+    mattered.
+    """
+    if not adaptive_requested:
+        return True
+    info = (metadata or {}).get("regulator_adaptive_gain") or {}
+    if info.get("enabled"):
+        return True          # the cached solve is itself an adaptive solve
+    return not any(
+        d.get("adaptive_gain_eligible")
+        for d in ((metadata or {}).get("directives") or [])
+    )
 
 
 def _try_solve_cache(prjpcb_path: Path,
@@ -6069,9 +6139,36 @@ def _open_solution_at(window, path: Path) -> None:
     )
 
 
+def _headless_platform() -> bool:
+    """True when Qt has no interactive display (``offscreen`` / ``minimal``).
+
+    A modal dialog on such a platform can never be dismissed, so a CI job
+    invoking ``FYPA gui`` would block indefinitely rather than fail.
+    """
+    app = QApplication.instance()
+    name = app.platformName() if app is not None else ""
+    return name in ("offscreen", "minimal", "")
+
+
+def _consume_cli_adaptive_flag(window) -> bool:
+    """Resolve the adaptive-gain setting for one import, then clear it.
+
+    A CLI ``--adaptive-regulator-gain`` / ``--no-adaptive-regulator-gain``
+    value belongs to the import it was passed with. A failed or cancelled CLI
+    import leaves the launcher open, and latching the value there would
+    override the user's Settings-tab choice for every later File > Import in
+    the session. Unset falls back to the persisted preference.
+    """
+    adaptive = getattr(window, "_cli_adaptive_regulator_gain", None)
+    if adaptive is None:
+        return load_adaptive_regulator_gain()
+    window._cli_adaptive_regulator_gain = None
+    return bool(adaptive)
+
+
 def _start_launcher_altium_solve(
     window, prjpcb_path: Path, pcbdoc_path: Path | None, *, clean: bool,
-    from_recent: bool = False,
+    from_recent: bool = False, force_solve: bool = False,
 ) -> None:
     """Launcher-only: run :class:`_SolveWorker` for an Altium import.
 
@@ -6092,7 +6189,7 @@ def _start_launcher_altium_solve(
     settings.apply_to_modules()
     imp = _altium_import_worker_options(
         prjpcb_path.name, clean=clean,
-        auto_solve=load_auto_solve_on_import(),
+        auto_solve=True if force_solve else load_auto_solve_on_import(),
     )
     dlg = QProgressDialog(imp["dialog_text"], "Cancel", 0, 0, window)
     dlg.setWindowTitle(imp["dialog_title"])
@@ -6107,9 +6204,7 @@ def _start_launcher_altium_solve(
     _sz = dlg.size()
     dlg.setFixedSize(int(_sz.width() * 1.44), _sz.height())
 
-    adaptive = getattr(window, "_cli_adaptive_regulator_gain", None)
-    if adaptive is None:
-        adaptive = load_adaptive_regulator_gain()
+    adaptive = _consume_cli_adaptive_flag(window)
 
     worker = _SolveWorker(
         prjpcb_path, settings,
@@ -6136,23 +6231,50 @@ def _start_launcher_altium_solve(
     worker.start()
 
 
+def _resync_settings_fields(window, values: dict) -> None:
+    """Push ``{settings_attr: value}`` into the matching Settings-tab edits."""
+    for key, value in values.items():
+        edit = getattr(window, f"settings_edit_{key}", None)
+        if edit is None:
+            continue
+        edit.setText(_SettingsTabMixin._fmt_settings_value(value))
+    refresh = getattr(window, "_update_settings_field_styles", None)
+    if callable(refresh):
+        refresh()
+
+
 def _schedule_cli_altium_import(window, target: dict) -> None:
     """Apply CLI ``gui`` overrides, then import like File > Import Altium."""
     settings = getattr(window, "_solve_settings", None)
-    if settings is not None:
-        if target.get("mesh_min_angle_deg") is not None:
-            settings.mesh_min_angle_deg = float(target["mesh_min_angle_deg"])
-        if target.get("mesh_max_size_mm") is not None:
-            settings.mesh_max_size_mm = float(target["mesh_max_size_mm"])
+    overrides = {
+        key: target[key]
+        for key in ("mesh_min_angle_deg", "mesh_max_size_mm")
+        if target.get(key) is not None
+    }
+    if overrides and settings is None:
+        logging.getLogger(__name__).warning(
+            "Ignoring CLI mesh override(s) %s: this window has no solve "
+            "settings to apply them to.", ", ".join(sorted(overrides)),
+        )
+    elif overrides:
+        for key, value in overrides.items():
+            setattr(settings, key, float(value))
+        # The Settings tab was populated from ``settings`` during __init__, so
+        # its line edits still show the pre-override values — they would read
+        # as user edits (dirty red outline) and would overwrite the CLI values
+        # if the user pressed Apply. Push the new values into the widgets.
+        _resync_settings_fields(window, overrides)
     adaptive = target.get("adaptive_regulator_gain")
     if adaptive is not None:
         window._cli_adaptive_regulator_gain = bool(adaptive)
     pcbdoc = target.get("pcbdoc_path")
+    window._cli_import_pending = True
     _open_altium_project_at(
         window,
         Path(target["prjpcb_path"]),
         Path(pcbdoc) if pcbdoc else None,
         clean=bool(target.get("clean", False)),
+        force_solve=bool(target.get("force_solve", False)),
     )
 
 
@@ -6163,8 +6285,15 @@ def _open_altium_project_at(
     *,
     clean: bool = False,
     from_recent: bool = False,
+    force_solve: bool = False,
 ) -> None:
-    """Import an Altium ``.PrjPcb`` without a file dialog when possible."""
+    """Import an Altium ``.PrjPcb`` without a file dialog when possible.
+
+    ``force_solve`` overrides the persisted "Solve automatically on Altium
+    import" preference. The CLI sets it when the user passed a mesh or
+    adaptive-gain flag: those mean nothing without a solve, so deferring to a
+    GUI checkbox there parses the flags and silently discards them.
+    """
     if _reject_if_solve_running(window):
         return
     if _reject_if_background_load_running(window):
@@ -6195,7 +6324,7 @@ def _open_altium_project_at(
     if hasattr(window, "_open_viewer_and_close"):
         _start_launcher_altium_solve(
             window, prjpcb_path, selected_pcbdoc, clean=clean,
-            from_recent=from_recent,
+            from_recent=from_recent, force_solve=force_solve,
         )
         return
 
@@ -6205,7 +6334,7 @@ def _open_altium_project_at(
     window._solve_settings.apply_to_modules()
     imp = _altium_import_worker_options(
         prjpcb_path.name, clean=clean,
-        auto_solve=load_auto_solve_on_import(),
+        auto_solve=True if force_solve else load_auto_solve_on_import(),
     )
     window._start_solve_worker(
         prjpcb_path, window._solve_settings,
@@ -7901,6 +8030,15 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
     def _on_solve_failed(self, message: str) -> None:
         logging.getLogger(__name__).error("Solve failed: %s", message)
         _drop_pending_altium_recent(self)
+        if getattr(self, "_cli_import_pending", False):
+            # Drives main()'s exit code — see the tail of main().
+            self._cli_import_failed = True
+            if _headless_platform():
+                # A modal here has no one to dismiss it: a CI job running
+                # `FYPA gui` under the offscreen platform would block forever.
+                # The message is already on stderr via the log above.
+                self.close()
+                return
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Critical)
         box.setWindowTitle("Solve failed")
@@ -28231,7 +28369,7 @@ def _maybe_show_mesh_failures(parent_win, metadata) -> None:
     if not isinstance(metadata, dict):
         return
     failures = metadata.get("mesh_failures") or []
-    if not failures:
+    if not metadata.get("mesh_failed") and not failures:
         return
     summaries = []
     for rec in failures[:3]:
@@ -28246,13 +28384,25 @@ def _maybe_show_mesh_failures(parent_win, metadata) -> None:
     box = QMessageBox(parent_win)
     box.setIcon(QMessageBox.Icon.Critical)
     box.setWindowTitle("Meshing failed")
-    box.setText(
-        "Look for the yellow ring and red disc on the board — that marks "
-        "where the mesh failed. (The red Top-layer copper overlay is "
-        "normal; it is not the error marker.) Fix the geometry there in "
-        "Altium, then press ↻ Solve."
-    )
-    box.setDetailedText(body)
+    if failures:
+        box.setText(
+            "Look for the yellow ring and red disc on the board — that marks "
+            "where the mesh failed. (The red Top-layer copper overlay is "
+            "normal; it is not the error marker.) Fix the geometry there in "
+            "Altium, then press ↻ Solve."
+        )
+    else:
+        # Nothing survived _build_stub_record, so there is no marker to look
+        # for — say that rather than send the user hunting for one.
+        box.setText(
+            "FEM meshing failed, but the offending copper could not be "
+            "localised, so there is no marker on the board. This usually "
+            "means a zero-area sliver or a self-intersecting polygon. Check "
+            "the log for the failing layer, fix the geometry in Altium, then "
+            "press ↻ Solve."
+        )
+    if body:
+        box.setDetailedText(body)
     box.exec()
 
 
@@ -28430,7 +28580,11 @@ def _build_stub_lean_solution_from_loaded(loaded):
     t_geom0 = time.monotonic()
     stub = build_stub_lean_solution_from_loaded(loaded)
     log.info(
-        "Stub solution: loaded.geometry access took %.2fs (%d layer(s))",
+        # Spans the lazy loaded.geometry access AND the per-layer LeanLayer
+        # construction — naming only the former made this read as a pure
+        # geometry-access cost when deciding whether that property is the
+        # bottleneck.
+        "Stub solution: geometry access + build took %.2fs (%d layer(s))",
         time.monotonic() - t_geom0,
         len(stub.problem.layers),
     )
@@ -28869,13 +29023,20 @@ def main(solution, warnings_list=None, metadata=None,
     _set_window_aumid(win)
     # ``show`` / a direct solution open: still pop the mesh-failure notice
     # (launcher import uses ``_on_solve_finished`` instead).
-    if solution is not None and (metadata or {}).get("mesh_failures"):
+    if solution is not None and (metadata or {}).get("mesh_failed"):
         from PySide6.QtCore import QTimer
         QTimer.singleShot(
             0, lambda: _maybe_show_mesh_failures(win, metadata),
         )
     if owns_app:
-        return app.exec()
+        code = app.exec()
+        # `FYPA gui <PrjPcb>` used to raise SystemExit(1) from _solve_loaded on
+        # a failed load/solve. That now happens on a worker thread inside the
+        # event loop, so without this the command exits 0 and no scripted
+        # caller (Run_FYPA.pas, CI) can tell success from failure.
+        if code == 0 and getattr(win, "_cli_import_failed", False):
+            return 1
+        return code
     return 0
 
 
