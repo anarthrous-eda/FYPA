@@ -140,6 +140,32 @@ def test_invalid_mask_input_is_rejected_without_persisting(viewer, monkeypatch):
     assert "caploop_rails" not in viewer._project.viewer_settings
 
 
+def test_transient_current_loads_with_dot_decimal_notation(viewer):
+    viewer._set_caploop_rail_config("+3V3", {
+        **viewer._caploop_rail_config("+3V3"),
+        "transient_current_a": 0.5,
+    })
+    viewer._load_impedance_rail_config("+3V3")
+    assert viewer.imp_itran_edit.text() == "0.5"
+
+
+def test_transient_current_accepts_comma_decimal_on_apply(viewer):
+    viewer.imp_itran_edit.setText("5,00E-01")
+    viewer._on_impedance_apply()
+    assert viewer._caploop_rail_config("+3V3")["transient_current_a"] == 0.5
+
+
+def test_impedance_mask_edits_use_standard_notation_validator(viewer):
+    from PySide6.QtGui import QDoubleValidator
+
+    for edit in (viewer.imp_ripple_edit, viewer.imp_itran_edit,
+                 viewer.imp_fmax_edit, viewer.imp_vrm_r_edit,
+                 viewer.imp_vrm_l_edit):
+        validator = edit.validator()
+        assert isinstance(validator, QDoubleValidator)
+        assert validator.notation() == QDoubleValidator.StandardNotation
+
+
 def test_vrm_resistance_sets_the_dc_floor(viewer):
     viewer._set_caploop_rail_config("+3V3", {
         **viewer._caploop_rail_config("+3V3"), "vrm_r_ohm": 4e-3})
