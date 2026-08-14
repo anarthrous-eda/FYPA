@@ -8,6 +8,7 @@ excluded loudly rather than silently.
 """
 from __future__ import annotations
 
+import dataclasses
 import math
 import os
 import types
@@ -292,38 +293,157 @@ def test_showing_individual_branches_labels_each_capacitor(viewer):
     legend_labels = viewer._imp_axes.get_legend_handles_labels()[1]
     assert "C1" in legend_labels
     assert viewer._imp_branch_artists
-    assert viewer._imp_branch_artists[0][1] == "C1"
-    designator_annotations = [
-        artist.get_text()
-        for artist in viewer._imp_axes.texts
-        if artist.get_text() in {"C1", "C2"}
-    ]
-    assert designator_annotations == []
+    assert viewer._imp_branch_artists[0].designator == "C1"
+    # The label lives on the artist, which is what the legend reads and what
+    # the hover tooltip reports.
+    assert viewer._imp_branch_artists[0].line.get_label() == "C1"
+
+
+def test_branch_traces_get_distinct_colours(viewer):
+    """One shared grey made the per-designator legend N identical swatches,
+    so no designator could be mapped to a trace."""
+    viewer.imp_show_branches.setChecked(True)
+    viewer._replot_impedance()
+    colours = [e.color for e in viewer._imp_branch_artists]
+    assert len(set(colours)) == len(colours)
+    # …and none of them is the accent used by the total |Z| trace.
+    assert av._T()["accent"].lower() not in {c.lower() for c in colours}
+
+
+def test_legend_is_capped_so_a_busy_rail_does_not_bury_the_plot(viewer):
+    """A rail with dozens of caps produced a legend taller than the axes."""
+    n = av._IMP_MAX_LEGEND_BRANCHES + 5
+    viewer.imp_show_branches.setChecked(True)
+    real = viewer._compute_rail_impedance
+
+    def _many(rail):
+        result = real(rail)
+        branch = result.branches[0]
+        return dataclasses.replace(result, branches=[branch] * n)
+
+    viewer._compute_rail_impedance = _many
+    try:
+        viewer._replot_impedance()
+    finally:
+        viewer._compute_rail_impedance = real
+
+    labels = viewer._imp_axes.get_legend_handles_labels()[1]
+    named = [l for l in labels if l == "C1"]
+    assert len(named) == av._IMP_MAX_LEGEND_BRANCHES
+    # Every trace is still drawn and still hoverable, just not all named.
+    assert len(viewer._imp_branch_artists) == n
+    assert "more are drawn unlabelled" in viewer.imp_summary_label.text()
+
+
+def _hover_event(viewer, entry, index=None):
+    """A motion event sitting exactly on one branch trace."""
+    idx = len(entry.freqs) // 2 if index is None else index
+    display = viewer._imp_axes.transData.transform(
+        (entry.freqs[idx], entry.z[idx]))
+
+    class _Event:
+        inaxes = viewer._imp_axes
+        xdata = float(entry.freqs[idx])
+        ydata = float(entry.z[idx])
+        x = float(display[0])
+        y = float(display[1])
+
+    return _Event()
 
 
 def test_hovering_a_branch_highlights_it_and_shows_tooltip(viewer):
     viewer.imp_show_branches.setChecked(True)
     viewer._replot_impedance()
-    line, designator, freqs, z = viewer._imp_branch_artists[0]
-    mid = len(freqs) // 2
-    display = viewer._imp_axes.transData.transform((freqs[mid], z[mid]))
-    inv = viewer._imp_axes.transData.inverted()
-    data = inv.transform(display)
-    class _Event:
-        inaxes = viewer._imp_axes
-        xdata = float(data[0])
-        ydata = float(data[1])
-        x = float(display[0])
-        y = float(display[1])
-    event = _Event()
-    hit, _info = line.contains(event)
-    assert hit
+    entry = viewer._imp_branch_artists[0]
+    event = _hover_event(viewer, entry)
+    assert entry.line.contains(event)[0]
+
     viewer._on_imp_branch_hover(event)
-    assert viewer._imp_branch_highlighted == designator
-    assert line.get_linewidth() > 1.0
+    assert viewer._imp_branch_highlighted is entry.line
+    assert entry.line.get_linewidth() > 1.0
     tooltip = viewer._ensure_imp_branch_tooltip()
-    assert tooltip.isVisible()
-    assert designator in tooltip.text()
+    # Qt.ToolTip makes the label a top-level window, so it is shown even
+    # though the fixture never shows the parent window.
+    assert not tooltip.isHidden()
+    assert entry.designator in tooltip.text()
+
+
+def test_highlight_keeps_the_branch_colour(viewer):
+    """Recolouring to the accent made the highlight indistinguishable from the
+    total |Z| trace, and left the legend swatch disagreeing with the line."""
+    viewer.imp_show_branches.setChecked(True)
+    viewer._replot_impedance()
+    entry = viewer._imp_branch_artists[0]
+    viewer._on_imp_branch_hover(_hover_event(viewer, entry))
+    assert matplotlib.colors.to_hex(entry.line.get_color()) == entry.color
+
+
+def test_leaving_the_canvas_clears_the_highlight_and_tooltip(viewer):
+    """Leaving over a trace delivers a leave event, not another motion event,
+    so without a handler the highlight and tooltip stay stuck."""
+    viewer.imp_show_branches.setChecked(True)
+    viewer._replot_impedance()
+    entry = viewer._imp_branch_artists[0]
+    viewer._on_imp_branch_hover(_hover_event(viewer, entry))
+    assert viewer._imp_branch_highlighted is not None
+
+    viewer._on_imp_branch_leave()
+    assert viewer._imp_branch_highlighted is None
+    assert viewer._ensure_imp_branch_tooltip().isHidden()
+    assert entry.line.get_linewidth() < 1.0
+
+
+def test_replot_hides_a_tooltip_left_over_from_a_background_tab(viewer):
+    """A solve completing while another tab is current calls _replot_impedance.
+    Guarding the hide on isVisible() skipped it (a non-current page is hidden),
+    so the stale tooltip reappeared with the tab."""
+    viewer.imp_show_branches.setChecked(True)
+    viewer._replot_impedance()
+    entry = viewer._imp_branch_artists[0]
+    viewer._on_imp_branch_hover(_hover_event(viewer, entry))
+    tooltip = viewer._ensure_imp_branch_tooltip()
+    assert not tooltip.isHidden()
+
+    tooltip.hide()          # stand in for the page being switched away from
+    viewer._replot_impedance()
+    assert tooltip.isHidden()
+
+
+def test_tooltip_is_rebuilt_after_the_impedance_tab_is_recreated(viewer):
+    """_refresh_inline_theme destroys this tab, taking the canvas and the
+    tooltip parented to it; a cached dead wrapper raised RuntimeError."""
+    import shiboken6
+
+    stale = viewer._ensure_imp_branch_tooltip()
+    shiboken6.delete(stale)
+    assert not av._qt_widget_alive(viewer._imp_branch_tooltip)
+
+    viewer._hide_imp_branch_tooltip()        # must not raise
+    fresh = viewer._ensure_imp_branch_tooltip()
+    assert av._qt_widget_alive(fresh)
+
+
+def test_pick_uses_the_nearest_point_not_the_first_in_range(viewer):
+    """Near an SRF the trace is near-vertical, contains() returns a long run,
+    and ind[0] can be a decade of |Z| from the cursor — enough to hand the
+    pick to a flatter neighbour."""
+    viewer.imp_show_branches.setChecked(True)
+    viewer._replot_impedance()
+    entry = viewer._imp_branch_artists[0]
+    for idx in (1, len(entry.freqs) // 3, len(entry.freqs) - 2):
+        picked = viewer._pick_impedance_branch(_hover_event(viewer, entry, idx))
+        assert picked is entry
+
+
+def test_hover_precomputes_the_log_arrays(viewer):
+    """The hit-test runs on every mouse-move; recomputing log10 over the whole
+    sweep there made each event O(branches x samples) on the GUI thread."""
+    viewer.imp_show_branches.setChecked(True)
+    viewer._replot_impedance()
+    entry = viewer._imp_branch_artists[0]
+    assert len(entry.log_f) == len(entry.freqs)
+    assert entry.log_f[0] == pytest.approx(math.log10(entry.freqs[0]))
+    assert entry.log_z[0] == pytest.approx(math.log10(entry.z[0]))
 
 
 def _empty_plot(v) -> str:

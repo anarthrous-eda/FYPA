@@ -38,9 +38,11 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 import matplotlib
 import matplotlib.cm as _mpl_cm
+import matplotlib.colors
 import numpy as np
 import shapely.geometry as _sg
 import shapely.prepared as _sp
@@ -1379,6 +1381,100 @@ def _eye_pixmap(open_: bool, size: int = 16, *, partial: bool = False) -> QPixma
         cached = _make_eye_pixmap(open_, partial=partial, size=size)
         _EYE_PIXMAP_CACHE[key] = cached
     return cached
+
+
+# Capacitor traces beyond this many carry no legend label. A rail with dozens
+# of decoupling caps otherwise produces a legend taller than the axes, hiding
+# the |Z| trace and the anti-resonance markers the tab exists to show; the
+# unlabelled traces stay identifiable by colour and the hover tooltip.
+_IMP_MAX_LEGEND_BRANCHES = 8
+
+
+class _ImpBranch(NamedTuple):
+    """One capacitor's |Z| trace, plus everything the hover hit-test needs.
+
+    ``log_f`` / ``log_z`` are precomputed per replot: the hit-test runs on
+    every mouse-move, and recomputing ``log10`` over the whole sweep there made
+    each event O(branches x samples) on the GUI thread. ``color`` is kept so
+    the highlight can be undone without re-deriving the palette.
+    """
+
+    line: object
+    designator: str
+    freqs: object
+    z: object
+    log_f: object
+    log_z: object
+    color: str
+
+
+def _branch_colors(n: int) -> list[str]:
+    """Distinct colours for the per-capacitor traces.
+
+    They were all one muted grey, which made the per-designator legend N
+    identical swatches — no way to map a designator to a trace, which is the
+    whole point of the "Show individual capacitors" checkbox. tab20 reads
+    acceptably on both the light and the dark theme.
+    """
+    cmap = matplotlib.colormaps["tab20"]
+    return [matplotlib.colors.to_hex(cmap(i % cmap.N)) for i in range(n)]
+
+
+def _floating_tooltip_qss(font_family: str | None = None,
+                          font_size: str = "9pt",
+                          padding: str = "4px 8px") -> str:
+    t = _T()
+    family = f" font-family: {font_family};" if font_family else ""
+    return (
+        "QLabel {"
+        f" background-color: {t['bg']};"
+        f" color: {t['fg']};"
+        f" border: 1px solid {t['border']};"
+        f" padding: {padding};"
+        f"{family}"
+        f" font-size: {font_size};"
+        "}"
+    )
+
+
+def _make_floating_tooltip(parent, *, font_family: str | None = None,
+                           font_size: str = "9pt",
+                           padding: str = "4px 8px") -> QLabel:
+    """A frameless, non-focusing tooltip label positioned in GLOBAL coordinates.
+
+    ``Qt.ToolTip`` makes the label a top-level window, so it is never clipped
+    to its parent's rect and is placed from :meth:`QCursor.pos`. Going through
+    the cursor also sidesteps two traps in putting a label over a matplotlib
+    canvas: mpl mouse events are bottom-origin where ``QWidget.move`` is
+    top-origin, and they carry physical device pixels where ``move`` takes
+    logical ones — so using ``event.x``/``event.y`` directly mirrors the label
+    about the canvas midline and displaces it by the device-pixel ratio.
+
+    ``WA_TransparentForMouseEvents`` stops the label stealing the very hover
+    events that drive it when it slides under the cursor.
+    """
+    label = QLabel(parent, Qt.ToolTip | Qt.FramelessWindowHint)
+    label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+    label.setAttribute(Qt.WA_ShowWithoutActivating, True)
+    label.setFocusPolicy(Qt.NoFocus)
+    label.setStyleSheet(_floating_tooltip_qss(font_family, font_size, padding))
+    label.hide()
+    return label
+
+
+def _move_tooltip_to_cursor(label) -> None:
+    """Anchor below-right of the cursor (Windows convention), clamped to the
+    current screen so the label stays fully visible near an edge."""
+    gx = QCursor.pos().x() + 16
+    gy = QCursor.pos().y() + 20
+    screen = label.screen() or QApplication.primaryScreen()
+    if screen is not None:
+        geo = screen.availableGeometry()
+        gx = min(gx, geo.right() - label.width() - 2)
+        gy = min(gy, geo.bottom() - label.height() - 2)
+        gx = max(gx, geo.left() + 2)
+        gy = max(gy, geo.top() + 2)
+    label.move(gx, gy)
 
 
 def _qt_widget_alive(widget) -> bool:
@@ -21386,34 +21482,16 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
     def _ensure_cursor_tooltip_label(self) -> QLabel:
         """Lazily build the floating QLabel used as the cursor tooltip."""
         label = getattr(self, "_cursor_tooltip_label", None)
-        if label is not None:
+        if label is not None and _qt_widget_alive(label):
             return label
-        # Qt.ToolTip = frameless, no focus, stays above its parent window.
-        # WA_TransparentForMouseEvents so we never steal hover events
-        # from the GL viewer when the label happens to slide under the
-        # cursor at the screen edge.
-        label = QLabel(self._gl_viewer, Qt.ToolTip | Qt.FramelessWindowHint)
-        label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        label.setAttribute(Qt.WA_ShowWithoutActivating, True)
-        label.setFocusPolicy(Qt.NoFocus)
-        _t = _T()
-        label.setStyleSheet(
-            "QLabel {"
-            f" background-color: {_t['bg']};"
-            f" color: {_t['fg']};"
-            f" border: 1px solid {_t['border']};"
-            " padding: 4px 8px;"
-            " font-family: Consolas, monospace;"
-            " font-size: 9pt;"
-            "}"
-        )
-        label.hide()
+        label = _make_floating_tooltip(
+            self._gl_viewer, font_family="Consolas, monospace")
         self._cursor_tooltip_label = label
         return label
 
     def _hide_cursor_tooltip(self) -> None:
         label = getattr(self, "_cursor_tooltip_label", None)
-        if label is not None and label.isVisible():
+        if label is not None and _qt_widget_alive(label):
             label.hide()
 
     def _update_cursor_tooltip(
@@ -21473,19 +21551,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         label = self._ensure_cursor_tooltip_label()
         label.setText("\n".join(lines))
         label.adjustSize()
-        # Anchor below-right of the cursor (Windows-cursor convention).
-        # Clamp to the current screen so the label stays fully visible
-        # when the cursor is near the right / bottom edge.
-        gx = QCursor.pos().x() + 16
-        gy = QCursor.pos().y() + 20
-        screen = label.screen() or QApplication.primaryScreen()
-        if screen is not None:
-            geo = screen.availableGeometry()
-            gx = min(gx, geo.right() - label.width() - 2)
-            gy = min(gy, geo.bottom() - label.height() - 2)
-            gx = max(gx, geo.left() + 2)
-            gy = max(gy, geo.top() + 2)
-        label.move(gx, gy)
+        _move_tooltip_to_cursor(label)
         if not label.isVisible():
             label.show()
 
@@ -22357,15 +22423,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             )
         if getattr(self, "_cursor_tooltip_label", None) is not None:
             self._cursor_tooltip_label.setStyleSheet(
-                "QLabel {"
-                f" background-color: {t['bg']};"
-                f" color: {t['fg']};"
-                f" border: 1px solid {t['border']};"
-                " padding: 4px 8px;"
-                " font-family: Consolas, monospace;"
-                " font-size: 9pt;"
-                "}"
-            )
+                _floating_tooltip_qss("Consolas, monospace"))
         if getattr(self, "scale_controller", None) is not None:
             self.scale_controller.apply_theme()
         if getattr(self, "_sidebar_toggle_btn", None) is not None:
@@ -26667,10 +26725,19 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._imp_figure = Figure(figsize=(7, 5), layout="constrained")
         self._imp_canvas = FigureCanvasQTAgg(self._imp_figure)
         self._imp_axes = self._imp_figure.add_subplot(111)
-        self._imp_branch_artists: list[tuple] = []
-        self._imp_branch_highlighted: str | None = None
+        self._imp_branch_artists: list[_ImpBranch] = []
+        self._imp_branch_highlighted = None
+        # This tab is destroyed and rebuilt on every theme change, taking the
+        # canvas and the tooltip parented to it. Drop the stale reference here
+        # or the next hover resolves a deleted C++ object.
+        self._imp_branch_tooltip = None
         self._imp_canvas.mpl_connect(
             "motion_notify_event", self._on_imp_branch_hover)
+        # Leaving delivers a leave event, not a final motion event.
+        self._imp_canvas.mpl_connect(
+            "figure_leave_event", self._on_imp_branch_leave)
+        self._imp_canvas.mpl_connect(
+            "axes_leave_event", self._on_imp_branch_leave)
         right.addWidget(NavigationToolbar2QT(self._imp_canvas, widget))
         right.addWidget(self._imp_canvas, 1)
 
@@ -27007,37 +27074,30 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
     def _ensure_imp_branch_tooltip(self) -> QLabel:
         """Floating label for the capacitor trace under the cursor."""
         label = getattr(self, "_imp_branch_tooltip", None)
-        if label is not None:
+        # Aliveness, not just presence: _refresh_inline_theme destroys and
+        # rebuilds the Impedance tab, taking the canvas and this child label
+        # with it, and a cached dead wrapper raises RuntimeError out of a slot.
+        if label is not None and _qt_widget_alive(label):
             return label
-        label = QLabel(self._imp_canvas)
-        label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        label.setFocusPolicy(Qt.NoFocus)
-        t = _T()
-        label.setStyleSheet(
-            "QLabel {"
-            f" background-color: {t['bg']};"
-            f" color: {t['fg']};"
-            f" border: 1px solid {t['border']};"
-            " padding: 3px 6px;"
-            " font-size: 8pt;"
-            "}"
-        )
-        label.hide()
+        label = _make_floating_tooltip(
+            self._imp_canvas, font_size="8pt", padding="3px 6px")
         self._imp_branch_tooltip = label
         return label
 
     def _hide_imp_branch_tooltip(self) -> None:
         label = getattr(self, "_imp_branch_tooltip", None)
-        if label is not None and label.isVisible():
+        # Unconditional hide: isVisible() is False whenever the Impedance page
+        # is not the current tab, so guarding on it left a stale tooltip to
+        # reappear with the tab after a background replot.
+        if label is not None and _qt_widget_alive(label):
             label.hide()
 
     def _reset_imp_branch_highlight(self) -> None:
-        t = _T()
-        for line, _designator, _freqs, _z in self._imp_branch_artists:
-            line.set_linewidth(0.6)
-            line.set_alpha(0.35)
-            line.set_color(t["fg_muted"])
-            line.set_zorder(2)
+        for entry in self._imp_branch_artists:
+            entry.line.set_linewidth(0.9)
+            entry.line.set_alpha(0.55)
+            entry.line.set_color(entry.color)
+            entry.line.set_zorder(2)
         self._imp_branch_highlighted = None
         self._hide_imp_branch_tooltip()
 
@@ -27055,49 +27115,66 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         best = None
         best_d2 = float("inf")
         for entry in self._imp_branch_artists:
-            line, designator, freqs, z = entry
-            hit, info = line.contains(event)
+            hit, info = entry.line.contains(event)
             if not hit:
                 continue
-            ind = int(info["ind"][0])
-            try:
-                lx = math.log10(freqs[ind])
-                ly = math.log10(z[ind])
-            except (ValueError, IndexError):
-                continue
-            d2 = (lx - ex) ** 2 + (ly - ey) ** 2
-            if d2 < best_d2:
-                best_d2 = d2
-                best = entry
+            # The nearest index within the pick radius, not the first one.
+            # Near a capacitor's SRF the trace is close to vertical, so
+            # contains() returns a long run of indices and ind[0] can be a
+            # decade of |Z| away — far enough for a genuinely more distant but
+            # flatter neighbour to win and the tooltip to name the wrong part.
+            for i in info.get("ind", ()):
+                if not 0 <= i < len(entry.log_f):
+                    continue
+                d2 = ((entry.log_f[i] - ex) ** 2
+                      + (entry.log_z[i] - ey) ** 2)
+                if d2 < best_d2:
+                    best_d2 = d2
+                    best = entry
         return best
 
     def _highlight_impedance_branch(self, entry, event) -> None:
-        line, designator, freqs, z = entry
-        restyle = self._imp_branch_highlighted != designator
+        # Keyed on the artist, not the designator: a duplicate refdes would
+        # otherwise short-circuit the restyle and leave the highlight on the
+        # first trace while the tooltip reported the second's values.
+        restyle = self._imp_branch_highlighted is not entry.line
         if restyle:
             self._reset_imp_branch_highlight()
-            t = _T()
-            line.set_linewidth(2.2)
-            line.set_alpha(1.0)
-            line.set_color(t["accent"])
-            line.set_zorder(6)
-            self._imp_branch_highlighted = designator
+            # Keep the branch's own colour. Recolouring to the accent made the
+            # highlight indistinguishable from the |Z| total trace (also
+            # accent) exactly where the two run together, and left the legend
+            # swatch — a copy taken at ax.legend() time — disagreeing with the
+            # line. Weight, opacity and z-order carry the highlight instead.
+            entry.line.set_linewidth(2.4)
+            entry.line.set_alpha(1.0)
+            entry.line.set_zorder(6)
+            self._imp_branch_highlighted = entry.line
 
-        idx = int(np.argmin(np.abs(np.log10(freqs) - math.log10(event.xdata))))
+        idx = int(np.argmin(np.abs(entry.log_f - math.log10(event.xdata))))
         label = self._ensure_imp_branch_tooltip()
         label.setText(
-            f"{designator}  |Z|={z[idx] * 1e3:.3g} mΩ @ "
-            f"{freqs[idx] / 1e6:.3g} MHz")
+            f"{entry.designator}  |Z|={entry.z[idx] * 1e3:.3g} mΩ @ "
+            f"{entry.freqs[idx] / 1e6:.3g} MHz")
         label.adjustSize()
-        x = int(event.x) + 12
-        y = int(event.y) + 12
-        max_x = max(0, self._imp_canvas.width() - label.width() - 4)
-        max_y = max(0, self._imp_canvas.height() - label.height() - 4)
-        label.move(min(x, max_x), min(y, max_y))
+        _move_tooltip_to_cursor(label)
         label.show()
         label.raise_()
         if restyle:
             self._imp_canvas.draw_idle()
+
+    def _on_imp_branch_leave(self, _event=None) -> None:
+        """Reset when the cursor leaves the axes or the canvas.
+
+        Leaving delivers a leave event, not another motion event, so without
+        this a cursor that exits over a trace — into the navigation toolbar, or
+        straight off the window — leaves the branch highlighted and the tooltip
+        floating indefinitely.
+        """
+        if self._imp_branch_highlighted is not None:
+            self._reset_imp_branch_highlight()
+            self._imp_canvas.draw_idle()
+        else:
+            self._hide_imp_branch_tooltip()
 
     def _on_imp_branch_hover(self, event) -> None:
         if not getattr(self, "imp_show_branches", None):
@@ -27148,17 +27225,25 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self.imp_plane_label.setText(self._rail_plane_capacitance_f(rail)[1])
 
         freqs = result.freqs_hz
+        unlabelled_branches = 0
         if self.imp_show_branches.isChecked():
             from fypa.caploop.impedance import branch_impedance
             omega = 2.0 * math.pi * freqs
-            for branch in result.branches:
+            log_f = np.log10(freqs)
+            colors = _branch_colors(len(result.branches))
+            for i, branch in enumerate(result.branches):
                 z_branch = np.abs(branch_impedance(branch, omega))
+                labelled = i < _IMP_MAX_LEGEND_BRANCHES
                 (line,) = ax.loglog(
-                    freqs, z_branch, lw=0.6, alpha=0.35,
-                    color=t["fg_muted"], label=branch.designator, zorder=2)
+                    freqs, z_branch, lw=0.9, alpha=0.55, color=colors[i],
+                    label=branch.designator if labelled else "_nolegend_",
+                    zorder=2)
                 line.set_picker(8)
-                self._imp_branch_artists.append(
-                    (line, branch.designator, freqs, z_branch))
+                self._imp_branch_artists.append(_ImpBranch(
+                    line, branch.designator, freqs, z_branch,
+                    log_f, np.log10(z_branch), colors[i]))
+            unlabelled_branches = max(
+                0, len(result.branches) - _IMP_MAX_LEGEND_BRANCHES)
 
         ax.loglog(freqs, result.z_mag, lw=1.8, color=t["accent"],
                   label=f"|Z| — {rail}", zorder=3)
@@ -27198,7 +27283,15 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         ax.legend(loc="upper left", fontsize=8, ncol=legend_ncol)
         self._style_impedance_axes(ax)
         self._imp_canvas.draw_idle()
-        self.imp_summary_label.setText(self._impedance_summary_html(result))
+        summary = self._impedance_summary_html(result)
+        if unlabelled_branches:
+            summary += (
+                f"<br><span style='color:{t['fg_muted']};'>Legend names the "
+                f"first {_IMP_MAX_LEGEND_BRANCHES} capacitors; "
+                f"{unlabelled_branches} more are drawn unlabelled — hover any "
+                f"trace to identify it.</span>"
+            )
+        self.imp_summary_label.setText(summary)
 
     def _style_impedance_axes(self, ax) -> None:
         """Match the plot to the app theme (matplotlib defaults are light)."""
