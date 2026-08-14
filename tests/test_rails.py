@@ -4,6 +4,87 @@ from fypa.altium.loader import build_net_canonical_map
 from fypa.rail_groups import compute_rail_groups
 
 
+def test_build_net_canonical_map_skips_alias_when_netlist_has_distinct_entry():
+    """Spurious compiler alias must not fold a net that owns its own entry."""
+    class _Net:
+        def __init__(self, name, aliases=()):
+            self.name = name
+            self.aliases = list(aliases)
+
+    class _Netlist:
+        nets = [
+            _Net("VDD_1V25D"),
+            _Net("VDD_1V25A", aliases=["VDD_1V25D"]),
+            _Net("VDD_1V25A"),
+        ]
+
+    m = build_net_canonical_map(_Netlist())
+    assert m["VDD_1V25A"] == "VDD_1V25A"
+    assert m["VDD_1V25D"] == "VDD_1V25D"
+
+
+def test_build_net_canonical_map_skips_alias_when_pcb_has_distinct_net():
+    """Schematic alias must not fold a PCB net that still exists by that name."""
+    class _Net:
+        def __init__(self, name, aliases=()):
+            self.name = name
+            self.aliases = list(aliases)
+
+    class _Netlist:
+        nets = [
+            _Net("VDD_1V25D"),
+            _Net("VDD_1V25A", aliases=["VDD_1V25D"]),
+        ]
+
+    m = build_net_canonical_map(
+        _Netlist(),
+        pcb_net_names={"VDD_1V25A", "VDD_1V25D"},
+    )
+    assert m["VDD_1V25A"] == "VDD_1V25A"
+    assert m["VDD_1V25D"] == "VDD_1V25D"
+
+
+def test_rail_groups_keep_split_pcb_nets_when_schematic_aliases_overlap():
+    """Two regulator outputs on distinct PCB nets stay separate rails."""
+    metadata = {
+        "net_canonical": {
+            "VDD_1V25A": "VDD_1V25A",
+            "VDD_1V25D": "VDD_1V25D",
+        },
+        "directives": [
+            {
+                "role": "REGULATOR",
+                "terminals": {
+                    "OUT_P": {
+                        "requested_net": "VDD_1V25D",
+                        "pins": [{"net": "VDD_1V25D"}],
+                    },
+                    "OUT_N": {"requested_net": "GND", "pins": [{"net": "GND"}]},
+                    "IN_P": {"requested_net": "VDD_12V", "pins": [{"net": "VDD_12V"}]},
+                    "IN_N": {"requested_net": "GND", "pins": [{"net": "GND"}]},
+                },
+            },
+            {
+                "role": "REGULATOR",
+                "terminals": {
+                    "OUT_P": {
+                        "requested_net": "VDD_1V25A",
+                        "pins": [{"net": "VDD_1V25A"}],
+                    },
+                    "OUT_N": {"requested_net": "GND", "pins": [{"net": "GND"}]},
+                    "IN_P": {"requested_net": "VDD_12V", "pins": [{"net": "VDD_12V"}]},
+                    "IN_N": {"requested_net": "GND", "pins": [{"net": "GND"}]},
+                },
+            },
+        ],
+    }
+    names, members = compute_rail_groups(metadata)
+    assert "VDD_1V25D" in names
+    assert "VDD_1V25A" in names
+    assert members["VDD_1V25D"] == ["VDD_1V25D"]
+    assert members["VDD_1V25A"] == ["VDD_1V25A"]
+
+
 def test_build_net_canonical_map_maps_aliases_to_name():
     class _Net:
         def __init__(self, name, aliases=()):

@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from fypa.altium.annotations import AnnotationResult, RegulatorSpec, TerminalSpec
 from fypa.altium.loader import (
     _ADAPTIVE_GAIN_MAX_ITERATIONS,
+    _ADAPTIVE_GAIN_REL_TOL,
     solve_problem_adaptive,
 )
 
@@ -96,6 +97,33 @@ def test_adaptive_gain_converges_to_fixed_point():
     assert abs(reported - expected) < 1e-9
     # Metadata (read off ``loaded``) must agree with the reported gain.
     assert abs(loaded.annotations.directives[0].gain - expected) < 1e-9
+
+
+def test_adaptive_gain_damped_when_multiple_smps_share_upstream():
+    """Several adaptive SMPS use blended gain steps (slower but stable)."""
+    term = TerminalSpec(pins=())
+    regs = [
+        RegulatorSpec(
+            designator=f"U{i}", schdoc_name="Pwr.SchDoc",
+            voltage=vout, gain=0.2, out_p=term, out_n=term,
+            in_p=term, in_n=term, regulator_type="SMPS",
+            efficiency=0.8, adaptive_gain_eligible=True,
+        )
+        for i, vout in enumerate((12.0, 3.3, 5.0), start=5)
+    ]
+    loaded = SimpleNamespace(
+        extracted=SimpleNamespace(),
+        annotations=AnnotationResult(directives=regs),
+    )
+    adaptive_info = _run_adaptive(loaded, lambda *a: 48.0)
+    assert adaptive_info["enabled"]
+    assert adaptive_info["converged"] is True
+    # Damped updates need more passes than a single-regulator design.
+    assert adaptive_info["iterations"] > 2
+    for d in loaded.annotations.directives:
+        assert isinstance(d, RegulatorSpec)
+        expected = d.voltage / (48.0 * d.efficiency)
+        assert abs(d.gain - expected) / expected < _ADAPTIVE_GAIN_REL_TOL
 
 
 def test_adaptive_gain_reports_gains_used_by_returned_solution():
