@@ -23,7 +23,7 @@ from dataclasses import dataclass
 import shapely.geometry
 import shapely.geometry.base
 
-from fypa.altium.annotations import _normalize_si_text, parse_si_value
+from fypa.altium.annotations import _SI_PREFIXES, parse_si_value
 from fypa.altium.extract import (
     NO_NET,
     ExtractedProject,
@@ -57,6 +57,13 @@ _CAPACITANCE_BAND_F = (1e-13, 1.0)
 _VOLTAGE_BAND_V = (1.0, 1000.0)
 
 _TOKEN_SPLIT_RE = re.compile(r"[\s/,;|]+")
+# A magnitude with no unit of its own — the left half of a spaced "100 nF".
+# Scientific mantissas count: "1e3" is a bare number, not a lettered token,
+# and treating it as lettered left "1e3 uF 16V" unparseable.
+_BARE_NUMBER_RE = re.compile(r"^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$")
+# A plausible right half: letters only. Excludes "%" (a tolerance field) and
+# anything carrying digits (a case code, a neighbouring value).
+_UNIT_TOKEN_RE = re.compile(r"^[A-Za-zµμΩ]+$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,11 +165,35 @@ def _ci_param(params: dict[str, str], key: str) -> str | None:
     return None
 
 
+def _case_folded_first(token: str) -> bool:
+    """Whether ``token``'s lower-cased reading should be tried before its literal.
+
+    SI prefixes are case-sensitive ("n" is nano, "N" is nothing) but Altium
+    comments are routinely upper-cased, so a folded retry is needed either way.
+    It cannot be a blind *fallback*, though: :func:`_apply_si_suffix` silently
+    drops a leading letter it does not recognise, so "0.1UF" parses literally
+    as 0.1 — farads, and inside the capacitance band — and the correct 1e-7
+    reading is never reached. That is a factor of a million on the commonest
+    decoupling values (only magnitudes ≤ 1.0 stay in band, so 0.1/0.22/0.47/1
+    break while 2.2 and 10 do not).
+
+    So when the token carries an upper-case letter whose lower-case form is a
+    real SI prefix, the folded reading is what the author meant. "M" is
+    excluded: M(ega) and m(illi) are both valid, genuinely ambiguous, and the
+    band is what disambiguates them.
+    """
+    return any(
+        c != "M" and c.isupper() and c.lower() in _SI_PREFIXES
+        for c in token
+    )
+
+
 def _parse_banded_tokens(
     text: str,
     band: tuple[float, float],
     require_char: str | None = None,
     exclude_char: str | None = None,
+    merge_unit: str | None = None,
 ) -> float | None:
     """First token of ``text`` that parses inside ``band``.
 
@@ -174,15 +205,17 @@ def _parse_banded_tokens(
     (only "16V"-style tokens count as voltages); ``exclude_char`` drops
     tokens containing it (a "0.5V" token must not be read as 0.5 F).
 
-    SI prefixes are case-sensitive ("n" is nano, "N" is nothing), but Altium
-    comments are frequently upper-cased ("100NF") — when the literal token
-    doesn't land in band, retry lower-cased. The band makes this safe: the
-    only case-folding hazard is M(ega)→m(illi), and no plausible band
-    contains both readings of the same token.
+    Every token is tried **standalone first**, and only if none parses are
+    bare numbers retried joined to the token that follows. The order matters:
+    an Altium comment often puts the case code before the value ("CAP CER 0402
+    100N 50V"), and merging first makes "0402"+"100N" parse as 402100 n → 4e-4
+    F, beating the 100 nF the author wrote — 4000× high, and fed straight into
+    the impedance model by :func:`~fypa.caploop.impedance.cap_branch`.
 
-    Altium ``Value`` fields often separate magnitude and unit (``100 nF``,
-    ``2.2 µF``). :func:`_normalize_si_text` collapses that spacing; bare
-    numeric tokens are also merged with the following token before parsing.
+    ``merge_unit`` enables that fallback and names the unit letter the partner
+    token must end with ("f" for capacitance, "v" for voltage). Without it a
+    tolerance field ("0.1 %"), a neighbouring value ("0.1 5") or an unrelated
+    quantity ("100 mOhm") would all be read as a capacitance.
     """
     lo, hi = band
     text = str(text).strip()
@@ -197,7 +230,10 @@ def _parse_banded_tokens(
             return None
         if exclude_char is not None and exclude_char in token_l:
             return None
-        for candidate in (token, token_l):
+        candidates = (
+            (token_l, token) if _case_folded_first(token) else (token, token_l)
+        )
+        for candidate in candidates:
             try:
                 value = parse_si_value(candidate)
             except ValueError:
@@ -206,21 +242,31 @@ def _parse_banded_tokens(
                 return value
         return None
 
-    normalized = _normalize_si_text(text)
-    hit = _try_token(normalized)
-    if hit is not None and (normalized != text or any(c.isalpha() for c in text)):
-        return hit
-
     tokens = [t for t in _TOKEN_SPLIT_RE.split(text) if t]
-    for i, token in enumerate(tokens):
-        if not any(c.isalpha() for c in token) and i + 1 < len(tokens):
-            hit = _try_token(_normalize_si_text(f"{token} {tokens[i + 1]}"))
-            if hit is not None:
-                return hit
+
+    # Pass 1 — each token on its own. Magnitude and unit are already together
+    # in the common case, and going first is what stops a numeric case code
+    # from swallowing the value token behind it.
+    for token in tokens:
         if any(c.isalpha() for c in token):
             hit = _try_token(token)
             if hit is not None:
                 return hit
+
+    # Pass 2 — nothing stood alone, so an Altium ``Value`` field has probably
+    # separated magnitude from unit ("100 nF", "2.2 µF", "1e3 uF").
+    if merge_unit is None:
+        return None
+    for number, unit in zip(tokens, tokens[1:]):
+        if not _BARE_NUMBER_RE.match(number):
+            continue
+        if not _UNIT_TOKEN_RE.match(unit):
+            continue
+        if not unit.lower().endswith(merge_unit):
+            continue
+        hit = _try_token(f"{number} {unit}")
+        if hit is not None:
+            return hit
     return None
 
 
@@ -230,8 +276,13 @@ def parse_cap_params(
 ) -> tuple[float | None, float | None]:
     """Heuristic (capacitance_F, voltage_rating_V) from component parameters.
 
-    Informational columns only — never inputs to the inductance math — so
-    unparseable values return ``None`` (blank cell), not an error.
+    Unparseable values return ``None`` (blank cell), not an error.
+
+    ``capacitance_F`` is NOT informational: :func:`fypa.caploop.impedance.
+    cap_branch` feeds it straight into ``branch_impedance``, so a wrong parse
+    is a wrong PDN impedance curve rather than a wrong table cell. Guessing is
+    therefore worse than returning ``None`` — a blank excludes the part from
+    the model and says so. (``voltage_rating_V`` is display-only.)
     """
     param_dicts = [d for d in (sch_params, pcb_comp.parameters) if d]
 
@@ -242,7 +293,8 @@ def parse_cap_params(
             if text is None:
                 continue
             capacitance = _parse_banded_tokens(
-                text, _CAPACITANCE_BAND_F, exclude_char="v")
+                text, _CAPACITANCE_BAND_F, exclude_char="v",
+                merge_unit="f")
             if capacitance is not None:
                 break
         if capacitance is not None:
@@ -255,7 +307,7 @@ def parse_cap_params(
             if text is None:
                 continue
             voltage = _parse_banded_tokens(
-                text, _VOLTAGE_BAND_V, require_char="v")
+                text, _VOLTAGE_BAND_V, require_char="v", merge_unit="v")
             if voltage is not None:
                 break
         if voltage is not None:

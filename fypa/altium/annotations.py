@@ -194,7 +194,10 @@ _KNOWN_SUFFIXES_BY_ROLE: dict[str, frozenset[str]] = {
 # --- SI value parsing ---------------------------------------------------------
 
 _SI_PREFIXES: dict[str, float] = {
-    "f": 1e-15, "p": 1e-12, "n": 1e-9, "u": 1e-6, "µ": 1e-6,
+    # Both micro signs: U+00B5 MICRO SIGN is what Altium emits, U+03BC GREEK
+    # SMALL LETTER MU is what datasheets, Word and several CAD exports produce.
+    # They are visually identical, so accepting only one silently drops the part.
+    "f": 1e-15, "p": 1e-12, "n": 1e-9, "u": 1e-6, "µ": 1e-6, "μ": 1e-6,
     "m": 1e-3, "":  1.0,    "k": 1e3,  "K": 1e3,
     "M": 1e6,  "G": 1e9,    "T": 1e12,
 }
@@ -216,13 +219,13 @@ _VALUE_RE = re.compile(
         (?:
             (?P<dotfrac>\.\d*)?          # 3.3
             |
-            (?P<eng_letter>[a-zA-Zµ])     # 3V3 form: int + unit-letter + frac
+            (?P<eng_letter>[a-zA-Zµμ])     # 3V3 form: int + unit-letter + frac
             (?P<eng_frac>\d+)?
         )?
         |
         (?P<leaddot>\.\d+)               # .001 — no leading integer digit
     )
-    (?P<rest>[a-zA-Zµ%Ω]*)            # SI prefix / unit suffix
+    (?P<rest>[a-zA-Zµμ%Ω]*)            # SI prefix / unit suffix
     \s*$
     """,
     re.VERBOSE,
@@ -231,7 +234,7 @@ _VALUE_RE = re.compile(
 _SCI_VALUE_RE = re.compile(
     r"""^\s*
     (?P<mantissa>[+-]?(?:\d+\.?\d*|\.\d+)[eE][+-]?\d+)
-    (?P<rest>[a-zA-Zµ%Ω]*)
+    (?P<rest>[a-zA-Zµμ%Ω]*)
     \s*$
     """,
     re.VERBOSE,
