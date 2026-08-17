@@ -8,6 +8,7 @@ excluded loudly rather than silently.
 """
 from __future__ import annotations
 
+import dataclasses
 import math
 import os
 import types
@@ -23,6 +24,8 @@ import matplotlib  # noqa: E402
 
 matplotlib.use("qtagg")
 
+from PySide6.QtCore import QLocale  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
     QMainWindow,
@@ -140,6 +143,117 @@ def test_invalid_mask_input_is_rejected_without_persisting(viewer, monkeypatch):
     assert "caploop_rails" not in viewer._project.viewer_settings
 
 
+# --- numeric input, independent of the system locale --------------------------
+#
+# Drive the fields with QTest keystrokes, never setText: setText bypasses
+# QLineEdit validation entirely, so a setText-based test green-lights strings
+# no user can actually produce.
+
+
+@pytest.fixture
+def german_locale():
+    """Run a test under a comma-decimal locale, then put the default back."""
+    previous = QLocale()
+    QLocale.setDefault(QLocale(QLocale.German))
+    yield
+    QLocale.setDefault(previous)
+
+
+def _type(edit, text: str) -> str:
+    edit.clear()
+    edit.show()
+    QTest.keyClicks(edit, text)
+    return edit.text()
+
+
+def test_dot_decimal_is_accepted_under_a_comma_locale(viewer, german_locale):
+    """The reported bug: Qt gives the validator the system locale, so on a
+    German system the field rejected '0.5' — the one format the rest of the
+    code can read."""
+    assert _type(viewer.imp_itran_edit, "0.5") == "0.5"
+    assert viewer.imp_itran_edit.hasAcceptableInput()
+    viewer._on_impedance_apply()
+    assert viewer._caploop_rail_config("+3V3")["transient_current_a"] == 0.5
+
+
+def test_comma_decimal_is_refused_loudly_not_reinterpreted(
+        viewer, german_locale, monkeypatch):
+    """'0,5' must not commit as 5.0 (comma keystroke silently dropped) or as
+    0.5 (comma rewritten to a dot, which reads '1,234' as 1.234). The comma
+    stays visible and the entry is refused."""
+    warned: list[str] = []
+    monkeypatch.setattr(av.QMessageBox, "warning",
+                        lambda *a, **k: warned.append(a[2]))
+
+    assert _type(viewer.imp_itran_edit, "0,5") == "0,5"
+    assert not viewer.imp_itran_edit.hasAcceptableInput()
+    viewer._on_impedance_apply()
+    assert warned and "not a number" in warned[0]
+    assert "caploop_rails" not in viewer._project.viewer_settings
+
+
+def test_group_separator_is_refused_rather_than_read_as_a_decimal(
+        viewer, monkeypatch):
+    """'1,234' means 1234 to the user who typed it. Reading it as 1.234 is a
+    1000x error on Z_target, so it must be refused, not translated."""
+    warned: list[str] = []
+    monkeypatch.setattr(av.QMessageBox, "warning",
+                        lambda *a, **k: warned.append(a[2]))
+
+    assert _type(viewer.imp_itran_edit, "1,234") == "1,234"
+    viewer._on_impedance_apply()
+    assert warned
+    assert "caploop_rails" not in viewer._project.viewer_settings
+
+
+@pytest.mark.parametrize("typed,expected", [
+    ("1e-3", 1e-3),
+    ("1E6", 1e6),
+    ("0.000005", 5e-6),
+])
+def test_scientific_input_survives_the_keystroke_filter(
+        viewer, typed, expected):
+    """A standard-notation validator drops the 'e' and the '-' per keystroke
+    while letting the digits through, committing '1e-3' as 13."""
+    assert _type(viewer.imp_itran_edit, typed) == typed
+    viewer._on_impedance_apply()
+    assert viewer._caploop_rail_config("+3V3")["transient_current_a"] ==         pytest.approx(expected)
+
+
+def test_formatter_output_is_accepted_by_its_own_validator(viewer):
+    """_load_impedance_rail_config setText()s _fmt_settings_value output
+    straight into these fields, bypassing validation. If the two disagree the
+    field lands permanently un-committable and cannot be retyped."""
+    fmt = av._SettingsTabMixin._fmt_settings_value
+    validator = viewer.imp_itran_edit.validator()
+    for value in (0.5, 5e-06, 0.00393, 1.7241e-5, 0.000123456789, 1234.5678,
+                  1e-12, 0.0):
+        text = fmt(value)
+        assert validator.validate(text, 0)[0] ==             av.QDoubleValidator.Acceptable, f"{value!r} -> {text!r}"
+
+
+def test_small_value_round_trips_through_save_and_reload(viewer):
+    """Type a value the formatter will render in exponent form, apply, then
+    reload the rail — the field must come back readable and committable."""
+    _type(viewer.imp_itran_edit, "0.000005")
+    viewer._on_impedance_apply()
+    viewer._load_impedance_rail_config("+3V3")
+    assert viewer.imp_itran_edit.hasAcceptableInput()
+    assert av._parse_numeric_text(viewer.imp_itran_edit.text()) ==         pytest.approx(5e-6)
+
+
+def test_every_numeric_field_shares_one_locale_pinned_validator(viewer):
+    for edit in (viewer.imp_ripple_edit, viewer.imp_itran_edit,
+                 viewer.imp_fmax_edit, viewer.imp_vrm_r_edit,
+                 viewer.imp_vrm_l_edit):
+        validator = edit.validator()
+        assert isinstance(validator, av._CLocaleDoubleValidator)
+        assert validator.notation() == av.QDoubleValidator.ScientificNotation
+        assert validator.locale().language() == QLocale.Language.C
+        assert validator.locale().numberOptions() & \
+            QLocale.NumberOption.RejectGroupSeparator
+
+
 def test_vrm_resistance_sets_the_dc_floor(viewer):
     viewer._set_caploop_rail_config("+3V3", {
         **viewer._caploop_rail_config("+3V3"), "vrm_r_ohm": 4e-3})
@@ -171,6 +285,165 @@ def test_showing_individual_branches_adds_a_curve_per_capacitor(viewer):
     before = len(viewer._imp_axes.lines)
     viewer.imp_show_branches.setChecked(True)
     assert len(viewer._imp_axes.lines) > before
+
+
+def test_showing_individual_branches_labels_each_capacitor(viewer):
+    viewer.imp_show_branches.setChecked(True)
+    viewer._replot_impedance()
+    legend_labels = viewer._imp_axes.get_legend_handles_labels()[1]
+    assert "C1" in legend_labels
+    assert viewer._imp_branch_artists
+    assert viewer._imp_branch_artists[0].designator == "C1"
+    # The label lives on the artist, which is what the legend reads and what
+    # the hover tooltip reports.
+    assert viewer._imp_branch_artists[0].line.get_label() == "C1"
+
+
+def test_branch_traces_get_distinct_colours(viewer):
+    """One shared grey made the per-designator legend N identical swatches,
+    so no designator could be mapped to a trace."""
+    viewer.imp_show_branches.setChecked(True)
+    viewer._replot_impedance()
+    colours = [e.color for e in viewer._imp_branch_artists]
+    assert len(set(colours)) == len(colours)
+    # …and none of them is the accent used by the total |Z| trace.
+    assert av._T()["accent"].lower() not in {c.lower() for c in colours}
+
+
+def test_legend_is_capped_so_a_busy_rail_does_not_bury_the_plot(viewer):
+    """A rail with dozens of caps produced a legend taller than the axes."""
+    n = av._IMP_MAX_LEGEND_BRANCHES + 5
+    viewer.imp_show_branches.setChecked(True)
+    real = viewer._compute_rail_impedance
+
+    def _many(rail):
+        result = real(rail)
+        branch = result.branches[0]
+        return dataclasses.replace(result, branches=[branch] * n)
+
+    viewer._compute_rail_impedance = _many
+    try:
+        viewer._replot_impedance()
+    finally:
+        viewer._compute_rail_impedance = real
+
+    labels = viewer._imp_axes.get_legend_handles_labels()[1]
+    named = [l for l in labels if l == "C1"]
+    assert len(named) == av._IMP_MAX_LEGEND_BRANCHES
+    # Every trace is still drawn and still hoverable, just not all named.
+    assert len(viewer._imp_branch_artists) == n
+    assert "more are drawn unlabelled" in viewer.imp_summary_label.text()
+
+
+def _hover_event(viewer, entry, index=None):
+    """A motion event sitting exactly on one branch trace."""
+    idx = len(entry.freqs) // 2 if index is None else index
+    display = viewer._imp_axes.transData.transform(
+        (entry.freqs[idx], entry.z[idx]))
+
+    class _Event:
+        inaxes = viewer._imp_axes
+        xdata = float(entry.freqs[idx])
+        ydata = float(entry.z[idx])
+        x = float(display[0])
+        y = float(display[1])
+
+    return _Event()
+
+
+def test_hovering_a_branch_highlights_it_and_shows_tooltip(viewer):
+    viewer.imp_show_branches.setChecked(True)
+    viewer._replot_impedance()
+    entry = viewer._imp_branch_artists[0]
+    event = _hover_event(viewer, entry)
+    assert entry.line.contains(event)[0]
+
+    viewer._on_imp_branch_hover(event)
+    assert viewer._imp_branch_highlighted is entry.line
+    assert entry.line.get_linewidth() > 1.0
+    tooltip = viewer._ensure_imp_branch_tooltip()
+    # Qt.ToolTip makes the label a top-level window, so it is shown even
+    # though the fixture never shows the parent window.
+    assert not tooltip.isHidden()
+    assert entry.designator in tooltip.text()
+
+
+def test_highlight_keeps_the_branch_colour(viewer):
+    """Recolouring to the accent made the highlight indistinguishable from the
+    total |Z| trace, and left the legend swatch disagreeing with the line."""
+    viewer.imp_show_branches.setChecked(True)
+    viewer._replot_impedance()
+    entry = viewer._imp_branch_artists[0]
+    viewer._on_imp_branch_hover(_hover_event(viewer, entry))
+    assert matplotlib.colors.to_hex(entry.line.get_color()) == entry.color
+
+
+def test_leaving_the_canvas_clears_the_highlight_and_tooltip(viewer):
+    """Leaving over a trace delivers a leave event, not another motion event,
+    so without a handler the highlight and tooltip stay stuck."""
+    viewer.imp_show_branches.setChecked(True)
+    viewer._replot_impedance()
+    entry = viewer._imp_branch_artists[0]
+    viewer._on_imp_branch_hover(_hover_event(viewer, entry))
+    assert viewer._imp_branch_highlighted is not None
+
+    viewer._on_imp_branch_leave()
+    assert viewer._imp_branch_highlighted is None
+    assert viewer._ensure_imp_branch_tooltip().isHidden()
+    assert entry.line.get_linewidth() < 1.0
+
+
+def test_replot_hides_a_tooltip_left_over_from_a_background_tab(viewer):
+    """A solve completing while another tab is current calls _replot_impedance.
+    Guarding the hide on isVisible() skipped it (a non-current page is hidden),
+    so the stale tooltip reappeared with the tab."""
+    viewer.imp_show_branches.setChecked(True)
+    viewer._replot_impedance()
+    entry = viewer._imp_branch_artists[0]
+    viewer._on_imp_branch_hover(_hover_event(viewer, entry))
+    tooltip = viewer._ensure_imp_branch_tooltip()
+    assert not tooltip.isHidden()
+
+    tooltip.hide()          # stand in for the page being switched away from
+    viewer._replot_impedance()
+    assert tooltip.isHidden()
+
+
+def test_tooltip_is_rebuilt_after_the_impedance_tab_is_recreated(viewer):
+    """_refresh_inline_theme destroys this tab, taking the canvas and the
+    tooltip parented to it; a cached dead wrapper raised RuntimeError."""
+    import shiboken6
+
+    stale = viewer._ensure_imp_branch_tooltip()
+    shiboken6.delete(stale)
+    assert not av._qt_widget_alive(viewer._imp_branch_tooltip)
+
+    viewer._hide_imp_branch_tooltip()        # must not raise
+    fresh = viewer._ensure_imp_branch_tooltip()
+    assert av._qt_widget_alive(fresh)
+
+
+def test_pick_uses_the_nearest_point_not_the_first_in_range(viewer):
+    """Near an SRF the trace is near-vertical, contains() returns a long run,
+    and ind[0] can be a decade of |Z| from the cursor — enough to hand the
+    pick to a flatter neighbour."""
+    viewer.imp_show_branches.setChecked(True)
+    viewer._replot_impedance()
+    entry = viewer._imp_branch_artists[0]
+    for idx in (1, len(entry.freqs) // 3, len(entry.freqs) - 2):
+        picked = viewer._pick_impedance_branch(_hover_event(viewer, entry, idx))
+        assert picked is entry
+
+
+def test_hover_precomputes_the_log_arrays(viewer):
+    """The hit-test runs on every mouse-move; recomputing log10 over the whole
+    sweep there made each event O(branches x samples) on the GUI thread."""
+    viewer.imp_show_branches.setChecked(True)
+    viewer._replot_impedance()
+    entry = viewer._imp_branch_artists[0]
+    assert len(entry.log_f) == len(entry.freqs)
+    assert entry.log_f[0] == pytest.approx(math.log10(entry.freqs[0]))
+    assert entry.log_z[0] == pytest.approx(math.log10(entry.z[0]))
 
 
 def _empty_plot(v) -> str:
@@ -277,7 +550,12 @@ def test_editing_a_package_reaches_every_cap_of_that_size(viewer):
         "esl_h"] == pytest.approx(1.5e-9)
 
 
-def test_a_bad_package_edit_reverts_to_the_previous_value(viewer):
+def test_a_bad_package_edit_reverts_and_says_why(viewer, monkeypatch):
+    """Reverting in silence reads as the edit having vanished, so the revert
+    has to be announced — a comma decimal is the likely cause."""
+    warned: list[str] = []
+    monkeypatch.setattr(av.QMessageBox, "warning",
+                        lambda *a, **k: warned.append(a[2]))
     table = viewer.imp_pkg_table
     row = next(r for r in range(table.rowCount())
                if table.item(r, 0).text() == "0402")
@@ -285,6 +563,20 @@ def test_a_bad_package_edit_reverts_to_the_previous_value(viewer):
     lib = viewer._caploop_package_library()
     assert table.item(row, 1).text() == f"{lib.get('0402').esl_nh:.4g}"
     assert lib.is_default("0402")
+    assert warned and "banana" in warned[0]
+
+
+def test_a_comma_package_edit_is_refused_not_reinterpreted(viewer, monkeypatch):
+    warned: list[str] = []
+    monkeypatch.setattr(av.QMessageBox, "warning",
+                        lambda *a, **k: warned.append(a[2]))
+    table = viewer.imp_pkg_table
+    row = next(r for r in range(table.rowCount())
+               if table.item(r, 0).text() == "0402")
+    table.item(row, 1).setText("1,5")
+    lib = viewer._caploop_package_library()
+    assert lib.is_default("0402")           # NOT committed as 1.5 nH
+    assert warned and "1,5" in warned[0]
 
 
 def test_resetting_the_library_restores_the_defaults(viewer):
