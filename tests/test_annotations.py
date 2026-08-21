@@ -27,12 +27,15 @@ from fypa.altium.annotations import (
     _LOCAL_NET_TIER_NAME,
     _LOCAL_NET_TIER_PCB,
     _arbitrate_overlapping_terminals,
+    _collect_series_upstream_map,
     _collect_supply_voltages_by_net,
     _iter_pdn_parameter_sources,
     _iter_series_bridge_pairs,
     _union_series_bridge_net_indices,
     _lookup_inferred_vin,
     _local_net_label_matches,
+    _SeriesVinGraph,
+    _SERIES_VIN_MAX_HOPS,
     _require_value,
     _resolve_local_net_pins,
     _resolve_terminal,
@@ -866,7 +869,10 @@ def test_bridge_pairs_indexed_series_nets():
             ),
         ),
     )
-    pairs = {(p, n) for _idx, p, n in _iter_series_bridge_pairs([source], proj)}
+    pairs = {
+        (p, n) for _idx, p, n, _directed
+        in _iter_series_bridge_pairs([source], proj)
+    }
     assert pairs == {("RAIL_A", "RAIL_B"), ("RAIL_C", "RAIL_D")}
 
 
@@ -883,6 +889,92 @@ def test_sheet_name_matches_full_path_not_basename_collision():
         "Power.SchDoc",
         ["SubB/Power.SchDoc"],
     )
+
+
+def _sheet_map(proj):
+    from fypa.altium.annotations import _physical_sheet_file_map
+    return _physical_sheet_file_map(proj)
+
+
+def test_sheet_name_matches_physical_page_id_via_map():
+    """altium_monkey ≥ 2026.7 emits physical page ids in source_sheets."""
+    physical = (
+        "physical:0:logical:0:main.SchDoc:child:1:sheet_symbol:U_PWR"
+        ":sheet:power.SchDoc"
+    )
+    proj = _minimal_proj(
+        physical_sheet_names=((physical, "Power.SchDoc"),),
+    )
+    smap = _sheet_map(proj)
+    assert _sheet_name_matches("Power.SchDoc", [physical], sheet_map=smap)
+    assert not _sheet_name_matches("Other.SchDoc", [physical], sheet_map=smap)
+
+
+def test_sheet_map_keeps_same_named_sheets_in_different_directories_apart():
+    """Harvesting the bare leaf would collapse these onto one name, which is
+    the collision _sheet_name_matches exists to prevent."""
+    page_a = "physical:0:logical:0:SubA/Power.SchDoc"
+    page_b = "physical:1:logical:1:SubB/Power.SchDoc"
+    proj = _minimal_proj(physical_sheet_names=(
+        (page_a, "SubA/Power.SchDoc"),
+        (page_b, "SubB/Power.SchDoc"),
+    ))
+    smap = _sheet_map(proj)
+    assert _sheet_name_matches("SubA/Power.SchDoc", [page_a], sheet_map=smap)
+    assert not _sheet_name_matches("SubA/Power.SchDoc", [page_b], sheet_map=smap)
+
+
+def test_unmapped_physical_page_id_is_unknown_not_guessed():
+    """A child page id embeds its PARENT's logical id, so scanning it for a
+    ``*.SchDoc`` token yields the root sheet — which both hides real matches
+    and invents false ones. An unmapped id must read as unknown provenance,
+    degrading to the permissive path rather than binding to a guess."""
+    from fypa.altium.annotations import _logical_schdoc_name
+
+    child = (
+        "physical:0:logical:0:main.SchDoc:child:logical:0:main.SchDoc"
+        ":sheet_symbol:UID-ABC:1"
+    )
+    assert _logical_schdoc_name(child, {}) is None
+    # Not "matches the root sheet", and not a hard reject either: with no
+    # usable provenance the net is accepted the same way one with no
+    # source_sheets at all is.
+    assert _sheet_name_matches("Power.SchDoc", [child])
+    assert _sheet_name_matches("main.SchDoc", [child])
+    # …but a page the map DOES cover still discriminates.
+    proj = _minimal_proj(physical_sheet_names=((child, "Power.SchDoc"),))
+    smap = _sheet_map(proj)
+    assert _sheet_name_matches("Power.SchDoc", [child], sheet_map=smap)
+    assert not _sheet_name_matches("main.SchDoc", [child], sheet_map=smap)
+
+
+def test_plain_sheet_names_are_unaffected_by_the_page_id_path():
+    assert _sheet_name_matches("Power.SchDoc", ["Power.SchDoc"])
+    assert _sheet_name_matches("Power.SchDoc", ["SubA/Power.SchDoc"])
+    assert not _sheet_name_matches("SubA/Power.SchDoc", ["SubB/Power.SchDoc"])
+
+
+def test_resolve_local_net_pins_physical_source_sheet():
+    physical = (
+        "physical:0:logical:0:main.SchDoc:child:1:sheet_symbol:U_PWR"
+        ":sheet:power.SchDoc"
+    )
+    netlist = _FakeNetlist(nets=[
+        _FakeNet(
+            name="Sheet1_+3V3",
+            aliases=["+3V3"],
+            source_sheets=[physical],
+            terminals=[_FakeTerminal("U1", "14"), _FakeTerminal("C1", "1")],
+        ),
+    ])
+    proj = _minimal_proj(
+        physical_sheet_names=((physical, "Power.SchDoc"),),
+        compiled_netlist=netlist,
+    )
+    pins = _resolve_local_net_pins(
+        netlist, "U1", "Power.SchDoc", "+3V3", sheet_map=_sheet_map(proj),
+    )
+    assert pins == ["14"]
 
 
 def test_pcb_sourced_local_net_scoped_per_instance():
@@ -1788,11 +1880,478 @@ def test_regulator_explicit_gain_overrides_type():
     assert any("overrides" in w for w in result.warnings)
 
 
-def test_lookup_inferred_vin_ignores_series_bridge_groups():
-    """Sense paths through GND must not make Vin ambiguous (project_a / PDN5_R)."""
+def test_lookup_inferred_vin_exact_match_without_series_walk():
+    """Without a SERIES graph, only direct supply_map hits resolve."""
     supply_map = {"VDD_48V": 48.0, "VDD_12V": 12.0}
-    assert _lookup_inferred_vin("VDD_48V", supply_map) == 48.0
-    assert _lookup_inferred_vin("VDD_12V", supply_map) == 12.0
+    assert _lookup_inferred_vin("VDD_48V", supply_map) == (48.0, None, 0)
+    assert _lookup_inferred_vin("VDD_12V", supply_map) == (12.0, None, 0)
+    assert _lookup_inferred_vin("VDD_48V_RP", supply_map) == (None, None, 0)
+
+
+def test_lookup_inferred_vin_walks_series_upstream():
+    supply_map = {"VDD_48V_IN": 48.0}
+    graph = _SeriesVinGraph(
+        upstream={"VDD_48V_RP": "VDD_48V", "VDD_48V": "VDD_48V_IN"},
+    )
+    # Two hops from the named rail — the caller warns on any non-zero hop count.
+    assert _lookup_inferred_vin(
+        "VDD_48V_RP", supply_map, graph=graph,
+    ) == (48.0, None, 2)
+
+
+def test_lookup_inferred_vin_series_ambiguous_and_cycle():
+    supply_map = {"VDD_48V_IN": 48.0}
+    assert _lookup_inferred_vin(
+        "VDD_48V_RP", supply_map,
+        graph=_SeriesVinGraph(ambiguous=frozenset({"VDD_48V_RP"})),
+    ) == (None, "ambiguous", 0)
+    assert _lookup_inferred_vin(
+        "VDD_48V_RP", supply_map,
+        graph=_SeriesVinGraph(
+            upstream={"VDD_48V_RP": "VDD_48V", "VDD_48V": "VDD_48V_RP"},
+        ),
+    ) == (None, "cycle", 1)
+
+
+def test_lookup_inferred_vin_declared_rail_beats_series_ambiguity():
+    """A rail whose voltage is declared resolves even when SERIES links to it
+    disagree — parallel ferrites / ORing FETs / fuse+bypass all land here."""
+    assert _lookup_inferred_vin(
+        "VDD_12V", {"VDD_12V": 12.0},
+        graph=_SeriesVinGraph(ambiguous=frozenset({"VDD_12V"})),
+    ) == (12.0, None, 0)
+
+
+def test_lookup_inferred_vin_crosses_single_undirected_link():
+    """An auto-inferred 2-pin element has no P/N direction, so it is crossed
+    only when it is the one unvisited way out of the net."""
+    supply_map = {"VDD_48V_IN": 48.0}
+    one_way = _SeriesVinGraph(
+        undirected={
+            "VDD_48V": frozenset({"VDD_48V_IN"}),
+            "VDD_48V_IN": frozenset({"VDD_48V"}),
+        },
+    )
+    assert _lookup_inferred_vin("VDD_48V", supply_map, graph=one_way) == (
+        48.0, None, 1,
+    )
+    forked = _SeriesVinGraph(
+        undirected={"VDD_48V": frozenset({"VDD_48V_IN", "VDD_SENSE"})},
+    )
+    assert _lookup_inferred_vin("VDD_48V", supply_map, graph=forked) == (
+        None, "undirected", 0,
+    )
+
+
+def test_lookup_inferred_vin_bounds_chain_length():
+    """A chain longer than the hop cap errors instead of walking on."""
+    chain = {f"N{i}": f"N{i + 1}" for i in range(_SERIES_VIN_MAX_HOPS + 3)}
+    vin, failure, _hops = _lookup_inferred_vin(
+        "N0", {"N99": 48.0}, graph=_SeriesVinGraph(upstream=chain),
+    )
+    assert vin is None
+    assert failure == "too_deep"
+
+
+def test_regulator_smps_vin_through_series_chain():
+    """VIP-style: SOURCE -> SERIES -> SERIES -> SMPS on downstream net."""
+    proj = _minimal_proj(
+        nets=(
+            RawNet("GND"), RawNet("VDD_48V_IN"), RawNet("VDD_48V"),
+            RawNet("VDD_48V_RP"), RawNet("VDD_12V"),
+        ),
+        sch_components=(
+            RawSchComponent(
+                designator="J7", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SOURCE",
+                    "PDN_V": "48",
+                    "PDN_P_NET": "VDD_48V_IN",
+                    "PDN_N_NET": "GND",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="J8", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SERIES",
+                    "PDN_R": "50m",
+                    "PDN_P_NET": "VDD_48V_IN",
+                    "PDN_N_NET": "VDD_48V",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="Q3", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SERIES",
+                    "PDN_R": "300m",
+                    "PDN_P_NET": "VDD_48V",
+                    "PDN_N_NET": "VDD_48V_RP",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="U5", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "REGULATOR",
+                    "PDN_REGULATOR_TYPE": "SMPS",
+                    "PDN_REGULATOR_EFFICIENCY": "0.8",
+                    "PDN_V": "12",
+                    "PDN_OUT_P_NET": "VDD_12V",
+                    "PDN_OUT_N_NET": "GND",
+                    "PDN_IN_P_NET": "VDD_48V_RP",
+                    "PDN_IN_N_NET": "GND",
+                },
+                pin_designators=("1", "2", "3", "4"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="J7", center=Pt2D(-15, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="CONN", source_designator="J7",
+            ),
+            RawPcbComponent(
+                designator="J8", center=Pt2D(-10, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="FUSE", source_designator="J8",
+            ),
+            RawPcbComponent(
+                designator="Q3", center=Pt2D(-5, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="SOT", source_designator="Q3",
+            ),
+            RawPcbComponent(
+                designator="U5", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="SOT", source_designator="U5",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, -15), _pad(0, "2", 0, -14),
+            _pad(1, "1", 1, -10), _pad(1, "2", 2, -9),
+            _pad(2, "1", 2, -5), _pad(2, "2", 3, -4),
+            _pad(3, "1", 4, 0), _pad(3, "2", 0, 1),
+            _pad(3, "3", 3, 2), _pad(3, "4", 0, 3),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    reg = next(d for d in result.directives if d.designator == "U5")
+    assert isinstance(reg, RegulatorSpec)
+    assert reg.regulator_type == "SMPS"
+    assert abs(reg.gain - (12.0 / (48.0 * 0.8))) < 1e-6
+    assert not any("cannot infer input voltage" in e for e in result.errors)
+
+
+def test_regulator_smps_vin_series_ambiguous_fork():
+    proj = _minimal_proj(
+        nets=(
+            RawNet("GND"), RawNet("VDD_48V_IN"), RawNet("VDD_48V"),
+            RawNet("VDD_48V_RP"), RawNet("VDD_12V"), RawNet("ALT_48V"),
+        ),
+        sch_components=(
+            RawSchComponent(
+                designator="J7", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SOURCE", "PDN_V": "48",
+                    "PDN_P_NET": "VDD_48V_IN", "PDN_N_NET": "GND",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="J8", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SERIES", "PDN_R": "50m",
+                    "PDN_P_NET": "VDD_48V_IN", "PDN_N_NET": "VDD_48V",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="Q3a", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SERIES", "PDN_R": "100m",
+                    "PDN_P_NET": "VDD_48V", "PDN_N_NET": "VDD_48V_RP",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="Q3b", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SERIES", "PDN_R": "200m",
+                    "PDN_P_NET": "ALT_48V", "PDN_N_NET": "VDD_48V_RP",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="U5", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "REGULATOR",
+                    "PDN_REGULATOR_TYPE": "SMPS",
+                    "PDN_REGULATOR_EFFICIENCY": "0.8",
+                    "PDN_V": "12",
+                    "PDN_OUT_P_NET": "VDD_12V",
+                    "PDN_OUT_N_NET": "GND",
+                    "PDN_IN_P_NET": "VDD_48V_RP",
+                    "PDN_IN_N_NET": "GND",
+                },
+                pin_designators=("1", "2", "3", "4"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="J7", center=Pt2D(-15, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="CONN", source_designator="J7",
+            ),
+            RawPcbComponent(
+                designator="J8", center=Pt2D(-10, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="FUSE", source_designator="J8",
+            ),
+            RawPcbComponent(
+                designator="Q3a", center=Pt2D(-5, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="SOT", source_designator="Q3a",
+            ),
+            RawPcbComponent(
+                designator="Q3b", center=Pt2D(-4, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="SOT", source_designator="Q3b",
+            ),
+            RawPcbComponent(
+                designator="U5", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="SOT", source_designator="U5",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, -15), _pad(0, "2", 0, -14),
+            _pad(1, "1", 1, -10), _pad(1, "2", 2, -9),
+            _pad(2, "1", 2, -5), _pad(2, "2", 3, -4),
+            _pad(3, "1", 5, -4), _pad(3, "2", 3, -3),
+            _pad(4, "1", 4, 0), _pad(4, "2", 0, 1),
+            _pad(4, "3", 3, 2), _pad(4, "4", 0, 3),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert not result.ok
+    assert any("ambiguous SERIES upstream" in e for e in result.errors)
+
+
+# --- SERIES Vin graph construction --------------------------------------------
+
+_SERIES_VIN_NETS = {
+    "GND": 0, "VDD_48V_IN": 1, "VDD_48V": 2, "VDD_12V": 3, "VDD_48V_F": 4,
+}
+
+
+def _series_vin_proj(
+    series_params: dict[str, str],
+    *,
+    in_p_net: str = "VDD_48V",
+    in_p_pad_net: int | None = None,
+    series_pads: tuple[tuple[str, int], ...] = (("1", 1), ("2", 2)),
+    extra_series: dict[str, str] | None = None,
+) -> ExtractedProject:
+    """SOURCE(48 V on VDD_48V_IN) → one SERIES part → SMPS on ``in_p_net``.
+
+    ``series_params`` is the SERIES component's parameter dict, so each test can
+    vary only how that one part declares its two nets. ``series_pads`` is its
+    ``(pin, net_index)`` list *in file order* — the order 2-pin auto-inference
+    reads P/N off. ``in_p_pad_net`` overrides the net the regulator's IN_P pad
+    sits on, modelling the state ``_apply_net_remap`` leaves behind: the pad
+    carries the canonical index while the annotation still names the folded one.
+    """
+    sch = [
+        RawSchComponent(
+            designator="J7", schdoc_name="Pwr.SchDoc",
+            parameters={
+                "PDN_ROLE": "SOURCE", "PDN_V": "48",
+                "PDN_P_NET": "VDD_48V_IN", "PDN_N_NET": "GND",
+            },
+            pin_designators=("1", "2"),
+        ),
+        RawSchComponent(
+            designator="F1", schdoc_name="Pwr.SchDoc",
+            parameters=series_params,
+            pin_designators=("1", "2", "3"),
+        ),
+        RawSchComponent(
+            designator="U5", schdoc_name="Pwr.SchDoc",
+            parameters={
+                "PDN_ROLE": "REGULATOR", "PDN_REGULATOR_TYPE": "SMPS",
+                "PDN_REGULATOR_EFFICIENCY": "0.8", "PDN_V": "12",
+                "PDN_OUT_P_NET": "VDD_12V", "PDN_OUT_N_NET": "GND",
+                "PDN_IN_P_NET": in_p_net, "PDN_IN_N_NET": "GND",
+            },
+            pin_designators=("1", "2", "3", "4"),
+        ),
+    ]
+    pcb = [
+        RawPcbComponent(
+            designator="J7", center=Pt2D(-15, 0), rotation_deg=0.0,
+            layer_name="TOP", footprint="CONN", source_designator="J7",
+        ),
+        RawPcbComponent(
+            designator="F1", center=Pt2D(-10, 0), rotation_deg=0.0,
+            layer_name="TOP", footprint="FUSE", source_designator="F1",
+        ),
+        RawPcbComponent(
+            designator="U5", center=Pt2D(0, 0), rotation_deg=0.0,
+            layer_name="TOP", footprint="SOT", source_designator="U5",
+        ),
+    ]
+    # J7 = pcb 0, F1 = pcb 1, [R9 = pcb 2], U5 last.
+    pads = [_pad(0, "1", 1, -15), _pad(0, "2", 0, -14)]
+    pads += [_pad(1, pin, net, -10) for pin, net in series_pads]
+    u5_index = 2
+    if extra_series is not None:
+        sch.insert(2, RawSchComponent(
+            designator="R9", schdoc_name="Pwr.SchDoc",
+            parameters=extra_series, pin_designators=("1", "2"),
+        ))
+        pcb.insert(2, RawPcbComponent(
+            designator="R9", center=Pt2D(-7, 0), rotation_deg=0.0,
+            layer_name="TOP", footprint="0402", source_designator="R9",
+        ))
+        pads += [_pad(2, "1", 2, -7), _pad(2, "2", 4, -6)]
+        u5_index = 3
+    pads += [
+        _pad(u5_index, "1", 3, 0),                              # OUT_P
+        _pad(u5_index, "2", 0, 1),                              # OUT_N
+        _pad(
+            u5_index, "3",
+            _SERIES_VIN_NETS[in_p_net] if in_p_pad_net is None else in_p_pad_net,
+            2,
+        ),                                                      # IN_P
+        _pad(u5_index, "4", 0, 3),                              # IN_N
+    ]
+    return _minimal_proj(
+        nets=(
+            RawNet("GND"), RawNet("VDD_48V_IN"), RawNet("VDD_48V"),
+            RawNet("VDD_12V"), RawNet("VDD_48V_F"),
+        ),
+        sch_components=tuple(sch),
+        pcb_components=tuple(pcb),
+        pads=tuple(pads),
+    )
+
+
+def test_series_upstream_map_reads_indexed_role_only_channels():
+    """A part whose SERIES channels come only from PDN<n>_ROLE overrides still
+    contributes its links — _is_pdn_annotated admits it, so the graph must too."""
+    proj = _series_vin_proj({
+        "PDN1_ROLE": "SERIES", "PDN1_R": "50m",
+        "PDN1_P_NET": "VDD_48V_IN", "PDN1_N_NET": "VDD_48V",
+        "PDN2_ROLE": "SERIES", "PDN2_R": "50m",
+        "PDN2_P_NET": "VDD_48V", "PDN2_N_NET": "VDD_12V",
+    })
+    graph = _collect_series_upstream_map(_iter_pdn_parameter_sources(proj), proj)
+    assert graph.upstream == {
+        "VDD_48V": "VDD_48V_IN", "VDD_12V": "VDD_48V",
+    }
+
+
+def test_series_upstream_map_reads_pin_specified_channels():
+    """PDN_P_PINS / PDN_N_PINS is a supported way to state a SERIES element's
+    two sides, so it must produce the same edge PDN_P_NET / PDN_N_NET would."""
+    proj = _series_vin_proj(
+        {
+            "PDN_ROLE": "SERIES", "PDN_R": "50m",
+            "PDN_P_PINS": "1", "PDN_N_PINS": "2,3",
+        },
+        # pin 1 on VDD_48V_IN, pins 2+3 both on VDD_48V.
+        series_pads=(("1", 1), ("2", 2), ("3", 2)),
+    )
+    graph = _collect_series_upstream_map(_iter_pdn_parameter_sources(proj), proj)
+    assert graph.upstream == {"VDD_48V": "VDD_48V_IN"}
+
+    result = parse_annotations(proj, enabled_layers=[1])
+    reg = next(d for d in result.directives if d.designator == "U5")
+    assert abs(reg.gain - (12.0 / (48.0 * 0.8))) < 1e-6
+
+
+def test_series_upstream_map_auto_inferred_link_is_direction_agnostic():
+    """_autoinfer_2pin_nets takes P/N from raw pad order, so the Vin result must
+    not change when the two RawPad entries are swapped."""
+    params = {"PDN_ROLE": "SERIES", "PDN_R": "50m"}
+    forward = _series_vin_proj(params, series_pads=(("1", 1), ("2", 2)))
+    reversed_ = _series_vin_proj(params, series_pads=(("2", 2), ("1", 1)))
+    expected = 12.0 / (48.0 * 0.8)
+    for proj in (forward, reversed_):
+        graph = _collect_series_upstream_map(
+            _iter_pdn_parameter_sources(proj), proj,
+        )
+        # Recorded as an undirected pair — pad order states no power flow.
+        assert not graph.upstream
+        assert graph.undirected["VDD_48V"] == frozenset({"VDD_48V_IN"})
+        result = parse_annotations(proj, enabled_layers=[1])
+        reg = next(d for d in result.directives if d.designator == "U5")
+        assert abs(reg.gain - expected) < 1e-6, result.errors
+
+
+def test_series_upstream_map_skips_merged_short_self_edges():
+    """A 0 Ω the merge pre-pass absorbed has both ends on one net now. Neither
+    the skip list nor the self-edge guard may let it shadow the real edge."""
+    proj = _series_vin_proj(
+        {
+            "PDN_ROLE": "SERIES", "PDN_R": "50m",
+            "PDN_P_NET": "VDD_48V_IN", "PDN_N_NET": "VDD_48V",
+        },
+        extra_series={
+            "PDN_ROLE": "SERIES", "PDN_R": "0.001",
+            "PDN_P_NET": "VDD_48V", "PDN_N_NET": "VDD_48V_F",
+        },
+    )
+    # VDD_48V_F (index 4) merged into VDD_48V (index 2).
+    net_remap = {4: 2}
+    graph = _collect_series_upstream_map(
+        _iter_pdn_parameter_sources(proj), proj,
+        net_remap=net_remap, skip_designators={"R9"},
+    )
+    assert graph.upstream == {"VDD_48V": "VDD_48V_IN"}
+    assert not graph.ambiguous
+
+    # Even without the skip list, the self-edge guard must hold the line.
+    unskipped = _collect_series_upstream_map(
+        _iter_pdn_parameter_sources(proj), proj, net_remap=net_remap,
+    )
+    assert unskipped.upstream == {"VDD_48V": "VDD_48V_IN"}
+    assert not unskipped.ambiguous
+
+
+def test_regulator_smps_vin_resolves_under_merged_net_name():
+    """The user may write either merged name. Both the supply map and the
+    lookup key are canonicalised, so IN_P_NET on the folded name still lands."""
+    proj = _series_vin_proj(
+        {
+            "PDN_ROLE": "SERIES", "PDN_R": "50m",
+            "PDN_P_NET": "VDD_48V_IN", "PDN_N_NET": "VDD_48V",
+        },
+        in_p_net="VDD_48V_F",   # the name the user wrote
+        in_p_pad_net=2,         # ...folded into VDD_48V by the merge pre-pass
+    )
+    result = parse_annotations(proj, enabled_layers=[1], net_remap={4: 2})
+    reg = next(d for d in result.directives if d.designator == "U5")
+    assert abs(reg.gain - (12.0 / (48.0 * 0.8))) < 1e-6, result.errors
+
+
+def test_regulator_smps_vin_warns_when_inferred_through_series_chain():
+    """Vin taken from a walked chain is a guess about which leg is the power
+    path — a sense or bleed resistor produces a silently wrong gain, so say so."""
+    proj = _series_vin_proj({
+        "PDN_ROLE": "SERIES", "PDN_R": "50m",
+        "PDN_P_NET": "VDD_48V_IN", "PDN_N_NET": "VDD_48V",
+    })
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert any(
+        "was inferred 1 SERIES hop(s) upstream" in w for w in result.warnings
+    ), result.warnings
+
+
+def test_regulator_smps_vin_does_not_warn_on_directly_declared_rail():
+    proj = _series_vin_proj(
+        {
+            "PDN_ROLE": "SERIES", "PDN_R": "50m",
+            "PDN_P_NET": "VDD_48V_IN", "PDN_N_NET": "VDD_48V",
+        },
+        in_p_net="VDD_48V_IN",
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert not any("SERIES hop(s) upstream" in w for w in result.warnings)
 
 
 def test_regulator_smps_vin_not_ambiguous_through_sense_bridges():
@@ -2651,7 +3210,9 @@ def test_indexed_roles_only_source_channel_contributes_supply_voltage():
     assert sources[0].channel_index == 1
     assert sources[0].voltage == pytest.approx(5.0)
 
-    supply_map = _collect_supply_voltages_by_net(_iter_pdn_parameter_sources(proj))
+    supply_map = _collect_supply_voltages_by_net(
+        _iter_pdn_parameter_sources(proj), proj,
+    )
     assert supply_map == {"+5V": 5.0}
 
 
@@ -2715,3 +3276,108 @@ def test_format_solve_blockers_lists_errors():
     assert "PDN2_PIN" in text
     assert "no SOURCE or REGULATOR" in text
     assert "fypa.log" in text
+
+
+# --- physical-page-map harvesting ---------------------------------------------
+
+
+def test_harvest_prefers_source_path_over_bare_file_name():
+    """file_name is the bare leaf, so harvesting it collapses same-named
+    sheets in different directories onto one map value."""
+    from types import SimpleNamespace
+
+    from fypa.altium.extract import _harvest_physical_sheet_names
+
+    compiled = SimpleNamespace(physical_documents=[
+        SimpleNamespace(id="physical:0", source_path="SubA/Power.SchDoc",
+                        file_name="Power.SchDoc"),
+        SimpleNamespace(id="physical:1", source_path="SubB/Power.SchDoc",
+                        file_name="Power.SchDoc"),
+    ])
+    assert _harvest_physical_sheet_names(compiled) == (
+        ("physical:0", "SubA/Power.SchDoc"),
+        ("physical:1", "SubB/Power.SchDoc"),
+    )
+
+
+def test_harvest_falls_back_to_file_name_when_source_path_is_absent():
+    from types import SimpleNamespace
+
+    from fypa.altium.extract import _harvest_physical_sheet_names
+
+    compiled = SimpleNamespace(physical_documents=[
+        SimpleNamespace(id="physical:0", file_name="Power.SchDoc"),
+    ])
+    assert _harvest_physical_sheet_names(compiled) == (
+        ("physical:0", "Power.SchDoc"),
+    )
+
+
+def test_harvest_is_empty_on_a_release_without_physical_documents():
+    """The installed library may predate the compiled model entirely; that
+    must yield an empty map, not an exception."""
+    from types import SimpleNamespace
+
+    from fypa.altium.extract import _harvest_physical_sheet_names
+
+    assert _harvest_physical_sheet_names(SimpleNamespace()) == ()
+    assert _harvest_physical_sheet_names(
+        SimpleNamespace(physical_documents=None)) == ()
+    # Entries missing either half are skipped rather than half-recorded.
+    assert _harvest_physical_sheet_names(SimpleNamespace(physical_documents=[
+        SimpleNamespace(id=None, source_path="A.SchDoc"),
+        SimpleNamespace(id="physical:0", source_path=None, file_name=None),
+    ])) == ()
+
+
+def test_compile_falls_back_to_to_netlist_with_the_designs_own_options():
+    """Rebuilding NetlistOptions.from_prjpcb() drops the merged per-sheet
+    parameters that net labels substitute — only AltiumDesign.from_prjpcb adds
+    them — so a fallback that does so silently renames nets."""
+
+    from fypa.altium.extract import _compile_schematic_netlist
+
+    sentinel = object()
+    calls = []
+
+    class _Design:
+        schdocs = ["a.SchDoc"]
+        project = None
+
+        def to_netlist(self):
+            calls.append("to_netlist")
+            return sentinel
+
+    netlist, sheet_names = _compile_schematic_netlist(_Design())
+    assert netlist is sentinel
+    assert sheet_names == ()
+    assert calls == ["to_netlist"]
+
+
+def test_a_failed_page_map_does_not_discard_a_good_netlist():
+
+    from fypa.altium.extract import _compile_schematic_netlist
+
+    sentinel = object()
+
+    class _Compiled:
+        def to_netlist(self):
+            return sentinel
+
+        @property
+        def physical_documents(self):
+            raise RuntimeError("field renamed upstream")
+
+    class _Design:
+        schdocs = ["a.SchDoc"]
+        project = None
+
+        def compile(self):
+            return _Compiled()
+
+        def to_netlist(self):
+            raise AssertionError("must not recompile after a good compile()")
+
+    netlist, sheet_names = _compile_schematic_netlist(_Design())
+    assert netlist is sentinel
+    assert sheet_names == ()

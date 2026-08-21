@@ -85,15 +85,12 @@ uv sync
 That's it. `uv sync` reads `pyproject.toml` + `uv.lock`, fetches Python 3.12
 if it isn't already available (the version is pinned in `.python-version`),
 creates a `.venv\` inside the repo, and installs every runtime + dev
-dependency — including `altium_monkey`, which uv pulls from
-[upstream](https://github.com/wavenumber-eng/altium_monkey) at the tag pinned
-in `pyproject.toml`'s `[tool.uv.sources]`.
+dependency — including `altium_monkey`, which uv pulls from PyPI at the
+version pinned in `pyproject.toml`.
 
-> **Python version: 3.11 or 3.12 only.** The `altium_monkey` upstream pins
-> `requires-python = ">=3.11,<3.13"`, and its `numpy==2.2.3` dependency
-> does not yet ship wheels for 3.13/3.14. `.python-version` pins 3.12, which
-> uv fetches automatically; to use 3.11 instead, edit that file before
-> running `uv sync`.
+> **Python version: 3.12 only.** Both FYPA and `altium_monkey` pin
+> `requires-python = ">=3.12,<3.13"`. `.python-version` selects 3.12, which
+> uv fetches automatically.
 
 Day-to-day commands:
 

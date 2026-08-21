@@ -421,6 +421,11 @@ class ExtractedProject:
     # Compiled schematic netlist (multi-sheet aware). Used to translate local
     # sheet net names in PDN_*_NET parameters to per-instance PCB connectivity.
     compiled_netlist: Any | None = None
+    # altium_monkey ≥ 2026.7 maps netlist ``source_sheets`` to physical page
+    # ids (``physical:0:logical:0:main.SchDoc:child:…``). This tuple maps each
+    # physical page id → logical schematic file name (``power.SchDoc``) so
+    # local-net sheet matching stays compatible with sch_components.
+    physical_sheet_names: tuple[tuple[str, str], ...] = ()
     # User-defined Altium origin (Board6/ORIGINX,ORIGINY), in mm. Every
     # Pt2D produced above has already had this subtracted, so coordinates
     # match what Altium displays when the user has set a custom origin.
@@ -1369,23 +1374,79 @@ def list_pcbdoc_paths(prjpcb_path: str | Path) -> list[Path]:
     return list(AltiumPrjPcb(prjpcb_path).get_pcbdoc_paths())
 
 
-def _compile_schematic_netlist(design: AltiumDesign) -> Netlist | None:
-    """Compile the project schematic netlist for local-net name resolution."""
-    if not design.schdocs:
-        return None
-    try:
-        from altium_monkey.altium_netlist_compilation import compile_netlist
-        from altium_monkey.altium_netlist_options import NetlistOptions
+def _compile_schematic_netlist(
+    design: AltiumDesign,
+) -> tuple[Netlist | None, tuple[tuple[str, str], ...]]:
+    """Compile the project schematic netlist for local-net name resolution.
 
-        options = (
-            NetlistOptions.from_prjpcb(design.project)
-            if design.project is not None
-            else NetlistOptions()
-        )
-        return compile_netlist(design.schdocs, design.project, options)
-    except Exception as exc:
-        log.warning("Could not compile schematic netlist: %s", exc)
-        return None
+    Returns ``(netlist, physical_sheet_names)`` where ``physical_sheet_names``
+    maps compiled physical page ids to logical ``*.SchDoc`` names
+    (altium_monkey ≥ 2026.7). The map is empty on releases without a
+    compiled model, and callers must then degrade rather than guess a sheet
+    from an unmapped page id.
+    """
+    if not design.schdocs:
+        return None, ()
+
+    netlist = None
+    compiled = None
+    if hasattr(design, "compile"):
+        # >= 2026.7 exposes the compiled model, which carries the page map.
+        try:
+            compiled = design.compile()
+            netlist = compiled.to_netlist()
+        except Exception as exc:
+            log.warning(
+                "Could not compile schematic netlist via design.compile(): %s",
+                exc,
+            )
+            compiled = None
+    if netlist is None:
+        # Older releases have no compile(). ``to_netlist()`` reaches the same
+        # compiler through the design's OWN options, which carry the merged
+        # per-sheet parameters that net labels substitute. Rebuilding options
+        # with ``NetlistOptions.from_prjpcb()`` drops that merge -- only
+        # ``AltiumDesign.from_prjpcb`` adds it -- which silently renames nets
+        # on a project using =Parameter substitution rather than degrading.
+        try:
+            netlist = design.to_netlist()
+        except Exception as exc:
+            log.warning("Could not compile schematic netlist: %s", exc)
+            return None, ()
+    if netlist is None:
+        return None, ()
+
+    # Harvested separately from the compile: losing the page map must not
+    # throw away a netlist that built cleanly.
+    sheet_names: tuple[tuple[str, str], ...] = ()
+    if compiled is not None:
+        try:
+            sheet_names = _harvest_physical_sheet_names(compiled)
+        except Exception as exc:
+            log.warning(
+                "Could not read the compiled physical-page map (%s); local-net "
+                "sheet matching falls back to alias resolution.", exc,
+            )
+    return netlist, sheet_names
+
+
+def _harvest_physical_sheet_names(compiled) -> tuple[tuple[str, str], ...]:
+    """``(physical page id, logical sheet name)`` pairs from a compiled design.
+
+    Prefers ``source_path`` -- the project-relative path -- over ``file_name``,
+    which is the bare leaf: harvesting the leaf collapses ``SubA/Power.SchDoc``
+    and ``SubB/Power.SchDoc`` onto one name, the very directory collision
+    :func:`~fypa.altium.annotations._sheet_name_matches` exists to keep apart.
+    Falls back to ``file_name`` on a release exposing only that.
+    """
+    pairs: list[tuple[str, str]] = []
+    for doc in (getattr(compiled, "physical_documents", None) or ()):
+        doc_id = getattr(doc, "id", None)
+        name = (getattr(doc, "source_path", None)
+                or getattr(doc, "file_name", None))
+        if doc_id and name:
+            pairs.append((str(doc_id), str(name)))
+    return tuple(pairs)
 
 
 def extract_project(prjpcb_path: str | Path,
@@ -1425,7 +1486,7 @@ def extract_project(prjpcb_path: str | Path,
     ox_mm = mils_to_mm(origin_x_mils)
     oy_mm = mils_to_mm(origin_y_mils)
 
-    compiled_netlist = _compile_schematic_netlist(design)
+    compiled_netlist, physical_sheet_names = _compile_schematic_netlist(design)
 
     return ExtractedProject(
         prjpcb_path=prjpcb_path,
@@ -1443,6 +1504,7 @@ def extract_project(prjpcb_path: str | Path,
         stackup=_extract_stackup(pcb),
         sch_components=_extract_sch_components(design),
         compiled_netlist=compiled_netlist,
+        physical_sheet_names=physical_sheet_names,
         board_origin_mm=Pt2D(ox_mm, oy_mm),
         board_outline=_extract_board_outline(pcb, ox_mm, oy_mm),
         **_plane_rule_kwargs(pcb),

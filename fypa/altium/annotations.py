@@ -194,7 +194,10 @@ _KNOWN_SUFFIXES_BY_ROLE: dict[str, frozenset[str]] = {
 # --- SI value parsing ---------------------------------------------------------
 
 _SI_PREFIXES: dict[str, float] = {
-    "f": 1e-15, "p": 1e-12, "n": 1e-9, "u": 1e-6, "µ": 1e-6,
+    # Both micro signs: U+00B5 MICRO SIGN is what Altium emits, U+03BC GREEK
+    # SMALL LETTER MU is what datasheets, Word and several CAD exports produce.
+    # They are visually identical, so accepting only one silently drops the part.
+    "f": 1e-15, "p": 1e-12, "n": 1e-9, "u": 1e-6, "µ": 1e-6, "μ": 1e-6,
     "m": 1e-3, "":  1.0,    "k": 1e3,  "K": 1e3,
     "M": 1e6,  "G": 1e9,    "T": 1e12,
 }
@@ -216,13 +219,13 @@ _VALUE_RE = re.compile(
         (?:
             (?P<dotfrac>\.\d*)?          # 3.3
             |
-            (?P<eng_letter>[a-zA-Zµ])     # 3V3 form: int + unit-letter + frac
+            (?P<eng_letter>[a-zA-Zµμ])     # 3V3 form: int + unit-letter + frac
             (?P<eng_frac>\d+)?
         )?
         |
         (?P<leaddot>\.\d+)               # .001 — no leading integer digit
     )
-    (?P<rest>[a-zA-Zµ%Ω]*)            # SI prefix / unit suffix
+    (?P<rest>[a-zA-Zµμ%Ω]*)            # SI prefix / unit suffix
     \s*$
     """,
     re.VERBOSE,
@@ -231,7 +234,7 @@ _VALUE_RE = re.compile(
 _SCI_VALUE_RE = re.compile(
     r"""^\s*
     (?P<mantissa>[+-]?(?:\d+\.?\d*|\.\d+)[eE][+-]?\d+)
-    (?P<rest>[a-zA-Zµ%Ω]*)
+    (?P<rest>[a-zA-Zµμ%Ω]*)
     \s*$
     """,
     re.VERBOSE,
@@ -678,6 +681,18 @@ class InstanceLocalNetResolver:
     _netlist_index: (
         dict[str, list[tuple[str, tuple[str, ...], tuple[str, ...]]]] | None
     ) = field(default=None, repr=False)
+    _sheet_map: dict[str, str] | None = field(default=None, repr=False)
+
+    def sheet_map(self) -> dict[str, str]:
+        """Memoised physical-page-id → logical-sheet-name map.
+
+        Consulted once per candidate net inside the netlist scans and again
+        per placement in :meth:`infer_schdoc`, so building it per call is
+        O(pages) work repeated thousands of times on a hierarchical board.
+        """
+        if self._sheet_map is None:
+            self._sheet_map = _physical_sheet_file_map(self.proj)
+        return self._sheet_map
 
     def pads_index(self) -> dict[int, dict[str, RawPad]]:
         """Memoized :func:`_build_pads_by_component` for this project."""
@@ -790,6 +805,7 @@ class InstanceLocalNetResolver:
                     routed_pin_keys=set(routed),
                     pcb_designator=pcb.designator,
                     pcb_net_by_pin=pcb_net_by_pin or None,
+                    sheet_map=self.sheet_map(),
                 )
                 wanted = {p.upper() for p in local_pins}
                 for pin_key, pad in routed.items():
@@ -866,7 +882,55 @@ def _pcb_indices_for_source(comp: PdnParameterSource,
     return _find_pcb_instances(proj, comp.designator)
 
 
-def _sheet_name_matches(schdoc_name: str, source_sheets: list[str]) -> bool:
+def _physical_sheet_file_map(proj: ExtractedProject | None) -> dict[str, str]:
+    """physical page id (lower) → logical ``*.SchDoc`` name.
+
+    Prefer :meth:`InstanceLocalNetResolver.sheet_map`, which memoises this —
+    it is consulted once per candidate net inside the netlist scans, so
+    rebuilding it per call is O(pages) work repeated thousands of times a load.
+    """
+    if proj is None:
+        return {}
+    return {
+        pid.replace("\\", "/").lower(): fn
+        for pid, fn in proj.physical_sheet_names or ()
+        if pid and fn
+    }
+
+
+def _logical_schdoc_name(name: str, sheet_map: dict[str, str]) -> str | None:
+    """Map a physical page id to its logical ``*.SchDoc`` name.
+
+    Returns ``None`` when ``name`` is a physical page id the compiled map does
+    not cover — the caller must then treat that entry as *unknown provenance*
+    rather than matching on it.
+
+    There is no reliable way to recover the sheet from the id alone: a child
+    page id embeds its PARENT's logical id, so scanning it for a ``*.SchDoc``
+    token yields the root sheet, not the page's own. That both hides a genuine
+    match (a local net on Power.SchDoc looks like it lives on the root) and
+    invents false ones (a root-sheet net appears to live on every child page).
+    Guessing is worse than admitting the id is unresolved.
+
+    A plain sheet name passes through unchanged, with directories preserved so
+    ``SubA/Power.SchDoc`` and ``SubB/Power.SchDoc`` stay distinct.
+    """
+    if not name:
+        return ""
+    key = name.replace("\\", "/").lower()
+    if key in sheet_map:
+        return sheet_map[key]
+    if key.startswith("physical:"):
+        return None
+    return name.replace("\\", "/")
+
+
+def _sheet_name_matches(
+    schdoc_name: str,
+    source_sheets: list[str],
+    *,
+    sheet_map: dict[str, str] | None = None,
+) -> bool:
     # A net with no recorded sheet provenance (e.g. a global/power net) cannot
     # contradict the inferred instance sheet, so it is accepted. This is the
     # one remaining permissive path; cross-instance mis-binding is bounded by
@@ -875,16 +939,28 @@ def _sheet_name_matches(schdoc_name: str, source_sheets: list[str]) -> bool:
         return True
     if not schdoc_name:
         return False
-    target_full = schdoc_name.replace("\\", "/").lower()
-    target_base = Path(schdoc_name).name.lower()
+    sheet_map = sheet_map or {}
+    target = _logical_schdoc_name(schdoc_name, sheet_map)
+    if target is None:
+        return False
+    target_full = target.replace("\\", "/").lower()
+    target_base = Path(target).name.lower()
     has_dir = "/" in target_full
+    resolved_any = False
     for sheet in source_sheets:
-        s = sheet.replace("\\", "/").lower()
+        resolved = _logical_schdoc_name(sheet, sheet_map)
+        if resolved is None:
+            continue          # unmapped page id — provenance unknown, not "no"
+        resolved_any = True
+        s = resolved.replace("\\", "/").lower()
         if s == target_full:
             return True
-        if not has_dir and Path(sheet).name.lower() == target_base:
+        if not has_dir and Path(resolved).name.lower() == target_base:
             return True
-    return False
+    # Every entry was an unresolvable page id, so this net carries no usable
+    # provenance. Fall through to the same permissive rule as a net with no
+    # source_sheets at all rather than rejecting on a guess.
+    return not resolved_any
 
 
 def _resolve_local_net_pins(
@@ -896,6 +972,7 @@ def _resolve_local_net_pins(
     routed_pin_keys: set[str] | None = None,
     pcb_designator: str | None = None,
     pcb_net_by_pin: dict[str, str] | None = None,
+    sheet_map: dict[str, str] | None = None,
 ) -> tuple[list[str], int]:
     """Return ``(pin designators, match_tier)`` for a local sheet net name.
 
@@ -937,7 +1014,8 @@ def _resolve_local_net_pins(
         if not name_match and not alias_match:
             continue
         net_sheets = list(getattr(net, "source_sheets", ()) or ())
-        if not _sheet_name_matches(schdoc_name, net_sheets):
+        if not _sheet_name_matches(schdoc_name, net_sheets,
+                                   sheet_map=sheet_map):
             continue
         base_tier = (
             _LOCAL_NET_TIER_NAME if name_match else _LOCAL_NET_TIER_ALIAS
@@ -1016,6 +1094,7 @@ def _resolve_alias_fallback_pads(
         return []
     netlist_index = _instance_resolver(proj).designator_index()
     des_candidates = _designator_candidates(sch_lookup_designator, pcb_designator)
+    sheet_map = _instance_resolver(proj).sheet_map()
     matched: list[RawPad] = []
     seen_pins: set[str] = set()
     for pad in component_pads:
@@ -1034,7 +1113,8 @@ def _resolve_alias_fallback_pads(
                     for n in names
                 ):
                     continue
-                if not _sheet_name_matches(schdoc_name, list(sheets)):
+                if not _sheet_name_matches(schdoc_name, list(sheets),
+                                           sheet_map=sheet_map):
                     continue
                 matched.append(pad)
                 seen_pins.add(pin_key)
@@ -1136,6 +1216,7 @@ def _resolve_terminal(
                 routed_pin_keys=routed_pin_keys or None,
                 pcb_designator=designator,
                 pcb_net_by_pin=pcb_net_by_pin or None,
+                sheet_map=_instance_resolver(proj).sheet_map(),
             )
             if local_pins:
                 wanted_pins = {pin.upper() for pin in local_pins}
@@ -1373,14 +1454,72 @@ def _series_channel_has_net_params(
     )
 
 
+def _net_name_for_pins(
+    proj: ExtractedProject,
+    pcb_idx: int,
+    pins: list[str],
+) -> str | None:
+    """The one net every listed pad of a placement sits on, else ``None``.
+
+    A multi-pad terminal (a series FET's three drain pads, say) names a net only
+    when all of its pads agree; a pad that is unrouted, absent from the
+    footprint, or on a different net leaves the side unnamed.
+    """
+    pads = {
+        p.designator.upper(): p
+        for p in _pads_by_component_all(proj).get(pcb_idx, [])
+    }
+    net_indices: set[int] = set()
+    for pin in pins:
+        pad = pads.get(pin.strip().upper())
+        if pad is None or pad.net_index == NO_NET:
+            return None
+        net_indices.add(pad.net_index)
+    if len(net_indices) != 1:
+        return None
+    return proj.nets[next(iter(net_indices))].name
+
+
+def _series_channel_side_net(
+    comp: PdnParameterSource,
+    proj: ExtractedProject,
+    ch_idx: int,
+    pcb_idx: int,
+    net_suffix: str,
+    pins_suffix: str,
+) -> str | None:
+    """One side (P or N) of a SERIES channel resolved to a net name.
+
+    ``PDN<n>_P_NET`` wins when set; otherwise the ``PDN<n>_P_PINS`` pad list is
+    resolved back through the placement's pads, so the pin form contributes the
+    same net pair as the name form instead of dropping out of the SERIES graph.
+    """
+    name = _ci_get(comp.parameters, _channel_key(net_suffix, ch_idx))
+    if name and name.strip():
+        return name
+    pins = _split_pin_list(
+        _ci_get(comp.parameters, _channel_key(pins_suffix, ch_idx)),
+    )
+    if not pins:
+        return None
+    return _net_name_for_pins(proj, pcb_idx, pins)
+
+
 def _resolve_series_channel_nets(
     comp: PdnParameterSource,
     proj: ExtractedProject,
     ch_idx: int,
     pcb_idx: int,
     ch_indices: list[int],
-) -> tuple[str, str] | None:
-    """P/N net names for one SERIES channel on one PCB placement."""
+) -> tuple[str, str, bool] | None:
+    """P/N net names for one SERIES channel on one PCB placement.
+
+    Returns ``(p_net, n_net, directed)``. ``directed`` is ``False`` on the
+    2-pin auto-inference path: :func:`_autoinfer_2pin_nets` takes P and N from
+    raw pad order, which carries no information about which side is upstream.
+    Callers that only need the unordered pair (bridge unioning) ignore the flag;
+    :func:`_collect_series_upstream_map` must not read power flow out of it.
+    """
     p_net = _ci_get(comp.parameters, _channel_key("P_NET", ch_idx))
     n_net = _ci_get(comp.parameters, _channel_key("N_NET", ch_idx))
     if p_net is None and n_net is None and not _series_channel_has_net_params(
@@ -1388,23 +1527,34 @@ def _resolve_series_channel_nets(
     ):
         if len(ch_indices) != 1:
             return None
-        return _autoinfer_2pin_nets(proj, pcb_idx)
-    if p_net and n_net:
-        return p_net, n_net
+        inferred = _autoinfer_2pin_nets(proj, pcb_idx)
+        if inferred is None:
+            return None
+        return inferred[0], inferred[1], False
+    p_resolved = _series_channel_side_net(
+        comp, proj, ch_idx, pcb_idx, "P_NET", "P_PINS",
+    )
+    n_resolved = _series_channel_side_net(
+        comp, proj, ch_idx, pcb_idx, "N_NET", "N_PINS",
+    )
+    if p_resolved and n_resolved:
+        return p_resolved, n_resolved, True
     return None
 
 
 def _iter_series_bridge_pairs(
     parameter_sources: list[PdnParameterSource],
     proj: ExtractedProject,
-) -> Iterator[tuple[int, str, str]]:
-    """Yield ``(pcb_index, p_net, n_net)`` for each SERIES bridge placement.
+) -> Iterator[tuple[int, str, str, bool]]:
+    """Yield ``(pcb_index, p_net, n_net, directed)`` per SERIES bridge placement.
 
     Every channel of every placement yields its own pair — a multi-channel
     SERIES part bridges a different net pair per channel, and a repeated
     sheet places the same channel once per PCB instance. Explicit
-    ``PDN<n>_P_NET`` / ``PDN<n>_N_NET`` pairs and single-channel 2-pin
-    auto-inference are resolved by :func:`_resolve_series_channel_nets`.
+    ``PDN<n>_P_NET`` / ``PDN<n>_N_NET`` pairs, the ``PDN<n>_P_PINS`` /
+    ``PDN<n>_N_PINS`` pin form, and single-channel 2-pin auto-inference are all
+    resolved by :func:`_resolve_series_channel_nets`, which also reports whether
+    the P/N order is meaningful (``directed``).
     """
     for comp in parameter_sources:
         ch_indices = _series_channel_indices(comp)
@@ -1413,11 +1563,11 @@ def _iter_series_bridge_pairs(
         pcb_indices = _pcb_indices_for_source(comp, proj)
         for ch_idx in ch_indices:
             for pcb_idx in pcb_indices:
-                pair = _resolve_series_channel_nets(
+                resolved = _resolve_series_channel_nets(
                     comp, proj, ch_idx, pcb_idx, ch_indices,
                 )
-                if pair is not None:
-                    yield pcb_idx, pair[0], pair[1]
+                if resolved is not None:
+                    yield pcb_idx, resolved[0], resolved[1], resolved[2]
 
 
 def _union_series_bridge_net_indices(
@@ -1432,7 +1582,7 @@ def _union_series_bridge_net_indices(
     channels in analysis-group validation.
     """
     resolver = _instance_resolver(proj)
-    for pcb_idx, p_net, n_net in _iter_series_bridge_pairs(
+    for pcb_idx, p_net, n_net, _directed in _iter_series_bridge_pairs(
         parameter_sources, proj,
     ):
         idxs: list[int] = []
@@ -1884,7 +2034,8 @@ def _has_single_net_params(params: dict[str, str],
 
 
 def _parse_source(comp, proj, enabled_layers, result,
-                  net_remap=None, supply_map=None, only_indices=None):
+                  net_remap=None, supply_map=None, only_indices=None,
+                  series_graph=None):
     # ``only_indices`` (from the per-channel role dispatcher) restricts this
     # parser to the channels whose effective role is SOURCE; when ``None`` the
     # whole part is SOURCE and channels are discovered here.
@@ -1961,7 +2112,8 @@ def _parse_source(comp, proj, enabled_layers, result,
 
 
 def _parse_sink(comp, proj, enabled_layers, result,
-                net_remap=None, supply_map=None, only_indices=None):
+                net_remap=None, supply_map=None, only_indices=None,
+                series_graph=None):
     # ``only_indices`` restricts this parser to the part's SINK-role channels;
     # see _parse_source.
     if only_indices is not None:
@@ -2042,7 +2194,8 @@ def _parse_sink(comp, proj, enabled_layers, result,
 
 
 def _parse_resistance(comp, proj, enabled_layers, result,
-                      net_remap=None, supply_map=None, only_indices=None):
+                      net_remap=None, supply_map=None, only_indices=None,
+                      series_graph=None):
     # This parser only ever handles SERIES-role channels (part-wide or a
     # PDN<n>_ROLE=SERIES override), so the role for diagnostics is always
     # SERIES regardless of the part-wide PDN_ROLE.
@@ -2152,18 +2305,36 @@ def _parse_resistance(comp, proj, enabled_layers, result,
 
 def _collect_supply_voltages_by_net(
     parameter_sources: list[PdnParameterSource],
+    proj: ExtractedProject,
+    net_remap: dict[int, int] | None = None,
 ) -> dict[str, float]:
-    """Map upper-cased supply net names to nominal voltages from SOURCE /
-    REGULATOR schematic parameters (before pad resolution)."""
+    """Map canonical supply net names to nominal voltages from SOURCE /
+    REGULATOR schematic parameters (before pad resolution).
+
+    Names are canonicalised with :func:`_canonical_supply_net_name` so this map,
+    :func:`_collect_series_upstream_map`, and the ``IN_P_NET`` a regulator is
+    looked up by are all keyed the same way. Without that, any design the
+    loader's net-merge pre-pass renamed a rail in would find no Vin at all.
+    """
     raw: dict[str, set[float]] = {}
 
-    def _register(net: str | None, voltage: float) -> None:
+    def _register(
+        net: str | None, voltage: float, pcb_indices: list[int],
+    ) -> None:
         if net is None or not str(net).strip():
             return
-        raw.setdefault(net.strip().upper(), set()).add(float(voltage))
+        # One placement per repeated-sheet instance; each may canonicalise
+        # differently, and the declared voltage holds for all of them.
+        keys = {
+            _canonical_supply_net_name(proj, net, net_remap, pcb_index=i)
+            for i in pcb_indices
+        } or {_canonical_supply_net_name(proj, net, net_remap)}
+        for key in keys:
+            raw.setdefault(key, set()).add(float(voltage))
 
     for comp in parameter_sources:
         part_role = _part_role_default(comp.parameters)
+        pcb_indices = _pcb_indices_for_source(comp, proj)
         # Both SOURCE and REGULATOR carry PDN<n>_V; switch on each channel's
         # effective role so a SOURCE (or REGULATOR) channel on a mixed-role
         # part still contributes its nominal rail voltage.
@@ -2181,10 +2352,10 @@ def _collect_supply_voltages_by_net(
             if eff == "SOURCE":
                 p_net = _ci_get(comp.parameters, _channel_key("P_NET", idx))
                 single_net = _ci_get(comp.parameters, _channel_key("NET", idx))
-                _register(p_net or single_net, v)
+                _register(p_net or single_net, v, pcb_indices)
             else:  # REGULATOR
                 out_net = _ci_get(comp.parameters, _channel_key("OUT_P_NET", idx))
-                _register(out_net, v)
+                _register(out_net, v, pcb_indices)
     out: dict[str, float] = {}
     for net, voltages in raw.items():
         if len(voltages) == 1:
@@ -2192,22 +2363,198 @@ def _collect_supply_voltages_by_net(
     return out
 
 
+def _canonical_supply_net_name(
+    proj: ExtractedProject,
+    net_name: str,
+    net_remap: dict[int, int] | None = None,
+    pcb_index: int | None = None,
+) -> str:
+    """Upper-case supply net label, remapped to its merge canonical.
+
+    A repeated (multi-channel) sheet shares one net *name* across several
+    distinct net indices — see :func:`_net_indices_by_name` — so the label alone
+    cannot pick a channel and taking the first index would key the Vin graph off
+    whichever instance happens to come first in ``proj.nets``. When
+    ``pcb_index`` is given the candidates are scoped to that placement with
+    :meth:`InstanceLocalNetResolver.expand_net_names`, matching
+    :func:`_union_series_bridge_net_indices`.
+
+    If the surviving candidates still disagree on a canonical name the label is
+    returned unchanged: a name-keyed graph cannot express a per-instance split,
+    and leaving the label alone at least keeps both sides of the lookup
+    consistent.
+    """
+    key = net_name.strip().upper()
+    if not net_remap:
+        # No merge happened, so the canonical name is the label itself. Skips
+        # the index lookup on the overwhelmingly common path.
+        return key
+    if pcb_index is None:
+        names: tuple[str, ...] = (key,)
+    else:
+        names = _instance_resolver(proj).expand_net_names(
+            key, pcb_index=pcb_index,
+        )
+    indices: list[int] = []
+    for name in names:
+        indices.extend(_net_indices_by_name(proj, name))
+    if not indices:
+        return key
+    canonical = {
+        proj.nets[net_remap.get(i, i)].name.upper() for i in indices
+    }
+    if len(canonical) != 1:
+        return key
+    return next(iter(canonical))
+
+
+@dataclass(frozen=True)
+class _SeriesVinGraph:
+    """SERIES power-flow graph used to infer an SMPS input voltage.
+
+    ``upstream`` holds directed ``downstream N_NET → upstream P_NET`` edges from
+    channels that state a P/N order. ``undirected`` holds auto-inferred 2-pin
+    links, whose P/N order comes from raw pad order and so cannot say which side
+    is upstream; the walk crosses one only when the step is unambiguous.
+    ``ambiguous`` lists downstream nets two SERIES channels claim different
+    upstream nets for.
+    """
+
+    upstream: dict[str, str] = field(default_factory=dict)
+    undirected: dict[str, frozenset[str]] = field(default_factory=dict)
+    ambiguous: frozenset[str] = frozenset()
+
+
+def _collect_series_upstream_map(
+    parameter_sources: list[PdnParameterSource],
+    proj: ExtractedProject,
+    net_remap: dict[int, int] | None = None,
+    skip_designators: set[str] | None = None,
+) -> _SeriesVinGraph:
+    """Build the SERIES power-flow graph for nominal Vin lookup.
+
+    Channels come from the same :func:`_iter_series_bridge_pairs` composition
+    the bridge-union path uses, so per-channel ``PDN<n>_ROLE`` overrides, the
+    ``PDN<n>_P_PINS`` / ``PDN<n>_N_PINS`` pin form, and repeated-sheet
+    placements are all handled in one place.
+
+    Unlike the undirected bridge union, direction is preserved: sense paths that
+    undirectedly join unrelated rails via GND must not collapse Vin inference.
+
+    ``skip_designators`` mirrors :func:`parse_annotations` — a SERIES element the
+    loader's net-merge pre-pass absorbed has both ends on one net now, and
+    registering it would contradict the real edge on that rail.
+    """
+    upstream: dict[str, str] = {}
+    undirected: dict[str, set[str]] = {}
+    ambiguous: set[str] = set()
+    skip = {d.upper() for d in (skip_designators or ())}
+
+    def _register_directed(downstream: str, upstream_net: str) -> None:
+        if downstream in ambiguous:
+            return
+        prev = upstream.get(downstream)
+        if prev is not None:
+            if prev != upstream_net:
+                ambiguous.add(downstream)
+                upstream.pop(downstream, None)
+            return
+        upstream[downstream] = upstream_net
+
+    sources = [
+        comp for comp in parameter_sources
+        if comp.designator.upper() not in skip
+    ]
+    for pcb_idx, p_net, n_net, directed in _iter_series_bridge_pairs(
+        sources, proj,
+    ):
+        up = _canonical_supply_net_name(proj, p_net, net_remap, pcb_index=pcb_idx)
+        dn = _canonical_supply_net_name(proj, n_net, net_remap, pcb_index=pcb_idx)
+        if up == dn:
+            # Both ends collapsed onto one net (a merged short, or an element
+            # annotated across a single net). A self-edge carries no power-flow
+            # information and would falsely conflict with the rail's real edge.
+            continue
+        if directed:
+            _register_directed(dn, up)
+        else:
+            undirected.setdefault(dn, set()).add(up)
+            undirected.setdefault(up, set()).add(dn)
+
+    return _SeriesVinGraph(
+        upstream=upstream,
+        undirected={k: frozenset(v) for k, v in undirected.items()},
+        ambiguous=frozenset(ambiguous),
+    )
+
+
+# Depth cap on the SERIES walk. A real Vin chain is a handful of elements
+# (fuse, ORing FET, filter, sense resistor); anything longer is far more likely
+# to be a sense/bleed path stitched into a chain than a power path.
+_SERIES_VIN_MAX_HOPS: int = 8
+
+
 def _lookup_inferred_vin(
     in_p_net: str | None,
     supply_map: dict[str, float],
-) -> float | None:
-    """Nominal Vin from an upstream SOURCE / REGULATOR on ``in_p_net``.
+    graph: _SeriesVinGraph | None = None,
+) -> tuple[float | None, str | None, int]:
+    """Nominal Vin from an upstream SOURCE / REGULATOR reachable from ``in_p_net``.
 
-    Uses an exact net-name match only — SERIES bridge equivalence must not
-    expand Vin lookup, because sense paths through GND can join unrelated
-    rails (e.g. 48 V input and 12 V output) into one class.
+    ``supply_map`` lists voltages on SOURCE ``P_NET`` and REGULATOR
+    ``OUT_P_NET`` only. Both it and ``in_p_net`` must already be canonicalised
+    by :func:`_canonical_supply_net_name`, so a merged rail is keyed one way.
+    When ``graph`` is given, walk SERIES edges upstream until a mapped voltage
+    is found.
+
+    Returns ``(vin, failure, hops)``. ``hops`` is 0 for a direct hit and lets
+    the caller warn when Vin came from a walked chain rather than the rail the
+    user named. ``failure`` is ``'ambiguous'`` (two SERIES channels disagree on
+    the upstream net), ``'undirected'`` (several auto-inferred neighbours, so
+    the direction is unknown), ``'cycle'``, ``'too_deep'``, or ``None`` on
+    success / no match.
+
+    Undirected bridge equivalence must not be used here: sense paths through
+    GND can join unrelated rails into one class.
     """
     if in_p_net is None or not str(in_p_net).strip():
-        return None
-    v = supply_map.get(in_p_net.strip().upper())
-    if v is not None and v > 0:
-        return v
-    return None
+        return None, None, 0
+    net = in_p_net.strip().upper()
+    visited: set[str] = set()
+    hops = 0
+    while True:
+        v = supply_map.get(net)
+        if v is not None and v > 0:
+            return v, None, hops
+        # Checked *after* the direct lookup: a rail whose voltage is explicitly
+        # declared resolves even when it is also the downstream end of two
+        # conflicting SERIES links (parallel ferrites, ORing FETs, fuse +
+        # bypass), which is exactly where a real design puts them.
+        if graph is not None and net in graph.ambiguous:
+            return None, "ambiguous", hops
+        visited.add(net)
+        if graph is None:
+            return None, None, hops
+        parent = graph.upstream.get(net)
+        if parent is None:
+            # No stated direction from here — fall back to an auto-inferred
+            # 2-pin link, but only when a single unvisited neighbour makes the
+            # step unambiguous.
+            candidates = [
+                other for other in graph.undirected.get(net, ())
+                if other not in visited
+            ]
+            if len(candidates) > 1:
+                return None, "undirected", hops
+            if not candidates:
+                return None, None, hops
+            parent = candidates[0]
+        if parent in visited:
+            return None, "cycle", hops
+        hops += 1
+        if hops > _SERIES_VIN_MAX_HOPS:
+            return None, "too_deep", hops
+        net = parent
 
 
 def _resolve_regulator_gain(
@@ -2218,6 +2565,9 @@ def _resolve_regulator_gain(
     supply_map: dict[str, float],
     role_diag: str,
     result: AnnotationResult,
+    series_graph: _SeriesVinGraph | None = None,
+    proj: ExtractedProject | None = None,
+    net_remap: dict[int, int] | None = None,
 ) -> tuple[float, str | None, float, bool] | None:
     """Return ``(gain, regulator_type, efficiency, adaptive_gain_eligible)``."""
     gain_key = _channel_key("GAIN", idx)
@@ -2285,22 +2635,65 @@ def _resolve_regulator_gain(
         )
         return None
 
-    vin = _lookup_inferred_vin(in_p_net, supply_map)
+    lookup_net = (
+        _canonical_supply_net_name(proj, in_p_net, net_remap)
+        if proj is not None and in_p_net else in_p_net
+    )
+    vin, vin_failure, vin_hops = _lookup_inferred_vin(
+        lookup_net, supply_map, graph=series_graph,
+    )
+    in_key = _channel_key("IN_P_NET", idx)
     if vin is None or vin <= 0:
-        in_key = _channel_key("IN_P_NET", idx)
-        result.errors.append(
-            f"{role_diag}: cannot infer input voltage for SMPS gain — "
-            f"no unique upstream SOURCE/REGULATOR voltage found for "
-            f"{in_key}={in_p_net!r}"
-        )
+        if vin_failure == "ambiguous":
+            result.errors.append(
+                f"{role_diag}: cannot infer input voltage for SMPS gain — "
+                f"ambiguous SERIES upstream for {in_key}={in_p_net!r}"
+            )
+        elif vin_failure == "undirected":
+            result.errors.append(
+                f"{role_diag}: cannot infer input voltage for SMPS gain — "
+                f"several auto-inferred SERIES elements meet at "
+                f"{in_key}={in_p_net!r} and none states a P/N direction; set "
+                f"PDN_P_NET / PDN_N_NET on the one carrying the input power"
+            )
+        elif vin_failure == "cycle":
+            result.errors.append(
+                f"{role_diag}: cannot infer input voltage for SMPS gain — "
+                f"cyclic SERIES upstream path for {in_key}={in_p_net!r}"
+            )
+        elif vin_failure == "too_deep":
+            result.errors.append(
+                f"{role_diag}: cannot infer input voltage for SMPS gain — "
+                f"the SERIES chain from {in_key}={in_p_net!r} is longer than "
+                f"{_SERIES_VIN_MAX_HOPS} elements without reaching a "
+                f"SOURCE/REGULATOR; set PDN_GAIN explicitly"
+            )
+        else:
+            result.errors.append(
+                f"{role_diag}: cannot infer input voltage for SMPS gain — "
+                f"no unique upstream SOURCE/REGULATOR voltage found for "
+                f"{in_key}={in_p_net!r}"
+            )
         return None
+
+    if vin_hops:
+        # Nothing here proves the walked chain is the power path rather than a
+        # sense / bleed / snubber leg that happens to be annotated SERIES, and a
+        # wrong Vin scales the gain silently. Say so rather than degrade quietly.
+        result.warnings.append(
+            f"{role_diag}: Vin={vin:g} V was inferred {vin_hops} SERIES hop(s) "
+            f"upstream of {in_key}={in_p_net!r}, not from a rail declared on "
+            f"that net — confirm that chain is the power path, or set "
+            f"{_channel_key('GAIN', idx)} explicitly"
+        )
 
     gain = v_out / (vin * eff)
     return gain, reg_type, eff, True
 
 
 def _parse_regulator(comp, proj, enabled_layers, result,
-                     net_remap=None, supply_map=None, only_indices=None):
+                     net_remap=None, supply_map=None, only_indices=None,
+                     series_graph=None):
     role_diag_base = f"REGULATOR on {comp.designator}"
     if _has_single_net_params(comp.parameters, only_indices):
         result.errors.append(
@@ -2347,6 +2740,7 @@ def _parse_regulator(comp, proj, enabled_layers, result,
         resolved = _resolve_regulator_gain(
             comp.parameters, idx, v, in_p_net,
             supply_map, role_diag, result,
+            series_graph=series_graph, proj=proj, net_remap=net_remap,
         ) if v is not None else None
         if v is None or resolved is None:
             continue
@@ -2712,7 +3106,13 @@ def parse_annotations(proj: ExtractedProject,
 
     parameter_sources = _iter_pdn_parameter_sources(proj)
 
-    supply_map = _collect_supply_voltages_by_net(parameter_sources)
+    supply_map = _collect_supply_voltages_by_net(
+        parameter_sources, proj, net_remap=net_remap,
+    )
+    series_graph = _collect_series_upstream_map(
+        parameter_sources, proj, net_remap=net_remap,
+        skip_designators=skip_set,
+    )
 
     for comp in parameter_sources:
         if comp.designator.upper() in skip_set:
@@ -2761,7 +3161,8 @@ def parse_annotations(proj: ExtractedProject,
                 continue
             specs = _PARSER_BY_ROLE[role](comp, proj, enabled_layers, result,
                                           net_remap=net_remap,
-                                          supply_map=supply_map)
+                                          supply_map=supply_map,
+                                          series_graph=series_graph)
             result.directives.extend(specs)
         else:
             for chan_role, idxs in channel_roles.items():
@@ -2769,6 +3170,7 @@ def parse_annotations(proj: ExtractedProject,
                     comp, proj, enabled_layers, result,
                     net_remap=net_remap,
                     supply_map=supply_map, only_indices=idxs,
+                    series_graph=series_graph,
                 )
                 # Every parser returns a list — empty if the directive failed
                 # to resolve, one element per resolved channel otherwise.

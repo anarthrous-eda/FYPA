@@ -484,13 +484,49 @@ def test_a_pad_sized_copper_island_is_not_a_reference_plane():
 
 @pytest.mark.parametrize("params,expect_c,expect_v", [
     ({"Capacitance": "100nF"}, 1e-7, None),
+    ({"Value": "100 nF"}, 1e-7, None),
+    ({"Value": "2.2 \u00b5F"}, 2.2e-6, None),   # micro sign (Altium default)
+    ({"Value": "2.2 uF"}, 2.2e-6, None),
     ({"Value": "0.1uF/16V"}, 1e-7, 16.0),
+    ({"Value": "0.1 uF / 16 V"}, 1e-7, 16.0),
     ({"Comment": "CAP CER 100NF 25V X7R 0402"}, 1e-7, 25.0),
+    ({"Comment": "CAP CER 100 nF 25V X7R"}, 1e-7, 25.0),
     ({"Comment": "4u7", "Voltage": "6V3"}, 4.7e-6, 6.3),
     ({"Value": "10k"}, None, None),          # a resistor value — out of band
     ({"Comment": "0.1"}, None, None),        # bare number — unit-ambiguous
     ({"Comment": "DNP"}, None, None),
     ({}, None, None),
+    # --- case code BEFORE the value ---------------------------------------
+    # Merging a bare number with the token after it, ahead of parsing that
+    # token alone, made "0402"+"100N" parse as 402100 n = 4.0e-4 F and win.
+    ({"Comment": "CAP CER 0402 100N 50V"}, 1e-7, 50.0),
+    ({"Comment": "CAP 0603 1UF 16V"}, 1e-6, 16.0),
+    ({"Comment": "0805 4U7 10V"}, 4.7e-6, 10.0),
+    ({"Comment": "3216 10uF"}, 1e-5, None),
+    ({"Comment": "CAP 0402 100NF"}, 1e-7, None),
+    # --- upper-case spaced units ------------------------------------------
+    # _apply_si_suffix silently drops an unrecognised leading letter, so
+    # "0.1 UF" read literally as 0.1 F — in band, so the folded 1e-7 reading
+    # was never reached. A factor of a million on the commonest values.
+    ({"Value": "0.1 UF"}, 1e-7, None),
+    ({"Value": "0.22 UF"}, 2.2e-7, None),
+    ({"Value": "1 UF"}, 1e-6, None),
+    ({"Comment": "CAP CER 0.1 UF 16V"}, 1e-7, 16.0),
+    # …while the values that always worked keep working.
+    ({"Value": "2.2 UF"}, 2.2e-6, None),
+    ({"Value": "10 UF"}, 1e-5, None),
+    # --- a bare number must not pair with a non-unit ----------------------
+    ({"Comment": "0.1 5"}, None, None),
+    ({"Comment": "0.1 %"}, None, None),        # tolerance, not capacitance
+    ({"Comment": "100 mOhm"}, None, None),     # some other quantity entirely
+    # --- scientific notation ----------------------------------------------
+    ({"Value": "1e3 uF"}, 1e-3, None),
+    ({"Value": "1e3 uF 16V"}, 1e-3, 16.0),
+    # --- both micro signs --------------------------------------------------
+    ({"Value": "2.2 μF"}, 2.2e-6, None),   # GREEK SMALL LETTER MU
+    ({"Value": "2.2μF"}, 2.2e-6, None),
+    # --- spaced voltage ----------------------------------------------------
+    ({"Comment": "CAP 0402 100N 50 V"}, 1e-7, 50.0),
 ])
 def test_parse_cap_params(params, expect_c, expect_v):
     comp = _comp("C1", params=params)
@@ -608,3 +644,41 @@ def test_v9_dielectric_gaps_missing_dk_yields_none():
 def test_v9_dielectric_gaps_no_stack():
     pcb = SimpleNamespace(board=SimpleNamespace(v9_stack=[]))
     assert _v9_dielectric_gaps(pcb) == {}
+
+
+def test_case_code_position_does_not_change_the_parsed_value():
+    """The suite used to pass only because the one composite case put the
+    case code last, where the merge branch could not fire."""
+    for comment in (
+        "CAP CER 100NF 25V X7R 0402",
+        "CAP CER 0402 100NF 25V X7R",
+        "0402 CAP CER 100NF 25V X7R",
+    ):
+        c, v = parse_cap_params(_comp("C1", params={"Comment": comment}), None)
+        assert c == pytest.approx(1e-7), comment
+        assert v == pytest.approx(25.0), comment
+
+
+def test_a_standalone_token_beats_a_merged_pair():
+    """Ordering is the whole fix: parse every token alone first, and only fall
+    back to joining a bare number to its neighbour."""
+    from fypa.caploop.identify import _CAPACITANCE_BAND_F, _parse_banded_tokens
+
+    # "0402" + "100N" would merge to 4.021e-4 if the merge pass ran first.
+    assert _parse_banded_tokens(
+        "0402 100N", _CAPACITANCE_BAND_F, exclude_char="v", merge_unit="f",
+    ) == pytest.approx(1e-7)
+    # With nothing standalone to find, the merge still does its job.
+    assert _parse_banded_tokens(
+        "100 nF", _CAPACITANCE_BAND_F, exclude_char="v", merge_unit="f",
+    ) == pytest.approx(1e-7)
+
+
+def test_merge_is_off_unless_a_unit_is_named():
+    """Without merge_unit the fallback must not run at all — otherwise any
+    bare number adjacent to any word becomes a value."""
+    from fypa.caploop.identify import _CAPACITANCE_BAND_F, _parse_banded_tokens
+
+    assert _parse_banded_tokens(
+        "100 nF", _CAPACITANCE_BAND_F, exclude_char="v",
+    ) is None
