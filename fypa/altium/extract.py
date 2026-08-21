@@ -1380,38 +1380,73 @@ def _compile_schematic_netlist(
     """Compile the project schematic netlist for local-net name resolution.
 
     Returns ``(netlist, physical_sheet_names)`` where ``physical_sheet_names``
-    maps compiled physical page ids to logical ``*.SchDoc`` file names
-    (altium_monkey ≥ 2026.7). Empty map when compilation fails or the
-    older single-sheet path has no physical pages.
+    maps compiled physical page ids to logical ``*.SchDoc`` names
+    (altium_monkey ≥ 2026.7). The map is empty on releases without a
+    compiled model, and callers must then degrade rather than guess a sheet
+    from an unmapped page id.
     """
     if not design.schdocs:
         return None, ()
-    try:
-        compiled = design.compile()
-        netlist = compiled.to_netlist()
-        sheet_names = tuple(
-            (str(doc.id), str(doc.file_name))
-            for doc in (getattr(compiled, "physical_documents", None) or ())
-            if getattr(doc, "id", None) and getattr(doc, "file_name", None)
-        )
-        return netlist, sheet_names
-    except Exception as exc:
-        log.warning("Could not compile schematic netlist via design.compile(): %s",
-                    exc)
-    # Fallback: legacy compile_netlist facade (no physical-page map).
-    try:
-        from altium_monkey.altium_netlist_compilation import compile_netlist
-        from altium_monkey.altium_netlist_options import NetlistOptions
 
-        options = (
-            NetlistOptions.from_prjpcb(design.project)
-            if design.project is not None
-            else NetlistOptions()
-        )
-        return compile_netlist(design.schdocs, design.project, options), ()
-    except Exception as exc:
-        log.warning("Could not compile schematic netlist: %s", exc)
+    netlist = None
+    compiled = None
+    if hasattr(design, "compile"):
+        # >= 2026.7 exposes the compiled model, which carries the page map.
+        try:
+            compiled = design.compile()
+            netlist = compiled.to_netlist()
+        except Exception as exc:
+            log.warning(
+                "Could not compile schematic netlist via design.compile(): %s",
+                exc,
+            )
+            compiled = None
+    if netlist is None:
+        # Older releases have no compile(). ``to_netlist()`` reaches the same
+        # compiler through the design's OWN options, which carry the merged
+        # per-sheet parameters that net labels substitute. Rebuilding options
+        # with ``NetlistOptions.from_prjpcb()`` drops that merge -- only
+        # ``AltiumDesign.from_prjpcb`` adds it -- which silently renames nets
+        # on a project using =Parameter substitution rather than degrading.
+        try:
+            netlist = design.to_netlist()
+        except Exception as exc:
+            log.warning("Could not compile schematic netlist: %s", exc)
+            return None, ()
+    if netlist is None:
         return None, ()
+
+    # Harvested separately from the compile: losing the page map must not
+    # throw away a netlist that built cleanly.
+    sheet_names: tuple[tuple[str, str], ...] = ()
+    if compiled is not None:
+        try:
+            sheet_names = _harvest_physical_sheet_names(compiled)
+        except Exception as exc:
+            log.warning(
+                "Could not read the compiled physical-page map (%s); local-net "
+                "sheet matching falls back to alias resolution.", exc,
+            )
+    return netlist, sheet_names
+
+
+def _harvest_physical_sheet_names(compiled) -> tuple[tuple[str, str], ...]:
+    """``(physical page id, logical sheet name)`` pairs from a compiled design.
+
+    Prefers ``source_path`` -- the project-relative path -- over ``file_name``,
+    which is the bare leaf: harvesting the leaf collapses ``SubA/Power.SchDoc``
+    and ``SubB/Power.SchDoc`` onto one name, the very directory collision
+    :func:`~fypa.altium.annotations._sheet_name_matches` exists to keep apart.
+    Falls back to ``file_name`` on a release exposing only that.
+    """
+    pairs: list[tuple[str, str]] = []
+    for doc in (getattr(compiled, "physical_documents", None) or ()):
+        doc_id = getattr(doc, "id", None)
+        name = (getattr(doc, "source_path", None)
+                or getattr(doc, "file_name", None))
+        if doc_id and name:
+            pairs.append((str(doc_id), str(name)))
+    return tuple(pairs)
 
 
 def extract_project(prjpcb_path: str | Path,

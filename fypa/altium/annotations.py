@@ -652,6 +652,18 @@ class InstanceLocalNetResolver:
     _netlist_index: (
         dict[str, list[tuple[str, tuple[str, ...], tuple[str, ...]]]] | None
     ) = field(default=None, repr=False)
+    _sheet_map: dict[str, str] | None = field(default=None, repr=False)
+
+    def sheet_map(self) -> dict[str, str]:
+        """Memoised physical-page-id → logical-sheet-name map.
+
+        Consulted once per candidate net inside the netlist scans and again
+        per placement in :meth:`infer_schdoc`, so building it per call is
+        O(pages) work repeated thousands of times on a hierarchical board.
+        """
+        if self._sheet_map is None:
+            self._sheet_map = _physical_sheet_file_map(self.proj)
+        return self._sheet_map
 
     def pads_index(self) -> dict[int, dict[str, RawPad]]:
         """Memoized :func:`_build_pads_by_component` for this project."""
@@ -716,8 +728,7 @@ class InstanceLocalNetResolver:
                     sorted(k for k, v in sheet_votes.items() if v == top),
                     sheet_paths[best],
                 )
-            raw = sheet_paths[best]
-            return _logical_schdoc_name(raw, _physical_sheet_file_map(self.proj))
+            return sheet_paths[best]
 
         sch_matches = [
             c.schdoc_name for c in self.proj.sch_components
@@ -759,7 +770,7 @@ class InstanceLocalNetResolver:
                     local_name,
                     routed_pin_keys=set(routed),
                     pcb_designator=pcb.designator,
-                    proj=self.proj,
+                    sheet_map=self.sheet_map(),
                 )
                 wanted = {p.upper() for p in local_pins}
                 for pin_key, pad in routed.items():
@@ -837,34 +848,45 @@ def _pcb_indices_for_source(comp: PdnParameterSource,
 
 
 def _physical_sheet_file_map(proj: ExtractedProject | None) -> dict[str, str]:
-    """physical page id (lower) → logical ``*.SchDoc`` file name."""
+    """physical page id (lower) → logical ``*.SchDoc`` name.
+
+    Prefer :meth:`InstanceLocalNetResolver.sheet_map`, which memoises this —
+    it is consulted once per candidate net inside the netlist scans, so
+    rebuilding it per call is O(pages) work repeated thousands of times a load.
+    """
     if proj is None:
         return {}
     return {
         pid.replace("\\", "/").lower(): fn
-        for pid, fn in getattr(proj, "physical_sheet_names", ()) or ()
+        for pid, fn in proj.physical_sheet_names or ()
         if pid and fn
     }
 
 
-def _logical_schdoc_name(name: str, sheet_map: dict[str, str]) -> str:
-    """Map a physical page id to its logical ``*.SchDoc`` name when known.
+def _logical_schdoc_name(name: str, sheet_map: dict[str, str]) -> str | None:
+    """Map a physical page id to its logical ``*.SchDoc`` name.
 
-    Relative paths with directories are preserved so SubA/Power.SchDoc and
-    SubB/Power.SchDoc stay distinct. Bare file names and physical page ids
-    (``physical:0:logical:0:Power.SchDoc:…``) resolve to the SchDoc leaf.
+    Returns ``None`` when ``name`` is a physical page id the compiled map does
+    not cover — the caller must then treat that entry as *unknown provenance*
+    rather than matching on it.
+
+    There is no reliable way to recover the sheet from the id alone: a child
+    page id embeds its PARENT's logical id, so scanning it for a ``*.SchDoc``
+    token yields the root sheet, not the page's own. That both hides a genuine
+    match (a local net on Power.SchDoc looks like it lives on the root) and
+    invents false ones (a root-sheet net appears to live on every child page).
+    Guessing is worse than admitting the id is unresolved.
+
+    A plain sheet name passes through unchanged, with directories preserved so
+    ``SubA/Power.SchDoc`` and ``SubB/Power.SchDoc`` stay distinct.
     """
     if not name:
         return ""
     key = name.replace("\\", "/").lower()
     if key in sheet_map:
         return sheet_map[key]
-    # Recover the embedded SchDoc leaf from altium_monkey ≥ 2026.7 page ids
-    # when the compile-time map is missing (legacy netlist fallback).
     if key.startswith("physical:"):
-        for part in name.replace("\\", "/").split(":"):
-            if part.lower().endswith(".schdoc"):
-                return part
+        return None
     return name.replace("\\", "/")
 
 
@@ -872,7 +894,7 @@ def _sheet_name_matches(
     schdoc_name: str,
     source_sheets: list[str],
     *,
-    proj: ExtractedProject | None = None,
+    sheet_map: dict[str, str] | None = None,
 ) -> bool:
     # A net with no recorded sheet provenance (e.g. a global/power net) cannot
     # contradict the inferred instance sheet, so it is accepted. This is the
@@ -882,19 +904,28 @@ def _sheet_name_matches(
         return True
     if not schdoc_name:
         return False
-    sheet_map = _physical_sheet_file_map(proj)
+    sheet_map = sheet_map or {}
     target = _logical_schdoc_name(schdoc_name, sheet_map)
+    if target is None:
+        return False
     target_full = target.replace("\\", "/").lower()
     target_base = Path(target).name.lower()
     has_dir = "/" in target_full
+    resolved_any = False
     for sheet in source_sheets:
         resolved = _logical_schdoc_name(sheet, sheet_map)
+        if resolved is None:
+            continue          # unmapped page id — provenance unknown, not "no"
+        resolved_any = True
         s = resolved.replace("\\", "/").lower()
         if s == target_full:
             return True
         if not has_dir and Path(resolved).name.lower() == target_base:
             return True
-    return False
+    # Every entry was an unresolvable page id, so this net carries no usable
+    # provenance. Fall through to the same permissive rule as a net with no
+    # source_sheets at all rather than rejecting on a guess.
+    return not resolved_any
 
 
 def _resolve_local_net_pins(
@@ -905,7 +936,7 @@ def _resolve_local_net_pins(
     *,
     routed_pin_keys: set[str] | None = None,
     pcb_designator: str | None = None,
-    proj: ExtractedProject | None = None,
+    sheet_map: dict[str, str] | None = None,
 ) -> list[str]:
     """Return pin designators on ``sch_designator`` for a local sheet net name.
 
@@ -927,7 +958,8 @@ def _resolve_local_net_pins(
         if not any(_local_net_label_matches(n, local_net_name, des_candidates) for n in names):
             continue
         net_sheets = list(getattr(net, "source_sheets", ()) or ())
-        if not _sheet_name_matches(schdoc_name, net_sheets, proj=proj):
+        if not _sheet_name_matches(schdoc_name, net_sheets,
+                                   sheet_map=sheet_map):
             continue
         for term in net.terminals:
             if term.designator.upper() not in des_candidates:
@@ -981,6 +1013,7 @@ def _resolve_alias_fallback_pads(
         return []
     netlist_index = _instance_resolver(proj).designator_index()
     des_candidates = _designator_candidates(sch_lookup_designator, pcb_designator)
+    sheet_map = _instance_resolver(proj).sheet_map()
     matched: list[RawPad] = []
     seen_pins: set[str] = set()
     for pad in component_pads:
@@ -999,7 +1032,8 @@ def _resolve_alias_fallback_pads(
                     for n in names
                 ):
                     continue
-                if not _sheet_name_matches(schdoc_name, list(sheets), proj=proj):
+                if not _sheet_name_matches(schdoc_name, list(sheets),
+                                           sheet_map=sheet_map):
                     continue
                 matched.append(pad)
                 seen_pins.add(pin_key)
@@ -1091,7 +1125,7 @@ def _resolve_terminal(
                 net_name,
                 routed_pin_keys=routed_pin_keys or None,
                 pcb_designator=designator,
-                proj=proj,
+                sheet_map=_instance_resolver(proj).sheet_map(),
             )
             if local_pins:
                 wanted_pins = {pin.upper() for pin in local_pins}

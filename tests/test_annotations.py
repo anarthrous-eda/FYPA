@@ -886,6 +886,11 @@ def test_sheet_name_matches_full_path_not_basename_collision():
     )
 
 
+def _sheet_map(proj):
+    from fypa.altium.annotations import _physical_sheet_file_map
+    return _physical_sheet_file_map(proj)
+
+
 def test_sheet_name_matches_physical_page_id_via_map():
     """altium_monkey ≥ 2026.7 emits physical page ids in source_sheets."""
     physical = (
@@ -895,21 +900,53 @@ def test_sheet_name_matches_physical_page_id_via_map():
     proj = _minimal_proj(
         physical_sheet_names=((physical, "Power.SchDoc"),),
     )
-    assert _sheet_name_matches(
-        "Power.SchDoc", [physical], proj=proj,
-    )
-    assert not _sheet_name_matches(
-        "Other.SchDoc", [physical], proj=proj,
-    )
+    smap = _sheet_map(proj)
+    assert _sheet_name_matches("Power.SchDoc", [physical], sheet_map=smap)
+    assert not _sheet_name_matches("Other.SchDoc", [physical], sheet_map=smap)
 
 
-def test_sheet_name_matches_physical_page_id_without_map():
-    """Embedded ``*.SchDoc`` leaf is recovered when the compile map is absent."""
-    physical = (
-        "physical:0:logical:0:Power.SchDoc:child:1:sheet_symbol:X"
+def test_sheet_map_keeps_same_named_sheets_in_different_directories_apart():
+    """Harvesting the bare leaf would collapse these onto one name, which is
+    the collision _sheet_name_matches exists to prevent."""
+    page_a = "physical:0:logical:0:SubA/Power.SchDoc"
+    page_b = "physical:1:logical:1:SubB/Power.SchDoc"
+    proj = _minimal_proj(physical_sheet_names=(
+        (page_a, "SubA/Power.SchDoc"),
+        (page_b, "SubB/Power.SchDoc"),
+    ))
+    smap = _sheet_map(proj)
+    assert _sheet_name_matches("SubA/Power.SchDoc", [page_a], sheet_map=smap)
+    assert not _sheet_name_matches("SubA/Power.SchDoc", [page_b], sheet_map=smap)
+
+
+def test_unmapped_physical_page_id_is_unknown_not_guessed():
+    """A child page id embeds its PARENT's logical id, so scanning it for a
+    ``*.SchDoc`` token yields the root sheet — which both hides real matches
+    and invents false ones. An unmapped id must read as unknown provenance,
+    degrading to the permissive path rather than binding to a guess."""
+    from fypa.altium.annotations import _logical_schdoc_name
+
+    child = (
+        "physical:0:logical:0:main.SchDoc:child:logical:0:main.SchDoc"
+        ":sheet_symbol:UID-ABC:1"
     )
-    assert _sheet_name_matches("Power.SchDoc", [physical])
-    assert not _sheet_name_matches("Other.SchDoc", [physical])
+    assert _logical_schdoc_name(child, {}) is None
+    # Not "matches the root sheet", and not a hard reject either: with no
+    # usable provenance the net is accepted the same way one with no
+    # source_sheets at all is.
+    assert _sheet_name_matches("Power.SchDoc", [child])
+    assert _sheet_name_matches("main.SchDoc", [child])
+    # …but a page the map DOES cover still discriminates.
+    proj = _minimal_proj(physical_sheet_names=((child, "Power.SchDoc"),))
+    smap = _sheet_map(proj)
+    assert _sheet_name_matches("Power.SchDoc", [child], sheet_map=smap)
+    assert not _sheet_name_matches("main.SchDoc", [child], sheet_map=smap)
+
+
+def test_plain_sheet_names_are_unaffected_by_the_page_id_path():
+    assert _sheet_name_matches("Power.SchDoc", ["Power.SchDoc"])
+    assert _sheet_name_matches("Power.SchDoc", ["SubA/Power.SchDoc"])
+    assert not _sheet_name_matches("SubA/Power.SchDoc", ["SubB/Power.SchDoc"])
 
 
 def test_resolve_local_net_pins_physical_source_sheet():
@@ -930,7 +967,7 @@ def test_resolve_local_net_pins_physical_source_sheet():
         compiled_netlist=netlist,
     )
     pins = _resolve_local_net_pins(
-        netlist, "U1", "Power.SchDoc", "+3V3", proj=proj,
+        netlist, "U1", "Power.SchDoc", "+3V3", sheet_map=_sheet_map(proj),
     )
     assert pins == ["14"]
 
@@ -3050,3 +3087,108 @@ def test_format_solve_blockers_lists_errors():
     assert "PDN2_PIN" in text
     assert "no SOURCE or REGULATOR" in text
     assert "fypa.log" in text
+
+
+# --- physical-page-map harvesting ---------------------------------------------
+
+
+def test_harvest_prefers_source_path_over_bare_file_name():
+    """file_name is the bare leaf, so harvesting it collapses same-named
+    sheets in different directories onto one map value."""
+    from types import SimpleNamespace
+
+    from fypa.altium.extract import _harvest_physical_sheet_names
+
+    compiled = SimpleNamespace(physical_documents=[
+        SimpleNamespace(id="physical:0", source_path="SubA/Power.SchDoc",
+                        file_name="Power.SchDoc"),
+        SimpleNamespace(id="physical:1", source_path="SubB/Power.SchDoc",
+                        file_name="Power.SchDoc"),
+    ])
+    assert _harvest_physical_sheet_names(compiled) == (
+        ("physical:0", "SubA/Power.SchDoc"),
+        ("physical:1", "SubB/Power.SchDoc"),
+    )
+
+
+def test_harvest_falls_back_to_file_name_when_source_path_is_absent():
+    from types import SimpleNamespace
+
+    from fypa.altium.extract import _harvest_physical_sheet_names
+
+    compiled = SimpleNamespace(physical_documents=[
+        SimpleNamespace(id="physical:0", file_name="Power.SchDoc"),
+    ])
+    assert _harvest_physical_sheet_names(compiled) == (
+        ("physical:0", "Power.SchDoc"),
+    )
+
+
+def test_harvest_is_empty_on_a_release_without_physical_documents():
+    """The installed library may predate the compiled model entirely; that
+    must yield an empty map, not an exception."""
+    from types import SimpleNamespace
+
+    from fypa.altium.extract import _harvest_physical_sheet_names
+
+    assert _harvest_physical_sheet_names(SimpleNamespace()) == ()
+    assert _harvest_physical_sheet_names(
+        SimpleNamespace(physical_documents=None)) == ()
+    # Entries missing either half are skipped rather than half-recorded.
+    assert _harvest_physical_sheet_names(SimpleNamespace(physical_documents=[
+        SimpleNamespace(id=None, source_path="A.SchDoc"),
+        SimpleNamespace(id="physical:0", source_path=None, file_name=None),
+    ])) == ()
+
+
+def test_compile_falls_back_to_to_netlist_with_the_designs_own_options():
+    """Rebuilding NetlistOptions.from_prjpcb() drops the merged per-sheet
+    parameters that net labels substitute — only AltiumDesign.from_prjpcb adds
+    them — so a fallback that does so silently renames nets."""
+
+    from fypa.altium.extract import _compile_schematic_netlist
+
+    sentinel = object()
+    calls = []
+
+    class _Design:
+        schdocs = ["a.SchDoc"]
+        project = None
+
+        def to_netlist(self):
+            calls.append("to_netlist")
+            return sentinel
+
+    netlist, sheet_names = _compile_schematic_netlist(_Design())
+    assert netlist is sentinel
+    assert sheet_names == ()
+    assert calls == ["to_netlist"]
+
+
+def test_a_failed_page_map_does_not_discard_a_good_netlist():
+
+    from fypa.altium.extract import _compile_schematic_netlist
+
+    sentinel = object()
+
+    class _Compiled:
+        def to_netlist(self):
+            return sentinel
+
+        @property
+        def physical_documents(self):
+            raise RuntimeError("field renamed upstream")
+
+    class _Design:
+        schdocs = ["a.SchDoc"]
+        project = None
+
+        def compile(self):
+            return _Compiled()
+
+        def to_netlist(self):
+            raise AssertionError("must not recompile after a good compile()")
+
+    netlist, sheet_names = _compile_schematic_netlist(_Design())
+    assert netlist is sentinel
+    assert sheet_names == ()
