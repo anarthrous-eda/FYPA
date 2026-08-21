@@ -716,7 +716,8 @@ class InstanceLocalNetResolver:
                     sorted(k for k, v in sheet_votes.items() if v == top),
                     sheet_paths[best],
                 )
-            return sheet_paths[best]
+            raw = sheet_paths[best]
+            return _logical_schdoc_name(raw, _physical_sheet_file_map(self.proj))
 
         sch_matches = [
             c.schdoc_name for c in self.proj.sch_components
@@ -758,6 +759,7 @@ class InstanceLocalNetResolver:
                     local_name,
                     routed_pin_keys=set(routed),
                     pcb_designator=pcb.designator,
+                    proj=self.proj,
                 )
                 wanted = {p.upper() for p in local_pins}
                 for pin_key, pad in routed.items():
@@ -834,7 +836,44 @@ def _pcb_indices_for_source(comp: PdnParameterSource,
     return _find_pcb_instances(proj, comp.designator)
 
 
-def _sheet_name_matches(schdoc_name: str, source_sheets: list[str]) -> bool:
+def _physical_sheet_file_map(proj: ExtractedProject | None) -> dict[str, str]:
+    """physical page id (lower) → logical ``*.SchDoc`` file name."""
+    if proj is None:
+        return {}
+    return {
+        pid.replace("\\", "/").lower(): fn
+        for pid, fn in getattr(proj, "physical_sheet_names", ()) or ()
+        if pid and fn
+    }
+
+
+def _logical_schdoc_name(name: str, sheet_map: dict[str, str]) -> str:
+    """Map a physical page id to its logical ``*.SchDoc`` name when known.
+
+    Relative paths with directories are preserved so SubA/Power.SchDoc and
+    SubB/Power.SchDoc stay distinct. Bare file names and physical page ids
+    (``physical:0:logical:0:Power.SchDoc:…``) resolve to the SchDoc leaf.
+    """
+    if not name:
+        return ""
+    key = name.replace("\\", "/").lower()
+    if key in sheet_map:
+        return sheet_map[key]
+    # Recover the embedded SchDoc leaf from altium_monkey ≥ 2026.7 page ids
+    # when the compile-time map is missing (legacy netlist fallback).
+    if key.startswith("physical:"):
+        for part in name.replace("\\", "/").split(":"):
+            if part.lower().endswith(".schdoc"):
+                return part
+    return name.replace("\\", "/")
+
+
+def _sheet_name_matches(
+    schdoc_name: str,
+    source_sheets: list[str],
+    *,
+    proj: ExtractedProject | None = None,
+) -> bool:
     # A net with no recorded sheet provenance (e.g. a global/power net) cannot
     # contradict the inferred instance sheet, so it is accepted. This is the
     # one remaining permissive path; cross-instance mis-binding is bounded by
@@ -843,14 +882,17 @@ def _sheet_name_matches(schdoc_name: str, source_sheets: list[str]) -> bool:
         return True
     if not schdoc_name:
         return False
-    target_full = schdoc_name.replace("\\", "/").lower()
-    target_base = Path(schdoc_name).name.lower()
+    sheet_map = _physical_sheet_file_map(proj)
+    target = _logical_schdoc_name(schdoc_name, sheet_map)
+    target_full = target.replace("\\", "/").lower()
+    target_base = Path(target).name.lower()
     has_dir = "/" in target_full
     for sheet in source_sheets:
-        s = sheet.replace("\\", "/").lower()
+        resolved = _logical_schdoc_name(sheet, sheet_map)
+        s = resolved.replace("\\", "/").lower()
         if s == target_full:
             return True
-        if not has_dir and Path(sheet).name.lower() == target_base:
+        if not has_dir and Path(resolved).name.lower() == target_base:
             return True
     return False
 
@@ -863,6 +905,7 @@ def _resolve_local_net_pins(
     *,
     routed_pin_keys: set[str] | None = None,
     pcb_designator: str | None = None,
+    proj: ExtractedProject | None = None,
 ) -> list[str]:
     """Return pin designators on ``sch_designator`` for a local sheet net name.
 
@@ -884,7 +927,7 @@ def _resolve_local_net_pins(
         if not any(_local_net_label_matches(n, local_net_name, des_candidates) for n in names):
             continue
         net_sheets = list(getattr(net, "source_sheets", ()) or ())
-        if not _sheet_name_matches(schdoc_name, net_sheets):
+        if not _sheet_name_matches(schdoc_name, net_sheets, proj=proj):
             continue
         for term in net.terminals:
             if term.designator.upper() not in des_candidates:
@@ -956,7 +999,7 @@ def _resolve_alias_fallback_pads(
                     for n in names
                 ):
                     continue
-                if not _sheet_name_matches(schdoc_name, list(sheets)):
+                if not _sheet_name_matches(schdoc_name, list(sheets), proj=proj):
                     continue
                 matched.append(pad)
                 seen_pins.add(pin_key)
@@ -1048,6 +1091,7 @@ def _resolve_terminal(
                 net_name,
                 routed_pin_keys=routed_pin_keys or None,
                 pcb_designator=designator,
+                proj=proj,
             )
             if local_pins:
                 wanted_pins = {pin.upper() for pin in local_pins}
