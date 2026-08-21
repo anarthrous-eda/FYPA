@@ -137,6 +137,41 @@ def test_package_column_and_library_defaults(viewer):
     assert "Typical" in tip and "0402" in tip
 
 
+def test_package_column_uses_metric_labels_when_configured(qapp):
+    import dataclasses
+    from tests.test_caploop_identify import _comp, _standard_cap_project
+
+    v = _Viewer()
+    v._loaded_project = types.SimpleNamespace(
+        extracted=_standard_cap_project(
+            pcb_components=(dataclasses.replace(
+                _comp("C1"), footprint="1005B"),)))
+    v._set_footprint_convention("metric")
+    v._caps_tab_index = v.tabs.addTab(v._build_capacitors_tab(), "Capacitors")
+    v._populate_caps_table()
+    assert _cell(v, "Pkg").text() == "1005"
+
+
+def test_caps_footprint_convention_combo_updates_pkg_column(qapp):
+    import dataclasses
+    from tests.test_caploop_identify import _comp, _standard_cap_project
+
+    v = _Viewer()
+    v._loaded_project = types.SimpleNamespace(
+        extracted=_standard_cap_project(
+            pcb_components=(dataclasses.replace(
+                _comp("C1"), footprint="1005B"),)))
+    v._caps_tab_index = v.tabs.addTab(v._build_capacitors_tab(), "Capacitors")
+    v._populate_caps_table()
+    assert _cell(v, "Pkg").text() == "0402"
+    idx = v.caps_footprint_conv_combo.findData("metric")
+    assert idx >= 0
+    v.caps_footprint_conv_combo.setCurrentIndex(idx)
+    v._populate_caps_table()
+    assert _cell(v, "Pkg").text() == "1005"
+    assert v._project.viewer_settings["footprint_convention"] == "metric"
+
+
 def test_unrecognised_package_shows_no_defaults(qapp):
     import dataclasses
     from tests.test_caploop_identify import _comp, _standard_cap_project

@@ -8238,6 +8238,10 @@ _NET_TABLE_ROW_ROLE = int(Qt.UserRole) + 1
 # identity that survives the user re-sorting the table.
 _CAPS_TABLE_ROW_ROLE = int(Qt.UserRole) + 2
 
+# Canonical imperial package key on the Impedance-tab package table's name
+# cell — the visible text may be a metric label when that convention is on.
+_PKG_CANONICAL_ROLE = int(Qt.UserRole) + 3
+
 # Columns of the Capacitors-tab table: (display label, numeric?). Defined at
 # module scope so the label→index map below can be built from it (a class-body
 # comprehension can't see other class-body names).
@@ -9347,6 +9351,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             self._invalidate_caps_cache(repopulate=False, heavy=True)
             self._caps_shapes_cache = None
             self._impedance_populated = False
+            self._sync_footprint_convention_ui()
             if self._project is not None:
                 self._update_pending_rails()
 
@@ -23526,6 +23531,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         if caploop is not None:
             proj.viewer_settings["caploop"] = caploop.to_dict()
 
+        proj.viewer_settings["footprint_convention"] = \
+            self._footprint_convention()
+
         overlay_state = getattr(self, "_overlay_state", None)
         if overlay_state:
             proj.viewer_settings["overlay_state"] = {
@@ -25622,6 +25630,58 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             self._caploop_settings_obj = obj
         return obj
 
+    def _footprint_convention(self) -> str:
+        """Case-size naming convention for footprint parsing and display."""
+        from fypa.caploop.packages import normalize_footprint_convention
+
+        if getattr(self, "_project", None) is not None:
+            stored = self._project.viewer_settings.get("footprint_convention")
+            if stored is not None:
+                return normalize_footprint_convention(str(stored))
+        return "auto"
+
+    def _set_footprint_convention(self, convention: str) -> None:
+        from fypa.caploop.packages import normalize_footprint_convention
+
+        conv = normalize_footprint_convention(convention)
+        proj = self._ensure_project()
+        proj.viewer_settings["footprint_convention"] = conv
+        self._display_dirty = True
+
+    def _build_footprint_convention_combo(self) -> QComboBox:
+        """Case-size naming convention — shared by Capacitors and Impedance tabs."""
+        combo = QComboBox()
+        for value, label in (
+            ("auto", "Auto"),
+            ("metric", "Metric"),
+            ("imperial", "Imperial"),
+        ):
+            combo.addItem(label, value)
+        current = self._footprint_convention()
+        idx = combo.findData(current)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+        combo.setToolTip(
+            "How bare case-size codes in footprint names are read and "
+            "shown. Auto recognises unambiguous metric codes (1005, 1608) "
+            "and treats bare 0402 / 0603 as imperial.")
+        combo.currentIndexChanged.connect(self._on_footprint_convention_changed)
+        return combo
+
+    def _sync_footprint_convention_ui(self) -> None:
+        """Refresh convention combos and package labels from the active project."""
+        current = self._footprint_convention()
+        for attr in ("caps_footprint_conv_combo", "imp_footprint_conv_combo"):
+            combo = getattr(self, attr, None)
+            if combo is not None:
+                combo.blockSignals(True)
+                idx = combo.findData(current)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+                combo.blockSignals(False)
+        if getattr(self, "imp_pkg_table", None) is not None:
+            self._populate_package_table()
+
     def _build_capacitors_tab(self) -> QWidget:
         """Build the Capacitors tab — a sortable table of every decoupling
         capacitor with its Tier-1 mounted loop inductance, informational
@@ -25670,6 +25730,11 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         )
         self.caps_overlay_box.toggled.connect(self._on_caps_overlay_toggled)
         filter_row.addWidget(self.caps_overlay_box)
+
+        filter_row.addSpacing(12)
+        filter_row.addWidget(QLabel("Footprints:"))
+        self.caps_footprint_conv_combo = self._build_footprint_convention_combo()
+        filter_row.addWidget(self.caps_footprint_conv_combo)
 
         filter_row.addSpacing(12)
         self.caps_tier23_btn = QPushButton("Compute Tier 2/3")
@@ -25841,10 +25906,12 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         # so toggling a checkbox is a millisecond, not a five-second freeze.
         _t1 = time.monotonic()
         forced = frozenset(d for d, v in includes.items() if v)
+        convention = self._footprint_convention()
         cached = getattr(self, "_caps_identity_cache", None)
         if (cached is not None and cached[0] is extracted
-                and cached[1] == settings and cached[2] == forced):
-            base = cached[3]
+                and cached[1] == settings and cached[2] == forced
+                and cached[3] == convention):
+            base = cached[4]
         else:
             base = identify_capacitors(
                 extracted, self._rail_to_members,
@@ -25852,8 +25919,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 settings=settings,
                 net_layer_shapes=shapes,
                 include_overrides={d: True for d in forced},
+                footprint_convention=convention,
             )
-            self._caps_identity_cache = (extracted, settings, forced, base)
+            self._caps_identity_cache = (
+                extracted, settings, forced, convention, base)
             log.info("Caps report: identify %.2fs (%d caps)",
                      time.monotonic() - _t1, len(base))
         caps = apply_cap_overrides(
@@ -26127,6 +26196,11 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
     def _populate_caps_table(self) -> None:
         """Fill the Capacitors table from the cached cap report. Same
         plain-cell + single click-dispatcher pattern as the Vias table."""
+        from fypa.caploop.packages import (
+            format_package_label,
+            package_detection_tooltip,
+        )
+
         log = logging.getLogger(__name__)
         _t0 = time.monotonic()
         rows = self._get_or_compute_cap_rows()
@@ -26137,6 +26211,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         warn_fg = QBrush(QColor(_t["warn_fg"]))
         action_fg = QBrush(QColor(_t["accent"]))
         muted_fg = QBrush(QColor(_t["fg_muted"]))
+        footprint_convention = self._footprint_convention()
 
         # itemChanged fires for every setItem during populate — guard the
         # include-toggle handler with a populating flag.
@@ -26190,6 +26265,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             if row.get("target_is_override"):
                 target_text += " ✎"
 
+            package_label = format_package_label(
+                row.get("package"), footprint_convention)
+
             cells = (
                 None,  # action
                 None,  # use checkbox — set above
@@ -26197,7 +26275,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 row["rail"],
                 None if row.get("capacitance_f") is None
                 else row["capacitance_f"] * 1e6,
-                row.get("package") or "—",
+                package_label if row.get("package") else "—",
                 None if row.get("esl_h") is None else row["esl_h"] * 1e9,
                 None if row.get("esr_ohm") is None else row["esr_ohm"] * 1e3,
                 row.get("voltage_rating_v"),
@@ -26268,14 +26346,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 if col_label == "Flags":
                     item.setToolTip(self._cap_flags_tooltip(row))
                 if col_label == "Pkg":
-                    item.setToolTip(
-                        f"SMD case size parsed from the footprint "
-                        f"{row['cap'].footprint!r}. It selects the default "
-                        f"ESL / ESR from the package library."
-                        if row.get("package") else
-                        f"{row['cap'].footprint!r} is not a recognised SMD "
-                        "chip package. Set ESL and ESR on this part to "
-                        "include it in the impedance model.")
+                    item.setToolTip(package_detection_tooltip(
+                        row["cap"].footprint,
+                        row.get("package")))
                 if col_label in ("ESL (nH)", "ESR (mΩ)"):
                     is_esl = col_label.startswith("ESL")
                     overridden = row.get(
@@ -26289,12 +26362,12 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                         item.setToolTip(
                             f"Per-part override. Double-click to change, or "
                             f"clear the field to fall back to the "
-                            f"{row['package']} package default.")
+                            f"{package_label} package default.")
                         item.setForeground(action_fg)
                     else:
                         item.setToolTip(
                             f"Typical equivalent series {what} for a "
-                            f"{row['package']} package. Double-click to "
+                            f"{package_label} package. Double-click to "
                             "override this part.")
                         item.setForeground(muted_fg)
                 if col_label == "Target":
@@ -26929,6 +27002,12 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         note.setStyleSheet(f"QLabel {{ color: {_T()['fg_muted']}; }}")
         layout.addWidget(note)
 
+        conv_row = QHBoxLayout()
+        conv_row.addWidget(QLabel("Case size convention:"))
+        self.imp_footprint_conv_combo = self._build_footprint_convention_combo()
+        conv_row.addWidget(self.imp_footprint_conv_combo, 1)
+        layout.addLayout(conv_row)
+
         self.imp_pkg_table = QTableWidget()
         self.imp_pkg_table.setColumnCount(3)
         self.imp_pkg_table.setHorizontalHeaderLabels(
@@ -26950,12 +27029,17 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         return box
 
     def _populate_package_table(self) -> None:
+        from fypa.caploop.packages import format_package_label
+
         lib = self._caploop_package_library()
         table = self.imp_pkg_table
+        convention = self._footprint_convention()
         self._imp_pkg_populating = True
         table.setRowCount(len(lib))
         for r, model in enumerate(lib):
-            name = QTableWidgetItem(model.name)
+            name = QTableWidgetItem(
+                format_package_label(model.name, convention))
+            name.setData(_PKG_CANONICAL_ROLE, model.name)
             name.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
             table.setItem(r, 0, name)
             for c, value in ((1, model.esl_nh), (2, model.esr_mohm)):
@@ -26965,13 +27049,38 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         table.resizeColumnsToContents()
         self._imp_pkg_populating = False
 
+    def _on_footprint_convention_changed(self, _index: int = 0) -> None:
+        sender = self.sender()
+        if isinstance(sender, QComboBox):
+            value = sender.currentData()
+        else:
+            combo = getattr(self, "imp_footprint_conv_combo", None)
+            value = combo.currentData() if combo else None
+        if not value:
+            return
+        self._set_footprint_convention(str(value))
+        for attr in ("caps_footprint_conv_combo", "imp_footprint_conv_combo"):
+            combo = getattr(self, attr, None)
+            if combo is not None and combo is not sender:
+                combo.blockSignals(True)
+                idx = combo.findData(value)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+                combo.blockSignals(False)
+        if getattr(self, "imp_pkg_table", None) is not None:
+            self._populate_package_table()
+        self._invalidate_caps_cache(heavy=True)
+
     def _on_package_item_changed(self, item) -> None:
         """Commit an edited ESL / ESR back to the library, persist it, and
         recompute every capacitor that uses that package."""
         if getattr(self, "_imp_pkg_populating", False) or item.column() == 0:
             return
         table = self.imp_pkg_table
-        package = table.item(item.row(), 0).text()
+        name_item = table.item(item.row(), 0)
+        package = name_item.data(_PKG_CANONICAL_ROLE) if name_item else None
+        if not package:
+            package = name_item.text() if name_item else ""
         lib = self._caploop_package_library()
         model = lib.get(package)
         try:
@@ -27155,6 +27264,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             combo.blockSignals(False)
             if rails:
                 self._load_impedance_rail_config(rails[0])
+            self._sync_footprint_convention_ui()
             self._replot_impedance()
 
         self._ensure_cap_rows_async(_ready)

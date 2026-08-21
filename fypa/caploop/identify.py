@@ -827,6 +827,7 @@ def identify_capacitors(
                            shapely.geometry.base.BaseGeometry] | None = None,
     include_overrides: dict[str, bool] | None = None,
     target_overrides: dict[str, str] | None = None,
+    footprint_convention: str = "auto",
 ) -> list[CapInstance]:
     """Find every decoupling capacitor and bundle its analysis geometry.
 
@@ -1008,7 +1009,8 @@ def identify_capacitors(
             designator=comp.designator,
             source_designator=comp.source_designator,
             footprint=comp.footprint,
-            package=detect_package(comp.footprint),
+            package=detect_package(
+                comp.footprint, convention=footprint_convention),
             center_xy=(comp.center.x, comp.center.y),
             mount_layer_id=mount_layer_id,
             rail_net=rail_net,

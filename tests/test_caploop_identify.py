@@ -147,6 +147,25 @@ def test_package_is_classified_from_the_footprint():
     assert _identify(proj)[0].package is None
 
 
+def test_metric_footprint_name_is_classified():
+    import dataclasses
+    caps = _identify(_standard_cap_project(
+        pcb_components=(dataclasses.replace(
+            _comp("C1"), footprint="1608C"),)))
+    assert caps[0].package == "0603"
+
+
+def test_footprint_convention_metric_disambiguates_bare_codes():
+    import dataclasses
+    caps = _identify(
+        _standard_cap_project(
+            pcb_components=(dataclasses.replace(
+                _comp("C1"), footprint="0603"),)),
+        footprint_convention="metric",
+    )
+    assert caps[0].package == "0201"
+
+
 def test_detects_decoupling_cap_and_orientation():
     caps = _identify(_standard_cap_project())
     assert len(caps) == 1
