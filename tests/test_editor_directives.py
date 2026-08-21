@@ -143,3 +143,24 @@ def test_series_bridge_unions_single_net_source_and_sink_return_groups():
     assert src.return_group == snk.return_group
     # The bridge closed the loop — no open-loop warning for either rail.
     assert not any("open loop" in w for w in warnings)
+
+
+def test_editor_series_shorting_one_net_is_refused():
+    """The annotation path errors on a P/N short; the editor path built the
+    spec silently, giving a lumped element with both terminals on one node."""
+    loaded = _loaded(["+5V", "+3V3"])
+    eds = [_free("SERIES", single_net=False, p_net="+5V", n_net="+5V",
+                 resistance=0.05)]
+    warnings = apply_editor_directives(loaded, eds)
+    assert warnings and "short the element" in warnings[0]
+    assert loaded.annotations.directives == []
+
+
+def test_editor_series_on_two_nets_is_still_accepted():
+    """The guard must not fire on a legitimate free marker, whose terminals
+    both carry the anchor placeholder rather than a pad name."""
+    loaded = _loaded(["+5V", "+3V3"])
+    eds = [_free("SERIES", single_net=False, p_net="+5V", n_net="+3V3",
+                 resistance=0.05)]
+    assert apply_editor_directives(loaded, eds) == []
+    assert len(loaded.annotations.directives) == 1

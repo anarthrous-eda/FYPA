@@ -971,7 +971,7 @@ def test_resolve_local_net_pins_physical_source_sheet():
         physical_sheet_names=((physical, "Power.SchDoc"),),
         compiled_netlist=netlist,
     )
-    pins = _resolve_local_net_pins(
+    pins, _tier = _resolve_local_net_pins(
         netlist, "U1", "Power.SchDoc", "+3V3", sheet_map=_sheet_map(proj),
     )
     assert pins == ["14"]
@@ -1744,7 +1744,11 @@ def test_arbitrate_overlapping_terminals_drops_weaker_side():
     assert p2 is not None and n2 is not None
     assert {pin.pad_designator for pin in p2.pins} == {"2"}
     assert {pin.pad_designator for pin in n2.pins} == {"1"}
-    assert any("overlap" in w for w in result.warnings)
+    assert any("both matched pin(s)" in w for w in result.warnings)
+    # The pad designator, not the internal "R1.1:1" arbitration key: the
+    # message tells the user to set PDN_*_PINS, which matches on pad names.
+    assert any("kept on N" in w and "dropped from P" in w
+               for w in result.warnings)
     assert not result.errors
 
 
@@ -3381,3 +3385,96 @@ def test_a_failed_page_map_does_not_discard_a_good_netlist():
     netlist, sheet_names = _compile_schematic_netlist(_Design())
     assert netlist is sentinel
     assert sheet_names == ()
+
+
+# --- P/N arbitration follow-ups ------------------------------------------------
+
+
+def test_alias_fallback_does_not_outrank_a_name_level_match():
+    """"The pad's PCB net is on the row" is the criterion the PCB tier
+    explicitly rejects, so an alias-only hit must not be stamped tier 0 and
+    strip a genuine net.name match on the other terminal."""
+    from fypa.altium.annotations import (
+        _LOCAL_NET_TIER_ALIAS, _LOCAL_NET_TIER_NAME, _LOCAL_NET_TIER_PCB,
+    )
+
+    assert _LOCAL_NET_TIER_ALIAS > _LOCAL_NET_TIER_NAME > _LOCAL_NET_TIER_PCB
+
+
+def test_explicit_pin_override_outranks_a_net_name_match():
+    """The overlap error tells the user to set PDN_*_PINS. That advice only
+    works if an explicit pin list actually breaks the tie."""
+    from fypa.altium.annotations import (
+        _LOCAL_NET_TIER_DIRECT, _LOCAL_NET_TIER_OVERRIDE,
+    )
+
+    assert _LOCAL_NET_TIER_OVERRIDE < _LOCAL_NET_TIER_DIRECT
+
+
+def _pin(pad):
+    return TerminalPin(pad, 1, 0, Pt2D(0, 0))
+
+
+def test_overlap_messages_name_pads_not_arbitration_keys():
+    """The keys are composite ("R5:1") but PDN_*_PINS matches bare pad names,
+    so printing the key sent the user to an error about an unknown pin."""
+    p = TerminalSpec(
+        pins=(TerminalPin("1", 1, 0, Pt2D(0, 0), component_designator="R5"),
+              TerminalPin("2", 1, 0, Pt2D(0, 0), component_designator="R5")),
+        requested_net="VIN",
+    )
+    n = TerminalSpec(
+        pins=(TerminalPin("1", 1, 0, Pt2D(0, 0), component_designator="R5"),),
+        requested_net="VIN_L",
+    )
+    result = AnnotationResult()
+    _arbitrate_overlapping_terminals(
+        p, n, _LOCAL_NET_TIER_ALIAS, _LOCAL_NET_TIER_NAME,
+        "SERIES on R5", result,
+    )
+    text = " ".join(result.warnings + result.errors)
+    assert "R5:1" not in text
+    assert "pin(s) 1" in text
+
+
+def test_empty_side_errors_without_a_contradictory_warning():
+    """Warning that pins were "dropped from N" and then that N is empty and
+    the directive discarded reads as two contradictory log lines."""
+    shared = TerminalPin("1", 1, 0, Pt2D(0, 0))
+    p = TerminalSpec(pins=(shared,), requested_net="VIN")
+    n = TerminalSpec(pins=(shared,), requested_net="VIN_L")
+    result = AnnotationResult()
+    p2, n2 = _arbitrate_overlapping_terminals(
+        p, n, _LOCAL_NET_TIER_NAME, _LOCAL_NET_TIER_ALIAS,
+        "SERIES on R5", result,
+    )
+    assert p2 is not None and n2 is None
+    assert result.errors and "would be empty" in result.errors[0]
+    assert result.warnings == []
+
+
+def test_equal_tier_error_points_at_the_remedy_that_works():
+    shared = TerminalPin("1", 1, 0, Pt2D(0, 0))
+    p = TerminalSpec(pins=(shared,), requested_net="VIN")
+    n = TerminalSpec(pins=(shared,), requested_net="VIN")
+    result = AnnotationResult()
+    p2, n2 = _arbitrate_overlapping_terminals(
+        p, n, _LOCAL_NET_TIER_NAME, _LOCAL_NET_TIER_NAME,
+        "SERIES on R5", result,
+    )
+    assert p2 is None and n2 is None
+    assert "outranks a net-name match" in result.errors[0]
+
+
+def test_channel_token_must_come_from_flattening():
+    """A part merely NAMED FB_2 is not channel 2 of FB, so an unrelated
+    repeated sheet's VIN.2 must not match it."""
+    # Genuine channel instance: the placed designator is the schematic one
+    # plus the channel token, so the separators may legitimately disagree.
+    assert _local_net_label_matches("VIN_1", "VIN", {"R1", "R1.1"})
+    assert _local_net_label_matches("VIN.1", "VIN", {"R1", "R1_1"})
+    # Not a channel: nothing in the candidate set is "FB" + sep + "2".
+    assert not _local_net_label_matches("VIN.2", "VIN", {"FB_2"})
+    assert not _local_net_label_matches("VIN_3", "VIN", {"SW_3"})
+    # An exact label still matches regardless.
+    assert _local_net_label_matches("VIN", "VIN", {"FB_2"})

@@ -588,7 +588,8 @@ def _designator_candidates(
 # alias-only hits when a stronger name-level or PCB-confirmed match exists
 # (shared bare aliases across hierarchy levels are common in multi-channel
 # netlists).
-_LOCAL_NET_TIER_DIRECT = -1   # direct PCB net name or pin override
+_LOCAL_NET_TIER_OVERRIDE = -2  # explicit PDN_*_PINS — the user named the pads
+_LOCAL_NET_TIER_DIRECT = -1   # direct PCB net name match
 _LOCAL_NET_TIER_PCB = 0       # netlist row lists the pad's PCB net name
 _LOCAL_NET_TIER_NAME = 1      # match on compiled net.name (exact/channel)
 _LOCAL_NET_TIER_ALIAS = 2     # match on a netlist alias only
@@ -607,7 +608,25 @@ def _channel_token_after_prefix(label: str, prefix: str) -> str | None:
 
 def _designator_has_channel_token(designator: str, token: str) -> bool:
     """True when ``designator`` ends with ``.token`` or ``_token``."""
-    return designator.endswith("." + token) or designator.endswith("_" + token)
+    return designator.endswith(("." + token, "_" + token))
+
+
+def _is_flattened_channel_token(des_candidates: set[str], token: str) -> bool:
+    """True when ``token`` is the channel suffix Altium added when flattening.
+
+    ``des_candidates`` holds the schematic designator and the placed one, so a
+    genuine channel instance shows up as a PAIR — ``R1`` plus ``R1.1`` — where
+    one is the other plus a separator and the token. Testing the suffix alone
+    also accepts a part merely NAMED that way: ``FB_2`` is not channel 2 of
+    ``FB``, but it ends in ``_2``, so an unrelated repeated sheet's ``VIN.2``
+    would match it.
+    """
+    return any(
+        other != d and d == other + sep + token
+        for d in des_candidates
+        for other in des_candidates
+        for sep in "._"
+    )
 
 
 def _local_net_label_matches(
@@ -622,6 +641,11 @@ def _local_net_label_matches(
     same channel *token*, regardless of whether the netlist used ``.`` or
     ``_`` as the separator (Altium's channel designator format and net
     annotation can disagree: designator ``R1.1`` vs net ``VIN_1``).
+
+    Accepting either separator is deliberate, but it must not accept a part
+    that merely happens to be named that way, so the token has to be the
+    suffix that flattening actually added — see
+    :func:`_is_flattened_channel_token`.
     """
     if not label:
         return False
@@ -630,9 +654,10 @@ def _local_net_label_matches(
     if lu == ln:
         return True
     channel = _channel_token_after_prefix(lu, ln)
-    if channel and any(
-        _designator_has_channel_token(d, channel) for d in des_candidates
-    ):
+    if (channel
+            and any(_designator_has_channel_token(d, channel)
+                    for d in des_candidates)
+            and _is_flattened_channel_token(des_candidates, channel)):
         return True
     return False
 
@@ -792,20 +817,26 @@ class InstanceLocalNetResolver:
             )
             routed = pads_by.get(pcb_index, {})
             if routed:
+                # _build_pads_by_component already drops NO_NET pads.
                 pcb_net_by_pin = {
                     pin_key: self.proj.nets[pad.net_index].name.upper()
                     for pin_key, pad in routed.items()
-                    if pad.net_index != NO_NET
                 }
                 local_pins, _tier = _resolve_local_net_pins(
                     self.proj.compiled_netlist,
                     lookup_des,
                     schdoc,
                     local_name,
-                    routed_pin_keys=set(routed),
+                    routed_pin_keys=set(pcb_net_by_pin) or None,
                     pcb_designator=pcb.designator,
                     pcb_net_by_pin=pcb_net_by_pin or None,
                     sheet_map=self.sheet_map(),
+                    # Equivalence expansion, not terminal selection: this feeds
+                    # the SERIES bridge union and the net-merge canonical, both
+                    # of which need EVERY equivalent PCB net name. Keeping only
+                    # the best tier silently shrinks the class and can make the
+                    # analysis-group check reject a topology it accepted.
+                    best_tier_only=False,
                 )
                 wanted = {p.upper() for p in local_pins}
                 for pin_key, pad in routed.items():
@@ -973,6 +1004,7 @@ def _resolve_local_net_pins(
     pcb_designator: str | None = None,
     pcb_net_by_pin: dict[str, str] | None = None,
     sheet_map: dict[str, str] | None = None,
+    best_tier_only: bool = True,
 ) -> tuple[list[str], int]:
     """Return ``(pin designators, match_tier)`` for a local sheet net name.
 
@@ -1003,7 +1035,6 @@ def _resolve_local_net_pins(
     unscoped_used = False
     for net in netlist.nets:
         aliases = list(getattr(net, "aliases", ()) or ())
-        names = [net.name, *aliases]
         name_match = _local_net_label_matches(
             net.name, local_net_name, des_candidates,
         )
@@ -1039,27 +1070,29 @@ def _resolve_local_net_pins(
                     pcb_n, local_net_name, des_candidates,
                 ):
                     tier = _LOCAL_NET_TIER_PCB
-            scored.append((tier, pin))
-            if schdoc_name and not net_sheets:
-                unscoped_used = True
+            scored.append((tier, pin, bool(schdoc_name and not net_sheets)))
+    if not scored:
+        return [], _LOCAL_NET_TIER_ALIAS
+    best = min(t for t, _, _ in scored)
+    pins: list[str] = []
+    seen: set[str] = set()
+    for tier, pin, unscoped in scored:
+        if best_tier_only and tier != best:
+            continue
+        key = pin.upper()
+        if key not in seen:
+            seen.add(key)
+            pins.append(pin)
+            unscoped_used = unscoped_used or unscoped
+    # Reported only for nets that actually contributed a RETURNED pin.
+    # Flagging every scored candidate fired this for rows the tier ranking
+    # discarded — a false trail when debugging a mis-mapped instance.
     if unscoped_used:
         log.debug(
             "Local net %r on %s resolved via net(s) lacking sheet provenance; "
             "match scoped by routed pins only.",
             local_net_name, sch_designator,
         )
-    if not scored:
-        return [], _LOCAL_NET_TIER_ALIAS
-    best = min(t for t, _ in scored)
-    pins: list[str] = []
-    seen: set[str] = set()
-    for tier, pin in scored:
-        if tier != best:
-            continue
-        key = pin.upper()
-        if key not in seen:
-            seen.add(key)
-            pins.append(pin)
     return pins, best
 
 
@@ -1149,7 +1182,11 @@ def _resolve_terminal(
     solver's net graph, not terminal pin selection.
 
     Returns ``(spec, errors, match_tier)``. If ``errors`` is non-empty,
-    ``spec`` is ``None``. ``match_tier`` is a :data:`_LOCAL_NET_TIER_*`
+    ``spec`` is ``None`` — EXCEPT on the partial pin-override path, where an
+    unmatched entry in ``PDN_*_PINS`` records an error while the pads that did
+    match still yield a spec. Callers that arbitrate between terminals must
+    therefore check ``errors`` as well as ``spec``.
+    ``match_tier`` is a :data:`_LOCAL_NET_TIER_*`
     constant used by :func:`_resolve_two_terminal` to arbitrate overlapping
     P/N pin sets.
     """
@@ -1165,6 +1202,10 @@ def _resolve_terminal(
         return None, errors, match_tier
 
     if override_pins:
+        # Outranks every inferred match. Both paths used to return DIRECT, so
+        # a user told to "set PDN_P_PINS / PDN_N_PINS to disambiguate" got the
+        # same equal-tier error back and had no way out of it.
+        match_tier = _LOCAL_NET_TIER_OVERRIDE
         wanted = {pin.upper() for pin in override_pins}
         matched = [p for p in component_pads if p.designator.upper() in wanted]
         missing = wanted - {p.designator.upper() for p in matched}
@@ -1198,16 +1239,12 @@ def _resolve_terminal(
             matched = [p for p in component_pads if p.net_index in wanted_nets]
 
         if not matched and sch_lookup_designator:
-            routed_pin_keys = {
-                p.designator.upper()
-                for p in component_pads
-                if p.net_index != NO_NET
-            }
             pcb_net_by_pin = {
                 p.designator.upper(): proj.nets[p.net_index].name.upper()
                 for p in component_pads
                 if p.net_index != NO_NET
             }
+            routed_pin_keys = set(pcb_net_by_pin)
             local_pins, local_tier = _resolve_local_net_pins(
                 proj.compiled_netlist,
                 sch_lookup_designator,
@@ -1256,10 +1293,20 @@ def _resolve_terminal(
             )
             if alias_matched:
                 matched = alias_matched
-                # Alias fallback already requires the pad's PCB net on the
-                # netlist row — equivalent to the PCB-confirmed local tier.
-                match_tier = _LOCAL_NET_TIER_PCB
-                resolved_via_local = True
+                # ALIAS, not PCB. "The pad's PCB net is listed on the row" is
+                # the criterion _resolve_local_net_pins explicitly rejects for
+                # the PCB tier: every terminal's primary name appears on its
+                # own row, so promoting on it erases the ranking. Stamping
+                # tier 0 here let an alias-only hit outrank a genuine net.name
+                # match on the opposite terminal, and the arbitrator then
+                # stripped the stronger side to empty and failed the solve.
+                match_tier = _LOCAL_NET_TIER_ALIAS
+                # NOT resolved_via_local: that flag is not a tier concept.
+                # loader.build_solve_metadata exports it and rail_groups
+                # branches on it to choose a rail's display name, so setting
+                # it here silently renamed rails in the GUI for any board
+                # whose SOURCE resolves by alias. The tier is carried by
+                # match_tier, which is what the arbitration actually reads.
                 if warnings is not None:
                     pcb_net_names = sorted({
                         proj.nets[p.net_index].name
@@ -1821,6 +1868,11 @@ def _resolve_two_terminal(
     result.errors.extend(n_err)
     if p_spec is None or n_spec is None:
         return None
+    if p_err or n_err:
+        # A partial pin override yields a spec AND an error. The directive is
+        # already failing, so arbitrating a knowingly truncated terminal would
+        # only append a second, contradictory complaint about it.
+        return None
 
     p_spec, n_spec = _arbitrate_overlapping_terminals(
         p_spec, n_spec, p_tier, n_tier, role_diag, result,
@@ -1831,16 +1883,35 @@ def _resolve_two_terminal(
 
 
 def _terminal_pin_overlap_key(pin: TerminalPin) -> str:
-    """Identity for P/N overlap arbitration.
+    """Internal identity for P/N overlap arbitration — never shown to a user.
 
     Pads on different components with the same pad designator (typical for
     single-pin lab jacks) are distinct. Without ``component_designator``,
     fall back to pad name only — same as the historical same-footprint case.
+
+    Note both terminals of an annotation-authored directive always resolve
+    from one ``pcb_index``, so the component half is currently the same on
+    both sides; it matters only for a caller that pairs terminals across
+    components. Use :func:`_overlap_pad_names` for anything user-visible.
     """
     pad = pin.pad_designator.upper()
     if pin.component_designator:
         return f"{pin.component_designator.upper()}:{pad}"
     return pad
+
+
+def _overlap_pad_names(spec: TerminalSpec, overlap: set[str]) -> list[str]:
+    """Pad designators behind ``overlap``, as the user must type them.
+
+    The arbitration keys are composite ("R5:1"), but PDN_P_PINS / PDN_N_PINS
+    match on the bare pad designator ("1"). Printing the key sent users to
+    set PDN_P_PINS='R5:1' and get "pin overrides not found: ['R5:1']" back.
+    """
+    return sorted({
+        pin.pad_designator
+        for pin in spec.pins
+        if _terminal_pin_overlap_key(pin) in overlap
+    })
 
 
 def _arbitrate_overlapping_terminals(
@@ -1857,9 +1928,12 @@ def _arbitrate_overlapping_terminals(
     of a two-pin part (shorting the series element). Prefer the higher-quality
     match tier; when tiers tie, require explicit ``PDN_*_PINS`` overrides.
 
-    Overlap is by component+pad when ``component_designator`` is set, so a
-    multi-connector SOURCE (P on J2 pad 1, N on J3 pad 1) is not treated as
-    a shorted pair.
+    Overlap is keyed by component+pad when ``component_designator`` is set.
+    Note that no current caller produces P and N on different components:
+    :func:`_resolve_two_terminal` resolves both from one ``pcb_index``, so the
+    component half is always equal and the key reduces to the pad name. It is
+    kept for a caller that pairs terminals across components; until one
+    exists, the multi-connector case it describes cannot arise.
     """
     p_keys = {_terminal_pin_overlap_key(pin) for pin in p_spec.pins}
     n_keys = {_terminal_pin_overlap_key(pin) for pin in n_spec.pins}
@@ -1867,7 +1941,8 @@ def _arbitrate_overlapping_terminals(
     if not overlap:
         return p_spec, n_spec
 
-    overlap_text = ", ".join(sorted(overlap))
+    pad_names = _overlap_pad_names(p_spec, overlap)
+    overlap_text = ", ".join(pad_names)
 
     def _label(spec: TerminalSpec) -> str:
         return spec.requested_net or "?"
@@ -1877,19 +1952,22 @@ def _arbitrate_overlapping_terminals(
             pin for pin in n_spec.pins
             if _terminal_pin_overlap_key(pin) not in overlap
         )
-        result.warnings.append(
-            f"{role_diag}: P/N pin overlap on {overlap_text} "
-            f"(P={_label(p_spec)!r} tier={p_tier}, "
-            f"N={_label(n_spec)!r} tier={n_tier}); "
-            f"kept on P-terminal, dropped from N-terminal"
-        )
         if not kept:
+            # Error only. Warning first that the pins were "dropped from the
+            # N-terminal" and then that the N-terminal is empty and the
+            # directive discarded reads as two contradictory lines in the log.
             result.errors.append(
-                f"{role_diag}: N-terminal empty after removing overlapping "
-                f"pins {sorted(overlap)}; set PDN_P_PINS / PDN_N_PINS to "
-                f"disambiguate"
+                f"{role_diag}: N-terminal ({_label(n_spec)!r}) would be empty "
+                f"after removing pin(s) {overlap_text}, which the P-terminal "
+                f"({_label(p_spec)!r}) matched more strongly; set "
+                f"PDN_N_PINS to name the pad(s) that belong to N"
             )
             return p_spec, None
+        result.warnings.append(
+            f"{role_diag}: P and N both matched pin(s) {overlap_text}; "
+            f"kept on P ({_label(p_spec)!r}, the stronger match), "
+            f"dropped from N ({_label(n_spec)!r})"
+        )
         return p_spec, TerminalSpec(
             pins=kept,
             requested_net=n_spec.requested_net,
@@ -1901,19 +1979,19 @@ def _arbitrate_overlapping_terminals(
             pin for pin in p_spec.pins
             if _terminal_pin_overlap_key(pin) not in overlap
         )
-        result.warnings.append(
-            f"{role_diag}: P/N pin overlap on {overlap_text} "
-            f"(P={_label(p_spec)!r} tier={p_tier}, "
-            f"N={_label(n_spec)!r} tier={n_tier}); "
-            f"kept on N-terminal, dropped from P-terminal"
-        )
         if not kept:
             result.errors.append(
-                f"{role_diag}: P-terminal empty after removing overlapping "
-                f"pins {sorted(overlap)}; set PDN_P_PINS / PDN_N_PINS to "
-                f"disambiguate"
+                f"{role_diag}: P-terminal ({_label(p_spec)!r}) would be empty "
+                f"after removing pin(s) {overlap_text}, which the N-terminal "
+                f"({_label(n_spec)!r}) matched more strongly; set "
+                f"PDN_P_PINS to name the pad(s) that belong to P"
             )
             return None, n_spec
+        result.warnings.append(
+            f"{role_diag}: P and N both matched pin(s) {overlap_text}; "
+            f"kept on N ({_label(n_spec)!r}, the stronger match), "
+            f"dropped from P ({_label(p_spec)!r})"
+        )
         return TerminalSpec(
             pins=kept,
             requested_net=p_spec.requested_net,
@@ -1921,9 +1999,11 @@ def _arbitrate_overlapping_terminals(
         ), n_spec
 
     result.errors.append(
-        f"{role_diag}: P and N terminals share pin(s) {sorted(overlap)} "
-        f"(P={_label(p_spec)!r}, N={_label(n_spec)!r}). "
-        f"Set PDN_P_PINS / PDN_N_PINS to disambiguate"
+        f"{role_diag}: P and N terminals both resolve to pin(s) "
+        f"{overlap_text} with equally strong evidence "
+        f"(P={_label(p_spec)!r}, N={_label(n_spec)!r}) — the element would be "
+        f"shorted. Set PDN_P_PINS / PDN_N_PINS to the pad designator(s) each "
+        f"side owns; an explicit pin list outranks a net-name match."
     )
     return None, None
 

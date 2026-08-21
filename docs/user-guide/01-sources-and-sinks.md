@@ -342,7 +342,7 @@ connectivity so local-net resolution stays scoped to that instance.
 | Same message, project compiles | Wrong local label or wrong sheet | Check the net label on the child sheet matches `PDN_*_NET` exactly |
 | `component … has no pad on net FOO` | Slot-qualified name on the wrong instance (e.g. `FOO.3` on channel 1) | Use the local name `FOO` instead of a channel suffix |
 | `resolved local net … via schematic pins` (warning) | Normal for repeated sheets | No action needed — mapping succeeded |
-| `P and N terminals share pin(s) … Set PDN_P_PINS / PDN_N_PINS` | Compiled netlist aliases the same local label onto both sides of a SERIES part | Set `PDN_P_PINS` / `PDN_N_PINS` (identical on every channel instance), or use the channel-qualified PCB net names |
+| `P and N terminals both resolve to pin(s) …` | Compiled netlist aliases the same local label onto both sides of a SERIES part | Set `PDN_P_PINS` / `PDN_N_PINS` to the **pad designators** the message lists (`1`, `2` — not `R5:1`), identical on every channel instance. An explicit pin list outranks a net-name match, so naming one side is enough. Channel-qualified PCB net names also work. |
 | P-terminal resolves to both PCB nets of a two-pin SERIES | Shared bare alias across hierarchy levels (netlist lists the local label on both nets) | Prefer local labels that FYPA can rank by channel token (`VIN` vs `VIN_L`); if the warning persists, add pin overrides |
 
 > If resolution still fails, verify that the component's schematic
