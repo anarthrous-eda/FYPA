@@ -469,6 +469,10 @@ class TerminalPin:
     # equipotential ``region`` so the terminal couples over the whole pad
     # footprint instead of a single point. ``None`` for degenerate pads.
     pad_polygon: shapely.geometry.Polygon | None = None
+    # Owning PCB component when known. Used so P/N overlap arbitration does
+    # not treat pad ``"1"`` on J2 and pad ``"1"`` on J3 as the same pin
+    # (multi-connector / banana-jack sources).
+    component_designator: str | None = None
 
 
 @dataclass(frozen=True)
@@ -580,6 +584,32 @@ def _designator_candidates(
     return candidates
 
 
+# Local-net match quality (lower = better). Used to discard ambiguous
+# alias-only hits when a stronger name-level or PCB-confirmed match exists
+# (shared bare aliases across hierarchy levels are common in multi-channel
+# netlists).
+_LOCAL_NET_TIER_DIRECT = -1   # direct PCB net name or pin override
+_LOCAL_NET_TIER_PCB = 0       # netlist row lists the pad's PCB net name
+_LOCAL_NET_TIER_NAME = 1      # match on compiled net.name (exact/channel)
+_LOCAL_NET_TIER_ALIAS = 2     # match on a netlist alias only
+
+
+def _channel_token_after_prefix(label: str, prefix: str) -> str | None:
+    """If ``label`` is ``prefix`` + ``.``/``_`` + token, return the token."""
+    if not label.startswith(prefix) or len(label) <= len(prefix):
+        return None
+    sep = label[len(prefix)]
+    if sep not in "._":
+        return None
+    token = label[len(prefix) + 1:]
+    return token or None
+
+
+def _designator_has_channel_token(designator: str, token: str) -> bool:
+    """True when ``designator`` ends with ``.token`` or ``_token``."""
+    return designator.endswith("." + token) or designator.endswith("_" + token)
+
+
 def _local_net_label_matches(
     label: str | None,
     local_net_name: str,
@@ -587,9 +617,11 @@ def _local_net_label_matches(
 ) -> bool:
     """True when ``label`` names the same local net class as ``local_net_name``.
 
-    Channel-mangled aliases (``S00A_SL8M7``, ``S00A.4``) are accepted only
-    when an instance designator in ``des_candidates`` carries the same
-    channel token.
+    Channel-mangled aliases (``S00A_SL8M7``, ``S00A.4``, ``VIN_1``) are
+    accepted when an instance designator in ``des_candidates`` carries the
+    same channel *token*, regardless of whether the netlist used ``.`` or
+    ``_`` as the separator (Altium's channel designator format and net
+    annotation can disagree: designator ``R1.1`` vs net ``VIN_1``).
     """
     if not label:
         return False
@@ -597,14 +629,11 @@ def _local_net_label_matches(
     lu = label.upper()
     if lu == ln:
         return True
-    if lu.startswith(ln + "."):
-        channel = lu[len(ln) + 1:]
-        if channel and any(d.endswith("." + channel) for d in des_candidates):
-            return True
-    if lu.startswith(ln + "_"):
-        channel = lu[len(ln) + 1:]
-        if channel and any(d.endswith("_" + channel) for d in des_candidates):
-            return True
+    channel = _channel_token_after_prefix(lu, ln)
+    if channel and any(
+        _designator_has_channel_token(d, channel) for d in des_candidates
+    ):
+        return True
     return False
 
 
@@ -763,13 +792,19 @@ class InstanceLocalNetResolver:
             )
             routed = pads_by.get(pcb_index, {})
             if routed:
-                local_pins = _resolve_local_net_pins(
+                pcb_net_by_pin = {
+                    pin_key: self.proj.nets[pad.net_index].name.upper()
+                    for pin_key, pad in routed.items()
+                    if pad.net_index != NO_NET
+                }
+                local_pins, _tier = _resolve_local_net_pins(
                     self.proj.compiled_netlist,
                     lookup_des,
                     schdoc,
                     local_name,
                     routed_pin_keys=set(routed),
                     pcb_designator=pcb.designator,
+                    pcb_net_by_pin=pcb_net_by_pin or None,
                     sheet_map=self.sheet_map(),
                 )
                 wanted = {p.upper() for p in local_pins}
@@ -936,31 +971,55 @@ def _resolve_local_net_pins(
     *,
     routed_pin_keys: set[str] | None = None,
     pcb_designator: str | None = None,
+    pcb_net_by_pin: dict[str, str] | None = None,
     sheet_map: dict[str, str] | None = None,
-) -> list[str]:
-    """Return pin designators on ``sch_designator`` for a local sheet net name.
+) -> tuple[list[str], int]:
+    """Return ``(pin designators, match_tier)`` for a local sheet net name.
 
     ``pcb_designator`` is the placed instance's (possibly channel-flattened)
     designator, e.g. ``J3_SL8M3``. In a repeated ("multi-channel") sheet the
     compiled netlist keys both terminals and mangled net-label aliases by that
     flattened form, whereas ``sch_designator`` is the base schematic designator
     (``J3``); terminal and alias matching accept either.
+
+    When several netlist nets share a bare local alias, only the strongest
+    match tier is kept:
+
+    * :data:`_LOCAL_NET_TIER_PCB` — the pad's PCB net name itself is a
+      channel form of the local label (``VIN_1`` for local ``VIN``);
+    * :data:`_LOCAL_NET_TIER_NAME` — ``net.name`` matches the local label
+      (exact or channel-token);
+    * :data:`_LOCAL_NET_TIER_ALIAS` — only an alias matched.
+
+    ``pcb_net_by_pin`` maps upper-cased pin designators to upper-cased PCB
+    net names for the PCB-confirmed tier.
     """
     if netlist is None:
-        return []
+        return [], _LOCAL_NET_TIER_ALIAS
     des_candidates = _designator_candidates(sch_designator, pcb_designator)
 
-    pins: list[str] = []
-    seen: set[str] = set()
+    # (tier, pin) candidates; lower tier wins.
+    scored: list[tuple[int, str]] = []
     unscoped_used = False
     for net in netlist.nets:
-        names = [net.name, *getattr(net, "aliases", ())]
-        if not any(_local_net_label_matches(n, local_net_name, des_candidates) for n in names):
+        aliases = list(getattr(net, "aliases", ()) or ())
+        names = [net.name, *aliases]
+        name_match = _local_net_label_matches(
+            net.name, local_net_name, des_candidates,
+        )
+        alias_match = any(
+            _local_net_label_matches(a, local_net_name, des_candidates)
+            for a in aliases
+        )
+        if not name_match and not alias_match:
             continue
         net_sheets = list(getattr(net, "source_sheets", ()) or ())
         if not _sheet_name_matches(schdoc_name, net_sheets,
                                    sheet_map=sheet_map):
             continue
+        base_tier = (
+            _LOCAL_NET_TIER_NAME if name_match else _LOCAL_NET_TIER_ALIAS
+        )
         for term in net.terminals:
             if term.designator.upper() not in des_candidates:
                 continue
@@ -968,18 +1027,40 @@ def _resolve_local_net_pins(
             key = pin.upper()
             if routed_pin_keys is not None and key not in routed_pin_keys:
                 continue
-            if key not in seen:
-                seen.add(key)
-                pins.append(pin)
-                if schdoc_name and not net_sheets:
-                    unscoped_used = True
+            tier = base_tier
+            if pcb_net_by_pin is not None:
+                pcb_n = pcb_net_by_pin.get(key)
+                # PCB-confirmed only when the physical net name itself is a
+                # channel form of the requested local label (VIN_1 / VIN.1 for
+                # local VIN). Being listed on the row is not enough — every
+                # terminal's primary name is on its own row, so that would
+                # promote alias-only hits to the top tier and erase ranking.
+                if pcb_n and _local_net_label_matches(
+                    pcb_n, local_net_name, des_candidates,
+                ):
+                    tier = _LOCAL_NET_TIER_PCB
+            scored.append((tier, pin))
+            if schdoc_name and not net_sheets:
+                unscoped_used = True
     if unscoped_used:
         log.debug(
             "Local net %r on %s resolved via net(s) lacking sheet provenance; "
             "match scoped by routed pins only.",
             local_net_name, sch_designator,
         )
-    return pins
+    if not scored:
+        return [], _LOCAL_NET_TIER_ALIAS
+    best = min(t for t, _ in scored)
+    pins: list[str] = []
+    seen: set[str] = set()
+    for tier, pin in scored:
+        if tier != best:
+            continue
+        key = pin.upper()
+        if key not in seen:
+            seen.add(key)
+            pins.append(pin)
+    return pins, best
 
 
 def _terminal_layer_for_pad(pad: RawPad, enabled_layers: list[int]) -> int:
@@ -1054,7 +1135,7 @@ def _resolve_terminal(
     net_remap: dict[int, int] | None = None,
     sch_lookup_designator: str | None = None,
     schdoc_name: str | None = None,
-) -> tuple[TerminalSpec | None, list[str]]:
+) -> tuple[TerminalSpec | None, list[str], int]:
     """Resolve a terminal to its participating pads.
 
     ``pcb_index`` indexes :attr:`ExtractedProject.pcb_components` — one
@@ -1067,17 +1148,21 @@ def _resolve_terminal(
     equivalence classes are *not* consulted here — those belong to the
     solver's net graph, not terminal pin selection.
 
-    Returns ``(spec, errors)``. If ``errors`` is non-empty, ``spec`` is ``None``.
+    Returns ``(spec, errors, match_tier)``. If ``errors`` is non-empty,
+    ``spec`` is ``None``. ``match_tier`` is a :data:`_LOCAL_NET_TIER_*`
+    constant used by :func:`_resolve_two_terminal` to arbitrate overlapping
+    P/N pin sets.
     """
     errors: list[str] = []
     resolved_via_local = False
+    match_tier = _LOCAL_NET_TIER_DIRECT
     designator = proj.pcb_components[pcb_index].designator
     component_pads = _pads_by_component_all(proj).get(pcb_index, [])
     if not component_pads:
         errors.append(
             f"{role_diagnostic}: component {designator!r} has no pads on the PCB"
         )
-        return None, errors
+        return None, errors, match_tier
 
     if override_pins:
         wanted = {pin.upper() for pin in override_pins}
@@ -1089,13 +1174,13 @@ def _resolve_terminal(
                 f"{sorted(missing)}"
             )
         if not matched:
-            return None, errors
+            return None, errors, match_tier
     else:
         if not net_name:
             errors.append(
                 f"{role_diagnostic}: neither a net nor pin overrides supplied"
             )
-            return None, errors
+            return None, errors, match_tier
         net_indices = _net_indices_by_name(proj, net_name)
         matched: list[RawPad] = []
         if net_indices:
@@ -1118,13 +1203,19 @@ def _resolve_terminal(
                 for p in component_pads
                 if p.net_index != NO_NET
             }
-            local_pins = _resolve_local_net_pins(
+            pcb_net_by_pin = {
+                p.designator.upper(): proj.nets[p.net_index].name.upper()
+                for p in component_pads
+                if p.net_index != NO_NET
+            }
+            local_pins, local_tier = _resolve_local_net_pins(
                 proj.compiled_netlist,
                 sch_lookup_designator,
                 schdoc_name or "",
                 net_name,
                 routed_pin_keys=routed_pin_keys or None,
                 pcb_designator=designator,
+                pcb_net_by_pin=pcb_net_by_pin or None,
                 sheet_map=_instance_resolver(proj).sheet_map(),
             )
             if local_pins:
@@ -1136,6 +1227,7 @@ def _resolve_terminal(
                 ]
                 if matched:
                     resolved_via_local = True
+                    match_tier = local_tier
                     if warnings is not None:
                         pcb_net_names = sorted({
                             proj.nets[p.net_index].name
@@ -1164,6 +1256,10 @@ def _resolve_terminal(
             )
             if alias_matched:
                 matched = alias_matched
+                # Alias fallback already requires the pad's PCB net on the
+                # netlist row — equivalent to the PCB-confirmed local tier.
+                match_tier = _LOCAL_NET_TIER_PCB
+                resolved_via_local = True
                 if warnings is not None:
                     pcb_net_names = sorted({
                         proj.nets[p.net_index].name
@@ -1219,7 +1315,7 @@ def _resolve_terminal(
                 f"PCB and could not be resolved as a local schematic net."
                 f"{hint}{local_hint}"
             )
-            return None, errors
+            return None, errors, match_tier
 
         if not matched:
             # List the nets that this component's pads actually sit on, so the
@@ -1237,7 +1333,7 @@ def _resolve_terminal(
                 f"{net_name!r}. {designator}'s pads connect to: {pads_listing}"
                 f" (could be due a series part not setup with PDN_ROLE: SERIES)"
             )
-            return None, errors
+            return None, errors, match_tier
 
     pins = tuple(
         TerminalPin(
@@ -1246,12 +1342,13 @@ def _resolve_terminal(
             net_index=p.net_index,
             point=p.center,
             pad_polygon=_pad_polygon(p, _tl),
+            component_designator=designator,
         )
         for p in matched
     )
     return TerminalSpec(
         pins=pins, requested_net=net_name, resolved_via_local=resolved_via_local,
-    ), errors
+    ), errors, match_tier
 
 
 def _find_pcb_instances(proj: ExtractedProject, sch_designator: str) -> list[int]:
@@ -1704,7 +1801,7 @@ def _resolve_two_terminal(
     if p_net is None and p_pins is None or n_net is None and n_pins is None:
         return None
 
-    p_spec, p_err = _resolve_terminal(
+    p_spec, p_err, p_tier = _resolve_terminal(
         proj, pcb_index, p_net, p_pins, enabled_layers,
         f"{role_diag} P-terminal",
         warnings=result.warnings,
@@ -1712,7 +1809,7 @@ def _resolve_two_terminal(
         sch_lookup_designator=sch_lookup_designator,
         schdoc_name=schdoc_name,
     )
-    n_spec, n_err = _resolve_terminal(
+    n_spec, n_err, n_tier = _resolve_terminal(
         proj, pcb_index, n_net, n_pins, enabled_layers,
         f"{role_diag} N-terminal",
         warnings=result.warnings,
@@ -1724,7 +1821,111 @@ def _resolve_two_terminal(
     result.errors.extend(n_err)
     if p_spec is None or n_spec is None:
         return None
+
+    p_spec, n_spec = _arbitrate_overlapping_terminals(
+        p_spec, n_spec, p_tier, n_tier, role_diag, result,
+    )
+    if p_spec is None or n_spec is None:
+        return None
     return p_spec, n_spec
+
+
+def _terminal_pin_overlap_key(pin: TerminalPin) -> str:
+    """Identity for P/N overlap arbitration.
+
+    Pads on different components with the same pad designator (typical for
+    single-pin lab jacks) are distinct. Without ``component_designator``,
+    fall back to pad name only — same as the historical same-footprint case.
+    """
+    pad = pin.pad_designator.upper()
+    if pin.component_designator:
+        return f"{pin.component_designator.upper()}:{pad}"
+    return pad
+
+
+def _arbitrate_overlapping_terminals(
+    p_spec: TerminalSpec,
+    n_spec: TerminalSpec,
+    p_tier: int,
+    n_tier: int,
+    role_diag: str,
+    result: AnnotationResult,
+) -> tuple[TerminalSpec | None, TerminalSpec | None]:
+    """Drop shared pins from the weaker terminal; error when tiers are equal.
+
+    Ambiguous local-net aliases can make a SERIES P-terminal claim both pads
+    of a two-pin part (shorting the series element). Prefer the higher-quality
+    match tier; when tiers tie, require explicit ``PDN_*_PINS`` overrides.
+
+    Overlap is by component+pad when ``component_designator`` is set, so a
+    multi-connector SOURCE (P on J2 pad 1, N on J3 pad 1) is not treated as
+    a shorted pair.
+    """
+    p_keys = {_terminal_pin_overlap_key(pin) for pin in p_spec.pins}
+    n_keys = {_terminal_pin_overlap_key(pin) for pin in n_spec.pins}
+    overlap = p_keys & n_keys
+    if not overlap:
+        return p_spec, n_spec
+
+    overlap_text = ", ".join(sorted(overlap))
+
+    def _label(spec: TerminalSpec) -> str:
+        return spec.requested_net or "?"
+
+    if p_tier < n_tier:
+        kept = tuple(
+            pin for pin in n_spec.pins
+            if _terminal_pin_overlap_key(pin) not in overlap
+        )
+        result.warnings.append(
+            f"{role_diag}: P/N pin overlap on {overlap_text} "
+            f"(P={_label(p_spec)!r} tier={p_tier}, "
+            f"N={_label(n_spec)!r} tier={n_tier}); "
+            f"kept on P-terminal, dropped from N-terminal"
+        )
+        if not kept:
+            result.errors.append(
+                f"{role_diag}: N-terminal empty after removing overlapping "
+                f"pins {sorted(overlap)}; set PDN_P_PINS / PDN_N_PINS to "
+                f"disambiguate"
+            )
+            return p_spec, None
+        return p_spec, TerminalSpec(
+            pins=kept,
+            requested_net=n_spec.requested_net,
+            resolved_via_local=n_spec.resolved_via_local,
+        )
+
+    if n_tier < p_tier:
+        kept = tuple(
+            pin for pin in p_spec.pins
+            if _terminal_pin_overlap_key(pin) not in overlap
+        )
+        result.warnings.append(
+            f"{role_diag}: P/N pin overlap on {overlap_text} "
+            f"(P={_label(p_spec)!r} tier={p_tier}, "
+            f"N={_label(n_spec)!r} tier={n_tier}); "
+            f"kept on N-terminal, dropped from P-terminal"
+        )
+        if not kept:
+            result.errors.append(
+                f"{role_diag}: P-terminal empty after removing overlapping "
+                f"pins {sorted(overlap)}; set PDN_P_PINS / PDN_N_PINS to "
+                f"disambiguate"
+            )
+            return None, n_spec
+        return TerminalSpec(
+            pins=kept,
+            requested_net=p_spec.requested_net,
+            resolved_via_local=p_spec.resolved_via_local,
+        ), n_spec
+
+    result.errors.append(
+        f"{role_diag}: P and N terminals share pin(s) {sorted(overlap)} "
+        f"(P={_label(p_spec)!r}, N={_label(n_spec)!r}). "
+        f"Set PDN_P_PINS / PDN_N_PINS to disambiguate"
+    )
+    return None, None
 
 
 def _terminal_mode(params: dict[str, str], idx: int | None,
@@ -1800,7 +2001,7 @@ def _resolve_single_terminal(
     """
     net = _ci_get(params, net_key)
     pins = _split_pin_list(_ci_get(params, pins_key))
-    spec, errs = _resolve_terminal(
+    spec, errs, _tier = _resolve_terminal(
         proj, pcb_index, net, pins, enabled_layers,
         f"{role_diag} terminal", warnings=result.warnings, net_remap=net_remap,
         sch_lookup_designator=sch_lookup_designator,
