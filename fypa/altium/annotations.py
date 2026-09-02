@@ -3265,9 +3265,11 @@ def _collect_supply_voltages_by_net(
     for net, voltages in raw.items():
         if len(voltages) == 1:
             out[net] = next(iter(voltages))
+    declared: frozenset[str] = frozenset()
     if proj is not None:
+        declared = frozenset(out.keys())
         _propagate_series_supply_voltages(out, parameter_sources, proj)
-    return out
+    return out, declared
 
 
 def _canonical_supply_net_name(
@@ -3475,6 +3477,7 @@ def _resolve_regulator_gain(
     proj: ExtractedProject | None = None,
     net_remap: dict[int, int] | None = None,
     pcb_index: int | None = None,
+    declared_supply: frozenset[str] | None = None,
 ) -> tuple[float, str | None, float, bool] | None:
     """Return ``(gain, regulator_type, efficiency, adaptive_gain_eligible)``."""
     gain_key = _channel_key("GAIN", idx)
@@ -3542,21 +3545,39 @@ def _resolve_regulator_gain(
         )
         return None
 
+    lookup_map = (
+        {k: v for k, v in supply_map.items() if k in declared_supply}
+        if declared_supply is not None else supply_map
+    )
     lookup_net = (
         _canonical_supply_net_name(proj, in_p_net, net_remap, pcb_index=pcb_index)
         if proj is not None and in_p_net else in_p_net
     )
     vin, vin_failure, vin_hops = _lookup_inferred_vin(
-        lookup_net, supply_map, graph=series_graph,
+        lookup_net, lookup_map, graph=series_graph,
     )
     if (vin is None or vin <= 0) and proj is not None:
         for name in _supply_net_lookup_aliases(proj, in_p_net, pcb_index):
             cand, fail, hops = _lookup_inferred_vin(
-                name, supply_map, graph=series_graph,
+                name, lookup_map, graph=series_graph,
             )
             if cand is not None and cand > 0:
                 vin, vin_failure, vin_hops = cand, fail, hops
                 break
+    if vin is None or vin <= 0:
+        fb_vin, fb_fail, fb_hops = _lookup_inferred_vin(
+            lookup_net, supply_map, graph=None,
+        )
+        if fb_vin is not None and fb_vin > 0:
+            vin, vin_failure, vin_hops = fb_vin, fb_fail, fb_hops
+        elif (vin is None or vin <= 0) and proj is not None:
+            for name in _supply_net_lookup_aliases(proj, in_p_net, pcb_index):
+                fb_vin, fb_fail, fb_hops = _lookup_inferred_vin(
+                    name, supply_map, graph=None,
+                )
+                if fb_vin is not None and fb_vin > 0:
+                    vin, vin_failure, vin_hops = fb_vin, fb_fail, fb_hops
+                    break
     in_key = _channel_key("IN_P_NET", idx)
     if vin is None or vin <= 0:
         if vin_failure == "ambiguous":
@@ -3608,7 +3629,7 @@ def _resolve_regulator_gain(
 
 def _parse_regulator(comp, proj, enabled_layers, result,
                      net_remap=None, supply_map=None, only_indices=None,
-                     series_graph=None):
+                     series_graph=None, declared_supply=None):
     role_diag_base = f"REGULATOR on {comp.designator}"
     discovery = _discovery_pdn_params(comp, proj)
     if _has_single_net_params(discovery, only_indices):
@@ -3668,7 +3689,7 @@ def _parse_regulator(comp, proj, enabled_layers, result,
                 params, idx, v, in_p_net,
                 supply_map, value_diag, result,
                 series_graph=series_graph, proj=proj, net_remap=net_remap,
-                pcb_index=pcb_idx,
+                pcb_index=pcb_idx, declared_supply=declared_supply,
             ) if v is not None else None
             if v is None or resolved is None:
                 continue
@@ -4038,13 +4059,16 @@ def parse_annotations(proj: ExtractedProject,
         proj, parameter_sources, result,
     )
 
-    supply_map = _collect_supply_voltages_by_net(
+    supply_map, declared_supply = _collect_supply_voltages_by_net(
         parameter_sources, proj, net_remap=net_remap,
     )
     series_graph = _collect_series_upstream_map(
         parameter_sources, proj, net_remap=net_remap,
         skip_designators=skip_set,
     )
+    for net in series_graph.ambiguous:
+        if net not in declared_supply:
+            supply_map.pop(net, None)
 
     for comp in parameter_sources:
         if comp.designator.upper() in skip_set:
@@ -4096,18 +4120,29 @@ def parse_annotations(proj: ExtractedProject,
             # the role-appropriate "missing PDN_V / PDN_I / …" diagnostic.
             if not role:
                 continue
-            specs = _PARSER_BY_ROLE[role](comp, proj, enabled_layers, result,
-                                          net_remap=net_remap,
-                                          supply_map=supply_map,
-                                          series_graph=series_graph)
+            parser_kw = dict(
+                net_remap=net_remap,
+                supply_map=supply_map,
+                series_graph=series_graph,
+            )
+            if role == "REGULATOR":
+                parser_kw["declared_supply"] = declared_supply
+            specs = _PARSER_BY_ROLE[role](
+                comp, proj, enabled_layers, result, **parser_kw,
+            )
             result.directives.extend(specs)
         else:
             for chan_role, idxs in channel_roles.items():
-                specs = _PARSER_BY_ROLE[chan_role](
-                    comp, proj, enabled_layers, result,
+                parser_kw = dict(
                     net_remap=net_remap,
-                    supply_map=supply_map, only_indices=idxs,
+                    supply_map=supply_map,
+                    only_indices=idxs,
                     series_graph=series_graph,
+                )
+                if chan_role == "REGULATOR":
+                    parser_kw["declared_supply"] = declared_supply
+                specs = _PARSER_BY_ROLE[chan_role](
+                    comp, proj, enabled_layers, result, **parser_kw,
                 )
                 # Every parser returns a list — empty if the directive failed
                 # to resolve, one element per resolved channel otherwise.
