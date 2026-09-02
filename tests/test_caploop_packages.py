@@ -7,6 +7,8 @@ from fypa.caploop.packages import (
     DEFAULT_PACKAGE_MODELS,
     PackageLibrary,
     detect_package,
+    format_package_label,
+    normalize_footprint_convention,
 )
 
 
@@ -27,9 +29,55 @@ from fypa.caploop.packages import (
     ("CAPC1005X55N", "0402"),
     # Reverse geometry.
     ("C_0306_SL", "0306"),
+    # Bare metric codes with Altium-style suffix letters.
+    ("1005B", "0402"),
+    ("1608C", "0603"),
+    ("1005R", "0402"),
+    ("1608C-HD", "0603"),
 ])
 def test_detect_package(footprint, expected):
     assert detect_package(footprint) == expected
+
+
+@pytest.mark.parametrize("footprint,expected", [
+    ("0603", "0201"),
+    ("0402", "01005"),
+])
+def test_detect_package_metric_convention(footprint, expected):
+    assert detect_package(footprint, convention="metric") == expected
+
+
+@pytest.mark.parametrize("footprint,expected", [
+    ("C_0603_SL", "0603"),
+    ("C_0402_SL", "0402"),
+])
+def test_explicit_imperial_names_ignore_metric_convention(footprint, expected):
+    assert detect_package(footprint, convention="metric") == expected
+
+
+def test_unambiguous_metric_code_wins_over_bare_ambiguous_imperial():
+    """Bare 0603 without a land-pattern marker loses to 1005."""
+    assert detect_package("0603_1005") == "0402"
+
+
+@pytest.mark.parametrize("footprint,expected", [
+    ("C_0603_1005", "0603"),
+    ("C_0402_1005", "0402"),
+])
+def test_explicit_imperial_marker_wins_over_metric_code(footprint, expected):
+    assert detect_package(footprint) == expected
+
+
+def test_format_package_label():
+    assert format_package_label("0402", "imperial") == "0402"
+    assert format_package_label("0402", "metric") == "1005"
+    assert format_package_label("0402", "auto") == "0402"
+    assert format_package_label(None, "metric") == "—"
+
+
+def test_normalize_footprint_convention():
+    assert normalize_footprint_convention("metric") == "metric"
+    assert normalize_footprint_convention("bogus") == "auto"
 
 
 def test_metric_and_imperial_0603_are_disambiguated():

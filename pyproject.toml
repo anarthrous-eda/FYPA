@@ -2,9 +2,8 @@
 #
 # FYPA is run as a set of top-level scripts (FYPA.py + sibling modules) rather
 # than an installed package. `[project]` exists so uv can resolve the runtime
-# dependency tree (including the altium_monkey submodule, see [tool.uv.sources]
-# below); `[tool.uv] package = false` tells uv NOT to try to build/install
-# FYPA itself as a wheel.
+# dependency tree (including altium-monkey from PyPI); `[tool.uv] package = false`
+# tells uv NOT to try to build/install FYPA itself as a wheel.
 #
 # Day-to-day commands:
 #   uv sync                  # runtime + dev deps (default)
@@ -20,8 +19,8 @@ description = "FEM Y-parameter Power Analyser — PDN analysis for Altium and Ge
 # altium_monkey pins `>=3.12,<3.13`; FYPA tracks the same window.
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    # --- Altium project parser (fetched from upstream git; see [tool.uv.sources]) ---
-    "altium-monkey",
+    # --- Altium project parser (PyPI release; bump version + uv lock) ---
+    "altium-monkey==2026.8.1",
 
     # --- Qt + GUI ---
     "PySide6==6.11.1",
@@ -52,7 +51,7 @@ dependencies = [
     "matplotlib==3.10.9",
 
     # --- ParaView VTU export (File > Export > ParaView, and `FYPA paraview` CLI) ---
-    "lxml==5.3.0",
+    "lxml==6.0.2",
 
     # --- Gerber + Excellon import (File > Import Gerber Files…) ---
     # Pure-Python RS-274X / NC-drill parser. Pulls flask / quart / h2 as
@@ -86,11 +85,6 @@ build = [
 # (FYPA.py + sibling modules) run directly out of the working copy. Skip the
 # project build step; uv still resolves and installs all dependencies.
 package = false
-
-[tool.uv.sources]
-# altium_monkey is fetched directly from the upstream repo at a pinned tag.
-# To bump: edit the tag, then `uv lock --upgrade-package altium-monkey`.
-altium-monkey = { git = "https://github.com/wavenumber-eng/altium_monkey", tag = "v2026.5.20" }
 
 [tool.pytest.ini_options]
 # Tests import `pdnsolver` (and, for regression tests, shell out to FYPA.py),

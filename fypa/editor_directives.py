@@ -29,6 +29,9 @@ log = logging.getLogger(__name__)
 _EDITOR_RETURN_GROUP_BASE = 9001
 
 _EDITOR_SCHDOC = "(editor)"
+# Stands in for a pad designator when a terminal couples at a free marker's
+# anchor instead of a real pad.
+_ANCHOR_PAD = "(editor)"
 
 
 def apply_editor_directives(loaded, editor_directives) -> list[str]:
@@ -168,7 +171,7 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
                 through = getattr(p, "is_through_hole", False)
                 lid = top_layer if through else p.layer_id
                 pins.append(TerminalPin(
-                    pad_designator=p.designator or "(editor)",
+                    pad_designator=p.designator or _ANCHOR_PAD,
                     layer_id=lid,
                     net_index=nidx,
                     point=p.center,
@@ -179,7 +182,7 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
             # at the supplied fallback point on the net's copper.
             fx, fy = fallback_xy
             pins.append(TerminalPin(
-                pad_designator="(editor)",
+                pad_designator=_ANCHOR_PAD,
                 layer_id=fallback_layer_id or top_layer,
                 net_index=nidx,
                 point=Pt2D(float(fx), float(fy)),
@@ -266,6 +269,32 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
                 warnings.append(
                     f"{label}: N net {ed.n_net!r} not found on the board; "
                     "skipped."
+                )
+                continue
+            # The same short the annotation path arbitrates, which this path
+            # never called: a lumped element with both terminals on one node.
+            # Two shapes reach it — both terminals on one real pad (overlapping
+            # pin filters), or both on one net (a free marker whose P and N
+            # nets are the same). Anchor pins carry the ``_ANCHOR_PAD``
+            # placeholder rather than a pad name, so comparing designators
+            # alone would flag every legitimate free marker.
+            shared_pads = sorted(
+                {pin.pad_designator for pin in p_term.pins
+                 if pin.pad_designator != _ANCHOR_PAD}
+                & {pin.pad_designator for pin in n_term.pins
+                   if pin.pad_designator != _ANCHOR_PAD}
+            )
+            same_net = (
+                {pin.net_index for pin in p_term.pins}
+                == {pin.net_index for pin in n_term.pins}
+            )
+            if shared_pads or same_net:
+                where = (f"pad(s) {', '.join(shared_pads)}" if shared_pads
+                         else f"net {ed.p_net!r}")
+                warnings.append(
+                    f"{label}: P ({ed.p_net!r}) and N ({ed.n_net!r}) both "
+                    f"resolve to {where}, which would short the element; "
+                    f"give them different nets or pin filters. Skipped."
                 )
                 continue
         # Single-net directives get their rail's own return group; two-net
