@@ -249,8 +249,8 @@ def _load_fypa_text_pixmap(height: int) -> QPixmap | None:
 
 
 from PySide6.QtCore import (
-    QByteArray, QEvent, QLocale, QObject, QPointF, QRectF, QSize, Qt, QThread,
-    QTimer, QUrl, Signal,
+    QByteArray, QEvent, QLocale, QMetaMethod, QObject, QPointF, QRectF, QSize,
+    Qt, QThread, QTimer, QUrl, Signal,
 )
 from PySide6.QtGui import (
     QAction,
@@ -1329,9 +1329,10 @@ def _eye_icon_color(theme: dict, *, open_: bool, partial: bool) -> QColor:
 def _make_eye_pixmap(open_: bool, *, partial: bool = False, size: int = 16) -> QPixmap:
     """Draw an Altium-style eye icon.
 
-    ``open_`` = True  → full-contrast open eye (all children visible).
-    ``partial`` = True → same open-eye shape, muted (some children visible).
-    ``open_`` = False → muted eye with a diagonal slash (all hidden).
+    ``open_`` drives the silhouette: an open eye, or a slashed one when this
+    item's own copper is hidden. ``partial`` only mutes the colour, so all
+    four combinations stay distinguishable — in particular hidden-with-
+    visible-descendants keeps its slash instead of reading as visible.
     """
     px = QPixmap(size, size)
     px.fill(Qt.transparent)
@@ -1361,7 +1362,7 @@ def _make_eye_pixmap(open_: bool, *, partial: bool = False, size: int = 16) -> Q
     r = size * 0.17
     p.drawEllipse(QPointF(size / 2.0, cy), r, r)
 
-    if not open_ and not partial:
+    if not open_:
         slash = QPen(color)
         slash.setWidthF(max(1.2, size * 0.11))
         slash.setCapStyle(Qt.RoundCap)
@@ -1493,16 +1494,23 @@ class EyeButton(QToolButton):
 
     toggled_visible = Signal(bool)
     shift_clicked = Signal()
+    # Ctrl+Click — the rail-tree subnet eyes use this for SERIES-subtree
+    # fan-out. Opt-in like Shift: an eye whose owner never connects it keeps
+    # the plain toggle rather than turning Ctrl+Click into a dead click.
+    ctrl_clicked = Signal()
 
     _SHIFT_TIP = (
         "\nShift+Click: show only this item; again to invert (hide this, show others)"
     )
+    # Appended to a badge eye's own tip so the muted icon has an explanation.
+    _MIXED_TIP = "\nThis SERIES subtree is partly hidden"
 
     def __init__(self, parent=None, *, visible: bool = True,
                  icon_size: int = 16,
                  tip_show: str = "Show layer",
                  tip_hide: str = "Hide layer",
-                 shift_isolatable: bool = False) -> None:
+                 shift_isolatable: bool = False,
+                 partial_is_badge: bool = False) -> None:
         super().__init__(parent)
         self._visible = bool(visible)
         self._partial = False
@@ -1514,6 +1522,16 @@ class EyeButton(QToolButton):
         # dead click and the advertised tip would be a lie.
         self._shift_isolatable = bool(shift_isolatable)
         shift_tip = self._SHIFT_TIP if self._shift_isolatable else ""
+        # Two kinds of eye share this class:
+        #
+        # * Aggregate ("All layers", a rail row) — owns no copper of its own,
+        #   so partial means "some children on" and a click means "show them
+        #   all".
+        # * Badge (a rail-tree subnet node) — owns this net's copper. Partial
+        #   is information *about its descendants*; it must never veto the
+        #   plain toggle, or the node's own copper cannot be hidden while any
+        #   descendant differs. Subtree fan-out is Ctrl+Click's job.
+        self._partial_is_badge = bool(partial_is_badge)
         self._tip_partial = (
             "Some subnet nets visible — click to show all" + shift_tip
         )
@@ -1541,7 +1559,10 @@ class EyeButton(QToolButton):
         self, on: bool, *, partial: bool = False, emit: bool = True,
     ) -> None:
         on = bool(on)
-        partial = bool(partial) and on
+        # Partial may sit on an off badge eye (this net hidden, descendants
+        # shown). An aggregate eye has no such state — its owner only ever
+        # passes partial together with on.
+        partial = bool(partial)
         if on == self._visible and partial == self._partial:
             return
         self._visible = on
@@ -1563,16 +1584,22 @@ class EyeButton(QToolButton):
             self._setting_own_tip = False
 
     def _apply_icon(self) -> None:
+        # The slash tracks this eye's *own* state; partial only mutes the
+        # colour. An off badge eye whose descendants are on must not borrow
+        # the open silhouette, or hidden copper looks exactly like drawn
+        # copper.
         self.setIcon(QIcon(_eye_pixmap(
             self._visible, self._icon_size, partial=self._partial,
         )))
         if self._custom_tip:
             return
-        if self._partial:
+        if self._partial and not self._partial_is_badge:
             self._set_own_tooltip(self._tip_partial)
-        else:
-            base = self._tip_hide if self._visible else self._tip_show
-            self._set_own_tooltip(base + self._shift_tip)
+            return
+        base = self._tip_hide if self._visible else self._tip_show
+        if self._partial:
+            base += self._MIXED_TIP
+        self._set_own_tooltip(base + self._shift_tip)
 
     def mousePressEvent(self, event) -> None:
         # Capture modifiers at press time — clicked fires on release and
@@ -1584,13 +1611,16 @@ class EyeButton(QToolButton):
         # ``clicked`` is emitted from inside the base implementation, so
         # ``_on_clicked`` still sees the press modifiers. Clearing afterwards
         # stops a press that never produced a click (drag off the button, a
-        # cancelled press) from leaking Shift into the next click — including
-        # programmatic ``click()`` and accessibility activation, which never
-        # go through ``mousePressEvent`` at all.
+        # cancelled press) from leaking Shift/Ctrl into the next click —
+        # including programmatic ``click()`` and accessibility activation,
+        # which never go through ``mousePressEvent`` at all.
         try:
             super().mouseReleaseEvent(event)
         finally:
             self._press_mods = Qt.NoModifier
+
+    def _signal_connected(self, signal) -> bool:
+        return self.isSignalConnected(QMetaMethod.fromSignal(signal))
 
     def _on_clicked(self) -> None:
         mods = self._press_mods
@@ -1598,10 +1628,19 @@ class EyeButton(QToolButton):
         if self._shift_isolatable and mods & Qt.ShiftModifier:
             self.shift_clicked.emit()
             return
-        if self._partial:
+        if (mods & Qt.ControlModifier) and self._signal_connected(
+            self.ctrl_clicked,
+        ):
+            self.ctrl_clicked.emit()
+            return
+        if self._partial and not self._partial_is_badge:
+            # Aggregate eye: partial → show every child.
             self.setVisibleState(True, partial=False)
-        else:
-            self.setVisibleState(not self._visible, partial=False)
+            return
+        # Badge eye (and any plain eye): toggle this eye's own copper. The
+        # partial badge is recomputed by the owner from the new subtree
+        # state, so it is carried across rather than cleared here.
+        self.setVisibleState(not self._visible, partial=self._partial)
 
 
 # --- Wire-mesh / solid fill toggle icons -----------------------------------
@@ -2586,18 +2625,25 @@ def _overlay_hole_ring(rec: dict) -> np.ndarray:
 
 
 class SidebarToggleButton(QToolButton):
-    """Slim vertical splitter handle that collapses / expands the heatmap
-    side panel. Paints a crisp anti-aliased triangle pointing in the
-    direction the panel will travel on the next click, instead of relying
-    on Unicode arrow glyphs (which render fuzzy at this size on Windows).
+    """Slim vertical splitter between the heatmap side panel and the plot.
+
+    * **Click** — collapse / expand the side panel (hotkey ``B``).
+    * **Drag horizontally** — resize the side panel width.
     """
+
+    # Delta (px) from the press position while dragging; positive = wider panel.
+    resizedBy = Signal(int)
+
+    _DRAG_THRESHOLD_PX = 4
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._collapsed = False
+        self._press_global_x: float | None = None
+        self._dragging = False
         self.setAutoRaise(True)
         self.setFocusPolicy(Qt.NoFocus)
-        self.setCursor(Qt.PointingHandCursor)
+        self.setCursor(Qt.SizeHorCursor)
         self.setFixedWidth(14)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
 
@@ -2606,10 +2652,53 @@ class SidebarToggleButton(QToolButton):
         if collapsed == self._collapsed:
             return
         self._collapsed = collapsed
+        self.setCursor(
+            Qt.PointingHandCursor if collapsed else Qt.SizeHorCursor,
+        )
         self.update()
 
     def isCollapsed(self) -> bool:
         return self._collapsed
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.LeftButton:
+            self._press_global_x = float(event.globalPosition().x())
+            self._dragging = False
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if (
+            self._press_global_x is not None
+            and event.buttons() & Qt.LeftButton
+            and not self._collapsed
+        ):
+            dx = int(round(float(event.globalPosition().x()) - self._press_global_x))
+            if not self._dragging and abs(dx) >= self._DRAG_THRESHOLD_PX:
+                self._dragging = True
+            if self._dragging:
+                self.resizedBy.emit(dx)
+                event.accept()
+                return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        was_drag = event.button() == Qt.LeftButton and self._dragging
+        self._press_global_x = None
+        self._dragging = False
+        if was_drag:
+            # Swallow the click (a drag must not also toggle the panel) but
+            # still let QAbstractButton finish its press: returning early
+            # here left its internal ``down`` flag latched and ``released``
+            # never emitted.
+            self.setDown(False)
+            self.blockSignals(True)
+            try:
+                super().mouseReleaseEvent(event)
+            finally:
+                self.blockSignals(False)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def paintEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         t = _T()
@@ -9035,6 +9124,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._rail_names, self._rail_to_members = self._compute_rail_groups(
             metadata,
         )
+        from fypa.rail_groups import build_rail_trees
+        self._rail_to_trees = build_rail_trees(
+            metadata, self._rail_to_members,
+        )
 
         _stackup_pos = {
             row["name"]: i
@@ -9158,6 +9251,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         saved_rails: dict[str, bool] = {}
         saved_subnets: dict[tuple[str, str], bool] = {}
         saved_expanded: dict[str, bool] = {}
+        saved_subnet_expanded: dict[tuple[str, str], bool] = {}
         if preserve_visibility:
             saved_layers = {
                 p: e.isVisibleState() for p, e in self._layer_eye_buttons
@@ -9172,6 +9266,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 for net, eye in nets.items():
                     saved_subnets[(rail, net)] = eye.isVisibleState()
             saved_expanded = dict(getattr(self, "_rail_expanded", {}))
+            saved_subnet_expanded = dict(
+                getattr(self, "_subnet_node_expanded", {}),
+            )
 
         while self.layer_list.count() > 1:
             self.layer_list.takeItem(self.layer_list.count() - 1)
@@ -9202,6 +9299,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             saved_rails=saved_rails,
             saved_subnets=saved_subnets,
             saved_expanded=saved_expanded,
+            saved_subnet_expanded=saved_subnet_expanded,
         )
 
         has_rails = bool(self._rails)
@@ -9292,6 +9390,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                     self._solved_since_save = False
                     self._display_dirty = False
                     self._init_overlay_state()
+                    self._load_sidebar_width_from_project()
                     title = (
                         Path(project_path).stem if project_path is not None
                         else getattr(new_solution.problem, "project_name", None)
@@ -9445,6 +9544,37 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         """
         from fypa.rail_groups import compute_rail_groups
         return compute_rail_groups(metadata)
+
+    def _rail_tree_metadata(self) -> dict:
+        """Metadata for :func:`build_rail_trees` on pending / editor rails."""
+        from fypa.rail_groups import merge_rail_tree_metadata
+        meta = self.metadata if isinstance(self.metadata, dict) else {}
+        editor_series: list[tuple[str, str]] = []
+        project = getattr(self, "_project", None)
+        if project is not None:
+            for ed in getattr(project, "editor_directives", []) or []:
+                if (
+                    getattr(ed, "role", None) == "SERIES"
+                    and getattr(ed, "p_net", None)
+                    and getattr(ed, "n_net", None)
+                ):
+                    editor_series.append((ed.p_net, ed.n_net))
+        return merge_rail_tree_metadata(meta, editor_series)
+
+    def _subnet_rows_for_rail(
+        self,
+        rail: str,
+        members: list[str],
+        trees: dict | None,
+        *,
+        node_expanded: dict | None = None,
+    ) -> list[tuple[str, int, bool]]:
+        """Visible subnet rows as ``(net, depth, has_children)``."""
+        from fypa.rail_groups import visible_rail_tree_rows
+        tree = (trees or {}).get(rail)
+        return visible_rail_tree_rows(
+            rail, members, tree, node_expanded=node_expanded,
+        )
 
     def showEvent(self, event) -> None:
         """Apply the deferred ``showMaximized`` once Qt has actually shown the
@@ -9837,19 +9967,31 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
 
         side.addStretch(1)
 
-        # Wrap side layout in a fixed-width container, then put that inside a
-        # QScrollArea so the panel scrolls vertically when its contents exceed
-        # the window height (e.g. on boards with many copper layers).
+        # Wrap side layout in a width-adjustable container, then put that
+        # inside a QScrollArea so the panel scrolls vertically when its
+        # contents exceed the window height (e.g. many copper layers).
+        # Width is user-draggable via the SidebarToggleButton splitter.
+        self._SIDEBAR_DEFAULT_W = 260
+        self._SIDEBAR_MIN_W = 180
+        self._SIDEBAR_MAX_W = 520
+        self._SIDEBAR_SCROLLBAR_W = 18
+        self._sidebar_content_w = self._SIDEBAR_DEFAULT_W
+        # What the user asked for, before clamping to the current window —
+        # see _apply_sidebar_content_width.
+        self._sidebar_requested_w = self._SIDEBAR_DEFAULT_W
+        self._sidebar_drag_start_w = self._sidebar_content_w
+
         side_widget = QWidget()
         side_widget.setLayout(side)
-        side_widget.setFixedWidth(260)
+        side_widget.setFixedWidth(self._sidebar_content_w)
+        self._sidebar_widget = side_widget
 
         side_scroll = QScrollArea()
         side_scroll.setWidget(side_widget)
         # Resizable=True is essential: with =False, the inner widget uses its
         # width-agnostic sizeHint() for height, which under-estimates the
         # height of word-wrapped labels (e.g. summary_label) at the actual
-        # 260px width, and the controls below it overlap. =True makes the
+        # panel width, and the controls below it overlap. =True makes the
         # layout reflow at the real width.
         side_scroll.setWidgetResizable(True)
         side_scroll.setFrameShape(QFrame.NoFrame)
@@ -9858,26 +10000,26 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         # constant regardless of whether scrolling is needed; without this,
         # adding/removing the scrollbar would shift content widths around.
         side_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
-        # Reserve room for the vertical scrollbar so its appearance doesn't
-        # crop the 260px-wide content. 18px covers the default Fusion/Win
-        # scrollbar extent with a hair of margin.
-        side_scroll.setFixedWidth(260 + 18)
+        side_scroll.setFixedWidth(
+            self._sidebar_content_w + self._SIDEBAR_SCROLLBAR_W,
+        )
         side_scroll.setStyleSheet(
             f"QScrollArea {{ background-color: {_T()['bg']}; }}"
         )
         outer.addWidget(side_scroll)
         self._sidebar_scroll = side_scroll
 
-        # Slim vertical splitter handle that toggles the sidebar's visibility
-        # so the user can give the viewport extra real estate. Custom-painted
-        # triangle stays crisp at 14px; Unicode arrow glyphs were fuzzy.
+        # Slim vertical splitter: click toggles collapse; drag resizes width.
         # Hotkey "B" mirrors the click.
         self._sidebar_toggle_btn = SidebarToggleButton()
         self._sidebar_toggle_btn.setToolTip(
-            "Collapse / expand the side panel (B)"
+            "Drag to resize the side panel · Click to collapse / expand (B)"
         )
         self._sidebar_toggle_btn.clicked.connect(self._toggle_sidebar)
+        self._sidebar_toggle_btn.resizedBy.connect(self._on_sidebar_resized_by)
+        self._sidebar_toggle_btn.pressed.connect(self._on_sidebar_resize_press)
         outer.addWidget(self._sidebar_toggle_btn)
+        self._load_sidebar_width_from_project()
 
         # Plot area — custom QOpenGLWidget rendering the FEM mesh directly
         # via shaders (per-vertex colour interpolation, MVP transform on
@@ -10224,6 +10366,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
 
     # --- Rails list (expandable subnet rows) ---------------------------------
 
+    # Indent per tree depth (px). Kept modest so deep SERIES chains stay
+    # readable in the default sidebar width.
+    _RAIL_SUBNET_INDENT_PX = 10
+
     def _init_rail_list_state(self) -> None:
         """Allocate per-rail / per-subnet visibility state containers."""
         self._rail_eye_buttons: list[tuple[str, EyeButton]] = []
@@ -10235,14 +10381,25 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._subnet_eye_holder.setFixedSize(0, 0)
         self._subnet_eye_holder.hide()
         self._rail_expand_buttons: dict[str, QToolButton] = {}
+        self._subnet_expand_buttons: dict[tuple[str, str], QToolButton] = {}
         self._rail_subnet_items: dict[str, list[QListWidgetItem]] = {}
         self._rail_expanded: dict[str, bool] = {}
+        # (rail, net) → whether that tree node's children are shown.
+        self._subnet_node_expanded: dict[tuple[str, str], bool] = getattr(
+            self, "_subnet_node_expanded", {},
+        )
         self._rail_list_items: dict[str, QListWidgetItem] = {}
+        self._rail_to_trees: dict = getattr(self, "_rail_to_trees", {})
         self._pending_rail_items: list = []
         self._pending_rail_list_items: dict[str, QListWidgetItem] = {}
         self._pending_rail_expand_buttons: dict[str, QToolButton] = {}
+        self._pending_subnet_expand_buttons: dict[tuple[str, str], QToolButton] = {}
         self._pending_rail_subnet_items: dict[str, list[QListWidgetItem]] = {}
         self._pending_rail_expanded: dict[str, bool] = {}
+        self._pending_subnet_node_expanded: dict[tuple[str, str], bool] = getattr(
+            self, "_pending_subnet_node_expanded", {},
+        )
+        self._pending_rail_trees: dict = {}
 
     def _ground_rail_names(self) -> set[str]:
         return {"0v", "gnd", "ground", "vss"}
@@ -10251,6 +10408,25 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         if self._no_pdn_visibility():
             return False
         return rail.lower() not in self._ground_rail_names()
+
+    def _make_expand_tool_button(
+        self,
+        *,
+        expanded: bool,
+        tip: str,
+        on_toggled,
+    ) -> QToolButton:
+        btn = QToolButton()
+        btn.setCheckable(True)
+        btn.setChecked(expanded)
+        btn.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        btn.setFixedSize(14, 14)
+        btn.setAutoRaise(True)
+        btn.setFocusPolicy(Qt.NoFocus)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setToolTip(tip)
+        btn.toggled.connect(on_toggled)
+        return btn
 
     def _build_rail_row_widget(
         self,
@@ -10301,6 +10477,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         for btn in getattr(self, "_rail_expand_buttons", {}).values():
             if _qt_widget_alive(btn):
                 btn.blockSignals(True)
+        for btn in getattr(self, "_subnet_expand_buttons", {}).values():
+            if _qt_widget_alive(btn):
+                btn.blockSignals(True)
         for nets in getattr(self, "_subnet_eye_buttons", {}).values():
             for eye in nets.values():
                 if _qt_widget_alive(eye):
@@ -10313,6 +10492,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         saved_rails: dict[str, bool] | None = None,
         saved_subnets: dict[tuple[str, str], bool] | None = None,
         saved_expanded: dict[str, bool] | None = None,
+        saved_subnet_expanded: dict[tuple[str, str], bool] | None = None,
     ) -> None:
         """Rebuild solved-rail rows (not including the 'All Rails' header)."""
         self._silence_rail_list_widgets()
@@ -10323,6 +10503,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._rail_eye_buttons.clear()
         self._subnet_eye_buttons.clear()
         self._rail_expand_buttons.clear()
+        self._subnet_expand_buttons.clear()
         self._rail_subnet_items.clear()
         self._rail_list_items.clear()
 
@@ -10336,6 +10517,11 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             }
         else:
             self._rail_expanded = {}
+        if saved_subnet_expanded is not None:
+            self._subnet_node_expanded = {
+                k: bool(v) for k, v in saved_subnet_expanded.items()
+                if k[0] in self._rails
+            }
 
         for rail in self._rails:
             members = self._rail_to_members.get(rail, [rail])
@@ -10352,19 +10538,12 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             expand_btn = None
             expanded = bool(self._rail_expanded.get(rail, False))
             if has_subnets:
-                expand_btn = QToolButton()
-                expand_btn.setCheckable(True)
-                expand_btn.setChecked(expanded)
-                expand_btn.setArrowType(
-                    Qt.DownArrow if expanded else Qt.RightArrow,
-                )
-                expand_btn.setFixedSize(14, 14)
-                expand_btn.setAutoRaise(True)
-                expand_btn.setFocusPolicy(Qt.NoFocus)
-                expand_btn.setCursor(Qt.PointingHandCursor)
-                expand_btn.setToolTip("Show/hide subnet nets")
-                expand_btn.toggled.connect(
-                    lambda exp, r=rail: self._on_rail_expand_toggled(r, exp),
+                expand_btn = self._make_expand_tool_button(
+                    expanded=expanded,
+                    tip="Show/hide subnet nets",
+                    on_toggled=lambda exp, r=rail: self._on_rail_expand_toggled(
+                        r, exp,
+                    ),
                 )
                 self._rail_expand_buttons[rail] = expand_btn
                 self._rail_expanded[rail] = expanded
@@ -10389,9 +10568,16 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                     subnet_eye = EyeButton(
                         parent=self._subnet_eye_holder,
                         visible=False,
-                        tip_show=f"Show {net} copper",
-                        tip_hide=f"Hide {net} copper",
+                        tip_show=(
+                            f"Show {net} copper\n"
+                            f"Ctrl+Click: include SERIES subtree"
+                        ),
+                        tip_hide=(
+                            f"Hide {net} copper\n"
+                            f"Ctrl+Click: include SERIES subtree"
+                        ),
                         shift_isolatable=True,
+                        partial_is_badge=True,
                     )
                     subnet_eye.toggled_visible.connect(
                         lambda on, r=rail, n=net: self._on_subnet_eye_toggled(
@@ -10400,6 +10586,11 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                     )
                     subnet_eye.shift_clicked.connect(
                         lambda r=rail, n=net: self._on_subnet_eye_shift_clicked(
+                            r, n,
+                        ),
+                    )
+                    subnet_eye.ctrl_clicked.connect(
+                        lambda r=rail, n=net: self._on_subnet_eye_ctrl_clicked(
                             r, n,
                         ),
                     )
@@ -10413,6 +10604,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                         vis = self._default_rail_visible(rail)
                     subnet_eye.setVisibleState(vis, emit=False)
                 self._sync_rail_eye_from_subnets(rail)
+                self._sync_rail_tree_node_partials(rail)
             else:
                 if preserve_visibility and rail in saved_rails:
                     vis = saved_rails[rail]
@@ -10427,32 +10619,87 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._update_rail_list_height()
 
     def _insert_subnet_rows(
-        self, rail: str, *, after_item: QListWidgetItem,
+        self, rail: str, *, after_item: QListWidgetItem, pending: bool = False,
     ) -> None:
-        """Insert indented subnet rows directly below a parent rail row."""
-        if self._rail_subnet_items.get(rail):
+        """Insert indented subnet rows for the currently expanded tree nodes.
+
+        Serves both rail panes. The solved pane shows the rail's live per-net
+        eyes; the pending pane shows a throwaway disabled eye on a muted
+        italic row. Everything else — the tree walk, the indent, the per-node
+        expand buttons, the item bookkeeping — is identical, and the two
+        copies this replaces had already drifted apart.
+        """
+        items_by_rail = (
+            self._pending_rail_subnet_items if pending
+            else self._rail_subnet_items
+        )
+        if items_by_rail.get(rail):
             return
-        members = self._rail_to_members.get(rail, [rail])
-        subnets = self._subnet_eye_buttons.get(rail, {})
+        node_expanded = (
+            self._pending_subnet_node_expanded if pending
+            else self._subnet_node_expanded
+        )
+        expand_buttons = (
+            self._pending_subnet_expand_buttons if pending
+            else self._subnet_expand_buttons
+        )
+        members = (
+            self._pending_rails.get(rail, [rail]) if pending
+            else self._rail_to_members.get(rail, [rail])
+        )
+        trees = getattr(
+            self, "_pending_rail_trees" if pending else "_rail_to_trees", {},
+        )
+        subnets = {} if pending else self._subnet_eye_buttons.get(rail, {})
+        muted_qss = (
+            f"color: {_T()['fg_muted']}; font-style: italic;" if pending
+            else ""
+        )
         items: list[QListWidgetItem] = []
         row_idx = self.rail_list.row(after_item) + 1
-        for net in members:
-            eye = subnets.get(net)
-            if eye is None or not _qt_widget_alive(eye):
-                continue
+        indent_px = self._RAIL_SUBNET_INDENT_PX
+        for net, depth, has_children in self._subnet_rows_for_rail(
+            rail, members, trees, node_expanded=node_expanded,
+        ):
+            if pending:
+                eye = EyeButton(visible=False)
+                eye.setEnabled(False)
+            else:
+                eye = subnets.get(net)
+                if eye is None or not _qt_widget_alive(eye):
+                    continue
             is_primary = net == rail
+            expand_btn = None
+            if has_children:
+                key = (rail, net)
+                node_exp = node_expanded.get(key, is_primary)
+                node_expanded[key] = node_exp
+                expand_btn = self._make_expand_tool_button(
+                    expanded=node_exp,
+                    tip=f"Show/hide children of {net}",
+                    on_toggled=lambda exp, r=rail, n=net, p=pending: (
+                        self._on_subnet_node_expand_toggled(r, n, exp, pending=p)
+                    ),
+                )
+                expand_buttons[key] = expand_btn
             subnet_row = self._build_rail_row_widget(
                 eye,
+                expand_btn=expand_btn,
                 label_text=net,
                 bold=is_primary,
-                indent=18,
+                indent=indent_px * depth,
             )
-            if is_primary:
+            if muted_qss:
+                subnet_row.setStyleSheet(muted_qss)
+            if pending:
+                tip = (
+                    f"Unsolved subnet of rail {rail} — press Resolve to "
+                    f"compute it."
+                )
+            elif is_primary:
                 tip = f"Primary net of rail {rail}"
             else:
-                tip = (
-                    f"Subnet of rail {rail} — joined via a SERIES bridge"
-                )
+                tip = f"Subnet of rail {rail} — joined via a SERIES bridge"
             subnet_row.setToolTip(tip)
             item = QListWidgetItem()
             item.setFlags(Qt.ItemIsEnabled)
@@ -10461,11 +10708,27 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             self.rail_list.setItemWidget(item, subnet_row)
             items.append(item)
             row_idx += 1
-        self._rail_subnet_items[rail] = items
+        items_by_rail[rail] = items
 
-    def _remove_subnet_rows(self, rail: str) -> None:
-        self._detach_subnet_eyes(rail)
-        for item in self._rail_subnet_items.pop(rail, []):
+    def _remove_subnet_rows(self, rail: str, *, pending: bool = False) -> None:
+        if not pending:
+            # Solved rows borrow the rail's persistent per-net eyes and must
+            # hand them back before the row widgets go; pending rows own
+            # throwaway ones that die with the row.
+            self._detach_subnet_eyes(rail)
+        expand_buttons = (
+            self._pending_subnet_expand_buttons if pending
+            else self._subnet_expand_buttons
+        )
+        items_by_rail = (
+            self._pending_rail_subnet_items if pending
+            else self._rail_subnet_items
+        )
+        for key in [k for k in list(expand_buttons) if k[0] == rail]:
+            btn = expand_buttons.pop(key)
+            if _qt_widget_alive(btn):
+                btn.blockSignals(True)
+        for item in items_by_rail.pop(rail, []):
             row = self.rail_list.row(item)
             if row >= 0:
                 self.rail_list.takeItem(row)
@@ -10479,7 +10742,59 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
     def _fan_out_rail_eye_to_subnets(self, rail: str, on: bool) -> None:
         for eye in self._subnet_eye_buttons.get(rail, {}).values():
             if _qt_widget_alive(eye):
-                eye.setVisibleState(on, emit=False)
+                eye.setVisibleState(on, partial=False, emit=False)
+
+    def _subnet_tree_for_rail(self, rail: str):
+        trees = getattr(self, "_rail_to_trees", {}) or {}
+        return trees.get(rail)
+
+    def _fan_out_subnet_subtree(
+        self, rail: str, net: str, on: bool,
+    ) -> None:
+        """Set visibility for ``net`` and all SERIES descendants."""
+        from fypa.rail_groups import subtree_net_names
+
+        tree = self._subnet_tree_for_rail(rail)
+        names = subtree_net_names(tree, net)
+        if not names:
+            names = [net]
+        subnets = self._subnet_eye_buttons.get(rail, {})
+        for name in names:
+            eye = subnets.get(name)
+            if eye is not None and _qt_widget_alive(eye):
+                eye.setVisibleState(on, partial=False, emit=False)
+
+    def _sync_rail_tree_node_partials(self, rail: str) -> None:
+        """Update node partial badges from subtree visibility.
+
+        Does **not** change each node's own on/off (that is copper for that
+        net). The badge means "my state does not describe this whole branch"
+        — some descendant differs from this node — and is information only:
+        a plain click still toggles this net, Ctrl+Click still owns the
+        branch. See :func:`rail_tree_node_partial_flags`.
+        """
+        from fypa.rail_groups import rail_tree_node_partial_flags
+
+        tree = self._subnet_tree_for_rail(rail)
+        if tree is None:
+            return
+        subnets = self._subnet_eye_buttons.get(rail, {})
+        if not subnets:
+            return
+        visible = {
+            name: eye.isVisibleState()
+            for name, eye in subnets.items()
+            if _qt_widget_alive(eye)
+        }
+        for name, partial in rail_tree_node_partial_flags(tree, visible).items():
+            eye = subnets.get(name)
+            if eye is None or not _qt_widget_alive(eye):
+                continue
+            eye.setVisibleState(
+                eye.isVisibleState(),
+                partial=partial,
+                emit=False,
+            )
 
     def _sync_rail_eye_from_subnets(self, rail: str) -> None:
         subnets = self._subnet_eye_buttons.get(rail, {})
@@ -10502,6 +10817,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 )
                 break
 
+    def _refresh_rail_visibility_after_subnet_change(self, rail: str) -> None:
+        self._sync_rail_tree_node_partials(rail)
+        self._sync_rail_eye_from_subnets(rail)
+        self._sync_all_rails_eye()
+        self._sync_rail_only_visibility()
+        self._render_with_busy_popup()
+
     def _on_rail_expand_toggled(self, rail: str, expanded: bool) -> None:
         self._rail_expanded[rail] = expanded
         btn = self._rail_expand_buttons.get(rail)
@@ -10516,14 +10838,71 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             self._remove_subnet_rows(rail)
         self._update_rail_list_height()
 
+    def _on_subnet_node_expand_toggled(
+        self, rail: str, net: str, expanded: bool, *, pending: bool = False,
+    ) -> None:
+        node_expanded = (
+            self._pending_subnet_node_expanded if pending
+            else self._subnet_node_expanded
+        )
+        expand_buttons = (
+            self._pending_subnet_expand_buttons if pending
+            else self._subnet_expand_buttons
+        )
+        node_expanded[(rail, net)] = expanded
+        btn = expand_buttons.get((rail, net))
+        if btn is not None and _qt_widget_alive(btn):
+            btn.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        # Defer the rebuild: this slot runs on the expand button's toggled
+        # signal, and rebuilding destroys that button.
+        QTimer.singleShot(
+            0, lambda r=rail, p=pending: self._rebuild_subnet_rows(
+                r, pending=p,
+            ),
+        )
+
+    def _rebuild_subnet_rows(self, rail: str, *, pending: bool = False) -> None:
+        # Deferred by one event-loop turn (see the caller), so the list may
+        # already have been torn down by a viewer retire in between — the
+        # Python-side item dicts outlive the C++ widget.
+        if not _qt_widget_alive(getattr(self, "rail_list", None)):
+            return
+        list_items = (
+            self._pending_rail_list_items if pending else self._rail_list_items
+        )
+        expanded = (
+            self._pending_rail_expanded if pending else self._rail_expanded
+        )
+        parent_item = list_items.get(rail)
+        if parent_item is None or not expanded.get(rail):
+            return
+        self._remove_subnet_rows(rail, pending=pending)
+        self._insert_subnet_rows(rail, after_item=parent_item, pending=pending)
+        self._update_rail_list_height()
+
     def _on_subnet_eye_toggled(self, rail: str, net: str, _on: bool) -> None:
         eye = self._subnet_eye_buttons.get(rail, {}).get(net)
         if eye is None or not _qt_widget_alive(eye):
             return
-        self._sync_rail_eye_from_subnets(rail)
-        self._sync_all_rails_eye()
-        self._sync_rail_only_visibility()
-        self._render_with_busy_popup()
+        self._refresh_rail_visibility_after_subnet_change(rail)
+
+    def _on_subnet_eye_ctrl_clicked(self, rail: str, net: str) -> None:
+        """Ctrl+Click: apply this net's own toggle to its SERIES subtree.
+
+        The target mirrors what a plain click on this node would do — visible
+        → hide the branch, hidden → show it — so the gesture round-trips. The
+        alternative ("anything mixed → show all") cannot hide a partly-hidden
+        branch at all without first rendering every net in it.
+        """
+        from fypa.rail_groups import subtree_toggle_target
+
+        eye = self._subnet_eye_buttons.get(rail, {}).get(net)
+        if eye is None or not _qt_widget_alive(eye):
+            return
+        self._fan_out_subnet_subtree(
+            rail, net, subtree_toggle_target(eye.isVisibleState()),
+        )
+        self._refresh_rail_visibility_after_subnet_change(rail)
 
     def _add_layer_row(self, phys: str) -> tuple[EyeButton, EyeButton]:
         """Build, wire and append one physical-layer row. Returns (eye, eye2).
@@ -10891,10 +11270,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         ):
             return
         self._fan_out_rail_eye_to_subnets(rail, on)
-        self._sync_rail_eye_from_subnets(rail)
-        self._sync_all_rails_eye()
-        self._sync_rail_only_visibility()
-        self._render_with_busy_popup()
+        self._refresh_rail_visibility_after_subnet_change(rail)
 
     def _on_all_rails_toggled(self, on: bool) -> None:
         """The "All Rails" eye was clicked — show or hide every rail."""
@@ -10902,6 +11278,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             if _qt_widget_alive(eye):
                 eye.setVisibleState(on, partial=False, emit=False)
             self._fan_out_rail_eye_to_subnets(name, on)
+            self._sync_rail_tree_node_partials(name)
         self._sync_all_rails_eye()
         self._sync_rail_only_visibility()
         self._render_with_busy_popup()
@@ -16648,12 +17025,83 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
 
     def _toggle_sidebar(self) -> None:
         """Show / hide the heatmap-tab side panel so the user can give the
-        viewport the panel's 260px of horizontal real estate. The slim
-        toggle button between the panel and the plot stays visible either
+        viewport the panel's horizontal real estate. The slim toggle /
+        resize handle between the panel and the plot stays visible either
         way, and its triangle flips ▶ / ◀ to mirror the new state."""
         was_visible = self._sidebar_scroll.isVisible()
         self._sidebar_scroll.setVisible(not was_visible)
         self._sidebar_toggle_btn.setCollapsed(was_visible)
+
+    def _on_sidebar_resize_press(self) -> None:
+        """Remember content width at the start of a splitter drag."""
+        self._sidebar_drag_start_w = getattr(
+            self, "_sidebar_requested_w", self._SIDEBAR_DEFAULT_W,
+        )
+
+    def _on_sidebar_resized_by(self, delta_px: int) -> None:
+        """Apply a drag delta from :class:`SidebarToggleButton`."""
+        start = getattr(
+            self, "_sidebar_drag_start_w", self._SIDEBAR_DEFAULT_W,
+        )
+        self._apply_sidebar_content_width(start + int(delta_px))
+        # Cosmetic and solve-independent, so _display_dirty rather than
+        # _mark_project_dirty: a panel drag must not light up Resolve, but it
+        # does need to count as an unsaved change or the width the user just
+        # set is silently lost on close.
+        self._display_dirty = True
+
+    def _apply_sidebar_content_width(
+        self, content_w: int, *, remember: bool = True,
+    ) -> None:
+        """Apply the left side-panel content width (px), clamped to the window.
+
+        ``_sidebar_requested_w`` is what the user asked for and is what gets
+        persisted; ``_sidebar_content_w`` is that same width clamped to what
+        currently fits beside the plot. Persisting the clamp instead would
+        shrink a 400 px preference to the 180 px minimum the first time the
+        project is opened on a narrow window — permanently, since the next
+        save writes the shrunken value back.
+        """
+        scroll = getattr(self, "_sidebar_scroll", None)
+        widget = getattr(self, "_sidebar_widget", None)
+        if scroll is None or widget is None:
+            return
+        content_w = int(content_w)
+        if remember:
+            self._sidebar_requested_w = max(
+                self._SIDEBAR_MIN_W, min(content_w, self._SIDEBAR_MAX_W),
+            )
+        max_w = getattr(self, "_SIDEBAR_MAX_W", 520)
+        gl = getattr(self, "_gl_viewer", None)
+        if gl is not None and gl.width() > 0:
+            # Leave room for the plot + toggle handle.
+            max_w = min(max_w, max(self._SIDEBAR_MIN_W, gl.width() - 80))
+        w = max(self._SIDEBAR_MIN_W, min(content_w, max_w))
+        if w == getattr(self, "_sidebar_content_w", None) and widget.width() == w:
+            return
+        self._sidebar_content_w = w
+        widget.setFixedWidth(w)
+        scroll.setFixedWidth(w + self._SIDEBAR_SCROLLBAR_W)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        # Re-assert the requested width against the new window size, so a
+        # panel that had to be clamped narrow grows back when the window is
+        # widened. ``remember=False``: the window changed, not the request.
+        super().resizeEvent(event)
+        requested = getattr(self, "_sidebar_requested_w", None)
+        if requested is not None:
+            self._apply_sidebar_content_width(requested, remember=False)
+
+    def _load_sidebar_width_from_project(self) -> None:
+        """Restore left side-panel width from ``viewer_settings``."""
+        proj = getattr(self, "_project", None)
+        if proj is None:
+            return
+        saved = (getattr(proj, "viewer_settings", None) or {}).get(
+            "sidebar_content_w",
+        )
+        if isinstance(saved, (int, float)) and saved > 0:
+            self._apply_sidebar_content_width(int(saved))
 
     def _hotkey_2d_mode(self) -> None:
         self.view_3d_box.setChecked(False)
@@ -21053,8 +21501,27 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._pending_rail_items = []
         self._pending_rail_list_items = {}
         self._pending_rail_expand_buttons = {}
+        self._pending_subnet_expand_buttons = {}
         self._pending_rail_subnet_items = {}
         self._pending_rails = self._editor_pending_rails()
+        # Drop expansion state for rails that are no longer pending. Without
+        # this the dicts grow for the process lifetime and a node collapsed
+        # in one project reopens collapsed in the next project that happens
+        # to reuse the rail and subnet names — the solved list prunes the
+        # same way in _populate_rail_list.
+        self._pending_rail_expanded = {
+            r: v for r, v in self._pending_rail_expanded.items()
+            if r in self._pending_rails
+        }
+        self._pending_subnet_node_expanded = {
+            k: v for k, v in self._pending_subnet_node_expanded.items()
+            if k[0] in self._pending_rails
+        }
+        from fypa.rail_groups import build_rail_trees
+        self._pending_rail_trees = build_rail_trees(
+            self._rail_tree_metadata(),
+            self._pending_rails,
+        )
         t = _T()
         for name in sorted(self._pending_rails):
             members = self._pending_rails[name]
@@ -21065,20 +21532,11 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             expand_btn = None
             expanded = bool(self._pending_rail_expanded.get(name, False))
             if has_subnets:
-                expand_btn = QToolButton()
-                expand_btn.setCheckable(True)
-                expand_btn.setChecked(expanded)
-                expand_btn.setArrowType(
-                    Qt.DownArrow if expanded else Qt.RightArrow,
-                )
-                expand_btn.setFixedSize(14, 14)
-                expand_btn.setAutoRaise(True)
-                expand_btn.setFocusPolicy(Qt.NoFocus)
-                expand_btn.setCursor(Qt.PointingHandCursor)
-                expand_btn.setToolTip("Show/hide subnet nets (unsolved)")
-                expand_btn.toggled.connect(
-                    lambda exp, n=name: self._on_pending_rail_expand_toggled(
-                        n, exp,
+                expand_btn = self._make_expand_tool_button(
+                    expanded=expanded,
+                    tip="Show/hide subnet nets (unsolved)",
+                    on_toggled=lambda exp, n=name: (
+                        self._on_pending_rail_expand_toggled(n, exp)
                     ),
                 )
                 self._pending_rail_expand_buttons[name] = expand_btn
@@ -21100,58 +21558,25 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             self._pending_rail_items.append(item)
             self._pending_rail_list_items[name] = item
             if has_subnets and expanded:
-                self._insert_pending_subnet_rows(name, after_item=item)
+                self._insert_subnet_rows(
+                    name, after_item=item, pending=True,
+                )
         self._update_rail_list_height()
-
-    def _insert_pending_subnet_rows(
-        self, rail: str, *, after_item: QListWidgetItem,
-    ) -> None:
-        if self._pending_rail_subnet_items.get(rail):
-            return
-        members = self._pending_rails.get(rail, [rail])
-        items: list[QListWidgetItem] = []
-        row_idx = self.rail_list.row(after_item) + 1
-        t = _T()
-        for net in members:
-            eye = EyeButton(visible=False)
-            eye.setEnabled(False)
-            is_primary = net == rail
-            subnet_row = self._build_rail_row_widget(
-                eye,
-                label_text=net,
-                bold=is_primary,
-                indent=18,
-            )
-            subnet_row.setStyleSheet(
-                f"color: {t['fg_muted']}; font-style: italic;"
-            )
-            subnet_row.setToolTip(
-                f"Unsolved subnet of rail {rail} — press Resolve to compute it."
-            )
-            item = QListWidgetItem()
-            item.setFlags(Qt.ItemIsEnabled)
-            self.rail_list.insertItem(row_idx, item)
-            item.setSizeHint(subnet_row.sizeHint())
-            self.rail_list.setItemWidget(item, subnet_row)
-            items.append(item)
-            row_idx += 1
-        self._pending_rail_subnet_items[rail] = items
 
     def _on_pending_rail_expand_toggled(self, rail: str, expanded: bool) -> None:
         self._pending_rail_expanded[rail] = expanded
         btn = self._pending_rail_expand_buttons.get(rail)
-        if btn is not None:
+        if btn is not None and _qt_widget_alive(btn):
             btn.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
         parent_item = self._pending_rail_list_items.get(rail)
         if parent_item is None:
             return
         if expanded:
-            self._insert_pending_subnet_rows(rail, after_item=parent_item)
+            self._insert_subnet_rows(
+                rail, after_item=parent_item, pending=True,
+            )
         else:
-            for item in self._pending_rail_subnet_items.pop(rail, []):
-                row = self.rail_list.row(item)
-                if row >= 0:
-                    self.rail_list.takeItem(row)
+            self._remove_subnet_rows(rail, pending=True)
         self._update_rail_list_height()
 
     def _unnamed_copper_directives(self) -> list:
@@ -23664,6 +24089,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         # read from self._project while writing into the PASSED proj (the
         # wrong project for any future Save-As), and stamped "auto" into
         # every saved .fypa for users who never touched the setting.
+
+        sidebar_w = getattr(self, "_sidebar_requested_w", None)
+        if isinstance(sidebar_w, int) and sidebar_w > 0:
+            proj.viewer_settings["sidebar_content_w"] = int(sidebar_w)
 
         overlay_state = getattr(self, "_overlay_state", None)
         if overlay_state:
