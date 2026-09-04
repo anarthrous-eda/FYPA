@@ -80,6 +80,13 @@ class EditorDirective:
     # with ``p_net`` (PDN_PINS in single-net mode), ``n_pins`` with ``n_net``.
     p_pins: list[str] | None = None
     n_pins: list[str] | None = None
+    # Optional multi-connector designator lists (schematic ``PDN_P_DES`` /
+    # ``PDN_N_DES``). When set on a two-net SOURCE/SINK, that terminal's pads
+    # come only from the listed designators — the host is not auto-included.
+    # ``None`` keeps host-only resolution (backward compatible). Ignored for
+    # free markers and single-net / SERIES directives.
+    p_des: list[str] | None = None
+    n_des: list[str] | None = None
     voltage: float | None = None
     current: float | None = None
     resistance: float | None = None       # SERIES only, ohms
@@ -101,11 +108,13 @@ class EditorDirective:
             d["anchor_xy"] = [float(self.anchor_xy[0]), float(self.anchor_xy[1])]
         d["p_pins"] = list(self.p_pins) if self.p_pins is not None else None
         d["n_pins"] = list(self.n_pins) if self.n_pins is not None else None
+        d["p_des"] = list(self.p_des) if self.p_des is not None else None
+        d["n_des"] = list(self.n_des) if self.n_des is not None else None
         return d
 
     @staticmethod
     def _coerce_pins(raw: Any) -> list[str] | None:
-        """Normalise a stored pin list to ``list[str]`` (or ``None``).
+        """Normalise a stored pin / designator list to ``list[str]`` (or ``None``).
 
         Drops blanks / whitespace; an empty result collapses to ``None`` so
         "no restriction" and "explicitly empty" are the same thing."""
@@ -131,6 +140,8 @@ class EditorDirective:
             n_net=d.get("n_net"),
             p_pins=cls._coerce_pins(d.get("p_pins")),
             n_pins=cls._coerce_pins(d.get("n_pins")),
+            p_des=cls._coerce_pins(d.get("p_des")),
+            n_des=cls._coerce_pins(d.get("n_des")),
             voltage=(None if d.get("voltage") is None else float(d["voltage"])),
             current=(None if d.get("current") is None else float(d["current"])),
             resistance=(None if d.get("resistance") is None

@@ -164,3 +164,301 @@ def test_editor_series_on_two_nets_is_still_accepted():
                  resistance=0.05)]
     assert apply_editor_directives(loaded, eds) == []
     assert len(loaded.annotations.directives) == 1
+
+
+# --- Multi-connector p_des / n_des -------------------------------------------
+
+def _loaded_with_connectors():
+    """Board stand-in: J2 (VIN+GND), J3/J5/J7 (GND return bananas), U1 load."""
+    from fypa.altium.extract import Pt2D
+
+    nets = [SimpleNamespace(name="GND"), SimpleNamespace(name="VIN")]
+    comps = [
+        SimpleNamespace(designator="J2"),
+        SimpleNamespace(designator="J3"),
+        SimpleNamespace(designator="J5"),
+        SimpleNamespace(designator="J7"),
+        SimpleNamespace(designator="U1"),
+    ]
+    pads = [
+        SimpleNamespace(component_index=0, net_index=1, designator="1",
+                        center=Pt2D(0, 0), layer_id=1, is_through_hole=False),
+        SimpleNamespace(component_index=0, net_index=0, designator="2",
+                        center=Pt2D(1, 0), layer_id=1, is_through_hole=False),
+        SimpleNamespace(component_index=1, net_index=0, designator="2",
+                        center=Pt2D(5, 0), layer_id=1, is_through_hole=False),
+        SimpleNamespace(component_index=2, net_index=0, designator="2",
+                        center=Pt2D(10, 0), layer_id=1, is_through_hole=False),
+        SimpleNamespace(component_index=3, net_index=0, designator="2",
+                        center=Pt2D(15, 0), layer_id=1, is_through_hole=False),
+        SimpleNamespace(component_index=4, net_index=1, designator="1",
+                        center=Pt2D(20, 0), layer_id=1, is_through_hole=False),
+        SimpleNamespace(component_index=4, net_index=0, designator="2",
+                        center=Pt2D(21, 0), layer_id=1, is_through_hole=False),
+    ]
+    extracted = SimpleNamespace(
+        nets=nets, pcb_components=comps, pads=pads,
+        enabled_copper_layer_ids=lambda: [1],
+    )
+    return SimpleNamespace(extracted=extracted, annotations=AnnotationResult())
+
+
+def test_editor_source_n_des_multi_connector():
+    loaded = _loaded_with_connectors()
+    eds = [
+        EditorDirective(
+            kind="component", role="SOURCE", designator="J2",
+            single_net=False, p_net="VIN", n_net="GND",
+            n_des=["J3", "J5", "J7"], voltage=5.0,
+        ),
+        EditorDirective(
+            kind="component", role="SINK", designator="U1",
+            single_net=False, p_net="VIN", n_net="GND", current=1.0,
+        ),
+    ]
+    warnings = apply_editor_directives(loaded, eds)
+    assert warnings == [], warnings
+    src = next(s for s in loaded.annotations.directives
+               if isinstance(s, SourceSpec))
+    assert src.designator == "J2"
+    assert {p.component_designator for p in src.p.pins} == {"J2"}
+    assert {p.component_designator for p in src.n.pins} == {"J3", "J5", "J7"}
+    assert "J2" not in {p.component_designator for p in src.n.pins}
+
+
+def _loaded_with_single_pin_jacks():
+    """Lab bench stand-in: banana jacks whose one and only pad is named "1".
+
+    J2 is the source jack (VIN), J3/J5 the return jacks (GND), U1 the load.
+    Every jack reuses pad designator "1" — the shape that made the short
+    check compare P's "1" against N's "1" and refuse the directive.
+    """
+    from fypa.altium.extract import Pt2D
+
+    nets = [SimpleNamespace(name="GND"), SimpleNamespace(name="VIN")]
+    comps = [SimpleNamespace(designator=d) for d in ("J2", "J3", "J5", "U1")]
+    pads = [
+        SimpleNamespace(component_index=0, net_index=1, designator="1",
+                        center=Pt2D(0, 0), layer_id=1, is_through_hole=False),
+        SimpleNamespace(component_index=1, net_index=0, designator="1",
+                        center=Pt2D(5, 0), layer_id=1, is_through_hole=False),
+        SimpleNamespace(component_index=2, net_index=0, designator="1",
+                        center=Pt2D(10, 0), layer_id=1, is_through_hole=False),
+        SimpleNamespace(component_index=3, net_index=1, designator="1",
+                        center=Pt2D(20, 0), layer_id=1, is_through_hole=False),
+        SimpleNamespace(component_index=3, net_index=0, designator="2",
+                        center=Pt2D(21, 0), layer_id=1, is_through_hole=False),
+    ]
+    extracted = SimpleNamespace(
+        nets=nets, pcb_components=comps, pads=pads,
+        enabled_copper_layer_ids=lambda: [1],
+    )
+    return SimpleNamespace(extracted=extracted, annotations=AnnotationResult())
+
+
+def test_editor_n_des_single_pin_jacks_is_not_a_short():
+    """Same pad name on different jacks is not a short.
+
+    Regression: the overlap check compared bare pad designators, so a source
+    on J2 pin 1 returning through J3/J5 pin 1 — the feature's whole point —
+    was refused as "both resolve to pad(s) 1".
+    """
+    loaded = _loaded_with_single_pin_jacks()
+    eds = [EditorDirective(
+        kind="component", role="SOURCE", designator="J2",
+        single_net=False, p_net="VIN", n_net="GND",
+        n_des=["J3", "J5"], voltage=5.0,
+    )]
+    warnings = apply_editor_directives(loaded, eds)
+    assert warnings == [], warnings
+    src = next(s for s in loaded.annotations.directives
+               if isinstance(s, SourceSpec))
+    assert {p.component_designator for p in src.p.pins} == {"J2"}
+    assert {p.component_designator for p in src.n.pins} == {"J3", "J5"}
+    assert {p.pad_designator for p in src.n.pins} == {"1"}
+
+
+def test_editor_n_des_onto_the_p_net_is_still_a_short():
+    """The overlap guard still fires when *_DES lands N back on P's net."""
+    loaded = _loaded_with_single_pin_jacks()
+    eds = [EditorDirective(
+        kind="component", role="SOURCE", designator="J2",
+        single_net=False, p_net="VIN", n_net="VIN",
+        n_des=["U1"], voltage=5.0,
+    )]
+    warnings = apply_editor_directives(loaded, eds)
+    assert any("short" in w for w in warnings), warnings
+    assert loaded.annotations.directives == []
+
+
+def test_editor_n_des_missing_designator_skipped():
+    loaded = _loaded_with_connectors()
+    eds = [EditorDirective(
+        kind="component", role="SOURCE", designator="J2",
+        single_net=False, p_net="VIN", n_net="GND",
+        n_des=["J3", "J99"], voltage=5.0,
+    )]
+    warnings = apply_editor_directives(loaded, eds)
+    assert loaded.annotations.directives == []
+    assert any("J99" in w and "not found" in w for w in warnings)
+
+
+def test_editor_n_des_no_pad_on_net_skipped():
+    loaded = _loaded_with_connectors()
+    # J7 has only a GND pad in the fixture; point N_DES at a designator
+    # whose pads are all on VIN instead — drop J3's GND by renaming net.
+    loaded.extracted.pads[2].net_index = 1  # J3 pad now on VIN, not GND
+    eds = [EditorDirective(
+        kind="component", role="SOURCE", designator="J2",
+        single_net=False, p_net="VIN", n_net="GND",
+        n_des=["J3"], voltage=5.0,
+    )]
+    warnings = apply_editor_directives(loaded, eds)
+    assert loaded.annotations.directives == []
+    assert any("J3" in w and "no pad" in w for w in warnings)
+
+
+def test_editor_without_des_backward_compat():
+    loaded = _loaded_with_connectors()
+    eds = [EditorDirective(
+        kind="component", role="SOURCE", designator="J2",
+        single_net=False, p_net="VIN", n_net="GND", voltage=5.0,
+    )]
+    warnings = apply_editor_directives(loaded, eds)
+    assert warnings == []
+    src = loaded.annotations.directives[0]
+    assert isinstance(src, SourceSpec)
+    assert {p.component_designator for p in src.p.pins} == {"J2"}
+    assert {p.component_designator for p in src.n.pins} == {"J2"}
+
+
+def test_editor_directive_p_des_n_des_round_trip():
+    d = EditorDirective(
+        kind="component", role="SOURCE", designator="J2",
+        single_net=False, p_net="VIN", n_net="GND",
+        p_des=["J1"], n_des=["J3", "J5"], voltage=5.0,
+    )
+    restored = EditorDirective.from_dict(d.to_dict())
+    assert restored.p_des == ["J1"]
+    assert restored.n_des == ["J3", "J5"]
+    # Absent keys stay None (backward compatible .fypa files).
+    bare = EditorDirective.from_dict({"role": "SINK", "p_net": "+5V"})
+    assert bare.p_des is None
+    assert bare.n_des is None
+
+
+def test_editor_n_des_missing_pin_override_skipped():
+    """Every *_PINS entry must appear on at least one listed designator."""
+    loaded = _loaded_with_connectors()
+    eds = [EditorDirective(
+        kind="component", role="SOURCE", designator="J2",
+        single_net=False, p_net="VIN", n_net="GND",
+        n_des=["J3", "J5"], n_pins=["2", "99"], voltage=5.0,
+    )]
+    warnings = apply_editor_directives(loaded, eds)
+    assert loaded.annotations.directives == []
+    assert any(
+        "pin overrides not found" in w and "99" in w for w in warnings
+    ), warnings
+
+
+def test_editor_n_des_multi_instance_merges_pads():
+    """Multi-channel: one logical DES matches several physical placements."""
+    from fypa.altium.extract import Pt2D
+
+    nets = [SimpleNamespace(name="GND"), SimpleNamespace(name="VIN")]
+    comps = [
+        SimpleNamespace(designator="J2", source_designator="J2"),
+        SimpleNamespace(designator="J3_CH1", source_designator="J3"),
+        SimpleNamespace(designator="J3_CH2", source_designator="J3"),
+    ]
+    pads = [
+        SimpleNamespace(component_index=0, net_index=1, designator="1",
+                        center=Pt2D(0, 0), layer_id=1, is_through_hole=False),
+        SimpleNamespace(component_index=0, net_index=0, designator="2",
+                        center=Pt2D(1, 0), layer_id=1, is_through_hole=False),
+        SimpleNamespace(component_index=1, net_index=0, designator="2",
+                        center=Pt2D(5, 0), layer_id=1, is_through_hole=False),
+        SimpleNamespace(component_index=2, net_index=0, designator="2",
+                        center=Pt2D(10, 0), layer_id=1, is_through_hole=False),
+    ]
+    extracted = SimpleNamespace(
+        nets=nets, pcb_components=comps, pads=pads,
+        enabled_copper_layer_ids=lambda: [1],
+    )
+    loaded = SimpleNamespace(
+        extracted=extracted, annotations=AnnotationResult(),
+    )
+    eds = [EditorDirective(
+        kind="component", role="SOURCE", designator="J2",
+        single_net=False, p_net="VIN", n_net="GND",
+        n_des=["J3"], voltage=5.0,
+    )]
+    warnings = apply_editor_directives(loaded, eds)
+    assert warnings == [], warnings
+    src = loaded.annotations.directives[0]
+    assert isinstance(src, SourceSpec)
+    assert {p.component_designator for p in src.n.pins} == {
+        "J3_CH1", "J3_CH2",
+    }
+    assert len(src.n.pins) == 2
+
+
+# --- Unlock seeding helpers (no GUI) -----------------------------------------
+
+def test_terminal_summary_pad_is_raw_not_compound():
+    from fypa.altium.annotations import TerminalPin, TerminalSpec
+    from fypa.altium.extract import Pt2D
+    from fypa.altium.loader import _terminal_summary
+
+    nets = [SimpleNamespace(name="GND"), SimpleNamespace(name="VIN")]
+    term = TerminalSpec(pins=(
+        TerminalPin(
+            pad_designator="1", layer_id=1, net_index=1,
+            point=Pt2D(0, 0), component_designator="J2",
+        ),
+        TerminalPin(
+            pad_designator="2", layer_id=1, net_index=0,
+            point=Pt2D(1, 0), component_designator="J3",
+        ),
+    ), requested_net="VIN")
+    summary = _terminal_summary(term, nets)
+    pads = [p["pad"] for p in summary["pins"]]
+    assert pads == ["1", "2"]
+    assert summary["pins"][0]["component"] == "J2"
+    assert summary["pins"][0]["pad_label"] == "J2-1"
+    assert summary["pins"][1]["pad_label"] == "J3-2"
+
+
+def test_unlock_seeds_raw_pads_and_des_lists():
+    """Unlock helpers: raw pads + DES from pin components (not host-only)."""
+    from fypa.altium_viewer import PdnViewer
+
+    host = "J2"
+    p_term = {
+        "pins": [
+            {"pad": "1", "component": "J2", "pad_label": "J2-1", "net": "VIN"},
+        ],
+    }
+    n_term = {
+        "pins": [
+            {"pad": "2", "component": "J3", "pad_label": "J3-2", "net": "GND"},
+            {"pad": "2", "component": "J5", "pad_label": "J5-2", "net": "GND"},
+            {"pad": "2", "component": "J7", "pad_label": "J7-2", "net": "GND"},
+        ],
+    }
+    assert PdnViewer._terminal_pin_pads(p_term) == ["1"]
+    assert PdnViewer._terminal_pin_pads(n_term) == ["2"]
+    assert PdnViewer._terminal_des_list(p_term, host) == []  # host-only
+    assert PdnViewer._terminal_des_list(n_term, host) == ["J3", "J5", "J7"]
+
+
+def test_unlock_strips_legacy_compound_pad():
+    from fypa.altium_viewer import PdnViewer
+
+    term = {
+        "pins": [
+            {"pad": "J2-1", "component": "J2", "net": "VIN"},
+        ],
+    }
+    assert PdnViewer._terminal_pin_pads(term) == ["1"]

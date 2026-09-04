@@ -16,16 +16,28 @@ overrides are honoured if supplied.
 ============   =============================   ==================================================
 Role           Value params                    Net / pin params
 ============   =============================   ==================================================
-SOURCE         PDN_V                           PDN_P_NET, PDN_N_NET           (overrides: *_PINS)
-                                               *or* PDN_NET                  (overrides: PDN_PINS)
-SINK           PDN_I                           PDN_P_NET, PDN_N_NET           (overrides: *_PINS)
-                                               *or* PDN_NET                  (overrides: PDN_PINS)
+SOURCE         PDN_V                           PDN_P_NET, PDN_N_NET  (overrides: *_PINS, *_DES)
+                                               *or* PDN_NET         (overrides: PDN_PINS)
+SINK           PDN_I                           PDN_P_NET, PDN_N_NET  (overrides: *_PINS, *_DES)
+                                               *or* PDN_NET         (overrides: PDN_PINS)
 SERIES         PDN_R                           PDN_P_NET, PDN_N_NET (optional) (overrides: *_PINS)
 REGULATOR      PDN_V                           PDN_OUT_P_NET, PDN_OUT_N_NET,
                PDN_REGULATOR_TYPE              PDN_IN_P_NET,  PDN_IN_N_NET    (overrides: *_PINS)
                PDN_REGULATOR_EFFICIENCY        *or* PDN_GAIN (fixed override)
                PDN_QUIESCENT (optional)
 ============   =============================   ==================================================
+
+Multi-connector P / N pads (``*_DES``)
+--------------------------------------
+Two-terminal SOURCE / SINK channels may pull a terminal's pads from **other**
+components via ``PDN_P_DES`` / ``PDN_N_DES`` (or ``PDNn_P_DES`` /
+``PDNn_N_DES``): a comma-separated list of designators (e.g. ``J1,J2``).
+Without ``*_DES``, pads come from the host component only (unchanged).
+With ``*_DES``, pads come **only** from the listed designators on the named
+net — the host is not auto-included. ``PDN_*_PINS`` still filters pads on
+those chosen components. Single-net (``PDN_NET``) mode stays single-component;
+SERIES / REGULATOR ignore ``*_DES``. ``SourceSpec.designator`` remains the
+host.
 
 Single-net (point-to-point) SOURCE / SINK
 ------------------------------------------
@@ -257,8 +269,8 @@ _COMMON_TERMINAL_SUFFIXES: frozenset[str] = frozenset({
     "NET", "PINS", "P_NET", "N_NET", "P_PINS", "N_PINS",
 })
 _KNOWN_SUFFIXES_BY_ROLE: dict[str, frozenset[str]] = {
-    "SOURCE": _COMMON_TERMINAL_SUFFIXES | frozenset({"V"}),
-    "SINK": _COMMON_TERMINAL_SUFFIXES | frozenset({"I", "MIN_V"}),
+    "SOURCE": _COMMON_TERMINAL_SUFFIXES | frozenset({"V", "P_DES", "N_DES"}),
+    "SINK": _COMMON_TERMINAL_SUFFIXES | frozenset({"I", "MIN_V", "P_DES", "N_DES"}),
     "REGULATOR": frozenset({
         "V", "GAIN", "REGULATOR_TYPE", "REGULATOR_EFFICIENCY", "QUIESCENT",
         "OUT_P_NET", "OUT_N_NET", "OUT_P_PINS", "OUT_N_PINS",
@@ -279,6 +291,20 @@ _SINGLE_NET_SUFFIXES: frozenset[str] = frozenset({"NET", "PINS"})
 _TWO_TERMINAL_SUFFIXES: frozenset[str] = frozenset({
     "P_NET", "N_NET", "P_PINS", "N_PINS",
 })
+# SOURCE / SINK may also draw one side from *other* components (PDN_*_DES),
+# which _terminal_mode counts as a two-terminal marker like any other. Kept
+# out of _TWO_TERMINAL_SUFFIXES itself because that set doubles as SERIES's
+# channel-defining suffixes below, and SERIES has no *_DES form.
+_TWO_TERMINAL_DES_SUFFIXES: frozenset[str] = frozenset({"P_DES", "N_DES"})
+# The full two-terminal form, in the order _terminal_mode lists it back to the
+# user. Template inheritance and _terminal_mode must agree on this set:
+# omitting *_DES let a single-net PDNn_NET channel inherit an unindexed
+# PDN_N_DES template it never asked for, and _terminal_mode then rejected the
+# channel it had just been handed. Derived from one tuple so they cannot drift.
+_TWO_TERMINAL_FORM_ORDER: tuple[str, ...] = (
+    "P_NET", "N_NET", "P_PINS", "N_PINS", "P_DES", "N_DES",
+)
+_TWO_TERMINAL_FORM_SUFFIXES: frozenset[str] = frozenset(_TWO_TERMINAL_FORM_ORDER)
 
 # Suffixes that *define* a channel, so setting one marks that channel present
 # in _resolve_channel_roles. Deliberately narrower than
@@ -289,8 +315,12 @@ _TWO_TERMINAL_SUFFIXES: frozenset[str] = frozenset({
 # defined by its OUT pair alone — PDN_IN_* is the side meant to be shared,
 # so an indexed IN never conscripts a channel into existence.
 _TERMINAL_SUFFIXES_BY_ROLE: dict[str, frozenset[str]] = {
-    "SOURCE": _COMMON_TERMINAL_SUFFIXES,
-    "SINK": _COMMON_TERMINAL_SUFFIXES,
+    # *_DES included: a channel whose only per-channel parameter is its
+    # return connector list (PDN1_N_DES=J3, PDN2_N_DES=J5 over a shared
+    # unindexed template) is a channel. Without it those channels were never
+    # discovered and the part silently collapsed to the unindexed directive.
+    "SOURCE": _COMMON_TERMINAL_SUFFIXES | _TWO_TERMINAL_DES_SUFFIXES,
+    "SINK": _COMMON_TERMINAL_SUFFIXES | _TWO_TERMINAL_DES_SUFFIXES,
     "REGULATOR": frozenset({
         "OUT_P_NET", "OUT_N_NET", "OUT_P_PINS", "OUT_N_PINS",
     }),
@@ -508,12 +538,12 @@ def _inheritable_suffixes(
         return frozenset()
     allowed = set(_KNOWN_SUFFIXES_BY_ROLE.get(role, _ALL_INHERITABLE_SUFFIXES))
     declares = {
-        suffix for suffix in _SINGLE_NET_SUFFIXES | _TWO_TERMINAL_SUFFIXES
+        suffix for suffix in _SINGLE_NET_SUFFIXES | _TWO_TERMINAL_FORM_SUFFIXES
         if _ci_get(params, _channel_key(suffix, index)) is not None
     }
     if declares & _SINGLE_NET_SUFFIXES:
-        allowed -= _TWO_TERMINAL_SUFFIXES
-    if declares & _TWO_TERMINAL_SUFFIXES:
+        allowed -= _TWO_TERMINAL_FORM_SUFFIXES
+    if declares & _TWO_TERMINAL_FORM_SUFFIXES:
         allowed -= _SINGLE_NET_SUFFIXES
     return frozenset(allowed)
 
@@ -747,7 +777,7 @@ class TerminalPin:
     pad_polygon: shapely.geometry.Polygon | None = None
     # Owning PCB component when known. Used so P/N overlap arbitration does
     # not treat pad ``"1"`` on J2 and pad ``"1"`` on J3 as the same pin
-    # (multi-connector / banana-jack sources).
+    # (multi-connector / banana-jack sources via ``PDN_*_DES``).
     component_designator: str | None = None
 
 
@@ -1674,6 +1704,179 @@ def _resolve_terminal(
     ), errors, match_tier
 
 
+def _resolve_terminal_multi(
+    proj: ExtractedProject,
+    designators: list[str],
+    net_name: str | None,
+    override_pins: list[str] | None,
+    enabled_layers: list[int],
+    role_diagnostic: str,
+    warnings: list[str] | None = None,
+    net_remap: dict[int, int] | None = None,
+    schdoc_name: str | None = None,
+) -> tuple[TerminalSpec | None, list[str], int]:
+    """Resolve a terminal from pads on *other* components named by ``*_DES``.
+
+    Each designator must exist on the PCB and contribute at least one matching
+    pad. The host component is not consulted — callers pass only the listed
+    designators. ``override_pins`` (from ``*_PINS``) *filters* pads across
+    those components: it narrows the net match rather than replacing it, so a
+    pin name that exists on a listed part but sits on a different net does not
+    silently drag the terminal onto that net. (This is where ``*_DES`` differs
+    from the single-component :func:`_resolve_terminal`, whose ``*_PINS`` is a
+    net-less override: there the user names pads on the one component the
+    directive is authored on, here the net is what makes a list of unrelated
+    connectors a single terminal.) A pin name is satisfied if any listed
+    component has it on the net.
+
+    Returns ``(spec, errors, match_tier)`` — the same shape as
+    :func:`_resolve_terminal`. ``match_tier`` is the *weakest* tier among the
+    contributing components (largest value: see the ``_LOCAL_NET_TIER_*``
+    ladder), so a terminal that leaned on an alias for any one connector is
+    not arbitrated as though every pad were a direct hit.
+    """
+    errors: list[str] = []
+    all_pins: list[TerminalPin] = []
+    resolved_via_local = False
+    tiers: list[int] = []
+
+    if not designators:
+        errors.append(f"{role_diagnostic}: empty designator list")
+        return None, errors, _LOCAL_NET_TIER_DIRECT
+    if net_name is None and not override_pins:
+        # _resolve_two_terminal rejects this before calling us; guard anyway so
+        # a future caller cannot fall into the pins-only branch below with no
+        # filter at all and silently claim every pad on every listed part.
+        errors.append(
+            f"{role_diagnostic}: neither a net nor pin overrides supplied"
+        )
+        return None, errors, _LOCAL_NET_TIER_DIRECT
+
+    # Preserve author order; ignore duplicate names (case-insensitive).
+    seen_des: set[str] = set()
+    unique_des: list[str] = []
+    for des in designators:
+        key = des.upper()
+        if key in seen_des:
+            continue
+        seen_des.add(key)
+        unique_des.append(des)
+
+    wanted = {pin.upper() for pin in override_pins} if override_pins else None
+
+    for des in unique_des:
+        indices = _find_pcb_instances(proj, des)
+        if not indices:
+            errors.append(
+                f"{role_diagnostic}: designator {des!r} not found on the PCB"
+            )
+            continue
+
+        des_pins: list[TerminalPin] = []
+        des_local = False
+
+        if net_name is None:
+            # Pins-only terminal: no net to intersect with, so the pad names
+            # are the whole selector (and must be present, or the caller gets
+            # the "not found on listed designators" error below).
+            for ix in indices:
+                comp_des = proj.pcb_components[ix].designator
+                component_pads = _pads_by_component_all(proj).get(ix, [])
+                matched_pads = [
+                    p for p in component_pads
+                    if wanted is None or p.designator.upper() in wanted
+                ]
+                for p in matched_pads:
+                    des_pins.append(TerminalPin(
+                        pad_designator=p.designator,
+                        layer_id=(_tl := _terminal_layer_for_pad(
+                            p, enabled_layers,
+                        )),
+                        net_index=p.net_index,
+                        point=p.center,
+                        pad_polygon=_pad_polygon(p, _tl),
+                        component_designator=comp_des,
+                    ))
+            if not des_pins:
+                errors.append(
+                    f"{role_diagnostic}: designator {des!r} has none of the "
+                    f"override pins {sorted(wanted or ())}"
+                )
+        else:
+            des_errs: list[str] = []
+            for ix in indices:
+                pcb_comp = proj.pcb_components[ix]
+                sch_lookup = pcb_comp.source_designator or pcb_comp.designator
+                spec, err, tier = _resolve_terminal(
+                    proj, ix, net_name, None, enabled_layers,
+                    f"{role_diagnostic} ({des})",
+                    warnings=warnings,
+                    net_remap=net_remap,
+                    sch_lookup_designator=sch_lookup,
+                    schdoc_name=schdoc_name,
+                )
+                if spec is None:
+                    des_errs.extend(err)
+                    continue
+                # *_PINS narrows the net match; it never widens it onto pads
+                # that are not on the requested net.
+                on_net = spec.pins
+                if wanted is not None:
+                    on_net = tuple(
+                        pin for pin in on_net
+                        if pin.pad_designator.upper() in wanted
+                    )
+                    if not on_net:
+                        des_errs.append(
+                            f"{role_diagnostic}: designator {des!r} has no pad "
+                            f"on net {net_name!r} among the pins "
+                            f"{sorted(wanted)} — {des} pad(s) "
+                            f"{sorted(p.pad_designator for p in spec.pins)} "
+                            f"are on {net_name!r}"
+                        )
+                        continue
+                des_pins.extend(on_net)
+                des_local = des_local or spec.resolved_via_local
+                tiers.append(tier)
+            if not des_pins:
+                if des_errs:
+                    errors.extend(des_errs)
+                else:
+                    errors.append(
+                        f"{role_diagnostic}: designator {des!r} has no pad "
+                        f"on net {net_name!r}"
+                    )
+
+        all_pins.extend(des_pins)
+        resolved_via_local = resolved_via_local or des_local
+
+    if override_pins and all_pins:
+        found = {p.pad_designator.upper() for p in all_pins}
+        missing = {pin.upper() for pin in override_pins} - found
+        if missing:
+            errors.append(
+                f"{role_diagnostic}: pin overrides not found on listed "
+                f"designators: {sorted(missing)}"
+            )
+
+    # Explicit pins outrank every inferred match (as in _resolve_terminal);
+    # otherwise the terminal is only as trustworthy as its weakest connector.
+    match_tier = (
+        _LOCAL_NET_TIER_OVERRIDE if override_pins
+        else (max(tiers) if tiers else _LOCAL_NET_TIER_DIRECT)
+    )
+
+    if errors:
+        return None, errors, match_tier
+    if not all_pins:
+        return None, [f"{role_diagnostic}: no pads resolved"], match_tier
+    return TerminalSpec(
+        pins=tuple(all_pins),
+        requested_net=net_name,
+        resolved_via_local=resolved_via_local,
+    ), [], match_tier
+
+
 def _find_pcb_instances(proj: ExtractedProject, sch_designator: str) -> list[int]:
     """Return the indices of every PCB component placed from a schematic part.
 
@@ -2149,11 +2352,19 @@ def _resolve_two_terminal(
     net_remap: dict[int, int] | None = None,
     sch_lookup_designator: str | None = None,
     schdoc_name: str | None = None,
+    p_des_key: str | None = None,
+    n_des_key: str | None = None,
 ) -> tuple[TerminalSpec, TerminalSpec] | None:
     p_net = _ci_get(params, p_net_key)
     n_net = _ci_get(params, n_net_key)
     p_pins = _split_pin_list(_ci_get(params, p_pins_key))
     n_pins = _split_pin_list(_ci_get(params, n_pins_key))
+    p_des = (
+        _split_pin_list(_ci_get(params, p_des_key)) if p_des_key else None
+    )
+    n_des = (
+        _split_pin_list(_ci_get(params, n_des_key)) if n_des_key else None
+    )
 
     if p_net is None and p_pins is None:
         result.errors.append(f"{role_diag}: missing {p_net_key} (or {p_pins_key})")
@@ -2162,22 +2373,30 @@ def _resolve_two_terminal(
     if p_net is None and p_pins is None or n_net is None and n_pins is None:
         return None
 
-    p_spec, p_err, p_tier = _resolve_terminal(
-        proj, pcb_index, p_net, p_pins, enabled_layers,
-        f"{role_diag} P-terminal",
-        warnings=result.warnings,
-        net_remap=net_remap,
-        sch_lookup_designator=sch_lookup_designator,
-        schdoc_name=schdoc_name,
-    )
-    n_spec, n_err, n_tier = _resolve_terminal(
-        proj, pcb_index, n_net, n_pins, enabled_layers,
-        f"{role_diag} N-terminal",
-        warnings=result.warnings,
-        net_remap=net_remap,
-        sch_lookup_designator=sch_lookup_designator,
-        schdoc_name=schdoc_name,
-    )
+    def _side(
+        net: str | None,
+        pins: list[str] | None,
+        des_list: list[str] | None,
+        side: str,
+    ) -> tuple[TerminalSpec | None, list[str], int]:
+        side_diag = f"{role_diag} {side}-terminal"
+        if des_list is not None:
+            return _resolve_terminal_multi(
+                proj, des_list, net, pins, enabled_layers, side_diag,
+                warnings=result.warnings,
+                net_remap=net_remap,
+                schdoc_name=schdoc_name,
+            )
+        return _resolve_terminal(
+            proj, pcb_index, net, pins, enabled_layers, side_diag,
+            warnings=result.warnings,
+            net_remap=net_remap,
+            sch_lookup_designator=sch_lookup_designator,
+            schdoc_name=schdoc_name,
+        )
+
+    p_spec, p_err, p_tier = _side(p_net, p_pins, p_des, "P")
+    n_spec, n_err, n_tier = _side(n_net, n_pins, n_des, "N")
     result.errors.extend(p_err)
     result.errors.extend(n_err)
     if p_spec is None or n_spec is None:
@@ -2203,10 +2422,12 @@ def _terminal_pin_overlap_key(pin: TerminalPin) -> str:
     single-pin lab jacks) are distinct. Without ``component_designator``,
     fall back to pad name only — same as the historical same-footprint case.
 
-    Note both terminals of an annotation-authored directive always resolve
-    from one ``pcb_index``, so the component half is currently the same on
-    both sides; it matters only for a caller that pairs terminals across
-    components. Use :func:`_overlap_pad_names` for anything user-visible.
+    The component half is live: a ``PDN_*_DES`` terminal resolves from a
+    designator list independent of the host's ``pcb_index``, so P and N
+    routinely sit on different components. Do not simplify this back to the
+    pad name alone — that reads every single-pin return jack as a short
+    against the host's own pin 1. Use :func:`_overlap_pad_names` for anything
+    user-visible.
     """
     pad = pin.pad_designator.upper()
     if pin.component_designator:
@@ -2243,11 +2464,9 @@ def _arbitrate_overlapping_terminals(
     match tier; when tiers tie, require explicit ``PDN_*_PINS`` overrides.
 
     Overlap is keyed by component+pad when ``component_designator`` is set.
-    Note that no current caller produces P and N on different components:
-    :func:`_resolve_two_terminal` resolves both from one ``pcb_index``, so the
-    component half is always equal and the key reduces to the pad name. It is
-    kept for a caller that pairs terminals across components; until one
-    exists, the multi-connector case it describes cannot arise.
+    That half is load-bearing: a ``PDN_*_DES`` side resolves from a designator
+    list rather than the host's ``pcb_index``, so P and N legitimately sit on
+    different components and identical pad names across them are not a short.
     """
     p_keys = {_terminal_pin_overlap_key(pin) for pin in p_spec.pins}
     n_keys = {_terminal_pin_overlap_key(pin) for pin in n_spec.pins}
@@ -2327,9 +2546,10 @@ def _terminal_mode(params: dict[str, str], idx: int | None,
     """Decide whether a SOURCE/SINK channel is single-net or two-terminal.
 
     A single-net channel carries ``PDN_NET`` (or ``PDN_PINS``); a two-terminal
-    channel carries ``PDN_P_NET``/``PDN_N_NET`` (or their ``*_PINS``). The two
-    are mutually exclusive — see the module docstring. Returns ``"single"``,
-    ``"two"``, or ``None`` (a validation error has been appended to ``result``).
+    channel carries ``PDN_P_NET``/``PDN_N_NET`` (or their ``*_PINS`` /
+    ``*_DES``). The two are mutually exclusive — see the module docstring.
+    Returns ``"single"``, ``"two"``, or ``None`` (a validation error has been
+    appended to ``result``).
     """
     net_key = _channel_key("NET", idx)
     pins_key = _channel_key("PINS", idx)
@@ -2342,7 +2562,7 @@ def _terminal_mode(params: dict[str, str], idx: int | None,
     if _ci_get(params, pins_key) is not None:
         single_set.append(f"{pins_key} (single-net pin override)")
     two_set: list[str] = []
-    for suffix in ("P_NET", "N_NET", "P_PINS", "N_PINS"):
+    for suffix in _TWO_TERMINAL_FORM_ORDER:
         key = _channel_key(suffix, idx)
         if _ci_get(params, key) is not None:
             two_set.append(key)
@@ -2371,6 +2591,46 @@ def _terminal_mode(params: dict[str, str], idx: int | None,
         f"{n_net_key}, or {net_key} for a single-net (point-to-point) check"
     )
     return None
+
+
+def _reject_des_on_multi_instance(
+    params: dict[str, str],
+    idx: int | None,
+    pcb_indices: list[int],
+    proj: ExtractedProject,
+    role_diag: str,
+    result: AnnotationResult,
+) -> bool:
+    """True (error recorded) when ``*_DES`` cannot be honoured per placement.
+
+    ``*_DES`` names schematic designators, and :func:`_find_pcb_instances`
+    resolves each to *every* placement of it — there is no per-channel
+    qualification, and the PCB record carries no room/channel field to add
+    one. So a multi-channel part would hand every one of its placements the
+    identical return pads: N independent elements stacked on one node,
+    multiplying the injected current with no diagnostic. Refuse instead, and
+    say what to do about it.
+    """
+    if len(pcb_indices) <= 1:
+        return False
+    declared = [
+        _channel_key(suffix, idx)
+        for suffix in ("P_DES", "N_DES")
+        if _ci_get(params, _channel_key(suffix, idx)) is not None
+    ]
+    if not declared:
+        return False
+    names = ", ".join(proj.pcb_components[i].designator for i in pcb_indices)
+    result.errors.append(
+        f"{role_diag}: {' + '.join(declared)} cannot be used on a "
+        f"multi-channel part — it is placed {len(pcb_indices)} times "
+        f"({names}) and a designator list resolves the same pads for every "
+        f"placement, so each channel would drive the identical node. "
+        f"Annotate each channel's connector on its own component, or use "
+        f"{_channel_key('N_NET', idx)} / {_channel_key('N_PINS', idx)} on "
+        f"the host."
+    )
+    return True
 
 
 def _resolve_single_terminal(
@@ -2466,6 +2726,10 @@ def _parse_source(comp, proj, enabled_layers, result,
         mode = _terminal_mode(params, idx, role_diag, result)
         if mode is None:
             continue
+        if _reject_des_on_multi_instance(
+            params, idx, pcb_indices, proj, role_diag, result,
+        ):
+            continue
         for pcb_idx in pcb_indices:
             pcb_des = proj.pcb_components[pcb_idx].designator
             inst_diag = (
@@ -2496,6 +2760,8 @@ def _parse_source(comp, proj, enabled_layers, result,
                 net_remap=net_remap,
                 sch_lookup_designator=comp.lookup_designator,
                 schdoc_name=comp.schdoc_name,
+                p_des_key=_channel_key("P_DES", idx),
+                n_des_key=_channel_key("N_DES", idx),
             )
             if pair is None:
                 continue
@@ -2544,6 +2810,10 @@ def _parse_sink(comp, proj, enabled_layers, result,
         mode = _terminal_mode(params, idx, role_diag, result)
         if mode is None:
             continue
+        if _reject_des_on_multi_instance(
+            params, idx, pcb_indices, proj, role_diag, result,
+        ):
+            continue
         min_v = _optional_value(
             params, _channel_key("MIN_V", idx), role_diag, result,
         )
@@ -2578,6 +2848,8 @@ def _parse_sink(comp, proj, enabled_layers, result,
                 net_remap=net_remap,
                 sch_lookup_designator=comp.lookup_designator,
                 schdoc_name=comp.schdoc_name,
+                p_des_key=_channel_key("P_DES", idx),
+                n_des_key=_channel_key("N_DES", idx),
             )
             if pair is None:
                 continue
@@ -3865,10 +4137,15 @@ def parse_annotations(proj: ExtractedProject,
 # --- self-check ---------------------------------------------------------------
 
 def _describe_terminal(label: str, term: TerminalSpec) -> str:
-    parts = [
-        f"{p.pad_designator}@layer{p.layer_id}({p.point.x:.2f},{p.point.y:.2f})"
-        for p in term.pins
-    ]
+    parts = []
+    for p in term.pins:
+        pad = (
+            f"{p.component_designator}-{p.pad_designator}"
+            if p.component_designator else p.pad_designator
+        )
+        parts.append(
+            f"{pad}@layer{p.layer_id}({p.point.x:.2f},{p.point.y:.2f})"
+        )
     return f"    {label:<8} pins: {', '.join(parts) if parts else '(none)'}"
 
 

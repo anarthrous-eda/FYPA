@@ -13310,7 +13310,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                                 continue
                             out.append(
                                 (v_at, f"{d.get('label') or d.get('designator', '?')}"
-                                       f".{pin.get('pad', '?')}")
+                                       f".{self._pin_display_pad(pin) or '?'}")
                             )
                 return out
 
@@ -19513,11 +19513,74 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
     def _terminal_pin_pads(term: dict | None) -> list[str]:
         """Pad designators of a metadata directive terminal's pins — the
         PDN_PINS set the schematic resolved to. ``[]`` for an ideal return or
-        a terminal with no pins."""
+        a terminal with no pins.
+
+        Uses the raw ``pad`` field (not a compound ``J2-1`` label). Dedupes
+        case-insensitively so multi-DES terminals with the same pad number on
+        several connectors seed a single PDN_PINS entry.
+        """
         if not term or term.get("ideal_return"):
             return []
-        return [str(p.get("pad")) for p in term.get("pins", []) or []
-                if p.get("pad") not in (None, "")]
+        seen: set[str] = set()
+        out: list[str] = []
+        for p in term.get("pins", []) or []:
+            pad = p.get("pad")
+            if pad in (None, ""):
+                continue
+            pad_s = str(pad)
+            # Legacy metadata prefixed pad as ``COMP-PAD``; strip when the
+            # component field matches the prefix so Unlock stays resolvable.
+            comp = p.get("component")
+            if (comp and pad_s.upper().startswith(str(comp).upper() + "-")):
+                pad_s = pad_s[len(str(comp)) + 1:]
+            key = pad_s.upper()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(pad_s)
+        return out
+
+    @staticmethod
+    def _terminal_des_list(term: dict | None,
+                           host: str | None) -> list[str]:
+        """Unique component designators that contributed pins to ``term``.
+
+        Used to seed P DES / N DES on Unlock. Host-only terminals return
+        ``[]`` (blank DES ⇒ host component). Multi-connector terminals return
+        every unique ``component`` that contributed a pin (order preserved).
+        """
+        if not term or term.get("ideal_return"):
+            return []
+        seen: set[str] = set()
+        out: list[str] = []
+        for p in term.get("pins", []) or []:
+            c = p.get("component")
+            if not c:
+                continue
+            key = str(c).upper()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(str(c))
+        if not out:
+            return []
+        if host and len(out) == 1 and out[0].upper() == str(host).upper():
+            return []
+        return out
+
+    @staticmethod
+    def _pin_display_pad(pin: dict | None) -> str:
+        """Display label for a metadata pin — prefer compound ``pad_label``."""
+        if not pin:
+            return ""
+        label = pin.get("pad_label")
+        if label:
+            return str(label)
+        pad = pin.get("pad", "")
+        comp = pin.get("component")
+        if comp and pad:
+            return f"{comp}-{pad}"
+        return "" if pad is None else str(pad)
 
     @staticmethod
     def _parse_pin_field(text: str | None) -> list[str] | None:
@@ -19915,10 +19978,33 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         )
         self._ef_npins_label = QLabel("N pins")
         form2.addRow(self._ef_npins_label, self._ef_npins)
-        # Pins apply to a real component's pads only.
+        # Multi-connector designator lists (PDN_P_DES / PDN_N_DES) — CSV of
+        # other component designators whose pads feed this terminal. Two-net
+        # SOURCE/SINK only; host is not auto-included when set.
+        self._ef_pdes = QLineEdit()
+        self._ef_pdes.setPlaceholderText("host only")
+        self._ef_pdes.setToolTip(
+            "Optional: comma-separated designators for the P terminal "
+            "(PDN_P_DES). Pads come only from those parts — the host is "
+            "not auto-included. Leave blank to use the host component."
+        )
+        self._ef_pdes_label = QLabel("P DES")
+        form2.addRow(self._ef_pdes_label, self._ef_pdes)
+        self._ef_ndes = QLineEdit()
+        self._ef_ndes.setPlaceholderText("host only")
+        self._ef_ndes.setToolTip(
+            "Optional: comma-separated designators for the N terminal "
+            "(PDN_N_DES). Pads come only from those parts — the host is "
+            "not auto-included. Leave blank to use the host component."
+        )
+        self._ef_ndes_label = QLabel("N DES")
+        form2.addRow(self._ef_ndes_label, self._ef_ndes)
+        # Pins / DES apply to a real component's pads only.
         self._ef_pins_apply = sel["kind"] == "component"
         for _w in (self._ef_pins, self._ef_pins_label,
-                   self._ef_npins, self._ef_npins_label):
+                   self._ef_npins, self._ef_npins_label,
+                   self._ef_pdes, self._ef_pdes_label,
+                   self._ef_ndes, self._ef_ndes_label):
             _w.setVisible(self._ef_pins_apply)
         lay.addLayout(form2)
 
@@ -19955,6 +20041,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 self._set_combo(self._ef_nnet, existing.n_net)
             self._ef_pins.setText(", ".join(existing.p_pins or []))
             self._ef_npins.setText(", ".join(existing.n_pins or []))
+            self._ef_pdes.setText(", ".join(
+                getattr(existing, "p_des", None) or []))
+            self._ef_ndes.setText(", ".join(
+                getattr(existing, "n_des", None) or []))
             self._ef_remove.setEnabled(True)
             if existing.overrides_designator:
                 self._ef_status.setText(
@@ -19993,6 +20083,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 ", ".join(self._terminal_pin_pads(terms.get("P"))))
             self._ef_npins.setText(
                 ", ".join(self._terminal_pin_pads(n_term)))
+            # Seed P/N DES from the components that actually contributed pins
+            # (multi-connector PDN_*_DES). Host-only → leave blank.
+            host_des = sel.get("designator")
+            self._ef_pdes.setText(
+                ", ".join(self._terminal_des_list(terms.get("P"), host_des)))
+            self._ef_ndes.setText(
+                ", ".join(self._terminal_des_list(n_term, host_des)))
             self._ef_remove.setEnabled(False)
             self._ef_status.setText(
                 f"<span style='color:{t['warn']};'>Unlocked — Apply "
@@ -20041,12 +20138,22 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._ef_pnet_label.setText("P net" if two else "Net")
         # The N-pin restriction only exists in two-net mode (single-net's N
         # terminal is an ideal return with no pads). Keep it in step with the
-        # N-net picker, and only for a component selection.
+        # N-net picker, and only for a component selection. P/N DES likewise
+        # apply only to two-net SOURCE/SINK (SERIES ignores them).
         if hasattr(self, "_ef_npins"):
             show_npins = two and getattr(self, "_ef_pins_apply", False)
             self._ef_npins.setVisible(show_npins)
             self._ef_npins_label.setVisible(show_npins)
             self._ef_pins_label.setText("P pins" if two else "Pins")
+        if hasattr(self, "_ef_pdes"):
+            role = (self._ef_role.currentText()
+                    if hasattr(self, "_ef_role") else "")
+            show_des = (two and getattr(self, "_ef_pins_apply", False)
+                        and role in ("SOURCE", "SINK"))
+            self._ef_pdes.setVisible(show_des)
+            self._ef_pdes_label.setVisible(show_des)
+            self._ef_ndes.setVisible(show_des)
+            self._ef_ndes_label.setVisible(show_des)
 
     def _on_editor_apply(self) -> None:
         """Commit the form into an :class:`EditorDirective` on the project,
@@ -20124,6 +20231,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             d.p_pins = self._parse_pin_field(self._ef_pins.text())
             d.n_pins = (None if single
                         else self._parse_pin_field(self._ef_npins.text()))
+            # Multi-connector DES lists (PDN_*_DES). Two-net SOURCE/SINK only.
+            if single or role not in ("SOURCE", "SINK"):
+                d.p_des = None
+                d.n_des = None
+            else:
+                d.p_des = self._parse_pin_field(self._ef_pdes.text())
+                d.n_des = self._parse_pin_field(self._ef_ndes.text())
             # If this component has a schematic directive, mark the editor
             # directive as its override so the re-solve drops the schematic
             # one instead of stamping both.
@@ -20135,6 +20249,8 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             d.kind = "free"
             d.p_pins = None
             d.n_pins = None
+            d.p_des = None
+            d.n_des = None
             self._editor_selection = {"kind": "free", "id": d.id}
 
         self._ensure_project().upsert_directive(d)
@@ -24877,7 +24993,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                         "designator": display_desig,
                         "schdoc": schdoc,
                         "terminal": term_name,
-                        "pad": pin.get("pad", ""),
+                        "pad": self._pin_display_pad(pin),
                         "net": net,
                         "layer_id": layer_id,
                         "x_mm": x,
@@ -29418,7 +29534,7 @@ def _format_setup_html(solution, metadata: dict | None,
                         net_cell = f"<code>{_esc(req_net or actual_net)}</code>"
                     parts.append("<tr>"
                                  f"<td>{_esc(term_name) if i == 0 else ''}</td>"
-                                 f"<td>{_esc(pin.get('pad',''))}</td>"
+                                 f"<td>{_esc(PdnViewer._pin_display_pad(pin))}</td>"
                                  f"<td>{net_cell}</td>"
                                  f"<td class='num'>{pin.get('layer_id','')}</td>"
                                  f"<td class='num'>{pin.get('x_mm', 0):.3f}</td>"
