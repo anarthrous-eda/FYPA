@@ -4153,6 +4153,205 @@ def test_sink_p_des_multi_connector():
     assert "J1" not in {p.component_designator for p in snk.p.pins}
 
 
+def test_source_n_des_pins_filter_intersects_net():
+    """``*_PINS`` narrows the ``*_DES`` net match; it never overrides it.
+
+    Regression: the pin filter used to select pads by name alone, so naming a
+    pin that sits on the *other* rail resolved the N terminal onto that rail —
+    both terminals on VIN, a dead short across the source, reported ok.
+    """
+    proj = _banana_source_proj(
+        n_des="J3,J5", extra_params={"PDN_N_PINS": "1"},
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert not result.ok, [
+        (d.n.requested_net,
+         [(p.component_designator, p.pad_designator, p.net_index)
+          for p in d.n.pins])
+        for d in result.directives if isinstance(d, SourceSpec)
+    ]
+    assert any(
+        "J3" in e and "GND" in e and "'1'" in e for e in result.errors
+    ), result.errors
+
+
+def test_source_n_des_pins_filter_selects_matching_pad():
+    """The filter still works when the named pin IS on the requested net."""
+    proj = _banana_source_proj(
+        n_des="J3,J5", extra_params={"PDN_N_PINS": "2"},
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    src = next(d for d in result.directives if isinstance(d, SourceSpec))
+    assert {p.component_designator for p in src.n.pins} == {"J3", "J5"}
+    assert {p.pad_designator for p in src.n.pins} == {"2"}
+    gnd = [i for i, n in enumerate(proj.nets) if n.name == "GND"][0]
+    assert {p.net_index for p in src.n.pins} == {gnd}
+
+
+def _multi_channel_des_proj():
+    """SOURCE J2 placed twice (multi-channel) with PDN_N_DES=J3 (placed once)."""
+    return _minimal_proj(
+        nets=(RawNet("GND"), RawNet("VIN")),
+        sch_components=(
+            RawSchComponent(
+                designator="J2", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_ROLE": "SOURCE", "PDN_V": "5",
+                    "PDN_P_NET": "VIN", "PDN_N_NET": "GND",
+                    "PDN_N_DES": "J3",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="J3", schdoc_name="Pwr.SchDoc",
+                parameters={"Comment": "CONN"}, pin_designators=("1", "2"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="J2_CH1", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="CONN", source_designator="J2",
+            ),
+            RawPcbComponent(
+                designator="J2_CH2", center=Pt2D(30, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="CONN", source_designator="J2",
+            ),
+            RawPcbComponent(
+                designator="J3", center=Pt2D(5, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="CONN", source_designator="J3",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, 0), _pad(0, "2", 0, 1),
+            _pad(1, "1", 1, 30), _pad(1, "2", 0, 31),
+            _pad(2, "1", 1, 5), _pad(2, "2", 0, 6),
+        ),
+    )
+
+
+def test_source_des_on_multi_channel_part_is_refused():
+    """A designator list cannot be qualified per channel, so refuse it.
+
+    Regression: every placement got the identical N pads, stacking one 5 V
+    source per channel on the same return node and multiplying the injected
+    current, with ok=True and no warning.
+    """
+    result = parse_annotations(_multi_channel_des_proj(), enabled_layers=[1])
+    assert not result.ok
+    assert any(
+        "PDN_N_DES" in e and "multi-channel" in e for e in result.errors
+    ), result.errors
+    assert not [d for d in result.directives if isinstance(d, SourceSpec)]
+
+
+def test_indexed_single_net_channel_does_not_inherit_des_template():
+    """A PDNn_NET channel must not inherit an unindexed PDN_*_DES template.
+
+    Regression: *_DES was missing from the two-terminal form group, so the
+    single-net channel inherited PDN_N_DES and _terminal_mode then rejected
+    the channel as a form conflict the user never wrote.
+    """
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("VIN")),
+        sch_components=(
+            RawSchComponent(
+                designator="J2", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN_N_DES": "J3",          # unindexed template only
+                    "PDN1_ROLE": "SOURCE", "PDN1_V": "5",
+                    "PDN1_NET": "VIN",          # single-net channel
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="J3", schdoc_name="Pwr.SchDoc",
+                parameters={"Comment": "CONN"}, pin_designators=("1", "2"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="J2", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="CONN", source_designator="J2",
+            ),
+            RawPcbComponent(
+                designator="J3", center=Pt2D(5, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="CONN", source_designator="J3",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, 0), _pad(0, "2", 0, 1),
+            _pad(1, "1", 1, 5), _pad(1, "2", 0, 6),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    sources = [d for d in result.directives if isinstance(d, SourceSpec)]
+    assert [s.channel_index for s in sources] == [1]
+
+
+def test_channel_defined_only_by_des_is_discovered():
+    """``PDNn_N_DES`` alone marks channel n present, like ``PDNn_N_PINS``.
+
+    Regression: *_DES was not a channel-defining suffix, so both indexed
+    channels were silently dropped and the part collapsed to the unindexed
+    directive resolving on the host's own pad.
+    """
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("VIN")),
+        sch_components=(
+            RawSchComponent(
+                designator="J2", schdoc_name="Pwr.SchDoc",
+                parameters={
+                    "PDN1_ROLE": "SOURCE", "PDN1_V": "5",
+                    "PDN1_P_NET": "VIN", "PDN1_N_NET": "GND",
+                    "PDN1_N_DES": "J3",
+                    "PDN2_ROLE": "SOURCE", "PDN2_V": "5",
+                    "PDN2_P_NET": "VIN", "PDN2_N_NET": "GND",
+                    "PDN2_N_DES": "J5",
+                },
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="J3", schdoc_name="Pwr.SchDoc",
+                parameters={"Comment": "CONN"}, pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="J5", schdoc_name="Pwr.SchDoc",
+                parameters={"Comment": "CONN"}, pin_designators=("1", "2"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator="J2", center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="CONN", source_designator="J2",
+            ),
+            RawPcbComponent(
+                designator="J3", center=Pt2D(5, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="CONN", source_designator="J3",
+            ),
+            RawPcbComponent(
+                designator="J5", center=Pt2D(10, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="CONN", source_designator="J5",
+            ),
+        ),
+        pads=(
+            _pad(0, "1", 1, 0), _pad(0, "2", 0, 1),
+            _pad(1, "1", 1, 5), _pad(1, "2", 0, 6),
+            _pad(2, "1", 1, 10), _pad(2, "2", 0, 11),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    assert result.ok, result.errors
+    by_channel = {
+        d.channel_index: d for d in result.directives
+        if isinstance(d, SourceSpec)
+    }
+    assert set(by_channel) == {1, 2}
+    assert {p.component_designator for p in by_channel[1].n.pins} == {"J3"}
+    assert {p.component_designator for p in by_channel[2].n.pins} == {"J5"}
+
+
 def test_format_solve_blockers_lists_errors():
     from types import SimpleNamespace
 

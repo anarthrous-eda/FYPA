@@ -49,6 +49,8 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
         SourceSpec,
         TerminalPin,
         TerminalSpec,
+        _overlap_pad_names,
+        _terminal_pin_overlap_key,
     )
     from fypa.altium.extract import Pt2D
 
@@ -175,7 +177,7 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
             through = getattr(p, "is_through_hole", False)
             lid = top_layer if through else p.layer_id
             out.append(TerminalPin(
-                pad_designator=p.designator or "(editor)",
+                pad_designator=p.designator or _ANCHOR_PAD,
                 layer_id=lid,
                 net_index=nidx,
                 point=p.center,
@@ -400,12 +402,17 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
             # nets are the same). Anchor pins carry the ``_ANCHOR_PAD``
             # placeholder rather than a pad name, so comparing designators
             # alone would flag every legitimate free marker.
-            shared_pads = sorted(
-                {pin.pad_designator for pin in p_term.pins
-                 if pin.pad_designator != _ANCHOR_PAD}
-                & {pin.pad_designator for pin in n_term.pins
-                   if pin.pad_designator != _ANCHOR_PAD}
-            )
+            #
+            # Compare on the annotation path's composite component+pad key,
+            # not the bare pad name: with *_DES the two terminals sit on
+            # different components, and single-pin lab jacks all call their
+            # one pad "1". Bare names made every banana-jack return look like
+            # a short with the host's own pin 1.
+            p_keys = {_terminal_pin_overlap_key(pin) for pin in p_term.pins
+                      if pin.pad_designator != _ANCHOR_PAD}
+            n_keys = {_terminal_pin_overlap_key(pin) for pin in n_term.pins
+                      if pin.pad_designator != _ANCHOR_PAD}
+            shared_pads = _overlap_pad_names(p_term, p_keys & n_keys)
             same_net = (
                 {pin.net_index for pin in p_term.pins}
                 == {pin.net_index for pin in n_term.pins}

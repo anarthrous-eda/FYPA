@@ -226,6 +226,71 @@ def test_editor_source_n_des_multi_connector():
     assert "J2" not in {p.component_designator for p in src.n.pins}
 
 
+def _loaded_with_single_pin_jacks():
+    """Lab bench stand-in: banana jacks whose one and only pad is named "1".
+
+    J2 is the source jack (VIN), J3/J5 the return jacks (GND), U1 the load.
+    Every jack reuses pad designator "1" — the shape that made the short
+    check compare P's "1" against N's "1" and refuse the directive.
+    """
+    from fypa.altium.extract import Pt2D
+
+    nets = [SimpleNamespace(name="GND"), SimpleNamespace(name="VIN")]
+    comps = [SimpleNamespace(designator=d) for d in ("J2", "J3", "J5", "U1")]
+    pads = [
+        SimpleNamespace(component_index=0, net_index=1, designator="1",
+                        center=Pt2D(0, 0), layer_id=1, is_through_hole=False),
+        SimpleNamespace(component_index=1, net_index=0, designator="1",
+                        center=Pt2D(5, 0), layer_id=1, is_through_hole=False),
+        SimpleNamespace(component_index=2, net_index=0, designator="1",
+                        center=Pt2D(10, 0), layer_id=1, is_through_hole=False),
+        SimpleNamespace(component_index=3, net_index=1, designator="1",
+                        center=Pt2D(20, 0), layer_id=1, is_through_hole=False),
+        SimpleNamespace(component_index=3, net_index=0, designator="2",
+                        center=Pt2D(21, 0), layer_id=1, is_through_hole=False),
+    ]
+    extracted = SimpleNamespace(
+        nets=nets, pcb_components=comps, pads=pads,
+        enabled_copper_layer_ids=lambda: [1],
+    )
+    return SimpleNamespace(extracted=extracted, annotations=AnnotationResult())
+
+
+def test_editor_n_des_single_pin_jacks_is_not_a_short():
+    """Same pad name on different jacks is not a short.
+
+    Regression: the overlap check compared bare pad designators, so a source
+    on J2 pin 1 returning through J3/J5 pin 1 — the feature's whole point —
+    was refused as "both resolve to pad(s) 1".
+    """
+    loaded = _loaded_with_single_pin_jacks()
+    eds = [EditorDirective(
+        kind="component", role="SOURCE", designator="J2",
+        single_net=False, p_net="VIN", n_net="GND",
+        n_des=["J3", "J5"], voltage=5.0,
+    )]
+    warnings = apply_editor_directives(loaded, eds)
+    assert warnings == [], warnings
+    src = next(s for s in loaded.annotations.directives
+               if isinstance(s, SourceSpec))
+    assert {p.component_designator for p in src.p.pins} == {"J2"}
+    assert {p.component_designator for p in src.n.pins} == {"J3", "J5"}
+    assert {p.pad_designator for p in src.n.pins} == {"1"}
+
+
+def test_editor_n_des_onto_the_p_net_is_still_a_short():
+    """The overlap guard still fires when *_DES lands N back on P's net."""
+    loaded = _loaded_with_single_pin_jacks()
+    eds = [EditorDirective(
+        kind="component", role="SOURCE", designator="J2",
+        single_net=False, p_net="VIN", n_net="VIN",
+        n_des=["U1"], voltage=5.0,
+    )]
+    warnings = apply_editor_directives(loaded, eds)
+    assert any("short" in w for w in warnings), warnings
+    assert loaded.annotations.directives == []
+
+
 def test_editor_n_des_missing_designator_skipped():
     loaded = _loaded_with_connectors()
     eds = [EditorDirective(
