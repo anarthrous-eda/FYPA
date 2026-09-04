@@ -198,16 +198,44 @@ a positive integer to `PDN` in the parameter prefix:
 | 2       | `PDN2_V` | `PDN2_I` | `PDN2_R` | `PDN2_P_NET`, … |
 | …       | … | … | … | … |
 
-REGULATOR channels also require `PDN<n>_GAIN` and the four `PDN<n>_OUT_*` /
-`PDN<n>_IN_*` net (or pin) parameters per channel.
+REGULATOR channels also require the four `PDN<n>_OUT_*` / `PDN<n>_IN_*` net
+(or pin) parameters per channel (IN may be inherited from unindexed
+`PDN_IN_*`; see templates below).
 
-The legacy unindexed channel and any number of indexed channels coexist
-as independent directives. Indices are sparse — gaps are allowed (e.g.
-just `PDN_V` + `PDN2_V`). A channel is "present" iff its value parameter
-is set; the per-channel `*_NET` and `*_PINS` parameters use the matching
-index. The part-wide `PDN_ROLE` is the **default** role for every channel —
-a channel can override it with `PDN<n>_ROLE` (see [Mixed-role
+The legacy unindexed channel and any number of indexed channels can coexist
+as independent directives when the unindexed form has its own terminals.
+Indices are sparse — gaps are allowed (e.g. just `PDN_V` + `PDN2_V`). A
+channel is present when its value parameter or a channel-defining terminal
+is set; unset indexed params inherit from the matching unindexed
+`PDN_*` template. The part-wide `PDN_ROLE` is the **default** role for every
+channel — a channel can override it with `PDN<n>_ROLE` (see [Mixed-role
 parts](#mixed-role-parts-a-source-and-a-sink-on-one-component) below).
+
+**Templates:** the unindexed form stays a real directive alongside indexed
+channels only when it is a channel in its own right — its **own** value
+parameter *and* a *complete* terminal set (both P and N for
+SOURCE/SINK/SERIES; both `OUT_*` sides for REGULATOR). Otherwise unindexed
+`PDN_*` values are defaults only and no legacy directive is emitted. A
+shared `PDN_N_NET = GND` or `PDN_IN_*` alone is a template, and so is a
+complete `PDN_P_NET` + `PDN_N_NET` pair with the values on `PDN1_I` /
+`PDN2_I`. Unindexed `PDN_NET` / `PDN_PINS` with its own value is a complete
+single-net channel and is kept alongside indexed channels.
+Indexed-only parts (`PDNn_ROLE` without `PDN_ROLE`) always treat unindexed
+values as templates when indexed channels exist.
+
+Inheritance is scoped to the part-wide role: a channel that overrides it
+with `PDN<n>_ROLE` reads nothing from the template, so a SERIES channel on
+a SINK part cannot pick up the sink's nets. The two terminal forms are also
+atomic — a channel that names `PDN1_P_NET` / `PDN1_N_NET` never inherits a
+shared `PDN_NET`, and vice versa. Example — shared SERIES resistance:
+
+```text
+SW1:
+  PDN_ROLE   = SERIES
+  PDN_R      = 0.05
+  PDN1_P_NET = VIN_A     PDN1_N_NET = VOUT_A
+  PDN2_P_NET = VIN_B     PDN2_N_NET = VOUT_B
+```
 
 Example — a SINK with three independent supply rails:
 

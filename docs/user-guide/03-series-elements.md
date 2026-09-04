@@ -15,6 +15,30 @@ solver cannot push current between them. With a `SERIES` directive, the
 two nets are bridged by a lumped resistance, current flows, and the
 voltage drop across the part shows up in the solve.
 
+## 3.0 Altium Net Ties (automatic)
+
+Altium **Net Tie** / **Net Tie (No BOM)** symbols (`Component Kind` on the
+schematic part) deliberately short two or more nets. FYPA detects that
+kind and auto-bridges the nets with a low-Ω short so they merge in the
+FEM — you do **not** need `PDN_ROLE=SERIES` on every Net Tie.
+
+- Override: if the Net Tie already carries any `PDN_*` parameter (for
+  example an explicit `SERIES` with a measured resistance, or incomplete
+  PDN fields), the auto-bridge is skipped and your annotation wins.
+- Jumpers and bare `0R` resistors that are still `Component Kind =
+  Standard` are **not** auto-detected; annotate those as `SERIES` as
+  usual.
+- The kind is read from the PCB footprint as well as the schematic
+  symbol, so a Net Tie that only exists on the board (added by ECO, or a
+  board opened without its schematics) is bridged too.
+- Every auto-bridge is logged. Look for `auto-bridged A <-> B` in
+  **Setup -> Annotation log**: that line is your check that the tie
+  shorted the nets you expected, not (say) a rail to ground. When the
+  bridge cannot be worked out, the reason is logged as a **warning** and
+  that tie is left unbridged — auto-detected ties never fail a load or
+  `fypa annotations`, because you did not annotate them. Annotate the
+  part with explicit `PDN_*` parameters to take over.
+
 > Read [Section 1](01-sources-and-sinks.md) first if you have not — the
 > parameter mechanics (where to add them, hiding them, library-symbol
 > defaults) are the same.
@@ -85,11 +109,42 @@ bead array) uses indexed parameters, the same way multi-rail SINKs use
 | 1       | `PDN1_R` | `PDN1_P_NET`, `PDN1_N_NET` or `PDN1_P_PINS` / `PDN1_N_PINS` |
 | 2       | `PDN2_R` | … |
 
+Unindexed `PDN_*` values are **templates** for indexed channels: `PDNn_X`
+wins when set, otherwise `PDN_X` is used. When indexed channels exist and
+the unindexed form does not carry its own `PDN_R` **and** a complete P/N
+(or pin) pair, the legacy channel is not emitted — a shared `PDN_P_NET` or
+`PDN_R` alone is template-only.
+
+A shared side inherited this way is a real connection: it bridges its nets
+in the series graph the same way an explicit `PDN<n>_P_NET` would, so
+downstream regulator Vin inference and rail grouping see it.
+
 Auto-inference from pad connectivity applies only when the part carries
 **one** SERIES channel. With two or more channels you must name each
 channel's nets or pin overrides explicitly.
 
-Example — a 4-pad ferrite array bridging two net pairs per channel:
+Example — shared resistance, two net pairs (multi-pin switch / ferrite):
+
+```text
+SW1:
+  PDN_ROLE    = SERIES
+  PDN_R       = 0.05
+  PDN1_P_NET  = VIN_A     PDN1_N_NET = VOUT_A
+  PDN2_P_NET  = VIN_B     PDN2_N_NET = VOUT_B
+```
+
+Example — shared P-side net, per-channel N side:
+
+```text
+SW1:
+  PDN_ROLE    = SERIES
+  PDN_R       = 0.05
+  PDN_P_NET   = VIN
+  PDN1_N_NET  = VOUT_A
+  PDN2_N_NET  = VOUT_B
+```
+
+Example — per-channel resistance and pin overrides:
 
 ```text
 FB1:

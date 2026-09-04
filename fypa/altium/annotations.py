@@ -78,10 +78,75 @@ Example — a SINK with three independent supply rails::
     PDN1_I     = 250mA     PDN1_P_NET = +1V8   PDN1_N_NET = GND
     PDN2_I     = 50mA      PDN2_P_NET = +5V    PDN2_N_NET = GND
 
-Indices are sparse (any positive integer; gaps allowed); a channel is
-"present" iff its value param (``PDNn_V`` for SOURCE / REGULATOR,
-``PDNn_I`` for SINK, ``PDNn_R`` for SERIES) is set. All four roles support
-the same indexed-prefix scheme.
+Indices are sparse (any positive integer; gaps allowed). A channel is
+"present" when it has a value param for its role (``PDNn_V`` / ``PDNn_I`` /
+``PDNn_R``), a channel-defining *terminal* param, or an indexed
+``PDNn_ROLE`` — and the value may be **inherited** from the unindexed
+template (``PDN_V`` when ``PDN1_V`` is omitted). Modifiers (``MIN_V``,
+``GAIN``, ``QUIESCENT``, ``REGULATOR_TYPE``, ``REGULATOR_EFFICIENCY``) tune
+a channel that already exists and never create one, so a stray
+``PDN1_MIN_V`` cannot clone the unindexed directive off the template and
+double-count it. A REGULATOR is defined by its ``OUT_*`` pair alone —
+``PDN_IN_*`` is the side meant to be shared. All four roles support the
+same indexed-prefix scheme.
+
+Unindexed template inheritance
+------------------------------
+Unindexed ``PDN_*`` parameters act as defaults for indexed channels: for
+channel *n*, ``PDNn_X`` wins when set, otherwise ``PDN_X`` is used. Two
+limits keep a channel from inheriting something it never asked for:
+
+* **Role.** The template belongs to the part-wide ``PDN_ROLE``, so only
+  channels of that role read it. A ``PDN1_ROLE=SERIES`` channel on a
+  ``PDN_ROLE=SINK`` part inherits nothing — otherwise it would pick up the
+  sink's ``PDN_P_NET`` / ``PDN_N_NET`` and drop a resistor across the rail.
+  A part with *no* part-wide role is the exception (the indexed-only
+  ``PDNn_ROLE`` form): its unindexed params are pure templates, so every
+  channel may read them.
+* **Terminal mode.** Single-net (``NET`` / ``PINS``) and two-terminal
+  (``P_NET`` / ``N_NET`` / ``*_PINS``) are mutually exclusive, so a channel
+  that already declares one form does not inherit the other. A legacy
+  ``PDN_NET`` channel and a two-terminal ``PDN1_*`` channel coexist fine.
+
+When at least one indexed channel exists, the legacy ``index=None`` channel
+is emitted only if it is a real channel in its own right: its **own** value
+param (not an inherited one) plus a *complete* terminal set for its role. A
+complete set means both sides of a two-terminal pair (or ``PDN_NET`` /
+``PDN_PINS`` for single-net SOURCE/SINK); for REGULATOR, both ``OUT_*``
+sides — so shared ``PDN_IN_*`` / ``PDN_N_NET`` / one SERIES side stay
+templates. Terminals without a value (``PDN_P_NET`` + ``PDN_N_NET`` beside
+only ``PDN1_I`` / ``PDN2_I``) are a terminal template, not a channel.
+Parts with only ``PDNn_ROLE`` (no part-wide ``PDN_ROLE``) always treat the
+unindexed form as template-only when indexed channels exist.
+
+Example — dual SERIES paths sharing one resistance::
+
+    PDN_ROLE   = SERIES
+    PDN_R      = 0.05
+    PDN1_P_NET = VIN_A     PDN1_N_NET = VOUT_A
+    PDN2_P_NET = VIN_B     PDN2_N_NET = VOUT_B
+
+Example — dual SERIES with a shared P-side net::
+
+    PDN_ROLE   = SERIES
+    PDN_R      = 0.05
+    PDN_P_NET  = VIN
+    PDN1_N_NET = VOUT_A
+    PDN2_N_NET = VOUT_B
+
+Example — dual REGULATOR outputs sharing Vin / type / voltage::
+
+    PDN_ROLE           = REGULATOR
+    PDN_V              = 3.3
+    PDN_REGULATOR_TYPE = LDO
+    PDN_IN_P_NET       = VIN       PDN_IN_N_NET = GND
+    PDN1_OUT_P_NET     = VOUT_P    PDN1_OUT_N_NET = GND
+    PDN2_OUT_P_NET     = GND       PDN2_OUT_N_NET = VOUT_N
+
+The classic pattern with a real unindexed channel *plus* indexed ones
+(``PDN_I`` + ``PDN_P_NET`` + ``PDN_N_NET`` alongside ``PDN1_I`` + …) is
+unchanged: unindexed keeps a complete terminal pair, so it remains a
+directive.
 
 Values support SI prefixes and units (``500mA``, ``3V3``, ``1.5k``, ``0.1``).
 
@@ -188,6 +253,18 @@ _RESISTOR_LIKE_ROLES: frozenset[str] = frozenset({"SERIES"})
 
 VALID_ROLES: frozenset[str] = frozenset({"SOURCE", "SINK", "REGULATOR"}) | _RESISTOR_LIKE_ROLES
 
+# Altium ``ComponentKind`` values that are Net Ties (altium_monkey.ComponentKind).
+COMPONENT_KIND_NET_TIE_BOM: int = 3
+COMPONENT_KIND_NET_TIE_NO_BOM: int = 4
+NET_TIE_COMPONENT_KINDS: frozenset[int] = frozenset({
+    COMPONENT_KIND_NET_TIE_BOM,
+    COMPONENT_KIND_NET_TIE_NO_BOM,
+})
+# Synthetic SERIES resistance for auto-detected Net Ties. Must stay below
+# ``fypa.altium.loader.NET_MERGE_RESISTANCE_THRESHOLD_OHM`` (0.9 mΩ) so the
+# loader merges the two nets instead of inserting a fragile lumped short.
+NET_TIE_BRIDGE_RESISTANCE_OHM: float = 0.5e-3
+
 _COMMON_TERMINAL_SUFFIXES: frozenset[str] = frozenset({
     "NET", "PINS", "P_NET", "N_NET", "P_PINS", "N_PINS",
 })
@@ -200,6 +277,36 @@ _KNOWN_SUFFIXES_BY_ROLE: dict[str, frozenset[str]] = {
         "IN_P_NET", "IN_N_NET", "IN_P_PINS", "IN_N_PINS",
     }),
     "SERIES": frozenset({"R", "P_NET", "N_NET", "P_PINS", "N_PINS"}),
+}
+
+_ALL_INHERITABLE_SUFFIXES: frozenset[str] = frozenset().union(
+    *(_KNOWN_SUFFIXES_BY_ROLE.values())
+)
+
+# The two mutually exclusive terminal forms for SOURCE / SINK (see
+# _terminal_mode). Template inheritance treats each as an atomic group: a
+# channel that already picks one form must not inherit the other from the
+# unindexed template, or it inherits its way into a "conflicts with" error.
+_SINGLE_NET_SUFFIXES: frozenset[str] = frozenset({"NET", "PINS"})
+_TWO_TERMINAL_SUFFIXES: frozenset[str] = frozenset({
+    "P_NET", "N_NET", "P_PINS", "N_PINS",
+})
+
+# Suffixes that *define* a channel, so setting one marks that channel present
+# in _resolve_channel_roles. Deliberately narrower than
+# _KNOWN_SUFFIXES_BY_ROLE: the modifiers (MIN_V, GAIN, QUIESCENT,
+# REGULATOR_TYPE, REGULATOR_EFFICIENCY) tune a channel that already exists,
+# so treating a stray PDN1_MIN_V as a channel would clone the whole unindexed
+# directive off the template and double-count the load. A REGULATOR is
+# defined by its OUT pair alone — PDN_IN_* is the side meant to be shared,
+# so an indexed IN never conscripts a channel into existence.
+_TERMINAL_SUFFIXES_BY_ROLE: dict[str, frozenset[str]] = {
+    "SOURCE": _COMMON_TERMINAL_SUFFIXES,
+    "SINK": _COMMON_TERMINAL_SUFFIXES,
+    "REGULATOR": frozenset({
+        "OUT_P_NET", "OUT_N_NET", "OUT_P_PINS", "OUT_N_PINS",
+    }),
+    "SERIES": _TWO_TERMINAL_SUFFIXES,
 }
 
 
@@ -384,6 +491,172 @@ def _channel_key(suffix: str, index: int | None) -> str:
     return f"PDN_{suffix}" if index is None else f"PDN{index}_{suffix}"
 
 
+def _inheritable_suffixes(
+    params: dict[str, str],
+    index: int | None,
+    role: str,
+) -> frozenset[str]:
+    """Suffixes channel ``index`` (effective ``role``) may inherit.
+
+    Two narrowings, both about not inheriting something the channel never
+    asked for:
+
+    *Role* — the unindexed template belongs to the part-wide ``PDN_ROLE``, so
+    only a channel of that same role may read it. A ``PDN1_ROLE=SERIES``
+    channel on a ``PDN_ROLE=SINK`` part must not pick up the sink's
+    ``PDN_P_NET`` / ``PDN_N_NET``: that silently bridges the two rails the
+    sink sits across with a resistor nobody declared. A part with *no*
+    part-wide role is the exception — its unindexed params are pure templates
+    with no channel of their own, which is the indexed-only ``PDNn_ROLE``
+    form — so every channel may read them.
+
+    *Terminal mode* — a channel that already declares one of the two mutually
+    exclusive SOURCE/SINK terminal forms does not inherit the other, which
+    would otherwise turn a working ``PDN_NET`` + ``PDN1_P_NET``/``PDN1_N_NET``
+    part into a ``_terminal_mode`` conflict.
+    """
+    part_role = _part_role_default(params)
+    if part_role in VALID_ROLES and part_role != role:
+        return frozenset()
+    allowed = set(_KNOWN_SUFFIXES_BY_ROLE.get(role, _ALL_INHERITABLE_SUFFIXES))
+    declares = {
+        suffix for suffix in _SINGLE_NET_SUFFIXES | _TWO_TERMINAL_SUFFIXES
+        if _ci_get(params, _channel_key(suffix, index)) is not None
+    }
+    if declares & _SINGLE_NET_SUFFIXES:
+        allowed -= _TWO_TERMINAL_SUFFIXES
+    if declares & _TWO_TERMINAL_SUFFIXES:
+        allowed -= _SINGLE_NET_SUFFIXES
+    return frozenset(allowed)
+
+
+def _channel_get(
+    params: dict[str, str],
+    suffix: str,
+    index: int | None,
+    role: str,
+) -> str | None:
+    """Read ``PDN<n>_<suffix>``, falling back to unindexed ``PDN_<suffix>``.
+
+    Indexed channels inherit unset parameters from the unindexed template,
+    but only the suffixes :func:`_inheritable_suffixes` allows for ``role`` —
+    so this agrees with what :func:`_materialize_channel_params` hands the
+    per-role parsers, and role resolution cannot admit a channel the parser
+    will then reject as missing its value.
+
+    The legacy channel (``index is None``) never falls back — there is no
+    further parent. ``PDN_ROLE`` is *not* read through this helper; use
+    :func:`_effective_role` for role resolution.
+    """
+    direct = _ci_get(params, _channel_key(suffix, index))
+    if direct is not None or index is None:
+        return direct
+    if suffix not in _inheritable_suffixes(params, index, role):
+        return None
+    return _ci_get(params, _channel_key(suffix, None))
+
+
+def _materialize_channel_params(
+    params: dict[str, str],
+    index: int | None,
+    role: str,
+) -> dict[str, str]:
+    """Copy ``params`` with unindexed templates written into indexed keys.
+
+    For ``index is None`` returns a shallow copy unchanged. For an indexed
+    channel, every suffix :func:`_inheritable_suffixes` allows that is missing
+    as ``PDNn_X`` but present as ``PDN_X`` is copied onto ``PDNn_X``, so
+    downstream helpers that look up exact channel keys (``_ci_get`` /
+    ``_require_value``) see the effective value. ``role`` is the channel's
+    *effective* role, not the part-wide default. Does not invent a
+    ``PDNn_ROLE`` from ``PDN_ROLE``.
+    """
+    out = dict(params)
+    if index is None:
+        return out
+    for suffix in _inheritable_suffixes(params, index, role):
+        indexed_key = _channel_key(suffix, index)
+        if _ci_get(out, indexed_key) is not None:
+            continue
+        template = _ci_get(params, _channel_key(suffix, None))
+        if template is not None:
+            out[indexed_key] = template
+    return out
+
+
+def _unindexed_has_defining_terminals(
+    params: dict[str, str],
+    role: str,
+) -> bool:
+    """True when the legacy channel has a *complete* terminal set for ``role``.
+
+    A lone shared side (``PDN_N_NET``, ``PDN_P_NET``, ``PDN_IN_*``) is not
+    enough — those stay templates when indexed channels exist. SOURCE/SINK
+    may also be complete via single-net ``PDN_NET`` / ``PDN_PINS``.
+    """
+    if role in ("SOURCE", "SINK"):
+        if (
+            _ci_get(params, _channel_key("NET", None)) is not None
+            or _ci_get(params, _channel_key("PINS", None)) is not None
+        ):
+            return True
+        has_p = (
+            _ci_get(params, _channel_key("P_NET", None)) is not None
+            or _ci_get(params, _channel_key("P_PINS", None)) is not None
+        )
+        has_n = (
+            _ci_get(params, _channel_key("N_NET", None)) is not None
+            or _ci_get(params, _channel_key("N_PINS", None)) is not None
+        )
+        return has_p and has_n
+    if role == "SERIES":
+        has_p = (
+            _ci_get(params, _channel_key("P_NET", None)) is not None
+            or _ci_get(params, _channel_key("P_PINS", None)) is not None
+        )
+        has_n = (
+            _ci_get(params, _channel_key("N_NET", None)) is not None
+            or _ci_get(params, _channel_key("N_PINS", None)) is not None
+        )
+        return has_p and has_n
+    if role == "REGULATOR":
+        has_out_p = (
+            _ci_get(params, _channel_key("OUT_P_NET", None)) is not None
+            or _ci_get(params, _channel_key("OUT_P_PINS", None)) is not None
+        )
+        has_out_n = (
+            _ci_get(params, _channel_key("OUT_N_NET", None)) is not None
+            or _ci_get(params, _channel_key("OUT_N_PINS", None)) is not None
+        )
+        return has_out_p and has_out_n
+    return False
+
+
+def _active_roles_for_discovery(
+    params: dict[str, str],
+    part_role: str,
+) -> set[str]:
+    """Roles whose value/terminal suffixes may mark a channel present.
+
+    Uses the part-wide default plus every valid ``PDNn_ROLE`` override so
+    mixed-role parts still discover SOURCE and SINK channels, while a
+    leftover ``PDN1_R`` on a SINK-only part does not invent a phantom channel.
+    """
+    roles: set[str] = set()
+    if part_role in VALID_ROLES:
+        roles.add(part_role)
+    for idx in _discover_channel_indices(params, "ROLE"):
+        if idx is None:
+            continue
+        raw = _ci_get(params, _channel_key("ROLE", idx))
+        if raw is None:
+            continue
+        role = raw.strip().upper()
+        if role in VALID_ROLES:
+            roles.add(role)
+    return roles
+
+
 def _discover_channel_indices(params: dict[str, str],
                               value_suffix: str) -> list[int | None]:
     """Return channel indices for which a value parameter is present.
@@ -415,10 +688,8 @@ def _channel_label(designator: str, index: int | None) -> str:
     return designator if index is None else f"{designator}#{index}"
 
 
-# Value parameter suffix that makes a channel "present" for each role. A
-# channel exists iff the value param for its (effective) role is set —
-# ``PDN<n>_V`` for SOURCE / REGULATOR, ``PDN<n>_I`` for SINK, ``PDN<n>_R``
-# for SERIES.
+# Value parameter suffix for each role. A channel needs this value (on the
+# channel itself or inherited from the unindexed template) to be present.
 _VALUE_SUFFIX_BY_ROLE: dict[str, str] = {
     "SOURCE": "V", "SINK": "I", "SERIES": "R", "REGULATOR": "V",
 }
@@ -457,6 +728,11 @@ def _is_pdn_annotated(params: dict[str, str]) -> bool:
     if _ci_get(params, ROLE_KEY) is not None:
         return True
     return _has_indexed_role_params(params)
+
+
+def _has_any_pdn_params(params: dict[str, str]) -> bool:
+    """True when any ``PDN_*`` / ``PDN<n>_*`` parameter key is present."""
+    return any(_INDEXED_KEY_RE.match(k.strip()) for k in params)
 
 
 def _part_role_default(params: dict[str, str]) -> str:
@@ -1620,23 +1896,42 @@ def _pads_by_component_all(proj: ExtractedProject) -> dict[int, list[RawPad]]:
 
 def _series_channel_indices(
     comp: PdnParameterSource,
-) -> list[int]:
-    """Indexed SERIES (resistor-like) channel numbers on one parameter source."""
+) -> list[int | None]:
+    """SERIES (resistor-like) channel indices on one parameter source.
+
+    Uses the same discovery / template-only rules as
+    :func:`_resolve_channel_roles` so bridge validation sees the same
+    channels the SERIES parser will emit.
+    """
     part_role = _part_role_default(comp.parameters)
-    return [
-        idx for idx in _discover_channel_indices(comp.parameters, "R")
-        if _effective_role(comp.parameters, idx, part_role)
-        in _RESISTOR_LIKE_ROLES
-    ]
+    scratch = AnnotationResult()
+    grouped = _resolve_channel_roles(
+        comp.parameters, part_role, comp.designator, scratch,
+        report_errors=False,
+    )
+    return list(grouped.get("SERIES", []))
+
+
+def _series_channel_params(
+    comp: PdnParameterSource,
+    ch_idx: int | None,
+) -> dict[str, str]:
+    """``comp.parameters`` with the SERIES channel's templates materialized.
+
+    The bridge graph must see the same effective nets the SERIES parser emits
+    — including ones inherited from a shared unindexed side — so both go
+    through :func:`_materialize_channel_params` rather than reading raw keys.
+    """
+    return _materialize_channel_params(comp.parameters, ch_idx, "SERIES")
 
 
 def _series_channel_has_net_params(
-    comp: PdnParameterSource,
-    ch_idx: int,
+    params: dict[str, str],
+    ch_idx: int | None,
 ) -> bool:
     return (
-        _ci_get(comp.parameters, _channel_key("P_PINS", ch_idx)) is not None
-        or _ci_get(comp.parameters, _channel_key("N_PINS", ch_idx)) is not None
+        _ci_get(params, _channel_key("P_PINS", ch_idx)) is not None
+        or _ci_get(params, _channel_key("N_PINS", ch_idx)) is not None
     )
 
 
@@ -1667,24 +1962,29 @@ def _net_name_for_pins(
 
 
 def _series_channel_side_net(
-    comp: PdnParameterSource,
+    params: dict[str, str],
     proj: ExtractedProject,
-    ch_idx: int,
+    ch_idx: int | None,
     pcb_idx: int,
     net_suffix: str,
     pins_suffix: str,
 ) -> str | None:
     """One side (P or N) of a SERIES channel resolved to a net name.
 
+    ``params`` is the channel's materialized parameter set (see
+    :func:`_series_channel_params`), so a side inherited from a shared
+    unindexed ``PDN_P_NET`` / ``PDN_P_PINS`` template resolves here too rather
+    than dropping the channel out of the SERIES graph.
+
     ``PDN<n>_P_NET`` wins when set; otherwise the ``PDN<n>_P_PINS`` pad list is
     resolved back through the placement's pads, so the pin form contributes the
-    same net pair as the name form instead of dropping out of the SERIES graph.
+    same net pair as the name form.
     """
-    name = _ci_get(comp.parameters, _channel_key(net_suffix, ch_idx))
+    name = _ci_get(params, _channel_key(net_suffix, ch_idx))
     if name and name.strip():
         return name
     pins = _split_pin_list(
-        _ci_get(comp.parameters, _channel_key(pins_suffix, ch_idx)),
+        _ci_get(params, _channel_key(pins_suffix, ch_idx)),
     )
     if not pins:
         return None
@@ -1694,9 +1994,9 @@ def _series_channel_side_net(
 def _resolve_series_channel_nets(
     comp: PdnParameterSource,
     proj: ExtractedProject,
-    ch_idx: int,
+    ch_idx: int | None,
     pcb_idx: int,
-    ch_indices: list[int],
+    ch_indices: list[int | None],
 ) -> tuple[str, str, bool] | None:
     """P/N net names for one SERIES channel on one PCB placement.
 
@@ -1706,10 +2006,11 @@ def _resolve_series_channel_nets(
     Callers that only need the unordered pair (bridge unioning) ignore the flag;
     :func:`_collect_series_upstream_map` must not read power flow out of it.
     """
-    p_net = _ci_get(comp.parameters, _channel_key("P_NET", ch_idx))
-    n_net = _ci_get(comp.parameters, _channel_key("N_NET", ch_idx))
+    params = _series_channel_params(comp, ch_idx)
+    p_net = _ci_get(params, _channel_key("P_NET", ch_idx))
+    n_net = _ci_get(params, _channel_key("N_NET", ch_idx))
     if p_net is None and n_net is None and not _series_channel_has_net_params(
-        comp, ch_idx,
+        params, ch_idx,
     ):
         if len(ch_indices) != 1:
             return None
@@ -1718,10 +2019,10 @@ def _resolve_series_channel_nets(
             return None
         return inferred[0], inferred[1], False
     p_resolved = _series_channel_side_net(
-        comp, proj, ch_idx, pcb_idx, "P_NET", "P_PINS",
+        params, proj, ch_idx, pcb_idx, "P_NET", "P_PINS",
     )
     n_resolved = _series_channel_side_net(
-        comp, proj, ch_idx, pcb_idx, "N_NET", "N_PINS",
+        params, proj, ch_idx, pcb_idx, "N_NET", "N_PINS",
     )
     if p_resolved and n_resolved:
         return p_resolved, n_resolved, True
@@ -1906,6 +2207,19 @@ class AnnotationResult:
     # injects a large ground-balancing current). Surfaced as an active dialog
     # like open_loop_rails. Populated by :func:`fypa.altium.loader.build_problem`.
     connectivity_breaks: list[str] = field(default_factory=list)
+    # Warnings about directives the low-Ω net-merge pass absorbs. A subset of
+    # ``warnings``. :func:`fypa.altium.loader.load_project` parses twice — once
+    # to discover the merges, once on the merged nets — and the second pass is
+    # told to skip every absorbed designator, so it cannot re-raise these. The
+    # loader copies them from the first result into the final one; without
+    # that, a Net Tie that wrongly bridged +3V3 to GND would merge the rails
+    # with nothing in the annotation log to say so.
+    absorbed_notes: list[str] = field(default_factory=list)
+
+    def note_absorbed(self, message: str) -> None:
+        """Warn, and mark the message to survive the post-merge re-parse."""
+        self.warnings.append(message)
+        self.absorbed_notes.append(message)
 
     @property
     def ok(self) -> bool:
@@ -2302,10 +2616,11 @@ def _parse_source(comp, proj, enabled_layers, result,
     specs: list[SourceSpec] = []
     for idx in indices:
         role_diag = f"SOURCE on {_channel_label(comp.designator, idx)}"
-        v = _require_value(comp.parameters, _channel_key("V", idx), role_diag, result)
+        params = _materialize_channel_params(comp.parameters, idx, "SOURCE")
+        v = _require_value(params, _channel_key("V", idx), role_diag, result)
         if v is None:
             continue
-        mode = _terminal_mode(comp.parameters, idx, role_diag, result)
+        mode = _terminal_mode(params, idx, role_diag, result)
         if mode is None:
             continue
         for pcb_idx in pcb_indices:
@@ -2316,7 +2631,7 @@ def _parse_source(comp, proj, enabled_layers, result,
             )
             if mode == "single":
                 p = _resolve_single_terminal(
-                    proj, pcb_idx, comp.parameters,
+                    proj, pcb_idx, params,
                     _channel_key("NET", idx), _channel_key("PINS", idx),
                     enabled_layers, inst_diag, result,
                     net_remap=net_remap,
@@ -2331,7 +2646,7 @@ def _parse_source(comp, proj, enabled_layers, result,
                 ))
                 continue
             pair = _resolve_two_terminal(
-                proj, pcb_idx, comp.parameters,
+                proj, pcb_idx, params,
                 _channel_key("P_NET", idx), _channel_key("N_NET", idx),
                 _channel_key("P_PINS", idx), _channel_key("N_PINS", idx),
                 enabled_layers, inst_diag, result,
@@ -2381,14 +2696,15 @@ def _parse_sink(comp, proj, enabled_layers, result,
     specs: list[SinkSpec] = []
     for idx in indices:
         role_diag = f"SINK on {_channel_label(comp.designator, idx)}"
-        i = _require_value(comp.parameters, _channel_key("I", idx), role_diag, result)
+        params = _materialize_channel_params(comp.parameters, idx, "SINK")
+        i = _require_value(params, _channel_key("I", idx), role_diag, result)
         if i is None:
             continue
-        mode = _terminal_mode(comp.parameters, idx, role_diag, result)
+        mode = _terminal_mode(params, idx, role_diag, result)
         if mode is None:
             continue
         min_v = _optional_value(
-            comp.parameters, _channel_key("MIN_V", idx), role_diag, result,
+            params, _channel_key("MIN_V", idx), role_diag, result,
         )
         for pcb_idx in pcb_indices:
             pcb_des = proj.pcb_components[pcb_idx].designator
@@ -2398,7 +2714,7 @@ def _parse_sink(comp, proj, enabled_layers, result,
             )
             if mode == "single":
                 p = _resolve_single_terminal(
-                    proj, pcb_idx, comp.parameters,
+                    proj, pcb_idx, params,
                     _channel_key("NET", idx), _channel_key("PINS", idx),
                     enabled_layers, inst_diag, result,
                     net_remap=net_remap,
@@ -2414,7 +2730,7 @@ def _parse_sink(comp, proj, enabled_layers, result,
                 ))
                 continue
             pair = _resolve_two_terminal(
-                proj, pcb_idx, comp.parameters,
+                proj, pcb_idx, params,
                 _channel_key("P_NET", idx), _channel_key("N_NET", idx),
                 _channel_key("P_PINS", idx), _channel_key("N_PINS", idx),
                 enabled_layers, inst_diag, result,
@@ -2476,8 +2792,9 @@ def _parse_resistance(comp, proj, enabled_layers, result,
     specs: list[ResistorSpec] = []
     for idx in indices:
         role_diag = f"{role_raw} on {_channel_label(comp.designator, idx)}"
+        params = _materialize_channel_params(comp.parameters, idx, role_raw)
         r = _require_value(
-            comp.parameters, _channel_key("R", idx), role_diag, result,
+            params, _channel_key("R", idx), role_diag, result,
         )
         if r is None:
             continue
@@ -2493,10 +2810,10 @@ def _parse_resistance(comp, proj, enabled_layers, result,
                 if len(pcb_indices) > 1 else role_diag
             )
             given = any(
-                _ci_get(comp.parameters, _channel_key(k, idx)) is not None
+                _ci_get(params, _channel_key(k, idx)) is not None
                 for k in ("P_NET", "N_NET", "P_PINS", "N_PINS")
             )
-            params = dict(comp.parameters)
+            resolve_params = dict(params)
             if not given:
                 if len(indices) > 1:
                     result.errors.append(
@@ -2518,8 +2835,8 @@ def _parse_resistance(comp, proj, enabled_layers, result,
                         f"{_channel_key('N_PINS', idx)})"
                     )
                     continue
-                params[_channel_key("P_NET", idx)] = inferred[0]
-                params[_channel_key("N_NET", idx)] = inferred[1]
+                resolve_params[_channel_key("P_NET", idx)] = inferred[0]
+                resolve_params[_channel_key("N_NET", idx)] = inferred[1]
                 result.warnings.append(
                     f"{inst_diag}: auto-inferred "
                     f"{_channel_key('P_NET', idx)}={inferred[0]!r}, "
@@ -2527,7 +2844,7 @@ def _parse_resistance(comp, proj, enabled_layers, result,
                     f"from 2-pin connectivity"
                 )
             pair = _resolve_two_terminal(
-                proj, pcb_idx, params,
+                proj, pcb_idx, resolve_params,
                 _channel_key("P_NET", idx), _channel_key("N_NET", idx),
                 _channel_key("P_PINS", idx), _channel_key("N_PINS", idx),
                 enabled_layers, inst_diag, result,
@@ -2578,25 +2895,30 @@ def _collect_supply_voltages_by_net(
         pcb_indices = _pcb_indices_for_source(comp, proj)
         # Both SOURCE and REGULATOR carry PDN<n>_V; switch on each channel's
         # effective role so a SOURCE (or REGULATOR) channel on a mixed-role
-        # part still contributes its nominal rail voltage.
-        for idx in _discover_channel_indices(comp.parameters, "V"):
-            eff = _effective_role(comp.parameters, idx, part_role)
-            if eff not in ("SOURCE", "REGULATOR"):
-                continue
-            v_raw = _ci_get(comp.parameters, _channel_key("V", idx))
-            if v_raw is None or not str(v_raw).strip():
-                continue
-            try:
-                v = parse_si_value(v_raw)
-            except ValueError:
-                continue
-            if eff == "SOURCE":
-                p_net = _ci_get(comp.parameters, _channel_key("P_NET", idx))
-                single_net = _ci_get(comp.parameters, _channel_key("NET", idx))
-                _register(p_net or single_net, v, pcb_indices)
-            else:  # REGULATOR
-                out_net = _ci_get(comp.parameters, _channel_key("OUT_P_NET", idx))
-                _register(out_net, v, pcb_indices)
+        # part still contributes its nominal rail voltage. Template inheritance
+        # goes through :func:`_resolve_channel_roles` + materialize.
+        scratch = AnnotationResult()
+        grouped = _resolve_channel_roles(
+            comp.parameters, part_role, comp.designator, scratch,
+            report_errors=False,
+        )
+        for role in ("SOURCE", "REGULATOR"):
+            for idx in grouped.get(role, []):
+                params = _materialize_channel_params(comp.parameters, idx, role)
+                v_raw = _ci_get(params, _channel_key("V", idx))
+                if v_raw is None or not str(v_raw).strip():
+                    continue
+                try:
+                    v = parse_si_value(v_raw)
+                except ValueError:
+                    continue
+                if role == "SOURCE":
+                    p_net = _ci_get(params, _channel_key("P_NET", idx))
+                    single_net = _ci_get(params, _channel_key("NET", idx))
+                    _register(p_net or single_net, v, pcb_indices)
+                else:  # REGULATOR
+                    out_net = _ci_get(params, _channel_key("OUT_P_NET", idx))
+                    _register(out_net, v, pcb_indices)
     out: dict[str, float] = {}
     for net, voltages in raw.items():
         if len(voltages) == 1:
@@ -2974,12 +3296,13 @@ def _parse_regulator(comp, proj, enabled_layers, result,
     specs: list[RegulatorSpec] = []
     for idx in indices:
         role_diag = f"REGULATOR on {_channel_label(comp.designator, idx)}"
+        params = _materialize_channel_params(comp.parameters, idx, "REGULATOR")
         v = _require_value(
-            comp.parameters, _channel_key("V", idx), role_diag, result,
+            params, _channel_key("V", idx), role_diag, result,
         )
-        in_p_net = _ci_get(comp.parameters, _channel_key("IN_P_NET", idx))
+        in_p_net = _ci_get(params, _channel_key("IN_P_NET", idx))
         resolved = _resolve_regulator_gain(
-            comp.parameters, idx, v, in_p_net,
+            params, idx, v, in_p_net,
             supply_map, role_diag, result,
             series_graph=series_graph, proj=proj, net_remap=net_remap,
         ) if v is not None else None
@@ -2987,10 +3310,10 @@ def _parse_regulator(comp, proj, enabled_layers, result,
             continue
         g, reg_type, eff, adaptive = resolved
         q_key = _channel_key("QUIESCENT", idx)
-        if _ci_get(comp.parameters, q_key) is None:
+        if _ci_get(params, q_key) is None:
             quiescent = 0.0
         else:
-            iq_raw = _optional_value(comp.parameters, q_key, role_diag, result)
+            iq_raw = _optional_value(params, q_key, role_diag, result)
             if iq_raw is None:
                 # Present but unparseable — error already recorded; skip the
                 # spec rather than building it with a silent quiescent=0.
@@ -3006,7 +3329,7 @@ def _parse_regulator(comp, proj, enabled_layers, result,
                 if len(pcb_indices) > 1 else role_diag
             )
             out = _resolve_two_terminal(
-                proj, pcb_idx, comp.parameters,
+                proj, pcb_idx, params,
                 _channel_key("OUT_P_NET", idx), _channel_key("OUT_N_NET", idx),
                 _channel_key("OUT_P_PINS", idx), _channel_key("OUT_N_PINS", idx),
                 enabled_layers, f"{inst_diag} OUT", result,
@@ -3015,7 +3338,7 @@ def _parse_regulator(comp, proj, enabled_layers, result,
                 schdoc_name=comp.schdoc_name,
             )
             in_ = _resolve_two_terminal(
-                proj, pcb_idx, comp.parameters,
+                proj, pcb_idx, params,
                 _channel_key("IN_P_NET", idx), _channel_key("IN_N_NET", idx),
                 _channel_key("IN_P_PINS", idx), _channel_key("IN_N_PINS", idx),
                 enabled_layers, f"{inst_diag} IN", result,
@@ -3227,28 +3550,41 @@ def _resolve_channel_roles(
     part_role: str,
     designator: str,
     result: AnnotationResult,
+    *,
+    report_errors: bool = True,
 ) -> dict[str, list[int | None]]:
     """Group a part's present channels by effective role.
 
     Each channel's effective role is its ``PDN<n>_ROLE`` override (validated
     against :data:`VALID_ROLES`) or the part-wide ``part_role``. A channel is
-    *present* iff the value parameter for its effective role is set
-    (``PDN<n>_V`` / ``PDN<n>_I`` / ``PDN<n>_R``). Returns ``{role: [index,
-    …]}`` in discovery order (unindexed first, then ascending index) so a
-    mixed part — e.g. a DAC that SINKs on its supply rail and SOURCEs on its
-    outputs — dispatches each channel to the right per-role parser.
+    *present* when it carries a value param, a terminal param for an *active*
+    role on the part, or an indexed ``PDNn_ROLE`` — the value may be
+    inherited from the unindexed template via :func:`_channel_get`. Returns
+    ``{role: [index, …]}`` in discovery order (unindexed first, then
+    ascending index).
 
-    A part that carries a uniform role (the common case) needs no
-    ``PDN<n>_ROLE`` at all: every channel simply inherits ``part_role``, and
-    two sinks stay ``{"SINK": [None, 1]}``. Only channels that diverge from
-    the default carry an override.
+    Discovery is scoped to :func:`_active_roles_for_discovery` so a leftover
+    cross-role value (e.g. ``PDN1_R`` on a SINK-only part) does not invent a
+    phantom channel.
 
-    A channel that declares a role (or a cross-role value parameter) but is
-    missing the value parameter its role needs produces an error and is
-    dropped.
+    When indexed channels exist and the unindexed form lacks a *complete*
+    terminal set for its role, ``None`` is omitted (template-only). A real
+    unindexed channel alongside indexed ones (complete terminals) is kept.
+    Parts with only ``PDNn_ROLE`` (no part-wide ``PDN_ROLE``) always treat
+    the unindexed form as template-only when indexed channels exist.
+
+    A channel that declares a role (or a cross-role value / terminal) but is
+    missing the value parameter its role needs — even after template
+    inheritance — produces an error and is dropped when ``report_errors`` is
+    true; dry-run callers (bridge / supply maps) pass ``report_errors=False``
+    to omit invalid channels quietly.
     """
     candidates: set[int | None] = set()
-    for suffix in set(_VALUE_SUFFIX_BY_ROLE.values()):
+    marking_suffixes: set[str] = set()
+    for role in _active_roles_for_discovery(params, part_role):
+        marking_suffixes.add(_VALUE_SUFFIX_BY_ROLE[role])
+        marking_suffixes |= set(_TERMINAL_SUFFIXES_BY_ROLE[role])
+    for suffix in marking_suffixes:
         candidates.update(_discover_channel_indices(params, suffix))
     # An indexed PDN<n>_ROLE override also marks its channel present, so a
     # channel that declares a role but omits its value param gets a clear
@@ -3257,6 +3593,26 @@ def _resolve_channel_roles(
     for idx in _discover_channel_indices(params, "ROLE"):
         if idx is not None:
             candidates.add(idx)
+
+    has_indexed = any(idx is not None for idx in candidates)
+    if has_indexed and None in candidates:
+        # Drop legacy when it is only a value/meta template. Indexed-only
+        # parts (no part-wide PDN_ROLE) always treat unindexed params as
+        # templates — otherwise PDN_R / PDN_V would error as "missing
+        # PDN_ROLE" while still emitting the indexed directives.
+        value_key = _channel_key(_VALUE_SUFFIX_BY_ROLE.get(part_role, ""), None)
+        if part_role not in VALID_ROLES:
+            candidates.discard(None)
+        elif _ci_get(params, value_key) is None:
+            # Shared terminals but no value of its own — a terminal template
+            # (PDN_P_NET + PDN_N_NET with only PDN1_I / PDN2_I). Keeping it
+            # would report a "missing PDN_I" for a channel the user never
+            # declared. The value must be set *directly*: inheriting it from
+            # itself is what makes this a template in the first place.
+            candidates.discard(None)
+        elif not _unindexed_has_defining_terminals(params, part_role):
+            candidates.discard(None)
+
     ordered = sorted(candidates, key=lambda x: (x is not None, x or 0))
 
     grouped: dict[str, list[int | None]] = {}
@@ -3265,29 +3621,267 @@ def _resolve_channel_roles(
         if override_raw is not None:
             eff = override_raw.strip().upper()
             if eff not in VALID_ROLES:
-                result.errors.append(
-                    f"{_channel_label(designator, idx)}: unknown "
-                    f"{_channel_key('ROLE', idx)}={override_raw!r} — must be "
-                    f"one of {sorted(VALID_ROLES)}"
-                )
+                if report_errors:
+                    result.errors.append(
+                        f"{_channel_label(designator, idx)}: unknown "
+                        f"{_channel_key('ROLE', idx)}={override_raw!r} — must be "
+                        f"one of {sorted(VALID_ROLES)}"
+                    )
                 continue
         else:
             if not part_role:
-                result.errors.append(
-                    f"{_channel_label(designator, idx)}: missing "
-                    f"{_channel_key('ROLE', idx)} (no part-wide PDN_ROLE)"
-                )
+                if report_errors:
+                    result.errors.append(
+                        f"{_channel_label(designator, idx)}: missing "
+                        f"{_channel_key('ROLE', idx)} (no part-wide PDN_ROLE)"
+                    )
                 continue
             eff = part_role
-        value_key = _channel_key(_VALUE_SUFFIX_BY_ROLE[eff], idx)
-        if _ci_get(params, value_key) is None:
-            result.errors.append(
-                f"{eff} on {_channel_label(designator, idx)}: missing "
-                f"{value_key}"
-            )
+        value_suffix = _VALUE_SUFFIX_BY_ROLE[eff]
+        if _channel_get(params, value_suffix, idx, eff) is None:
+            if report_errors:
+                value_key = _channel_key(value_suffix, idx)
+                inheritable = value_suffix in _inheritable_suffixes(
+                    params, idx, eff,
+                )
+                if idx is not None and inheritable:
+                    result.errors.append(
+                        f"{eff} on {_channel_label(designator, idx)}: missing "
+                        f"{value_key} (or template "
+                        f"{_channel_key(value_suffix, None)})"
+                    )
+                else:
+                    # Either the legacy channel (no parent to inherit from) or
+                    # a channel whose PDN<n>_ROLE differs from the part-wide
+                    # role, so the unindexed value belongs to another role and
+                    # naming it as a template would send the user the wrong way.
+                    result.errors.append(
+                        f"{eff} on {_channel_label(designator, idx)}: missing "
+                        f"{value_key}"
+                    )
             continue
         grouped.setdefault(eff, []).append(idx)
     return grouped
+
+
+def _is_nettie_component_kind(kind: int) -> bool:
+    return int(kind) in NET_TIE_COMPONENT_KINDS
+
+
+def _schdocs_with_pcb_placements(proj: ExtractedProject) -> set[str]:
+    """Schematic sheets that placed at least one component on this board.
+
+    A .PrjPcb can hold several .PcbDoc files while ``extract_project`` loads
+    only the selected one, so most sheets of a multi-board project contribute
+    nothing here. Used to tell "this tie is missing from the board" (worth a
+    warning) from "this tie belongs to a different board" (not).
+    """
+    placed: set[str] = set()
+    for pcb in proj.pcb_components:
+        if pcb.source_designator:
+            placed.add(pcb.source_designator.upper())
+        if pcb.designator:
+            placed.add(pcb.designator.upper())
+    return {
+        sch.schdoc_name for sch in proj.sch_components
+        if sch.designator.upper() in placed
+    }
+
+
+def _nettie_net_names(proj: ExtractedProject, pcb_index: int) -> list[str]:
+    """Distinct connected net *names* on a PCB placement, pad order preserved.
+
+    Deduplicated by name (case-insensitively), not by net index. A
+    multi-channel board stores one net per channel and Altium does not
+    channel-qualify the names in Nets6, so two distinct indices can share one
+    name — see :func:`_net_indices_by_name`. The chain built from this list is
+    resolved by :func:`_resolve_terminal`, which matches on the *name*, so
+    keeping both indices would pair a net with itself: P and N would resolve to
+    the same pads and :func:`_arbitrate_overlapping_terminals` would reject the
+    tie as a short instead of bridging it.
+    """
+    pads = _pads_by_component_all(proj).get(pcb_index, [])
+    names: list[str] = []
+    seen: set[str] = set()
+    for pad in pads:
+        ni = pad.net_index
+        if ni == NO_NET or not (0 <= ni < len(proj.nets)):
+            continue
+        name = proj.nets[ni].name
+        key = name.strip().upper()
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(name)
+    return names
+
+
+def _nettie_skip_reason(proj: ExtractedProject, pcb_index: int,
+                        net_names: list[str]) -> str:
+    """Why a Net Tie placement has nothing to bridge.
+
+    Keyed on the distinct-net count the bridge actually needs.
+    :func:`_autoinfer_failure_reason` describes a different guard (the 2-pin
+    auto-infer rules) and would tell the user a 3-pad tie failed because of its
+    pad count, which the N-pad chain does not care about.
+    """
+    pads = _pads_by_component_all(proj).get(pcb_index, [])
+    if not pads:
+        return "the footprint has no pads"
+    if not net_names:
+        return f"none of its {len(pads)} pad(s) are connected to a net"
+    return (
+        f"all {len(pads)} pad(s) are on one net ({net_names[0]!r}) — "
+        f"there is nothing to bridge"
+    )
+
+
+def _synth_nettie_bridge_for_instance(
+    proj: ExtractedProject,
+    pcb_index: int,
+    schdoc_name: str,
+    enabled_layers: list[int],
+    result: AnnotationResult,
+    net_remap: dict[int, int] | None,
+) -> list[ResistorSpec]:
+    """Build low-Ω SERIES specs that short every distinct NetTie net together."""
+    pcb_des = proj.pcb_components[pcb_index].designator
+    role_diag = f"NetTie on {pcb_des}"
+    net_names = _nettie_net_names(proj, pcb_index)
+    if len(net_names) < 2:
+        reason = _nettie_skip_reason(proj, pcb_index, net_names)
+        result.note_absorbed(
+            f"{role_diag} ({schdoc_name}): skipped auto-bridge — {reason}"
+        )
+        return []
+
+    # Resolution failures here are not the user's annotation mistakes: nobody
+    # asked for this directive, it was inferred from ComponentKind. Collect
+    # into a scratch result and downgrade its errors to warnings, so a Net Tie
+    # the bridge cannot resolve does not fail `fypa annotations` in CI or raise
+    # a load-time error telling the user to set PDN_N_PINS on a part they never
+    # annotated. The advice in those messages still holds for anyone who wants
+    # to take over with explicit PDN_* parameters, so it is kept verbatim.
+    scratch = AnnotationResult()
+    specs: list[ResistorSpec] = []
+    # Chain consecutive nets so N nets become N-1 shorts (union-find merge
+    # collapses the whole set). Two-pin NetTies take the single pair path.
+    for p_net, n_net in zip(net_names, net_names[1:]):
+        params = {"PDN_P_NET": p_net, "PDN_N_NET": n_net}
+        pair = _resolve_two_terminal(
+            proj, pcb_index, params,
+            "PDN_P_NET", "PDN_N_NET", "PDN_P_PINS", "PDN_N_PINS",
+            enabled_layers, role_diag, scratch,
+            net_remap=net_remap,
+            schdoc_name=schdoc_name,
+        )
+        if pair is None:
+            continue
+        specs.append(ResistorSpec(
+            designator=pcb_des,
+            schdoc_name=schdoc_name,
+            resistance=NET_TIE_BRIDGE_RESISTANCE_OHM,
+            p=pair[0],
+            n=pair[1],
+            channel_index=None,
+        ))
+    for warning in scratch.warnings:
+        result.note_absorbed(warning)
+    for err in scratch.errors:
+        result.note_absorbed(f"{err} (auto-bridge skipped)")
+    if specs:
+        result.note_absorbed(
+            f"{role_diag} ({schdoc_name}): auto-bridged "
+            f"{' ↔ '.join(net_names)} as low-Ω NetTie short "
+            f"({NET_TIE_BRIDGE_RESISTANCE_OHM * 1e3:.2g} mΩ)"
+        )
+    return specs
+
+
+def _synth_nettie_directives(
+    proj: ExtractedProject,
+    enabled_layers: list[int],
+    result: AnnotationResult,
+    skip_set: set[str],
+    net_remap: dict[int, int] | None = None,
+) -> list[ResistorSpec]:
+    """Emit synthetic SERIES bridges for Altium Net Tie schematic components.
+
+    Components with ``ComponentKind`` Net Tie / Net Tie (No BOM) short their
+    pads by design. Without PDN annotations FYPA would leave those nets
+    disconnected; this pass synthesises a low-Ω SERIES directive per PCB
+    placement so the loader's net-merge path collapses them.
+
+    A Net Tie carrying ``ComponentKind`` only on the PCB record — added by ECO,
+    or a board opened without its schematics — is picked up too, so the bridge
+    does not depend on a matching symbol existing.
+
+    An explicit ``PDN_ROLE`` on the same part wins — auto-bridge is skipped.
+    """
+    specs: list[ResistorSpec] = []
+    # Every placement this pass has decided about, bridged or deliberately not.
+    # The PCB sweep at the end consults it so a schematic opt-out is not undone
+    # by the same ComponentKind sitting on the footprint record.
+    handled_pcb: set[int] = set()
+    placed_schdocs = _schdocs_with_pcb_placements(proj)
+
+    def can_bridge(pcb_idx: int) -> bool:
+        if pcb_idx in handled_pcb:
+            return False
+        handled_pcb.add(pcb_idx)
+        pcb = proj.pcb_components[pcb_idx]
+        # PCB Blanket/ECO PDN_* on the placement overrides auto-bridge,
+        # same as schematic PDN_* on the symbol.
+        if _has_any_pdn_params(pcb.parameters):
+            return False
+        return pcb.designator.upper() not in skip_set
+
+    for sch in proj.sch_components:
+        if not _is_nettie_component_kind(sch.component_kind):
+            continue
+        pcb_indices = _find_pcb_instances(proj, sch.designator)
+        # Any schematic PDN_* (even incomplete) opts out of auto-bridge so a
+        # half-finished annotation is not silently replaced by a merge short.
+        # The placements are still marked handled: Altium stamps ComponentKind
+        # on the footprint too, so the PCB sweep below would otherwise bridge
+        # straight over the user's own directive.
+        if _has_any_pdn_params(sch.parameters) or sch.designator.upper() in skip_set:
+            handled_pcb.update(pcb_indices)
+            continue
+        if not pcb_indices:
+            # extract_project reads every SchDoc in the .PrjPcb but only one
+            # .PcbDoc, so on a multi-board project every Net Tie belonging to
+            # another board lands here. Warn only for sheets that placed
+            # something on *this* board — otherwise the log fills with notices
+            # about parts the user never asked this board to contain.
+            if sch.schdoc_name in placed_schdocs:
+                result.note_absorbed(
+                    f"NetTie {sch.designator} ({sch.schdoc_name}): no PCB "
+                    f"placement found — cannot auto-bridge"
+                )
+            continue
+        for pcb_idx in pcb_indices:
+            if can_bridge(pcb_idx):
+                specs.extend(_synth_nettie_bridge_for_instance(
+                    proj, pcb_idx, sch.schdoc_name, enabled_layers,
+                    result, net_remap,
+                ))
+
+    # PCB-side Net Ties with no schematic counterpart reached above.
+    for pcb_idx, pcb in enumerate(proj.pcb_components):
+        if pcb_idx in handled_pcb:
+            continue
+        if not _is_nettie_component_kind(pcb.component_kind):
+            continue
+        if not can_bridge(pcb_idx):
+            continue
+        lookup_des = pcb.source_designator or pcb.designator
+        specs.extend(_synth_nettie_bridge_for_instance(
+            proj, pcb_idx,
+            _schdoc_for_pcb_instance(proj, pcb_idx, lookup_des),
+            enabled_layers, result, net_remap,
+        ))
+    return specs
 
 
 # --- public entry -------------------------------------------------------------
@@ -3416,6 +4010,13 @@ def parse_annotations(proj: ExtractedProject,
                 # Every parser returns a list — empty if the directive failed
                 # to resolve, one element per resolved channel otherwise.
                 result.directives.extend(specs)
+
+    # Altium Net Ties short their pads by ComponentKind — synthesise low-Ω
+    # SERIES bridges so the loader merge path connects those nets without
+    # requiring a PDN_ROLE=SERIES on every NetTie symbol.
+    result.directives.extend(_synth_nettie_directives(
+        proj, enabled_layers, result, skip_set, net_remap=net_remap,
+    ))
 
     # Cross-directive checks (mode consistency, open-loop) + return grouping.
     _validate_directive_groups(result, proj, parameter_sources)

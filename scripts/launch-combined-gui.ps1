@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Check out origin/test/combined and launch the GUI (Altium bootstrap path).
 
@@ -49,6 +49,8 @@ else {
 }
 Set-Location $RepoRoot
 
+. (Join-Path $PSScriptRoot '_git-helpers.ps1')
+
 if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot 'FYPA.py'))) {
     throw "FYPA.py not found in $RepoRoot"
 }
@@ -58,27 +60,19 @@ if (-not (Test-Path -LiteralPath $PrjPcb)) {
 }
 $PrjPcbPath = (Resolve-Path -LiteralPath $PrjPcb).Path
 
-function Invoke-GitLogged {
-    param(
-        [Parameter(Mandatory, ValueFromRemainingArguments)]
-        [string[]] $GitArgs
-    )
-    Write-Host (">> git {0}" -f ($GitArgs -join ' ')) -ForegroundColor DarkGray
-    & git.exe @GitArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw "git $($GitArgs -join ' ') failed (exit $LASTEXITCODE)"
-    }
-}
-
 $RemoteRef = "$Remote/$TestBranch"
 Write-Host "==> Fetch $Remote $TestBranch"
-& git.exe fetch $Remote $TestBranch 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) {
+# Invoke-GitCore keeps git's stderr out of the success stream: under
+# $ErrorActionPreference = 'Stop' a bare `2>&1` here makes fetch's normal
+# progress output a terminating NativeCommandError, so the fallback below
+# would never run.
+$FetchResult = Invoke-GitCore -Quiet @('fetch', $Remote, $TestBranch)
+if ($FetchResult.ExitCode -ne 0) {
     Write-Warning "git fetch $Remote $TestBranch failed; trying existing $RemoteRef"
 }
 
-& git.exe rev-parse --verify "$RemoteRef^{commit}" 2>$null | Out-Null
-if ($LASTEXITCODE -ne 0) {
+$Tip = Get-RefSha -Ref $RemoteRef
+if (-not $Tip) {
     throw @"
 $RemoteRef not found.
 Publish the shared branch first (on a maintainer machine or via the team/local Action):
@@ -87,22 +81,10 @@ Publish the shared branch first (on a maintainer machine or via the team/local A
 "@
 }
 
-$Tip = ([string](& git.exe rev-parse --verify "$RemoteRef^{commit}")).Trim()
-Write-Host "==> Checkout $TestBranch @ $Tip"
-Invoke-GitLogged @('checkout', '-B', $TestBranch, $RemoteRef)
-Invoke-GitLogged @('reset', '--hard', $RemoteRef)
+Write-Host "==> $TestBranch @ $Tip"
+Reset-ToRemoteTip -Branch $TestBranch -RemoteRef $RemoteRef
 
-Write-Host "==> uv sync (on $TestBranch)"
-& uv sync
-if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
-    $venvPython = Join-Path $RepoRoot '.venv\Scripts\python.exe'
-    if (Test-Path -LiteralPath $venvPython) {
-        Write-Warning "uv sync failed; reusing existing .venv"
-    }
-    else {
-        throw "uv sync failed (exit $LASTEXITCODE)"
-    }
-}
+Sync-UvEnvironment -RepoRoot $RepoRoot
 
 Write-Host "==> Launch GUI"
 $env:PYTHONUNBUFFERED = '1'

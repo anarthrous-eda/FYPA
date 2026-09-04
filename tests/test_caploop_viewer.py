@@ -42,6 +42,7 @@ class _FakeViewer:
     _set_cap_override = PdnViewer._set_cap_override
     _invalidate_caps_cache = PdnViewer._invalidate_caps_cache
     _ensure_project = PdnViewer._ensure_project
+    _footprint_convention = PdnViewer._footprint_convention
 
     def __init__(self, extracted, directives=None, project=None):
         self._loaded_project = types.SimpleNamespace(extracted=extracted)

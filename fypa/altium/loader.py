@@ -4077,6 +4077,26 @@ def _build_net_merge_map(
     return remap, skipped, bridges
 
 
+def _carry_absorbed_notes(first: AnnotationResult,
+                          second: AnnotationResult) -> None:
+    """Copy pass-1 warnings that pass 2 can no longer raise.
+
+    The post-merge re-parse is told to skip every designator the merge
+    absorbed, so anything the first pass said about them — notably a Net
+    Tie's "auto-bridged X ↔ Y", the only record that two rails were shorted
+    together — is otherwise dropped on the floor along with the rest of the
+    first result. Order is preserved and nothing pass 2 did manage to say is
+    duplicated.
+    """
+    already = set(second.warnings)
+    for note in first.absorbed_notes:
+        if note in already:
+            continue
+        already.add(note)
+        second.warnings.append(note)
+        second.absorbed_notes.append(note)
+
+
 def _apply_net_remap(
     proj: ExtractedProject, remap: dict[int, int],
 ) -> ExtractedProject:
@@ -4210,6 +4230,7 @@ def load_project(prjpcb_path: str | Path,
         )
         log.info("Stage 2/2: annotations (pass 2) done in %.2fs",
                  time.monotonic() - _t)
+        _carry_absorbed_notes(initial_annotations, annotations)
     else:
         annotations = initial_annotations
 

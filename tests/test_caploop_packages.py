@@ -48,11 +48,74 @@ def test_detect_package_metric_convention(footprint, expected):
 
 
 @pytest.mark.parametrize("footprint,expected", [
+    ("C_0603_SL", "0201"),
+    ("C_0402_SL", "01005"),
+    ("C0603", "0201"),
+    ("CAP_0603", "0201"),
+])
+def test_explicit_convention_beats_the_imperial_name_heuristic(
+        footprint, expected):
+    """The marker heuristic exists to GUESS which convention a library uses.
+    An explicit selection answers that, so it wins — testing the marker first
+    left Metric with no effect on the commonest library name shapes."""
+    assert detect_package(footprint, convention="metric") == expected
+
+
+@pytest.mark.parametrize("footprint,expected", [
     ("C_0603_SL", "0603"),
     ("C_0402_SL", "0402"),
+    ("C0603", "0603"),
 ])
-def test_explicit_imperial_names_ignore_metric_convention(footprint, expected):
-    assert detect_package(footprint, convention="metric") == expected
+def test_auto_still_reads_marked_names_as_imperial(footprint, expected):
+    """Auto is the default and keeps the heuristic, so nobody who leaves the
+    setting alone sees a change."""
+    assert detect_package(footprint, convention="auto") == expected
+
+
+@pytest.mark.parametrize("footprint", ["1608", "1005B", "3216"])
+def test_imperial_convention_rejects_metric_only_codes(footprint):
+    """There is no imperial 1608 or 3216 chip package, so under a declared
+    imperial library the token is not a case code at all. Without this,
+    'imperial' was indistinguishable from 'auto' on every input."""
+    assert detect_package(footprint, convention="imperial") is None
+    assert detect_package(footprint, convention="auto") is not None
+
+
+@pytest.mark.parametrize("footprint", [
+    "TANT_3216_A", "POLY_3216", "ELEC_3216", "ALUM_3216",
+])
+def test_non_chip_parts_stay_unsupported(footprint):
+    """EIA tantalum A-case 3216 collides with metric chip 3216. Accepting it
+    gave the part 1206 MLCC parasitics — two orders of magnitude off its real
+    ESR — where the module contract says it must report as unsupported."""
+    for conv in ("auto", "metric", "imperial"):
+        assert detect_package(footprint, convention=conv) is None
+
+
+def test_a_named_imperial_package_beats_an_incidental_metric_token():
+    """C_0805_3216 names its land size; 3216 is a cross-reference in the name.
+    Ranking metric-only tokens higher resolved it to 1206."""
+    for conv in ("auto", "metric", "imperial"):
+        assert detect_package("C_0805_3216", convention=conv) == "0805"
+
+
+@pytest.mark.parametrize("footprint", ["C0402_SL", "C0402-SL", "C0603_X",
+                                       "C0603-X"])
+def test_separator_does_not_change_classification(footprint):
+    """A word-boundary cannot match before an underscore, so the two
+    spellings of one land pattern classified as different body sizes."""
+    assert (detect_package(footprint, convention="auto")
+            == detect_package(footprint.replace("_", "-"),
+                              convention="auto"))
+
+
+@pytest.mark.parametrize("footprint", ["CAPC1608X90N", "C_0402_1005Metric"])
+def test_unambiguous_names_are_convention_independent(footprint):
+    """A name that already states its units must not be overridden by the
+    convention setting."""
+    results = {detect_package(footprint, convention=c)
+               for c in ("auto", "metric", "imperial")}
+    assert len(results) == 1 and None not in results
 
 
 def test_unambiguous_metric_code_wins_over_bare_ambiguous_imperial():

@@ -214,11 +214,40 @@ value and its own P/N nets:
 |             |         | `PDN2_N_NET` | `GND`  |
 
 Each channel becomes its own directive; the viewer labels them `U7`,
-`U7#1`, `U7#2`. A channel exists as soon as its value parameter
-(`PDN<n>_I` here) is set. Indices can be sparse (gaps allowed). The same
-scheme works for every role — use `PDN<n>_V` for sources/regulators,
-`PDN<n>_R` for series parts. See the [main README](../../README.md#multi-channel-directives)
-for the full reference.
+`U7#1`, `U7#2`. A channel exists when its value parameter (`PDN<n>_I`
+here) or a channel-defining terminal param is set; the value may be
+inherited from the unindexed template (`PDN_I` when `PDN1_I` is omitted).
+Indices can be sparse (gaps allowed). The same scheme works for every
+role — use `PDN<n>_V` for sources/regulators, `PDN<n>_R` for series parts.
+See the [main README](../../README.md#multi-channel-directives) for the
+full reference.
+
+When indexed channels exist, the unindexed form stays a directive only if
+it is a channel in its own right: its **own** `PDN_I` (or `PDN_V`) *and* a
+complete terminal pair (`PDN_P_NET` **and** `PDN_N_NET`, or single-net
+`PDN_NET`). Otherwise its parameters are template-only — FYPA does not also
+emit a legacy directive. A shared return such as `PDN_N_NET = GND` alone is
+a template, and so is a complete `PDN_P_NET` + `PDN_N_NET` pair whose
+currents live on `PDN1_I` / `PDN2_I`. Keep a full unindexed value **and**
+terminal pair if you want both a legacy channel and indexed ones (as in the
+table above).
+
+> Unindexed `PDN_NET` / `PDN_PINS` plus its own value counts as a complete
+> single-net channel, so that legacy directive is kept — there is no
+> "shared `PDN_NET` template only" mode. Indexed channels beside it are
+> free to use either terminal form: the two forms are mutually exclusive
+> per channel, so a `PDN1_P_NET` / `PDN1_N_NET` channel never inherits the
+> shared `PDN_NET`.
+
+Inheritance follows the part-wide `PDN_ROLE`. A channel that overrides it
+with `PDN<n>_ROLE` reads nothing from the unindexed template — a SERIES
+channel on a SINK part has to name its own nets rather than silently
+borrowing the sink's. Modifiers like `PDN1_MIN_V` tune a channel that
+already exists; they never create one on their own.
+
+Parts that use only `PDNn_ROLE` (no part-wide `PDN_ROLE`) may still put
+shared values on unindexed `PDN_R` / `PDN_V` / `PDN_I`; those stay
+templates for the indexed channels.
 
 > You only need channels for **different** rails. An IC with many pins on
 > the *same* rail is still one directive — FYPA already groups every pad

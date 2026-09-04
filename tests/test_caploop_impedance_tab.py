@@ -672,3 +672,74 @@ def test_mounted_inductance_moves_the_self_resonance(viewer):
     assert worse.l_mount_h > branch.l_mount_h
     assert worse.srf_hz < good
     assert math.isfinite(worse.srf_hz)
+
+
+# --- footprint case-size convention -------------------------------------------
+
+
+def test_convention_change_redraws_the_plot(viewer, monkeypatch):
+    """Every cap's package -- and so its library ESL/ESR and the
+    anti-resonance -- changes with the convention, so leaving the plotted
+    curve, summary and skipped list untouched shows the old convention's
+    results."""
+    viewer._impedance_populated = True
+    replots: list[bool] = []
+    heavy_calls: list[bool] = []
+    monkeypatch.setattr(type(viewer), "_replot_impedance",
+                        lambda self, *a: replots.append(True))
+    monkeypatch.setattr(type(viewer), "_invalidate_caps_cache",
+                        lambda self, heavy=False: heavy_calls.append(heavy))
+
+    viewer.imp_footprint_conv_combo.setCurrentIndex(
+        viewer.imp_footprint_conv_combo.findData("metric"))
+    assert replots, "the convention change must redraw the impedance plot"
+    # The convention only remaps a footprint string to a package key, so the
+    # geometric caches must survive: heavy=True is a multi-second freeze.
+    assert heavy_calls == [False]
+
+
+def test_package_table_labels_follow_the_convention(viewer):
+    from fypa.altium_viewer import _PKG_CANONICAL_ROLE
+
+    viewer._set_footprint_convention("metric")
+    viewer._populate_package_table()
+    table = viewer.imp_pkg_table
+    row = next(r for r in range(table.rowCount())
+               if table.item(r, 0).data(_PKG_CANONICAL_ROLE) == "0402")
+    assert table.item(row, 0).text() == "1005"
+    # The canonical key travels on the role, never in the visible text.
+    assert table.item(row, 0).data(_PKG_CANONICAL_ROLE) == "0402"
+
+
+def test_package_edit_is_ignored_when_the_canonical_role_is_missing(viewer):
+    """Falling back to the cell text is precisely wrong: under Metric that is
+    a display label, never a library key, so every lookup below raised."""
+    from PySide6.QtWidgets import QTableWidgetItem
+
+    from fypa.altium_viewer import _PKG_CANONICAL_ROLE
+
+    viewer._set_footprint_convention("metric")
+    viewer._populate_package_table()
+    table = viewer.imp_pkg_table
+    lib = viewer._caploop_package_library()
+    before = lib.get("0402").esl_h
+
+    row = 0
+    table.item(row, 0).setData(_PKG_CANONICAL_ROLE, None)
+    viewer._imp_pkg_populating = True
+    table.setItem(row, 1, QTableWidgetItem("9.9"))
+    viewer._imp_pkg_populating = False
+    viewer._on_package_item_changed(table.item(row, 1))
+
+    assert lib.get("0402").esl_h == before   # no exception, no write
+
+
+def test_populating_flag_is_cleared_even_if_filling_raises(viewer, monkeypatch):
+    """A stuck flag makes _on_package_item_changed discard EVERY later ESL/ESR
+    edit for the rest of the session, silently."""
+    monkeypatch.setattr(
+        type(viewer), "_fill_package_rows",
+        lambda self, *a: (_ for _ in ()).throw(RuntimeError("boom")))
+    with pytest.raises(RuntimeError):
+        viewer._populate_package_table()
+    assert viewer._imp_pkg_populating is False

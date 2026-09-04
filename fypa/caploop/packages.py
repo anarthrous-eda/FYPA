@@ -109,9 +109,11 @@ def _has_explicit_imperial_marker(footprint: str, code: str) -> bool:
     # Underscore-delimited land name: C_0402_SL, FOOT_0603_X
     if re.search(rf'[_/\-]{re.escape(code)}(?:[_/\-]|$)', footprint, re.I):
         return True
-    # Component prefix: C0402, C_0402, R0603
+    # Component prefix: C0402, C_0402, R0603. A trailing  does not
+    # match before an underscore (both are word characters), so
+    # C0402_SL and C0402-SL classified as different body sizes.
     if re.search(
-            rf'(?:^|[_/\-])[CRLD](?:[_\-]?){re.escape(code)}\b',
+            rf'(?:^|[_/\-])[CRLD](?:[_\-]?){re.escape(code)}(?![0-9])',
             footprint, re.I):
         return True
     return False
@@ -122,13 +124,30 @@ def _code_match_priority(code: str, footprint: str) -> int:
     if (code in _AMBIGUOUS_CODES
             and _has_explicit_imperial_marker(footprint, code)):
         return 4
-    if code in _METRIC_TO_IMPERIAL and code not in DEFAULT_PACKAGE_MODELS:
-        return 3
+    # An imperial key the name spells out outranks a bare metric-only token,
+    # which is often an incidental part-number or dimension suffix. The other
+    # order made C_0805_3216 resolve to 1206 instead of the 0805 it names.
     if code in DEFAULT_PACKAGE_MODELS and code not in _AMBIGUOUS_CODES:
+        return 3
+    if code in _METRIC_TO_IMPERIAL and code not in DEFAULT_PACKAGE_MODELS:
         return 2
     if code in _AMBIGUOUS_CODES:
         return 1
     return 0
+
+
+# Substrings marking a part that has no SMD chip case size. Checked only
+# before accepting a BARE metric code, because the EIA tantalum case codes
+# overlap the metric chip table at exactly one point: A-case 3216 is also
+# metric 3216 (imperial 1206). The others (3528, 6032, 7343) are not in the
+# table and already resolve to None.
+_NON_CHIP_MARKERS: tuple[str, ...] = ("TANT", "POLY", "ELEC", "ALUM")
+
+
+def _is_non_chip_footprint(footprint: str) -> bool:
+    """True when the name marks a part with no chip case size."""
+    upper = footprint.upper()
+    return any(marker in upper for marker in _NON_CHIP_MARKERS)
 
 
 def _resolve_bare_code(
@@ -137,14 +156,29 @@ def _resolve_bare_code(
     footprint: str,
 ) -> str | None:
     if code in _AMBIGUOUS_CODES:
-        if _has_explicit_imperial_marker(footprint, code):
-            return code
+        # An explicit convention answers the question the marker heuristic
+        # exists to GUESS, so it wins. Testing the marker first meant a user
+        # who selected Metric saw no change on C0603 / CAP_0603 / C_0603_SL --
+        # the overwhelmingly common shapes, and the whole reason to select it.
         if conv == "metric":
             return _METRIC_TO_IMPERIAL.get(code)
+        if conv == "imperial":
+            return code
+        # Auto: the imperial reading either way. The marker only raises the
+        # match priority (see _code_match_priority); it does not change this.
         return code
     if code in DEFAULT_PACKAGE_MODELS:
         return code
     if code in _METRIC_TO_IMPERIAL:
+        if conv == "imperial":
+            # No imperial 1608 or 3216 chip package exists, so under a
+            # declared imperial library this token is not a case code at all.
+            return None
+        if _is_non_chip_footprint(footprint):
+            # Restores the module contract: a tantalum reports as unsupported
+            # instead of silently taking MLCC parasitics two orders of
+            # magnitude away from its real ESR.
+            return None
         return _METRIC_TO_IMPERIAL[code]
     return None
 

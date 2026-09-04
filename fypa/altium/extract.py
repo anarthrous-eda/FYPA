@@ -355,6 +355,12 @@ class RawPcbComponent:
     # schematic→PCB ECO; carries Blanket/Parameter-Set directives among others).
     parameters: dict[str, str] = field(default_factory=dict)
     unique_id: str = ""
+    # Altium ``ComponentKind`` as stored on the PCB record (COMPONENTKIND /
+    # VERSION2 / VERSION3). Same encoding as
+    # :attr:`RawSchComponent.component_kind`. Captured on both sides because a
+    # Net Tie can exist only on the PCB — added by ECO, or a board opened
+    # without its schematics — and the auto-bridge has to see it there too.
+    component_kind: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -401,6 +407,25 @@ class RawSchComponent:
     schdoc_name: str          # filename only, e.g. 'Power.SchDoc'
     parameters: dict[str, str]  # name -> text (case-preserved keys)
     pin_designators: tuple[str, ...]
+    # Altium schematic ComponentKind (see altium_monkey.ComponentKind).
+    # 3 = Net Tie (BOM), 4 = Net Tie (No BOM); 0 = Standard.
+    component_kind: int = 0
+
+
+def _component_kind_value(comp) -> int:
+    """Return Altium ``ComponentKind`` as an int (0 = Standard).
+
+    Works for schematic and PCB components alike: altium_monkey exposes the
+    field as a ``ComponentKind`` enum on both, and older builds may not expose
+    it at all.
+    """
+    kind = getattr(comp, "component_kind", None)
+    if kind is None:
+        return 0
+    try:
+        return int(getattr(kind, "value", kind) or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -992,6 +1017,7 @@ def _extract_pcb_components(pcb, ox_mm: float, oy_mm: float,
                 parameters=_normalise_pcb_parameters(
                     getattr(c, "parameters", None)),
                 unique_id=str(getattr(c, "unique_id", "") or ""),
+                component_kind=_component_kind_value(c),
             ))
         except Exception as exc:
             desig = getattr(c, "designator", "?")
@@ -1339,6 +1365,7 @@ def _extract_sch_component(comp, schdoc_name: str) -> RawSchComponent | None:
         schdoc_name=schdoc_name,
         parameters=parameters,
         pin_designators=tuple(pins),
+        component_kind=_component_kind_value(comp),
     )
 
 

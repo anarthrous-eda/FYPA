@@ -22233,8 +22233,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
     def _rail_sink_load(self, rail_members: set[str]) -> tuple[float, bool]:
         """Sum of every SINK load coupling into ``rail_members`` — solved
         schematic directives plus pending editor directives. A schematic
-        SINK is dropped when an editor directive overrides its designator
-        so an unlocked-and-edited sink isn't counted twice. Returns
+        SINK is dropped when an editor directive overrides its designator,
+        and an editor-originated one is dropped from the solved side
+        outright, so neither is counted twice. Returns
         ``(total_amps, any_found)``."""
         total = 0.0
         any_found = False
@@ -22245,6 +22246,16 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             if other.get("role") != "SINK":
                 continue
             if other.get("designator") in overridden:
+                continue
+            # An editor directive that has survived a re-solve sits in BOTH
+            # lists: apply_editor_directives appended it to the solved
+            # directives, and the project still holds it as a live editor
+            # directive. The editor loop below owns it, so counting it here
+            # too doubles the reported rail load. Only skip when that loop
+            # will actually run — a solve bundle opened without a project
+            # would otherwise lose its editor-placed sinks entirely.
+            if (self._project is not None
+                    and other.get("schdoc") == _EDITOR_SCHDOC):
                 continue
             for term in (other.get("terminals") or {}).values():
                 if any(p.get("net") in rail_members
@@ -23647,8 +23658,12 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         if caploop is not None:
             proj.viewer_settings["caploop"] = caploop.to_dict()
 
-        proj.viewer_settings["footprint_convention"] = \
-            self._footprint_convention()
+        # No footprint_convention here: _set_footprint_convention already
+        # writes it into the project's viewer_settings the moment the user
+        # picks one, and this method does not clear the dict. Repeating it
+        # read from self._project while writing into the PASSED proj (the
+        # wrong project for any future Save-As), and stamped "auto" into
+        # every saved .fypa for users who never touched the setting.
 
         overlay_state = getattr(self, "_overlay_state", None)
         if overlay_state:
@@ -25848,7 +25863,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         filter_row.addWidget(self.caps_overlay_box)
 
         filter_row.addSpacing(12)
-        filter_row.addWidget(QLabel("Footprints:"))
+        filter_row.addWidget(QLabel("Case size convention:"))
         self.caps_footprint_conv_combo = self._build_footprint_convention_combo()
         filter_row.addWidget(self.caps_footprint_conv_combo)
 
@@ -26391,7 +26406,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 row["rail"],
                 None if row.get("capacitance_f") is None
                 else row["capacitance_f"] * 1e6,
-                package_label if row.get("package") else "—",
+                package_label,   # already "—" when the package is unknown
                 None if row.get("esl_h") is None else row["esl_h"] * 1e9,
                 None if row.get("esr_ohm") is None else row["esr_ohm"] * 1e3,
                 row.get("voltage_rating_v"),
@@ -26474,11 +26489,18 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                         item.setToolTip(
                             f"No equivalent series {what} — the package is "
                             "unrecognised. Double-click to set it.")
-                    elif overridden:
+                    elif overridden and row.get("package"):
                         item.setToolTip(
                             f"Per-part override. Double-click to change, or "
                             f"clear the field to fall back to the "
                             f"{package_label} package default.")
+                    elif overridden:
+                        # No package, so there is nothing to fall back TO --
+                        # clearing the field drops the part from the model.
+                        item.setToolTip(
+                            "Per-part override. Double-click to change. The "
+                            "package is unrecognised, so clearing this field "
+                            "removes the part from the impedance model.")
                         item.setForeground(action_fg)
                     else:
                         item.setToolTip(
@@ -26597,9 +26619,15 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             title, unit, scale = "Equivalent series resistance", "mΩ", 1e-3
             current, key = data.get("esr_ohm"), "esr_ohm"
 
+        from fypa.caploop.packages import format_package_label
         package = data.get("package")
+        # Same label the Pkg cell shows: naming the canonical "0402" while the
+        # cell the user just double-clicked reads "1005" looks like two
+        # different parts.
+        package_label = format_package_label(
+            package, self._footprint_convention())
         default_note = (
-            f"Leave empty to use the {package} package default."
+            f"Leave empty to use the {package_label} package default."
             if package else
             "This part's package is unrecognised, so there is no default to "
             "fall back on.")
@@ -27145,12 +27173,22 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         return box
 
     def _populate_package_table(self) -> None:
-        from fypa.caploop.packages import format_package_label
-
         lib = self._caploop_package_library()
         table = self.imp_pkg_table
         convention = self._footprint_convention()
         self._imp_pkg_populating = True
+        try:
+            self._fill_package_rows(table, lib, convention)
+        finally:
+            # Without this, an exception mid-fill leaves the flag set and
+            # _on_package_item_changed silently discards EVERY later ESL/ESR
+            # edit for the rest of the session.
+            self._imp_pkg_populating = False
+        table.resizeColumnsToContents()
+
+    def _fill_package_rows(self, table, lib, convention: str) -> None:
+        from fypa.caploop.packages import format_package_label
+
         table.setRowCount(len(lib))
         for r, model in enumerate(lib):
             name = QTableWidgetItem(
@@ -27162,8 +27200,6 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 item = QTableWidgetItem(f"{value:.4g}")
                 item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 table.setItem(r, c, item)
-        table.resizeColumnsToContents()
-        self._imp_pkg_populating = False
 
     def _on_footprint_convention_changed(self, _index: int = 0) -> None:
         sender = self.sender()
@@ -27185,7 +27221,16 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 combo.blockSignals(False)
         if getattr(self, "imp_pkg_table", None) is not None:
             self._populate_package_table()
-        self._invalidate_caps_cache(heavy=True)
+        # heavy=False: the convention only remaps a footprint STRING to a
+        # package key. Copper geometry, escape-via clustering and the
+        # plane-pair cavity are untouched, so discarding those caches cost a
+        # multi-second re-identification per toggle for no change in result.
+        self._invalidate_caps_cache(heavy=False)
+        # Every cap's package -- and so its library ESL/ESR and the
+        # anti-resonance -- just changed, leaving the plotted curve, the
+        # summary and the skipped list stale. Both sibling handlers do this.
+        if getattr(self, "_impedance_populated", False):
+            self._replot_impedance()
 
     def _on_package_item_changed(self, item) -> None:
         """Commit an edited ESL / ESR back to the library, persist it, and
@@ -27196,9 +27241,16 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         name_item = table.item(item.row(), 0)
         package = name_item.data(_PKG_CANONICAL_ROLE) if name_item else None
         if not package:
-            package = name_item.text() if name_item else ""
+            # Falling back to the cell TEXT is precisely wrong here: under the
+            # metric convention that text is a display label ("1005"), never a
+            # library key, so lib.get() returns None and every branch below
+            # raises AttributeError or KeyError. A row without the canonical
+            # role is not editable.
+            return
         lib = self._caploop_package_library()
         model = lib.get(package)
+        if model is None:
+            return
         try:
             value = _parse_numeric_text(item.text())
             if value < 0.0:

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Check out origin/test/combined, optionally run tests/FYPA, then switch back.
 
@@ -22,6 +22,10 @@
 .PARAMETER SkipTests
     Skip the pytest topology suite; still runs FYPA.py unless the script exits earlier.
 
+.PARAMETER SkipSync
+    Skip `uv sync` after checkout. Only safe when the combined branch carries no
+    dependency change relative to the branch you started on.
+
 .PARAMETER PrjPcb
     Path to a .PrjPcb passed through to FYPA.py.
 
@@ -38,13 +42,16 @@ param(
     [string] $TestBranch = "test/combined",
     [switch] $Rebuild,
     [switch] $SkipTests,
+    [switch] $SkipSync,
     [string] $PrjPcb
 )
 
 $ErrorActionPreference = "Stop"
 
-$RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $RepoRoot
+
+. (Join-Path $PSScriptRoot '_git-helpers.ps1')
 
 if ($Rebuild) {
     Write-Error @"
@@ -56,64 +63,6 @@ Rebuild and publish the shared branch with:
 Then re-run this script to check out $Remote/$TestBranch.
 "@
     exit 1
-}
-
-function Invoke-GitCore {
-    param(
-        [Parameter(Mandatory, ValueFromRemainingArguments)]
-        [string[]] $GitArgs,
-        [switch] $Quiet
-    )
-    if ($GitArgs.Count -eq 0) {
-        throw "Invoke-GitCore: no arguments"
-    }
-
-    $Output = @(& git.exe @GitArgs 2>&1)
-    $ExitCode = $LASTEXITCODE
-
-    if (-not $Quiet) {
-        foreach ($Line in $Output) {
-            if ($Line -is [System.Management.Automation.ErrorRecord]) {
-                Write-Warning $Line.ToString()
-            }
-            else {
-                Write-Host $Line
-            }
-        }
-    }
-
-    $Stdout = @(
-        $Output |
-            Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } |
-            ForEach-Object { [string] $_ }
-    )
-
-    return @{
-        ExitCode = $ExitCode
-        Output   = $Stdout
-    }
-}
-
-function Invoke-Git {
-    param(
-        [Parameter(Mandatory, ValueFromRemainingArguments)]
-        [string[]] $GitArgs
-    )
-    $Result = Invoke-GitCore @GitArgs
-    if ($Result.ExitCode -ne 0) {
-        throw "git $($GitArgs -join ' ') failed (exit $($Result.ExitCode))"
-    }
-    return $Result.Output
-}
-
-function Get-CurrentBranch {
-    return ([string] (Invoke-Git @('branch', '--show-current') | Select-Object -First 1)).Trim()
-}
-
-function Test-GitRef {
-    param([string] $Ref)
-    & git show-ref --verify --quiet $Ref
-    return $LASTEXITCODE -eq 0
 }
 
 if (-not (Test-Path "FYPA.py")) {
@@ -130,23 +79,13 @@ if ($PrjPcb) {
 
 $ReturnBranch = Get-CurrentBranch
 if (-not $ReturnBranch) {
-    throw "Could not determine the current branch."
+    throw "Could not determine the current branch (detached HEAD?). Check out a branch first."
 }
 
-$IgnoredPaths = @('.gitignore', 'FYPA.code-workspace')
-$Status = @(Invoke-Git @('status', '--porcelain'))
-$BlockingStatus = @($Status | Where-Object {
-    $path = $_.Substring(3).Trim()
-    if ($path -match ' -> ') { $path = ($path -split ' -> ', 2)[-1].Trim() }
-    elseif ($path -match "`t") { $path = ($path -split "`t", 2)[-1].Trim() }
-    $path -notin $IgnoredPaths
-})
-if ($BlockingStatus.Count -gt 0) {
-    throw @"
-Uncommitted changes detected on '$ReturnBranch'.
-Commit or stash them before running the test script.
-"@
-}
+# The gate waves through local .gitignore / FYPA.code-workspace edits, so the
+# reset below would silently destroy them. Snapshot and restore instead.
+$DirtyIgnored = Assert-CleanWorktree -Context "the test script"
+$IgnoredBackup = Backup-WorktreePath -Paths $DirtyIgnored
 
 $RemoteRef = "$Remote/$TestBranch"
 Write-Host "==> Fetch $Remote $TestBranch"
@@ -163,12 +102,18 @@ Publish the shared branch first:
 "@
 }
 
-$Returned = $false
 $FypaExit = 0
 try {
-    Write-Host "==> Checkout $TestBranch from $RemoteRef"
-    Invoke-Git @('checkout', '-B', $TestBranch, $RemoteRef)
-    Invoke-Git @('reset', '--hard', $RemoteRef)
+    Reset-ToRemoteTip -Branch $TestBranch -RemoteRef $RemoteRef
+
+    # The combined branch may carry a feature branch's dependency change; the
+    # GUI launcher syncs after the same checkout, so do it here too.
+    if ($SkipSync) {
+        Write-Host "==> Skip uv sync (-SkipSync)"
+    }
+    else {
+        Sync-UvEnvironment -RepoRoot $RepoRoot
+    }
 
     if ($SkipTests) {
         Write-Host "==> Skip pytest (-SkipTests)"
@@ -197,21 +142,12 @@ try {
     }
     $FypaExit = $LASTEXITCODE
 }
-catch {
-    throw
-}
 finally {
-    $Current = Get-CurrentBranch
-    if ($Current -ne $ReturnBranch) {
+    if ((Get-CurrentBranch) -ne $ReturnBranch) {
         Write-Host "==> Return to $ReturnBranch"
         Invoke-Git @('checkout', $ReturnBranch)
-        $Returned = $true
     }
-}
-
-if (-not $Returned) {
-    Write-Host "==> Return to $ReturnBranch"
-    Invoke-Git @('checkout', $ReturnBranch)
+    Restore-WorktreePath -Backup $IgnoredBackup
 }
 
 if ($FypaExit -and $FypaExit -ne 0) {
