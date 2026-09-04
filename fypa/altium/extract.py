@@ -373,6 +373,14 @@ class RawPcbComponent:
     # Net Tie can exist only on the PCB — added by ECO, or a board opened
     # without its schematics — and the auto-bridge has to see it there too.
     component_kind: int = 0
+    # Hierarchy path of UniqueIDs from root sheet symbol(s) down to the
+    # schematic component (PCB ``SOURCEUNIQUEID``, e.g. ``\XOZXOXGE\QJGQOCLZ``).
+    # Primary key for binding sheet-symbol ``PDN_<Des>_*`` overrides.
+    source_unique_id: str = ""
+    # Human-readable hierarchy (PCB ``SOURCEHIERARCHICALPATH``), e.g.
+    # ``main\CON-AUX``. Used as fallback when ``source_unique_id`` is empty:
+    # sheet-symbol ``sheet_name`` is matched against path segments.
+    source_hierarchical_path: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -441,6 +449,21 @@ def _component_kind_value(comp) -> int:
 
 
 @dataclass(frozen=True, slots=True)
+class RawSchSheetSymbol:
+    """One hierarchical sheet symbol placement (parent sheet → child SchDoc).
+
+    Carries optional ``PDN_<Designator>_*`` parameters that override child
+    component PDN directives for PCB instances whose ``SOURCEUNIQUEID`` path
+    contains this symbol's :attr:`unique_id`.
+    """
+    parent_schdoc: str        # filename of the sheet that hosts the symbol
+    sheet_name: str           # display name (may be ``REPEAT(...)``)
+    child_filename: str       # referenced child schematic filename
+    unique_id: str            # Altium UniqueID of the sheet symbol
+    parameters: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
 class ExtractedProject:
     prjpcb_path: Path
     pcbdoc_path: Path           # which .PcbDoc was actually loaded (multi-PCB projects)
@@ -455,6 +478,9 @@ class ExtractedProject:
     nets: tuple[RawNet, ...]
     stackup: tuple[RawStackupLayer, ...]
     sch_components: tuple[RawSchComponent, ...]
+    # Sheet symbols across all SchDocs (for per-instance PDN overrides).
+    # Empty default so older callers / Gerber extracts keep working.
+    sch_sheet_symbols: tuple[RawSchSheetSymbol, ...] = ()
     # Compiled schematic netlist (multi-sheet aware). Used to translate local
     # sheet net names in PDN_*_NET parameters to per-instance PCB connectivity.
     compiled_netlist: Any | None = None
@@ -1086,6 +1112,7 @@ def _extract_pcb_components(pcb, ox_mm: float, oy_mm: float,
         # skip it. A dropped component only loses its designator overlay /
         # any PDN annotations it carried; the copper geometry is unaffected.
         try:
+            rr = getattr(c, "raw_record", None) or {}
             out.append(RawPcbComponent(
                 designator=str(c.designator),
                 center=Pt2D(parse_mil_string(c.x) - ox_mm,
@@ -1094,11 +1121,14 @@ def _extract_pcb_components(pcb, ox_mm: float, oy_mm: float,
                 layer_name=str(c.layer),
                 footprint=str(c.footprint),
                 source_designator=str(
-                    c.raw_record.get("SOURCEDESIGNATOR", "") or ""),
+                    rr.get("SOURCEDESIGNATOR", "") or ""),
                 parameters=_normalise_pcb_parameters(
                     getattr(c, "parameters", None)),
                 unique_id=str(getattr(c, "unique_id", "") or ""),
                 component_kind=_component_kind_value(c),
+                source_unique_id=str(rr.get("SOURCEUNIQUEID", "") or ""),
+                source_hierarchical_path=str(
+                    rr.get("SOURCEHIERARCHICALPATH", "") or ""),
             ))
         except Exception as exc:
             desig = getattr(c, "designator", "?")
@@ -1461,6 +1491,121 @@ def _extract_sch_components(design) -> tuple[RawSchComponent, ...]:
     return tuple(out)
 
 
+def _parameters_from_sch_children(children) -> dict[str, str]:
+    """Collect ``AltiumSchParameter`` name→text from a parent object's children."""
+    parameters: dict[str, str] = {}
+    for child in children or ():
+        if type(child).__name__ != "AltiumSchParameter":
+            continue
+        name = getattr(child, "name", None)
+        if not name:
+            continue
+        parameters[str(name).strip()] = str(getattr(child, "text", ""))
+    return parameters
+
+
+def _parameters_owned_by_index(schdoc, owner_index: int) -> dict[str, str]:
+    """Parameters on ``schdoc.parameters`` whose ``owner_index`` matches.
+
+    altium_monkey attaches sheet-symbol parameters this way (OwnerIndex →
+    sheet symbol ``index_in_sheet``). They are *not* placed on
+    ``symbol.children`` — that list only holds entries / name / filename.
+    """
+    parameters: dict[str, str] = {}
+    for param in getattr(schdoc, "parameters", ()) or ():
+        if getattr(param, "owner_index", None) != owner_index:
+            continue
+        name = getattr(param, "name", None)
+        if not name:
+            continue
+        parameters[str(name).strip()] = str(getattr(param, "text", "") or "")
+    return parameters
+
+
+# Sheet-symbol PDN overrides are ``PDN_<DesignatorWithDigit>_*`` (e.g.
+# ``PDN_J1_I``, ``PDN_U12A_I``). BOM / library params on the same symbol
+# are dropped.
+_PDN_SHEET_OVERRIDE_NAME_RE = re.compile(
+    r"^PDN_[A-Za-z]*\d[A-Za-z0-9]*_", re.IGNORECASE,
+)
+
+
+def _filter_sheet_pdn_parameters(parameters: dict[str, str]) -> dict[str, str]:
+    """Keep only designator-targeted ``PDN_<Des>_*`` sheet-symbol keys."""
+    return {
+        k: v for k, v in parameters.items()
+        if _PDN_SHEET_OVERRIDE_NAME_RE.match(str(k).strip())
+    }
+
+
+def _extract_sch_sheet_symbol(
+    info, parent_schdoc: str, schdoc=None,
+) -> RawSchSheetSymbol | None:
+    """Extract one sheet symbol's identity + parameters."""
+    record = getattr(info, "record", None)
+    if record is None:
+        return None
+    unique_id = str(getattr(info, "unique_id", "") or "").strip()
+    if not unique_id:
+        unique_id = str(getattr(record, "unique_id", "") or "").strip()
+    child_filename = str(getattr(info, "file_name", "") or "").strip()
+    if not child_filename:
+        return None
+    sheet_name = str(getattr(info, "designator", "") or "").strip()
+    # Children rarely carry parameters for sheet symbols; OwnerIndex on the
+    # schdoc's flat parameter list is the authoritative path.
+    parameters = _parameters_from_sch_children(getattr(record, "children", ()))
+    owner_index = getattr(record, "index_in_sheet", None)
+    if schdoc is not None and owner_index is not None:
+        parameters.update(_parameters_owned_by_index(schdoc, owner_index))
+    parameters = _filter_sheet_pdn_parameters(parameters)
+    return RawSchSheetSymbol(
+        parent_schdoc=parent_schdoc,
+        sheet_name=sheet_name,
+        child_filename=child_filename,
+        unique_id=unique_id,
+        parameters=parameters,
+    )
+
+
+def _sheet_symbol_info_wrapper(record):
+    """Adapt a bare ``AltiumSchSheetSymbol`` to the info-wrapper interface."""
+    class _Info:
+        def __init__(self, rec):
+            self.record = rec
+
+        @property
+        def designator(self):
+            sn = getattr(self.record, "sheet_name", None)
+            return getattr(sn, "text", "") if sn is not None else ""
+
+        @property
+        def file_name(self):
+            fn = getattr(self.record, "file_name", None)
+            return getattr(fn, "text", "") if fn is not None else ""
+
+        @property
+        def unique_id(self):
+            return getattr(self.record, "unique_id", "") or ""
+
+    return _Info(record)
+
+
+def _extract_sch_sheet_symbols(design) -> tuple[RawSchSheetSymbol, ...]:
+    out: list[RawSchSheetSymbol] = []
+    for sd in design.schdocs:
+        parent_name = sd.filepath.name if getattr(sd, "filepath", None) else ""
+        getter = getattr(sd, "get_sheet_symbols", None)
+        symbols = getter() if callable(getter) else getattr(sd, "sheet_symbols", ())
+        for info in symbols or ():
+            if type(info).__name__ == "AltiumSchSheetSymbol":
+                info = _sheet_symbol_info_wrapper(info)
+            rec = _extract_sch_sheet_symbol(info, parent_name, schdoc=sd)
+            if rec is not None:
+                out.append(rec)
+    return tuple(out)
+
+
 # --- public entry -------------------------------------------------------------
 
 def list_pcbdoc_paths(prjpcb_path: str | Path) -> list[Path]:
@@ -1611,6 +1756,7 @@ def extract_project(prjpcb_path: str | Path,
         nets=_extract_nets(pcb),
         stackup=_extract_stackup(pcb),
         sch_components=_extract_sch_components(design),
+        sch_sheet_symbols=_extract_sch_sheet_symbols(design),
         compiled_netlist=compiled_netlist,
         physical_sheet_names=physical_sheet_names,
         board_origin_mm=Pt2D(ox_mm, oy_mm),
@@ -1648,6 +1794,7 @@ def _summarise(proj: ExtractedProject) -> str:
         f"  nets         : {len(proj.nets):>6}\n"
         f"  stackup rows : {len(proj.stackup):>6}\n"
         f"  sch_components: {len(proj.sch_components):>6}\n"
+        f"  sch_sheet_symbols: {len(proj.sch_sheet_symbols):>6}\n"
         f"  enabled copper layers (Top->Bottom): {enabled_str}\n"
     )
 

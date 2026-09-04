@@ -118,8 +118,11 @@ When `PDN_GAIN` is omitted, set `PDN_REGULATOR_TYPE`:
 
 For `SMPS`, **Vin_nom** is inferred from an upstream `SOURCE` or
 `REGULATOR` whose output is declared on the same net name as
-`PDN_IN_P_NET` (exact name match — SERIES bridge groups are not used to
-expand Vin lookup or terminal pin resolution). Set
+`PDN_IN_P_NET` (exact / instance-expanded names — undirected bridge groups
+are not used to expand Vin lookup). Multi-channel child sheets that share
+a local switch node name (`LX`) publish per-instance PCB nets (`LX.1`,
+`LX.2`) and filter inductors annotated as `SERIES` (`LX` → `VDD_OUT`)
+propagate voltage onto the instance rails (`VDD_5V0`, `VDD_12V`). Set
 `PDN_REGULATOR_EFFICIENCY` to the datasheet value (default `1.0` = ideal).
 
 Example — 3.3 V buck from a 5 V `SOURCE`:

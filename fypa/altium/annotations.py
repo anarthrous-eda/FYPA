@@ -187,6 +187,13 @@ one of SOURCE / SINK / SERIES / REGULATOR. (A SOURCE and a SINK on the same
 channels on **different** nets; a genuine input→output converter is better
 modelled with a single REGULATOR channel.)
 
+On **repeated schematic sheets** (Altium ``REPEAT``), ``PDN_*_NET`` may use
+the local child-sheet net label; FYPA maps each PCB instance to its slot
+net via pin connectivity (not via ``ChannelDesignatorFormatString``). See
+the user guide. Sheet-symbol parameters ``PDN_<Designator>_*`` (e.g.
+``PDN_J1_I``) override values per placement — see
+:func:`_overrides_from_sheet_symbols`.
+
 Auto-inference for 2-pin SERIES
 --------------------------------
 For a SERIES directive on a 2-pin component (inductor DCR, 0Ω jumper,
@@ -230,6 +237,7 @@ from fypa.altium.extract import (
     NO_NET,
     Pt2D,
     RawPad,
+    RawSchSheetSymbol,
 )
 from fypa.altium_geometry import _pad_polygon
 
@@ -246,6 +254,15 @@ MULTI_LAYER_PAD_LAYER_ID: int = 74
 # independent channels on one part. Index `None` is the legacy unindexed
 # form; integer indices are additional channels.
 _INDEXED_KEY_RE = re.compile(r"^PDN(\d+)?_(.+)$", re.IGNORECASE)
+
+# Sheet-symbol per-instance override: ``PDN_<Des>_<Key>``, optional indexed
+# channel ``PDN_<Des>_<n>_<Key>``, optional REPEAT slot ``….N``.
+# Designator must contain a digit (``J1``, ``U12A``) so ``PDN_P_NET`` /
+# ``PDN_OUT_P_NET`` stay ordinary component keys.
+_SHEET_OVERRIDE_KEY_RE = re.compile(
+    r"^PDN_([A-Za-z]*\d[A-Za-z0-9]*)_(?:(\d+)_)?(.+?)(?:\.(\d+))?$",
+    re.IGNORECASE,
+)
 
 # Roles that produce a Resistor lumped element (a series resistance between
 # two nets).
@@ -980,6 +997,500 @@ def _channel_suffix_from_pcb_designator(pcb_designator: str) -> str | None:
     return suffix if suffix.isdigit() else None
 
 
+def _source_unique_id_segments(uid_path: str) -> list[str]:
+    """Split PCB ``SOURCEUNIQUEID`` into UniqueID segments (upper-cased)."""
+    if not uid_path:
+        return []
+    normalised = uid_path.replace("/", "\\")
+    return [s.upper() for s in normalised.split("\\") if s.strip()]
+
+
+def _parse_sheet_override_key(
+    name: str,
+) -> tuple[str, int | None, str, int | None] | None:
+    """Parse ``PDN_<Des>[_n]_<Key>[.slot]`` → (des, channel, suffix, slot).
+
+    Returns ``None`` for ordinary component keys (``PDN_I``, ``PDN1_I``,
+    ``PDN_P_NET``, …).
+    """
+    m = _SHEET_OVERRIDE_KEY_RE.match(str(name).strip())
+    if m is None:
+        return None
+    des = m.group(1).upper()
+    ch_raw, suffix, slot_raw = m.group(2), m.group(3), m.group(4)
+    channel = int(ch_raw) if ch_raw else None
+    slot = int(slot_raw) if slot_raw else None
+    return des, channel, suffix.upper(), slot
+
+
+def _sheet_symbol_bind_key(sym: RawSchSheetSymbol) -> str:
+    """Stable identity for a sheet symbol (UniqueID, else sheet_name)."""
+    return (sym.unique_id or "").upper() or f"name:{(sym.sheet_name or '').upper()}"
+
+
+def _schdoc_basename(name: str) -> str:
+    """Case-folded filename of a schematic path (``Port.SchDoc``)."""
+    return Path(name or "").name.lower()
+
+
+def _hierpath_matchable_segments(
+    path: str,
+    symbols: tuple[RawSchSheetSymbol, ...] | list[RawSchSheetSymbol],
+) -> list[str]:
+    """``SOURCEHIERARCHICALPATH`` segments used for sheet-symbol name matching.
+
+    Only segments that equal a sheet-symbol ``sheet_name`` are candidates.
+    A leading candidate is kept when it is the only match, or when it can be
+    the parent of a deeper matched symbol (``child_filename`` ↔ later
+    ``parent_schdoc``). A leading name that is not such a parent is dropped
+    so a root document segment that happens to equal a sheet-symbol name
+    (e.g. ``main`` in ``main\\\\CON-A``) does not bind.
+    """
+    parts = [
+        p.strip().upper()
+        for p in path.replace("/", "\\").split("\\") if p.strip()
+    ]
+    if not parts:
+        return []
+    by_name: dict[str, list[RawSchSheetSymbol]] = {}
+    for sym in symbols:
+        name = (sym.sheet_name or "").strip().upper()
+        if name:
+            by_name.setdefault(name, []).append(sym)
+    hits: list[tuple[int, str]] = [
+        (i, part) for i, part in enumerate(parts) if part in by_name
+    ]
+    if not hits:
+        return []
+    kept: list[str] = []
+    for j, (_idx, part) in enumerate(hits):
+        if j == len(hits) - 1:
+            kept.append(part)
+            continue
+        later_syms = [
+            s for _i, later_name in hits[j + 1:] for s in by_name[later_name]
+        ]
+        if any(
+            _schdoc_basename(later.parent_schdoc)
+            == _schdoc_basename(cand.child_filename)
+            for cand in by_name[part]
+            for later in later_syms
+        ):
+            kept.append(part)
+    out: list[str] = []
+    seen: set[str] = set()
+    for part in kept:
+        if part in seen:
+            continue
+        seen.add(part)
+        out.append(part)
+    return out
+
+
+def _hierpath_symbols_by_name(
+    symbols: tuple[RawSchSheetSymbol, ...] | list[RawSchSheetSymbol],
+    matchable: list[str],
+) -> dict[str, list[RawSchSheetSymbol]]:
+    """Group sheet symbols whose ``sheet_name`` appears in ``matchable``."""
+    order = {part: i for i, part in enumerate(matchable)}
+    by_name: dict[str, list[RawSchSheetSymbol]] = {}
+    for sym in symbols:
+        name = (sym.sheet_name or "").strip().upper()
+        if not name or name not in order:
+            continue
+        by_name.setdefault(name, []).append(sym)
+    return by_name
+
+
+def _pick_hierpath_symbol(
+    group: list[RawSchSheetSymbol],
+) -> RawSchSheetSymbol:
+    """Deterministic winner among same-named hierpath candidates."""
+    return sorted(
+        group,
+        key=lambda s: (
+            (s.unique_id or "").upper(),
+            (s.parent_schdoc or "").upper(),
+        ),
+    )[0]
+
+
+def _hierpath_ambiguous_loser_keys(proj: ExtractedProject) -> set[str]:
+    """Bind keys of symbols discarded when several share a hierpath name."""
+    symbols = getattr(proj, "sch_sheet_symbols", ()) or ()
+    losers: set[str] = set()
+    for pcb in proj.pcb_components:
+        if _source_unique_id_segments(pcb.source_unique_id):
+            continue
+        path = pcb.source_hierarchical_path or ""
+        matchable = _hierpath_matchable_segments(path, symbols)
+        if not matchable:
+            continue
+        by_name = _hierpath_symbols_by_name(symbols, matchable)
+        for group in by_name.values():
+            if len(group) < 2:
+                continue
+            winner = _pick_hierpath_symbol(group)
+            win_key = _sheet_symbol_bind_key(winner)
+            for sym in group:
+                key = _sheet_symbol_bind_key(sym)
+                if key != win_key:
+                    losers.add(key)
+    return losers
+
+
+def _sheet_symbols_for_pcb(
+    proj: ExtractedProject, pcb_index: int,
+) -> list[RawSchSheetSymbol]:
+    """Sheet symbols bound to this PCB placement.
+
+    Primary: UniqueID segments in ``SOURCEUNIQUEID`` (shallow→deep).
+    Fallback when that path is empty: ``SOURCEHIERARCHICALPATH`` segments
+    that match sheet-symbol names (see :func:`_hierpath_matchable_segments`).
+    When several symbols share a matched name, only the first in a
+    deterministic order (UniqueID, then parent sheet) is kept — see
+    :func:`_warn_ambiguous_hierpath_sheet_symbols`.
+    """
+    pcb = proj.pcb_components[pcb_index]
+    symbols = getattr(proj, "sch_sheet_symbols", ()) or ()
+    segments = _source_unique_id_segments(pcb.source_unique_id)
+    if segments:
+        order = {seg: i for i, seg in enumerate(segments)}
+        matched = [
+            sym for sym in symbols
+            if sym.unique_id and sym.unique_id.upper() in order
+        ]
+        matched.sort(key=lambda s: order[s.unique_id.upper()])
+        return matched
+
+    path = pcb.source_hierarchical_path or ""
+    matchable = _hierpath_matchable_segments(path, symbols)
+    if not matchable:
+        return []
+    order = {part: i for i, part in enumerate(matchable)}
+    by_name = _hierpath_symbols_by_name(symbols, matchable)
+    matched = []
+    for name in sorted(by_name, key=lambda n: order[n]):
+        matched.append(_pick_hierpath_symbol(by_name[name]))
+    return matched
+
+
+def _bound_sheet_symbols_for_designator(
+    proj: ExtractedProject, logical_designator: str,
+) -> list[RawSchSheetSymbol]:
+    """Sheet symbols that bind to at least one PCB placement of ``designator``."""
+    target = logical_designator.upper()
+    seen: set[str] = set()
+    out: list[RawSchSheetSymbol] = []
+    for i, pcb in enumerate(proj.pcb_components):
+        lookup = (pcb.source_designator or pcb.designator).upper()
+        if lookup != target:
+            continue
+        for sym in _sheet_symbols_for_pcb(proj, i):
+            key = _sheet_symbol_bind_key(sym)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(sym)
+    return out
+
+
+def _overrides_from_sheet_symbols(
+    proj: ExtractedProject,
+    pcb_index: int,
+    logical_designator: str,
+    result: AnnotationResult | None = None,
+) -> dict[str, str]:
+    """Map normal ``PDN_*`` keys ← sheet-symbol overrides for one placement.
+
+    Deeper sheet symbols in ``SOURCEUNIQUEID`` overwrite shallower ones for
+    the same key. REPEAT-qualified keys (``.N``) apply only when the PCB
+    designator's numeric channel suffix matches ``N``. When a slot-qualified
+    key cannot be matched because the designator has no numeric suffix,
+    a warning is recorded (once per key) if ``result`` is provided.
+    """
+    target = logical_designator.upper()
+    pcb = proj.pcb_components[pcb_index]
+    slot_str = _channel_suffix_from_pcb_designator(pcb.designator)
+    slot = int(slot_str) if slot_str is not None else None
+    out: dict[str, str] = {}
+    for sym in _sheet_symbols_for_pcb(proj, pcb_index):
+        for raw_key, raw_val in (sym.parameters or {}).items():
+            parsed = _parse_sheet_override_key(raw_key)
+            if parsed is None:
+                continue
+            des, channel, suffix, rep_slot = parsed
+            if des != target:
+                continue
+            if rep_slot is not None:
+                if slot is None:
+                    if result is not None:
+                        _append_warning_once(
+                            result,
+                            f"sheet symbol {sym.sheet_name!r} "
+                            f"({sym.parent_schdoc}): {raw_key} ignored — "
+                            f"PCB designator {pcb.designator!r} has no "
+                            f"numeric channel suffix (expected e.g. "
+                            f"{des}.{rep_slot})",
+                        )
+                    continue
+                if rep_slot != slot:
+                    continue
+            out[_channel_key(suffix, channel)] = raw_val
+    return out
+
+
+def _instance_pdn_params(
+    comp: PdnParameterSource,
+    proj: ExtractedProject,
+    pcb_index: int,
+    result: AnnotationResult | None = None,
+) -> dict[str, str]:
+    """Child (or PCB-ECO) parameters merged with sheet-symbol overrides."""
+    merged = dict(comp.parameters)
+    if getattr(proj, "sch_sheet_symbols", None):
+        overrides = _overrides_from_sheet_symbols(
+            proj, pcb_index, comp.lookup_designator, result=result,
+        )
+        merged.update(overrides)
+        _strip_stale_cross_role_values(merged, overrides)
+    return merged
+
+
+def _strip_stale_cross_role_values(
+    params: dict[str, str],
+    overrides: dict[str, str],
+) -> None:
+    """Drop params illegal for the new role when an override sets ``PDN[_n]_ROLE``.
+
+    Clears other roles' value keys (e.g. leftover ``PDN_I`` after a switch to
+    SOURCE) and REGULATOR-only terminals / options when leaving REGULATOR.
+    SOURCE and REGULATOR both allow ``V``.
+    """
+    role_channels: set[int | None] = set()
+    for key in overrides:
+        m = _INDEXED_KEY_RE.match(str(key).strip())
+        if m is None or m.group(2).upper() != "ROLE":
+            continue
+        role_channels.add(int(m.group(1)) if m.group(1) else None)
+    if not role_channels:
+        return
+    part_role = _part_role_default(params)
+    for idx in role_channels:
+        eff = _effective_role(params, idx, part_role)
+        if eff not in _KNOWN_SUFFIXES_BY_ROLE:
+            continue
+        allowed = _KNOWN_SUFFIXES_BY_ROLE[eff] | {"ROLE"}
+        for key in list(params):
+            m = _INDEXED_KEY_RE.match(str(key).strip())
+            if m is None:
+                continue
+            key_idx = int(m.group(1)) if m.group(1) else None
+            if key_idx != idx:
+                continue
+            if m.group(2).upper() not in allowed:
+                params.pop(key, None)
+
+
+def _discovery_pdn_params(
+    comp: PdnParameterSource,
+    proj: ExtractedProject,
+) -> dict[str, str]:
+    """Parameters used for role / channel discovery.
+
+    Sheet-bound placements are expanded to per-PCB sources in
+    :func:`_expand_sheet_bound_parameter_sources` with overrides already
+    merged, so discovery must not union keys across sibling instances
+    (that would invent indexed channels on placements that never set them).
+    """
+    _ = proj
+    return dict(comp.parameters)
+
+
+def _expand_sheet_bound_parameter_sources(
+    proj: ExtractedProject,
+    sources: list[PdnParameterSource],
+    result: AnnotationResult,
+) -> list[PdnParameterSource]:
+    """Clone sheet-bound logical sources into one source per PCB placement.
+
+    Each clone carries that placement's merged parameters (child + sheet
+    overrides), including a possible per-instance ``PDN_ROLE``. Sources that
+    already pin ``pcb_index`` (PCB-ECO / sheet-symbol-only) stay single-
+    placement, but still receive sheet-symbol overrides so keys like
+    ``PDN_U17_V`` fill ``PDN_V`` for channel discovery.
+
+    Only the first schematic source per logical designator is expanded; later
+    duplicates (same designator in another SchDoc) are skipped with the same
+    warning as the non-sheet path, so expand cannot multiply directives.
+    """
+    if not getattr(proj, "sch_sheet_symbols", None):
+        return sources
+    out: list[PdnParameterSource] = []
+    expanded_logical: set[str] = set()
+    for comp in sources:
+        if comp.pcb_index is not None:
+            params = _instance_pdn_params(
+                comp, proj, comp.pcb_index, result=result,
+            )
+            out.append(replace(comp, parameters=params))
+            continue
+        if not _bound_sheet_symbols_for_designator(proj, comp.lookup_designator):
+            out.append(comp)
+            continue
+        key = comp.lookup_designator.upper()
+        if key in expanded_logical:
+            _append_warning_once(
+                result,
+                f"{comp.designator}: appears in multiple schdocs with "
+                f"PDN_ROLE — only the first occurrence is used",
+            )
+            continue
+        indices = _find_pcb_instances(proj, comp.lookup_designator)
+        if not indices:
+            out.append(comp)
+            continue
+        expanded_logical.add(key)
+        for pcb_idx in indices:
+            params = _instance_pdn_params(comp, proj, pcb_idx, result=result)
+            out.append(replace(comp, parameters=params, pcb_index=pcb_idx))
+    return out
+
+
+def _sibling_pcb_count(proj: ExtractedProject, logical_designator: str) -> int:
+    """How many PCB placements share this schematic designator."""
+    return len(_find_pcb_instances(proj, logical_designator))
+
+
+def _sch_component_for_designator(
+    proj: ExtractedProject, designator: str, child_filename: str,
+):
+    """Best-effort schematic component row for ``designator`` on a child sheet."""
+    des_u = designator.upper()
+    child_base = Path(child_filename).name.lower() if child_filename else ""
+    fallback = None
+    for sc in proj.sch_components:
+        if sc.designator.upper() != des_u:
+            continue
+        if child_base and Path(sc.schdoc_name).name.lower() == child_base:
+            return sc
+        if fallback is None:
+            fallback = sc
+    return fallback
+
+
+def _append_error_once(result: AnnotationResult, msg: str) -> None:
+    if msg not in result.errors:
+        result.errors.append(msg)
+
+
+def _append_warning_once(result: AnnotationResult, msg: str) -> None:
+    if msg not in result.warnings:
+        result.warnings.append(msg)
+
+
+def _warn_orphan_sheet_overrides(
+    proj: ExtractedProject, result: AnnotationResult,
+) -> None:
+    """Warn when sheet-symbol ``PDN_<Des>_*`` keys match no PCB placement.
+
+    Binding is the same as parse time: UniqueID in ``SOURCEUNIQUEID``, or
+    ``sheet_name`` in ``SOURCEHIERARCHICALPATH`` when the UniqueID path is empty.
+    Symbols discarded only as same-name hierpath losers skip the *unbound*
+    warning (covered by :func:`_warn_ambiguous_hierpath_sheet_symbols`) but
+    still warn when their designator targets no PCB component.
+    """
+    bound_keys: set[str] = set()
+    for i in range(len(proj.pcb_components)):
+        for sym in _sheet_symbols_for_pcb(proj, i):
+            bound_keys.add(_sheet_symbol_bind_key(sym))
+    ambiguous_losers = _hierpath_ambiguous_loser_keys(proj)
+    logical_on_pcb = {
+        (pcb.source_designator or pcb.designator).upper()
+        for pcb in proj.pcb_components
+    }
+    for sym in getattr(proj, "sch_sheet_symbols", ()) or ():
+        bind_key = _sheet_symbol_bind_key(sym)
+        is_ambig_loser = bind_key in ambiguous_losers
+        missing_bind_keys: list[str] = []
+        missing_des_keys: dict[str, list[str]] = {}
+        for raw_key in (sym.parameters or ()):
+            parsed = _parse_sheet_override_key(raw_key)
+            if parsed is None:
+                continue
+            des, _ch, _suf, _slot = parsed
+            if bind_key not in bound_keys:
+                if is_ambig_loser:
+                    # Unbound is explained by the ambiguous-name warning; still
+                    # flag designators that match no PCB component.
+                    if des not in logical_on_pcb:
+                        missing_des_keys.setdefault(des, []).append(raw_key)
+                else:
+                    missing_bind_keys.append(raw_key)
+                continue
+            if des not in logical_on_pcb:
+                missing_des_keys.setdefault(des, []).append(raw_key)
+        if not missing_bind_keys and not missing_des_keys:
+            continue
+        label = (
+            f"sheet symbol {sym.sheet_name!r} "
+            f"({sym.parent_schdoc} → {sym.child_filename})"
+        )
+        if missing_bind_keys:
+            keys = ", ".join(repr(k) for k in missing_bind_keys)
+            uid = sym.unique_id or "(none)"
+            result.warnings.append(
+                f"{label}: {keys} — not bound to any PCB placement "
+                f"(UniqueID {uid!r} not on SOURCEUNIQUEID, and sheet_name "
+                f"not on an empty-UID SOURCEHIERARCHICALPATH)"
+            )
+        for des, keys_list in missing_des_keys.items():
+            keys = ", ".join(repr(k) for k in keys_list)
+            result.warnings.append(
+                f"{label}: {keys} — no PCB component with "
+                f"source designator {des!r}"
+            )
+
+
+def _warn_ambiguous_hierpath_sheet_symbols(
+    proj: ExtractedProject, result: AnnotationResult,
+) -> None:
+    """Warn when hierpath fallback matches multiple symbols with the same name.
+
+    Binding keeps only the first symbol per name (UniqueID, then parent sheet);
+    others are ignored — prefer UniqueID paths or unique sheet names.
+    """
+    symbols = getattr(proj, "sch_sheet_symbols", ()) or ()
+    if not symbols:
+        return
+    for pcb in proj.pcb_components:
+        if _source_unique_id_segments(pcb.source_unique_id):
+            continue
+        matchable = _hierpath_matchable_segments(
+            pcb.source_hierarchical_path or "", symbols,
+        )
+        if not matchable:
+            continue
+        by_name = _hierpath_symbols_by_name(symbols, matchable)
+        for name, group in by_name.items():
+            if len(group) < 2:
+                continue
+            winner = _pick_hierpath_symbol(group)
+            chosen = winner.unique_id or winner.sheet_name
+            ignored = ", ".join(
+                repr(s.unique_id or s.sheet_name)
+                for s in group if _sheet_symbol_bind_key(s)
+                != _sheet_symbol_bind_key(winner)
+            )
+            _append_warning_once(
+                result,
+                f"PCB {pcb.designator!r}: SOURCEHIERARCHICALPATH matches "
+                f"{len(group)} sheet symbols named {name!r} — using "
+                f"{chosen!r}, ignoring {ignored}. Prefer SOURCEUNIQUEID "
+                f"binding or unique sheet-symbol names.",
+            )
+
+
 def _degraded_pcb_net_candidates(
     local_net_name: str,
     pcb_designator: str,
@@ -1167,10 +1678,25 @@ def _instance_resolver(proj: ExtractedProject) -> InstanceLocalNetResolver:
     return entry[1]
 
 
-def _iter_pdn_parameter_sources(proj: ExtractedProject) -> list[PdnParameterSource]:
-    """Schematic PDN directives plus PCB-only directives (Blanket ECO path)."""
+def _iter_pdn_parameter_sources(
+    proj: ExtractedProject,
+    result: AnnotationResult | None = None,
+) -> list[PdnParameterSource]:
+    """Schematic PDN directives plus PCB-only directives (Blanket ECO path).
+
+    Also synthesises per-placement sources when ``PDN_<Des>_*`` overrides on
+    sheet symbols fully define a directive and the child component itself
+    carries no ``PDN_ROLE``. When a PCB placement already has a PCB-ECO
+    source, sheet-symbol-only synthesis skips that ``pcb_index`` (overrides
+    are merged later in :func:`_expand_sheet_bound_parameter_sources`) so the
+    same placement is not parsed twice. When at least one sheet-only source
+    is synthesised and some sibling placement is still uncovered (PCB-ECO
+    placements count as covered), a warning is recorded if ``result`` is
+    provided.
+    """
     sources: list[PdnParameterSource] = []
     sch_with_role: set[str] = set()
+    occupied_pcb_indices: set[int] = set()
 
     for comp in proj.sch_components:
         if not _is_pdn_annotated(comp.parameters):
@@ -1209,6 +1735,87 @@ def _iter_pdn_parameter_sources(proj: ExtractedProject) -> list[PdnParameterSour
             pcb_index=idx,
             sch_lookup_designator=lookup_des,
         ))
+        occupied_pcb_indices.add(idx)
+
+    # Sheet-symbol-only directives (child has no PDN_ROLE).
+    override_designators: set[str] = set()
+    for sym in getattr(proj, "sch_sheet_symbols", ()) or ():
+        for raw_key in (sym.parameters or ()):
+            parsed = _parse_sheet_override_key(raw_key)
+            if parsed is not None:
+                override_designators.add(parsed[0])
+    for des in sorted(override_designators):
+        if des in sch_with_role:
+            continue
+        pcb_indices = _find_pcb_instances(proj, des)
+        if not pcb_indices:
+            continue
+        sheet_only_covered: list[int] = []
+        pcb_eco_for_des = occupied_pcb_indices & set(pcb_indices)
+        for pcb_idx in pcb_indices:
+            if pcb_idx in occupied_pcb_indices:
+                # PCB-ECO already owns this placement; sheet overrides merge
+                # in expand — do not synthesise a second source.
+                continue
+            overrides = _overrides_from_sheet_symbols(proj, pcb_idx, des)
+            if not overrides:
+                continue
+            child_fn = ""
+            for sym in reversed(_sheet_symbols_for_pcb(proj, pcb_idx)):
+                for k in (sym.parameters or ()):
+                    parsed = _parse_sheet_override_key(k)
+                    if parsed is not None and parsed[0] == des:
+                        child_fn = sym.child_filename
+                        break
+                if child_fn:
+                    break
+            sch = _sch_component_for_designator(proj, des, child_fn)
+            base = dict(sch.parameters) if sch is not None else {}
+            merged = {**base, **overrides}
+            _strip_stale_cross_role_values(merged, overrides)
+            if not _is_pdn_annotated(merged):
+                continue
+            sources.append(PdnParameterSource(
+                designator=des,
+                schdoc_name=(
+                    sch.schdoc_name if sch is not None
+                    else (Path(child_fn).name if child_fn else "")
+                ),
+                parameters=merged,
+                pcb_index=pcb_idx,
+                sch_lookup_designator=des,
+            ))
+            occupied_pcb_indices.add(pcb_idx)
+            sheet_only_covered.append(pcb_idx)
+        # Warn only when at least one sheet-only source was synthesised and
+        # some sibling placement is still uncovered (PCB-ECO counts as
+        # covered so mixed ECO + sheet-only does not false-alarm).
+        if result is not None and sheet_only_covered:
+            covered_set = set(sheet_only_covered) | pcb_eco_for_des
+            if len(covered_set) < len(pcb_indices):
+                def _names(indices: set[int] | list[int]) -> str:
+                    return ", ".join(
+                        proj.pcb_components[i].designator
+                        for i in sorted(indices)
+                    )
+
+                covered_parts: list[str] = [
+                    f"{_names(sheet_only_covered)} (sheet symbol)",
+                ]
+                if pcb_eco_for_des:
+                    covered_parts.append(
+                        f"{_names(pcb_eco_for_des)} (PCB-ECO)",
+                    )
+                missing_names = _names(
+                    [i for i in pcb_indices if i not in covered_set],
+                )
+                _append_warning_once(
+                    result,
+                    f"{des}: PDN covers {' and '.join(covered_parts)} "
+                    f"but not {missing_names} — add "
+                    f"PDN_{des}_ROLE (and value/nets) on those sheet symbols "
+                    f"or annotate the child component / PCB",
+                )
     return sources
 
 
@@ -2314,12 +2921,15 @@ class AnnotationResult:
 def _require_value(params: dict[str, str], key: str, role_diag: str, result: AnnotationResult) -> float | None:
     raw = _ci_get(params, key)
     if raw is None:
-        result.errors.append(f"{role_diag}: missing required parameter {key}")
+        _append_error_once(result, f"{role_diag}: missing required parameter {key}")
         return None
     try:
         return parse_si_value(raw)
     except ValueError as e:
-        result.errors.append(f"{role_diag}: {key}={raw!r} — {e}{_PARSE_VALUE_HINT}")
+        _append_error_once(
+            result,
+            f"{role_diag}: {key}={raw!r} — {e}{_PARSE_VALUE_HINT}",
+        )
         return None
 
 
@@ -2334,7 +2944,10 @@ def _optional_value(params: dict[str, str], key: str, role_diag: str,
     try:
         return parse_si_value(raw)
     except ValueError as e:
-        result.errors.append(f"{role_diag}: {key}={raw!r} — {e}{_PARSE_VALUE_HINT}")
+        _append_error_once(
+            result,
+            f"{role_diag}: {key}={raw!r} — {e}{_PARSE_VALUE_HINT}",
+        )
         return None
 
 
@@ -2354,7 +2967,12 @@ def _resolve_two_terminal(
     schdoc_name: str | None = None,
     p_des_key: str | None = None,
     n_des_key: str | None = None,
+    param_diag: str | None = None,
 ) -> tuple[TerminalSpec, TerminalSpec] | None:
+    # ``param_diag`` prefixes missing-parameter errors (logical designator
+    # when expanding multi-channel PCB instances); pad-resolution errors keep
+    # ``role_diag`` (often the physical instance label).
+    missing_diag = param_diag or role_diag
     p_net = _ci_get(params, p_net_key)
     n_net = _ci_get(params, n_net_key)
     p_pins = _split_pin_list(_ci_get(params, p_pins_key))
@@ -2367,9 +2985,13 @@ def _resolve_two_terminal(
     )
 
     if p_net is None and p_pins is None:
-        result.errors.append(f"{role_diag}: missing {p_net_key} (or {p_pins_key})")
+        _append_error_once(
+            result, f"{missing_diag}: missing {p_net_key} (or {p_pins_key})",
+        )
     if n_net is None and n_pins is None:
-        result.errors.append(f"{role_diag}: missing {n_net_key} (or {n_pins_key})")
+        _append_error_once(
+            result, f"{missing_diag}: missing {n_net_key} (or {n_pins_key})",
+        )
     if p_net is None and p_pins is None or n_net is None and n_pins is None:
         return None
 
@@ -2397,8 +3019,11 @@ def _resolve_two_terminal(
 
     p_spec, p_err, p_tier = _side(p_net, p_pins, p_des, "P")
     n_spec, n_err, n_tier = _side(n_net, n_pins, n_des, "N")
-    result.errors.extend(p_err)
-    result.errors.extend(n_err)
+    # Deduped: one directive expanded over several PCB placements resolves the
+    # same terminal once per instance, so an unresolvable net would otherwise
+    # report identically N times.
+    for err in (*p_err, *n_err):
+        _append_error_once(result, err)
     if p_spec is None or n_spec is None:
         return None
     if p_err or n_err:
@@ -2580,15 +3205,16 @@ def _terminal_mode(params: dict[str, str], idx: int | None,
         )
         if _ci_get(params, pins_key) is not None:
             msg += f" For a two-terminal check use {p_pins_key}, not {pins_key}."
-        result.errors.append(msg)
+        _append_error_once(result, msg)
         return None
     if has_single:
         return "single"
     if has_two:
         return "two"
-    result.errors.append(
+    _append_error_once(
+        result,
         f"{role_diag}: no terminal net specified — set {p_net_key} and "
-        f"{n_net_key}, or {net_key} for a single-net (point-to-point) check"
+        f"{n_net_key}, or {net_key} for a single-net (point-to-point) check",
     )
     return None
 
@@ -2661,7 +3287,8 @@ def _resolve_single_terminal(
         sch_lookup_designator=sch_lookup_designator,
         schdoc_name=schdoc_name,
     )
-    result.errors.extend(errs)
+    for err in errs:
+        _append_error_once(result, err)
     return spec
 
 
@@ -2693,14 +3320,16 @@ def _parse_source(comp, proj, enabled_layers, result,
     # ``only_indices`` (from the per-channel role dispatcher) restricts this
     # parser to the channels whose effective role is SOURCE; when ``None`` the
     # whole part is SOURCE and channels are discovered here.
+    discovery = _discovery_pdn_params(comp, proj)
     if only_indices is not None:
         indices = list(only_indices)
     else:
-        indices = _discover_channel_indices(comp.parameters, "V")
+        indices = _discover_channel_indices(discovery, "V")
         if not indices:
-            result.errors.append(
-                f"SOURCE on {comp.designator}: missing PDN_V "
-                f"(or PDN<n>_V for an indexed channel)"
+            _append_error_once(
+                result,
+                f"SOURCE on {comp.lookup_designator}: missing PDN_V "
+                f"(or PDN<n>_V for an indexed channel)",
             )
             return []
     pcb_indices = _pcb_indices_for_source(comp, proj)
@@ -2717,25 +3346,39 @@ def _parse_source(comp, proj, enabled_layers, result,
             f"{len(pcb_indices)} multi-channel PCB instances ({names})"
         )
     specs: list[SourceSpec] = []
+    sibling_indices = _find_pcb_instances(proj, comp.lookup_designator)
+    multi = len(sibling_indices) > 1
+    logical = comp.lookup_designator
     for idx in indices:
-        role_diag = f"SOURCE on {_channel_label(comp.designator, idx)}"
-        params = _materialize_channel_params(comp.parameters, idx, "SOURCE")
-        v = _require_value(params, _channel_key("V", idx), role_diag, result)
-        if v is None:
-            continue
-        mode = _terminal_mode(params, idx, role_diag, result)
-        if mode is None:
-            continue
+        role_diag = f"SOURCE on {_channel_label(logical, idx)}"
+        # Judged against every placement of the logical part, not against
+        # ``pcb_indices``: a sheet-bound directive is pre-split into one
+        # source per placement, so the local list no longer shows the fan-out
+        # this guard exists to refuse.
         if _reject_des_on_multi_instance(
-            params, idx, pcb_indices, proj, role_diag, result,
+            _materialize_channel_params(comp.parameters, idx, "SOURCE"),
+            idx, sibling_indices, proj, role_diag, result,
         ):
             continue
         for pcb_idx in pcb_indices:
+            params = _materialize_channel_params(
+                _instance_pdn_params(comp, proj, pcb_idx, result=result),
+                idx, "SOURCE",
+            )
             pcb_des = proj.pcb_components[pcb_idx].designator
             inst_diag = (
                 f"SOURCE on {_channel_label(pcb_des, idx)}"
-                if len(pcb_indices) > 1 else role_diag
+                if multi else role_diag
             )
+            # Shared missing/invalid values: report on the logical designator
+            # once instead of once per expanded PCB instance.
+            value_diag = role_diag if multi else inst_diag
+            v = _require_value(params, _channel_key("V", idx), value_diag, result)
+            if v is None:
+                continue
+            mode = _terminal_mode(params, idx, value_diag, result)
+            if mode is None:
+                continue
             if mode == "single":
                 p = _resolve_single_terminal(
                     proj, pcb_idx, params,
@@ -2762,6 +3405,7 @@ def _parse_source(comp, proj, enabled_layers, result,
                 schdoc_name=comp.schdoc_name,
                 p_des_key=_channel_key("P_DES", idx),
                 n_des_key=_channel_key("N_DES", idx),
+                param_diag=value_diag,
             )
             if pair is None:
                 continue
@@ -2777,14 +3421,16 @@ def _parse_sink(comp, proj, enabled_layers, result,
                 series_graph=None):
     # ``only_indices`` restricts this parser to the part's SINK-role channels;
     # see _parse_source.
+    discovery = _discovery_pdn_params(comp, proj)
     if only_indices is not None:
         indices = list(only_indices)
     else:
-        indices = _discover_channel_indices(comp.parameters, "I")
+        indices = _discover_channel_indices(discovery, "I")
         if not indices:
-            result.errors.append(
-                f"SINK on {comp.designator}: missing PDN_I "
-                f"(or PDN<n>_I for an indexed channel)"
+            _append_error_once(
+                result,
+                f"SINK on {comp.lookup_designator}: missing PDN_I "
+                f"(or PDN<n>_I for an indexed channel)",
             )
             return []
     pcb_indices = _pcb_indices_for_source(comp, proj)
@@ -2801,27 +3447,37 @@ def _parse_sink(comp, proj, enabled_layers, result,
             f"{len(pcb_indices)} multi-channel PCB instances ({names})"
         )
     specs: list[SinkSpec] = []
+    sibling_indices = _find_pcb_instances(proj, comp.lookup_designator)
+    multi = len(sibling_indices) > 1
+    logical = comp.lookup_designator
     for idx in indices:
-        role_diag = f"SINK on {_channel_label(comp.designator, idx)}"
-        params = _materialize_channel_params(comp.parameters, idx, "SINK")
-        i = _require_value(params, _channel_key("I", idx), role_diag, result)
-        if i is None:
-            continue
-        mode = _terminal_mode(params, idx, role_diag, result)
-        if mode is None:
-            continue
+        role_diag = f"SINK on {_channel_label(logical, idx)}"
+        # See _parse_source: judged against every placement of the logical
+        # part, not against the pre-split ``pcb_indices``.
         if _reject_des_on_multi_instance(
-            params, idx, pcb_indices, proj, role_diag, result,
+            _materialize_channel_params(comp.parameters, idx, "SINK"),
+            idx, sibling_indices, proj, role_diag, result,
         ):
             continue
-        min_v = _optional_value(
-            params, _channel_key("MIN_V", idx), role_diag, result,
-        )
         for pcb_idx in pcb_indices:
+            params = _materialize_channel_params(
+                _instance_pdn_params(comp, proj, pcb_idx, result=result),
+                idx, "SINK",
+            )
             pcb_des = proj.pcb_components[pcb_idx].designator
             inst_diag = (
                 f"SINK on {_channel_label(pcb_des, idx)}"
-                if len(pcb_indices) > 1 else role_diag
+                if multi else role_diag
+            )
+            value_diag = role_diag if multi else inst_diag
+            i = _require_value(params, _channel_key("I", idx), value_diag, result)
+            if i is None:
+                continue
+            mode = _terminal_mode(params, idx, value_diag, result)
+            if mode is None:
+                continue
+            min_v = _optional_value(
+                params, _channel_key("MIN_V", idx), value_diag, result,
             )
             if mode == "single":
                 p = _resolve_single_terminal(
@@ -2850,6 +3506,7 @@ def _parse_sink(comp, proj, enabled_layers, result,
                 schdoc_name=comp.schdoc_name,
                 p_des_key=_channel_key("P_DES", idx),
                 n_des_key=_channel_key("N_DES", idx),
+                param_diag=value_diag,
             )
             if pair is None:
                 continue
@@ -2869,7 +3526,8 @@ def _parse_resistance(comp, proj, enabled_layers, result,
     # SERIES regardless of the part-wide PDN_ROLE.
     role_raw = "SERIES"
     role_diag_base = f"{role_raw} on {comp.designator}"
-    if _has_single_net_params(comp.parameters, only_indices):
+    discovery = _discovery_pdn_params(comp, proj)
+    if _has_single_net_params(discovery, only_indices):
         result.errors.append(
             f"{role_diag_base}: PDN_NET is only valid on SOURCE/SINK — a "
             f"SERIES directive bridges two nets, use PDN_P_NET and PDN_N_NET"
@@ -2878,11 +3536,12 @@ def _parse_resistance(comp, proj, enabled_layers, result,
     if only_indices is not None:
         indices = list(only_indices)
     else:
-        indices = _discover_channel_indices(comp.parameters, "R")
+        indices = _discover_channel_indices(discovery, "R")
         if not indices:
-            result.errors.append(
-                f"{role_diag_base}: missing PDN_R "
-                f"(or PDN<n>_R for an indexed channel)"
+            _append_error_once(
+                result,
+                f"SERIES on {comp.lookup_designator}: missing PDN_R "
+                f"(or PDN<n>_R for an indexed channel)",
             )
             return []
 
@@ -2901,25 +3560,33 @@ def _parse_resistance(comp, proj, enabled_layers, result,
         )
 
     specs: list[ResistorSpec] = []
+    multi = _sibling_pcb_count(proj, comp.lookup_designator) > 1
+    logical = comp.lookup_designator
     for idx in indices:
-        role_diag = f"{role_raw} on {_channel_label(comp.designator, idx)}"
-        params = _materialize_channel_params(comp.parameters, idx, role_raw)
-        r = _require_value(
-            params, _channel_key("R", idx), role_diag, result,
-        )
-        if r is None:
-            continue
-        if r <= 0:
-            result.errors.append(
-                f"{role_diag}: {_channel_key('R', idx)} must be positive, got {r}"
-            )
-            continue
+        role_diag = f"{role_raw} on {_channel_label(logical, idx)}"
         for pcb_idx in pcb_indices:
+            params = _materialize_channel_params(
+                _instance_pdn_params(comp, proj, pcb_idx, result=result),
+                idx, role_raw,
+            )
             pcb_des = proj.pcb_components[pcb_idx].designator
             inst_diag = (
                 f"{role_raw} on {_channel_label(pcb_des, idx)}"
-                if len(pcb_indices) > 1 else role_diag
+                if multi else role_diag
             )
+            value_diag = role_diag if multi else inst_diag
+            r = _require_value(
+                params, _channel_key("R", idx), value_diag, result,
+            )
+            if r is None:
+                continue
+            if r <= 0:
+                _append_error_once(
+                    result,
+                    f"{value_diag}: {_channel_key('R', idx)} must be positive, "
+                    f"got {r}",
+                )
+                continue
             given = any(
                 _ci_get(params, _channel_key(k, idx)) is not None
                 for k in ("P_NET", "N_NET", "P_PINS", "N_PINS")
@@ -2927,11 +3594,12 @@ def _parse_resistance(comp, proj, enabled_layers, result,
             resolve_params = dict(params)
             if not given:
                 if len(indices) > 1:
-                    result.errors.append(
-                        f"{inst_diag}: multi-channel SERIES requires explicit "
+                    _append_error_once(
+                        result,
+                        f"{value_diag}: multi-channel SERIES requires explicit "
                         f"{_channel_key('P_NET', idx)} / {_channel_key('N_NET', idx)} "
                         f"or {_channel_key('P_PINS', idx)} / "
-                        f"{_channel_key('N_PINS', idx)} per channel"
+                        f"{_channel_key('N_PINS', idx)} per channel",
                     )
                     continue
                 inferred = _autoinfer_2pin_nets(proj, pcb_idx)
@@ -2962,6 +3630,7 @@ def _parse_resistance(comp, proj, enabled_layers, result,
                 net_remap=net_remap,
                 sch_lookup_designator=comp.lookup_designator,
                 schdoc_name=comp.schdoc_name,
+                param_diag=value_diag,
             )
             if pair is None:
                 continue
@@ -2970,6 +3639,164 @@ def _parse_resistance(comp, proj, enabled_layers, result,
                 resistance=r, p=pair[0], n=pair[1], channel_index=idx,
             ))
     return specs
+
+
+
+def _expanded_supply_net_names(
+    proj: ExtractedProject,
+    local_name: str,
+    pcb_index: int,
+) -> tuple[str, ...]:
+    """PCB / local labels for a supply net on one placement.
+
+    Starts from :meth:`InstanceLocalNetResolver.expand_net_names`, then adds a
+    channel-suffixed candidate (``LX`` + designator ``U1.2`` → ``LX.2``) when
+    that net exists on the PCB — needed when the compiled netlist is missing
+    and pin-driven expansion cannot run.
+    """
+    if not local_name or not str(local_name).strip():
+        return ()
+    local_u = local_name.strip().upper()
+    names: list[str] = list(
+        _instance_resolver(proj).expand_net_names(local_u, pcb_index=pcb_index),
+    )
+    pcb = proj.pcb_components[pcb_index]
+    suffix = _channel_suffix_from_pcb_designator(pcb.designator)
+    if suffix:
+        slotted = f"{local_u}.{suffix}"
+        if _net_indices_by_name(proj, slotted) and slotted not in names:
+            names.append(slotted)
+    # Prefer instance-specific labels when present so multi-channel locals
+    # (shared ``LX``) do not collapse to one ambiguous supply-map key.
+    preferred = tuple(n for n in names if n != local_u)
+    if preferred:
+        return preferred
+    return (local_u,)
+
+
+def _primary_supply_net_name(
+    proj: ExtractedProject,
+    local_name: str,
+    pcb_index: int,
+) -> str | None:
+    """One canonical label per placement (avoids alias cross-products)."""
+    names = _expanded_supply_net_names(proj, local_name, pcb_index)
+    if not names:
+        return None
+    local_u = local_name.strip().upper()
+    suffix = _channel_suffix_from_pcb_designator(
+        proj.pcb_components[pcb_index].designator,
+    )
+    if suffix:
+        slotted = f"{local_u}.{suffix}"
+        if slotted in names:
+            return slotted
+    return names[0]
+
+
+def _supply_net_lookup_aliases(
+    proj: ExtractedProject | None,
+    local_name: str | None,
+    pcb_index: int | None,
+) -> tuple[str, ...]:
+    """Net names to try for Vin lookup (instance expansions, then bare label)."""
+    if local_name is None or not str(local_name).strip():
+        return ()
+    raw = local_name.strip().upper()
+    if proj is None or pcb_index is None:
+        return (raw,)
+    seen: list[str] = []
+    for name in _expanded_supply_net_names(proj, raw, pcb_index):
+        if name not in seen:
+            seen.append(name)
+    if raw not in seen:
+        seen.append(raw)
+    return tuple(seen)
+
+
+def _iter_series_supply_flow_edges(
+    parameter_sources: list[PdnParameterSource],
+    proj: ExtractedProject,
+) -> Iterator[tuple[bool, str, str]]:
+    """SERIES supply-flow edges as ``(directed, net_a, net_b)``.
+
+    Explicit ``P_NET``/``N_NET`` yield directed ``(True, upstream_P, downstream_N)``.
+    Single-channel 2-pin autoinfer (pad order is not power-flow) yields
+    undirected ``(False, net_a, net_b)`` so voltage can copy either way.
+    Each side is expanded to one primary instance label (no alias cross-product).
+    """
+    for comp in parameter_sources:
+        indices = _series_channel_indices(comp)
+        if not indices:
+            continue
+        pcb_indices = _pcb_indices_for_source(comp, proj)
+        if not pcb_indices:
+            # Unplaced / DNI SERIES must not invent global Vin edges.
+            continue
+        for idx in indices:
+            explicit = (
+                _ci_get(comp.parameters, _channel_key("P_NET", idx)) is not None
+                and _ci_get(comp.parameters, _channel_key("N_NET", idx)) is not None
+            )
+            for pcb_idx in pcb_indices:
+                pair = _resolve_series_channel_nets(
+                    comp, proj, idx, pcb_idx, indices,
+                )
+                if pair is None:
+                    continue
+                a = _primary_supply_net_name(proj, pair[0], pcb_idx)
+                b = _primary_supply_net_name(proj, pair[1], pcb_idx)
+                if a is None or b is None or a == b:
+                    continue
+                yield explicit, a, b
+
+
+def _propagate_series_supply_voltages(
+    supply_map: dict[str, float],
+    parameter_sources: list[PdnParameterSource],
+    proj: ExtractedProject,
+) -> None:
+    """Copy unique voltages along SERIES edges until fixpoint (in-place).
+
+    Directed edges copy P→N. Undirected autoinfer edges copy whichever side
+    already has a unique voltage onto the other (pad order is not power-flow).
+    Multi-hop chains resolve regardless of SERIES directive order. Conflicting
+    directed voltages on one downstream net are dropped (ambiguous).
+    """
+    edges = list(_iter_series_supply_flow_edges(parameter_sources, proj))
+    if not edges:
+        return
+    ambiguous: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for directed, a, b in edges:
+            if directed:
+                up, dn = a, b
+                if dn in ambiguous:
+                    continue
+                v = supply_map.get(up)
+                if v is None:
+                    continue
+                existing = supply_map.get(dn)
+                if existing is None:
+                    supply_map[dn] = v
+                    changed = True
+                elif existing != v:
+                    supply_map.pop(dn, None)
+                    ambiguous.add(dn)
+                    changed = True
+            else:
+                if a in ambiguous or b in ambiguous:
+                    continue
+                va = supply_map.get(a)
+                vb = supply_map.get(b)
+                if va is not None and vb is None:
+                    supply_map[b] = va
+                    changed = True
+                elif vb is not None and va is None:
+                    supply_map[a] = vb
+                    changed = True
 
 
 def _collect_supply_voltages_by_net(
@@ -2984,6 +3811,11 @@ def _collect_supply_voltages_by_net(
     :func:`_collect_series_upstream_map`, and the ``IN_P_NET`` a regulator is
     looked up by are all keyed the same way. Without that, any design the
     loader's net-merge pre-pass renamed a rail in would find no Vin at all.
+
+    When placements exist, each instance expands local OUT / P net names
+    (e.g. ``LX`` → ``LX.2``) so multi-channel regulators with different
+    ``PDN_V`` do not collide on the shared child-sheet label. Unique voltages
+    then propagate along SERIES edges to fixpoint.
     """
     raw: dict[str, set[float]] = {}
 
@@ -3001,13 +3833,26 @@ def _collect_supply_voltages_by_net(
         for key in keys:
             raw.setdefault(key, set()).add(float(voltage))
 
+    def _register_local(comp: PdnParameterSource, local_net: str | None,
+                        voltage: float) -> None:
+        if local_net is None or not str(local_net).strip():
+            return
+        pcb_indices = _pcb_indices_for_source(comp, proj)
+        if not pcb_indices:
+            _register(local_net, voltage, [])
+            return
+        for pcb_idx in pcb_indices:
+            for name in _expanded_supply_net_names(proj, local_net, pcb_idx):
+                _register(name, voltage, [pcb_idx])
+
     for comp in parameter_sources:
         part_role = _part_role_default(comp.parameters)
-        pcb_indices = _pcb_indices_for_source(comp, proj)
         # Both SOURCE and REGULATOR carry PDN<n>_V; switch on each channel's
         # effective role so a SOURCE (or REGULATOR) channel on a mixed-role
         # part still contributes its nominal rail voltage. Template inheritance
-        # goes through :func:`_resolve_channel_roles` + materialize.
+        # goes through :func:`_resolve_channel_roles` + materialize; the
+        # per-placement net expansion is `_register_local`'s job, so it works
+        # out its own placements rather than taking a list from here.
         scratch = AnnotationResult()
         grouped = _resolve_channel_roles(
             comp.parameters, part_role, comp.designator, scratch,
@@ -3026,15 +3871,19 @@ def _collect_supply_voltages_by_net(
                 if role == "SOURCE":
                     p_net = _ci_get(params, _channel_key("P_NET", idx))
                     single_net = _ci_get(params, _channel_key("NET", idx))
-                    _register(p_net or single_net, v, pcb_indices)
+                    _register_local(comp, p_net or single_net, v)
                 else:  # REGULATOR
                     out_net = _ci_get(params, _channel_key("OUT_P_NET", idx))
-                    _register(out_net, v, pcb_indices)
+                    _register_local(comp, out_net, v)
     out: dict[str, float] = {}
     for net, voltages in raw.items():
         if len(voltages) == 1:
             out[net] = next(iter(voltages))
-    return out
+    declared: frozenset[str] = frozenset()
+    if proj is not None:
+        declared = frozenset(out.keys())
+        _propagate_series_supply_voltages(out, parameter_sources, proj)
+    return out, declared
 
 
 def _canonical_supply_net_name(
@@ -3167,7 +4016,6 @@ def _collect_series_upstream_map(
 # to be a sense/bleed path stitched into a chain than a power path.
 _SERIES_VIN_MAX_HOPS: int = 8
 
-
 def _lookup_inferred_vin(
     in_p_net: str | None,
     supply_map: dict[str, float],
@@ -3242,6 +4090,8 @@ def _resolve_regulator_gain(
     series_graph: _SeriesVinGraph | None = None,
     proj: ExtractedProject | None = None,
     net_remap: dict[int, int] | None = None,
+    pcb_index: int | None = None,
+    declared_supply: frozenset[str] | None = None,
 ) -> tuple[float, str | None, float, bool] | None:
     """Return ``(gain, regulator_type, efficiency, adaptive_gain_eligible)``."""
     gain_key = _channel_key("GAIN", idx)
@@ -3309,13 +4159,39 @@ def _resolve_regulator_gain(
         )
         return None
 
+    lookup_map = (
+        {k: v for k, v in supply_map.items() if k in declared_supply}
+        if declared_supply is not None else supply_map
+    )
     lookup_net = (
-        _canonical_supply_net_name(proj, in_p_net, net_remap)
+        _canonical_supply_net_name(proj, in_p_net, net_remap, pcb_index=pcb_index)
         if proj is not None and in_p_net else in_p_net
     )
     vin, vin_failure, vin_hops = _lookup_inferred_vin(
-        lookup_net, supply_map, graph=series_graph,
+        lookup_net, lookup_map, graph=series_graph,
     )
+    if (vin is None or vin <= 0) and proj is not None:
+        for name in _supply_net_lookup_aliases(proj, in_p_net, pcb_index):
+            cand, fail, hops = _lookup_inferred_vin(
+                name, lookup_map, graph=series_graph,
+            )
+            if cand is not None and cand > 0:
+                vin, vin_failure, vin_hops = cand, fail, hops
+                break
+    if vin is None or vin <= 0:
+        fb_vin, fb_fail, fb_hops = _lookup_inferred_vin(
+            lookup_net, supply_map, graph=None,
+        )
+        if fb_vin is not None and fb_vin > 0:
+            vin, vin_failure, vin_hops = fb_vin, fb_fail, fb_hops
+        elif (vin is None or vin <= 0) and proj is not None:
+            for name in _supply_net_lookup_aliases(proj, in_p_net, pcb_index):
+                fb_vin, fb_fail, fb_hops = _lookup_inferred_vin(
+                    name, supply_map, graph=None,
+                )
+                if fb_vin is not None and fb_vin > 0:
+                    vin, vin_failure, vin_hops = fb_vin, fb_fail, fb_hops
+                    break
     in_key = _channel_key("IN_P_NET", idx)
     if vin is None or vin <= 0:
         if vin_failure == "ambiguous":
@@ -3367,9 +4243,10 @@ def _resolve_regulator_gain(
 
 def _parse_regulator(comp, proj, enabled_layers, result,
                      net_remap=None, supply_map=None, only_indices=None,
-                     series_graph=None):
+                     series_graph=None, declared_supply=None):
     role_diag_base = f"REGULATOR on {comp.designator}"
-    if _has_single_net_params(comp.parameters, only_indices):
+    discovery = _discovery_pdn_params(comp, proj)
+    if _has_single_net_params(discovery, only_indices):
         result.errors.append(
             f"{role_diag_base}: PDN_NET is only valid on SOURCE/SINK — a "
             f"REGULATOR has four terminals, use PDN_OUT_P_NET / PDN_OUT_N_NET "
@@ -3379,11 +4256,12 @@ def _parse_regulator(comp, proj, enabled_layers, result,
     if only_indices is not None:
         indices = list(only_indices)
     else:
-        indices = _discover_channel_indices(comp.parameters, "V")
+        indices = _discover_channel_indices(discovery, "V")
         if not indices:
-            result.errors.append(
-                f"REGULATOR on {comp.designator}: missing PDN_V "
-                f"(or PDN<n>_V for an indexed channel)"
+            _append_error_once(
+                result,
+                f"REGULATOR on {comp.lookup_designator}: missing PDN_V "
+                f"(or PDN<n>_V for an indexed channel)",
             )
             return []
 
@@ -3405,40 +4283,50 @@ def _parse_regulator(comp, proj, enabled_layers, result,
         supply_map = {}
 
     specs: list[RegulatorSpec] = []
+    multi = _sibling_pcb_count(proj, comp.lookup_designator) > 1
+    logical = comp.lookup_designator
     for idx in indices:
-        role_diag = f"REGULATOR on {_channel_label(comp.designator, idx)}"
-        params = _materialize_channel_params(comp.parameters, idx, "REGULATOR")
-        v = _require_value(
-            params, _channel_key("V", idx), role_diag, result,
-        )
-        in_p_net = _ci_get(params, _channel_key("IN_P_NET", idx))
-        resolved = _resolve_regulator_gain(
-            params, idx, v, in_p_net,
-            supply_map, role_diag, result,
-            series_graph=series_graph, proj=proj, net_remap=net_remap,
-        ) if v is not None else None
-        if v is None or resolved is None:
-            continue
-        g, reg_type, eff, adaptive = resolved
-        q_key = _channel_key("QUIESCENT", idx)
-        if _ci_get(params, q_key) is None:
-            quiescent = 0.0
-        else:
-            iq_raw = _optional_value(params, q_key, role_diag, result)
-            if iq_raw is None:
-                # Present but unparseable — error already recorded; skip the
-                # spec rather than building it with a silent quiescent=0.
-                continue
-            if iq_raw < 0:
-                result.errors.append(f"{role_diag}: {q_key} must be >= 0")
-                continue
-            quiescent = iq_raw
+        role_diag = f"REGULATOR on {_channel_label(logical, idx)}"
         for pcb_idx in pcb_indices:
+            params = _materialize_channel_params(
+                _instance_pdn_params(comp, proj, pcb_idx, result=result),
+                idx, "REGULATOR",
+            )
             pcb_des = proj.pcb_components[pcb_idx].designator
             inst_diag = (
                 f"REGULATOR on {_channel_label(pcb_des, idx)}"
-                if len(pcb_indices) > 1 else role_diag
+                if multi else role_diag
             )
+            value_diag = role_diag if multi else inst_diag
+            v = _require_value(
+                params, _channel_key("V", idx), value_diag, result,
+            )
+            in_p_net = _ci_get(params, _channel_key("IN_P_NET", idx))
+            resolved = _resolve_regulator_gain(
+                params, idx, v, in_p_net,
+                supply_map, value_diag, result,
+                series_graph=series_graph, proj=proj, net_remap=net_remap,
+                pcb_index=pcb_idx, declared_supply=declared_supply,
+            ) if v is not None else None
+            if v is None or resolved is None:
+                continue
+            g, reg_type, eff, adaptive = resolved
+            q_key = _channel_key("QUIESCENT", idx)
+            if _ci_get(params, q_key) is None:
+                quiescent = 0.0
+            else:
+                iq_raw = _optional_value(params, q_key, value_diag, result)
+                if iq_raw is None:
+                    # Present but unparseable — error already recorded; skip
+                    # the spec rather than building it with a silent
+                    # quiescent=0.
+                    continue
+                if iq_raw < 0:
+                    _append_error_once(
+                        result, f"{value_diag}: {q_key} must be >= 0",
+                    )
+                    continue
+                quiescent = iq_raw
             out = _resolve_two_terminal(
                 proj, pcb_idx, params,
                 _channel_key("OUT_P_NET", idx), _channel_key("OUT_N_NET", idx),
@@ -3447,6 +4335,7 @@ def _parse_regulator(comp, proj, enabled_layers, result,
                 net_remap=net_remap,
                 sch_lookup_designator=comp.lookup_designator,
                 schdoc_name=comp.schdoc_name,
+                param_diag=f"{value_diag} OUT",
             )
             in_ = _resolve_two_terminal(
                 proj, pcb_idx, params,
@@ -3456,6 +4345,7 @@ def _parse_regulator(comp, proj, enabled_layers, result,
                 net_remap=net_remap,
                 sch_lookup_designator=comp.lookup_designator,
                 schdoc_name=comp.schdoc_name,
+                param_diag=f"{value_diag} IN",
             )
             if out is None or in_ is None:
                 continue
@@ -3639,20 +4529,23 @@ def _warn_unknown_pdn_params(
         ch = f"#{idx}" if idx is not None else ""
         if suffix_u == "PIN":
             suggest = _channel_key("P_PINS", idx)
-            result.warnings.append(
+            _append_warning_once(
+                result,
                 f"{diag}{ch}: unknown parameter {key!r} — did you mean "
-                f"{suggest}?"
+                f"{suggest}?",
             )
             continue
         if suffix_u.startswith("OUT_") and eff_role in ("SOURCE", "SINK"):
-            result.warnings.append(
+            _append_warning_once(
+                result,
                 f"{diag}{ch}: {key!r} is a REGULATOR parameter — did you mean "
                 f"to set the channel's role to REGULATOR "
-                f"({_channel_key('ROLE', idx)}=REGULATOR)?"
+                f"({_channel_key('ROLE', idx)}=REGULATOR)?",
             )
             continue
-        result.warnings.append(
-            f"{diag}{ch}: unknown PDN parameter {key!r} (ignored)"
+        _append_warning_once(
+            result,
+            f"{diag}{ch}: unknown PDN parameter {key!r} (ignored)",
         )
 
 
@@ -3733,7 +4626,7 @@ def _resolve_channel_roles(
             eff = override_raw.strip().upper()
             if eff not in VALID_ROLES:
                 if report_errors:
-                    result.errors.append(
+                    _append_error_once(result, 
                         f"{_channel_label(designator, idx)}: unknown "
                         f"{_channel_key('ROLE', idx)}={override_raw!r} — must be "
                         f"one of {sorted(VALID_ROLES)}"
@@ -3742,7 +4635,7 @@ def _resolve_channel_roles(
         else:
             if not part_role:
                 if report_errors:
-                    result.errors.append(
+                    _append_error_once(result, 
                         f"{_channel_label(designator, idx)}: missing "
                         f"{_channel_key('ROLE', idx)} (no part-wide PDN_ROLE)"
                     )
@@ -3756,7 +4649,7 @@ def _resolve_channel_roles(
                     params, idx, eff,
                 )
                 if idx is not None and inheritable:
-                    result.errors.append(
+                    _append_error_once(result, 
                         f"{eff} on {_channel_label(designator, idx)}: missing "
                         f"{value_key} (or template "
                         f"{_channel_key(value_suffix, None)})"
@@ -3766,7 +4659,7 @@ def _resolve_channel_roles(
                     # a channel whose PDN<n>_ROLE differs from the part-wide
                     # role, so the unindexed value belongs to another role and
                     # naming it as a template would send the user the wrong way.
-                    result.errors.append(
+                    _append_error_once(result, 
                         f"{eff} on {_channel_label(designator, idx)}: missing "
                         f"{value_key}"
                     )
@@ -4050,22 +4943,31 @@ def parse_annotations(proj: ExtractedProject,
                 f"directive ignored"
             )
 
-    parameter_sources = _iter_pdn_parameter_sources(proj)
+    parameter_sources = _iter_pdn_parameter_sources(proj, result=result)
+    _warn_orphan_sheet_overrides(proj, result)
+    _warn_ambiguous_hierpath_sheet_symbols(proj, result)
+    parameter_sources = _expand_sheet_bound_parameter_sources(
+        proj, parameter_sources, result,
+    )
 
-    supply_map = _collect_supply_voltages_by_net(
+    supply_map, declared_supply = _collect_supply_voltages_by_net(
         parameter_sources, proj, net_remap=net_remap,
     )
     series_graph = _collect_series_upstream_map(
         parameter_sources, proj, net_remap=net_remap,
         skip_designators=skip_set,
     )
+    for net in series_graph.ambiguous:
+        if net not in declared_supply:
+            supply_map.pop(net, None)
 
     for comp in parameter_sources:
         if comp.designator.upper() in skip_set:
             continue  # Absorbed by net-merge pre-pass — see fypa.altium.loader.
-        role_raw = _ci_get(comp.parameters, ROLE_KEY)
+        discovery = _discovery_pdn_params(comp, proj)
+        role_raw = _ci_get(discovery, ROLE_KEY)
         if role_raw is None:
-            if not _has_indexed_role_params(comp.parameters):
+            if not _has_indexed_role_params(discovery):
                 continue
             role = ""
         else:
@@ -4090,7 +4992,11 @@ def parse_annotations(proj: ExtractedProject,
         if comp.pcb_index is None:
             seen_designators.add(key)
 
-        _warn_unknown_pdn_params(comp, role, result)
+        _warn_unknown_pdn_params(
+            replace(comp, parameters=discovery) if discovery != comp.parameters
+            else comp,
+            role, result,
+        )
 
         # Split the part's channels by effective role (part-wide PDN_ROLE, or
         # a per-channel PDN<n>_ROLE override) and dispatch each group to its
@@ -4098,25 +5004,36 @@ def parse_annotations(proj: ExtractedProject,
         # and multi-channel same-role parts behave exactly as before; a mixed
         # part (source + sink on one component) yields one group per role.
         channel_roles = _resolve_channel_roles(
-            comp.parameters, role, comp.designator, result,
+            discovery, role, comp.designator, result,
         )
         if not channel_roles:
             # No resolvable channels — call the part-role parser so it emits
             # the role-appropriate "missing PDN_V / PDN_I / …" diagnostic.
             if not role:
                 continue
-            specs = _PARSER_BY_ROLE[role](comp, proj, enabled_layers, result,
-                                          net_remap=net_remap,
-                                          supply_map=supply_map,
-                                          series_graph=series_graph)
+            parser_kw = {
+                "net_remap": net_remap,
+                "supply_map": supply_map,
+                "series_graph": series_graph,
+            }
+            if role == "REGULATOR":
+                parser_kw["declared_supply"] = declared_supply
+            specs = _PARSER_BY_ROLE[role](
+                comp, proj, enabled_layers, result, **parser_kw,
+            )
             result.directives.extend(specs)
         else:
             for chan_role, idxs in channel_roles.items():
+                parser_kw = {
+                    "net_remap": net_remap,
+                    "supply_map": supply_map,
+                    "only_indices": idxs,
+                    "series_graph": series_graph,
+                }
+                if chan_role == "REGULATOR":
+                    parser_kw["declared_supply"] = declared_supply
                 specs = _PARSER_BY_ROLE[chan_role](
-                    comp, proj, enabled_layers, result,
-                    net_remap=net_remap,
-                    supply_map=supply_map, only_indices=idxs,
-                    series_graph=series_graph,
+                    comp, proj, enabled_layers, result, **parser_kw,
                 )
                 # Every parser returns a list — empty if the directive failed
                 # to resolve, one element per resolved channel otherwise.

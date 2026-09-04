@@ -390,11 +390,87 @@ The same parameters on every instance; FYPA resolves `VCC_EFUSE` to
 `resolved local net 'VCC_EFUSE' via schematic pins ['2'] → PCB net(s) VCC_EFUSE.4`
 is expected and not an error.
 
+#### Per-instance overrides on sheet symbols
+
+When the **same** child sheet is placed more than once and you need a
+**different** current (or voltage / resistance) per placement, put the
+shared role and nets on the child component and override the value on
+each **sheet symbol**:
+
+On `Port.SchDoc`, component `J1`:
+
+| Parameter    | Value   |
+|--------------|---------|
+| `PDN_ROLE`   | `SINK`  |
+| `PDN_I`      | `500mA` |
+| `PDN_P_NET`  | `VBUS`  |
+| `PDN_N_NET`  | `GND`   |
+
+(`PDN_I` on the child is an optional default; each sheet symbol may
+override it.)
+
+On the parent sheet, sheet symbol `CON-A` (file `Port.SchDoc`):
+
+| Parameter   | Value |
+|-------------|-------|
+| `PDN_J1_I`  | `1.5A` |
+
+On sheet symbol `CON-B`:
+
+| Parameter   | Value |
+|-------------|-------|
+| `PDN_J1_I`  | `3A`   |
+
+FYPA binds each override to the PCB instance whose `SOURCEUNIQUEID` path
+contains that sheet symbol's UniqueID (`J1.1`, `J1.2`, …). When
+`SOURCEUNIQUEID` is empty, FYPA falls back to matching sheet-symbol names
+against `SOURCEHIERARCHICALPATH` segments. Only segments that equal a sheet
+symbol name are considered; a leading name is kept when it parents a deeper
+matched symbol (nested sheets), otherwise a root-like leading collision is
+ignored (e.g. a symbol named `main` under path `main\CON-A`). If several
+symbols share a matched name, only one is used (sorted by UniqueID) and a
+warning is emitted — prefer UniqueID binding or unique sheet-symbol names.
+Deeper symbols in a nested UniqueID hierarchy win when both set the same key.
+
+| Form | Meaning |
+|------|---------|
+| `PDN_<Des>_<Key>` | Override for logical designator (e.g. `PDN_J1_I`) |
+| `PDN_<Des>_<n>_<Key>` | Override for indexed PDN channel `n` on that part |
+| `PDN_<Des>_<Key>.N` | REPEAT slot `N` when one sheet symbol expands to several channels |
+
+`<Key>` is any normal PDN suffix (`I`, `V`, `R`, `ROLE`, `P_NET`, …). The
+designator segment must contain a digit (`J1`, `U12`, `U12A`) so ordinary
+keys like `PDN_P_NET` are not misread as overrides.
+
+You can also place a **full** directive on the sheet symbol alone
+(`PDN_J1_ROLE`, `PDN_J1_I`, nets) with no `PDN_*` on the child component.
+A sheet-symbol `PDN_<Des>_ROLE` may also override the child's role for
+that placement only.
+
+Sheet overrides also apply when the shared `PDN_*` parameters live only on
+the **PCB** (Blanket / ECO) and the per-instance value is on the sheet
+symbol — e.g. PCB has `PDN_ROLE=REGULATOR` and nets, sheet symbol has
+`PDN_U1_V=5V`. FYPA merges those into one directive per placement (it does
+not create a second source when both PCB-ECO and a full sheet-symbol
+directive target the same instance). Different `PDN_<Des>_V` values on
+repeated regulator sheets also feed SMPS Vin inference under the
+instance-expanded output nets (see [Section 4](04-regulators.md)).
+
+A *partial coverage* warning (`PDN covers … (sheet symbol) … but not …`)
+is issued only when FYPA synthesises at least one full sheet-symbol-only
+directive and another placement of the same designator still has neither
+PCB-ECO/`PDN_ROLE` nor a complete sheet-symbol directive. Covered
+placements are labelled `(sheet symbol)` or `(PCB-ECO)` in the message.
+Value-only overrides on an ECO'd placement do not trigger that warning for
+bare siblings.
+
 #### PCB-only parameters (Blanket / ECO)
 
 When `PDN_*` parameters are pushed to the PCB only (Blanket rule or ECO),
 FYPA infers the originating schematic sheet from pad ↔ netlist
 connectivity so local-net resolution stays scoped to that instance.
+Combine with sheet-symbol `PDN_<Des>_*` overrides as above when values
+must differ per placement.
 
 #### Troubleshooting local nets
 
