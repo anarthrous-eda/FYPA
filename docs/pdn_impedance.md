@@ -109,11 +109,24 @@ The case size is parsed from the footprint name. FYPA recognises:
 * IPC-7351 land names (`CAPC1608X90N`, whose digits are always metric).
 
 Note that `0603` is both an imperial code *and* the metric code for an 0201.
-Unambiguous metric codes (1005, 1608, …) are always read as metric. For the
-ambiguous pair `0402` / `0603`, the **Case size convention** setting on the
-Impedance tab chooses imperial (default in Auto) or metric. Names that spell
-out an imperial land pattern (`C_0402_SL`) stay imperial even when the
-project convention is metric.
+For that ambiguous pair (`0402` / `0603`), the **Case size convention**
+setting — on both the Capacitors and Impedance tabs, one project-wide value —
+decides how a bare code is read:
+
+| | bare `0402` / `0603` | metric-only codes (1005, 1608, 3216, …) |
+|---|---|---|
+| **Auto** (default) | imperial, unless the name marks it otherwise | read as metric |
+| **Metric** | metric — so `C0603` is an 0201 | read as metric |
+| **Imperial** | imperial | not case codes at all; the part is unsupported |
+
+Under Auto, a name that spells out an imperial land pattern (`C_0402_SL`,
+`C0402`) stays imperial. Choosing **Metric** or **Imperial** overrides that
+heuristic — it exists to guess which convention a library uses, and an
+explicit choice answers the question.
+
+Names that already state their units are never overridden: IPC-7351 land
+names (`CAPC1608X90N`) and explicit suffixes (`C_0402_1005Metric`) classify
+the same under all three settings.
 
 Pad geometry from the layout is always in millimetres — only the **name**
 convention affects classification and how the Pkg column is labelled.
