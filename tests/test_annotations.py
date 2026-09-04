@@ -3759,3 +3759,284 @@ def test_sch_ignored_pins_missing_sheet_ambiguous_no_fallback_union():
         ),
     )
     assert _sch_ignored_pins(proj, "U1", "Missing.SchDoc") == frozenset()
+
+
+# --- PR #36 review fixes ------------------------------------------------------
+#
+# Each test below pins one behaviour that was wrong (or silently absent) in the
+# first cut of the pin-allowlist / local-net work. Names say what breaks.
+
+def _u2_pcb(**params) -> RawPcbComponent:
+    return RawPcbComponent(
+        designator="U2", center=Pt2D(0, 0), rotation_deg=0.0,
+        layer_name="TOP", footprint="QFN", source_designator="U2",
+        parameters=params,
+    )
+
+
+def test_symbol_pins_only_applies_to_pcb_sourced_directive():
+    # The documented Blanket/ECO workflow: PDN_PINS_ONLY stays on the SchLib
+    # symbol while the ECO puts PDN_ROLE + values on the PCB instance. The PCB
+    # source is the only one parsed, so the symbol's allowlist has to be
+    # adopted or the hard-tied EN pad joins the +3V3 terminal and steals a
+    # share of the sink current.
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+3V3")),
+        sch_components=(
+            RawSchComponent(
+                designator="U2", schdoc_name="Mcu.SchDoc",
+                parameters={"PDN_PINS_ONLY": "1,2,G1"},
+                pin_designators=("1", "2", "EN", "G1"),
+            ),
+        ),
+        pcb_components=(_u2_pcb(
+            PDN_ROLE="SINK", PDN_I="500mA",
+            PDN_P_NET="+3V3", PDN_N_NET="GND",
+        ),),
+        pads=(
+            _pad(0, "1", 1, 0), _pad(0, "2", 1, 1),
+            _pad(0, "EN", 1, 2), _pad(0, "G1", 0, 3),
+        ),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    sinks = [d for d in result.directives if isinstance(d, SinkSpec)]
+    assert len(sinks) == 1
+    assert {p.pad_designator for p in sinks[0].p.pins} == {"1", "2"}
+    assert not result.errors
+
+
+def test_symbol_ignore_pins_applies_to_pcb_sourced_directive():
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+3V3")),
+        sch_components=(
+            RawSchComponent(
+                designator="U2", schdoc_name="Mcu.SchDoc",
+                parameters={"PDN_IGNORE_PINS": "EN"},
+                pin_designators=("1", "EN", "G1"),
+            ),
+        ),
+        pcb_components=(_u2_pcb(
+            PDN_ROLE="SINK", PDN_I="500mA",
+            PDN_P_NET="+3V3", PDN_N_NET="GND",
+        ),),
+        pads=(_pad(0, "1", 1, 0), _pad(0, "EN", 1, 1), _pad(0, "G1", 0, 2)),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    sinks = [d for d in result.directives if isinstance(d, SinkSpec)]
+    assert {p.pad_designator for p in sinks[0].p.pins} == {"1"}
+
+
+def test_pcb_pin_filter_overrides_symbol_value():
+    # The board-level statement is the more specific one and wins outright
+    # (not a union) for the same key.
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+3V3")),
+        sch_components=(
+            RawSchComponent(
+                designator="U2", schdoc_name="Mcu.SchDoc",
+                parameters={"PDN_PINS_ONLY": "1,G1"},
+                pin_designators=("1", "2", "G1"),
+            ),
+        ),
+        pcb_components=(_u2_pcb(
+            PDN_ROLE="SINK", PDN_I="500mA",
+            PDN_P_NET="+3V3", PDN_N_NET="GND",
+            PDN_PINS_ONLY="2,G1",
+        ),),
+        pads=(_pad(0, "1", 1, 0), _pad(0, "2", 1, 1), _pad(0, "G1", 0, 2)),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    sinks = [d for d in result.directives if isinstance(d, SinkSpec)]
+    assert {p.pad_designator for p in sinks[0].p.pins} == {"2"}
+
+
+def test_pcb_extra_pins_unions_with_symbol_pins_only():
+    # The documented per-board tweak: symbol owns PINS_ONLY, the placed part
+    # adds a forgotten sense pin. Different keys, so both apply.
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+3V3")),
+        sch_components=(
+            RawSchComponent(
+                designator="U2", schdoc_name="Mcu.SchDoc",
+                parameters={"PDN_PINS_ONLY": "1,G1"},
+                pin_designators=("1", "SNS", "G1"),
+            ),
+        ),
+        pcb_components=(_u2_pcb(
+            PDN_ROLE="SINK", PDN_I="500mA",
+            PDN_P_NET="+3V3", PDN_N_NET="GND",
+            PDN_EXTRA_PINS="SNS",
+        ),),
+        pads=(_pad(0, "1", 1, 0), _pad(0, "SNS", 1, 1), _pad(0, "G1", 0, 2)),
+    )
+    result = parse_annotations(proj, enabled_layers=[1])
+    sinks = [d for d in result.directives if isinstance(d, SinkSpec)]
+    assert {p.pad_designator for p in sinks[0].p.pins} == {"1", "SNS"}
+    # Both keys are present on the merged part, so no lone-EXTRA_PINS warning.
+    assert not any("EXTRA_PINS is set without" in w for w in result.warnings)
+
+
+def test_extra_pins_without_pins_only_warns():
+    # EXTRA_PINS alone IS the whole allowlist, so this quietly collapses a
+    # multi-pin rail terminal to one pad. Nothing else flags it.
+    comp = PdnParameterSource(
+        designator="U9", schdoc_name="Mcu.SchDoc",
+        parameters={
+            "PDN_ROLE": "SINK", "PDN_I": "500mA",
+            "PDN_P_NET": "+3V3", "PDN_N_NET": "GND",
+            "PDN_EXTRA_PINS": "SNS",
+        },
+    )
+    result = AnnotationResult()
+    _warn_unknown_pdn_params(comp, "SINK", result)
+    assert any("EXTRA_PINS is set without PDN_PINS_ONLY" in w
+               for w in result.warnings)
+
+
+def test_pin_ignores_do_not_leak_between_sheets_sharing_a_basename():
+    from fypa.altium.annotations import _sch_ignored_pins
+
+    proj = _minimal_proj(sch_components=(
+        RawSchComponent(
+            designator="U1", schdoc_name="mod_a/Child.SchDoc",
+            parameters={}, pin_designators=("1", "EN"),
+            ignored_pins=frozenset({"EN"}),
+        ),
+        RawSchComponent(
+            designator="U1", schdoc_name="mod_b/Child.SchDoc",
+            parameters={}, pin_designators=("1", "EN"),
+        ),
+    ))
+    assert _sch_ignored_pins(proj, "U1", "mod_a/Child.SchDoc") == frozenset({"EN"})
+    # mod_b's U1 has no ignores of its own and must not inherit mod_a's.
+    assert _sch_ignored_pins(proj, "U1", "mod_b/Child.SchDoc") == frozenset()
+    # A bare basename cannot pick between them - refuse rather than guess.
+    assert _sch_ignored_pins(proj, "U1", "Child.SchDoc") == frozenset()
+
+
+def test_pin_ignores_union_across_parts_of_one_multipart_symbol():
+    from fypa.altium.annotations import _sch_ignored_pins
+
+    proj = _minimal_proj(sch_components=(
+        RawSchComponent(
+            designator="U1", schdoc_name="Mcu.SchDoc", parameters={},
+            pin_designators=("1",), ignored_pins=frozenset({"1"}),
+        ),
+        RawSchComponent(
+            designator="U1", schdoc_name="Mcu.SchDoc", parameters={},
+            pin_designators=("2",), ignored_pins=frozenset({"2"}),
+        ),
+    ))
+    # Same physical part, two part records - both sets apply.
+    assert _sch_ignored_pins(proj, "U1", "Mcu.SchDoc") == frozenset({"1", "2"})
+    assert _sch_ignored_pins(proj, "U1", None) == frozenset({"1", "2"})
+
+
+def test_infer_schdoc_resolves_multipart_symbol():
+    # A dual-part symbol is two sch_components rows on one sheet; counting rows
+    # instead of sheets made this return "" and killed the child-sheet
+    # local-net fallback it exists for.
+    proj = _minimal_proj(
+        sch_components=(
+            RawSchComponent(designator="R1", schdoc_name="Child.SchDoc",
+                            parameters={}, pin_designators=("1",)),
+            RawSchComponent(designator="R1", schdoc_name="Child.SchDoc",
+                            parameters={}, pin_designators=("2",)),
+        ),
+        pcb_components=(RawPcbComponent(
+            designator="R1.3", center=Pt2D(0, 0), rotation_deg=0.0,
+            layer_name="TOP", footprint="R", parameters={},
+        ),),
+    )
+    resolver = _instance_resolver(proj)
+    assert resolver.infer_schdoc(0, "R1.3") == "Child.SchDoc"
+
+
+def test_clear_annotation_caches_drops_pad_and_net_indices():
+    from fypa.altium import annotations as ann
+
+    proj = _minimal_proj(nets=(RawNet("GND"),), pads=(_pad(0, "1", 0),))
+    ann._net_indices_by_name(proj, "GND")
+    ann._pads_by_component_all(proj)
+    assert ann._net_indices_cache and ann._pads_by_comp_cache
+    ann.clear_annotation_caches()
+    # Left populated, these pin the *previous* project's whole extract in
+    # memory for the entire duration of the next project's load.
+    assert not ann._net_indices_cache
+    assert not ann._pads_by_comp_cache
+
+
+def test_missing_net_error_wins_over_empty_allowlist():
+    # Both are wrong, but the absent net is the one that blocks everything
+    # downstream and the one the user can act on; reporting only "no pads
+    # match PDN_PINS_ONLY" sends them after the wrong problem.
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("+3V3")),
+        pcb_components=(_u2_pcb(),),
+        pads=(_pad(0, "1", 1, 0), _pad(0, "G1", 0, 1)),
+    )
+    spec, errors = _resolve_terminal(
+        proj, 0, None, None, [1], "SINK on U2",
+        allow_pins=frozenset({"NOSUCH"}),
+    )
+    assert spec is None
+    assert any("neither a net nor pin overrides supplied" in e for e in errors)
+    assert not any("no pads match" in e for e in errors)
+
+
+def test_child_sheet_compile_warning_is_deduped():
+    from fypa.altium.annotations import (
+        _compile_sheet_netlist_at_path,
+        clear_annotation_caches,
+    )
+
+    clear_annotation_caches()
+    proj = _minimal_proj()
+    with patch("fypa.altium.annotations.log") as log_mock:
+        for _ in range(5):
+            # No such file, so the parse raises identically every time.
+            assert _compile_sheet_netlist_at_path(
+                "C:/nope/Child.SchDoc", proj,
+            ) is None
+        assert log_mock.warning.call_count == 1
+
+
+def test_extracted_project_pickle_drops_sheet_netlists():
+    import pickle
+
+    proj = _minimal_proj(schdoc_paths={"child.schdoc": "C:/p/Child.SchDoc"})
+    proj.sheet_netlists["child.schdoc"] = {"a": "compiled netlist stand-in"}
+    revived = pickle.loads(pickle.dumps(proj))
+    # Rebuildable cache - it must not ride along into the design-info pickle.
+    assert revived.sheet_netlists == {}
+    assert revived.schdoc_paths == {"child.schdoc": "C:/p/Child.SchDoc"}
+    assert proj.sheet_netlists  # the live project keeps its cache
+
+
+def test_degraded_net_guess_does_not_leak_into_allowlist_error():
+    # No compiled netlist, so the resolver falls back to channel-suffix net
+    # guesses ("VCC" -> "VCC.4"). A guess that fails to match must not be left
+    # standing as the net whose pads get listed: the message names the user's
+    # net, so listing pads from VCC.4 points them at the wrong pins.
+    proj = _minimal_proj(
+        nets=(RawNet("GND"), RawNet("VCC"), RawNet("VCC.4")),
+        pcb_components=(RawPcbComponent(
+            designator="U2.4", center=Pt2D(0, 0), rotation_deg=0.0,
+            layer_name="TOP", footprint="QFN", parameters={},
+        ),),
+        pads=(
+            _pad(0, "1", 0, 0),   # allowlisted, but sits on GND
+            _pad(0, "2", 2, 1),   # on the *guessed* net VCC.4
+            _pad(0, "3", 1, 2),   # on the net the user actually named
+        ),
+        compiled_netlist=None,
+    )
+    spec, errors = _resolve_terminal(
+        proj, 0, "VCC", None, [1], "SINK on U2.4",
+        allow_pins=frozenset({"1"}),
+    )
+    assert spec is None
+    joined = " ".join(errors)
+    assert "no allowlisted pad on net 'VCC'" in joined
+    assert "'3'" in joined       # the pad actually on VCC
+    assert "'2'" not in joined   # the pad on the failed guess VCC.4

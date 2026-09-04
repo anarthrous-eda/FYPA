@@ -669,9 +669,16 @@ def _terminal_connections(
             region=pin.pad_polygon,
         )], []
 
-    areas = [_pin_area_mm2(pin) for _layer, pin in valid]
+    # Areas are only consulted when weighting is on; on the default path
+    # _pin_coupling_resistances discards them immediately, so computing a
+    # shapely polygon area per pin of every multi-pin terminal is pure waste.
+    area_weighted = AREA_WEIGHTED_PIN_COUPLING
+    areas = (
+        [_pin_area_mm2(pin) for _layer, pin in valid]
+        if area_weighted else [0.0] * len(valid)
+    )
     resistances = _pin_coupling_resistances(
-        areas, coupling_resistance_ohm,
+        areas, coupling_resistance_ohm, area_weighted=area_weighted,
     )
     conns: list[_pp.Connection] = []
     aux: list[_pp.BaseLumped] = []

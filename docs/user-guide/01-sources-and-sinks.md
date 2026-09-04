@@ -189,7 +189,9 @@ then let net matching partition pins across rails:
    library sets `PDN_PINS_ONLY`, the schematic instance adds one forgotten
    pin via `PDN_EXTRA_PINS` without retyping the list. If **only**
    `PDN_EXTRA_PINS` is set (no `PDN_PINS_ONLY`), that list **is** the full
-   allowlist — it does *not* mean “all pads plus these”.
+   allowlist — it does *not* mean “all pads plus these”. Because that
+   silently narrows a multi-pin rail to those pins alone, FYPA warns when it
+   sees `PDN_EXTRA_PINS` with no `PDN_PINS_ONLY` on the part.
 3. **Per-terminal override** — `PDN[_n]_P_PINS` / `PDN[_n]_N_PINS` (or
    single-net `PDN[_n]_PINS`) bypasses the allowlist for that terminal.
 4. **Exclude (fine-tuning)** — pin parameter `PDN_IGNORE` = `1` (also
@@ -203,6 +205,12 @@ then let net matching partition pins across rails:
 `PDN_PINS_ONLY` / `PDN_EXTRA_PINS` are **unindexed** (part-wide). Indexed
 forms such as `PDN1_PINS_ONLY` are ignored with a warning.
 
+The pin filters (`PDN_PINS_ONLY`, `PDN_EXTRA_PINS`, `PDN_IGNORE_PINS`) do not
+have to sit on the same document as `PDN_ROLE`. In the Blanket / Parameter-Set
+ECO workflow the role and values end up on the PCB instance while the filters
+stay on the symbol; FYPA reads the symbol's filters for that PCB directive. A
+filter set on the PCB instance wins over the symbol's value for the same key.
+
 Example — multi-rail IC in the SchLib with power pins `1`–`4` and `EP`,
 enable pin `EN` hard-tied to `+3V3` on the board:
 
@@ -210,11 +218,18 @@ enable pin `EN` hard-tied to `+3V3` on the board:
 |------|-------|
 | `PDN_PINS_ONLY` | `1,2,3,4,EP` |
 | `PDN_ROLE` | `SINK` |
-| `PDN_I` | `500mA` | `PDN_P_NET` = `+3V3`, `PDN_N_NET` = `GND` |
-| `PDN1_I` | `250mA` | `PDN1_P_NET` = `+1V8`, `PDN1_N_NET` = `GND` |
+| `PDN_I` | `500mA` |
+| `PDN_P_NET` | `+3V3` |
+| `PDN_N_NET` | `GND` |
+| `PDN1_I` | `250mA` |
+| `PDN1_P_NET` | `+1V8` |
+| `PDN1_N_NET` | `GND` |
 
-`EN` never joins the `+3V3` terminal. On one board, add a forgotten sense
-pin with `PDN_EXTRA_PINS=SNS` on the placed part.
+`EN` never joins the `+3V3` terminal. To pick up a forgotten sense pin on one
+board, set `PDN_EXTRA_PINS` = `SNS` on the placed part: it unions with the
+symbol's `PDN_PINS_ONLY`, giving `1,2,3,4,EP,SNS`. Setting `PDN_EXTRA_PINS`
+with no `PDN_PINS_ONLY` anywhere on the part would instead restrict the
+terminal to `SNS` alone, and is warned about.
 
 ### Area-weighted multi-pin coupling
 

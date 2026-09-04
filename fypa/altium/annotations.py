@@ -378,6 +378,65 @@ def _split_pin_list(s: str | None) -> list[str] | None:
     return items or None
 
 
+def _sheet_key(name: str | None) -> str:
+    """Normalized comparison key for a SchDoc name (slashes + case folded)."""
+    return (name or "").replace("\\", "/").strip().lower()
+
+
+def _sch_component_rows(
+    proj: ExtractedProject,
+    lookup_designator: str,
+    schdoc_name: str | None = None,
+) -> list:
+    """Schematic component rows for one designator, scoped to a single sheet.
+
+    A multi-part symbol contributes one row per part (all sharing the
+    designator and sheet), so callers get every part of the same physical
+    component — but never rows from a *different* placement.
+
+    Sheet selection, in order:
+
+    * ``schdoc_name`` matching rows on the same project-relative path → those
+      rows. Paths are compared whole, so ``mod_a/Child.SchDoc`` and
+      ``mod_b/Child.SchDoc`` never pool.
+    * No exact match, but rows whose *basename* matches and which all sit on
+      one sheet → those rows (covers a bare-basename hint, or bare row names
+      from a legacy extract). An ambiguous basename resolves to nothing
+      rather than guessing — same rule as :func:`_schdoc_path_key`.
+    * No usable sheet hint at all → every row, but only when the designator
+      occupies exactly one sheet project-wide.
+    """
+    if not lookup_designator:
+        return []
+    lu = lookup_designator.upper()
+    rows = [c for c in proj.sch_components if c.designator.upper() == lu]
+    if not rows:
+        return []
+
+    target = _sheet_key(schdoc_name)
+    if target:
+        exact = [c for c in rows if _sheet_key(c.schdoc_name) == target]
+        if exact:
+            return exact
+        base = Path(target).name
+        near = [c for c in rows if Path(_sheet_key(c.schdoc_name)).name == base]
+        if near:
+            sheets = {_sheet_key(c.schdoc_name) for c in near}
+            if len(sheets) == 1:
+                return near
+            log.debug(
+                "Ambiguous SchDoc basename %r for %s matches %s; refusing to "
+                "pool schematic rows across sheets",
+                base, lookup_designator, sorted(sheets),
+            )
+            return []
+        # Sheet hint missed entirely — fall through to the project-wide rule.
+
+    if len({_sheet_key(c.schdoc_name) for c in rows}) == 1:
+        return rows
+    return []
+
+
 def _sch_ignored_pins(
     proj: ExtractedProject,
     lookup_designator: str,
@@ -385,53 +444,13 @@ def _sch_ignored_pins(
 ) -> frozenset[str]:
     """Pin designators marked ``PDN_IGNORE`` on matching schematic components.
 
-    Sheet selection:
-
-    * Non-empty ``schdoc_name`` that matches one or more rows → union ignores
-      from those rows only (empty ignore set stays empty; no cross-sheet leak).
-    * Non-empty ``schdoc_name`` that matches nothing, or blank/``None`` sheet →
-      use a same-designator row only when it is **unique** in the project.
-      Multiple placements with the same designator are ambiguous; return empty
-      rather than unioning ignores across sheets.
+    Rows come from :func:`_sch_component_rows`, so ignores are never unioned
+    across two sheets that merely share a filename.
     """
-    if not lookup_designator:
-        return frozenset()
-    lu = lookup_designator.upper()
-    sheet = (schdoc_name or "").strip()
-    target_base = Path(sheet).name.lower() if sheet else None
-
-    def _matching_rows(sheet_base: str | None) -> list:
-        rows = []
-        for sch in proj.sch_components:
-            if sch.designator.upper() != lu:
-                continue
-            if sheet_base is not None:
-                if Path(sch.schdoc_name).name.lower() != sheet_base:
-                    continue
-            rows.append(sch)
-        return rows
-
-    def _union_ignores(rows) -> frozenset[str]:
-        out: set[str] = set()
-        for sch in rows:
-            out |= {p.upper() for p in sch.ignored_pins}
-        return frozenset(out)
-
-    if target_base is not None:
-        rows = _matching_rows(target_base)
-        if rows:
-            return _union_ignores(rows)
-        # Sheet hint missed — only fall back when the designator is unique.
-        global_rows = _matching_rows(None)
-        if len(global_rows) == 1:
-            return _union_ignores(global_rows)
-        return frozenset()
-
-    # No usable sheet name: unique placement only.
-    global_rows = _matching_rows(None)
-    if len(global_rows) == 1:
-        return _union_ignores(global_rows)
-    return frozenset()
+    out: set[str] = set()
+    for sch in _sch_component_rows(proj, lookup_designator, schdoc_name):
+        out |= {p.upper() for p in sch.ignored_pins}
+    return frozenset(out)
 
 
 def _ignore_pins_for_channel(
@@ -457,6 +476,48 @@ def _ignore_pins_for_channel(
         if ch:
             ignored.update(p.upper() for p in ch)
     return frozenset(ignored)
+
+
+def _merge_sch_pin_filters(
+    proj: ExtractedProject,
+    lookup_designator: str,
+    schdoc_name: str,
+    params: dict[str, str],
+) -> dict[str, str]:
+    """Overlay symbol-side pin-filter parameters onto a PCB parameter source.
+
+    ``PDN_PINS_ONLY`` / ``PDN_EXTRA_PINS`` / ``PDN_IGNORE_PINS`` normally live
+    on the SchLib symbol, while ``PDN_ROLE`` and the values land on the PCB
+    instance after a Blanket / Parameter-Set ECO. That PCB source is then the
+    *only* one parsed for the part (see :func:`_iter_pdn_parameter_sources`),
+    so without this merge the symbol's allowlist is silently dropped and every
+    pad on the named net rejoins the terminal — a hard-tied ``EN`` pad would
+    take its share of a sink's current.
+
+    A key already present on the PCB instance wins: it is the more specific,
+    board-level statement. Multi-part symbols contribute the union of their
+    parts' lists, since together they describe one physical component.
+    """
+    rows = _sch_component_rows(proj, lookup_designator, schdoc_name)
+    if not rows:
+        return params
+    adopted: dict[str, str] = {}
+    for suffix in sorted(_PIN_FILTER_MODIFIER_SUFFIXES):
+        key = _channel_key(suffix, None)
+        if _ci_get(params, key) is not None:
+            continue  # PCB-side value is more specific — leave it alone.
+        merged: list[str] = []
+        seen: set[str] = set()
+        for row in rows:
+            for pin in _split_pin_list(_ci_get(row.parameters, key)) or ():
+                if pin.upper() not in seen:
+                    seen.add(pin.upper())
+                    merged.append(pin)
+        if merged:
+            adopted[key] = ",".join(merged)
+    if not adopted:
+        return params
+    return {**params, **adopted}
 
 
 def _allow_pins_for_part(params: dict[str, str]) -> frozenset[str] | None:
@@ -569,11 +630,14 @@ def _is_pdn_annotated(params: dict[str, str]) -> bool:
 
 
 def _stray_pdn_suffixes(params: dict[str, str]) -> list[tuple[str, str]]:
-    """Return ``(key, uppercased_suffix)`` for every ``PDN[_n]_*`` parameter.
+    """Return ``(key, uppercased_suffix)`` for every unindexed ``PDN_*`` key.
 
-    Keys that do not match :data:`_INDEXED_KEY_RE` (malformed ``PDN_*`` names)
-    keep the upper-cased key as the ``suffix`` so they still count as non-
-    modifier strays.
+    Only the ``PDN_`` prefix is scanned, so indexed ``PDN<n>_*`` keys are not
+    reported here — those are checked against their channel's role by
+    :func:`_warn_unknown_pdn_params`, which runs on parts that *do* carry a
+    role. Keys that do not match :data:`_INDEXED_KEY_RE` (malformed ``PDN_*``
+    names) keep the upper-cased key as the ``suffix`` so they still count as
+    non-modifier strays.
     """
     out: list[tuple[str, str]] = []
     for k in params:
@@ -907,23 +971,25 @@ class InstanceLocalNetResolver:
             raw = sheet_paths[best]
             return _logical_schdoc_name(raw, _physical_sheet_file_map(self.proj))
 
-        sch_matches = [
-            c.schdoc_name for c in self.proj.sch_components
-            if c.designator.upper() == lookup_des.upper()
-        ]
-        if len(sch_matches) == 1:
-            return sch_matches[0]
+        # Count *distinct sheets*, not rows: a multi-part symbol contributes
+        # one sch_components row per part, all on the same sheet, and that is
+        # still an unambiguous answer.
+        def _unique_sheet(designator: str) -> str:
+            sheets = {
+                c.schdoc_name for c in self.proj.sch_components
+                if c.designator.upper() == designator.upper()
+            }
+            return next(iter(sheets)) if len(sheets) == 1 else ""
+
+        sole = _unique_sheet(lookup_des)
+        if sole:
+            return sole
         # Channel-qualified PCB designators (``R1.3``) without SourceDesignator
         # still need the child sheet for local-net fallback; match the base
         # schematic designator on sch_components.
         base_des = _base_sch_designator(lookup_des)
         if base_des.upper() != lookup_des.upper():
-            base_matches = [
-                c.schdoc_name for c in self.proj.sch_components
-                if c.designator.upper() == base_des.upper()
-            ]
-            if len(base_matches) == 1:
-                return base_matches[0]
+            return _unique_sheet(base_des)
         return ""
 
     def expand_net_names(
@@ -981,12 +1047,28 @@ class InstanceLocalNetResolver:
 
 _resolver_cache: dict[int, tuple[ExtractedProject, InstanceLocalNetResolver]] = {}
 _netlist_options_cache: dict[str, object] = {}
+# {id(proj): (proj, {(sheet_path, error_text), ...})} — child-sheet compile
+# failures already reported, so the same bad SchDoc is logged once per load
+# rather than once per terminal that falls back to it.
+_warned_sheet_compiles: dict[
+    int, tuple[ExtractedProject | None, set[tuple[str, str]]]
+] = {}
 
 
 def clear_annotation_caches() -> None:
-    """Drop memoized resolvers / netlist options. Call on project (re)load."""
+    """Drop every memoized per-project index. Call on project (re)load.
+
+    ``_net_indices_cache`` / ``_pads_by_comp_cache`` are keyed by ``id(proj)``
+    and hold a strong reference to the project itself, so they are only
+    evicted lazily on the next mismatched lookup. Left here, the previous
+    project's whole pad/net extract stays alive for the entire duration of the
+    next project's extraction — a peak-RSS spike at the worst moment.
+    """
     _resolver_cache.clear()
     _netlist_options_cache.clear()
+    _net_indices_cache.clear()
+    _pads_by_comp_cache.clear()
+    _warned_sheet_compiles.clear()
 
 
 def _instance_resolver(proj: ExtractedProject) -> InstanceLocalNetResolver:
@@ -1030,14 +1112,19 @@ def _iter_pdn_parameter_sources(proj: ExtractedProject) -> list[PdnParameterSour
             resolver = _instance_resolver(proj)
             pads_by_component = resolver.pads_index()
             netlist_index = resolver.designator_index()
+        sheet = _schdoc_for_pcb_instance(
+            proj, idx, lookup_des,
+            pads_by_component=pads_by_component,
+            netlist_index=netlist_index,
+        )
         sources.append(PdnParameterSource(
             designator=pcb.designator,
-            schdoc_name=_schdoc_for_pcb_instance(
-                proj, idx, lookup_des,
-                pads_by_component=pads_by_component,
-                netlist_index=netlist_index,
+            schdoc_name=sheet,
+            # Pin filters usually stay on the symbol when the ECO pushes the
+            # role/values to the PCB; adopt them or the allowlist is lost.
+            parameters=_merge_sch_pin_filters(
+                proj, lookup_des, sheet, pcb.parameters,
             ),
-            parameters=pcb.parameters,
             pcb_index=idx,
             sch_lookup_designator=lookup_des,
         ))
@@ -1217,7 +1304,19 @@ def _compile_sheet_netlist_at_path(path: str, proj: ExtractedProject | None = No
         sch = AltiumSchDoc(path)
         return compile_netlist([sch], None, options)
     except Exception as exc:
-        log.warning("Could not compile child-sheet netlist for %s: %s", path, exc)
+        # One line per (sheet, error). Failures are intentionally not memoized
+        # so a transient I/O error stays retryable, which means this runs once
+        # per terminal that falls back to the sheet — without this the log
+        # fills with dozens of identical warnings for a single bad SchDoc.
+        seen = _warned_sheet_compiles.setdefault(id(proj), (proj, set()))
+        if seen[0] is not proj:
+            _warned_sheet_compiles[id(proj)] = seen = (proj, set())
+        signature = (path, str(exc))
+        if signature not in seen[1]:
+            seen[1].add(signature)
+            log.warning(
+                "Could not compile child-sheet netlist for %s: %s", path, exc,
+            )
         return None
 
 
@@ -1250,6 +1349,9 @@ def _get_child_sheet_netlist(proj: ExtractedProject, schdoc_name: str):
     nl = _compile_sheet_netlist_at_path(path, proj)
     if nl is None:
         # Do not memoize failures — a transient I/O error must be retryable.
+        # The retry cost is bounded by deduping the warning (see
+        # _compile_sheet_netlist_at_path), so a sheet referenced by 30
+        # terminals no longer writes 30 identical lines into the log.
         return None
     sheets[key] = nl
     if base in paths and paths[base] == path:
@@ -1465,6 +1567,14 @@ def _resolve_terminal(
         if not matched:
             return None, errors
     else:
+        # Missing net first: a part with both a bad allowlist and no PDN_*_NET
+        # should hear about the net, which is the error that blocks everything
+        # downstream and the one the user can act on.
+        if not net_name:
+            errors.append(
+                f"{role_diagnostic}: neither a net nor pin overrides supplied"
+            )
+            return None, errors
         pool = component_pads
         if allow_pins is not None:
             pool = [
@@ -1484,19 +1594,13 @@ def _resolve_terminal(
                     warnings.append(miss_msg)
             if not pool:
                 # Designator-stable text so P/N/IN/OUT do not each append a
-                # duplicate when the allowlist matches nothing on the PCB.
-                empty_msg = (
+                # duplicate; ``errors`` is local to this call, so the real
+                # dedupe is the caller's ``e not in result.errors`` filter.
+                errors.append(
                     f"{designator}: no pads match "
                     f"PDN_PINS_ONLY / PDN_EXTRA_PINS"
                 )
-                if empty_msg not in errors:
-                    errors.append(empty_msg)
                 return None, errors
-        if not net_name:
-            errors.append(
-                f"{role_diagnostic}: neither a net nor pin overrides supplied"
-            )
-            return None, errors
         net_indices = _net_indices_by_name(proj, net_name)
         matched: list[RawPad] = []
         wanted_nets: set[int] | None = None
@@ -1604,9 +1708,13 @@ def _resolve_terminal(
                     candidate_indices = [
                         net_remap.get(ix, ix) for ix in candidate_indices
                     ]
-                wanted_nets = set(candidate_indices)
-                matched = [p for p in pool if p.net_index in wanted_nets]
+                guessed_nets = set(candidate_indices)
+                matched = [p for p in pool if p.net_index in guessed_nets]
                 if matched:
+                    # Only adopt the guess once it actually resolved, so a
+                    # failed guess cannot leak into the diagnostics below and
+                    # list pads from a net the user never named.
+                    wanted_nets = guessed_nets
                     if warnings is not None:
                         warnings.append(
                             f"{role_diagnostic}: no compiled netlist — guessed "
@@ -2264,6 +2372,12 @@ def _parse_source(comp, proj, enabled_layers, result,
             f"{len(pcb_indices)} multi-channel PCB instances ({names})"
         )
     specs: list[SourceSpec] = []
+    # Hoisted out of the channel loop: neither depends on the channel index,
+    # and _sch_ignored_pins is a linear scan of every schematic component.
+    sch_ignored = _sch_ignored_pins(
+        proj, comp.lookup_designator, comp.schdoc_name,
+    )
+    allow_pins = _allow_pins_for_part(comp.parameters)
     for idx in indices:
         role_diag = f"SOURCE on {_channel_label(comp.designator, idx)}"
         v = _require_value(comp.parameters, _channel_key("V", idx), role_diag, result)
@@ -2273,10 +2387,8 @@ def _parse_source(comp, proj, enabled_layers, result,
         if mode is None:
             continue
         ignore_pins = _ignore_pins_for_channel(
-            comp.parameters, idx,
-            _sch_ignored_pins(proj, comp.lookup_designator, comp.schdoc_name),
+            comp.parameters, idx, sch_ignored,
         )
-        allow_pins = _allow_pins_for_part(comp.parameters)
         for pcb_idx in pcb_indices:
             pcb_des = proj.pcb_components[pcb_idx].designator
             inst_diag = (
@@ -2349,6 +2461,12 @@ def _parse_sink(comp, proj, enabled_layers, result,
             f"{len(pcb_indices)} multi-channel PCB instances ({names})"
         )
     specs: list[SinkSpec] = []
+    # Hoisted out of the channel loop: neither depends on the channel index,
+    # and _sch_ignored_pins is a linear scan of every schematic component.
+    sch_ignored = _sch_ignored_pins(
+        proj, comp.lookup_designator, comp.schdoc_name,
+    )
+    allow_pins = _allow_pins_for_part(comp.parameters)
     for idx in indices:
         role_diag = f"SINK on {_channel_label(comp.designator, idx)}"
         i = _require_value(comp.parameters, _channel_key("I", idx), role_diag, result)
@@ -2361,10 +2479,8 @@ def _parse_sink(comp, proj, enabled_layers, result,
             comp.parameters, _channel_key("MIN_V", idx), role_diag, result,
         )
         ignore_pins = _ignore_pins_for_channel(
-            comp.parameters, idx,
-            _sch_ignored_pins(proj, comp.lookup_designator, comp.schdoc_name),
+            comp.parameters, idx, sch_ignored,
         )
-        allow_pins = _allow_pins_for_part(comp.parameters)
         for pcb_idx in pcb_indices:
             pcb_des = proj.pcb_components[pcb_idx].designator
             inst_diag = (
@@ -2450,6 +2566,12 @@ def _parse_resistance(comp, proj, enabled_layers, result,
         )
 
     specs: list[ResistorSpec] = []
+    # Hoisted out of the channel loop: neither depends on the channel index,
+    # and _sch_ignored_pins is a linear scan of every schematic component.
+    sch_ignored = _sch_ignored_pins(
+        proj, comp.lookup_designator, comp.schdoc_name,
+    )
+    allow_pins = _allow_pins_for_part(comp.parameters)
     for idx in indices:
         role_diag = f"{role_raw} on {_channel_label(comp.designator, idx)}"
         r = _require_value(
@@ -2463,10 +2585,8 @@ def _parse_resistance(comp, proj, enabled_layers, result,
             )
             continue
         ignore_pins = _ignore_pins_for_channel(
-            comp.parameters, idx,
-            _sch_ignored_pins(proj, comp.lookup_designator, comp.schdoc_name),
+            comp.parameters, idx, sch_ignored,
         )
-        allow_pins = _allow_pins_for_part(comp.parameters)
         for pcb_idx in pcb_indices:
             pcb_des = proj.pcb_components[pcb_idx].designator
             inst_diag = (
@@ -2715,6 +2835,12 @@ def _parse_regulator(comp, proj, enabled_layers, result,
         supply_map = {}
 
     specs: list[RegulatorSpec] = []
+    # Hoisted out of the channel loop: neither depends on the channel index,
+    # and _sch_ignored_pins is a linear scan of every schematic component.
+    sch_ignored = _sch_ignored_pins(
+        proj, comp.lookup_designator, comp.schdoc_name,
+    )
+    allow_pins = _allow_pins_for_part(comp.parameters)
     for idx in indices:
         role_diag = f"REGULATOR on {_channel_label(comp.designator, idx)}"
         v = _require_value(
@@ -2742,10 +2868,8 @@ def _parse_regulator(comp, proj, enabled_layers, result,
                 continue
             quiescent = iq_raw
         ignore_pins = _ignore_pins_for_channel(
-            comp.parameters, idx,
-            _sch_ignored_pins(proj, comp.lookup_designator, comp.schdoc_name),
+            comp.parameters, idx, sch_ignored,
         )
-        allow_pins = _allow_pins_for_part(comp.parameters)
         for pcb_idx in pcb_indices:
             pcb_des = proj.pcb_components[pcb_idx].designator
             inst_diag = (
@@ -2934,6 +3058,19 @@ def _warn_unknown_pdn_params(
     it with ``PDN<n>_ROLE`` — so e.g. a ``PDN2_V`` on a SOURCE channel of an
     otherwise-SINK part is not flagged."""
     diag = f"{comp.designator} ({comp.schdoc_name})"
+
+    # EXTRA_PINS alone *is* the whole allowlist (see _allow_pins_for_part), so
+    # a part that sets only it collapses to those pins — a multi-pin rail
+    # terminal silently becomes one pad, with no other diagnostic to catch it.
+    # Almost always the PINS_ONLY it was meant to extend went missing.
+    if (_ci_get(comp.parameters, _channel_key("EXTRA_PINS", None)) is not None
+            and _ci_get(comp.parameters,
+                        _channel_key("PINS_ONLY", None)) is None):
+        result.warnings.append(
+            f"{diag}: PDN_EXTRA_PINS is set without PDN_PINS_ONLY — the "
+            f"terminal is restricted to those pins alone, not 'all pads plus "
+            f"the extras'. Add PDN_PINS_ONLY if you meant to extend a list."
+        )
     for key, raw in comp.parameters.items():
         if raw is None or not str(raw).strip():
             continue
@@ -3086,7 +3223,8 @@ def parse_annotations(proj: ExtractedProject,
 
     # Designators that already carry a role on the PCB (Blanket/ECO path).
     # SchLib pin-filter-only symbols for those parts are the expected
-    # workflow — do not INFO about a "missing" sch-side directive.
+    # workflow and their filters ARE applied to the PCB directive (see
+    # _merge_sch_pin_filters) — do not INFO about a "missing" sch-side one.
     pcb_annotated_designators: set[str] = {
         (pcb.source_designator or pcb.designator).upper()
         for pcb in proj.pcb_components

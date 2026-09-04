@@ -92,3 +92,49 @@ def test_terminal_connections_emits_unequal_resistors_when_weighted():
         assert rs[1] == pytest.approx(0.25)
     finally:
         SolveSettings().apply_to_modules()
+
+
+def test_pad_areas_not_computed_when_weighting_off():
+    """The default path must not pay for a polygon area per pin.
+
+    ``_pin_coupling_resistances`` throws the areas away when weighting is off,
+    so computing them for every multi-pin terminal on the board is pure waste.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    import shapely.geometry
+    from pdnsolver import problem as pp
+
+    from fypa.altium.annotations import TerminalPin, TerminalSpec
+    from fypa.altium.extract import Pt2D
+    from fypa.altium.loader import _terminal_connections
+
+    poly = shapely.geometry.box(0, 0, 1, 1)
+    layer = SimpleNamespace(shape=shapely.geometry.box(-10, -10, 10, 10))
+    term = TerminalSpec(pins=(
+        TerminalPin(pad_designator="1", layer_id=1, net_index=0,
+                    point=Pt2D(0.25, 0.25), pad_polygon=poly),
+        TerminalPin(pad_designator="2", layer_id=1, net_index=0,
+                    point=Pt2D(0.75, 0.75), pad_polygon=poly),
+    ))
+    layers = {(1, 0): layer}
+
+    SolveSettings().apply_to_modules()  # weighting off (the default)
+    with patch("fypa.altium.loader._pin_area_mm2") as area_mock:
+        _conns, aux = _terminal_connections(
+            term, pp.NodeID(), layers, coupling_resistance_ohm=0.1,
+        )
+    assert area_mock.call_count == 0
+    assert [float(r.resistance) for r in aux] == [0.1, 0.1]
+
+    SolveSettings(area_weighted_pin_coupling=True).apply_to_modules()
+    try:
+        with patch("fypa.altium.loader._pin_area_mm2",
+                   return_value=1.0) as area_mock:
+            _terminal_connections(
+                term, pp.NodeID(), layers, coupling_resistance_ohm=0.1,
+            )
+        assert area_mock.call_count == 2
+    finally:
+        SolveSettings().apply_to_modules()

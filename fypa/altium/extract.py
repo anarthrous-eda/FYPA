@@ -433,8 +433,9 @@ class ExtractedProject:
     # filename still resolve. Used for lazy per-sheet netlist compiles.
     schdoc_paths: dict[str, str] = field(default_factory=dict)
     # Lazily filled single-sheet netlists, keyed like :attr:`schdoc_paths`.
-    # Empty until a child-sheet local-net fallback needs a sheet; keeps the
-    # design-info pickle small.
+    # Empty until a child-sheet local-net fallback needs a sheet, and dropped
+    # by ``__getstate__`` so it never reaches the design-info pickle (see
+    # there) — it is a rebuildable cache, not project data.
     sheet_netlists: dict[str, Any] = field(default_factory=dict)
     # altium_monkey ≥ 2026.7 maps netlist ``source_sheets`` to physical page
     # ids (``physical:0:logical:0:main.SchDoc:child:…``). This tuple maps each
@@ -469,6 +470,31 @@ class ExtractedProject:
     plane_relief_air_gap_mm: float = 0.0
     plane_relief_conductor_width_mm: float = 0.0
     plane_relief_entries: int = 4
+
+    def __getstate__(self) -> dict:
+        """Drop :attr:`sheet_netlists` from the pickle.
+
+        ``parse_annotations`` fills it lazily during ``load_project``, i.e.
+        *before* the CLI pickles the whole ``LoadedProject`` into the
+        design-info cache. On a project with many repeated child sheets that
+        would write one fully compiled netlist per sheet on top of the
+        project-wide ``compiled_netlist``, inflating both the cache write and
+        every subsequent cache-hit load. Each entry is recomputed on demand.
+        """
+        state = {
+            name: getattr(self, name)
+            for cls in type(self).__mro__
+            for name in getattr(cls, "__slots__", ())
+            if hasattr(self, name)
+        }
+        state["sheet_netlists"] = {}
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        # frozen=True blocks setattr, and slots=True means there is no
+        # __dict__ to update — set each slot directly.
+        for name, value in state.items():
+            object.__setattr__(self, name, value)
 
     def enabled_copper_layer_ids(self) -> list[int]:
         """Layer ids forming the actually-enabled copper stack, in Top→Bottom order.
