@@ -401,6 +401,17 @@ class RawSchComponent:
     schdoc_name: str          # filename only, e.g. 'Power.SchDoc'
     parameters: dict[str, str]  # name -> text (case-preserved keys)
     pin_designators: tuple[str, ...]
+    # Altium schematic ComponentKind (see altium_monkey.ComponentKind).
+    # 3 = Net Tie (BOM), 4 = Net Tie (No BOM); 0 = Standard.
+    component_kind: int = 0
+
+
+def _sch_component_kind_value(comp) -> int:
+    """Return Altium ``ComponentKind`` as an int (0 = Standard)."""
+    kind = getattr(comp, "component_kind", None)
+    if kind is None:
+        return 0
+    return int(getattr(kind, "value", kind) or 0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1339,6 +1350,7 @@ def _extract_sch_component(comp, schdoc_name: str) -> RawSchComponent | None:
         schdoc_name=schdoc_name,
         parameters=parameters,
         pin_designators=tuple(pins),
+        component_kind=_sch_component_kind_value(comp),
     )
 
 

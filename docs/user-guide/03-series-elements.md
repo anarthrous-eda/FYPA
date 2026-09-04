@@ -15,6 +15,20 @@ solver cannot push current between them. With a `SERIES` directive, the
 two nets are bridged by a lumped resistance, current flows, and the
 voltage drop across the part shows up in the solve.
 
+## 3.0 Altium Net Ties (automatic)
+
+Altium **Net Tie** / **Net Tie (No BOM)** symbols (`Component Kind` on the
+schematic part) deliberately short two or more nets. FYPA detects that
+kind and auto-bridges the nets with a low-Ω short so they merge in the
+FEM — you do **not** need `PDN_ROLE=SERIES` on every Net Tie.
+
+- Override: if the Net Tie already carries any `PDN_*` parameter (for
+  example an explicit `SERIES` with a measured resistance, or incomplete
+  PDN fields), the auto-bridge is skipped and your annotation wins.
+- Jumpers and bare `0R` resistors that are still `Component Kind =
+  Standard` are **not** auto-detected; annotate those as `SERIES` as
+  usual.
+
 > Read [Section 1](01-sources-and-sinks.md) first if you have not — the
 > parameter mechanics (where to add them, hiding them, library-symbol
 > defaults) are the same.
