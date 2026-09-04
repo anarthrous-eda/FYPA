@@ -598,7 +598,7 @@ def run_tier2(
                     c.target_label or "")
         # Capacitors merged onto another capacitor's via inherit its result:
         # they are the same port, so their spreading term is identical.
-        by_index = {i: c for i, c in enumerate(group)}
+        by_index = dict(enumerate(group))
         for designator, rep_index in merged_into.items():
             rep = by_index[rep_index]
             rep_result = results.get(rep.designator)

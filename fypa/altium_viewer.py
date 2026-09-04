@@ -26049,7 +26049,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 metadata_directives=directives,
                 settings=settings,
                 net_layer_shapes=shapes,
-                include_overrides={d: True for d in forced},
+                include_overrides=dict.fromkeys(forced, True),
                 footprint_convention=convention,
             )
             self._caps_identity_cache = (

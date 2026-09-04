@@ -9,8 +9,6 @@ and disconnected cavity islands.
 """
 from __future__ import annotations
 
-import math
-
 import numpy as np
 import pytest
 import shapely.geometry
@@ -21,7 +19,6 @@ from fypa.caploop.constants import MU0_H_PER_MM
 from fypa.caploop.tier1 import spreading_closed_form_h
 from fypa.caploop.tier2_fem import (
     Tier2Error,
-    _Port,
     _make_port,
     build_cavity_problem,
     build_cavity_sheet,
@@ -324,7 +321,7 @@ def test_a_cap_on_the_targets_own_via_reports_zero_with_a_reason():
     from fypa.caploop.identify import identify_capacitors
     from fypa.caploop.tier2_fem import run_tier2
     from tests.test_caploop_identify import (
-        GND, PWR, RAILS, _directives, _pad, _standard_cap_project, _via,
+        GND, PWR, RAILS, _directives, _pad, _standard_cap_project,
     )
 
     # The sink's pins sit on the capacitor's own escape vias.

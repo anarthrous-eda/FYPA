@@ -40,8 +40,8 @@ class _HoverViewerStub:
 
 
 def _editor(role, **kw):
-    spec = dict(role=role, p_net="+12V", n_net="GND", current=None,
-                voltage=None, overrides_designator=None)
+    spec = {"role": role, "p_net": "+12V", "n_net": "GND", "current": None,
+            "voltage": None, "overrides_designator": None}
     spec.update(kw)
     return SimpleNamespace(**spec)
 

@@ -318,7 +318,7 @@ class PackageLibrary:
         }
 
     @classmethod
-    def from_dict(cls, d: dict | None) -> "PackageLibrary":
+    def from_dict(cls, d: dict | None) -> PackageLibrary:
         lib = cls()
         for name, values in (d or {}).items():
             if name not in lib._models:

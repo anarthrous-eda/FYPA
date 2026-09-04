@@ -49,7 +49,7 @@ or voltage), point this tool at the `.PrjPcb`, and it:
 
 If you just want to run the tool — no Python install, no git clone — grab the
 latest packaged build from the
-[Releases page](https://github.com/cutreedesigns/FYPA/releases/latest):
+[Releases page](https://github.com/anarthrous-eda/FYPA/releases/latest):
 
 1. Download `FYPA_v<version>.zip` from the latest release's *Assets*.
 2. Extract it anywhere permanent (e.g. `C:\Tools\FYPA\`).
@@ -77,7 +77,7 @@ winget install astral-sh.uv          # or: pip install uv
 Then clone and sync:
 
 ```sh
-git clone git@github.com:cutreedesigns/FYPA.git
+git clone git@github.com:anarthrous-eda/FYPA.git
 cd FYPA
 uv sync
 ```
@@ -538,14 +538,30 @@ FYPA\
 
 ### Distributing
 
-The standard distribution channel is **GitHub Releases** — tag a version
-(e.g. `v0.02`), draft a release on GitHub, and upload `dist\FYPA.zip`
-(rename it to include the version, e.g. `FYPA_v0.02.zip`) as a release
-asset. Users follow the
+The standard distribution channel is **GitHub Releases**, and publishing one
+is automated — pushing a version tag runs
+[`.github/workflows/release.yml`](.github/workflows/release.yml), which lints,
+tests, stamps the tag into `__version__`, builds the PyInstaller bundle, and
+uploads `FYPA_v<version>.zip` with auto-generated release notes:
+
+```
+git tag -a v1.7.0 -m "FYPA v1.7.0"
+git push origin v1.7.0
+```
+
+Run `uv run ruff check .` and `uv run pytest` **before** tagging — the
+workflow runs the same gate, and a failure there means no release is created
+and the tag has to be deleted locally and on GitHub before the version number
+can be reused. Everything in the release must already be merged to `main`;
+the tag is only a pointer to a commit. The release publishes live immediately
+(add `--draft` to the `gh release create` step if you'd rather review first).
+
+Users follow the
 [Download (prebuilt Windows binary)](#download-prebuilt-windows-binary)
 instructions above.
 
-The zip can also be sent directly if you don't want to publish a release.
+To build and share a zip without publishing a release, run
+`packaging\build_dist.bat` and send `dist\FYPA.zip` directly.
 
 Cached solves (`.cache\`) are written next to `FYPA.exe`, so they survive
 re-extracting a new build over the old folder.

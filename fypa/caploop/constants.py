@@ -79,7 +79,7 @@ class CapLoopSettings:
         return dataclasses.asdict(self)
 
     @classmethod
-    def from_dict(cls, d: dict | None) -> "CapLoopSettings":
+    def from_dict(cls, d: dict | None) -> CapLoopSettings:
         """Build settings from a ``viewer_settings`` sub-dict, ignoring
         unknown keys and keeping defaults for missing ones (older or newer
         project files round-trip safely)."""

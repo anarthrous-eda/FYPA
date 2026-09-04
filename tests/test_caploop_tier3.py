@@ -7,7 +7,6 @@ parallel rollup.
 from __future__ import annotations
 
 import dataclasses
-import math
 
 import pytest
 

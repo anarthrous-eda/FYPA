@@ -6,9 +6,10 @@ name: Release
 #   git tag v1.6.0
 #   git push origin v1.6.0
 #
-# The zip is named after the tag (FYPA-v1.6.0.zip), so no manual renaming,
-# and the release is created with auto-generated notes from the merged PRs
-# since the previous tag.
+# The zip is named after the tag (FYPA_v1.6.0.zip) — the underscore matches
+# every release published so far and the filename the README tells users to
+# look for — so no manual renaming, and the release is created with
+# auto-generated notes from the merged PRs since the previous tag.
 
 on:
   push:
@@ -62,12 +63,12 @@ jobs:
         run: Copy-Item README.md dist/FYPA/README.md
 
       - name: Create zip
-        run: Compress-Archive -Path dist/FYPA -DestinationPath "dist/FYPA-${{ github.ref_name }}.zip"
+        run: Compress-Archive -Path dist/FYPA -DestinationPath "dist/FYPA_${{ github.ref_name }}.zip"
 
       - name: Publish GitHub release
         # `gh` is preinstalled on GitHub runners. --generate-notes builds the
         # changelog from merged PRs since the last tag. Add --draft here if
         # you'd rather review the release before it goes public.
-        run: gh release create "${{ github.ref_name }}" "dist/FYPA-${{ github.ref_name }}.zip" --title "FYPA ${{ github.ref_name }}" --generate-notes
+        run: gh release create "${{ github.ref_name }}" "dist/FYPA_${{ github.ref_name }}.zip" --title "FYPA ${{ github.ref_name }}" --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}
