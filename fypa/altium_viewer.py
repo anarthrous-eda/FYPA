@@ -22117,8 +22117,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
     def _rail_sink_load(self, rail_members: set[str]) -> tuple[float, bool]:
         """Sum of every SINK load coupling into ``rail_members`` — solved
         schematic directives plus pending editor directives. A schematic
-        SINK is dropped when an editor directive overrides its designator
-        so an unlocked-and-edited sink isn't counted twice. Returns
+        SINK is dropped when an editor directive overrides its designator,
+        and an editor-originated one is dropped from the solved side
+        outright, so neither is counted twice. Returns
         ``(total_amps, any_found)``."""
         total = 0.0
         any_found = False
@@ -22129,6 +22130,16 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             if other.get("role") != "SINK":
                 continue
             if other.get("designator") in overridden:
+                continue
+            # An editor directive that has survived a re-solve sits in BOTH
+            # lists: apply_editor_directives appended it to the solved
+            # directives, and the project still holds it as a live editor
+            # directive. The editor loop below owns it, so counting it here
+            # too doubles the reported rail load. Only skip when that loop
+            # will actually run — a solve bundle opened without a project
+            # would otherwise lose its editor-placed sinks entirely.
+            if (self._project is not None
+                    and other.get("schdoc") == _EDITOR_SCHDOC):
                 continue
             for term in (other.get("terminals") or {}).values():
                 if any(p.get("net") in rail_members
