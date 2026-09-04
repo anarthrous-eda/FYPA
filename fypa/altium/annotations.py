@@ -2068,6 +2068,19 @@ class AnnotationResult:
     # injects a large ground-balancing current). Surfaced as an active dialog
     # like open_loop_rails. Populated by :func:`fypa.altium.loader.build_problem`.
     connectivity_breaks: list[str] = field(default_factory=list)
+    # Warnings about directives the low-Ω net-merge pass absorbs. A subset of
+    # ``warnings``. :func:`fypa.altium.loader.load_project` parses twice — once
+    # to discover the merges, once on the merged nets — and the second pass is
+    # told to skip every absorbed designator, so it cannot re-raise these. The
+    # loader copies them from the first result into the final one; without
+    # that, a Net Tie that wrongly bridged +3V3 to GND would merge the rails
+    # with nothing in the annotation log to say so.
+    absorbed_notes: list[str] = field(default_factory=list)
+
+    def note_absorbed(self, message: str) -> None:
+        """Warn, and mark the message to survive the post-merge re-parse."""
+        self.warnings.append(message)
+        self.absorbed_notes.append(message)
 
     @property
     def ok(self) -> bool:
@@ -3494,20 +3507,72 @@ def _is_nettie_component_kind(kind: int) -> bool:
     return int(kind) in NET_TIE_COMPONENT_KINDS
 
 
+def _schdocs_with_pcb_placements(proj: ExtractedProject) -> set[str]:
+    """Schematic sheets that placed at least one component on this board.
+
+    A .PrjPcb can hold several .PcbDoc files while ``extract_project`` loads
+    only the selected one, so most sheets of a multi-board project contribute
+    nothing here. Used to tell "this tie is missing from the board" (worth a
+    warning) from "this tie belongs to a different board" (not).
+    """
+    placed: set[str] = set()
+    for pcb in proj.pcb_components:
+        if pcb.source_designator:
+            placed.add(pcb.source_designator.upper())
+        if pcb.designator:
+            placed.add(pcb.designator.upper())
+    return {
+        sch.schdoc_name for sch in proj.sch_components
+        if sch.designator.upper() in placed
+    }
+
+
 def _nettie_net_names(proj: ExtractedProject, pcb_index: int) -> list[str]:
-    """Distinct connected net names on a PCB placement, pad order preserved."""
+    """Distinct connected net *names* on a PCB placement, pad order preserved.
+
+    Deduplicated by name (case-insensitively), not by net index. A
+    multi-channel board stores one net per channel and Altium does not
+    channel-qualify the names in Nets6, so two distinct indices can share one
+    name — see :func:`_net_indices_by_name`. The chain built from this list is
+    resolved by :func:`_resolve_terminal`, which matches on the *name*, so
+    keeping both indices would pair a net with itself: P and N would resolve to
+    the same pads and :func:`_arbitrate_overlapping_terminals` would reject the
+    tie as a short instead of bridging it.
+    """
     pads = _pads_by_component_all(proj).get(pcb_index, [])
     names: list[str] = []
-    seen: set[int] = set()
+    seen: set[str] = set()
     for pad in pads:
         ni = pad.net_index
-        if ni == NO_NET or ni in seen:
+        if ni == NO_NET or not (0 <= ni < len(proj.nets)):
             continue
-        if not (0 <= ni < len(proj.nets)):
+        name = proj.nets[ni].name
+        key = name.strip().upper()
+        if key in seen:
             continue
-        seen.add(ni)
-        names.append(proj.nets[ni].name)
+        seen.add(key)
+        names.append(name)
     return names
+
+
+def _nettie_skip_reason(proj: ExtractedProject, pcb_index: int,
+                        net_names: list[str]) -> str:
+    """Why a Net Tie placement has nothing to bridge.
+
+    Keyed on the distinct-net count the bridge actually needs.
+    :func:`_autoinfer_failure_reason` describes a different guard (the 2-pin
+    auto-infer rules) and would tell the user a 3-pad tie failed because of its
+    pad count, which the N-pad chain does not care about.
+    """
+    pads = _pads_by_component_all(proj).get(pcb_index, [])
+    if not pads:
+        return "the footprint has no pads"
+    if not net_names:
+        return f"none of its {len(pads)} pad(s) are connected to a net"
+    return (
+        f"all {len(pads)} pad(s) are on one net ({net_names[0]!r}) — "
+        f"there is nothing to bridge"
+    )
 
 
 def _synth_nettie_bridge_for_instance(
@@ -3523,12 +3588,20 @@ def _synth_nettie_bridge_for_instance(
     role_diag = f"NetTie on {pcb_des}"
     net_names = _nettie_net_names(proj, pcb_index)
     if len(net_names) < 2:
-        reason = _autoinfer_failure_reason(proj, pcb_index)
-        result.warnings.append(
+        reason = _nettie_skip_reason(proj, pcb_index, net_names)
+        result.note_absorbed(
             f"{role_diag} ({schdoc_name}): skipped auto-bridge — {reason}"
         )
         return []
 
+    # Resolution failures here are not the user's annotation mistakes: nobody
+    # asked for this directive, it was inferred from ComponentKind. Collect
+    # into a scratch result and downgrade its errors to warnings, so a Net Tie
+    # the bridge cannot resolve does not fail `fypa annotations` in CI or raise
+    # a load-time error telling the user to set PDN_N_PINS on a part they never
+    # annotated. The advice in those messages still holds for anyone who wants
+    # to take over with explicit PDN_* parameters, so it is kept verbatim.
+    scratch = AnnotationResult()
     specs: list[ResistorSpec] = []
     # Chain consecutive nets so N nets become N-1 shorts (union-find merge
     # collapses the whole set). Two-pin NetTies take the single pair path.
@@ -3537,7 +3610,7 @@ def _synth_nettie_bridge_for_instance(
         pair = _resolve_two_terminal(
             proj, pcb_index, params,
             "PDN_P_NET", "PDN_N_NET", "PDN_P_PINS", "PDN_N_PINS",
-            enabled_layers, role_diag, result,
+            enabled_layers, role_diag, scratch,
             net_remap=net_remap,
             schdoc_name=schdoc_name,
         )
@@ -3551,8 +3624,12 @@ def _synth_nettie_bridge_for_instance(
             n=pair[1],
             channel_index=None,
         ))
+    for warning in scratch.warnings:
+        result.note_absorbed(warning)
+    for err in scratch.errors:
+        result.note_absorbed(f"{err} (auto-bridge skipped)")
     if specs:
-        result.warnings.append(
+        result.note_absorbed(
             f"{role_diag} ({schdoc_name}): auto-bridged "
             f"{' ↔ '.join(net_names)} as low-Ω NetTie short "
             f"({NET_TIE_BRIDGE_RESISTANCE_OHM * 1e3:.2g} mΩ)"
@@ -3574,41 +3651,75 @@ def _synth_nettie_directives(
     disconnected; this pass synthesises a low-Ω SERIES directive per PCB
     placement so the loader's net-merge path collapses them.
 
+    A Net Tie carrying ``ComponentKind`` only on the PCB record — added by ECO,
+    or a board opened without its schematics — is picked up too, so the bridge
+    does not depend on a matching symbol existing.
+
     An explicit ``PDN_ROLE`` on the same part wins — auto-bridge is skipped.
     """
     specs: list[ResistorSpec] = []
-    seen_pcb: set[int] = set()
+    # Every placement this pass has decided about, bridged or deliberately not.
+    # The PCB sweep at the end consults it so a schematic opt-out is not undone
+    # by the same ComponentKind sitting on the footprint record.
+    handled_pcb: set[int] = set()
+    placed_schdocs = _schdocs_with_pcb_placements(proj)
+
+    def can_bridge(pcb_idx: int) -> bool:
+        if pcb_idx in handled_pcb:
+            return False
+        handled_pcb.add(pcb_idx)
+        pcb = proj.pcb_components[pcb_idx]
+        # PCB Blanket/ECO PDN_* on the placement overrides auto-bridge,
+        # same as schematic PDN_* on the symbol.
+        if _has_any_pdn_params(pcb.parameters):
+            return False
+        return pcb.designator.upper() not in skip_set
+
     for sch in proj.sch_components:
         if not _is_nettie_component_kind(sch.component_kind):
             continue
+        pcb_indices = _find_pcb_instances(proj, sch.designator)
         # Any schematic PDN_* (even incomplete) opts out of auto-bridge so a
         # half-finished annotation is not silently replaced by a merge short.
-        if _has_any_pdn_params(sch.parameters):
+        # The placements are still marked handled: Altium stamps ComponentKind
+        # on the footprint too, so the PCB sweep below would otherwise bridge
+        # straight over the user's own directive.
+        if _has_any_pdn_params(sch.parameters) or sch.designator.upper() in skip_set:
+            handled_pcb.update(pcb_indices)
             continue
-        if sch.designator.upper() in skip_set:
-            continue
-        pcb_indices = _find_pcb_instances(proj, sch.designator)
         if not pcb_indices:
-            result.warnings.append(
-                f"NetTie {sch.designator} ({sch.schdoc_name}): no PCB "
-                f"placement found — cannot auto-bridge"
-            )
+            # extract_project reads every SchDoc in the .PrjPcb but only one
+            # .PcbDoc, so on a multi-board project every Net Tie belonging to
+            # another board lands here. Warn only for sheets that placed
+            # something on *this* board — otherwise the log fills with notices
+            # about parts the user never asked this board to contain.
+            if sch.schdoc_name in placed_schdocs:
+                result.note_absorbed(
+                    f"NetTie {sch.designator} ({sch.schdoc_name}): no PCB "
+                    f"placement found — cannot auto-bridge"
+                )
             continue
         for pcb_idx in pcb_indices:
-            if pcb_idx in seen_pcb:
-                continue
-            seen_pcb.add(pcb_idx)
-            pcb = proj.pcb_components[pcb_idx]
-            # PCB Blanket/ECO PDN_* on the placement overrides auto-bridge,
-            # same as schematic PDN_* on the symbol.
-            if _has_any_pdn_params(pcb.parameters):
-                continue
-            if pcb.designator.upper() in skip_set:
-                continue
-            specs.extend(_synth_nettie_bridge_for_instance(
-                proj, pcb_idx, sch.schdoc_name, enabled_layers,
-                result, net_remap,
-            ))
+            if can_bridge(pcb_idx):
+                specs.extend(_synth_nettie_bridge_for_instance(
+                    proj, pcb_idx, sch.schdoc_name, enabled_layers,
+                    result, net_remap,
+                ))
+
+    # PCB-side Net Ties with no schematic counterpart reached above.
+    for pcb_idx, pcb in enumerate(proj.pcb_components):
+        if pcb_idx in handled_pcb:
+            continue
+        if not _is_nettie_component_kind(pcb.component_kind):
+            continue
+        if not can_bridge(pcb_idx):
+            continue
+        lookup_des = pcb.source_designator or pcb.designator
+        specs.extend(_synth_nettie_bridge_for_instance(
+            proj, pcb_idx,
+            _schdoc_for_pcb_instance(proj, pcb_idx, lookup_des),
+            enabled_layers, result, net_remap,
+        ))
     return specs
 
 

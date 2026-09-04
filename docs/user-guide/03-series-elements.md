@@ -28,6 +28,16 @@ FEM — you do **not** need `PDN_ROLE=SERIES` on every Net Tie.
 - Jumpers and bare `0R` resistors that are still `Component Kind =
   Standard` are **not** auto-detected; annotate those as `SERIES` as
   usual.
+- The kind is read from the PCB footprint as well as the schematic
+  symbol, so a Net Tie that only exists on the board (added by ECO, or a
+  board opened without its schematics) is bridged too.
+- Every auto-bridge is logged. Look for `auto-bridged A <-> B` in
+  **Setup -> Annotation log**: that line is your check that the tie
+  shorted the nets you expected, not (say) a rail to ground. When the
+  bridge cannot be worked out, the reason is logged as a **warning** and
+  that tie is left unbridged — auto-detected ties never fail a load or
+  `fypa annotations`, because you did not annotate them. Annotate the
+  part with explicit `PDN_*` parameters to take over.
 
 > Read [Section 1](01-sources-and-sinks.md) first if you have not — the
 > parameter mechanics (where to add them, hiding them, library-symbol

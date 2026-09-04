@@ -57,6 +57,11 @@ ExampleDesigns/Sandbox/*
 # would re-leak exactly what it removes. Run it before each commit.
 sanitize_sandbox.ps1
 wiring.json
+# Same rule for local-only test scripts (scripts/test-mine.ps1 etc.): they
+# hardcode scrubbed strings too, so they stay untracked. The combined-test
+# workflow scripts below are deliberately committed, hence the negations.
+scripts/test-*.ps1
+!scripts/test-combined.ps1
 # Local override for test-combined (team config is on team/local branch)
 scripts/test-combined.json
 scripts/py314.local.json

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Rebuild origin/test/combined from team/local config and optionally push.
 
@@ -8,9 +8,13 @@
     and optionally force-pushes with lease.
 
     Default (no -Rebuild): if origin/test/combined exists, check it out and
-    merge only extras whose tips are not already ancestors of HEAD
-    (incremental — keeps prior conflict resolutions). Pass -Rebuild for a
-    clean recreate from baseBranch (expect conflicts again).
+    merge the base branch plus any extras whose tips are not already ancestors
+    of HEAD (incremental — keeps prior conflict resolutions). Pass -Rebuild for
+    a clean recreate from baseBranch (expect conflicts again).
+
+    The published tip is stamped with its inputs in refs/notes/test-combined,
+    which is fetched and pushed with the branch so any machine can tell an
+    up-to-date tip from a stale one.
 
     Local unpushed commits are never merged — tips are always origin/<branch>.
     Missing remote extras abort the run.
@@ -35,9 +39,11 @@
     Prefer incremental updates without this switch.
 
 .PARAMETER Abort
-    Abort a stuck merge: hard-reset local test/combined to origin/test/combined
-    (if present), clear merge/rebase state, and check out the starting branch.
-    Does not push.
+    Abort a stuck merge or rebase: hard-reset local test/combined to
+    origin/test/combined (if present), clear merge/rebase state, and check out
+    the branch the conflicted run started from (recorded in
+    .git/fypa-test-combined-return; falls back to the current branch). Works
+    from a detached HEAD. Does not push.
 
 .PARAMETER Push
     After a successful update (or reuse), push --force-with-lease to Remote.
@@ -77,87 +83,25 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $RepoRoot
 
-function Invoke-GitCore {
-    param(
-        [Parameter(Mandatory, ValueFromRemainingArguments)]
-        [string[]] $GitArgs,
-        [switch] $Quiet
-    )
-    if ($GitArgs.Count -eq 0) {
-        throw "Invoke-GitCore: no arguments"
-    }
+# Invoke-GitCore / Invoke-Git / Invoke-GitSoft / Get-CurrentBranch / Test-GitRef
+# / Get-RefSha and the worktree-preservation helpers.
+. (Join-Path $PSScriptRoot '_git-helpers.ps1')
 
-    $Output = @(& git.exe @GitArgs 2>&1)
-    $ExitCode = $LASTEXITCODE
-
-    if (-not $Quiet) {
-        foreach ($Line in $Output) {
-            if ($Line -is [System.Management.Automation.ErrorRecord]) {
-                Write-Warning $Line.ToString()
-            }
-            else {
-                Write-Host $Line
-            }
-        }
-    }
-
-    $Stdout = @(
-        $Output |
-            Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } |
-            ForEach-Object { [string] $_ }
-    )
-
-    return @{
-        ExitCode = $ExitCode
-        Output   = $Stdout
-    }
-}
-
-function Invoke-Git {
-    param(
-        [Parameter(Mandatory, ValueFromRemainingArguments)]
-        [string[]] $GitArgs
-    )
-    $Result = Invoke-GitCore @GitArgs
-    if ($Result.ExitCode -ne 0) {
-        throw "git $($GitArgs -join ' ') failed (exit $($Result.ExitCode))"
-    }
-    return $Result.Output
-}
-
-function Invoke-GitSoft {
-    param(
-        [Parameter(Mandatory, ValueFromRemainingArguments)]
-        [string[]] $GitArgs
-    )
-    return (Invoke-GitCore @GitArgs).ExitCode
-}
-
-function Test-GitRef {
-    param([string] $Ref)
-    & git show-ref --verify --quiet $Ref
-    return $LASTEXITCODE -eq 0
-}
+# Notes ref carrying the input stamp of each published tip. Shared, so it has
+# to travel with the branch — see Sync-StampNotes / Publish-StampNotes.
+$StampNotesRef = 'refs/notes/test-combined'
 
 function Test-GitAncestor {
     param(
         [string] $Ancestor,
         [string] $Descendant
     )
-    & git.exe merge-base --is-ancestor $Ancestor $Descendant 2>$null | Out-Null
-    return $LASTEXITCODE -eq 0
-}
-
-function Get-RefSha {
-    param([string] $Ref)
-    $Sha = ([string] (& git.exe rev-parse --verify "$Ref^{commit}" 2>$null)).Trim()
-    if ($LASTEXITCODE -ne 0 -or -not $Sha) {
-        return $null
-    }
-    return $Sha
+    return (Invoke-GitSoft -Quiet @(
+        'merge-base', '--is-ancestor', $Ancestor, $Descendant
+    )) -eq 0
 }
 
 function Sync-RemoteBranches {
@@ -222,11 +166,11 @@ function Get-InputStamp {
 function Get-TestCombinedStamp {
     param([string] $Commit)
     if (-not $Commit) { return $null }
-    $Lines = @(& git.exe notes --ref=test-combined show $Commit 2>$null)
-    if ($LASTEXITCODE -ne 0) {
+    $Result = Invoke-GitCore -Quiet @('notes', "--ref=$StampNotesRef", 'show', $Commit)
+    if ($Result.ExitCode -ne 0) {
         return $null
     }
-    return (($Lines -join "`n").Trim())
+    return (($Result.Output -join "`n").Trim())
 }
 
 function Set-TestCombinedStamp {
@@ -235,10 +179,43 @@ function Set-TestCombinedStamp {
         [string] $Stamp
     )
     $ExitCode = Invoke-GitSoft @(
-        'notes', '--ref=test-combined', 'add', '-f', '-m', $Stamp, $Commit
+        'notes', "--ref=$StampNotesRef", 'add', '-f', '-m', $Stamp, $Commit
     )
     if ($ExitCode -ne 0) {
         Write-Warning "Could not write test-combined stamp note on $Commit"
+    }
+}
+
+function Sync-StampNotes {
+    <#
+        Fetch the shared stamp notes. Without this the reuse fast path only ever
+        engages on the machine that built the branch: notes live in their own
+        ref, which a plain `git fetch <remote> <branch>` does not bring down, so
+        a CI runner or a second maintainer would rebuild from scratch every run.
+    #>
+    param([string] $RemoteName)
+    $ExitCode = Invoke-GitSoft -Quiet @(
+        'fetch', $RemoteName, "+${StampNotesRef}:${StampNotesRef}"
+    )
+    if ($ExitCode -ne 0) {
+        Write-Host "==> No published stamp notes on $RemoteName yet"
+    }
+}
+
+function Publish-StampNotes {
+    <# Push the stamp notes so other machines can reuse the published tip. #>
+    param([string] $RemoteName)
+    $ExitCode = Invoke-GitSoft @(
+        'push', '--force', $RemoteName, "${StampNotesRef}:${StampNotesRef}"
+    )
+    if ($ExitCode -ne 0) {
+        Write-Warning @"
+Could not push $StampNotesRef to $RemoteName. The branch is published, but
+other machines will rebuild it from scratch instead of reusing this tip.
+"@
+    }
+    else {
+        Write-Host "==> Pushed $StampNotesRef"
     }
 }
 
@@ -253,16 +230,62 @@ function ConvertTo-NormalizedStamp {
 }
 
 function Test-MergeInProgress {
-    $MergeHead = & git.exe rev-parse -q --verify MERGE_HEAD 2>$null
-    return [bool] $MergeHead
+    $Result = Invoke-GitCore -Quiet @('rev-parse', '-q', '--verify', 'MERGE_HEAD')
+    return ($Result.ExitCode -eq 0 -and @($Result.Output | Where-Object { $_ }).Count -gt 0)
 }
 
 function Get-UnmergedPaths {
-    $Output = & git.exe diff --name-only --diff-filter=U 2>$null
-    if ($LASTEXITCODE -ne 0) {
+    $Result = Invoke-GitCore -Quiet @('diff', '--name-only', '--diff-filter=U')
+    if ($Result.ExitCode -ne 0) {
         return @()
     }
-    return @($Output | Where-Object { $_ })
+    return @($Result.Output | Where-Object { $_ })
+}
+
+function Get-GitDir {
+    $Result = Invoke-GitCore -Quiet @('rev-parse', '--git-dir')
+    if ($Result.ExitCode -ne 0) { return $null }
+    return (Get-FirstLine $Result.Output)
+}
+
+function Test-RebaseInProgress {
+    $GitDir = Get-GitDir
+    if (-not $GitDir) { return $false }
+    return (
+        (Test-Path -LiteralPath (Join-Path $GitDir 'rebase-merge')) -or
+        (Test-Path -LiteralPath (Join-Path $GitDir 'rebase-apply'))
+    )
+}
+
+# Where the pre-run branch is parked when a merge conflict leaves the worktree
+# on the test branch, so -Abort can honour its promise to put you back. Lives
+# in .git/, not the worktree, so it never shows up in `git status`.
+function Get-ReturnBranchMemoPath {
+    $GitDir = Get-GitDir
+    if (-not $GitDir) { return $null }
+    return (Join-Path $GitDir 'fypa-test-combined-return')
+}
+
+function Set-ReturnBranchMemo {
+    param([string] $Branch)
+    $Path = Get-ReturnBranchMemoPath
+    if (-not $Path -or -not $Branch) { return }
+    try { Set-Content -LiteralPath $Path -Value $Branch -Encoding ascii -NoNewline }
+    catch { Write-Warning "Could not record the return branch: $_" }
+}
+
+function Get-ReturnBranchMemo {
+    $Path = Get-ReturnBranchMemoPath
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $null }
+    $Raw = Get-Content -LiteralPath $Path -Raw
+    $Branch = if ($null -eq $Raw) { '' } else { ([string] $Raw).Trim() }
+    if (-not $Branch) { return $null }
+    return $Branch
+}
+
+function Clear-ReturnBranchMemo {
+    $Path = Get-ReturnBranchMemoPath
+    if ($Path) { Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue }
 }
 
 function Resolve-IgnoredMergeConflicts {
@@ -310,10 +333,6 @@ function Merge-FeatureBranch {
     Invoke-Git @('commit', '--no-edit')
 }
 
-function Get-CurrentBranch {
-    return ([string] (Invoke-Git @('branch', '--show-current') | Select-Object -First 1)).Trim()
-}
-
 function Restore-DevBranch {
     param([string] $Branch)
     if ($Branch) {
@@ -330,9 +349,9 @@ function Get-GitConfigJson {
     foreach ($Ref in $Refs) {
         if (-not $Ref) { continue }
         $Spec = "${Ref}:${RepoPath}"
-        $Json = & git show $Spec 2>$null
-        if ($LASTEXITCODE -eq 0 -and $Json) {
-            return @{ Source = $Spec; Json = [string] $Json }
+        $Result = Invoke-GitCore -Quiet @('show', $Spec)
+        if ($Result.ExitCode -eq 0 -and $Result.Output.Count -gt 0) {
+            return @{ Source = $Spec; Json = ($Result.Output -join "`n") }
         }
     }
 
@@ -353,9 +372,9 @@ function Resolve-ConfigSource {
             }
         }
         if ($ExplicitPath -match ':') {
-            $Json = & git show $ExplicitPath 2>$null
-            if ($LASTEXITCODE -eq 0 -and $Json) {
-                return @{ Source = $ExplicitPath; Json = [string] $Json }
+            $Result = Invoke-GitCore -Quiet @('show', $ExplicitPath)
+            if ($Result.ExitCode -eq 0 -and $Result.Output.Count -gt 0) {
+                return @{ Source = $ExplicitPath; Json = ($Result.Output -join "`n") }
             }
         }
         throw "Config file not found: $ExplicitPath"
@@ -429,7 +448,9 @@ function Read-TestCombinedConfig {
 function Clear-TestCombinedUpstream {
     param([string] $Branch)
     # Creating from origin/main sets upstream to main — confusing ("ahead of main").
-    & git.exe branch --unset-upstream $Branch 2>$null | Out-Null
+    # Fails loudly when there is no upstream to clear, which is a normal state
+    # here, so the exit code is discarded rather than allowed to surface.
+    Invoke-GitSoft -Quiet @('branch', '--unset-upstream', $Branch) | Out-Null
 }
 
 if (-not (Test-Path "FYPA.py")) {
@@ -437,7 +458,9 @@ if (-not (Test-Path "FYPA.py")) {
 }
 
 $ReturnBranch = Get-CurrentBranch
-if (-not $ReturnBranch) {
+if (-not $ReturnBranch -and -not $Abort) {
+    # -Abort is exempt: a detached HEAD is the stuck state it exists to escape,
+    # so throwing here would make the documented escape hatch unusable.
     throw "Could not determine the current branch (detached HEAD?). Check out a branch first."
 }
 
@@ -449,11 +472,28 @@ if ($Abort) {
         "test/combined"
     }
     Write-Host "==> Abort: clear merge/rebase state and reset $AbortTestBranch"
+    # A conflicted run parks the branch you started on; prefer it over "whatever
+    # branch I happen to be on now", which on the abort run is the test branch.
+    $MemoBranch = Get-ReturnBranchMemo
+    if ($MemoBranch) {
+        $ReturnBranch = $MemoBranch
+        Write-Host "==> Recorded return branch: $ReturnBranch"
+    }
     $onAbortBranch = ((Get-CurrentBranch) -eq $AbortTestBranch)
-    if ($onAbortBranch) {
-        & git merge --abort 2>$null | Out-Null
-        & git rebase --abort 2>$null | Out-Null
-        & git reset --merge 2>$null | Out-Null
+    # An interrupted rebase leaves HEAD detached, so `-eq $AbortTestBranch` is
+    # false exactly when the state most needs clearing. Treat detached-with-
+    # rebase-state as ours too; a detached HEAD with no rebase in progress is
+    # someone else's business and is left alone.
+    $DetachedMidRebase = ((-not (Get-CurrentBranch)) -and (Test-RebaseInProgress))
+    if ($onAbortBranch -or $DetachedMidRebase) {
+        Invoke-GitSoft -Quiet @('merge', '--abort') | Out-Null
+        Invoke-GitSoft -Quiet @('rebase', '--abort') | Out-Null
+        Invoke-GitSoft -Quiet @('reset', '--merge') | Out-Null
+        # rebase --abort lands us back on the pre-rebase branch.
+        $onAbortBranch = ((Get-CurrentBranch) -eq $AbortTestBranch)
+    }
+    if (-not $ReturnBranch) {
+        $ReturnBranch = Get-CurrentBranch
     }
     try {
         Sync-RemoteBranches -RemoteName $Remote -Branches @($AbortTestBranch)
@@ -467,10 +507,8 @@ if ($Abort) {
             Invoke-Git @('reset', '--hard', $RemoteAbortRef)
             Clear-TestCombinedUpstream -Branch $AbortTestBranch
             Write-Host "==> $AbortTestBranch reset to $RemoteAbortRef"
-            if ($ReturnBranch -ne $AbortTestBranch) {
-                Write-Host "==> Return to $ReturnBranch"
-                Restore-DevBranch -Branch $ReturnBranch
-            }
+            # The single return-to-$ReturnBranch step is at the end of the
+            # block, so it also covers the paths that reach here detached.
         }
         else {
             # Update the local branch tip without checking it out (worktree may be dirty).
@@ -494,7 +532,14 @@ if ($Abort) {
     else {
         Write-Host "==> No local/remote $AbortTestBranch to reset"
     }
-    Write-Host "==> Abort done — on $(Get-CurrentBranch)"
+    $AbortCurrent = Get-CurrentBranch
+    if ($ReturnBranch -and $AbortCurrent -ne $ReturnBranch) {
+        Write-Host "==> Return to $ReturnBranch"
+        Restore-DevBranch -Branch $ReturnBranch
+        $AbortCurrent = Get-CurrentBranch
+    }
+    Clear-ReturnBranchMemo
+    Write-Host "==> Abort done — on $AbortCurrent"
     exit 0
 }
 
@@ -596,6 +641,9 @@ $DesiredStamp = ConvertTo-NormalizedStamp (Get-InputStamp `
 $RemoteTestRef = "$Remote/$TestBranch"
 $HasRemoteTest = Test-GitRef "refs/remotes/$Remote/$TestBranch"
 $RemoteTestSha = if ($HasRemoteTest) { Get-RefSha -Ref $RemoteTestRef } else { $null }
+if ($RemoteTestSha) {
+    Sync-StampNotes -RemoteName $Remote
+}
 $RemoteStamp = ConvertTo-NormalizedStamp (Get-TestCombinedStamp -Commit $RemoteTestSha)
 
 $CanReuse = (
@@ -623,38 +671,46 @@ else {
     Write-Host "==> No $RemoteTestRef yet — first create from $BaseRef"
 }
 
-$IgnoredPaths = @('.gitignore', 'FYPA.code-workspace')
-$Status = @(Invoke-Git @('status', '--porcelain'))
-$BlockingStatus = @($Status | Where-Object {
-    $path = $_.Substring(3).Trim()
-    if ($path -match ' -> ') { $path = ($path -split ' -> ', 2)[-1].Trim() }
-    elseif ($path -match "`t") { $path = ($path -split "`t", 2)[-1].Trim() }
-    $path -notin $IgnoredPaths
-})
-if ($BlockingStatus.Count -gt 0) {
+$IgnoredPaths = $script:CombinedIgnoredPaths
+try {
+    $DirtyIgnored = Assert-CleanWorktree -IgnoredPaths $IgnoredPaths `
+        -Context "maintain-test-combined"
+}
+catch {
     throw @"
-Uncommitted changes detected on '$ReturnBranch'.
-Commit or stash them before running maintain-test-combined.
+$_
 To escape a stuck merge: pwsh scripts/maintain-test-combined.ps1 -Abort
 "@
 }
+# The gate waves those paths through; the checkout/reset below would then wipe
+# them without a word. Snapshot now, restore once we are back on $ReturnBranch.
+$IgnoredBackup = Backup-WorktreePath -Paths $DirtyIgnored
 
-$Returned = $false
 $LeaveOnConflict = $false
 try {
     if ($CanReuse) {
-        Write-Host "==> Checkout $TestBranch @ $RemoteTestRef"
-        Invoke-Git @('checkout', '-B', $TestBranch, $RemoteTestRef)
-        Invoke-Git @('reset', '--hard', $RemoteTestRef)
+        Reset-ToRemoteTip -Branch $TestBranch -RemoteRef $RemoteTestRef
         Clear-TestCombinedUpstream -Branch $TestBranch
     }
     elseif ($UseIncremental) {
-        Write-Host "==> Checkout $TestBranch @ $RemoteTestRef"
-        Invoke-Git @('checkout', '-B', $TestBranch, $RemoteTestRef)
-        Invoke-Git @('reset', '--hard', $RemoteTestRef)
+        Reset-ToRemoteTip -Branch $TestBranch -RemoteRef $RemoteTestRef
         Clear-TestCombinedUpstream -Branch $TestBranch
 
         $HeadSha = Get-RefSha -Ref 'HEAD'
+        # The base has to be merged before the extras, and before the stamp is
+        # written. The stamp records the base SHA, so skipping this step would
+        # mark the tip as built from a base it has never seen: every later run
+        # would compute the same stamp, take the reuse path, and republish a
+        # branch quietly missing everything main gained in the meantime.
+        if (-not (Test-GitAncestor -Ancestor $BaseSha -Descendant $HeadSha)) {
+            Write-Host "==> Merge $BaseRef into $TestBranch"
+            Merge-FeatureBranch -MergeRef $BaseRef -ExtraBranch $BaseBranch -IgnoredPaths $IgnoredPaths
+            $HeadSha = Get-RefSha -Ref 'HEAD'
+        }
+        else {
+            Write-Host "==> Skip $BaseBranch (already in $TestBranch)"
+        }
+
         foreach ($Extra in $ResolvedExtras) {
             if (Test-GitAncestor -Ancestor $Extra.Sha -Descendant $HeadSha) {
                 Write-Host "==> Skip $($Extra.Branch) (already in $TestBranch)"
@@ -711,6 +767,9 @@ try {
         Write-Host "==> Push --force-with-lease $Remote $TestBranch"
         Invoke-Git @('push', '--force-with-lease', $Remote, "HEAD:refs/heads/$TestBranch")
         Write-Host "==> Pushed $Remote/$TestBranch"
+        # The stamp is what lets the next machine reuse this tip instead of
+        # rebuilding it, so it has to be published alongside the branch.
+        Publish-StampNotes -RemoteName $Remote
     }
     else {
         Write-Host "==> Local only (pass -Push to update $Remote/$TestBranch)"
@@ -722,6 +781,9 @@ catch {
             (Test-MergeInProgress) -or ((Get-UnmergedPaths).Count -gt 0)
         )) {
         $LeaveOnConflict = $true
+        # Remember where the maintainer came from: -Abort runs as a separate
+        # invocation, from the test branch, and otherwise has no way to know.
+        Set-ReturnBranchMemo -Branch $ReturnBranch
         Write-Host @"
 
 ==> Merge conflict — still on $TestBranch (do not git switch away).
@@ -736,25 +798,23 @@ Abort back to published tip + previous branch:
 "@
     }
     elseif ((Get-CurrentBranch) -ne $ReturnBranch) {
-        & git merge --abort 2>$null | Out-Null
-        & git rebase --abort 2>$null | Out-Null
+        Invoke-GitSoft -Quiet @('merge', '--abort') | Out-Null
+        Invoke-GitSoft -Quiet @('rebase', '--abort') | Out-Null
     }
     throw
 }
 finally {
-    if (-not $LeaveOnConflict) {
-        $Current = Get-CurrentBranch
-        if ($Current -ne $ReturnBranch) {
-            Write-Host "==> Return to $ReturnBranch"
-            Restore-DevBranch -Branch $ReturnBranch
-            $Returned = $true
+    if ($LeaveOnConflict) {
+        if ($IgnoredBackup) {
+            Write-Host "==> Local edits to $($IgnoredBackup.Files.Keys -join ', ') kept at $($IgnoredBackup.Dir)"
         }
     }
-}
-
-if (-not $LeaveOnConflict) {
-    if (-not $Returned) {
-        Write-Host "==> Return to $ReturnBranch"
-        Restore-DevBranch -Branch $ReturnBranch
+    else {
+        Clear-ReturnBranchMemo
+        if ((Get-CurrentBranch) -ne $ReturnBranch) {
+            Write-Host "==> Return to $ReturnBranch"
+            Restore-DevBranch -Branch $ReturnBranch
+        }
+        Restore-WorktreePath -Backup $IgnoredBackup
     }
 }
