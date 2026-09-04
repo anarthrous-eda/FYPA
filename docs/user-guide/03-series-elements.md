@@ -87,9 +87,13 @@ bead array) uses indexed parameters, the same way multi-rail SINKs use
 
 Unindexed `PDN_*` values are **templates** for indexed channels: `PDNn_X`
 wins when set, otherwise `PDN_X` is used. When indexed channels exist and
-the unindexed form does not carry a **complete** P/N (or pin) pair, the
-legacy channel is not emitted — a shared `PDN_P_NET` or `PDN_R` alone is
-template-only.
+the unindexed form does not carry its own `PDN_R` **and** a complete P/N
+(or pin) pair, the legacy channel is not emitted — a shared `PDN_P_NET` or
+`PDN_R` alone is template-only.
+
+A shared side inherited this way is a real connection: it bridges its nets
+in the series graph the same way an explicit `PDN<n>_P_NET` would, so
+downstream regulator Vin inference and rail grouping see it.
 
 Auto-inference from pad connectivity applies only when the part carries
 **one** SERIES channel. With two or more channels you must name each

@@ -67,8 +67,12 @@ multi-rail SINKs use `PDN1_I`:
 Unindexed parameters are templates for indexed channels (`PDNn_X` overrides
 `PDN_X`). Shared input nets, voltage, type, and quiescent current can stay
 on `PDN_*` while each output names only `PDNn_OUT_*`. When indexed
-channels exist and the unindexed form lacks a **complete** `OUT_*` pair,
-the legacy channel is not emitted.
+channels exist and the unindexed form lacks its own `PDN_V` or a
+**complete** `OUT_*` pair, the legacy channel is not emitted.
+
+A regulator channel is defined by its `OUT_*` pair — `PDN_IN_*` is the side
+meant to be shared, so an indexed `PDN1_IN_P_NET` does not by itself create
+channel 1. Give each channel its `PDN<n>_OUT_*` (or `PDN<n>_V`).
 
 Example — dual LDO outputs with shared Vin / Vout / type:
 

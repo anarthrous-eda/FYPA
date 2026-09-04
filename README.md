@@ -204,15 +204,23 @@ is set; unset indexed params inherit from the matching unindexed
 channel — a channel can override it with `PDN<n>_ROLE` (see [Mixed-role
 parts](#mixed-role-parts-a-source-and-a-sink-on-one-component) below).
 
-**Templates:** when indexed channels exist and the unindexed form lacks a
-*complete* terminal set (both P and N for SOURCE/SINK/SERIES; both `OUT_*`
-sides for REGULATOR), unindexed `PDN_*` values are defaults only — no
-legacy directive is emitted. A shared `PDN_N_NET = GND` or `PDN_IN_*` alone
-is a template. Unindexed `PDN_NET` / `PDN_PINS` is a complete single-net
-channel and is kept alongside indexed channels (not template-only).
+**Templates:** the unindexed form stays a real directive alongside indexed
+channels only when it is a channel in its own right — its **own** value
+parameter *and* a *complete* terminal set (both P and N for
+SOURCE/SINK/SERIES; both `OUT_*` sides for REGULATOR). Otherwise unindexed
+`PDN_*` values are defaults only and no legacy directive is emitted. A
+shared `PDN_N_NET = GND` or `PDN_IN_*` alone is a template, and so is a
+complete `PDN_P_NET` + `PDN_N_NET` pair with the values on `PDN1_I` /
+`PDN2_I`. Unindexed `PDN_NET` / `PDN_PINS` with its own value is a complete
+single-net channel and is kept alongside indexed channels.
 Indexed-only parts (`PDNn_ROLE` without `PDN_ROLE`) always treat unindexed
-values as templates when indexed channels exist. Example — shared SERIES
-resistance:
+values as templates when indexed channels exist.
+
+Inheritance is scoped to the part-wide role: a channel that overrides it
+with `PDN<n>_ROLE` reads nothing from the template, so a SERIES channel on
+a SINK part cannot pick up the sink's nets. The two terminal forms are also
+atomic — a channel that names `PDN1_P_NET` / `PDN1_N_NET` never inherits a
+shared `PDN_NET`, and vice versa. Example — shared SERIES resistance:
 
 ```text
 SW1:
