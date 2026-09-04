@@ -14,8 +14,11 @@ Units: millimetres everywhere. Conductivity is therefore in S/mm (not S/m).
 
 Geometry rules
 --------------
-* **Tracks** with ``is_keepout`` or ``is_polygon_outline`` are skipped; the
-  remaining tracks are buffered LineStrings of half-width with round caps.
+* **Tracks** with ``is_keepout`` are skipped, as are ``is_polygon_outline``
+  tracks belonging to a *solid* pour (boundary artwork over the region fill).
+  A hatched or outlines-only pour keeps its perimeter — there the tracks are
+  the copper. The remaining tracks are buffered LineStrings of half-width
+  with round caps.
   Tracks on layer id ``MULTI_LAYER_PAD_LAYER_ID`` (74) with an assigned net
   appear on every enabled **signal** copper layer; internal planes are
   excluded. Unassigned (``NO_NET``) ones are omitted.
@@ -692,14 +695,28 @@ def _distribute_to_layers(
         add_fn(prim_layer_id, net_index, geom)
 
 
+def _pour_outline_is_artwork(prim: RawTrack | RawArc) -> bool:
+    """True when a polygon-pour outline primitive is display-only boundary
+    artwork rather than copper.
+
+    For a *solid* pour it is: the poured copper lives in the region fill, and
+    including the outline would give a rounded-corner pour a spurious band of
+    copper along its border. A hatched (or outlines-only) pour is the opposite
+    case — its copper *is* tracks and arcs, and the perimeter Altium flags as
+    the polygon outline is the pour's outer conductor. Excluding it dropped
+    the border of every hatched pour from the mesh (GitHub issue #41).
+    """
+    return prim.is_polygon_outline and not prim.polygon_hatched
+
+
 def _track_is_copper(t: RawTrack, plane_layer_ids: set[int]) -> bool:
-    return (not t.is_keepout and not t.is_polygon_outline and t.width_mm > 0
-            and t.layer_id not in plane_layer_ids)
+    return (not t.is_keepout and not _pour_outline_is_artwork(t)
+            and t.width_mm > 0 and t.layer_id not in plane_layer_ids)
 
 
 def _arc_is_copper(a: RawArc, plane_layer_ids: set[int]) -> bool:
-    return (not a.is_keepout and not a.is_polygon_outline and a.width_mm > 0
-            and a.layer_id not in plane_layer_ids)
+    return (not a.is_keepout and not _pour_outline_is_artwork(a)
+            and a.width_mm > 0 and a.layer_id not in plane_layer_ids)
 
 
 def _region_is_copper(
@@ -1563,7 +1580,7 @@ def _build_net_layer_buckets(
         _distribute_to_layers(t.layer_id, t.net_index, poly, enabled_layers,
                               _add, plane_layer_ids)
 
-    # Arcs: same vectorised-buffer trick. Exclude polygon-pour *outline* arcs
+    # Arcs: same vectorised-buffer trick. Exclude solid-pour *outline* arcs
     # (boundary artwork, not copper) exactly as the track filter above does.
     valid_arcs = [a for a in proj.arcs if _arc_is_copper(a, plane_layer_ids)]
     arc_polys = _batch_buffer_arcs(valid_arcs)

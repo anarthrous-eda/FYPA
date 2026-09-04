@@ -521,6 +521,7 @@ def apply_copper_names(loaded, copper_names) -> list[str]:
     from fypa.altium_geometry import (
         _arc_polygon,
         _fill_polygon,
+        _pour_outline_is_artwork,
         _region_polygon,
         _shape_based_region_polygon,
         _track_polygon,
@@ -603,7 +604,7 @@ def apply_copper_names(loaded, copper_names) -> list[str]:
 
     for t in extracted.tracks:
         if (t.layer_id in enabled_set and t.net_index == NO_NET
-                and not t.is_keepout and not t.is_polygon_outline
+                and not t.is_keepout and not _pour_outline_is_artwork(t)
                 and t.width_mm > 0):
             try:
                 _take(t, _track_polygon(t))

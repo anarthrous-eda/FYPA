@@ -14,6 +14,11 @@ Conventions
   module-level sentinel `NO_NET = -1` for unassigned. `NO_POLYGON = 65535` is
   the sentinel returned by altium_monkey on tracks that are not part of a
   polygon outline.
+- A primitive owned by a polygon pour inherits that polygon's net when it
+  carries none of its own — Altium keeps the net on the `Polygons6` record for
+  poured copper (regions for a solid fill, tracks/arcs for a hatched one).
+  Tracks and arcs also record whether that parent pour is hatched, because a
+  hatched pour's perimeter is real copper rather than boundary artwork.
 
 Public entry: :func:`extract_project`.
 """
@@ -85,6 +90,11 @@ class RawTrack:
     is_polygon_outline: bool
     component_index: int      # -1 if not part of a component
     is_keepout: bool
+    # True when the parent polygon pour is *not* solid-filled (any hatch
+    # style, or "outlines only"). A hatched pour's copper IS its tracks —
+    # including the perimeter — so `is_polygon_outline` must not exclude
+    # them the way it does for a solid pour. See `_polygon_lookup`.
+    polygon_hatched: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,12 +107,14 @@ class RawArc:
     layer_id: int
     net_index: int
     is_keepout: bool
-    # An arc that forms part of a polygon-pour *outline* (flags1 & 0x02) is
-    # boundary artwork, not copper — the poured copper is the region/fill. Like
-    # is_polygon_outline tracks, these must be excluded from the copper geometry
-    # or a rounded-corner pour gains a spurious band of copper along its outline.
+    # An arc that forms part of a *solid* polygon-pour outline (flags1 & 0x02)
+    # is boundary artwork, not copper — the poured copper is the region/fill.
+    # Like is_polygon_outline tracks, these must be excluded from the copper
+    # geometry or a rounded-corner pour gains a spurious band of copper along
+    # its outline. A hatched pour is the exception: see `polygon_hatched`.
     is_polygon_outline: bool = False
     polygon_index: int = NO_POLYGON
+    polygon_hatched: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -533,6 +545,69 @@ def _component_index(raw) -> int:
     return -1 if raw is None else int(raw)
 
 
+# HATCHSTYLE values Altium writes for a *solid* pour, lower-cased. Everything
+# else ("45degree", "90degree", "horizontal", "vertical", "none") means the
+# pour's copper is drawn as tracks/arcs rather than poured as regions.
+_SOLID_HATCH_STYLES: frozenset[str] = frozenset({"solid", ""})
+
+
+def _polygon_net_of(poly) -> int | None:
+    """One polygon's net index, or ``None`` when it carries no net.
+
+    Deliberately does *not* trust ``polygon.net`` alone: altium_monkey parses a
+    missing ``NET`` field as ``int(record.get('NET', 0))``, so a net-less
+    polygon is indistinguishable from one genuinely on net index 0. Inheriting
+    that would silently attach pour copper to whichever net happens to sit at
+    index 0 — 27 of Corvette's 134 polygons carry no ``NET`` field at all, and
+    were landing on ``PWR_I2C.SDA``. The raw record is consulted so "absent"
+    stays absent; a polygon built programmatically has no raw record, and there
+    ``poly.net`` is all we have.
+    """
+    raw = getattr(poly, "_raw_record", None) or {}
+    if raw and not str(raw.get("NET") or "").strip():
+        return None
+    try:
+        value = int(poly.net)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return None if value < 0 else value
+
+
+def _polygon_is_hatched(poly) -> bool:
+    """True when a pour is not solid-filled, so its copper is tracks and arcs.
+
+    Note the two distinct "None"s: a *missing* ``hatch_style`` attribute
+    (Python ``None``) means solid — that is altium_monkey's own default —
+    whereas the *string* ``'None'`` is Altium's "outlines only" fill, whose
+    copper really is just the perimeter tracks.
+    """
+    style = str(getattr(poly, "hatch_style", None) or "Solid").strip()
+    return style.lower() not in _SOLID_HATCH_STYLES
+
+
+def _polygon_lookup(pcb):
+    """Return ``(net_of, hatched_of)`` resolvers mapping a primitive's
+    ``polygon_index`` to facts about its parent ``Polygons6`` record.
+
+    Both are resolved once per polygon up front — a board has a hundred or so
+    pours but tens of thousands of primitives asking about them.
+    """
+    polygons = list(getattr(pcb, "polygons", None) or ())
+    nets = [_polygon_net_of(p) for p in polygons]
+    hatched = [_polygon_is_hatched(p) for p in polygons]
+
+    # 65535 is the documented "no polygon" sentinel; split-plane and
+    # board-outline tracks carry 65534. Both land outside the record list, so
+    # one range check covers every sentinel Altium writes.
+    def net_of(idx: int) -> int | None:
+        return nets[idx] if 0 <= idx < len(nets) else None
+
+    def hatched_of(idx: int) -> bool:
+        return hatched[idx] if 0 <= idx < len(hatched) else False
+
+    return net_of, hatched_of
+
+
 def _pt_from_mils(x_mils: float, y_mils: float,
                   ox_mm: float = 0.0, oy_mm: float = 0.0) -> Pt2D:
     return Pt2D(mils_to_mm(x_mils) - ox_mm, mils_to_mm(y_mils) - oy_mm)
@@ -547,25 +622,47 @@ def _pad_height_mm(pad) -> float:
 
 
 def _extract_tracks(pcb, ox_mm: float, oy_mm: float) -> tuple[RawTrack, ...]:
+    """Extract ``Tracks6`` records, inheriting the parent polygon's net.
+
+    A hatched (or outlines-only) pour renders its copper as tracks, and Altium
+    leaves those tracks' own ``net_index`` unlinked (0xFFFF) because the net
+    assignment lives on the parent ``Polygons6`` record — the same split
+    :func:`_extract_regions` already handles for solid pours. Without this the
+    hatch lines arrive as NO_NET and drop out of the per-net pipeline.
+    """
+    poly_net, poly_hatched = _polygon_lookup(pcb)
     out: list[RawTrack] = []
     for t in pcb.tracks:
+        raw_net = t.net_index
+        poly_idx = int(t.polygon_index)
+        if raw_net is None:
+            raw_net = poly_net(poly_idx)
         out.append(RawTrack(
             a=_pt_from_mils(t.start_x_mils, t.start_y_mils, ox_mm, oy_mm),
             b=_pt_from_mils(t.end_x_mils, t.end_y_mils, ox_mm, oy_mm),
             width_mm=mils_to_mm(t.width_mils),
             layer_id=int(t.layer),
-            net_index=_net_index(t.net_index),
-            polygon_index=int(t.polygon_index),
+            net_index=_net_index(raw_net),
+            polygon_index=poly_idx,
             is_polygon_outline=bool(t.is_polygon_outline),
             component_index=_component_index(t.component_index),
             is_keepout=bool(t.is_keepout),
+            polygon_hatched=poly_hatched(poly_idx),
         ))
     return tuple(out)
 
 
 def _extract_arcs(pcb, ox_mm: float, oy_mm: float) -> tuple[RawArc, ...]:
+    """Extract ``Arcs6`` records, inheriting the parent polygon's net exactly
+    as :func:`_extract_tracks` does — a hatched pour's rounded corners and
+    curved perimeter arrive as polygon-owned arcs with no net of their own."""
+    poly_net, poly_hatched = _polygon_lookup(pcb)
     out: list[RawArc] = []
     for a in pcb.arcs:
+        raw_net = a.net_index
+        poly_idx = int(getattr(a, "polygon_index", NO_POLYGON))
+        if raw_net is None:
+            raw_net = poly_net(poly_idx)
         out.append(RawArc(
             center=_pt_from_mils(a.center_x_mils, a.center_y_mils, ox_mm, oy_mm),
             radius_mm=mils_to_mm(a.radius_mils),
@@ -573,10 +670,11 @@ def _extract_arcs(pcb, ox_mm: float, oy_mm: float) -> tuple[RawArc, ...]:
             end_angle_deg=float(a.end_angle),
             width_mm=mils_to_mm(a.width_mils),
             layer_id=int(a.layer),
-            net_index=_net_index(a.net_index),
+            net_index=_net_index(raw_net),
             is_keepout=bool(a.is_keepout),
             is_polygon_outline=bool(getattr(a, "is_polygon_outline", False)),
-            polygon_index=int(getattr(a, "polygon_index", NO_POLYGON)),
+            polygon_index=poly_idx,
+            polygon_hatched=poly_hatched(poly_idx),
         ))
     return tuple(out)
 
@@ -821,16 +919,7 @@ def _extract_regions(pcb, ox_mm: float, oy_mm: float) -> tuple[RawRegion, ...]:
     Polygons6 record. Without this inheritance, the largest copper pours on
     the board come out unassigned — wreaking havoc on per-net-aware FEM.
     """
-    polygons = list(pcb.polygons)
-
-    def _polygon_net(idx: int):
-        # polygon_index == 65535 → sentinel for "not part of a polygon".
-        if idx < 0 or idx >= len(polygons):
-            return None
-        try:
-            return polygons[idx].net
-        except (AttributeError, IndexError):
-            return None
+    _polygon_net, _ = _polygon_lookup(pcb)
 
     out: list[RawRegion] = []
     for r in pcb.regions:
@@ -904,15 +993,7 @@ def _extract_shape_based_regions(pcb, ox_mm: float, oy_mm: float,
     shape_based = getattr(pcb, "shapebased_regions", None)
     if not shape_based:
         return ()
-    polygons = list(pcb.polygons)
-
-    def _polygon_net(idx: int):
-        if idx < 0 or idx >= len(polygons):
-            return None
-        try:
-            return polygons[idx].net
-        except (AttributeError, IndexError):
-            return None
+    _polygon_net, _ = _polygon_lookup(pcb)
 
     out: list[RawShapeBasedRegion] = []
     for r in shape_based:
