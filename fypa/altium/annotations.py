@@ -66,10 +66,55 @@ Example — a SINK with three independent supply rails::
     PDN1_I     = 250mA     PDN1_P_NET = +1V8   PDN1_N_NET = GND
     PDN2_I     = 50mA      PDN2_P_NET = +5V    PDN2_N_NET = GND
 
-Indices are sparse (any positive integer; gaps allowed); a channel is
-"present" iff its value param (``PDNn_V`` for SOURCE / REGULATOR,
-``PDNn_I`` for SINK, ``PDNn_R`` for SERIES) is set. All four roles support
-the same indexed-prefix scheme.
+Indices are sparse (any positive integer; gaps allowed). A channel is
+"present" when it has a value param for its role (``PDNn_V`` / ``PDNn_I`` /
+``PDNn_R``), a channel-defining terminal param, or an indexed ``PDNn_ROLE``
+— and the value may be **inherited** from the unindexed template (``PDN_V``
+when ``PDN1_V`` is omitted). All four roles support the same indexed-prefix
+scheme.
+
+Unindexed template inheritance
+------------------------------
+Unindexed ``PDN_*`` parameters act as defaults for indexed channels: for
+channel *n*, ``PDNn_X`` wins when set, otherwise ``PDN_X`` is used. When at
+least one indexed channel exists and the unindexed form does **not** carry a
+*complete* terminal set for its role, the legacy ``index=None`` channel is
+*not* emitted — unindexed values are template-only. A complete set means
+both sides of a two-terminal pair (or ``PDN_NET`` / ``PDN_PINS`` for
+single-net SOURCE/SINK — those keep a real legacy channel when indexed
+channels also exist); for REGULATOR, both ``OUT_*`` sides (so shared
+``PDN_IN_*`` / ``PDN_N_NET`` / one SERIES side can be templates). Parts
+with only ``PDNn_ROLE`` (no part-wide ``PDN_ROLE``) always treat the
+unindexed form as template-only when indexed channels exist.
+
+Example — dual SERIES paths sharing one resistance::
+
+    PDN_ROLE   = SERIES
+    PDN_R      = 0.05
+    PDN1_P_NET = VIN_A     PDN1_N_NET = VOUT_A
+    PDN2_P_NET = VIN_B     PDN2_N_NET = VOUT_B
+
+Example — dual SERIES with a shared P-side net::
+
+    PDN_ROLE   = SERIES
+    PDN_R      = 0.05
+    PDN_P_NET  = VIN
+    PDN1_N_NET = VOUT_A
+    PDN2_N_NET = VOUT_B
+
+Example — dual REGULATOR outputs sharing Vin / type / voltage::
+
+    PDN_ROLE           = REGULATOR
+    PDN_V              = 3.3
+    PDN_REGULATOR_TYPE = LDO
+    PDN_IN_P_NET       = VIN       PDN_IN_N_NET = GND
+    PDN1_OUT_P_NET     = VOUT_P    PDN1_OUT_N_NET = GND
+    PDN2_OUT_P_NET     = GND       PDN2_OUT_N_NET = VOUT_N
+
+The classic pattern with a real unindexed channel *plus* indexed ones
+(``PDN_I`` + ``PDN_P_NET`` + ``PDN_N_NET`` alongside ``PDN1_I`` + …) is
+unchanged: unindexed keeps a complete terminal pair, so it remains a
+directive.
 
 Values support SI prefixes and units (``500mA``, ``3V3``, ``1.5k``, ``0.1``).
 
@@ -189,6 +234,10 @@ _KNOWN_SUFFIXES_BY_ROLE: dict[str, frozenset[str]] = {
     }),
     "SERIES": frozenset({"R", "P_NET", "N_NET", "P_PINS", "N_PINS"}),
 }
+
+_ALL_INHERITABLE_SUFFIXES: frozenset[str] = frozenset().union(
+    *(_KNOWN_SUFFIXES_BY_ROLE.values())
+)
 
 
 # --- SI value parsing ---------------------------------------------------------
@@ -372,6 +421,122 @@ def _channel_key(suffix: str, index: int | None) -> str:
     return f"PDN_{suffix}" if index is None else f"PDN{index}_{suffix}"
 
 
+def _channel_get(
+    params: dict[str, str],
+    suffix: str,
+    index: int | None,
+) -> str | None:
+    """Read ``PDN<n>_<suffix>``, falling back to unindexed ``PDN_<suffix>``.
+
+    Indexed channels inherit unset parameters from the unindexed template.
+    The legacy channel (``index is None``) never falls back — there is no
+    further parent. ``PDN_ROLE`` is *not* read through this helper; use
+    :func:`_effective_role` for role resolution.
+    """
+    direct = _ci_get(params, _channel_key(suffix, index))
+    if direct is not None or index is None:
+        return direct
+    return _ci_get(params, _channel_key(suffix, None))
+
+
+def _materialize_channel_params(
+    params: dict[str, str],
+    index: int | None,
+) -> dict[str, str]:
+    """Copy ``params`` with unindexed templates written into indexed keys.
+
+    For ``index is None`` returns a shallow copy unchanged. For an indexed
+    channel, every inheritable suffix missing as ``PDNn_X`` but present as
+    ``PDN_X`` is copied onto ``PDNn_X`` so downstream helpers that look up
+    exact channel keys (``_ci_get`` / ``_require_value``) see the effective
+    value. Does not invent a ``PDNn_ROLE`` from ``PDN_ROLE``.
+    """
+    out = dict(params)
+    if index is None:
+        return out
+    for suffix in _ALL_INHERITABLE_SUFFIXES:
+        indexed_key = _channel_key(suffix, index)
+        if _ci_get(out, indexed_key) is not None:
+            continue
+        template = _ci_get(params, _channel_key(suffix, None))
+        if template is not None:
+            out[indexed_key] = template
+    return out
+
+
+def _unindexed_has_defining_terminals(
+    params: dict[str, str],
+    role: str,
+) -> bool:
+    """True when the legacy channel has a *complete* terminal set for ``role``.
+
+    A lone shared side (``PDN_N_NET``, ``PDN_P_NET``, ``PDN_IN_*``) is not
+    enough — those stay templates when indexed channels exist. SOURCE/SINK
+    may also be complete via single-net ``PDN_NET`` / ``PDN_PINS``.
+    """
+    if role in ("SOURCE", "SINK"):
+        if (
+            _ci_get(params, _channel_key("NET", None)) is not None
+            or _ci_get(params, _channel_key("PINS", None)) is not None
+        ):
+            return True
+        has_p = (
+            _ci_get(params, _channel_key("P_NET", None)) is not None
+            or _ci_get(params, _channel_key("P_PINS", None)) is not None
+        )
+        has_n = (
+            _ci_get(params, _channel_key("N_NET", None)) is not None
+            or _ci_get(params, _channel_key("N_PINS", None)) is not None
+        )
+        return has_p and has_n
+    if role == "SERIES":
+        has_p = (
+            _ci_get(params, _channel_key("P_NET", None)) is not None
+            or _ci_get(params, _channel_key("P_PINS", None)) is not None
+        )
+        has_n = (
+            _ci_get(params, _channel_key("N_NET", None)) is not None
+            or _ci_get(params, _channel_key("N_PINS", None)) is not None
+        )
+        return has_p and has_n
+    if role == "REGULATOR":
+        has_out_p = (
+            _ci_get(params, _channel_key("OUT_P_NET", None)) is not None
+            or _ci_get(params, _channel_key("OUT_P_PINS", None)) is not None
+        )
+        has_out_n = (
+            _ci_get(params, _channel_key("OUT_N_NET", None)) is not None
+            or _ci_get(params, _channel_key("OUT_N_PINS", None)) is not None
+        )
+        return has_out_p and has_out_n
+    return False
+
+
+def _active_roles_for_discovery(
+    params: dict[str, str],
+    part_role: str,
+) -> set[str]:
+    """Roles whose value/terminal suffixes may mark a channel present.
+
+    Uses the part-wide default plus every valid ``PDNn_ROLE`` override so
+    mixed-role parts still discover SOURCE and SINK channels, while a
+    leftover ``PDN1_R`` on a SINK-only part does not invent a phantom channel.
+    """
+    roles: set[str] = set()
+    if part_role in VALID_ROLES:
+        roles.add(part_role)
+    for idx in _discover_channel_indices(params, "ROLE"):
+        if idx is None:
+            continue
+        raw = _ci_get(params, _channel_key("ROLE", idx))
+        if raw is None:
+            continue
+        role = raw.strip().upper()
+        if role in VALID_ROLES:
+            roles.add(role)
+    return roles
+
+
 def _discover_channel_indices(params: dict[str, str],
                               value_suffix: str) -> list[int | None]:
     """Return channel indices for which a value parameter is present.
@@ -403,10 +568,8 @@ def _channel_label(designator: str, index: int | None) -> str:
     return designator if index is None else f"{designator}#{index}"
 
 
-# Value parameter suffix that makes a channel "present" for each role. A
-# channel exists iff the value param for its (effective) role is set —
-# ``PDN<n>_V`` for SOURCE / REGULATOR, ``PDN<n>_I`` for SINK, ``PDN<n>_R``
-# for SERIES.
+# Value parameter suffix for each role. A channel needs this value (on the
+# channel itself or inherited from the unindexed template) to be present.
 _VALUE_SUFFIX_BY_ROLE: dict[str, str] = {
     "SOURCE": "V", "SINK": "I", "SERIES": "R", "REGULATOR": "V",
 }
@@ -1481,23 +1644,29 @@ def _pads_by_component_all(proj: ExtractedProject) -> dict[int, list[RawPad]]:
 
 def _series_channel_indices(
     comp: PdnParameterSource,
-) -> list[int]:
-    """Indexed SERIES (resistor-like) channel numbers on one parameter source."""
+) -> list[int | None]:
+    """SERIES (resistor-like) channel indices on one parameter source.
+
+    Uses the same discovery / template-only rules as
+    :func:`_resolve_channel_roles` so bridge validation sees the same
+    channels the SERIES parser will emit.
+    """
     part_role = _part_role_default(comp.parameters)
-    return [
-        idx for idx in _discover_channel_indices(comp.parameters, "R")
-        if _effective_role(comp.parameters, idx, part_role)
-        in _RESISTOR_LIKE_ROLES
-    ]
+    scratch = AnnotationResult()
+    grouped = _resolve_channel_roles(
+        comp.parameters, part_role, comp.designator, scratch,
+        report_errors=False,
+    )
+    return list(grouped.get("SERIES", []))
 
 
 def _series_channel_has_net_params(
     comp: PdnParameterSource,
-    ch_idx: int,
+    ch_idx: int | None,
 ) -> bool:
     return (
-        _ci_get(comp.parameters, _channel_key("P_PINS", ch_idx)) is not None
-        or _ci_get(comp.parameters, _channel_key("N_PINS", ch_idx)) is not None
+        _channel_get(comp.parameters, "P_PINS", ch_idx) is not None
+        or _channel_get(comp.parameters, "N_PINS", ch_idx) is not None
     )
 
 
@@ -1555,9 +1724,9 @@ def _series_channel_side_net(
 def _resolve_series_channel_nets(
     comp: PdnParameterSource,
     proj: ExtractedProject,
-    ch_idx: int,
+    ch_idx: int | None,
     pcb_idx: int,
-    ch_indices: list[int],
+    ch_indices: list[int | None],
 ) -> tuple[str, str, bool] | None:
     """P/N net names for one SERIES channel on one PCB placement.
 
@@ -1567,8 +1736,8 @@ def _resolve_series_channel_nets(
     Callers that only need the unordered pair (bridge unioning) ignore the flag;
     :func:`_collect_series_upstream_map` must not read power flow out of it.
     """
-    p_net = _ci_get(comp.parameters, _channel_key("P_NET", ch_idx))
-    n_net = _ci_get(comp.parameters, _channel_key("N_NET", ch_idx))
+    p_net = _channel_get(comp.parameters, "P_NET", ch_idx)
+    n_net = _channel_get(comp.parameters, "N_NET", ch_idx)
     if p_net is None and n_net is None and not _series_channel_has_net_params(
         comp, ch_idx,
     ):
@@ -2145,10 +2314,11 @@ def _parse_source(comp, proj, enabled_layers, result,
     specs: list[SourceSpec] = []
     for idx in indices:
         role_diag = f"SOURCE on {_channel_label(comp.designator, idx)}"
-        v = _require_value(comp.parameters, _channel_key("V", idx), role_diag, result)
+        params = _materialize_channel_params(comp.parameters, idx)
+        v = _require_value(params, _channel_key("V", idx), role_diag, result)
         if v is None:
             continue
-        mode = _terminal_mode(comp.parameters, idx, role_diag, result)
+        mode = _terminal_mode(params, idx, role_diag, result)
         if mode is None:
             continue
         for pcb_idx in pcb_indices:
@@ -2159,7 +2329,7 @@ def _parse_source(comp, proj, enabled_layers, result,
             )
             if mode == "single":
                 p = _resolve_single_terminal(
-                    proj, pcb_idx, comp.parameters,
+                    proj, pcb_idx, params,
                     _channel_key("NET", idx), _channel_key("PINS", idx),
                     enabled_layers, inst_diag, result,
                     net_remap=net_remap,
@@ -2174,7 +2344,7 @@ def _parse_source(comp, proj, enabled_layers, result,
                 ))
                 continue
             pair = _resolve_two_terminal(
-                proj, pcb_idx, comp.parameters,
+                proj, pcb_idx, params,
                 _channel_key("P_NET", idx), _channel_key("N_NET", idx),
                 _channel_key("P_PINS", idx), _channel_key("N_PINS", idx),
                 enabled_layers, inst_diag, result,
@@ -2222,14 +2392,15 @@ def _parse_sink(comp, proj, enabled_layers, result,
     specs: list[SinkSpec] = []
     for idx in indices:
         role_diag = f"SINK on {_channel_label(comp.designator, idx)}"
-        i = _require_value(comp.parameters, _channel_key("I", idx), role_diag, result)
+        params = _materialize_channel_params(comp.parameters, idx)
+        i = _require_value(params, _channel_key("I", idx), role_diag, result)
         if i is None:
             continue
-        mode = _terminal_mode(comp.parameters, idx, role_diag, result)
+        mode = _terminal_mode(params, idx, role_diag, result)
         if mode is None:
             continue
         min_v = _optional_value(
-            comp.parameters, _channel_key("MIN_V", idx), role_diag, result,
+            params, _channel_key("MIN_V", idx), role_diag, result,
         )
         for pcb_idx in pcb_indices:
             pcb_des = proj.pcb_components[pcb_idx].designator
@@ -2239,7 +2410,7 @@ def _parse_sink(comp, proj, enabled_layers, result,
             )
             if mode == "single":
                 p = _resolve_single_terminal(
-                    proj, pcb_idx, comp.parameters,
+                    proj, pcb_idx, params,
                     _channel_key("NET", idx), _channel_key("PINS", idx),
                     enabled_layers, inst_diag, result,
                     net_remap=net_remap,
@@ -2255,7 +2426,7 @@ def _parse_sink(comp, proj, enabled_layers, result,
                 ))
                 continue
             pair = _resolve_two_terminal(
-                proj, pcb_idx, comp.parameters,
+                proj, pcb_idx, params,
                 _channel_key("P_NET", idx), _channel_key("N_NET", idx),
                 _channel_key("P_PINS", idx), _channel_key("N_PINS", idx),
                 enabled_layers, inst_diag, result,
@@ -2315,8 +2486,9 @@ def _parse_resistance(comp, proj, enabled_layers, result,
     specs: list[ResistorSpec] = []
     for idx in indices:
         role_diag = f"{role_raw} on {_channel_label(comp.designator, idx)}"
+        params = _materialize_channel_params(comp.parameters, idx)
         r = _require_value(
-            comp.parameters, _channel_key("R", idx), role_diag, result,
+            params, _channel_key("R", idx), role_diag, result,
         )
         if r is None:
             continue
@@ -2332,10 +2504,10 @@ def _parse_resistance(comp, proj, enabled_layers, result,
                 if len(pcb_indices) > 1 else role_diag
             )
             given = any(
-                _ci_get(comp.parameters, _channel_key(k, idx)) is not None
+                _ci_get(params, _channel_key(k, idx)) is not None
                 for k in ("P_NET", "N_NET", "P_PINS", "N_PINS")
             )
-            params = dict(comp.parameters)
+            resolve_params = dict(params)
             if not given:
                 if len(indices) > 1:
                     result.errors.append(
@@ -2357,8 +2529,8 @@ def _parse_resistance(comp, proj, enabled_layers, result,
                         f"{_channel_key('N_PINS', idx)})"
                     )
                     continue
-                params[_channel_key("P_NET", idx)] = inferred[0]
-                params[_channel_key("N_NET", idx)] = inferred[1]
+                resolve_params[_channel_key("P_NET", idx)] = inferred[0]
+                resolve_params[_channel_key("N_NET", idx)] = inferred[1]
                 result.warnings.append(
                     f"{inst_diag}: auto-inferred "
                     f"{_channel_key('P_NET', idx)}={inferred[0]!r}, "
@@ -2366,7 +2538,7 @@ def _parse_resistance(comp, proj, enabled_layers, result,
                     f"from 2-pin connectivity"
                 )
             pair = _resolve_two_terminal(
-                proj, pcb_idx, params,
+                proj, pcb_idx, resolve_params,
                 _channel_key("P_NET", idx), _channel_key("N_NET", idx),
                 _channel_key("P_PINS", idx), _channel_key("N_PINS", idx),
                 enabled_layers, inst_diag, result,
@@ -2417,25 +2589,30 @@ def _collect_supply_voltages_by_net(
         pcb_indices = _pcb_indices_for_source(comp, proj)
         # Both SOURCE and REGULATOR carry PDN<n>_V; switch on each channel's
         # effective role so a SOURCE (or REGULATOR) channel on a mixed-role
-        # part still contributes its nominal rail voltage.
-        for idx in _discover_channel_indices(comp.parameters, "V"):
-            eff = _effective_role(comp.parameters, idx, part_role)
-            if eff not in ("SOURCE", "REGULATOR"):
-                continue
-            v_raw = _ci_get(comp.parameters, _channel_key("V", idx))
-            if v_raw is None or not str(v_raw).strip():
-                continue
-            try:
-                v = parse_si_value(v_raw)
-            except ValueError:
-                continue
-            if eff == "SOURCE":
-                p_net = _ci_get(comp.parameters, _channel_key("P_NET", idx))
-                single_net = _ci_get(comp.parameters, _channel_key("NET", idx))
-                _register(p_net or single_net, v, pcb_indices)
-            else:  # REGULATOR
-                out_net = _ci_get(comp.parameters, _channel_key("OUT_P_NET", idx))
-                _register(out_net, v, pcb_indices)
+        # part still contributes its nominal rail voltage. Template inheritance
+        # goes through :func:`_resolve_channel_roles` + materialize.
+        scratch = AnnotationResult()
+        grouped = _resolve_channel_roles(
+            comp.parameters, part_role, comp.designator, scratch,
+            report_errors=False,
+        )
+        for role in ("SOURCE", "REGULATOR"):
+            for idx in grouped.get(role, []):
+                params = _materialize_channel_params(comp.parameters, idx)
+                v_raw = _ci_get(params, _channel_key("V", idx))
+                if v_raw is None or not str(v_raw).strip():
+                    continue
+                try:
+                    v = parse_si_value(v_raw)
+                except ValueError:
+                    continue
+                if role == "SOURCE":
+                    p_net = _ci_get(params, _channel_key("P_NET", idx))
+                    single_net = _ci_get(params, _channel_key("NET", idx))
+                    _register(p_net or single_net, v, pcb_indices)
+                else:  # REGULATOR
+                    out_net = _ci_get(params, _channel_key("OUT_P_NET", idx))
+                    _register(out_net, v, pcb_indices)
     out: dict[str, float] = {}
     for net, voltages in raw.items():
         if len(voltages) == 1:
@@ -2813,12 +2990,13 @@ def _parse_regulator(comp, proj, enabled_layers, result,
     specs: list[RegulatorSpec] = []
     for idx in indices:
         role_diag = f"REGULATOR on {_channel_label(comp.designator, idx)}"
+        params = _materialize_channel_params(comp.parameters, idx)
         v = _require_value(
-            comp.parameters, _channel_key("V", idx), role_diag, result,
+            params, _channel_key("V", idx), role_diag, result,
         )
-        in_p_net = _ci_get(comp.parameters, _channel_key("IN_P_NET", idx))
+        in_p_net = _ci_get(params, _channel_key("IN_P_NET", idx))
         resolved = _resolve_regulator_gain(
-            comp.parameters, idx, v, in_p_net,
+            params, idx, v, in_p_net,
             supply_map, role_diag, result,
             series_graph=series_graph, proj=proj, net_remap=net_remap,
         ) if v is not None else None
@@ -2826,10 +3004,10 @@ def _parse_regulator(comp, proj, enabled_layers, result,
             continue
         g, reg_type, eff, adaptive = resolved
         q_key = _channel_key("QUIESCENT", idx)
-        if _ci_get(comp.parameters, q_key) is None:
+        if _ci_get(params, q_key) is None:
             quiescent = 0.0
         else:
-            iq_raw = _optional_value(comp.parameters, q_key, role_diag, result)
+            iq_raw = _optional_value(params, q_key, role_diag, result)
             if iq_raw is None:
                 # Present but unparseable — error already recorded; skip the
                 # spec rather than building it with a silent quiescent=0.
@@ -2845,7 +3023,7 @@ def _parse_regulator(comp, proj, enabled_layers, result,
                 if len(pcb_indices) > 1 else role_diag
             )
             out = _resolve_two_terminal(
-                proj, pcb_idx, comp.parameters,
+                proj, pcb_idx, params,
                 _channel_key("OUT_P_NET", idx), _channel_key("OUT_N_NET", idx),
                 _channel_key("OUT_P_PINS", idx), _channel_key("OUT_N_PINS", idx),
                 enabled_layers, f"{inst_diag} OUT", result,
@@ -2854,7 +3032,7 @@ def _parse_regulator(comp, proj, enabled_layers, result,
                 schdoc_name=comp.schdoc_name,
             )
             in_ = _resolve_two_terminal(
-                proj, pcb_idx, comp.parameters,
+                proj, pcb_idx, params,
                 _channel_key("IN_P_NET", idx), _channel_key("IN_N_NET", idx),
                 _channel_key("IN_P_PINS", idx), _channel_key("IN_N_PINS", idx),
                 enabled_layers, f"{inst_diag} IN", result,
@@ -3066,28 +3244,41 @@ def _resolve_channel_roles(
     part_role: str,
     designator: str,
     result: AnnotationResult,
+    *,
+    report_errors: bool = True,
 ) -> dict[str, list[int | None]]:
     """Group a part's present channels by effective role.
 
     Each channel's effective role is its ``PDN<n>_ROLE`` override (validated
     against :data:`VALID_ROLES`) or the part-wide ``part_role``. A channel is
-    *present* iff the value parameter for its effective role is set
-    (``PDN<n>_V`` / ``PDN<n>_I`` / ``PDN<n>_R``). Returns ``{role: [index,
-    …]}`` in discovery order (unindexed first, then ascending index) so a
-    mixed part — e.g. a DAC that SINKs on its supply rail and SOURCEs on its
-    outputs — dispatches each channel to the right per-role parser.
+    *present* when it carries a value param, a terminal param for an *active*
+    role on the part, or an indexed ``PDNn_ROLE`` — the value may be
+    inherited from the unindexed template via :func:`_channel_get`. Returns
+    ``{role: [index, …]}`` in discovery order (unindexed first, then
+    ascending index).
 
-    A part that carries a uniform role (the common case) needs no
-    ``PDN<n>_ROLE`` at all: every channel simply inherits ``part_role``, and
-    two sinks stay ``{"SINK": [None, 1]}``. Only channels that diverge from
-    the default carry an override.
+    Discovery is scoped to :func:`_active_roles_for_discovery` so a leftover
+    cross-role value (e.g. ``PDN1_R`` on a SINK-only part) does not invent a
+    phantom channel.
 
-    A channel that declares a role (or a cross-role value parameter) but is
-    missing the value parameter its role needs produces an error and is
-    dropped.
+    When indexed channels exist and the unindexed form lacks a *complete*
+    terminal set for its role, ``None`` is omitted (template-only). A real
+    unindexed channel alongside indexed ones (complete terminals) is kept.
+    Parts with only ``PDNn_ROLE`` (no part-wide ``PDN_ROLE``) always treat
+    the unindexed form as template-only when indexed channels exist.
+
+    A channel that declares a role (or a cross-role value / terminal) but is
+    missing the value parameter its role needs — even after template
+    inheritance — produces an error and is dropped when ``report_errors`` is
+    true; dry-run callers (bridge / supply maps) pass ``report_errors=False``
+    to omit invalid channels quietly.
     """
     candidates: set[int | None] = set()
-    for suffix in set(_VALUE_SUFFIX_BY_ROLE.values()):
+    marking_suffixes: set[str] = set()
+    for role in _active_roles_for_discovery(params, part_role):
+        marking_suffixes.add(_VALUE_SUFFIX_BY_ROLE[role])
+        marking_suffixes |= set(_KNOWN_SUFFIXES_BY_ROLE[role])
+    for suffix in marking_suffixes:
         candidates.update(_discover_channel_indices(params, suffix))
     # An indexed PDN<n>_ROLE override also marks its channel present, so a
     # channel that declares a role but omits its value param gets a clear
@@ -3096,6 +3287,18 @@ def _resolve_channel_roles(
     for idx in _discover_channel_indices(params, "ROLE"):
         if idx is not None:
             candidates.add(idx)
+
+    has_indexed = any(idx is not None for idx in candidates)
+    if has_indexed and None in candidates:
+        # Drop legacy when it is only a value/meta template. Indexed-only
+        # parts (no part-wide PDN_ROLE) always treat unindexed params as
+        # templates — otherwise PDN_R / PDN_V would error as "missing
+        # PDN_ROLE" while still emitting the indexed directives.
+        if part_role not in VALID_ROLES:
+            candidates.discard(None)
+        elif not _unindexed_has_defining_terminals(params, part_role):
+            candidates.discard(None)
+
     ordered = sorted(candidates, key=lambda x: (x is not None, x or 0))
 
     grouped: dict[str, list[int | None]] = {}
@@ -3104,26 +3307,37 @@ def _resolve_channel_roles(
         if override_raw is not None:
             eff = override_raw.strip().upper()
             if eff not in VALID_ROLES:
-                result.errors.append(
-                    f"{_channel_label(designator, idx)}: unknown "
-                    f"{_channel_key('ROLE', idx)}={override_raw!r} — must be "
-                    f"one of {sorted(VALID_ROLES)}"
-                )
+                if report_errors:
+                    result.errors.append(
+                        f"{_channel_label(designator, idx)}: unknown "
+                        f"{_channel_key('ROLE', idx)}={override_raw!r} — must be "
+                        f"one of {sorted(VALID_ROLES)}"
+                    )
                 continue
         else:
             if not part_role:
-                result.errors.append(
-                    f"{_channel_label(designator, idx)}: missing "
-                    f"{_channel_key('ROLE', idx)} (no part-wide PDN_ROLE)"
-                )
+                if report_errors:
+                    result.errors.append(
+                        f"{_channel_label(designator, idx)}: missing "
+                        f"{_channel_key('ROLE', idx)} (no part-wide PDN_ROLE)"
+                    )
                 continue
             eff = part_role
-        value_key = _channel_key(_VALUE_SUFFIX_BY_ROLE[eff], idx)
-        if _ci_get(params, value_key) is None:
-            result.errors.append(
-                f"{eff} on {_channel_label(designator, idx)}: missing "
-                f"{value_key}"
-            )
+        value_suffix = _VALUE_SUFFIX_BY_ROLE[eff]
+        if _channel_get(params, value_suffix, idx) is None:
+            if report_errors:
+                value_key = _channel_key(value_suffix, idx)
+                if idx is not None:
+                    result.errors.append(
+                        f"{eff} on {_channel_label(designator, idx)}: missing "
+                        f"{value_key} (or template "
+                        f"{_channel_key(value_suffix, None)})"
+                    )
+                else:
+                    result.errors.append(
+                        f"{eff} on {_channel_label(designator, idx)}: missing "
+                        f"{value_key}"
+                    )
             continue
         grouped.setdefault(eff, []).append(idx)
     return grouped

@@ -191,11 +191,29 @@ value and its own P/N nets:
 |             |         | `PDN2_N_NET` | `GND`  |
 
 Each channel becomes its own directive; the viewer labels them `U7`,
-`U7#1`, `U7#2`. A channel exists as soon as its value parameter
-(`PDN<n>_I` here) is set. Indices can be sparse (gaps allowed). The same
-scheme works for every role — use `PDN<n>_V` for sources/regulators,
-`PDN<n>_R` for series parts. See the [main README](../../README.md#multi-channel-directives)
-for the full reference.
+`U7#1`, `U7#2`. A channel exists when its value parameter (`PDN<n>_I`
+here) or a channel-defining terminal param is set; the value may be
+inherited from the unindexed template (`PDN_I` when `PDN1_I` is omitted).
+Indices can be sparse (gaps allowed). The same scheme works for every
+role — use `PDN<n>_V` for sources/regulators, `PDN<n>_R` for series parts.
+See the [main README](../../README.md#multi-channel-directives) for the
+full reference.
+
+When indexed channels exist and the unindexed form has **no complete**
+terminal pair of its own (`PDN_P_NET` **and** `PDN_N_NET`, or single-net
+`PDN_NET`), unindexed parameters are template-only — FYPA does not also
+emit a legacy directive. A shared return such as `PDN_N_NET = GND` alone
+is a template. Keep a full unindexed terminal pair if you want both a
+legacy channel and indexed ones (as in the table above).
+
+> Unindexed `PDN_NET` / `PDN_PINS` counts as a complete single-net channel.
+> If indexed channels are also present, that legacy single-net directive is
+> kept — there is no "shared `PDN_NET` template only" mode. Put `PDNn_NET`
+> on each indexed channel (or inherit a two-terminal `PDN_N_NET`) instead.
+
+Parts that use only `PDNn_ROLE` (no part-wide `PDN_ROLE`) may still put
+shared values on unindexed `PDN_R` / `PDN_V` / `PDN_I`; those stay
+templates for the indexed channels.
 
 > You only need channels for **different** rails. An IC with many pins on
 > the *same* rail is still one directive — FYPA already groups every pad

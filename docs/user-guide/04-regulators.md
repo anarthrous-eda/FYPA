@@ -64,7 +64,27 @@ multi-rail SINKs use `PDN1_I`:
 | 1       | `PDN1_V`, `PDN1_REGULATOR_TYPE`, `PDN1_QUIESCENT`, … | `PDN1_OUT_P_NET`, … |
 | 2       | `PDN2_V`, … | … |
 
-Example — 3.3 V and 1.8 V outputs from a shared 5 V input:
+Unindexed parameters are templates for indexed channels (`PDNn_X` overrides
+`PDN_X`). Shared input nets, voltage, type, and quiescent current can stay
+on `PDN_*` while each output names only `PDNn_OUT_*`. When indexed
+channels exist and the unindexed form lacks a **complete** `OUT_*` pair,
+the legacy channel is not emitted.
+
+Example — dual LDO outputs with shared Vin / Vout / type:
+
+```text
+U2:
+  PDN_ROLE           = REGULATOR
+  PDN_V              = 3.3
+  PDN_REGULATOR_TYPE = LDO
+  PDN_QUIESCENT      = 390uA
+  PDN_IN_P_NET       = VIN        PDN_IN_N_NET  = GND
+  PDN1_OUT_P_NET     = VOUT_P     PDN1_OUT_N_NET = GND
+  PDN2_OUT_P_NET     = GND        PDN2_OUT_N_NET = VOUT_N
+```
+
+Example — 3.3 V and 1.8 V outputs, each fully specified (legacy + indexed
+both real because each has its own `OUT_*`):
 
 ```text
 U4:
