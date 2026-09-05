@@ -19,9 +19,12 @@ import logging
 import math
 import re
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+import shapely
 import shapely.geometry
 import shapely.strtree
 
@@ -742,6 +745,33 @@ def _terminal_connections(
     return conns, aux
 
 
+def _sink_pin_coupling(d) -> float:
+    """Star coupling resistance for a sink's pins, in ohms.
+
+    Defaults to the global :data:`COUPLING_RESISTANCE_OHM`, which stands in
+    for the package's internal pin-to-pin resistance. That is a property of
+    the *part* — a BGA's on-die supply grid and a TO-220's leadframe are
+    nothing alike — so ``PDN_PIN_R`` on the schematic symbol overrides it
+    per part. Left unset, behaviour is unchanged.
+    """
+    override = getattr(d, "pin_coupling_ohm", None)
+    if override is None:
+        return COUPLING_RESISTANCE_OHM
+    try:
+        value = float(override)
+    except (TypeError, ValueError):
+        return COUPLING_RESISTANCE_OHM
+    if value <= 0.0:
+        # A zero/negative coupling would short every pin of the terminal
+        # together through an ideal wire and divide by zero in the stamp.
+        log.warning(
+            "%s: PDN_PIN_R=%s is not positive — using the default %.4g Ω.",
+            getattr(d, "designator", "?"), override, COUPLING_RESISTANCE_OHM,
+        )
+        return COUPLING_RESISTANCE_OHM
+    return value
+
+
 def _directive_to_network(
     d: DirectiveSpec,
     layer_by_layer_and_net: dict[tuple[int, int], _pp.Layer],
@@ -855,14 +885,14 @@ def _directive_to_network(
             node_t = _return_ref(return_ref_nodes, d.return_group)
             element = _pp.CurrentSource(f=node_f, t=node_t, current=d.current)
             conns, aux = _gather(
-                (d.p, node_f, COUPLING_RESISTANCE_OHM, "P"),
+                (d.p, node_f, _sink_pin_coupling(d), "P"),
             )
         else:
             node_t = _pp.NodeID()
             element = _pp.CurrentSource(f=node_f, t=node_t, current=d.current)
             conns, aux = _gather(
-                (d.p, node_f, COUPLING_RESISTANCE_OHM, "P"),
-                (d.n, node_t, COUPLING_RESISTANCE_OHM, "N"),
+                (d.p, node_f, _sink_pin_coupling(d), "P"),
+                (d.n, node_t, _sink_pin_coupling(d), "N"),
             )
     elif isinstance(d, ResistorSpec):
         node_a, node_b = _pp.NodeID(), _pp.NodeID()
@@ -1175,6 +1205,12 @@ def _coupling_networks(
     if conductive_fill_mode is None:
         conductive_fill_mode = CONDUCTIVE_FILL_MODE
     networks: list[_pp.Network] = []
+    # Sites bucketed by net — the unit the coverage batch works over.
+    _sites_by_net: dict[int, list] = {}
+    for _st in sites:
+        if _st.net_index != NO_NET:
+            _sites_by_net.setdefault(_st.net_index, []).append(_st)
+
     segment_records: list[dict] = []
     skipped_unknown_net = 0
     # Hops that fell back to the fixed resistance instead of the
@@ -1185,27 +1221,51 @@ def _coupling_networks(
     skipped_missing_layer = 0
     skipped_xy_outside_copper = 0
 
-    # Prepare each (layer, net) copper shape once and reuse it. Every via/PTH on
-    # a net probes the same handful of (layer, net) MultiPolygons with `covers`;
-    # unprepared that is O(boundary_vertices) each (a GND sheet has 10⁴–10⁵), so
-    # on a stitched board (10⁴+ vias × several layers) it was ~10⁶ un-indexed
-    # point-in-polygon calls. A PreparedGeometry builds an edge RTree once, so
-    # each covers drops to O(log n). Same predicate → identical result.
-    import shapely.prepared
-    _prep_covers: dict[tuple[int, int], object] = {}
+    # Coverage test, batched per (layer, net). Every via/PTH on a net probes
+    # the same handful of (layer, net) MultiPolygons with `covers`; done one
+    # point at a time that is 10⁵–10⁶ Python→GEOS round trips on a stitched
+    # board, even with a prepared geometry making each one O(log n).
+    #
+    # Instead, the first probe against a (layer, net) tests EVERY site on that
+    # net at once with a single vectorised ``shapely.covers`` call, and the
+    # result is memoised as a boolean array. ``covers`` is the same predicate
+    # as before — boundary included, which matters because a via whose centre
+    # sits exactly on the edge of a pad must still count — so the answer is
+    # identical, just computed in one C pass instead of thousands.
+    _site_index_by_net: dict[int, dict[int, int]] = {}
+    _site_points_by_net: dict[int, np.ndarray] = {}
+    for _net, _members in _sites_by_net.items():
+        _site_index_by_net[_net] = {id(st): i for i, st in enumerate(_members)}
+        _site_points_by_net[_net] = shapely.points(
+            np.fromiter((st.x_mm for st in _members), dtype=np.float64,
+                        count=len(_members)),
+            np.fromiter((st.y_mm for st in _members), dtype=np.float64,
+                        count=len(_members)),
+        )
 
-    def _covers(key: tuple[int, int], layer, pt) -> bool:
-        prep = _prep_covers.get(key)
-        if prep is None:
-            prep = shapely.prepared.prep(layer.shape)
-            _prep_covers[key] = prep
-        return prep.covers(pt)
+    _covers_cache: dict[tuple[int, int], np.ndarray] = {}
+
+    def _covers(key: tuple[int, int], layer, site) -> bool:
+        hits = _covers_cache.get(key)
+        if hits is None:
+            pts = _site_points_by_net.get(key[1])
+            if pts is None or pts.size == 0:
+                hits = np.zeros(0, dtype=bool)
+            else:
+                hits = np.asarray(
+                    shapely.covers(layer.shape, pts), dtype=bool,
+                )
+            _covers_cache[key] = hits
+        pos = _site_index_by_net[key[1]].get(id(site))
+        return bool(hits[pos]) if pos is not None else False
 
     for site in sites:
         if site.net_index == NO_NET:
             skipped_unknown_net += 1
             continue
         pt = shapely.geometry.Point(site.x_mm, site.y_mm)
+        # ``pt`` is still needed below for the Connection geometry; the
+        # coverage test itself goes through the batched path.
         # Only chain the via through layers where the net's copper
         # actually covers the via's (x, y). Checking "net has copper
         # SOMEWHERE on this layer" isn't enough: a through-hole via
@@ -1222,7 +1282,7 @@ def _coupling_networks(
             lid for lid in site.span
             if (L := layer_by_layer_and_net.get((lid, site.net_index))) is not None
             and not L.shape.is_empty
-            and _covers((lid, site.net_index), L, pt)
+            and _covers((lid, site.net_index), L, site)
         ]
         if len(layers_for_net) < 2:
             # Either the net has copper on <2 layers in the span at
@@ -3664,6 +3724,74 @@ def _flag_open_loop_rails(loaded: LoadedProject) -> list[str]:
     return warnings
 
 
+class _LazyGeometryLayers(Sequence):
+    """The active-net :class:`GeometryLayer` objects, plus the non-active ones
+    appended on first use — joining the background union only when something
+    actually reads them.
+
+    ``build_problem`` used to end with ``active + rest_future.result()``,
+    which put the *display-only* overlay geometry on the FEM's critical path:
+    the solve waited for copper it never meshes. Nothing between that join
+    and the return touched the list, and most consumers only pass it along,
+    so the join belongs at the point of use.
+
+    This is a real immutable ``Sequence`` rather than a future so every
+    existing consumer keeps working unchanged — they index, iterate and
+    ``len()`` it exactly as before, and the first of those resolves the rest.
+    ``active_layers`` is available without blocking, which is what the
+    diagnostics inside ``build_problem`` need.
+    """
+
+    __slots__ = ("_active", "_future", "_all")
+
+    def __init__(self, active: list, future) -> None:
+        self._active = list(active)
+        self._future = future
+        self._all: list | None = None
+
+    def _resolve(self) -> list:
+        if self._all is None:
+            try:
+                rest = self._future.result()
+            except Exception as exc:
+                # The overlay is cosmetic; a failure there must not sink a
+                # solve that has already succeeded. It is logged by the
+                # future's own done-callback too.
+                log.warning(
+                    "Non-active-net overlay geometry unavailable (%s) — "
+                    "showing active rails only.", exc,
+                )
+                rest = []
+            self._all = self._active + list(rest)
+        return self._all
+
+    @property
+    def active_only(self) -> list:
+        """The active-net layers, without joining the background union."""
+        return self._active
+
+    def __getitem__(self, index):
+        return self._resolve()[index]
+
+    def __len__(self) -> int:
+        return len(self._resolve())
+
+    def __iter__(self):
+        return iter(self._resolve())
+
+    def __repr__(self) -> str:
+        state = "resolved" if self._all is not None else "pending"
+        return (f"<_LazyGeometryLayers {len(self._active)} active "
+                f"+ rest ({state})>")
+
+    def __reduce__(self):
+        # A Future is not picklable. No current caller pickles this (the
+        # metadata builder consumes it and stores only derived values), but
+        # if one ever does, resolving to a plain list is the graceful answer
+        # rather than an opaque "cannot pickle _thread.RLock".
+        return (list, (self._resolve(),))
+
+
 def _log_build_timings(stages: list[tuple[str, float]], total: float) -> None:
     """Log a build_problem stage breakdown, slowest first.
 
@@ -4326,10 +4454,10 @@ def build_problem(
     # the FEM assembly above ran. per_net_layers must carry every net: the
     # viewer's "all copper" overlay needs the non-active ones too.
     _t_mark = _stage("Problem assembly (layers, vias, networks)", _t_mark)
-    # Joining the background union: this is the viewer's display-only overlay
-    # geometry, so any time spent here is time the FEM did not need.
-    per_net_layers = active_layers + _rest_geom_future.result()
-    _t_mark = _stage("Join background overlay union", _t_mark)
+    # NOT joined here: the background union produces the viewer's display-only
+    # overlay, so blocking on it would put geometry the FEM never meshes on
+    # the solve's critical path. The wrapper joins on first read instead.
+    per_net_layers = _LazyGeometryLayers(active_layers, _rest_geom_future)
     _log_build_timings(_build_stages, time.monotonic() - _build_t0)
     return problem, segment_records, stub_pieces_by_pair, per_net_layers
 

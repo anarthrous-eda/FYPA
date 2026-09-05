@@ -327,7 +327,8 @@ _COMMON_TERMINAL_SUFFIXES: frozenset[str] = frozenset({
 }) | _PART_WIDE_PIN_FILTER_SUFFIXES
 _KNOWN_SUFFIXES_BY_ROLE: dict[str, frozenset[str]] = {
     "SOURCE": _COMMON_TERMINAL_SUFFIXES | frozenset({"V", "P_DES", "N_DES"}),
-    "SINK": _COMMON_TERMINAL_SUFFIXES | frozenset({"I", "MIN_V", "P_DES", "N_DES"}),
+    "SINK": _COMMON_TERMINAL_SUFFIXES | frozenset(
+        {"I", "MIN_V", "PIN_R", "P_DES", "N_DES"}),
     "REGULATOR": frozenset({
         "V", "GAIN", "REGULATOR_TYPE", "REGULATOR_EFFICIENCY", "QUIESCENT",
         "OUT_P_NET", "OUT_N_NET", "OUT_P_PINS", "OUT_N_PINS",
@@ -3458,6 +3459,12 @@ class SinkSpec(_BaseSpec):
     # against this limit and flags pass / fail per pin.
     min_voltage: float | None = None
     solve_excluded: bool = False  # see SourceSpec.solve_excluded
+    # Per-part override for the multi-pin star coupling resistance (Ω),
+    # from ``PDN_PIN_R`` / ``PDN<n>_PIN_R``. ``None`` keeps the global
+    # default. See fypa.altium.loader.COUPLING_RESISTANCE_OHM for what this
+    # models — the IC package's internal pin-to-pin resistance, which is a
+    # property of the part, not of the board.
+    pin_coupling_ohm: float | None = None
 
 
 @dataclass(frozen=True)
@@ -4156,6 +4163,11 @@ def _parse_sink(comp, proj, enabled_layers, result,
             min_v = _optional_value(
                 params, _channel_key("MIN_V", idx), value_diag, result,
             )
+            # Per-part package pin-to-pin resistance. Optional; unset keeps
+            # the global default (fypa.altium.loader.COUPLING_RESISTANCE_OHM).
+            pin_r = _optional_value(
+                params, _channel_key("PIN_R", idx), value_diag, result,
+            )
             if mode == "single":
                 p = _resolve_single_terminal(
                     proj, pcb_idx, params,
@@ -4172,7 +4184,7 @@ def _parse_sink(comp, proj, enabled_layers, result,
                 specs.append(SinkSpec(
                     designator=pcb_des, schdoc_name=comp.schdoc_name,
                     current=i, p=p, n=None, channel_index=idx,
-                    min_voltage=min_v,
+                    min_voltage=min_v, pin_coupling_ohm=pin_r,
                 ))
                 continue
             pair = _resolve_two_terminal(
@@ -4194,7 +4206,7 @@ def _parse_sink(comp, proj, enabled_layers, result,
             specs.append(SinkSpec(
                 designator=pcb_des, schdoc_name=comp.schdoc_name,
                 current=i, p=pair[0], n=pair[1], channel_index=idx,
-                min_voltage=min_v,
+                min_voltage=min_v, pin_coupling_ohm=pin_r,
             ))
     return specs
 

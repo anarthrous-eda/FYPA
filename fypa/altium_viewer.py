@@ -7840,6 +7840,26 @@ class _SettingsTabMixin:
 
         return any_dirty
 
+    def _on_electrothermal_toggled(self, _checked: bool) -> None:
+        """Grey the heat-transfer field when the coupled solve is off — it
+        has no effect there, and a live-looking field that does nothing is
+        worse than a disabled one."""
+        self._apply_electrothermal_enabled()
+
+    def _apply_electrothermal_enabled(self) -> None:
+        chk = getattr(self, "_settings_electrothermal_check", None)
+        edit = getattr(self, "settings_edit_heat_transfer_w_per_m2k", None)
+        if edit is None:
+            return
+        on = bool(chk.isChecked()) if chk is not None else False
+        edit.setEnabled(on)
+        edit.setToolTip(
+            "How readily the board sheds heat to ambient, both faces "
+            "combined. Lower = hotter copper = larger IR drop."
+            if on else
+            "Enabled by 'Coupled electro-thermal solve (self-heating)'."
+        )
+
     def _on_settings_field_changed(self, *_args) -> None:
         """Slot wired to every Settings-tab editor's change signal:
         refresh per-field dirty outlines and update ``_settings_dirty``
@@ -17533,26 +17553,6 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 "closed-loop check failed; enabling Solve", exc_info=True,
             )
             return True
-
-    def _on_electrothermal_toggled(self, _checked: bool) -> None:
-        """Grey the heat-transfer field when the coupled solve is off — it
-        has no effect there, and a live-looking field that does nothing is
-        worse than a disabled one."""
-        self._apply_electrothermal_enabled()
-
-    def _apply_electrothermal_enabled(self) -> None:
-        chk = getattr(self, "_settings_electrothermal_check", None)
-        edit = getattr(self, "settings_edit_heat_transfer_w_per_m2k", None)
-        if edit is None:
-            return
-        on = bool(chk.isChecked()) if chk is not None else False
-        edit.setEnabled(on)
-        edit.setToolTip(
-            "How readily the board sheds heat to ambient, both faces "
-            "combined. Lower = hotter copper = larger IR drop."
-            if on else
-            "Enabled by 'Coupled electro-thermal solve (self-heating)'."
-        )
 
     def _on_adaptive_gain_toggled(self, checked: bool) -> None:
         save_adaptive_regulator_gain(checked)

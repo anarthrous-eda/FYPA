@@ -12,12 +12,22 @@ import logging
 
 import pytest
 
+import fypa.altium_geometry as _geom
 from fypa.altium_geometry import (
-    COPPER_CONDUCTIVITY_S_PER_MM,
     DEFAULT_COPPER_THICKNESS_MM,
     _layer_conductance,
     _thickness_warned,
 )
+
+
+def _sigma() -> float:
+    """Copper conductivity read from the module at call time.
+
+    ``SolveSettings.apply_to_modules`` monkey-patches this global, and other
+    tests in the suite do call it — so binding the value at import time makes
+    these tests pass alone and fail in a full run.
+    """
+    return _geom.COPPER_CONDUCTIVITY_S_PER_MM
 from fypa.altium.extract import RawStackupLayer
 
 
@@ -41,19 +51,19 @@ def _reset_warn_memo():
 
 def test_real_thickness_is_used_unchanged():
     cond = _layer_conductance(_layer(0.035))
-    assert cond == pytest.approx(0.035 * COPPER_CONDUCTIVITY_S_PER_MM)
+    assert cond == pytest.approx(0.035 * _sigma())
 
 
 def test_heavy_copper_is_used_unchanged():
     cond = _layer_conductance(_layer(0.105))     # 3 oz
-    assert cond == pytest.approx(0.105 * COPPER_CONDUCTIVITY_S_PER_MM)
+    assert cond == pytest.approx(0.105 * _sigma())
 
 
 @pytest.mark.parametrize("bad", [0.0, -0.0, -1.0])
 def test_missing_thickness_falls_back_to_one_ounce(bad):
     cond = _layer_conductance(_layer(bad))
     assert cond == pytest.approx(
-        DEFAULT_COPPER_THICKNESS_MM * COPPER_CONDUCTIVITY_S_PER_MM)
+        DEFAULT_COPPER_THICKNESS_MM * _sigma())
 
 
 def test_missing_thickness_never_yields_zero_conductance():

@@ -22,21 +22,29 @@ per side. The cavity sheet (the intersection of the two planes' copper) has
 anti-pad holes exactly there, so a port region covering the hole ties the
 mesh vertices ringing it into one equipotential node: a finite-size port.
 
-**The port matrix.** One solve per capacitor injects 1 A at that cap and
-reads ``Φ`` at *every* port. That gives a column of the N-port transfer
-inductance matrix ``L[i][j] = Φ_j(I_i = 1) − Φ_ic`` for free — diagonal
-entries are each cap's self spreading inductance (what the Capacitors tab
-shows), off-diagonals the cap↔cap coupling through the shared cavity that a
-future PDN-impedance ``Z(f) = jωL + branch RLCs`` needs and which cannot be
-recovered from scalars after the fact. Solves 2…N reuse the cached mesh +
-Laplacian (the assembly fingerprint covers geometry and connection seeds,
-never source magnitudes), so the extra columns are cheap.
+**The port matrix.** Injecting 1 A at one capacitor and reading ``Φ`` at
+*every* port gives a column of the N-port transfer inductance matrix
+``L[i][j] = Φ_j(I_i = 1) − Φ_ic`` for free — diagonal entries are each cap's
+self spreading inductance (what the Capacitors tab shows), off-diagonals the
+cap↔cap coupling through the shared cavity that a future PDN-impedance
+``Z(f) = jωL + branch RLCs`` needs and which cannot be recovered from
+scalars after the fact.
+
+Which port is driven changes only the right-hand side — the mesh, the
+Laplacian and the whole MNA matrix are identical for every column — so the
+cavity is meshed, assembled and factorised **once** and all N columns are
+solved together as one multi-RHS solve (:func:`solve_cavity_matrix`). The
+alternative, one full ``pdnsolver.solve`` per capacitor, repeated the
+connectivity analysis, node indexing, network stamping, COO→CSC build and
+the full-sheet post-processing N times over to change two numbers in a
+vector; the factorisation was already cached, the rest was not.
 """
 
 from __future__ import annotations
 
 import logging
 import math
+import threading
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -307,9 +315,10 @@ def build_cavity_problem(
     currents: list[float],
 ) -> _pp.Problem:
     """One network: every cap port plus the shared IC port, with a current
-    source from the IC to each cap. Only the magnitudes differ between the
-    N solves, so the mesh + Laplacian assembly fingerprint is identical and
-    solves 2…N hit the cache (a "value-only re-solve")."""
+    source from the IC to each cap. ``currents`` sets only source magnitudes,
+    which touch the right-hand side alone — the geometry, the connection
+    seeds and hence the assembled matrix are the same whatever is passed.
+    That is what lets the N port columns share one assembly."""
     ic_conn = _port_connection(sheet, ic_port)
     conns = [ic_conn]
     elements: list[_pp.BaseLumped] = []
@@ -399,6 +408,260 @@ def _warn_on_overlapping_ports(cap_ports: list[_Port],
                     a.label, b.label)
 
 
+# --- the N-port solve ---------------------------------------------------------
+
+class _MultiRhsUnavailable(Exception):
+    """The one-assembly multi-RHS path could not be *proved* equivalent to the
+    per-port solves for this cavity, so the caller falls back to them."""
+
+
+# pdnsolver assembles its system inside ``solve()`` and hands the matrix and
+# right-hand side to ``_solve_robust`` as locals; nothing returns them. Swapping
+# that module global for the duration of one solve is the only way to reach the
+# assembled system without editing pdnsolver. The lock keeps two cavities from
+# patching (and un-patching) it over each other; a solve running on another
+# thread meanwhile is unaffected — the wrapper only calls through and records.
+_ASSEMBLY_LOCK = threading.Lock()
+
+
+def _raise_if_cancelled(cancel_event) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise Tier2Error("cancelled")
+
+
+def _probe_currents(n_live: int) -> list[float]:
+    """A distinct current per live port for the single assembly pass.
+
+    ``stamp_network_into_system`` writes ``r[ic] += I`` and ``r[port] -= I``
+    and nothing else in this problem touches the RHS, so an assembly driven
+    this way carries exactly one ``+ΣI`` entry (the IC port) and one ``−I_k``
+    entry per port. That is what pins each port to its row in the *reduced*
+    system: pdnsolver hands back neither its node indexing nor its
+    equipotential contraction, and both stand between a port and its row.
+    Small integers are exact in float64, so the rows are identified by value
+    equality rather than by a tolerance.
+    """
+    return [float(k + 1) for k in range(n_live)]
+
+
+def _assemble_and_solve_once(prob: _pp.Problem, mesher_config):
+    """Run one pdnsolver solve and keep the reduced system it assembled.
+
+    Returns ``(solution, L_csc, r_solve, v_solve)``: the ordinary
+    :class:`~pdnsolver.solver.Solution`, the (contracted) system matrix, its
+    right-hand side, and the solution vector in that same reduced space.
+    """
+    captured: dict = {}
+    original = _solver._solve_robust
+
+    def _capture(L_csc, r, *args, **kwargs):
+        out = original(L_csc, r, *args, **kwargs)
+        # First call only: with thermal off there is exactly one. A stray
+        # concurrent solve's system would fail the port-row checks below
+        # anyway, so this can never silently produce a wrong matrix.
+        captured.setdefault("system", (L_csc, r, out[0]))
+        return out
+
+    with _ASSEMBLY_LOCK:
+        _solver._solve_robust = _capture
+        try:
+            solution = _solver.solve(prob, mesher_config)
+        finally:
+            _solver._solve_robust = original
+
+    if "system" not in captured:
+        raise _MultiRhsUnavailable("pdnsolver ran no linear solve")
+    L_csc, r_solve, v_solve = captured["system"]
+    return solution, L_csc, r_solve, v_solve
+
+
+def _port_rows(r_solve: np.ndarray,
+               probe: list[float]) -> tuple[int, list[int]]:
+    """Locate the IC port's row and each live cap port's row in the assembled
+    RHS — see :func:`_probe_currents` for why the driven entries identify
+    them. Anything but the expected ``+ΣI`` / ``−I_k`` pattern (a network
+    filtered out as dead, two ports contracted onto one node) means the ports
+    and the system cannot be lined up, so the caller falls back."""
+    expected = len(probe) + 1
+    nz = np.flatnonzero(r_solve)
+    if nz.size != expected:
+        raise _MultiRhsUnavailable(
+            f"assembled RHS drives {nz.size} rows, expected {expected}")
+    vals = r_solve[nz]
+
+    hits = nz[vals == float(sum(probe))]
+    if hits.size != 1:
+        raise _MultiRhsUnavailable("IC port row not identifiable")
+    ic_row = int(hits[0])
+
+    cap_rows: list[int] = []
+    for current in probe:
+        hits = nz[vals == -current]
+        if hits.size != 1:
+            raise _MultiRhsUnavailable("cap port row not identifiable")
+        cap_rows.append(int(hits[0]))
+    return ic_row, cap_rows
+
+
+# Memory budget for one block of right-hand sides. The RHS and the solution
+# are both dense (M, w) arrays: a 2 M-variable board with 50 capacitors would
+# want 800 MB of each if every column went in one call, which is a worse
+# problem than the one being solved here. Columns are therefore solved in
+# blocks sized to this budget — all blocks share the single factorisation, so
+# only the (already cheap) triangular solves are split up.
+_MULTI_RHS_BLOCK_BYTES = 64 << 20
+
+
+def _make_block_solver(L_csc):
+    """A callable solving ``L·X = B`` for a dense (M, w) block, factorising
+    at most once.
+
+    ``_pardiso_solve_sym`` is private but used deliberately: it owns the
+    cached symmetric factorisation, and — the matrix being the one pdnsolver
+    just factorised, so its fingerprint still matches — it runs the solve
+    phase alone. Re-implementing its triu/setdiag/sort dance here would fork
+    pdnsolver's PARDISO handling. If it ever raises, one SuperLU
+    factorisation serves the remaining blocks.
+    """
+    lu: list = []
+
+    def _solve(B: np.ndarray) -> np.ndarray:
+        if not lu and _solver._HAVE_PARDISO:
+            try:
+                _solver._configure_mkl_threads()
+                return _solver._pardiso_solve_sym(L_csc, B)
+            except Exception as e:
+                log.debug("Multi-RHS PARDISO solve failed (%s) — "
+                          "falling back to SuperLU", e)
+        if not lu:
+            import scipy.sparse.linalg
+            try:
+                lu.append(scipy.sparse.linalg.splu(L_csc))
+            except Exception as e:
+                raise _MultiRhsUnavailable(
+                    f"direct multi-RHS solve failed: {e}") from e
+        return lu[0].solve(B)
+
+    return _solve
+
+
+def _solve_port_columns(L_csc, ic_row: int,
+                        cap_rows: list[int]) -> tuple[np.ndarray, np.ndarray]:
+    """Every port's potential under every port's 1 A drive.
+
+    This is the point of the whole exercise: the cavity's matrix does not
+    depend on which port is driven, so n ports are n right-hand sides against
+    one assembly and one factorisation, not n solves. Only the port rows of
+    each solution are kept — the rest of the sheet's potential field is what
+    the per-port path spent its time reconstructing and never looked at.
+
+    Returns ``(phi_ic, phi_caps)``: ``phi_ic[k]`` is the IC port's potential
+    in column ``k``, ``phi_caps[j, k]`` port ``j``'s. Every column is held to
+    the residual gate ``_solve_robust`` applies; one that misses it sends the
+    cavity back to the per-port path, which carries pdnsolver's full fallback
+    ladder (unsymmetric PARDISO, SuperLU, MINRES).
+    """
+    m = int(L_csc.shape[0])
+    n = len(cap_rows)
+    wanted = np.asarray([ic_row] + list(cap_rows), dtype=np.int64)
+    out = np.empty((wanted.size, n), dtype=np.float64)
+    width = max(1, min(n, _MULTI_RHS_BLOCK_BYTES // (8 * max(m, 1))))
+    solve_block = _make_block_solver(L_csc)
+
+    for start in range(0, n, width):
+        stop = min(start + width, n)
+        # One column per port: 1 A out of the IC port and into that cap port —
+        # the same right-hand side the per-port loop stamped one solve at a
+        # time (``r[ic] += I``, ``r[cap] -= I``).
+        B = np.zeros((m, stop - start), dtype=np.float64)
+        B[ic_row, :] = 1.0
+        B[cap_rows[start:stop], np.arange(stop - start)] = -1.0
+        X = solve_block(B)
+        resid = np.linalg.norm(L_csc @ X - B, axis=0)
+        tol = np.maximum(_solver._DIRECT_SOLVE_ABS_TOL_FLOOR,
+                         _solver._DIRECT_SOLVE_REL_TOL
+                         * np.linalg.norm(B, axis=0))
+        if not np.all(resid <= tol):
+            raise _MultiRhsUnavailable(
+                f"multi-RHS residual {float(np.max(resid)):.4g} over tolerance")
+        out[:, start:stop] = np.asarray(X, dtype=np.float64)[wanted, :]
+
+    return out[0], out[1:]
+
+
+def _fill_multi_rhs(matrix: np.ndarray, sheet: _pp.Layer,
+                    cap_ports: list[_Port], ic_port: _Port, live: list[int],
+                    mesher_config, progress_cb, cancel_event) -> None:
+    """Fill every live row of ``matrix`` from a single cavity assembly."""
+    n = len(cap_ports)
+    probe = _probe_currents(len(live))
+    currents = [0.0] * n
+    for k, i in enumerate(live):
+        currents[i] = probe[k]
+    # Island ports stay at zero current, exactly as the per-port loop left
+    # them: injecting into a subsystem with no return path would make
+    # pdnsolver warn about an unbalanced ground node, for nothing.
+
+    # The GUI drives its determinate progress bar off the "Cavity solve k/n"
+    # prefix (it reads k as the cap index), so keep that shape even though
+    # there is now one pass rather than n: the bar starts the cavity and
+    # completes it, instead of stalling at zero for the whole solve.
+    k_live = len(live)
+    if progress_cb is not None:
+        progress_cb(f"Cavity solve 1/{k_live}: assembling {k_live} port(s)")
+    prob = build_cavity_problem(sheet, cap_ports, ic_port, currents)
+    solution, L_csc, r_solve, v_solve = _assemble_and_solve_once(
+        prob, mesher_config)
+    _raise_if_cancelled(cancel_event)
+
+    ic_row, cap_rows = _port_rows(r_solve, probe)
+
+    # Reading a port's potential straight out of the solution vector is the
+    # same measurement as _sample_port's nearest-vertex lookup only while the
+    # port's representative vertex is the one that lookup lands on. Claimed
+    # vertices (overlapping ports) and orphan vertices break that, so prove it
+    # against this assembly's own solution before trusting it for every
+    # column — the row indices are RHS-independent, so one check covers all n.
+    ports = [ic_port] + [cap_ports[i] for i in live]
+    rows = [ic_row] + cap_rows
+    sampled = _sample_potentials(solution, [p.points[0] for p in ports])
+    for port, row, phi in zip(ports, rows, sampled):
+        if v_solve[row] != phi:
+            raise _MultiRhsUnavailable(
+                f"port {port.label} does not sample its own node")
+
+    phi_ic, phi_caps = _solve_port_columns(L_csc, ic_row, cap_rows)
+    if progress_cb is not None:
+        progress_cb(f"Cavity solve {k_live}/{k_live}: "
+                    f"{k_live} port(s) solved in one pass")
+
+    # Column k is cap ``live[k]``'s drive, so it is that cap's ROW of the port
+    # matrix: matrix[i][j] = Φ_j − Φ_ic with 1 A at cap i.
+    for k, i in enumerate(live):
+        matrix[i, live] = phi_caps[:, k] - phi_ic[k]
+
+
+def _fill_per_port(matrix: np.ndarray, sheet: _pp.Layer,
+                   cap_ports: list[_Port], ic_port: _Port, live: list[int],
+                   mesher_config, progress_cb, cancel_event) -> None:
+    """One full solve per port — the original path, kept as the fallback for
+    a cavity the multi-RHS path cannot verify."""
+    n = len(cap_ports)
+    live_ports = [cap_ports[i] for i in live]
+    for k, i in enumerate(live):
+        _raise_if_cancelled(cancel_event)
+        if progress_cb is not None:
+            progress_cb(f"Cavity solve {k + 1}/{len(live)}: "
+                        f"{cap_ports[i].label}")
+        currents = [0.0] * n
+        currents[i] = 1.0
+        prob = build_cavity_problem(sheet, cap_ports, ic_port, currents)
+        solution = _solver.solve(prob, mesher_config)
+        phi_ic = _sample_port(solution, ic_port)
+        matrix[i, live] = [_sample_port(solution, p) - phi_ic
+                           for p in live_ports]
+
+
 def solve_cavity_matrix(
     sheet: _pp.Layer,
     cap_ports: list[_Port],
@@ -407,33 +670,46 @@ def solve_cavity_matrix(
     progress_cb=None,
     cancel_event=None,
 ) -> np.ndarray:
-    """The (n, n) port inductance matrix, one solve per cap port.
+    """The (n, n) port inductance matrix, from one cavity assembly.
 
     ``matrix[i][j] = Φ_j − Φ_ic`` with 1 A injected at cap ``i``. Ports with
-    no conduction path to the IC (a split plane between them) yield a NaN row.
+    no conduction path to the IC (a split plane between them) yield a NaN row,
+    and — the matrix being reciprocal — a NaN column: there is no meaningful
+    coupling to a port the cavity cannot reach.
+
+    Only the right-hand side changes from one port's column to the next, so
+    all n columns are solved together against a single assembly and a single
+    factorisation (:func:`_fill_multi_rhs`) instead of re-posing the whole
+    problem per port. :func:`_fill_per_port` — the original one-solve-per-port
+    path — remains for any cavity whose ports cannot be lined up with the
+    assembled system, so an unverifiable case is slow, never wrong.
     """
     n = len(cap_ports)
     matrix = np.full((n, n), np.nan, dtype=np.float64)
     _warn_on_overlapping_ports(cap_ports, ic_port)
 
+    live: list[int] = []
     for i, port in enumerate(cap_ports):
-        if cancel_event is not None and cancel_event.is_set():
-            raise Tier2Error("cancelled")
         if port.geom_index != ic_port.geom_index:
             # Disconnected cavity islands: no return path through this
             # cavity at all. Left as NaN — the row is not "zero coupling".
             log.info("Cap port %s is on a cavity island isolated from the "
                      "target port — no spreading path", port.label)
-            continue
-        if progress_cb is not None:
-            progress_cb(f"Cavity solve {i + 1}/{n}: {port.label}")
-        currents = [0.0] * n
-        currents[i] = 1.0
-        prob = build_cavity_problem(sheet, cap_ports, ic_port, currents)
-        solution = _solver.solve(prob, mesher_config)
-        phi_ic = _sample_port(solution, ic_port)
-        matrix[i, :] = [_sample_port(solution, p) - phi_ic
-                        for p in cap_ports]
+        else:
+            live.append(i)
+    if not live:
+        return matrix
+
+    _raise_if_cancelled(cancel_event)
+    try:
+        _fill_multi_rhs(matrix, sheet, cap_ports, ic_port, live,
+                        mesher_config, progress_cb, cancel_event)
+    except _MultiRhsUnavailable as e:
+        log.info("Cavity multi-RHS solve unusable (%s) — falling back to one "
+                 "solve per port", e)
+        matrix[:, :] = np.nan
+        _fill_per_port(matrix, sheet, cap_ports, ic_port, live,
+                       mesher_config, progress_cb, cancel_event)
     return matrix
 
 

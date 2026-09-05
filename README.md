@@ -131,6 +131,7 @@ Optional two-terminal helpers (SOURCE / SINK):
 |-----------|---------|
 | `PDN_P_PINS` / `PDN_N_PINS` | Restrict which pads on the host (or DES-listed parts) couple |
 | `PDN_P_DES` / `PDN_N_DES` | Pull that terminal's pads from other designators only (host not auto-included); for multi-connector / banana-style sources |
+| `PDN_PIN_R` (`SINK`) | Package pin-to-pin resistance in ohms, used to share current between a multi-pin terminal's pads. Defaults to 100 mΩ — see *Settings → Multi-pin coupling resistance*. Set it per part when you know the package: a large BGA's supply grid is far lower than a leadframe's. |
 
 \* `PDN_P_NET` and `PDN_N_NET` are optional for `SERIES` on a 2-pin part — the
 tool auto-infers them from the component's pad connectivity.

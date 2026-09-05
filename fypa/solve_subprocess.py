@@ -84,6 +84,16 @@ def _child_entry(job: SolveJob, q: mp.Queue) -> None:
         except Exception:  # pragma: no cover - settings without the hook
             pass
 
+        # This process solves once and exits, so keeping mesh workers warm
+        # afterwards buys nothing — and it is actively harmful: the parent
+        # may still hold its own warm pool, so persisting here doubles the
+        # live worker processes and can exhaust memory on a large board.
+        try:
+            from pdnsolver import solver as _pdn_solver_mod
+            _pdn_solver_mod._MESH_POOL_PERSIST = False
+        except Exception:  # pragma: no cover - defensive
+            pass
+
         # Forward pdnsolver's per-step INFO logs to the parent as substage
         # updates, mirroring _SolveWorker's _SubstageForwarder.
         class _QueueLogHandler(logging.Handler):
@@ -175,6 +185,15 @@ def run_solve_in_subprocess(
     # daemonic processes may not have children. We terminate the child
     # explicitly (on cancel, on failure, and in the finally below), so it never
     # outlives its use despite not being a daemon.
+    # Release our own warm mesh workers first: the child is about to spawn a
+    # full pool of its own, and holding both at once is what makes a large
+    # board run out of memory.
+    try:
+        from pdnsolver.solver import shutdown_idle_mesh_pool
+        shutdown_idle_mesh_pool()
+    except Exception:  # pragma: no cover - defensive
+        pass
+
     proc = ctx.Process(target=_child_entry, args=(job, q), daemon=False)
     proc.start()
     if register_process is not None:

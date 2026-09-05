@@ -1445,11 +1445,17 @@ def build_per_net_geometry_layers_split(
         empty.set_result([])
         return [], empty
 
-    buckets = _build_net_layer_buckets(proj, enabled, include_vias=True)
     if active_nets:
-        active_b = {k: v for k, v in buckets.items() if k[1] in active_nets}
-        rest_b = {k: v for k, v in buckets.items() if k[1] not in active_nets}
+        # Buffer ONLY the active rails synchronously. The other few thousand
+        # (layer, net) pairs feed the viewer's display overlay and are built
+        # on the background thread below, so the FEM never waits for copper
+        # it will not mesh. When the full bucket set is already memoised both
+        # calls are served from it instead (see _build_net_layer_buckets).
+        active_b = _build_net_layer_buckets(
+            proj, enabled, include_vias=True, only_nets=active_nets)
+        rest_b = None   # built lazily in the background union below
     else:
+        buckets = _build_net_layer_buckets(proj, enabled, include_vias=True)
         # No directive touches a net — treat every real net as active, but
         # keep NO_NET copper out of the FEM regardless (it carries no rail
         # current; it exists only for the viewer's "all copper" overlay).
@@ -1465,9 +1471,19 @@ def build_per_net_geometry_layers_split(
     # Union the non-active nets on a background thread (shapely releases the
     # GIL inside union_all, so this genuinely overlaps the caller's work).
     ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    rest_future = ex.submit(
-        lambda: _shapes_to_geometry_layers(
-            proj, _parallel_union_buckets(rest_b, snap=False)))
+
+    def _build_rest() -> list[GeometryLayer]:
+        # ``rest_b is None`` means the active path filtered the sweep, so the
+        # non-active buckets have not been buffered yet — do that here, off
+        # the caller's critical path, rather than ahead of the FEM.
+        buckets = (rest_b if rest_b is not None
+                   else _build_net_layer_buckets(
+                       proj, enabled, include_vias=True,
+                       exclude_nets=active_nets))
+        return _shapes_to_geometry_layers(
+            proj, _parallel_union_buckets(buckets, snap=False))
+
+    rest_future = ex.submit(_build_rest)
     ex.shutdown(wait=False)   # task still completes; executor frees when done
 
     # The caller awaits ``rest_future.result()`` at the end of a long
@@ -1611,6 +1627,8 @@ def _build_net_layer_buckets(
     proj: ExtractedProject,
     enabled_layers: list[int],
     include_vias: bool = False,
+    only_nets: set[int] | None = None,
+    exclude_nets: set[int] | None = None,
 ) -> dict[tuple[int, int], list[shapely.geometry.base.BaseGeometry]]:
     """Per-(layer_id, net_index) lists of un-unioned copper primitive
     polygons — the bucketing (and buffering) half of
@@ -1627,19 +1645,54 @@ def _build_net_layer_buckets(
     ``(proj, enabled_layers, include_vias)``. Callers treat the returned dict
     as read-only; they partition it into new dicts rather than mutating it.
 
+    ``only_nets`` / ``exclude_nets`` restrict the sweep to a subset of net
+    indices *before* any buffering happens. The FEM needs only the handful of
+    rails a directive touches, while the other few thousand (layer, net)
+    pairs exist purely for the viewer's "all copper" overlay — so buffering
+    every track, arc, pad and via on the board to assemble a Problem that
+    will use 0.2 % of them is the single most wasteful step in the pipeline.
+    Filtering is a pure prefilter: the result is exactly the subset of the
+    unfiltered buckets whose net passes, so a filtered and an unfiltered run
+    agree polygon-for-polygon on the buckets they share.
+
+    Only the *unfiltered* result is memoised, and a filtered request is
+    served by subsetting that memo when it is present. That keeps both wins:
+    the session's second full sweep is free, and a caller that wants just
+    the active rails never pays for the rest.
+
     ``include_vias`` — see :func:`build_net_layer_shapes`.
     """
     global _bucket_cache_proj, _bucket_cache_key, _bucket_cache_value
     cache_key = (tuple(enabled_layers), bool(include_vias))
+    unfiltered = only_nets is None and exclude_nets is None
+
+    def _passes(net_index: int) -> bool:
+        if only_nets is not None and net_index not in only_nets:
+            return False
+        return not (exclude_nets is not None and net_index in exclude_nets)
+
     with _bucket_cache_lock:
-        if (_bucket_cache_proj is proj
-                and _bucket_cache_key == cache_key
-                and _bucket_cache_value is not None):
+        cached = (_bucket_cache_value
+                  if (_bucket_cache_proj is proj
+                      and _bucket_cache_key == cache_key)
+                  else None)
+    if cached is not None:
+        if unfiltered:
             log.info(
                 "Reusing cached (layer, net) buckets for %s (%d bucket(s))",
-                proj.prjpcb_path.name, len(_bucket_cache_value),
+                proj.prjpcb_path.name, len(cached),
             )
-            return _bucket_cache_value
+            return cached
+        # Subsetting the memo is far cheaper than re-buffering; the lists
+        # are shared by reference because every caller treats them as
+        # read-only (they union out of them, never mutate them).
+        subset = {k: v for k, v in cached.items() if _passes(k[1])}
+        log.info(
+            "Reusing cached (layer, net) buckets for %s (%d of %d bucket(s) "
+            "after net filter)",
+            proj.prjpcb_path.name, len(subset), len(cached),
+        )
+        return subset
 
     buckets: dict[tuple[int, int], list[shapely.geometry.base.BaseGeometry]] = {}
     enabled_set = set(enabled_layers)
@@ -1664,7 +1717,9 @@ def _build_net_layer_buckets(
         buckets.setdefault((layer_id, net_index), []).append(geom)
 
     # Tracks: batch-buffer all valid tracks in one shapely call, then route.
-    valid_tracks = [t for t in proj.tracks if _track_is_copper(t, plane_layer_ids)]
+    valid_tracks = [t for t in proj.tracks
+                    if _passes(t.net_index)
+                    and _track_is_copper(t, plane_layer_ids)]
     track_polys = _batch_buffer_tracks(valid_tracks)
     for t, poly in zip(valid_tracks, track_polys):
         _distribute_to_layers(t.layer_id, t.net_index, poly, enabled_layers,
@@ -1672,7 +1727,9 @@ def _build_net_layer_buckets(
 
     # Arcs: same vectorised-buffer trick. Exclude solid-pour *outline* arcs
     # (boundary artwork, not copper) exactly as the track filter above does.
-    valid_arcs = [a for a in proj.arcs if _arc_is_copper(a, plane_layer_ids)]
+    valid_arcs = [a for a in proj.arcs
+                  if _passes(a.net_index)
+                  and _arc_is_copper(a, plane_layer_ids)]
     arc_polys = _batch_buffer_arcs(valid_arcs)
     for a, poly in zip(valid_arcs, arc_polys):
         _distribute_to_layers(a.layer_id, a.net_index, poly, enabled_layers,
@@ -1680,6 +1737,8 @@ def _build_net_layer_buckets(
 
     sbr_poly_indices = _shape_based_polygon_indices(proj)
     for r in proj.regions:
+        if not _passes(r.net_index):
+            continue
         if not _region_is_copper(r, plane_layer_ids, sbr_poly_indices):
             continue
         poly = _region_polygon(r)
@@ -1687,6 +1746,8 @@ def _build_net_layer_buckets(
                               _add, plane_layer_ids)
 
     for r in proj.shape_based_regions:
+        if not _passes(r.net_index):
+            continue
         if not _shape_based_region_is_copper(r, plane_layer_ids):
             continue
         poly = _shape_based_region_polygon(r)
@@ -1694,6 +1755,8 @@ def _build_net_layer_buckets(
                               _add, plane_layer_ids)
 
     for f in proj.fills:
+        if not _passes(f.net_index):
+            continue
         if not _fill_is_copper(f, plane_layer_ids):
             continue
         poly = _fill_polygon(f)
@@ -1702,6 +1765,8 @@ def _build_net_layer_buckets(
                                   _add, plane_layer_ids)
 
     for p in proj.pads:
+        if not _passes(p.net_index):
+            continue
         if p.is_through_hole or p.layer_id == MULTI_LAYER_PAD_LAYER_ID:
             # Through-hole / multi-layer pads sit on every enabled copper layer.
             if getattr(p, "layer_variations", ()):
@@ -1728,7 +1793,12 @@ def _build_net_layer_buckets(
     if include_vias:
         enabled_pos = {lid: i for i, lid in enumerate(enabled_layers)}
         # One vectorised buffer for all via discs, then distribute to layers.
-        for v, poly in _batch_via_polygons(proj.vias):
+        # Filtered before buffering, so a net the caller does not want never
+        # costs a via disc.
+        _vias = ([v for v in proj.vias if _passes(v.net_index)]
+                 if (only_nets is not None or exclude_nets is not None)
+                 else proj.vias)
+        for v, poly in _batch_via_polygons(_vias):
             # Span by physical stack position (not raw layer id): internal
             # planes carry ids 39-54 that fall outside a Top..Bottom id range
             # but sit physically between them, so a raw-id range would skip
@@ -1753,6 +1823,11 @@ def _build_net_layer_buckets(
         net_index = _net_index_by_name(proj, s.plane_net_name)
         if net_index == NO_NET:
             continue
+        if not _passes(net_index):
+            # Building a plane sheet subtracts every anti-pad and thermal
+            # relief on the layer, so skipping an unwanted plane's net here
+            # is the single largest saving the filter makes.
+            continue
         if _through_cache is None:
             _through_cache = _ThroughFeatureCache(proj)
         # Per-plane: pullback and net differ, so the sheet is built per layer.
@@ -1763,11 +1838,14 @@ def _build_net_layer_buckets(
     log.info("build_net_layer_shapes: buffered primitives into %d (layer, net) "
              "bucket(s) in %.2fs", len(buckets), time.monotonic() - _t_buckets)
     # Memoise for the second caller in the session (see the docstring).
+    # Only the unfiltered sweep is stored — a filtered one is a subset and
+    # caching it would let a later full request be served short.
     # Replacing the slot drops the previous project's polygons.
-    with _bucket_cache_lock:
-        _bucket_cache_proj = proj
-        _bucket_cache_key = cache_key
-        _bucket_cache_value = buckets
+    if unfiltered:
+        with _bucket_cache_lock:
+            _bucket_cache_proj = proj
+            _bucket_cache_key = cache_key
+            _bucket_cache_value = buckets
     return buckets
 
 
