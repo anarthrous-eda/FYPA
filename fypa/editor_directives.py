@@ -485,6 +485,138 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
     return warnings
 
 
+# ``p_net`` / ``n_net`` value the editor writes for copper that has no net.
+_UNNAMED_NET = "(none)"
+
+
+def has_closed_pdn_loop(loaded, editor_directives, *,
+                        p_net_resolver=None) -> bool:
+    """True when the schematic + editor directives together form at least
+    one **closed** rail — a connected group of nets carrying both a source
+    (schematic ``SourceSpec`` / ``RegulatorSpec`` or an editor SOURCE) and a
+    sink (``SinkSpec`` or an editor SINK). This is the condition
+    :attr:`fypa.altium.loader.LoadedProject.is_solveable` checks *after*
+    :func:`apply_editor_directives` has run, evaluated here without mutating
+    ``loaded`` so the viewer can grey out ↻ Solve when a click would only
+    produce the "Project is not solveable" dialog.
+
+    Mirrors the two functions it stands in for:
+
+    * like :func:`apply_editor_directives`, it drops schematic directives an
+      editor directive overrides (``overrides_designator``) and skips editor
+      directives the re-solve would skip — unsupported roles, a SOURCE with
+      no voltage, a SINK with no current, a SERIES with no positive
+      resistance, or a terminal still on unnamed ``"(none)"`` copper;
+    * like :func:`fypa.altium.loader._analyze_open_loop_rails`, it unions
+      the nets each directive touches (a SERIES / ``ResistorSpec`` and a
+      ``RegulatorSpec`` bridge their terminals' rails) and looks for a group
+      with both roles.
+
+    ``p_net_resolver(ed) -> str | None`` may supply a net name for a free
+    marker whose ``p_net`` is still ``"(none)"`` — the viewer passes its
+    :class:`~fypa.project_file.CopperName` lookup so copper the user named
+    after placing the marker still counts, exactly as the resolve path
+    promotes it.
+    """
+    from fypa.altium.annotations import (
+        RegulatorSpec,
+        ResistorSpec,
+        SinkSpec,
+        SourceSpec,
+    )
+    from fypa.altium.extract import NO_NET
+    from fypa.altium.loader import _directive_terminals
+
+    extracted = loaded.extracted
+    if not extracted.enabled_copper_layer_ids():
+        return False
+    nets = list(getattr(extracted, "nets", ()) or ())
+
+    def _net_key(name) -> str | None:
+        if not name or name == _UNNAMED_NET:
+            return None
+        return str(name).upper()
+
+    # (role, touched-net keys) per directive; role in {source, sink, bridge}.
+    items: list[tuple[str, set[str]]] = []
+
+    override_desigs = {
+        ed.overrides_designator for ed in editor_directives
+        if getattr(ed, "overrides_designator", None)
+    }
+    for d in getattr(loaded.annotations, "directives", ()):
+        if getattr(d, "designator", None) in override_desigs:
+            continue
+        if isinstance(d, (SourceSpec, RegulatorSpec)):
+            role = "source"
+        elif isinstance(d, SinkSpec):
+            role = "sink"
+        elif isinstance(d, ResistorSpec):
+            role = "bridge"
+        else:
+            continue
+        keys: set[str] = set()
+        for term in _directive_terminals(d):
+            for pin in getattr(term, "pins", ()) or ():
+                idx = pin.net_index
+                if idx != NO_NET and 0 <= idx < len(nets):
+                    k = _net_key(getattr(nets[idx], "name", None))
+                    if k:
+                        keys.add(k)
+        if keys:
+            items.append((role, keys))
+
+    for ed in editor_directives:
+        if ed.role == "SOURCE":
+            if ed.voltage is None:
+                continue
+            role = "source"
+        elif ed.role == "SINK":
+            if ed.current is None:
+                continue
+            role = "sink"
+        elif ed.role == "SERIES":
+            if ed.resistance is None or ed.resistance <= 0:
+                continue
+            role = "bridge"
+        else:
+            continue  # REGULATOR etc. — apply_editor_directives skips these
+        p_name = ed.p_net
+        if p_name == _UNNAMED_NET and p_net_resolver is not None:
+            try:
+                p_name = p_net_resolver(ed) or p_name
+            except Exception:  # lookup is best-effort
+                log.debug("p_net_resolver failed for %s", ed.id, exc_info=True)
+        two_net = ed.role == "SERIES" or not ed.single_net
+        names = [p_name] + ([ed.n_net] if two_net else [])
+        keys = {k for k in (_net_key(n) for n in names) if k}
+        # A terminal on unnamed copper can't be solved — treat the whole
+        # directive as unresolved, as apply_editor_directives drops it.
+        if len(keys) != len(names):
+            continue
+        items.append((role, keys))
+
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        while parent.setdefault(x, x) != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for _role, keys in items:
+        ordered = sorted(keys)
+        for other in ordered[1:]:
+            ra, rb = find(ordered[0]), find(other)
+            if ra != rb:
+                parent[rb] = ra
+
+    roles_by_group: dict[str, set[str]] = {}
+    for role, keys in items:
+        roles_by_group.setdefault(find(min(keys)), set()).add(role)
+    return any({"source", "sink"} <= roles for roles in roles_by_group.values())
+
+
 def apply_copper_names(loaded, copper_names) -> list[str]:
     """Promote user-named unnamed-copper pieces into real nets on
     ``loaded.extracted``, in place.

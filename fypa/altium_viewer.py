@@ -17385,9 +17385,59 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         adaptive_on = (
             chk is not None and chk.isEnabled() and chk.isChecked()
         )
-        return bool(
+        wanted = bool(
             self._awaiting_first_solve or self._solve_stale or adaptive_on
         )
+        # A pending / stale solve is only actionable if the solver would
+        # accept it — otherwise the click just lands on the "Project is not
+        # solveable" dialog, so keep the button greyed out with a tooltip
+        # that says what's missing instead.
+        return wanted and self._has_solveable_directives()
+
+    _NOTHING_TO_SOLVE_TIP = (
+        "Nothing to solve yet — the design needs a SOURCE and a SINK on the "
+        "same rail. Switch on Edit to place them, then Solve."
+    )
+
+    def _has_solveable_directives(self) -> bool:
+        """True when the schematic + editor directives form at least one
+        closed rail (a source and a sink that share connected nets) — the
+        same test :attr:`LoadedProject.is_solveable` applies once the editor
+        directives are merged in. Answers ``True`` when there is no in-memory
+        design to inspect (a viewer opened from a bare pickle) or the check
+        itself fails, so the button never gets stuck disabled for a solve
+        the worker could actually run."""
+        loaded = getattr(self, "_loaded_project", None)
+        if loaded is None:
+            return True
+        project = getattr(self, "_project", None)
+        editor_directives = (
+            list(project.editor_directives) if project is not None else []
+        )
+
+        def _named_copper_at(ed):
+            # Free marker on copper the user has since named via a
+            # CopperName rename — mirror _unnamed_copper_directives()'s
+            # promotion, read-only.
+            if (ed.kind != "free" or ed.anchor_xy is None
+                    or ed.layer_id is None):
+                return None
+            c = self._copper_name_at(
+                float(ed.anchor_xy[0]), float(ed.anchor_xy[1]),
+                int(ed.layer_id),
+            )
+            return c.name if c is not None else None
+
+        try:
+            from fypa.editor_directives import has_closed_pdn_loop
+            return has_closed_pdn_loop(
+                loaded, editor_directives, p_net_resolver=_named_copper_at,
+            )
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "closed-loop check failed; enabling Solve", exc_info=True,
+            )
+            return True
 
     def _on_adaptive_gain_toggled(self, checked: bool) -> None:
         save_adaptive_regulator_gain(checked)
@@ -17868,9 +17918,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             if visible:
                 enabled = self._resolve_button_enabled()
                 rbtn.setEnabled(enabled)
+                solveable = enabled or self._has_solveable_directives()
                 if self._awaiting_first_solve:
                     rbtn.setText("↻  Solve")
-                    rbtn.setToolTip("Run the FEM solver on the loaded design")
+                    rbtn.setToolTip(
+                        "Run the FEM solver on the loaded design"
+                        if solveable else self._NOTHING_TO_SOLVE_TIP
+                    )
                 else:
                     rbtn.setText("↻  Resolve")
                     if enabled:
@@ -17878,6 +17932,8 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                             "Re-run the solver with the current editor "
                             "changes and settings applied"
                         )
+                    elif not solveable:
+                        rbtn.setToolTip(self._NOTHING_TO_SOLVE_TIP)
                     else:
                         rbtn.setToolTip(
                             "Check Adaptive SMPS gain to re-solve, or edit "
@@ -21680,6 +21736,15 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         editor directives) — in that case the editor-directive list is
         simply empty and the solve runs with the new parameters."""
         if not self._resolve_button_enabled():
+            if not self._has_solveable_directives():
+                QMessageBox.information(
+                    self, "Nothing to solve",
+                    "The design has no closed PDN rail to solve: it needs a "
+                    "<b>SOURCE</b> and a <b>SINK</b> on the same rail.\n\n"
+                    "Switch on Edit to place them, then press "
+                    f"{self._stub_action_word()}.",
+                )
+                return
             QMessageBox.information(
                 self, "Nothing to resolve",
                 "The current solve is up to date. Check "

@@ -462,3 +462,138 @@ def test_unlock_strips_legacy_compound_pad():
         ],
     }
     assert PdnViewer._terminal_pin_pads(term) == ["1"]
+
+# ---------------------------------------------------------------------------
+# has_closed_pdn_loop — the read-only "would the solver accept this?" check
+# behind the viewer's greyed-out ↻ Solve button.
+# ---------------------------------------------------------------------------
+
+from fypa.altium.annotations import TerminalPin, TerminalSpec  # noqa: E402
+from fypa.editor_directives import has_closed_pdn_loop  # noqa: E402
+
+
+def _term(net_index: int) -> TerminalSpec:
+    pin = TerminalPin(pad_designator="1", layer_id=1, net_index=net_index,
+                      point=(0.0, 0.0))
+    return TerminalSpec(pins=(pin,))
+
+
+def _sch_source(net_index: int, designator: str = "J1") -> SourceSpec:
+    return SourceSpec(designator=designator, schdoc_name="a.SchDoc",
+                      voltage=5.0, p=_term(net_index), n=None)
+
+
+def _sch_sink(net_index: int, designator: str = "U1") -> SinkSpec:
+    return SinkSpec(designator=designator, schdoc_name="a.SchDoc",
+                    current=1.0, p=_term(net_index), n=None)
+
+
+def test_closed_loop_false_with_no_directives():
+    assert has_closed_pdn_loop(_loaded(["+5V"]), []) is False
+
+
+def test_closed_loop_false_with_no_copper_layers():
+    loaded = _loaded(["+5V"])
+    loaded.extracted.enabled_copper_layer_ids = list
+    eds = [_free("SOURCE", p_net="+5V", voltage=5.0),
+           _free("SINK", p_net="+5V", current=1.0)]
+    assert has_closed_pdn_loop(loaded, eds) is False
+
+
+def test_closed_loop_false_with_source_only():
+    eds = [_free("SOURCE", p_net="+5V", voltage=5.0)]
+    assert has_closed_pdn_loop(_loaded(["+5V"]), eds) is False
+
+
+def test_closed_loop_true_with_editor_source_and_sink_on_same_net():
+    eds = [_free("SOURCE", p_net="+5V", voltage=5.0),
+           _free("SINK", p_net="+5v", current=1.0)]   # case-insensitive
+    assert has_closed_pdn_loop(_loaded(["+5V"]), eds) is True
+
+
+def test_closed_loop_false_when_source_and_sink_are_on_different_rails():
+    eds = [_free("SOURCE", p_net="+5V", voltage=5.0),
+           _free("SINK", p_net="+3V3", current=1.0)]
+    assert has_closed_pdn_loop(_loaded(["+5V", "+3V3"]), eds) is False
+
+
+def test_series_bridge_closes_the_loop_across_two_nets():
+    eds = [_free("SOURCE", p_net="+5V", voltage=5.0),
+           _free("SINK", p_net="+3V3", current=1.0),
+           _free("SERIES", single_net=False, p_net="+5V", n_net="+3V3",
+                 resistance=0.05)]
+    assert has_closed_pdn_loop(_loaded(["+5V", "+3V3"]), eds) is True
+
+
+def test_series_without_positive_resistance_does_not_bridge():
+    for r in (None, 0.0, -1.0):
+        eds = [_free("SOURCE", p_net="+5V", voltage=5.0),
+               _free("SINK", p_net="+3V3", current=1.0),
+               _free("SERIES", single_net=False, p_net="+5V", n_net="+3V3",
+                     resistance=r)]
+        assert has_closed_pdn_loop(_loaded(["+5V", "+3V3"]), eds) is False
+
+
+def test_editor_directives_missing_their_value_are_ignored():
+    loaded = _loaded(["+5V"])
+    assert has_closed_pdn_loop(loaded, [
+        _free("SOURCE", p_net="+5V", voltage=None),
+        _free("SINK", p_net="+5V", current=1.0),
+    ]) is False
+    assert has_closed_pdn_loop(loaded, [
+        _free("SOURCE", p_net="+5V", voltage=5.0),
+        _free("SINK", p_net="+5V", current=None),
+    ]) is False
+
+
+def test_editor_regulator_role_is_not_counted_as_a_source():
+    # apply_editor_directives skips REGULATOR, so the check must too.
+    eds = [_free("REGULATOR", p_net="+5V", voltage=5.0),
+           _free("SINK", p_net="+5V", current=1.0)]
+    assert has_closed_pdn_loop(_loaded(["+5V"]), eds) is False
+
+
+def test_schematic_source_plus_editor_sink_closes_the_loop():
+    loaded = _loaded(["+5V"])
+    loaded.annotations.directives.append(_sch_source(0))
+    eds = [_free("SINK", p_net="+5V", current=1.0)]
+    assert has_closed_pdn_loop(loaded, eds) is True
+
+
+def test_schematic_source_and_sink_alone_close_the_loop():
+    loaded = _loaded(["+5V"])
+    loaded.annotations.directives += [_sch_source(0), _sch_sink(0)]
+    assert has_closed_pdn_loop(loaded, []) is True
+
+
+def test_schematic_directive_overridden_by_editor_is_dropped():
+    loaded = _loaded(["+5V"])
+    loaded.annotations.directives += [_sch_source(0, "J1"), _sch_sink(0)]
+    # Editor SINK takes over J1 — the schematic SOURCE on J1 no longer counts,
+    # leaving two sinks and no source.
+    eds = [EditorDirective(kind="component", role="SINK", designator="J1",
+                           p_net="+5V", current=1.0,
+                           overrides_designator="J1")]
+    assert has_closed_pdn_loop(loaded, eds) is False
+
+
+def test_unnamed_copper_terminal_is_unresolved_until_named():
+    loaded = _loaded(["+5V"])
+    eds = [_free("SOURCE", p_net="(none)", voltage=5.0),
+           _free("SINK", p_net="+5V", current=1.0)]
+    assert has_closed_pdn_loop(loaded, eds) is False
+    # A CopperName-style resolver can promote the free marker.
+    assert has_closed_pdn_loop(
+        loaded, eds, p_net_resolver=lambda ed: "+5V") is True
+    # A failing resolver is best-effort, not fatal.
+    def _boom(ed):
+        raise RuntimeError("no geometry")
+    assert has_closed_pdn_loop(loaded, eds, p_net_resolver=_boom) is False
+
+
+def test_two_net_editor_directive_with_unnamed_n_net_is_unresolved():
+    loaded = _loaded(["+5V", "GND"])
+    eds = [_free("SOURCE", single_net=False, p_net="+5V", n_net="(none)",
+                 voltage=5.0),
+           _free("SINK", p_net="+5V", current=1.0)]
+    assert has_closed_pdn_loop(loaded, eds) is False
