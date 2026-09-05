@@ -74,6 +74,13 @@ management. Install uv once (Windows):
 winget install astral-sh.uv          # or: pip install uv
 ```
 
+> **First-time install: restart your terminal.** The installer adds `uv` to
+> your `PATH`, but shells that are already open don't see the change — you'll
+> get `uv : The term 'uv' is not recognized`. Close and reopen the terminal.
+> If you ran the install from the VS Code terminal, close and reopen **VS Code
+> itself** (it caches the environment it was launched with; a new terminal tab
+> isn't enough). `uv --version` should then work.
+
 Then clone and sync:
 
 ```sh
