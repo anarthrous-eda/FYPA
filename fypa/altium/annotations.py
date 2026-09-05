@@ -5624,6 +5624,7 @@ def _synth_nettie_directives(
     result: AnnotationResult,
     skip_set: set[str],
     net_remap: dict[int, int] | None = None,
+    no_auto_bridge: set[str] | None = None,
 ) -> list[ResistorSpec]:
     """Emit synthetic SERIES bridges for Altium Net Tie schematic components.
 
@@ -5653,6 +5654,14 @@ def _synth_nettie_directives(
         # PCB Blanket/ECO PDN_* on the placement overrides auto-bridge,
         # same as schematic PDN_* on the symbol.
         if _has_any_pdn_params(pcb.parameters):
+            return False
+        des_u = (pcb.source_designator or pcb.designator).upper()
+        if no_auto_bridge and des_u in no_auto_bridge:
+            result.note_absorbed(
+                f"{pcb.designator}: auto-bridge disabled by the user "
+                f"(Bridges tab) — left open at DC. Give it a resistance "
+                f"there, or remove the opt-out, to model it as SERIES."
+            )
             return False
         return pcb.designator.upper() not in skip_set
 
@@ -5751,6 +5760,7 @@ def parse_annotations(proj: ExtractedProject,
                       enabled_layers: list[int] | None = None,
                       skip_designators: set[str] | None = None,
                       net_remap: dict[int, int] | None = None,
+                      no_auto_bridge: set[str] | None = None,
                       ) -> AnnotationResult:
     """Scan schematic and PCB components for PDN_* parameters and build directives.
 
@@ -5770,6 +5780,13 @@ def parse_annotations(proj: ExtractedProject,
     that reference EITHER the canonical or the non-canonical merged name
     still resolve to the correct (canonical) net index — pads on the
     merged net have all been remapped to the canonical index.
+
+    `no_auto_bridge` is an optional case-insensitive set of designators the
+    user has explicitly told the tool not to short automatically. Net Ties
+    and 0 Ω links are otherwise bridged on sight; a part listed here is left
+    open at DC. This is the only way to veto an auto-bridge, because the
+    bridge (and the net merge that absorbs it) happens here, long before any
+    editor directive is applied.
     """
     if enabled_layers is None:
         enabled_layers = proj.enabled_copper_layer_ids()
@@ -5912,6 +5929,7 @@ def parse_annotations(proj: ExtractedProject,
     # requiring a PDN_ROLE=SERIES on every NetTie symbol.
     result.directives.extend(_synth_nettie_directives(
         proj, enabled_layers, result, skip_set, net_remap=net_remap,
+        no_auto_bridge={d.strip().upper() for d in (no_auto_bridge or set())},
     ))
 
     # Cross-directive checks (mode consistency, open-loop) + return grouping.

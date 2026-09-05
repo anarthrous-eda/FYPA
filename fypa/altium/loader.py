@@ -2305,6 +2305,26 @@ def build_solve_metadata(
             "next_layer_id": s.next_layer_id,
         })
 
+    # Links absorbed by the net merge. Built before the directive summary so
+    # the synthetic marker records can be appended to it below.
+    merged_bridges = []
+    for _b in getattr(loaded, "absorbed_bridges", ()) or ():
+        _p_name = _net_name(_b.p_net_index)
+        _n_name = _net_name(_b.n_net_index)
+        _canon = _net_name(_b.canonical_net_index)
+        merged_bridges.append({
+            "designator": _b.designator,
+            "resistance_ohm": float(_b.resistance),
+            "resistance_str": f"{_b.resistance * 1000.0:.4g} mΩ",
+            "p_net": _p_name,
+            "n_net": _n_name,
+            "canonical_net": _canon,
+            "p_x_mm": float(_b.p_x_mm), "p_y_mm": float(_b.p_y_mm),
+            "p_layer_id": int(_b.p_layer_id),
+            "n_x_mm": float(_b.n_x_mm), "n_y_mm": float(_b.n_y_mm),
+            "n_layer_id": int(_b.n_layer_id),
+        })
+
     # Directive summary — what each PDN_* annotation resolved to.
     directives = []
     for d in loaded.annotations.directives:
@@ -2760,6 +2780,50 @@ def build_solve_metadata(
     # text for the viewer's Overlays control (Heatmap tab).
     overlay_records = _build_overlay_records(proj, _net_name)
 
+    # Give every absorbed link a directive record so it renders exactly like a
+    # hand-written PDN_ROLE=SERIES: same RESISTOR role, so the same square
+    # marker, the same legend row, the same Setup entry. Without this the user
+    # sees nothing on the canvas for a part FYPA silently shorted, which is
+    # precisely the case they most need to notice. ``auto_bridged`` lets the UI
+    # label it as inferred rather than annotated.
+    for _mb in merged_bridges:
+        _shorted = (f"{_mb['p_net']} \u2194 {_mb['n_net']}"
+                    if _mb["p_net"] != _mb["n_net"] else _mb["canonical_net"])
+        directives.append({
+            # Its own role, not RESISTOR. An absorbed link's two pads both
+            # report the surviving net after the merge, so a RESISTOR record
+            # would be gated by the marker overlay's "is this net on a visible
+            # rail?" test and vanish whenever the user is looking at anything
+            # but that rail — which, for the ground-to-ground merges these
+            # usually are, means always. AUTO_BRIDGE gets its own legend row
+            # and skips that gate, so an inferred short is always visible and
+            # independently toggleable.
+            "role": "AUTO_BRIDGE",
+            "designator": _mb["designator"],
+            "channel_index": None,
+            "label": _mb["designator"],
+            "schdoc": "(auto-bridge)",
+            "value": _mb["resistance_ohm"],
+            "unit": "\u03a9",
+            "value_str": _mb["resistance_str"],
+            "auto_bridged": True,
+            "shorted_nets": _shorted,
+            "terminals": {
+                "P": {"pin_count": 1, "pins": [{
+                    "pad": "1", "layer_id": _mb["p_layer_id"],
+                    "net": _mb["canonical_net"],
+                    "x_mm": _mb["p_x_mm"], "y_mm": _mb["p_y_mm"],
+                    "area_mm2": 0.0,
+                }]},
+                "N": {"pin_count": 1, "pins": [{
+                    "pad": "2", "layer_id": _mb["n_layer_id"],
+                    "net": _mb["canonical_net"],
+                    "x_mm": _mb["n_x_mm"], "y_mm": _mb["n_y_mm"],
+                    "area_mm2": 0.0,
+                }]},
+            },
+        })
+
     return {
         "project_name": proj.prjpcb_path.stem,
         "prjpcb_path": str(proj.prjpcb_path),
@@ -2841,6 +2905,18 @@ def build_solve_metadata(
             ),
         },
         "directives": directives,
+        # Links the net-merge pass absorbed (Net Ties, 0 Ω resistors, wire
+        # jumpers, and any SERIES the user gave a sub-milliohm value). They
+        # are no longer directives — the merge collapsed their two nets into
+        # one — but they ARE still physically modelled as a same-net bridge
+        # resistor, and the user needs to see which nets got shorted and
+        # where. Drives both the SERIES markers and the Setup tab's
+        # "Bridged / shorted nets" table.
+        "merged_bridges": merged_bridges,
+        # Every part that joins two nets, and what FYPA did with it — the
+        # Bridges tab's model. Includes parts nothing models yet, which is
+        # the point: those are the ones whose copper is missing from the FEM.
+        "bridge_candidates": collect_bridge_candidates(loaded),
         "net_canonical": build_net_canonical_map(
             proj.compiled_netlist,
             # Merged-away names are still in ``proj.nets`` but own no copper,
@@ -3586,40 +3662,50 @@ def _bridge_part_kind(designator: str) -> str | None:
     return None
 
 
-def _flag_unannotated_bridges(loaded: LoadedProject) -> list[str]:
-    """Report parts that join a solved rail to copper the FEM never sees.
+def collect_bridge_candidates(loaded: LoadedProject) -> list[dict]:
+    """Every part that electrically joins two nets, and what FYPA did with it.
 
-    The FEM is restricted to *active* nets — those a PDN directive's
-    terminal actually touches (:func:`_collect_active_nets`). Copper on
-    every other net is excluded, which is right for signal nets but wrong
-    whenever a component physically conducts between an active net and an
-    excluded one: a ferrite between GND and AGND, a fuse ahead of VIN, a
-    sense resistor to a `_SENSE` net, a connector to a daughter board. That
-    path carries real current, so leaving it out overstates the rail's
-    return resistance.
+    One record per candidate, whatever its current state — annotated as
+    SERIES, auto-bridged (Net Tie / 0 Ω link), or not modelled at all. This
+    is the single source of truth behind the Bridges tab, the load-time
+    advisory, and the Setup summary, so those three can never disagree.
 
-    This is advisory only. Nothing is bridged automatically, because only
-    the user knows the part's DC resistance — a ferrite's datasheet "0 Ω"
-    is 20-200 mΩ of DCR, and guessing would be worse than omitting it. The
-    fix the message recommends is ``PDN_ROLE=SERIES`` + ``PDN_R``, which
-    pulls the far-side net into the solve. (Parts that are genuinely a piece
-    of metal — Net Ties and 0 Ω links — are bridged automatically before
-    this runs, so they never appear here.)
+    A "candidate" is a part whose pads touch exactly **two** distinct nets
+    and whose designator prefix is one that conducts at DC (see
+    :data:`_BRIDGE_DESIGNATOR_PREFIXES`). Note the test is two *nets*, not
+    two *pins*: a 4-pad Kelvin shunt or a 2-position jumper block bridges
+    two nets and matters, while a 2-pin part with both pads on one net does
+    not.
 
-    Returns one message per bridging part, most-connected net first.
+    ``impact`` is the field worth sorting on. The FEM only meshes nets a
+    directive touches, so a part joining a solved rail to an un-annotated
+    net is a real parallel current path the model cannot see, and the rail's
+    return resistance reads high. Those are the rows that change an answer.
     """
+    from fypa.altium.annotations import (
+        _component_value_text,
+        _zero_ohm_bridge_reason,
+    )
+
     proj = loaded.extracted
     directives = loaded.annotations.directives
     active = _collect_active_nets(directives, proj)
-    if not active:
-        return []
 
-    # Designators that already carry a directive — they are annotated, so
-    # whatever they bridge is already in the model.
-    annotated = {
-        (d.designator or "").strip().upper()
-        for d in directives if getattr(d, "designator", None)
+    # Designator -> the SERIES directive that already models it, if any.
+    series_by_des: dict[str, object] = {}
+    for d in directives:
+        if isinstance(d, ResistorSpec) and d.designator:
+            series_by_des[d.designator.strip().upper()] = d
+    # Designator -> the link the net merge absorbed, if any.
+    absorbed_by_des = {
+        b.designator.strip().upper(): b
+        for b in (getattr(loaded, "absorbed_bridges", ()) or ())
+        if b.designator
     }
+
+    sch_by_des: dict[str, object] = {}
+    for sch in proj.sch_components:
+        sch_by_des.setdefault(sch.designator.strip().upper(), sch)
 
     pads_by_comp: dict[int, list] = {}
     for pad in proj.pads:
@@ -3627,44 +3713,115 @@ def _flag_unannotated_bridges(loaded: LoadedProject) -> list[str]:
         if idx is not None and idx >= 0:
             pads_by_comp.setdefault(int(idx), []).append(pad)
 
-    messages: list[str] = []
+    def _net_name(idx: int) -> str:
+        return (proj.nets[idx].name
+                if 0 <= idx < len(proj.nets) else "(none)")
+
+    out: list[dict] = []
     for comp_idx, pads in pads_by_comp.items():
         if not (0 <= comp_idx < len(proj.pcb_components)):
             continue
-        if len(pads) > _BRIDGE_MAX_PADS:
-            continue
         comp = proj.pcb_components[comp_idx]
         des = (comp.source_designator or comp.designator or "").strip()
-        if not des or des.upper() in annotated:
+        if not des:
             continue
+        key = des.upper()
         kind = _bridge_part_kind(des)
-        if kind is None:
+        absorbed = absorbed_by_des.get(key)
+        series = series_by_des.get(key)
+        # A part the tool already models counts even if its prefix is not on
+        # the conducting list — the user's own annotation outranks the
+        # heuristic.
+        if kind is None and series is None and absorbed is None:
             continue
 
-        net_idxs = {
-            int(p.net_index) for p in pads
-            if p.net_index != NO_NET and 0 <= p.net_index < len(proj.nets)
-        }
-        if len(net_idxs) != 2:
-            continue  # not a two-terminal bridge
-        on_rail = sorted(net_idxs & active)
-        off_rail = sorted(net_idxs - active)
-        if not on_rail or not off_rail:
-            continue  # wholly inside or wholly outside the model
+        net_idxs = sorted({
+            int(pd.net_index) for pd in pads
+            if pd.net_index != NO_NET and 0 <= pd.net_index < len(proj.nets)
+        })
+        if absorbed is not None:
+            # Post-merge both pads report the surviving net; the original
+            # pair is only recoverable from the bridge record.
+            pair = [absorbed.p_net_index, absorbed.n_net_index]
+        else:
+            pair = net_idxs
+        if len(pair) != 2:
+            continue
 
-        rail_name = proj.nets[on_rail[0]].name
-        other_name = proj.nets[off_rail[0]].name
+        sch = sch_by_des.get(key)
+        params = getattr(sch, "parameters", None) or comp.parameters
+        value = _component_value_text(params)
+
+        if series is not None:
+            state = "series"
+            resistance = float(series.resistance)
+            why = "annotated PDN_ROLE=SERIES"
+        elif absorbed is not None:
+            state = "auto"
+            resistance = float(absorbed.resistance)
+            why = (_zero_ohm_bridge_reason(params, comp.footprint)
+                   or "Altium ComponentKind marks it a Net Tie")
+        else:
+            state = "unmodelled"
+            resistance = None
+            why = ""
+
+        a_active = pair[0] in active
+        b_active = pair[1] in active
+        if state == "unmodelled" and (a_active != b_active):
+            impact = (
+                f"joins the solved rail {_net_name(pair[0] if a_active else pair[1])!r} "
+                f"to {_net_name(pair[1] if a_active else pair[0])!r}, which no "
+                f"directive touches — that copper is left out of the FEM, so "
+                f"the rail's return resistance reads high"
+            )
+        else:
+            impact = ""
+
+        anchor = pads[0]
+        out.append({
+            "designator": des,
+            "kind": kind or "part",
+            "value": value,
+            "footprint": str(comp.footprint or ""),
+            "pin_count": len(pads),
+            "net_a": _net_name(pair[0]),
+            "net_b": _net_name(pair[1]),
+            "state": state,
+            "resistance_ohm": resistance,
+            "why": why,
+            "impact": impact,
+            "touches_active_rail": bool(a_active or b_active),
+            "x_mm": float(anchor.center.x),
+            "y_mm": float(anchor.center.y),
+            "layer_id": int(anchor.layer_id),
+        })
+
+    out.sort(key=lambda r: (not r["impact"], r["designator"]))
+    return out
+
+
+def _flag_unannotated_bridges(loaded: LoadedProject) -> list[str]:
+    """Advisory messages for parts that conduct between a solved rail and
+    copper the FEM never sees.
+
+    A thin presentation layer over :func:`collect_bridge_candidates` — the
+    Bridges tab renders the same records as an editable table, so the two
+    can never disagree about what was found.
+    """
+    messages: list[str] = []
+    for rec in collect_bridge_candidates(loaded):
+        if not rec["impact"]:
+            continue
         messages.append(
-            f"{des} ({kind}) connects the solved rail {rail_name!r} to "
-            f"{other_name!r}, which no PDN directive touches — so that copper "
-            f"is left out of the FEM and any current it really carries is "
-            f"missing. If it conducts at DC, annotate {des} with "
-            f"PDN_ROLE=SERIES and PDN_R set to its actual DC resistance "
-            f"(a ferrite's DCR, a fuse's cold resistance, a shunt's marked "
-            f"value); the return path through {other_name!r} is then solved "
-            f"too. Ignore this if the part is genuinely open at DC."
+            f"{rec['designator']} ({rec['kind']}) {rec['impact']}. If it "
+            f"conducts at DC, give it a resistance in the Bridges tab (or "
+            f"annotate it in Altium with PDN_ROLE=SERIES and PDN_R set to "
+            f"its actual DC resistance — a ferrite's DCR, a fuse's cold "
+            f"resistance, a shunt's marked value); the return path through "
+            f"{rec['net_b']!r} is then solved too. Ignore this if the part "
+            f"is genuinely open at DC."
         )
-
     messages.sort()
     return messages
 
@@ -4503,6 +4660,12 @@ class _AbsorbedBridge:
     n_x_mm: float
     n_y_mm: float
     canonical_net_index: int
+    # The two nets this link originally joined, before the merge collapsed
+    # them onto ``canonical_net_index``. Kept so the viewer can tell the user
+    # *what* got shorted — after the merge both pads report the canonical
+    # name, so the original pair is otherwise unrecoverable.
+    p_net_index: int = NO_NET
+    n_net_index: int = NO_NET
 
 
 def _build_net_merge_map(
@@ -4623,6 +4786,8 @@ def _build_net_merge_map(
             n_x_mm=n_pin.point.x,
             n_y_mm=n_pin.point.y,
             canonical_net_index=canonical,
+            p_net_index=p_pin.net_index,
+            n_net_index=n_pin.net_index,
         ))
     return remap, skipped, bridges
 
@@ -4717,6 +4882,7 @@ def _apply_net_remap(
 
 def load_project(prjpcb_path: str | Path,
                  pcbdoc_selector: str | Path | None = None,
+                 no_auto_bridge: set[str] | None = None,
                  ) -> LoadedProject:
     """Load and prepare an Altium project for PDN analysis.
 
@@ -4729,6 +4895,13 @@ def load_project(prjpcb_path: str | Path,
 
     ``pcbdoc_selector`` picks one of several ``.PcbDoc`` files when the
     project contains more than one (see :func:`fypa.altium.extract.extract_project`).
+
+    ``no_auto_bridge`` is the set of designators the user has told the tool
+    not to short automatically (the Bridges tab, persisted in the ``.fypa``).
+    It has to arrive here rather than with the editor directives: the
+    auto-bridge and the net merge it triggers both happen during annotation
+    parsing, so by the time editor directives are applied the two nets have
+    already been collapsed into one.
 
     Auto-merge pass: SERIES directives below
     :data:`NET_MERGE_RESISTANCE_THRESHOLD_OHM` are detected as electrical
@@ -4745,7 +4918,8 @@ def load_project(prjpcb_path: str | Path,
 
     log.info("Stage 2/2: parsing PDN_* annotations (pass 1: discover merges)")
     _t = time.monotonic()
-    initial_annotations = parse_annotations(extracted, enabled_layers=enabled)
+    initial_annotations = parse_annotations(
+        extracted, enabled_layers=enabled, no_auto_bridge=no_auto_bridge)
     log.info("Stage 2/2: annotations (pass 1) done in %.2fs",
              time.monotonic() - _t)
 
@@ -4777,6 +4951,7 @@ def load_project(prjpcb_path: str | Path,
             extracted, enabled_layers=enabled,
             skip_designators=skipped_designators,
             net_remap=net_remap,
+            no_auto_bridge=no_auto_bridge,
         )
         log.info("Stage 2/2: annotations (pass 2) done in %.2fs",
                  time.monotonic() - _t)

@@ -259,3 +259,55 @@ def test_explicit_pdn_role_overrides_auto_bridge():
     specs = _resistors(parse_annotations(proj, enabled_layers=[1]))
     assert len(specs) == 1
     assert specs[0].resistance == pytest.approx(0.05)
+
+
+# ---------------------------------------------------------------------------
+# Auto-bridge opt-out (Bridges tab -> .fypa -> parse_annotations)
+# ---------------------------------------------------------------------------
+
+def test_opt_out_leaves_the_link_open():
+    """The only way to veto an auto-bridge: the bridge and the net merge it
+    triggers both happen during annotation parsing, before any editor
+    directive is applied."""
+    proj = _link_proj("0R")
+    assert _resistors(parse_annotations(proj, enabled_layers=[1])), "precondition"
+    result = parse_annotations(proj, enabled_layers=[1],
+                               no_auto_bridge={"R9"})
+    assert _resistors(result) == []
+
+
+def test_opt_out_is_case_insensitive():
+    proj = _link_proj("0R", designator="R9")
+    assert _resistors(parse_annotations(
+        proj, enabled_layers=[1], no_auto_bridge={"r9"})) == []
+
+
+def test_opt_out_only_affects_the_named_part():
+    proj = _link_proj("0R", designator="R9")
+    assert _resistors(parse_annotations(
+        proj, enabled_layers=[1], no_auto_bridge={"R10"}))
+
+
+def test_opt_out_is_reported_not_silent():
+    """A silently skipped bridge is as confusing as a silently applied one."""
+    result = parse_annotations(_link_proj("0R"), enabled_layers=[1],
+                               no_auto_bridge={"R9"})
+    notes = " ".join(result.warnings + result.infos + result.errors)
+    assert "auto-bridge disabled" in notes and "R9" in notes
+
+
+def test_opt_out_round_trips_through_the_project_file(tmp_path):
+    from fypa.project_file import ProjectFile
+    proj = ProjectFile(no_auto_bridge=["R9", "FB2"])
+    path = tmp_path / "p.fypa"
+    proj.save(path)
+    assert ProjectFile.load(path).no_auto_bridge == ["R9", "FB2"]
+
+
+def test_project_file_without_the_key_loads_with_an_empty_opt_out(tmp_path):
+    """Older .fypa files predate the field — additive, so no schema bump."""
+    import json
+    from fypa.project_file import ProjectFile
+    path = tmp_path / "old.fypa"
+    path.write_text(json.dumps({"schema": 1}), encoding="utf-8")
+    assert ProjectFile.load(path).no_auto_bridge == []

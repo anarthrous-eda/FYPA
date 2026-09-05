@@ -291,6 +291,13 @@ class ProjectFile:
     copper_names: list[CopperName] = field(default_factory=list)
     cap_overrides: list[CapOverride] = field(default_factory=list)
     net_renames: dict[str, str] = field(default_factory=dict)   # reserved
+    # Designators the user has told FYPA NOT to auto-bridge. A Net Tie, 0 Ω
+    # resistor or wire jumper is normally shorted automatically and its two
+    # nets merged; listing it here leaves it open at DC instead. Needed
+    # because the auto-bridge runs during annotation parsing, long before
+    # editor directives are applied, so an editor directive cannot veto one
+    # — this list is the only thing that can. Case-insensitive on use.
+    no_auto_bridge: list[str] = field(default_factory=list)
     viewer_settings: dict[str, Any] = field(default_factory=dict)
 
     # ---- Gerber-import fields (schema v2) --------------------------------
@@ -331,6 +338,7 @@ class ProjectFile:
             "copper_names": [c.to_dict() for c in self.copper_names],
             "cap_overrides": [c.to_dict() for c in self.cap_overrides],
             "net_renames": dict(self.net_renames),
+            "no_auto_bridge": list(self.no_auto_bridge),
             "viewer_settings": dict(self.viewer_settings),
             "source_kind": self.source_kind,
             "gerber_files": [_rel(p, base) for p in self.gerber_files],
@@ -378,6 +386,7 @@ class ProjectFile:
                 CapOverride.from_dict(c)
                 for c in doc.get("cap_overrides", [])
             ],
+            no_auto_bridge=[str(d) for d in doc.get("no_auto_bridge", [])],
             net_renames=dict(doc.get("net_renames", {})),
             viewer_settings=dict(doc.get("viewer_settings", {})),
             source_kind=str(doc.get("source_kind", "altium")),

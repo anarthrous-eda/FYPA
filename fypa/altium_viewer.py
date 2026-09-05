@@ -4912,10 +4912,16 @@ class _SolveWorker(QThread):
                   loaded_project: object | None = None,
                   load_only: bool = False,
                   adaptive_regulator_gain: bool = False,
+                  no_auto_bridge: set[str] | None = None,
                   parent=None) -> None:
         super().__init__(parent)
         self._prjpcb_path = prjpcb_path
         self._settings = settings
+        # Designators the user has told the tool not to short automatically
+        # (Bridges tab). Has to reach load_project, not the editor-directive
+        # path: the auto-bridge and the net merge it triggers both happen
+        # while annotations are parsed, before editor directives exist.
+        self._no_auto_bridge = set(no_auto_bridge or ())
         # ``{(designator, schdoc, channel_index): current_amperes}`` —
         # substituted into the parsed AnnotationResult before build_problem
         # so the FEM sees the new currents. ``channel_index`` is None for
@@ -5206,8 +5212,10 @@ class _SolveWorker(QThread):
             if loaded is None:
                 self.stage_changed.emit("Loading project from disk…")
                 with _timer.stage("Extract + load project"):
-                    loaded = load_project(self._prjpcb_path,
-                                          pcbdoc_selector=self._pcbdoc_selector)
+                    loaded = load_project(
+                        self._prjpcb_path,
+                        pcbdoc_selector=self._pcbdoc_selector,
+                        no_auto_bridge=self._no_auto_bridge or None)
                 # Persist the freshly-loaded design info so the next run
                 # (e.g. a Re-run that only changes physics) can skip the
                 # extract step. Failures are non-fatal.
@@ -10294,6 +10302,17 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._vias_tab_index = self.tabs.addTab(self._build_vias_tab(), "Vias")
         self._init_log.info("PdnViewer init: Vias tab (%.2fs)", time.monotonic() - _t)
 
+        # Bridges — every part that joins two nets, and what FYPA did with
+        # it. Cheap to build (the candidate scan already ran during the
+        # solve), but populated lazily like its neighbours for consistency.
+        _t = time.monotonic()
+        self._bridges_table_populated = False
+        self._bridges_tab_index = self.tabs.addTab(
+            self._build_bridges_tab(), "Bridges")
+        self._update_bridges_tab_title()
+        self._init_log.info("PdnViewer init: Bridges tab (%.2fs)",
+                            time.monotonic() - _t)
+
         # Capacitors tab — decoupling-cap loop-inductance analysis. Same
         # lazy-populate treatment; unlike Nodes/Vias there's no deferred
         # warning-count init either, because the row build includes a
@@ -14228,6 +14247,12 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         "RESISTOR":  {"symbol": "s",        "color": "#3aff8a", "size": 12, "label": "SERIES"},
         "SERIES":    {"symbol": "s",        "color": "#3aff8a", "size": 12, "label": "SERIES"},
         "REGULATOR": {"symbol": "d",        "color": "#ff66ff", "size": 14, "label": "REGULATOR"},
+        # A link FYPA shorted on its own (Net Tie, 0 Ω resistor, jumper).
+        # Same square as SERIES because that is what it is electrically, but
+        # a dimmer green and its own legend row so it reads as inferred
+        # rather than annotated, and can be toggled independently.
+        "AUTO_BRIDGE": {"symbol": "s",      "color": "#1f9c5a", "size": 12,
+                        "label": "SERIES (auto)"},
     }
 
     # --- Directive-pin marker + legend overlay -----------------------------
@@ -16428,7 +16453,14 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                         # every rail's directives in at once. No visible rail
                         # ⇒ no rail markers (don't fall through to "show
                         # everything").
-                        if pin.get("net") not in rail_members:
+                        # An auto-bridge is not gated on rail visibility:
+                        # after the merge both its pads report the surviving
+                        # net, which is usually a return net the user is not
+                        # currently viewing — so the rail test would hide
+                        # exactly the inferred shorts they most need to see.
+                        # Its own legend row provides the off switch instead.
+                        if (role != "AUTO_BRIDGE"
+                                and pin.get("net") not in rail_members):
                             continue
                         xs, ys, zs, rcs = per_role.setdefault(
                             (role, is_n_side), ([], [], [], []))
@@ -23419,6 +23451,11 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             self._build_vias_tab(), "Vias",
         )
         self._update_vias_tab_title(getattr(self, "_vias_warn_count", 0))
+        self._bridges_table_populated = False
+        self._bridges_tab_index = self.tabs.addTab(
+            self._build_bridges_tab(), "Bridges",
+        )
+        self._update_bridges_tab_title()
         self._caps_tab_index = self.tabs.addTab(
             self._build_capacitors_tab(), "Capacitors",
         )
@@ -24738,6 +24775,14 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             loaded_project=loaded_project,
             load_only=load_only,
             adaptive_regulator_gain=adaptive_regulator_gain,
+            # Bridges-tab opt-outs. Read from the live project rather than
+            # passed in: every solve path (Resolve, Re-run, import) must
+            # honour them, and they live with the editor directives.
+            no_auto_bridge={
+                d.strip().upper()
+                for d in (getattr(getattr(self, "_project", None),
+                                  "no_auto_bridge", []) or [])
+            },
             parent=self,
         )
         if is_import:
@@ -25300,6 +25345,23 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         # is deferred to first tab activation (see __init__ + _on_tabs_current_changed).
         return widget
 
+    def _update_bridges_tab_title(self) -> None:
+        """Badge the tab with the number of parts that affect a solved rail.
+
+        Those are the rows that change an answer — a part joining a solved
+        rail to copper no directive touches means that copper is missing
+        from the FEM. Putting the count on the tab is what stops the whole
+        feature being something the user has to think to go and look at.
+        """
+        idx = getattr(self, "_bridges_tab_index", -1)
+        if idx < 0:
+            return
+        try:
+            n = sum(1 for r in self._bridge_rows() if r.get("impact"))
+        except Exception:
+            n = 0
+        self.tabs.setTabText(idx, f"Bridges \u26a0 {n}" if n else "Bridges")
+
     def _on_tabs_current_changed(self, index: int) -> None:
         """Lazy-populate the Nodes / Vias tables the first time the user
         opens them. On a 7 000-via board the Vias populate alone takes
@@ -25322,6 +25384,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 self._populate_vias_table()
             finally:
                 QApplication.restoreOverrideCursor()
+        elif (index == getattr(self, "_bridges_tab_index", -1)
+                and not getattr(self, "_bridges_table_populated", True)):
+            self._bridges_table_populated = True
+            self._populate_bridges_table()
         elif (index == getattr(self, "_caps_tab_index", -1)
                 and not getattr(self, "_caps_table_populated", True)):
             # The row build is seconds of geometry work — run it behind a busy
@@ -25783,6 +25849,516 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         ("|I| max (A)",      True),
         ("Power (mW)",       True),
     )
+
+
+    # --- Bridges tab -------------------------------------------------------
+    #
+    # Every part that joins two nets, and what FYPA did with it. Bridging was
+    # previously spread across four mechanisms with no single view of the
+    # result — Altium PDN_ROLE=SERIES, the Net Tie / 0 Ω auto-bridge, the
+    # low-Ω net merge that absorbs those, and editor-mode SERIES — which is
+    # why a board could be silently shorted in five places with nothing on
+    # screen to say so. This tab is that single view, and the only place an
+    # auto-bridge can be turned off.
+
+    _BRIDGES_TABLE_COLUMNS: tuple[tuple[str, str], ...] = (
+        ("Part", "Designator. Click a row to locate it on the board."),
+        ("Kind", "Inferred from the designator prefix."),
+        ("Value", "The part's Altium value / comment."),
+        ("Pins", "Pad count. The filter below keys on distinct NETS, not "
+                 "pins — a 4-pad Kelvin shunt bridges two nets and matters, "
+                 "a 2-pin part with both pads on one net does not."),
+        ("Nets", "The two nets this part joins."),
+        ("State", "series = you annotated it · auto = FYPA shorted it on "
+                  "its own · off = auto-bridge disabled · not modelled = "
+                  "open at DC, its far-side copper is absent from the FEM."),
+        ("R", "DC resistance in ohms. Editable. Blank = not modelled."),
+        ("Why / impact", "Why FYPA treated it this way, and what it costs "
+                         "the result if it is wrong."),
+    )
+
+    # Below this, FYPA merges the two nets into one rail instead of keeping a
+    # lumped resistor — mirrors loader.NET_MERGE_RESISTANCE_THRESHOLD_OHM.
+    # Surfaced in the UI because the merge renames nets, which is startling
+    # if you typed a small number and watched a rail disappear.
+    _BRIDGE_MERGE_THRESHOLD_OHM: float = 0.9e-3
+
+    def _build_bridges_tab(self) -> QWidget:
+        widget = QWidget(self.tabs)
+        outer = QVBoxLayout(widget)
+        outer.setContentsMargins(8, 8, 8, 8)
+
+        blurb = QLabel(
+            "Parts that electrically join two nets. Set a resistance to model "
+            "one as a SERIES element, or switch off an automatic short. "
+            "Changes are saved to the project file and applied on the next "
+            "Resolve."
+        )
+        blurb.setWordWrap(True)
+        blurb.setStyleSheet(f"QLabel {{ color: {_T()['fg_muted']}; }}")
+        outer.addWidget(blurb)
+
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("Show:"))
+        self.bridges_state_combo = QComboBox()
+        self.bridges_state_combo.addItems([
+            "All parts", "Modelled as SERIES", "Auto-bridged",
+            "Not modelled", "Affects a solved rail",
+        ])
+        self.bridges_state_combo.setToolTip(
+            "'Affects a solved rail' is the one to watch: those parts join a "
+            "rail being solved to copper no directive touches, so that copper "
+            "is missing from the FEM and the rail's return resistance reads "
+            "high."
+        )
+        self.bridges_state_combo.currentTextChanged.connect(
+            self._apply_bridges_filter)
+        filter_row.addWidget(self.bridges_state_combo)
+
+        filter_row.addSpacing(12)
+        self.bridges_two_net_box = QCheckBox("Two-net parts only")
+        self.bridges_two_net_box.setChecked(True)
+        self.bridges_two_net_box.setToolTip(
+            "Only parts whose pads touch exactly two distinct nets — the "
+            "ones that can actually bridge. Off shows every candidate part."
+        )
+        self.bridges_two_net_box.toggled.connect(self._apply_bridges_filter)
+        filter_row.addWidget(self.bridges_two_net_box)
+
+        filter_row.addStretch(1)
+        self.bridges_summary_label = QLabel("")
+        self.bridges_summary_label.setStyleSheet(
+            f"QLabel {{ color: {_T()['fg_muted']}; }}")
+        filter_row.addWidget(self.bridges_summary_label)
+        outer.addLayout(filter_row)
+
+        self.bridges_table = QTableWidget()
+        cols = self._BRIDGES_TABLE_COLUMNS
+        self.bridges_table.setColumnCount(len(cols))
+        self.bridges_table.setHorizontalHeaderLabels([c[0] for c in cols])
+        for i, (_name, tip) in enumerate(cols):
+            item = self.bridges_table.horizontalHeaderItem(i)
+            if item is not None:
+                item.setToolTip(tip)
+        self.bridges_table.setSortingEnabled(True)
+        self.bridges_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.bridges_table.setAlternatingRowColors(True)
+        self.bridges_table.verticalHeader().setVisible(False)
+        self.bridges_table.horizontalHeader().setStretchLastSection(True)
+        self.bridges_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.Interactive)
+        _t = _T()
+        self.bridges_table.setStyleSheet(
+            f"QTableWidget {{ background-color: {_t['bg']}; color: {_t['fg']};"
+            f"               gridline-color: {_t['gridline']};"
+            f"               alternate-background-color: {_t['bg_alt']}; }}"
+            f"QHeaderView::section {{ background-color: {_t['bg_header']};"
+            f"                       color: {_t['fg_strong']}; padding: 4px;"
+            f"                       border: 1px solid {_t['border']}; }}"
+            f"QTableWidget::item:selected {{"
+            f"    background-color: {_t['bg_selection']}; }}"
+        )
+        self.bridges_table.cellClicked.connect(self._on_bridges_cell_clicked)
+        self.bridges_table.itemChanged.connect(self._on_bridges_item_changed)
+        outer.addWidget(self.bridges_table, 1)
+
+        edit_row = QHBoxLayout()
+        edit_row.addWidget(QLabel("Selected part:"))
+        self.bridges_r_edit = QLineEdit()
+        self.bridges_r_edit.setPlaceholderText("resistance in ohms, e.g. 0.05")
+        self.bridges_r_edit.setValidator(_numeric_validator(self, top=1e12))
+        self.bridges_r_edit.setFixedWidth(180)
+        self.bridges_r_edit.setToolTip(
+            "Use the part's real DC resistance, not its nominal value — a "
+            "ferrite's datasheet '0 Ω' is 20–200 mΩ of DCR, a fuse 10–100 mΩ."
+        )
+        self.bridges_r_edit.textChanged.connect(self._on_bridge_r_text_changed)
+        edit_row.addWidget(self.bridges_r_edit)
+
+        self.bridges_apply_btn = QPushButton("Model as SERIES")
+        self.bridges_apply_btn.setToolTip(
+            "Add an editor SERIES directive for the selected part with this "
+            "resistance. Saved to the .fypa; press Resolve to apply it.")
+        self.bridges_apply_btn.clicked.connect(self._on_bridge_apply)
+        edit_row.addWidget(self.bridges_apply_btn)
+
+        self.bridges_clear_btn = QPushButton("Remove")
+        self.bridges_clear_btn.setToolTip(
+            "Drop the editor SERIES directive for this part, or re-enable an "
+            "auto-bridge that was switched off.")
+        self.bridges_clear_btn.clicked.connect(self._on_bridge_clear)
+        edit_row.addWidget(self.bridges_clear_btn)
+
+        self.bridges_disable_btn = QPushButton("Disable auto-bridge")
+        self.bridges_disable_btn.setToolTip(
+            "Stop FYPA shorting this part automatically — it is left open at "
+            "DC. The only way to veto an auto-bridge: the short (and the net "
+            "merge that absorbs it) happens while annotations are parsed, "
+            "long before editor directives are applied.")
+        self.bridges_disable_btn.clicked.connect(self._on_bridge_disable)
+        edit_row.addWidget(self.bridges_disable_btn)
+
+        edit_row.addStretch(1)
+        self.bridges_hint_label = QLabel("")
+        self.bridges_hint_label.setWordWrap(True)
+        edit_row.addWidget(self.bridges_hint_label, 1)
+        outer.addLayout(edit_row)
+        self._refresh_bridge_buttons()
+        return widget
+
+    # --- Bridges tab: data -------------------------------------------------
+
+    def _bridge_rows(self) -> list[dict]:
+        """Candidate records from solve metadata, with the user's own edits
+        folded in so the table shows the *pending* state rather than the last
+        solve's."""
+        meta = self.metadata if isinstance(self.metadata, dict) else {}
+        rows = [dict(r) for r in (meta.get("bridge_candidates") or [])]
+        project = getattr(self, "_project", None)
+        if project is None:
+            return rows
+
+        opted_out = {d.strip().upper()
+                     for d in getattr(project, "no_auto_bridge", []) or []}
+        editor_series = {
+            (ed.designator or "").strip().upper(): ed
+            for ed in getattr(project, "editor_directives", []) or []
+            if ed.role == "SERIES" and ed.designator
+        }
+        for r in rows:
+            key = r["designator"].strip().upper()
+            ed = editor_series.get(key)
+            if ed is not None and ed.resistance is not None:
+                r["state"] = "series"
+                r["resistance_ohm"] = float(ed.resistance)
+                r["why"] = "set here (editor SERIES)"
+                r["impact"] = ""
+            elif key in opted_out:
+                r["state"] = "off"
+                r["resistance_ohm"] = None
+                r["why"] = "auto-bridge disabled here"
+        return rows
+
+    def _selected_bridge_row(self) -> dict | None:
+        table = getattr(self, "bridges_table", None)
+        if table is None:
+            return None
+        items = table.selectedItems()
+        if not items:
+            return None
+        rec = table.item(items[0].row(), 0)
+        return rec.data(Qt.UserRole) if rec is not None else None
+
+
+    _BRIDGE_STATE_LABEL = {
+        "series": "series",
+        "auto": "auto",
+        "off": "off",
+        "unmodelled": "not modelled",
+    }
+
+    def _populate_bridges_table(self) -> None:
+        table = getattr(self, "bridges_table", None)
+        if table is None:
+            return
+        rows = self._bridge_rows()
+        self._bridges_rows_cache = rows
+        # Sorting and itemChanged both fire during a populate; suppress them
+        # or every setItem re-sorts the model out from under the loop and the
+        # R column's edit handler fires on rows the user never touched.
+        table.setSortingEnabled(False)
+        self._bridges_populating = True
+        try:
+            table.setRowCount(len(rows))
+            for i, r in enumerate(rows):
+                state = r.get("state", "unmodelled")
+                r_ohm = r.get("resistance_ohm")
+                nets = f"{r.get('net_a', '?')} \u2194 {r.get('net_b', '?')}"
+                why = r.get("impact") or r.get("why") or ""
+                cells = [
+                    r.get("designator", "?"),
+                    r.get("kind", ""),
+                    r.get("value", ""),
+                    str(r.get("pin_count", "")),
+                    nets,
+                    self._BRIDGE_STATE_LABEL.get(state, state),
+                    "" if r_ohm is None else f"{r_ohm:g}",
+                    why,
+                ]
+                for c, text in enumerate(cells):
+                    item = QTableWidgetItem(text)
+                    # Only the R column is editable — everything else is
+                    # extracted fact, not a user choice.
+                    if c == 6:
+                        item.setFlags(item.flags() | Qt.ItemIsEditable)
+                    else:
+                        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                    if c == 0:
+                        item.setData(Qt.UserRole, r)
+                    if r.get("impact"):
+                        item.setForeground(QColor("#ffb300"))
+                    elif state == "auto":
+                        item.setForeground(QColor("#1f9c5a"))
+                    table.setItem(i, c, item)
+        finally:
+            self._bridges_populating = False
+            table.setSortingEnabled(True)
+        table.resizeColumnsToContents()
+        self._apply_bridges_filter()
+
+    def _apply_bridges_filter(self) -> None:
+        table = getattr(self, "bridges_table", None)
+        if table is None:
+            return
+        mode = self.bridges_state_combo.currentText()
+        two_net_only = self.bridges_two_net_box.isChecked()
+        shown = 0
+        impacted = 0
+        for i in range(table.rowCount()):
+            cell = table.item(i, 0)
+            r = cell.data(Qt.UserRole) if cell is not None else None
+            if r is None:
+                continue
+            state = r.get("state", "unmodelled")
+            if r.get("impact"):
+                impacted += 1
+            keep = True
+            if mode == "Modelled as SERIES":
+                keep = state == "series"
+            elif mode == "Auto-bridged":
+                keep = state == "auto"
+            elif mode == "Not modelled":
+                keep = state in ("unmodelled", "off")
+            elif mode == "Affects a solved rail":
+                keep = bool(r.get("impact"))
+            if keep and two_net_only and r.get("net_a") == r.get("net_b"):
+                keep = False
+            table.setRowHidden(i, not keep)
+            shown += int(keep)
+        total = table.rowCount()
+        msg = f"{shown} of {total} part(s)"
+        if impacted:
+            msg += f"  \u2022  {impacted} affecting a solved rail"
+        self.bridges_summary_label.setText(msg)
+
+    def _on_bridges_cell_clicked(self, row: int, _col: int) -> None:
+        """Locate the part on the board and load its resistance into the
+        editor field."""
+        cell = self.bridges_table.item(row, 0)
+        r = cell.data(Qt.UserRole) if cell is not None else None
+        if not r:
+            return
+        r_ohm = r.get("resistance_ohm")
+        self.bridges_r_edit.setText("" if r_ohm is None else f"{r_ohm:g}")
+        self._refresh_bridge_buttons()
+        # Reuse the Vias tab's highlight so a row click centres the part.
+        try:
+            self._highlight_via_xy = (float(r["x_mm"]), float(r["y_mm"]))
+            self._render()
+        except Exception:
+            logging.getLogger(__name__).debug("bridge row highlight failed", exc_info=True)
+
+    def _on_bridges_item_changed(self, item) -> None:
+        """In-place edit of the R column commits the same way the button
+        does, so typing a value and pressing Enter just works."""
+        if getattr(self, "_bridges_populating", False) or item.column() != 6:
+            return
+        cell = self.bridges_table.item(item.row(), 0)
+        r = cell.data(Qt.UserRole) if cell is not None else None
+        if not r:
+            return
+        text = item.text().strip()
+        if not text:
+            self._apply_bridge_series(r, None)
+            return
+        try:
+            value = _parse_numeric_text(text)
+        except ValueError:
+            QMessageBox.warning(
+                self, "Not a number",
+                f"{text!r} is not a resistance. Enter ohms, e.g. 0.05.")
+            self._populate_bridges_table()
+            return
+        self._apply_bridge_series(r, value)
+
+    def _on_bridge_r_text_changed(self, text: str) -> None:
+        """Live warning about the merge cliff — below the threshold the two
+        nets stop existing separately, which renames rails."""
+        label = getattr(self, "bridges_hint_label", None)
+        if label is None:
+            return
+        text = (text or "").strip()
+        if not text:
+            label.setText("")
+            return
+        try:
+            value = _parse_numeric_text(text)
+        except ValueError:
+            label.setText("")
+            return
+        r = self._selected_bridge_row()
+        if value < self._BRIDGE_MERGE_THRESHOLD_OHM:
+            a = (r or {}).get("net_a", "the two nets")
+            b = (r or {}).get("net_b", "")
+            label.setText(
+                f"<span style='color:#ffb300;'>Below "
+                f"{self._BRIDGE_MERGE_THRESHOLD_OHM * 1e3:g} m\u03a9 this is "
+                f"treated as a wire: {_esc(a)} and {_esc(b)} merge into one "
+                f"rail and one of the names disappears from the rail "
+                f"picker.</span>")
+        else:
+            label.setText(
+                f"<span style='color:{_T()['fg_muted']};'>Modelled as a "
+                f"{value * 1e3:g} m\u03a9 series element; both nets stay "
+                f"separate.</span>")
+
+    def _refresh_bridge_buttons(self) -> None:
+        r = self._selected_bridge_row()
+        for name in ("bridges_apply_btn", "bridges_clear_btn",
+                     "bridges_disable_btn"):
+            btn = getattr(self, name, None)
+            if btn is not None:
+                btn.setEnabled(bool(r))
+        btn = getattr(self, "bridges_disable_btn", None)
+        if btn is not None:
+            # Only meaningful for a part FYPA shorted on its own.
+            btn.setEnabled(bool(r) and r.get("state") == "auto")
+
+    # --- Bridges tab: actions ----------------------------------------------
+
+    def _warn_if_shorting_power_rails(self, rec: dict) -> bool:
+        """Confirm before joining two nets that both look like supplies.
+
+        Tying AGND to GND is routine; tying +5V to +3V3 is almost always a
+        mistake, and it is one the solver will happily accept and quietly
+        give a wrong answer for.
+        """
+        a = str(rec.get("net_a", ""))
+        b = str(rec.get("net_b", ""))
+        if not (_looks_like_supply_net(a) and _looks_like_supply_net(b)):
+            return True
+        if _supply_net_key(a) == _supply_net_key(b):
+            return True   # +3V3 and +3V3_SW are the same supply
+        return QMessageBox.warning(
+            self, "Shorting two supplies?",
+            f"{rec.get('designator', '?')} joins {a} and {b}, which "
+            f"both look like supply rails rather than a ground pair."
+            f"\n\nTying two grounds together is routine; tying two "
+            f"different supplies is almost always a mistake, and the "
+            f"solver will accept it and quietly return a wrong answer."
+            f"\n\nBridge them anyway?",
+            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel,
+        ) == QMessageBox.Yes
+
+    def _on_bridge_apply(self) -> None:
+        rec = self._selected_bridge_row()
+        if not rec:
+            return
+        text = self.bridges_r_edit.text().strip()
+        if not text:
+            QMessageBox.information(
+                self, "No resistance",
+                "Enter the part's DC resistance in ohms first.")
+            return
+        try:
+            value = _parse_numeric_text(text)
+        except ValueError:
+            QMessageBox.warning(self, "Not a number",
+                                f"{text!r} is not a resistance.")
+            return
+        self._apply_bridge_series(rec, value)
+
+    def _on_bridge_clear(self) -> None:
+        rec = self._selected_bridge_row()
+        if rec:
+            self._apply_bridge_series(rec, None)
+
+    def _on_bridge_disable(self) -> None:
+        rec = self._selected_bridge_row()
+        if not rec:
+            return
+        project = self._ensure_project()
+        des = rec["designator"]
+        existing = {d.strip().upper()
+                    for d in getattr(project, "no_auto_bridge", []) or []}
+        if des.strip().upper() in existing:
+            return
+        project.no_auto_bridge = list(
+            getattr(project, "no_auto_bridge", []) or []) + [des]
+        self._after_bridge_edit(
+            f"{des}: auto-bridge disabled. It will be left open at DC on the "
+            f"next Resolve.")
+
+    def _apply_bridge_series(self, rec: dict, resistance: float | None) -> None:
+        """Write (or drop) an editor SERIES directive for this part.
+
+        Edits go into the ``.fypa`` as ordinary editor directives — the same
+        store and the same undo path as Edit mode — so there is one source of
+        truth rather than a parallel one owned by this tab.
+        """
+        from fypa.project_file import EditorDirective
+
+        project = self._ensure_project()
+        des = rec["designator"]
+        key = des.strip().upper()
+
+        # Drop any existing editor SERIES for this part first, so repeated
+        # edits replace rather than accumulate.
+        for ed in list(getattr(project, "editor_directives", []) or []):
+            if (ed.role == "SERIES"
+                    and (ed.designator or "").strip().upper() == key):
+                project.remove_directive(ed.id)
+
+        if resistance is None:
+            # "Remove" also lifts an opt-out, so one button undoes either.
+            opted = list(getattr(project, "no_auto_bridge", []) or [])
+            project.no_auto_bridge = [
+                d for d in opted if d.strip().upper() != key]
+            self._after_bridge_edit(f"{des}: reverted to FYPA's default.")
+            return
+
+        if not self._warn_if_shorting_power_rails(rec):
+            return
+        if resistance <= 0.0:
+            QMessageBox.warning(
+                self, "Resistance must be positive",
+                "A zero or negative resistance would short the pads through "
+                "an ideal wire. For a true wire link, leave it to the "
+                "automatic bridge.")
+            return
+
+        project.upsert_directive(EditorDirective(
+            kind="component", role="SERIES", designator=des,
+            single_net=False,
+            p_net=rec.get("net_a"), n_net=rec.get("net_b"),
+            resistance=float(resistance),
+            overrides_designator=des,
+        ))
+        # An explicit directive supersedes the automatic short, so clear any
+        # opt-out too — otherwise the part would be both disabled and modelled.
+        opted = list(getattr(project, "no_auto_bridge", []) or [])
+        project.no_auto_bridge = [
+            d for d in opted if d.strip().upper() != key]
+        note = (f"{des}: modelled as a {resistance * 1e3:g} m\u03a9 SERIES "
+                f"element.")
+        if resistance < self._BRIDGE_MERGE_THRESHOLD_OHM:
+            note += (f" Below {self._BRIDGE_MERGE_THRESHOLD_OHM * 1e3:g} "
+                     f"m\u03a9, so {rec.get('net_a')} and {rec.get('net_b')} "
+                     f"will be merged into one rail.")
+        self._after_bridge_edit(note)
+
+    def _after_bridge_edit(self, message: str) -> None:
+        """Persist, refresh the table, and mark the solve stale."""
+        # Editor mode marks dirty and lets the user save explicitly; do the
+        # same rather than writing the .fypa behind their back. The edit is
+        # already in the in-memory project either way.
+        self._mark_project_dirty()
+        self._update_pending_rails()
+        self._populate_bridges_table()
+        self.bridges_hint_label.setText(
+            f"<span style='color:{_T()['fg_muted']};'>{_esc(message)} "
+            f"Press Resolve to apply.</span>")
+
 
     def _build_vias_tab(self) -> QWidget:
         """Build the Vias tab — a sortable table of every via's worst-segment
@@ -29751,6 +30327,59 @@ def _build_stub_lean_solution_from_loaded(loaded):
     return stub
 
 
+
+# Net names that read as a ground / return rather than a supply. Bridging two
+# of these is routine (AGND to GND through a ferrite is a standard layout);
+# bridging two different *supplies* almost never is, so the Bridges tab warns
+# only in the latter case.
+_GROUND_NET_TOKENS: frozenset[str] = frozenset({
+    "GND", "GROUND", "AGND", "DGND", "PGND", "SGND", "EGND", "CHASSIS",
+    "EARTH", "VSS", "VSSA", "COM", "RTN", "RETURN", "0V",
+})
+
+
+def _supply_net_key(name: str) -> str:
+    """Normalised identity of the supply a net name refers to.
+
+    ``+3V3``, ``3V3``, ``+3V3_SW`` and ``3v3-filt`` are all the same supply
+    seen at different points, so bridging them is not worth a warning. The
+    key strips polarity, separators and the common post-regulation suffixes.
+    """
+    key = re.sub(r"[^A-Z0-9]", "", str(name).upper())
+    for suffix in ("SW", "FILT", "FILTERED", "SENSE", "SNS", "IN", "OUT",
+                   "A", "D", "F"):
+        if len(key) > len(suffix) + 1 and key.endswith(suffix):
+            key = key[: -len(suffix)]
+            break
+    return key
+
+
+def _looks_like_supply_net(name: str) -> bool:
+    """True when a net name reads as a power rail rather than a return.
+
+    Deliberately conservative: it must NOT look like a ground, and must
+    carry a voltage-ish token (``3V3``, ``VCC``, ``VDD``, ``+5``). Anything
+    unrecognised returns False, so an unusual naming scheme produces no
+    warning rather than a false one.
+    """
+    raw = str(name).strip().upper()
+    if not raw:
+        return False
+    squashed = re.sub(r"[^A-Z0-9]", "", raw)
+    if not squashed:
+        return False
+    if squashed in _GROUND_NET_TOKENS:
+        return False
+    if any(squashed.startswith(g) or squashed.endswith(g)
+           for g in ("GND", "VSS", "AGND", "DGND", "PGND")):
+        return False
+    # 3V3 / 1V8 / 12V style, or an explicit supply prefix.
+    if re.search(r"\d+V\d*", squashed):
+        return True
+    return bool(re.match(r"^(VCC|VDD|VBAT|VBUS|VIN|VOUT|VREF|VVDD|PWR|\+)",
+                         raw.replace(" ", "")))
+
+
 class _GerberImportCancelled(Exception):
     """Signals that a Gerber import was cancelled cooperatively at a stage
     boundary. Raised from :func:`_finish_gerber_import` when the worker's
@@ -30460,6 +31089,40 @@ def _format_setup_html(solution, metadata: dict | None,
             parts.append(f"<tr><th>Solver residual ‖L·v − r‖</th><td{res_flag} class='num'>{res:.3e}</td></tr>"
                          f"<tr><th>Ground-node current</th><td{gnd_flag} class='num'>{gnd*1000:.4f} mA "
                          f"<span class='muted'>(should be ≈ 0 for a well-posed problem)</span></td></tr>")
+        parts.append("</table>")
+
+    # Bridged / shorted nets. These parts are electrically a piece of metal
+    # (a Net Tie, a 0 Ω resistor, a wire jumper, or a SERIES the user gave a
+    # sub-milliohm value), so the loader merges the two nets into one rail and
+    # re-inserts the physical link as a same-net bridge resistor. That merge
+    # is invisible everywhere else — after it, both pads report the surviving
+    # net name — so this is the one place the user can see which rails were
+    # tied together and by what.
+    bridges = metadata.get("merged_bridges") or []
+    if bridges:
+        parts.append("<h2>Bridged / shorted nets</h2>")
+        parts.append(
+            "<p class='muted'>These parts join two nets with (near-)zero "
+            "resistance, so FYPA solves them as a single rail and models the "
+            "link itself as a bridge resistor at the pads below. A part here "
+            "was <b>not</b> annotated by you \u2014 it was inferred from its "
+            "Altium ComponentKind, value or footprint. To model a real "
+            "resistance instead, annotate it with "
+            "<code>PDN_ROLE=SERIES</code> and <code>PDN_R</code>.</p>")
+        parts.append(
+            "<table><tr><th>Part</th><th>Shorted nets</th>"
+            "<th>Solved as</th><th>Bridge R</th><th>Location</th></tr>")
+        for b in bridges:
+            p_net, n_net = b.get("p_net", "?"), b.get("n_net", "?")
+            shorted = (f"{_esc(p_net)} \u2194 {_esc(n_net)}"
+                       if p_net != n_net else _esc(p_net))
+            parts.append(
+                f"<tr><th>{_esc(b.get('designator', '?'))}</th>"
+                f"<td>{shorted}</td>"
+                f"<td>{_esc(b.get('canonical_net', '?'))}</td>"
+                f"<td class='num'>{_esc(b.get('resistance_str', ''))}</td>"
+                f"<td class='num'>({b.get('p_x_mm', 0.0):.3f}, "
+                f"{b.get('p_y_mm', 0.0):.3f}) mm</td></tr>")
         parts.append("</table>")
 
     # Warnings + errors
