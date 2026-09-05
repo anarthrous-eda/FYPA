@@ -213,6 +213,13 @@ class CapOverride:
     carries no case-size code — a tantalum brick, an electrolytic — since no
     table can predict those.
 
+    ``capacitance_f`` replaces the value parsed from the part's Altium
+    parameters, for the part whose ``Comment`` no heuristic can read and for
+    the DC-bias / temperature derating the nameplate value ignores.
+    ``package`` replaces the case size detected from the footprint name; it
+    holds the **canonical imperial key** ("0402"), never a metric display
+    label, so the choice survives a change of case-size convention.
+
     An override with every field ``None`` is meaningless and is dropped on
     upsert.
     """
@@ -222,11 +229,14 @@ class CapOverride:
     target_label: str | None = None
     esl_h: float | None = None
     esr_ohm: float | None = None
+    capacitance_f: float | None = None
+    package: str | None = None
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
 
     def is_empty(self) -> bool:
         return (self.include is None and self.target_label is None
-                and self.esl_h is None and self.esr_ohm is None)
+                and self.esl_h is None and self.esr_ohm is None
+                and self.capacitance_f is None and self.package is None)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -236,6 +246,8 @@ class CapOverride:
             "target_label": self.target_label,
             "esl_h": self.esl_h,
             "esr_ohm": self.esr_ohm,
+            "capacitance_f": self.capacitance_f,
+            "package": self.package,
         }
 
     @classmethod
@@ -257,6 +269,9 @@ class CapOverride:
                           else str(d["target_label"])),
             esl_h=_float("esl_h"),
             esr_ohm=_float("esr_ohm"),
+            capacitance_f=_float("capacitance_f"),
+            package=(None if d.get("package") is None
+                     else str(d["package"]) or None),
         )
 
 
@@ -451,13 +466,15 @@ class ProjectFile:
         target_label: str | None = ...,
         esl_h: float | None = ...,
         esr_ohm: float | None = ...,
+        capacitance_f: float | None = ...,
+        package: str | None = ...,
     ) -> None:
         """Merge the given fields into the designator's override (one
         override per designator). A field passed as the ``...`` sentinel is
-        left untouched, so the include toggle, the target picker and the two
-        parasitic editors each update their own part independently. An
-        override whose fields are all back at ``None`` is removed entirely —
-        the .fypa doesn't accumulate no-op entries."""
+        left untouched, so the include toggle, the target picker and the
+        value / package / parasitic editors each update their own part
+        independently. An override whose fields are all back at ``None`` is
+        removed entirely — the .fypa doesn't accumulate no-op entries."""
         existing = self.cap_override_for(designator)
         merged = existing or CapOverride(designator=designator)
         if include is not ...:
@@ -468,6 +485,10 @@ class ProjectFile:
             merged.esl_h = esl_h
         if esr_ohm is not ...:
             merged.esr_ohm = esr_ohm
+        if capacitance_f is not ...:
+            merged.capacitance_f = capacitance_f
+        if package is not ...:
+            merged.package = package or None
         if merged.is_empty():
             if existing is not None:
                 self.cap_overrides = [
@@ -503,6 +524,25 @@ class ProjectFile:
             if c.esr_ohm is not None:
                 esrs[c.designator] = c.esr_ohm
         return esls, esrs
+
+    def cap_value_overrides(
+        self,
+    ) -> tuple[dict[str, float], dict[str, str]]:
+        """(capacitance_overrides, package_overrides) keyed by designator.
+
+        Separate from :meth:`cap_parasitic_overrides` because these two
+        replace values the *extraction* produced (the parsed part value, the
+        case size read off the footprint name), where the parasitics replace
+        values the package library supplied.
+        """
+        caps: dict[str, float] = {}
+        packages: dict[str, str] = {}
+        for c in self.cap_overrides:
+            if c.capacitance_f is not None:
+                caps[c.designator] = c.capacitance_f
+            if c.package:
+                packages[c.designator] = c.package
+        return caps, packages
 
 
 # --- path helpers -------------------------------------------------------------

@@ -286,6 +286,31 @@ NET_TIE_COMPONENT_KINDS: frozenset[int] = frozenset({
 # loader merges the two nets instead of inserting a fragile lumped short.
 NET_TIE_BRIDGE_RESISTANCE_OHM: float = 0.5e-3
 
+# Component parameters searched, in order, for a part's value when deciding
+# whether it is a 0 ohm link. Mirrors fypa.caploop.identify's key list so the
+# two agree on where an Altium part keeps its value.
+_VALUE_PARAM_KEYS: tuple[str, ...] = (
+    "Resistance", "Value", "Val", "Comment",
+)
+# Value strings that mean "this part is a solid piece of metal". Matched after
+# upper-casing and stripping spaces / the ohm sign, so "0R", "0 R", "0R0",
+# "0.0", "0E0", "0 OHM" and "0Ω" all land here.
+_ZERO_OHM_VALUE_PATTERN = re.compile(
+    r"^(?:0(?:[.,]0+)?(?:R0*|E0*|M0*|OHMS?)?|R0+|JUMPER|JMP|LINK|SHORT|"
+    r"SHUNT|ZERO)$"
+)
+# Footprint-name fragments that identify a wire link / solder-bridge part
+# whose value field is empty or unhelpful. Deliberately narrow: a false
+# positive silently shorts two nets together, which is exactly the failure a
+# PDN tool must not have.
+# Net-tie footprints are deliberately NOT listed: a Net Tie is identified
+# authoritatively by its Altium ComponentKind (see NET_TIE_COMPONENT_KINDS),
+# so matching the footprint name too would bridge a *standard* component that
+# merely reuses a net-tie land pattern.
+_JUMPER_FOOTPRINT_FRAGMENTS: tuple[str, ...] = (
+    "JUMPER", "SOLDERBRIDGE", "SOLDER_BRIDGE", "WIRELINK", "WIRE_LINK",
+)
+
 # Part-wide only (unindexed): restrict which pads may enter net matching.
 # Channel indices belong to nets / per-terminal overrides, not this list.
 _PART_WIDE_PIN_FILTER_SUFFIXES: frozenset[str] = frozenset({
@@ -3487,6 +3512,16 @@ class AnnotationResult:
     # injects a large ground-balancing current). Surfaced as an active dialog
     # like open_loop_rails. Populated by :func:`fypa.altium.loader.build_problem`.
     connectivity_breaks: list[str] = field(default_factory=list)
+    # Per-component "this part joins a solved rail to copper that isn't in
+    # the FEM" notices. The solve restricts itself to nets a directive
+    # touches (see :func:`fypa.altium.loader._collect_active_nets`), so a
+    # ferrite, fuse, shunt or connector linking an active rail to an
+    # un-annotated net is a real parallel current path the model cannot
+    # see — and the return-path resistance comes out overstated. Purely
+    # advisory: nothing is bridged automatically, because only the user
+    # knows the part's DC resistance. Populated by
+    # :func:`fypa.altium.loader._flag_unannotated_bridges`.
+    unannotated_bridges: list[str] = field(default_factory=list)
     # Warnings about directives the low-Ω net-merge pass absorbs. A subset of
     # ``warnings``. :func:`fypa.altium.loader.load_project` parses twice — once
     # to discover the merges, once on the merged nets — and the second pass is
@@ -5357,6 +5392,71 @@ def _is_nettie_component_kind(kind: int) -> bool:
     return int(kind) in NET_TIE_COMPONENT_KINDS
 
 
+def _component_value_text(parameters: dict[str, str] | None) -> str:
+    """The part's value string, from the first populated of
+    :data:`_VALUE_PARAM_KEYS` (case-insensitive key match)."""
+    if not parameters:
+        return ""
+    lowered = {str(k).strip().lower(): v for k, v in parameters.items()}
+    for key in _VALUE_PARAM_KEYS:
+        val = lowered.get(key.lower())
+        if val is not None and str(val).strip():
+            return str(val).strip()
+    return ""
+
+
+def _looks_like_zero_ohm_value(text: str) -> bool:
+    """True when ``text`` is a part value meaning zero ohms.
+
+    Normalises away spaces, the ohm sign and a trailing tolerance/rating
+    suffix before matching, so the many ways Altium libraries spell a link
+    ("0", "0R", "0R0", "0 Ohm", "0Ω", "JUMPER") all resolve. Anything with a
+    non-zero magnitude — "0.01", "0R01", "10R" — must NOT match: those are
+    real resistances the user should annotate with a real PDN_R.
+    """
+    if not text:
+        return False
+    norm = str(text).strip().upper()
+    # Strip an ohm sign in either encoding and all internal whitespace.
+    norm = norm.replace("\u2126", "").replace("\u03a9", "")
+    norm = re.sub(r"\s+", "", norm)
+    # Drop a trailing tolerance / power rating field ("0R 1% 0.25W").
+    norm = norm.split(",")[0]
+    if not norm:
+        return False
+    return bool(_ZERO_OHM_VALUE_PATTERN.match(norm))
+
+
+def _looks_like_jumper_footprint(footprint: str) -> bool:
+    """True when the footprint name marks a wire link / solder bridge."""
+    if not footprint:
+        return False
+    squashed = re.sub(r"[^A-Z0-9]", "", str(footprint).upper())
+    return any(frag.replace("_", "") in squashed
+               for frag in _JUMPER_FOOTPRINT_FRAGMENTS)
+
+
+def _zero_ohm_bridge_reason(
+    parameters: dict[str, str] | None,
+    footprint: str,
+) -> str | None:
+    """Why this part should be auto-bridged as a 0 ohm link, or ``None``.
+
+    Value wins over footprint: a part explicitly marked "10R" in a footprint
+    that happens to be called ``JUMPER-0603`` is a real resistor, and
+    shorting it would be wrong.
+    """
+    value = _component_value_text(parameters)
+    if value:
+        if _looks_like_zero_ohm_value(value):
+            return f"value {value!r} reads as a 0 \u03a9 link"
+        # A populated, non-zero value is a definite "no".
+        return None
+    if _looks_like_jumper_footprint(footprint):
+        return f"footprint {footprint!r} is a wire link / solder bridge"
+    return None
+
+
 def _schdocs_with_pcb_placements(proj: ExtractedProject) -> set[str]:
     """Schematic sheets that placed at least one component on this board.
 
@@ -5432,10 +5532,22 @@ def _synth_nettie_bridge_for_instance(
     enabled_layers: list[int],
     result: AnnotationResult,
     net_remap: dict[int, int] | None,
+    kind_label: str = "NetTie",
+    why: str | None = None,
 ) -> list[ResistorSpec]:
-    """Build low-Ω SERIES specs that short every distinct NetTie net together."""
+    """Build low-Ω SERIES specs that short every distinct net on this
+    placement together.
+
+    Used for two kinds of part that are electrically a piece of metal:
+    Altium Net Tie components (``kind_label="NetTie"``) and 0 Ω links /
+    jumpers detected by value or footprint (``kind_label="0R link"``, with
+    ``why`` explaining which signal matched). Both emit the same
+    :class:`ResistorSpec`, so downstream — the loader's net-merge, the
+    viewer's marker overlay and the Setup panel — treats them exactly like a
+    hand-written ``PDN_ROLE=SERIES``.
+    """
     pcb_des = proj.pcb_components[pcb_index].designator
-    role_diag = f"NetTie on {pcb_des}"
+    role_diag = f"{kind_label} on {pcb_des}"
     net_names = _nettie_net_names(proj, pcb_index)
     if len(net_names) < 2:
         reason = _nettie_skip_reason(proj, pcb_index, net_names)
@@ -5443,6 +5555,13 @@ def _synth_nettie_bridge_for_instance(
             f"{role_diag} ({schdoc_name}): skipped auto-bridge — {reason}"
         )
         return []
+    if why:
+        result.note_absorbed(
+            f"{role_diag} ({schdoc_name}): auto-bridged as SERIES "
+            f"({NET_TIE_BRIDGE_RESISTANCE_OHM * 1e3:g} mΩ) because {why}. "
+            f"Bridging {' / '.join(net_names)}. Add PDN_ROLE=SERIES with a "
+            f"real PDN_R to override."
+        )
 
     # Resolution failures here are not the user's annotation mistakes: nobody
     # asked for this directive, it was inferred from ComponentKind. Collect
@@ -5569,6 +5688,47 @@ def _synth_nettie_directives(
             proj, pcb_idx,
             _schdoc_for_pcb_instance(proj, pcb_idx, lookup_des),
             enabled_layers, result, net_remap,
+        ))
+
+    # --- 0 Ω links and wire jumpers -------------------------------------
+    # Electrically identical to a Net Tie: a part whose whole job is to join
+    # two nets with no resistance. Altium does not mark them with a
+    # ComponentKind, so they are identified from the part value (or, when
+    # that is empty, a link-shaped footprint). Same bridge, same resistance,
+    # same override rules — an explicit PDN_* on the part always wins.
+    sch_params_by_des: dict[str, dict] = {}
+    sch_doc_by_des: dict[str, str] = {}
+    for sch in proj.sch_components:
+        key = sch.designator.upper()
+        sch_params_by_des.setdefault(key, sch.parameters)
+        sch_doc_by_des.setdefault(key, sch.schdoc_name)
+
+    for pcb_idx, pcb in enumerate(proj.pcb_components):
+        if pcb_idx in handled_pcb:
+            continue
+        lookup_des = (pcb.source_designator or pcb.designator).upper()
+        # Prefer schematic parameters (that is where a library part keeps its
+        # Value); fall back to whatever the placement carries.
+        params = sch_params_by_des.get(lookup_des) or pcb.parameters
+        if _has_any_pdn_params(params or {}):
+            handled_pcb.add(pcb_idx)
+            continue
+        why = _zero_ohm_bridge_reason(params, pcb.footprint)
+        if why is None:
+            continue
+        if not can_bridge(pcb_idx):
+            continue
+        # Only a genuine two-net part is bridged. A 0 Ω-valued part sitting
+        # on one net (or on three, e.g. a multi-way link) is left alone
+        # rather than guessed at.
+        if len(_nettie_net_names(proj, pcb_idx)) != 2:
+            continue
+        specs.extend(_synth_nettie_bridge_for_instance(
+            proj, pcb_idx,
+            sch_doc_by_des.get(lookup_des)
+            or _schdoc_for_pcb_instance(proj, pcb_idx, lookup_des),
+            enabled_layers, result, net_remap,
+            kind_label="0R link", why=why,
         ))
     return specs
 

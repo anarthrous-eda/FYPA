@@ -26,15 +26,40 @@ from typing import Any
 import numpy as np
 
 from pdnsolver.vtu_fields import (
+    VTK_HEADER_TYPE,
     global_voltage_max,
     per_vertex_fields,
     sanitize_filename,
+    vtk_binary_data,
 )
 
 log = logging.getLogger(__name__)
 
 # VTK cell type for a single vertex (used by vias.vtu).
 _VTK_VERTEX: int = 1
+
+
+def _data_array(parent, data_type: str, values, *,
+                name: str | None = None,
+                num_components: int | None = None) -> Any:
+    """Append one inline-binary ``<DataArray>`` holding ``values``.
+
+    The payload is base64 binary (``format="binary"``) rather than
+    whitespace-separated decimal text: ~8x faster to serialise, roughly
+    half the bytes, and exact — Float64 values go out bit-for-bit instead
+    of through a ``repr()`` decimal round trip.
+    """
+    from lxml.etree import SubElement
+
+    arr = SubElement(parent, "DataArray")
+    arr.set("type", data_type)
+    arr.set("format", "binary")
+    if name is not None:
+        arr.set("Name", name)
+    if num_components is not None:
+        arr.set("NumberOfComponents", str(num_components))
+    arr.text = vtk_binary_data(values, data_type)
+    return arr
 
 
 def _write_scalar_arrays(parent, fields: dict[str, np.ndarray],
@@ -44,27 +69,23 @@ def _write_scalar_arrays(parent, fields: dict[str, np.ndarray],
     point_data = SubElement(parent, "PointData")
     point_data.set("Scalars", default_scalar)
     for name, values in fields.items():
-        arr = SubElement(point_data, "DataArray")
-        arr.set("type", "Float64")
-        arr.set("format", "ascii")
-        arr.set("Name", name)
-        arr.text = " ".join(repr(float(v)) for v in values)
+        _data_array(point_data, "Float64", values, name=name)
+
+
+def _xyz_flat(xys: np.ndarray) -> np.ndarray:
+    """Interleave an ``(N, 2)`` xy array into flat xyz with Y negated."""
+    flat = np.empty(int(xys.shape[0]) * 3, dtype=np.float64)
+    flat[0::3] = xys[:, 0]
+    flat[1::3] = -xys[:, 1]
+    flat[2::3] = 0.0
+    return flat
 
 
 def _write_points(parent, xys: np.ndarray) -> None:
     from lxml.etree import SubElement
 
-    num_points = int(xys.shape[0])
     points = SubElement(parent, "Points")
-    coords = SubElement(points, "DataArray")
-    coords.set("type", "Float64")
-    coords.set("format", "ascii")
-    coords.set("NumberOfComponents", "3")
-    flat = np.empty(num_points * 3, dtype=np.float64)
-    flat[0::3] = xys[:, 0]
-    flat[1::3] = -xys[:, 1]
-    flat[2::3] = 0.0
-    coords.text = " ".join(repr(float(v)) for v in flat)
+    _data_array(points, "Float64", _xyz_flat(xys), num_components=3)
 
 
 def _write_triangle_cells(parent, tris: np.ndarray) -> None:
@@ -72,23 +93,12 @@ def _write_triangle_cells(parent, tris: np.ndarray) -> None:
 
     num_cells = int(tris.shape[0])
     cells = SubElement(parent, "Cells")
-    conn = SubElement(cells, "DataArray")
-    conn.set("type", "Int32")
-    conn.set("format", "ascii")
-    conn.set("Name", "connectivity")
-    conn.text = " ".join(str(int(v)) for v in tris.reshape(-1))
-
-    offsets = SubElement(cells, "DataArray")
-    offsets.set("type", "Int32")
-    offsets.set("format", "ascii")
-    offsets.set("Name", "offsets")
-    offsets.text = " ".join(str(3 * (i + 1)) for i in range(num_cells))
-
-    types = SubElement(cells, "DataArray")
-    types.set("type", "UInt8")
-    types.set("format", "ascii")
-    types.set("Name", "types")
-    types.text = " ".join("5" for _ in range(num_cells))
+    _data_array(cells, "Int32", np.asarray(tris).reshape(-1),
+                name="connectivity")
+    _data_array(cells, "Int32", np.arange(3, 3 * num_cells + 1, 3,
+                                          dtype=np.int64), name="offsets")
+    _data_array(cells, "UInt8", np.full(num_cells, 5, dtype=np.uint8),
+                name="types")
 
 
 def _write_piece(xys: np.ndarray, tris: np.ndarray,
@@ -116,6 +126,8 @@ def _write_vtu(root_children: list, out_path: Path) -> None:
     root.set("type", "UnstructuredGrid")
     root.set("version", "0.1")
     root.set("byte_order", "LittleEndian")
+    # Width of the byte-count header prefixing each inline binary DataArray.
+    root.set("header_type", VTK_HEADER_TYPE)
     ug = SubElement(root, "UnstructuredGrid")
     for child in root_children:
         ug.append(child)
@@ -152,41 +164,18 @@ def _export_via_points(via_rows: list[dict], output_dir: Path) -> bool:
 
     point_data = SubElement(piece, "PointData")
     point_data.set("Scalars", "via_current")
-    arr = SubElement(point_data, "DataArray")
-    arr.set("type", "Float64")
-    arr.set("format", "ascii")
-    arr.set("Name", "via_current")
-    arr.text = " ".join(repr(v) for v in currents)
+    _data_array(point_data, "Float64", currents, name="via_current")
 
     points = SubElement(piece, "Points")
-    coords = SubElement(points, "DataArray")
-    coords.set("type", "Float64")
-    coords.set("format", "ascii")
-    coords.set("NumberOfComponents", "3")
-    flat = np.empty(n * 3, dtype=np.float64)
-    flat[0::3] = xys[:, 0]
-    flat[1::3] = -xys[:, 1]
-    flat[2::3] = 0.0
-    coords.text = " ".join(repr(float(v)) for v in flat)
+    _data_array(points, "Float64", _xyz_flat(xys), num_components=3)
 
     cells = SubElement(piece, "Cells")
-    conn = SubElement(cells, "DataArray")
-    conn.set("type", "Int32")
-    conn.set("format", "ascii")
-    conn.set("Name", "connectivity")
-    conn.text = " ".join(str(i) for i in range(n))
-
-    offsets = SubElement(cells, "DataArray")
-    offsets.set("type", "Int32")
-    offsets.set("format", "ascii")
-    offsets.set("Name", "offsets")
-    offsets.text = " ".join(str(i + 1) for i in range(n))
-
-    types = SubElement(cells, "DataArray")
-    types.set("type", "UInt8")
-    types.set("format", "ascii")
-    types.set("Name", "types")
-    types.text = " ".join(str(_VTK_VERTEX) for _ in range(n))
+    _data_array(cells, "Int32", np.arange(n, dtype=np.int64),
+                name="connectivity")
+    _data_array(cells, "Int32", np.arange(1, n + 1, dtype=np.int64),
+                name="offsets")
+    _data_array(cells, "UInt8", np.full(n, _VTK_VERTEX, dtype=np.uint8),
+                name="types")
 
     _write_vtu([piece], output_dir / "vias.vtu")
     return True

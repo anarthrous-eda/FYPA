@@ -466,3 +466,261 @@ def test_a_settings_change_does_rebuild_the_identification(viewer):
     assert viewer._caps_identity_cache is None
     rows = viewer._get_or_compute_cap_rows()
     assert has_flag(rows[0]["flags"], "no-escape-via")
+
+
+# --- part value and case size -------------------------------------------------
+
+
+def _viewer_with(qapp, **comp_kwargs):
+    """A one-capacitor board whose C1 carries the given component fields."""
+    import dataclasses
+    from tests.test_caploop_identify import _comp, _standard_cap_project
+
+    v = _Viewer()
+    v._loaded_project = types.SimpleNamespace(
+        extracted=_standard_cap_project(
+            pcb_components=(dataclasses.replace(
+                _comp("C1"), **comp_kwargs),)))
+    v._caps_tab_index = v.tabs.addTab(v._build_capacitors_tab(), "Capacitors")
+    v._populate_caps_table()
+    return v
+
+
+def test_capacitance_column_shows_the_parsed_value(qapp):
+    v = _viewer_with(qapp, parameters={"Value": "100nF"})
+    assert _cell(v, "C (µF)").text() == "0.1"          # 100 nF in µF
+    assert "Altium parameters" in _cell(v, "C (µF)").toolTip()
+
+
+def test_an_unparseable_value_says_the_cap_is_out_of_the_model(viewer):
+    """The fixture part carries no parameters at all."""
+    assert _cell(viewer, "C (µF)").text() == "—"
+    tip = _cell(viewer, "C (µF)").toolTip()
+    assert "excluded from the impedance model" in tip
+    assert "Double-click to set it" in tip
+
+
+def test_capacitance_override_persists_and_marks_the_cell(viewer):
+    viewer._set_cap_override("C1", capacitance_f=4.7e-6)
+    caps, _packages = viewer._project.cap_value_overrides()
+    assert caps == {"C1": 4.7e-6}
+    item = _cell(viewer, "C (µF)")
+    assert item.text() == "4.7 ✎"
+    # The marker must not cost the column its numeric sort key.
+    assert item.data(Qt.UserRole) == pytest.approx(4.7)
+    assert "Per-part override" in item.toolTip()
+
+
+def test_clearing_the_capacitance_override_restores_the_parsed_value(qapp):
+    v = _viewer_with(qapp, parameters={"Value": "100nF"})
+    v._set_cap_override("C1", capacitance_f=4.7e-6)
+    assert _cell(v, "C (µF)").text() == "4.7 ✎"
+    v._set_cap_override("C1", capacitance_f=None)
+    assert _cell(v, "C (µF)").text() == "0.1"
+    assert v._project.cap_overrides == []
+
+
+def test_the_capacitance_override_is_what_the_impedance_model_reads(viewer):
+    viewer._set_cap_override("C1", capacitance_f=4.7e-6)
+    row = viewer._caps_rows_cache[0]
+    assert row["capacitance_f"] == 4.7e-6
+    assert row["capacitance_parsed_f"] is None      # what the part actually said
+
+
+def test_package_override_relabels_the_cell_and_moves_the_parasitics(viewer):
+    """The whole point of pinning a case size: the library entry follows."""
+    lib = viewer._caploop_package_library()
+    assert _cell(viewer, "Pkg").text() == "0402"
+    viewer._set_cap_override("C1", package="0805")
+    assert _cell(viewer, "Pkg").text() == "0805 ✎"
+    assert _cell(viewer, "ESL (nH)").text() == f"{lib.get('0805').esl_nh:.4g}"
+    assert _cell(viewer, "ESR (mΩ)").text() == f"{lib.get('0805').esr_mohm:.4g}"
+    tip = _cell(viewer, "Pkg").toolTip()
+    assert "Per-part override" in tip and "0402" in tip
+
+
+def test_package_override_admits_an_unrecognised_footprint(qapp):
+    """A footprint the parser can't classify is the case the picker exists
+    for — one choice, and the part is in the impedance model."""
+    v = _viewer_with(qapp, footprint="FP-TCJD-MFG",
+                     parameters={"Value": "10uF"})
+    assert _cell(v, "Pkg").text() == "—"
+    assert _cell(v, "ESL (nH)").text() == "—"
+    v._set_cap_override("C1", package="1210")
+    lib = v._caploop_package_library()
+    assert _cell(v, "Pkg").text() == "1210 ✎"
+    assert _cell(v, "ESL (nH)").text() == f"{lib.get('1210').esl_nh:.4g}"
+    assert "names no case size" in _cell(v, "Pkg").toolTip()
+
+
+def test_package_override_stores_the_canonical_key_not_the_label(viewer):
+    """Stored metric-labelled, the choice would break the next time the
+    convention changed — and would match no library entry."""
+    viewer._set_cap_override("C1", package="0805")
+    viewer._set_footprint_convention("metric")
+    viewer._invalidate_caps_cache()
+    assert _cell(viewer, "Pkg").text() == "2012 ✎"
+    assert viewer._project.cap_value_overrides()[1] == {"C1": "0805"}
+
+
+def test_clearing_the_package_override_falls_back_to_detection(viewer):
+    viewer._set_cap_override("C1", package="0805")
+    viewer._set_cap_override("C1", package=None)
+    assert _cell(viewer, "Pkg").text() == "0402"
+    assert viewer._project.cap_overrides == []
+
+
+def test_a_package_override_reuses_the_identification(viewer):
+    """It selects a library entry and a label — no geometry changes, so the
+    expensive identification must not run again."""
+    identity = viewer._caps_identity_cache
+    assert identity is not None
+    viewer._set_cap_override("C1", package="0805")
+    assert viewer._caps_identity_cache is identity
+
+
+# --- capacitance input parsing ------------------------------------------------
+
+
+@pytest.mark.parametrize("text,farads", [
+    ("0.1", 1e-7),           # bare number: the column's unit, µF
+    ("100n", 1e-7),          # a suffix beats the column's unit
+    ("100nF", 1e-7),
+    ("4.7uF", 4.7e-6),
+    ("4.7 µF", 4.7e-6),
+    ("4.7 \u03bcF", 4.7e-6),   # GREEK SMALL LETTER µ, as Windows emits it
+    ("220pF", 2.2e-10),
+    ("1e3", 1e-3),
+    ("1F", 1.0),
+])
+def test_capacitance_input_units(text, farads):
+    assert av._parse_capacitance_f(text) == pytest.approx(farads)
+
+
+@pytest.mark.parametrize("text", ["", "banana", "0,1", "100 farads", "1n2"])
+def test_capacitance_input_rejects_what_it_cannot_read(text):
+    """A comma decimal is rejected, not translated: on a comma-grouping
+    locale 1,234 is a thousand — reading it as 1.234 is a silent 1000x error."""
+    with pytest.raises(ValueError):
+        av._parse_capacitance_f(text)
+
+
+# --- double-click dispatch ----------------------------------------------------
+
+
+def _dbl(v, col):
+    """Double-click row 0 of *col*, the way the table's signal would."""
+    v._on_caps_cell_double_clicked(0, av._CAPS_COL[col])
+
+
+def _answer_dialog(monkeypatch, text, ok=True):
+    monkeypatch.setattr(av.QInputDialog, "getText",
+                        staticmethod(lambda *a, **k: (text, ok)))
+
+
+def _stub_menu(monkeypatch, label=None):
+    """Swap in a QMenu whose exec() picks *label* instead of blocking.
+
+    The swap is on the module global the popup builds through, not on
+    ``QMenu.exec``: patching the method on the PySide6 type doesn't take, and
+    the real exec then blocks the test run on a modal menu.
+
+    Returns a list that receives the menu's item labels once it is shown.
+    """
+    shown: list[str] = []
+
+    class _Menu(av.QMenu):
+        def exec(self, *args):
+            shown.extend(a.text() for a in self.actions()
+                         if not a.isSeparator())
+            return next((a for a in self.actions() if a.text() == label), None)
+
+    monkeypatch.setattr(av, "QMenu", _Menu)
+    return shown
+
+
+def test_double_clicking_the_value_cell_sets_the_capacitance(viewer,
+                                                             monkeypatch):
+    _answer_dialog(monkeypatch, "100n")
+    _dbl(viewer, "C (µF)")
+    assert viewer._project.cap_value_overrides()[0] == \
+        pytest.approx({"C1": 1e-7})
+    assert _cell(viewer, "C (µF)").text() == "0.1 ✎"
+
+
+def test_a_cancelled_value_dialog_writes_nothing(viewer, monkeypatch):
+    _answer_dialog(monkeypatch, "100n", ok=False)
+    _dbl(viewer, "C (µF)")
+    assert viewer._project.cap_overrides == []
+
+
+def test_a_value_that_is_not_a_capacitance_is_refused(viewer, monkeypatch):
+    warned = []
+    _answer_dialog(monkeypatch, "banana")
+    monkeypatch.setattr(av.QMessageBox, "warning",
+                        staticmethod(lambda *a, **k: warned.append(a[1])))
+    _dbl(viewer, "C (µF)")
+    assert warned == ["Not a capacitance"]
+    assert viewer._project.cap_overrides == []
+
+
+def test_a_non_positive_capacitance_is_refused(viewer, monkeypatch):
+    warned = []
+    _answer_dialog(monkeypatch, "0")
+    monkeypatch.setattr(av.QMessageBox, "warning",
+                        staticmethod(lambda *a, **k: warned.append(a[1])))
+    _dbl(viewer, "C (µF)")
+    assert warned == ["Out of range"]
+    assert viewer._project.cap_overrides == []
+
+
+def test_double_clicking_the_package_cell_pins_the_case_size(viewer,
+                                                             monkeypatch):
+    _stub_menu(monkeypatch, "0805")
+    _dbl(viewer, "Pkg")
+    assert viewer._project.cap_value_overrides()[1] == {"C1": "0805"}
+    assert _cell(viewer, "Pkg").text() == "0805 ✎"
+
+
+def test_picking_the_detected_case_size_stores_no_override(viewer,
+                                                           monkeypatch):
+    """C1's footprint already reads as 0402 — pinning it would leave a record
+    that a later footprint rename could silently contradict."""
+    _stub_menu(monkeypatch, "0402")
+    _dbl(viewer, "Pkg")
+    assert viewer._project.cap_overrides == []
+    assert _cell(viewer, "Pkg").text() == "0402"
+
+
+def test_the_package_menu_offers_automatic_and_the_whole_library(viewer,
+                                                                 monkeypatch):
+    seen = _stub_menu(monkeypatch)          # nothing chosen
+    _dbl(viewer, "Pkg")
+    assert seen[0].startswith("(automatic")
+    assert "0402" in seen[0]                  # names what detection found
+    assert seen[1:] == [m.name for m in viewer._caploop_package_library()]
+    assert viewer._project.cap_overrides == []      # exec returned nothing
+
+
+def test_double_clicking_the_esl_cell_still_edits_the_parasitic(viewer,
+                                                                monkeypatch):
+    """The value and package cells were added to this dispatcher; the two
+    editors that were already there must keep their columns."""
+    _answer_dialog(monkeypatch, "0.2")
+    _dbl(viewer, "ESL (nH)")
+    assert viewer._project.cap_parasitic_overrides()[0] ==         pytest.approx({"C1": 0.2e-9})
+
+
+def test_double_clicking_a_plain_cell_opens_nothing(viewer, monkeypatch):
+    def _boom(*a, **k):
+        raise AssertionError("no editor should open on this column")
+
+    monkeypatch.setattr(av.QInputDialog, "getText", staticmethod(_boom))
+
+    class _Menu(av.QMenu):
+        exec = _boom
+
+    monkeypatch.setattr(av, "QMenu", _Menu)
+    for col in ("Designator", "Rail", "L1 (nH)", "Flags"):
+        _dbl(viewer, col)
+    assert viewer._project.cap_overrides == []

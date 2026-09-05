@@ -67,13 +67,19 @@ physical designator in the project file (`ProjectFile.cap_overrides`):
 
 * the **Use** checkbox forces a structurally-valid cap in, or drops a
   detected one;
-* the **Target** cell repoints the loop's far end at another directive.
+* the **Target** cell repoints the loop's far end at another directive;
+* the **C (µF)** and **Pkg** cells replace what extraction found — the parsed
+  part value and the case size read off the footprint name — and **ESL** /
+  **ESR** replace the package library's parasitics. All four are double-click
+  editors; see [pdn_impedance.md](pdn_impedance.md#per-part-overrides).
 
 Capacitance and voltage rating are parsed from Altium component parameters
 (`Capacitance` / `Value` / `Comment`, `Voltage` / `Voltage Rating`, …) with
-plausibility bands. These columns are **informational only** — they are
-never inputs to the inductance math — so an unparseable value shows blank
-rather than raising.
+plausibility bands. Neither is an input to the inductance math, so an
+unparseable value shows blank rather than raising. The capacitance *is* an
+input to the [impedance model](pdn_impedance.md), which is why its cell is
+editable and a blank one keeps the part out of Z(f); the voltage rating is
+informational throughout.
 
 ### Escape vias
 

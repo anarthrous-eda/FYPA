@@ -107,6 +107,7 @@ def _child_entry(job: SolveJob, q: mp.Queue) -> None:
                 job.mesher_config,
                 adaptive_regulator_gain=job.adaptive_regulator_gain,
                 stage_callback=lambda m: q.put(("stage", m)),
+                thermal_config=job.settings.thermal_config(),
             )
         except Exception as exc:
             # Mesh failures must open the same stub + markers as the in-process

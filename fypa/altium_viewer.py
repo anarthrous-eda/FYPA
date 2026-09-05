@@ -3256,9 +3256,17 @@ def _slider_data_max(vs_arr: np.ndarray, mode: str, raw_max: float) -> float:
 def _face_to_vertex_average(tris: np.ndarray, face_values: np.ndarray,
                             n_verts: int) -> np.ndarray:
     """Average face-defined values onto vertices (each vertex gets the mean
-    of the values of its incident faces). Vectorised via ``np.bincount`` —
-    same result as a Python loop, and 5–10× faster than ``np.add.at`` on
-    large meshes (bincount is a single C pass instead of six scatter-adds)."""
+    of the values of its incident faces). Vectorised via ``np.bincount``.
+
+    A note on the "bincount is faster than np.add.at" claim this docstring
+    used to make: it is no longer true. numpy grew a fast scatter path for
+    ``np.add.at`` in 1.24, and measured on numpy 2.2 the ``add.at`` form is
+    1.4-2.3x FASTER here (65 ms vs 103 ms on a 2M-triangle mesh). The two
+    also differ by up to ~6 ULP because they accumulate in different orders.
+    Kept as bincount because this is the viewer's hot path and changing the
+    accumulation order would shift rendered values; see
+    ``pdnsolver/vtu_fields.py`` for the same measurement written down where
+    the export path made the same choice in reverse."""
     if tris.size == 0:
         return np.zeros(n_verts, dtype=np.float64)
     # tris.ravel() is [f0v0, f0v1, f0v2, f1v0, …]; each vertex slot's weight is
@@ -5556,6 +5564,7 @@ class _SolveWorker(QThread):
                     mesher_config,
                     adaptive_regulator_gain=self._adaptive_regulator_gain,
                     stage_callback=self.stage_changed.emit,
+                    thermal_config=self._settings.thermal_config(),
                 )
             except _pdn_mesh.MeshingException as mesh_exc:
                 from fypa.altium.loader import package_mesh_failure
@@ -6608,6 +6617,45 @@ def _parse_numeric_text(text: str) -> float:
     return float(text.strip())
 
 
+# Capacitance suffixes accepted by the Capacitors tab's value editor, in
+# farads. The empty key is the bare number, which means the unit the column
+# is labelled with — µF.
+_CAPACITANCE_UNIT_F: dict[str, float] = {
+    "": 1e-6,
+    "f": 1.0,
+    "mf": 1e-3, "m": 1e-3,
+    "uf": 1e-6, "u": 1e-6, "µf": 1e-6, "µ": 1e-6,
+    "nf": 1e-9, "n": 1e-9,
+    "pf": 1e-12, "p": 1e-12,
+}
+
+_CAPACITANCE_INPUT_RE = re.compile(
+    r"([0-9][0-9.]*(?:[eE][+\-]?[0-9]+)?)\s*([a-zA-Zµ]*)")
+
+
+def _parse_capacitance_f(text: str) -> float:
+    """Farads from a Capacitors-tab capacitance entry.
+
+    A bare number is µF, the unit the column is labelled with. A unit
+    suffix overrides that, because "100n" typed into a µF field means
+    100 nF and never 100 µF — and silently reading it as µF would be
+    exactly the 1000x error this editor exists to correct.
+
+    Raises ``ValueError`` on anything else, including a comma decimal: on a
+    comma-grouping locale ``1,234`` is one thousand two hundred and thirty
+    four, so translating it would be another silent 1000x error (see
+    :func:`_parse_numeric_text`).
+    """
+    stripped = text.strip().replace("μ", "µ")
+    m = _CAPACITANCE_INPUT_RE.fullmatch(stripped)
+    if m is None:
+        raise ValueError(f"not a capacitance: {text!r}")
+    scale = _CAPACITANCE_UNIT_F.get(m.group(2).lower())
+    if scale is None:
+        raise ValueError(f"unknown capacitance unit: {m.group(2)!r}")
+    return float(m.group(1)) * scale
+
+
 class _SettingsTabMixin:
     """Shared construction of the Settings tab.
 
@@ -6646,6 +6694,15 @@ class _SettingsTabMixin:
          "1/°C",
          "Linear temperature coefficient of resistivity. Default 0.00393 "
          "/°C is the standard value for annealed copper."),
+        ("heat_transfer_w_per_m2k",
+         "Board heat transfer coefficient",
+         "W/(m²·K)",
+         "Only used when 'Coupled electro-thermal solve' is ticked. How "
+         "readily the board sheds heat to ambient, counting both faces. "
+         "~20 is a bare board in still air; 50–100 with forced air or a "
+         "chassis heatsink; lower for a conformally coated board in a "
+         "sealed box. Lower values mean hotter copper and a larger IR "
+         "drop."),
         ("plating_thickness_mm",
          "Via plating thickness",
          "mm",
@@ -6873,10 +6930,35 @@ class _SettingsTabMixin:
         )
         self._settings_area_weighted_check.toggled.connect(
             self._on_settings_field_changed)
+        # Coupled electro-thermal solve. Off by default: with it off the
+        # solve is bit-identical to an isothermal run, so every existing
+        # result is reproduced exactly.
+        self._settings_electrothermal_check = QCheckBox(
+            "Coupled electro-thermal solve (self-heating)")
+        self._settings_electrothermal_check.setChecked(
+            bool(getattr(self._solve_settings, "electrothermal", False)))
+        self._settings_electrothermal_check.setToolTip(
+            "Iterate self-heating: copper that dissipates power gets hotter, "
+            "so more resistive, so it drops more and heats further. Copper "
+            "rises ~0.39 %/K, so a heavily loaded rail can read 10–20 % "
+            "optimistic without this.\n\n"
+            "Heat is shed locally to ambient using the 'Board heat transfer "
+            "coefficient' above — there is no lateral heat spreading, so a "
+            "small hot feature reads as an upper bound while a broad one is "
+            "about right. Costs one extra factorisation per iteration "
+            "(typically 3–8).\n\n"
+            "Off = isothermal at the board temperature (the default)."
+        )
+        self._settings_electrothermal_check.toggled.connect(
+            self._on_settings_field_changed)
+        self._settings_electrothermal_check.toggled.connect(
+            self._on_electrothermal_toggled)
         _solve_layout = solve_box.layout()
         if _solve_layout is not None:
             _solve_layout.addRow(self._settings_adaptive_check)
             _solve_layout.addRow(self._settings_area_weighted_check)
+            _solve_layout.addRow(self._settings_electrothermal_check)
+        self._apply_electrothermal_enabled()
         # Adaptive SMPS regulator-gain iteration — moved here from the editor
         # canvas overlay. Same attribute name + handler as before, so the
         # solve-time reads and resolve-enable logic are unchanged. Enabled only
@@ -7631,6 +7713,10 @@ class _SettingsTabMixin:
         chk = getattr(self, "_settings_adaptive_check", None)
         if chk is not None:
             chk.setChecked(bool(defaults.adaptive_mesh))
+        et = getattr(self, "_settings_electrothermal_check", None)
+        if et is not None:
+            et.setChecked(bool(defaults.electrothermal))
+            self._apply_electrothermal_enabled()
         aw = getattr(self, "_settings_area_weighted_check", None)
         if aw is not None:
             aw.setChecked(bool(defaults.area_weighted_pin_coupling))
@@ -7707,6 +7793,13 @@ class _SettingsTabMixin:
                 getattr(
                     self._solve_settings, "area_weighted_pin_coupling", False))
             mark(aw, dirty)
+            any_dirty = any_dirty or dirty
+
+        et = getattr(self, "_settings_electrothermal_check", None)
+        if et is not None:
+            dirty = bool(et.isChecked()) != bool(
+                getattr(self._solve_settings, "electrothermal", False))
+            mark(et, dirty)
             any_dirty = any_dirty or dirty
 
         mode_combo = getattr(self, "_fill_mode_combo", None)
@@ -8184,6 +8277,8 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         _maybe_warn_open_loop_rails(new_win or self, metadata)
         # Nets whose source & sink landed on disconnected copper — tell the user.
         _maybe_warn_connectivity_breaks(new_win or self, metadata)
+        # Parts joining a solved rail to copper outside the FEM — advisory.
+        _maybe_warn_unannotated_bridges(new_win or self, metadata)
 
     def _on_menu_open_solution(self) -> None:
         path_str, _ = QFileDialog.getOpenFileName(
@@ -17439,6 +17534,26 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             )
             return True
 
+    def _on_electrothermal_toggled(self, _checked: bool) -> None:
+        """Grey the heat-transfer field when the coupled solve is off — it
+        has no effect there, and a live-looking field that does nothing is
+        worse than a disabled one."""
+        self._apply_electrothermal_enabled()
+
+    def _apply_electrothermal_enabled(self) -> None:
+        chk = getattr(self, "_settings_electrothermal_check", None)
+        edit = getattr(self, "settings_edit_heat_transfer_w_per_m2k", None)
+        if edit is None:
+            return
+        on = bool(chk.isChecked()) if chk is not None else False
+        edit.setEnabled(on)
+        edit.setToolTip(
+            "How readily the board sheds heat to ambient, both faces "
+            "combined. Lower = hotter copper = larger IR drop."
+            if on else
+            "Enabled by 'Coupled electro-thermal solve (self-heating)'."
+        )
+
     def _on_adaptive_gain_toggled(self, checked: bool) -> None:
         save_adaptive_regulator_gain(checked)
         self._refresh_solve_stale_overlay()
@@ -23634,6 +23749,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         aw = getattr(self, "_settings_area_weighted_check", None)
         if aw is not None:
             kwargs["area_weighted_pin_coupling"] = aw.isChecked()
+        et = getattr(self, "_settings_electrothermal_check", None)
+        if et is not None:
+            kwargs["electrothermal"] = et.isChecked()
         mode_combo = getattr(self, "_fill_mode_combo", None)
         if mode_combo is not None:
             data = mode_combo.currentData()
@@ -26289,6 +26407,8 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
     _CAPS_ACTION_COL = _CAPS_COL[""]
     _CAPS_USE_COL = _CAPS_COL["Use"]
     _CAPS_RAIL_COL = _CAPS_COL["Rail"]
+    _CAPS_C_COL = _CAPS_COL["C (µF)"]
+    _CAPS_PKG_COL = _CAPS_COL["Pkg"]
     _CAPS_ESL_COL = _CAPS_COL["ESL (nH)"]
     _CAPS_ESR_COL = _CAPS_COL["ESR (mΩ)"]
     _CAPS_TARGET_COL = _CAPS_COL["Target"]
@@ -26570,9 +26690,11 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         settings = self._caploop_settings()
         includes, targets = ({}, {})
         esl_over, esr_over = ({}, {})
+        cap_over, pkg_over = ({}, {})
         if getattr(self, "_project", None) is not None:
             includes, targets = self._project.cap_override_maps()
             esl_over, esr_over = self._project.cap_parasitic_overrides()
+            cap_over, pkg_over = self._project.cap_value_overrides()
         library = self._caploop_package_library()
         directives = (self.metadata or {}).get("directives") or []
 
@@ -26608,10 +26730,16 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         rows: list[dict] = []
         for cap in caps:
             t1 = mounted_inductance(cap, settings)
+            # Case size: detected from the footprint name unless the user has
+            # pinned one. The override is applied *here* rather than inside
+            # identification because it only selects a library entry and a
+            # label — it changes no geometry, so the identity cache (which a
+            # package override does not key) stays valid.
+            package = pkg_over.get(cap.designator, cap.package)
             # Part parasitics: the package library supplies the default, an
             # explicit per-part override wins. A part the library can't
             # classify has neither until the user supplies one.
-            model = library.get(cap.package)
+            model = library.get(package)
             esl_h = esl_over.get(cap.designator,
                                  model.esl_h if model else None)
             esr_ohm = esr_over.get(cap.designator,
@@ -26622,8 +26750,17 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 "rail": cap.rail_group,
                 "rail_net": cap.rail_net,
                 "return_net": cap.return_net,
-                "capacitance_f": cap.capacitance_f,
-                "package": cap.package,
+                "capacitance_f": cap_over.get(cap.designator,
+                                              cap.capacitance_f),
+                "package": package,
+                # What extraction found, kept beside the effective value so a
+                # tooltip can say what the override is overriding — and so
+                # picking the detected case size can be stored as "no
+                # override" rather than as a redundant one.
+                "capacitance_parsed_f": cap.capacitance_f,
+                "package_detected": cap.package,
+                "capacitance_is_override": cap.designator in cap_over,
+                "package_is_override": cap.designator in pkg_over,
                 "esl_h": esl_h,
                 "esr_ohm": esr_ohm,
                 "esl_is_override": cap.designator in esl_over,
@@ -26874,10 +27011,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
     def _populate_caps_table(self) -> None:
         """Fill the Capacitors table from the cached cap report. Same
         plain-cell + single click-dispatcher pattern as the Vias table."""
-        from fypa.caploop.packages import (
-            format_package_label,
-            package_detection_tooltip,
-        )
+        from fypa.caploop.packages import format_package_label
 
         log = logging.getLogger(__name__)
         _t0 = time.monotonic()
@@ -27023,10 +27157,19 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                             "press Compute Tier 2/3.")
                 if col_label == "Flags":
                     item.setToolTip(self._cap_flags_tooltip(row))
+                if col_label == "C (µF)":
+                    item.setToolTip(self._cap_value_tooltip(row))
+                    if row.get("capacitance_is_override"):
+                        item.setText(f"{item.text()} ✎")
+                        item.setForeground(action_fg)
+                    elif row.get("capacitance_f") is None:
+                        item.setForeground(action_fg)
                 if col_label == "Pkg":
-                    item.setToolTip(package_detection_tooltip(
-                        row["cap"].footprint,
-                        row.get("package")))
+                    item.setToolTip(self._cap_package_tooltip(
+                        row, package_label, footprint_convention))
+                    if row.get("package_is_override"):
+                        item.setText(f"{package_label} ✎")
+                        item.setForeground(action_fg)
                 if col_label in ("ESL (nH)", "ESR (mΩ)"):
                     is_esl = col_label.startswith("ESL")
                     overridden = row.get(
@@ -27035,7 +27178,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                     if row.get("esl_h" if is_esl else "esr_ohm") is None:
                         item.setToolTip(
                             f"No equivalent series {what} — the package is "
-                            "unrecognised. Double-click to set it.")
+                            "unrecognised. Double-click to set it, or "
+                            "double-click the Pkg cell to name the case "
+                            "size and take the library default.")
                     elif overridden and row.get("package"):
                         item.setToolTip(
                             f"Per-part override. Double-click to change, or "
@@ -27088,6 +27233,54 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._apply_caps_filter()
         log.info("Caps populate: TOTAL %.2fs (%d rows)",
                  time.monotonic() - _t0, len(rows))
+
+    def _cap_value_tooltip(self, row: dict) -> str:
+        """Tooltip for the Capacitors-tab C column.
+
+        The value is not decoration: :func:`fypa.caploop.impedance.cap_branch`
+        feeds it straight into the branch impedance, and a capacitor without
+        one is dropped from the model — so the cell has to say where the
+        number came from and how to correct it.
+        """
+        parsed = row.get("capacitance_parsed_f")
+        parsed_txt = ("—" if parsed is None
+                      else f"{parsed * 1e6:.4g} µF")
+        if row.get("capacitance_is_override"):
+            return (
+                "Per-part override. Double-click to change, or clear the "
+                "field to fall back to the value read from the part "
+                f"({parsed_txt}).")
+        if parsed is None:
+            return (
+                "No capacitance could be read from this part's Altium "
+                "parameters (Capacitance / Value / Comment), so it is "
+                "excluded from the impedance model. Double-click to set it.")
+        return (
+            "Read from the part's Altium parameters. Double-click to "
+            "override — for a value no heuristic can parse, or for the "
+            "effective capacitance after DC-bias and temperature derating.")
+
+    def _cap_package_tooltip(self, row: dict, package_label: str,
+                             convention: str) -> str:
+        """Tooltip for the Capacitors-tab Pkg column."""
+        from fypa.caploop.packages import (
+            format_package_label,
+            package_detection_tooltip,
+        )
+
+        footprint = row["cap"].footprint
+        if row.get("package_is_override"):
+            detected = row.get("package_detected")
+            was = (f"The footprint {footprint!r} reads as "
+                   f"{format_package_label(detected, convention)}."
+                   if detected else
+                   f"The footprint {footprint!r} names no case size.")
+            return (
+                f"Per-part override: {package_label}. {was} It selects the "
+                "default ESL / ESR from the package library. Double-click "
+                "to change it, or choose (automatic) to clear it.")
+        return (package_detection_tooltip(footprint, row.get("package"))
+                + "\n\nDouble-click to pin a different case size.")
 
     def _on_caps_item_changed(self, item) -> None:
         """Include-checkbox edits → persist as a CapOverride and recompute.
@@ -27146,16 +27339,24 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         return None
 
     def _on_caps_cell_double_clicked(self, row: int, col: int) -> None:
-        """Edit a capacitor's own ESL / ESR — the parasitics the impedance
-        model needs and the board geometry can't supply.
+        """Edit the four per-part values the board geometry can't supply:
+        the capacitance, the case size, and the part's own ESL / ESR.
 
-        An empty input clears the override and falls back to the package
-        library, which is the only way back for a part the user has pinned.
+        An empty input clears the override, falling back to the parsed part
+        value or the package library — the only way back for a part the user
+        has pinned.
         """
-        if col not in (self._CAPS_ESL_COL, self._CAPS_ESR_COL):
+        if col not in (self._CAPS_C_COL, self._CAPS_PKG_COL,
+                       self._CAPS_ESL_COL, self._CAPS_ESR_COL):
             return
         data = self._caps_row_at(row)
         if data is None:
+            return
+        if col == self._CAPS_C_COL:
+            self._edit_cap_capacitance(data)
+            return
+        if col == self._CAPS_PKG_COL:
+            self._show_cap_package_menu(data)
             return
 
         is_esl = col == self._CAPS_ESL_COL
@@ -27201,6 +27402,82 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             return
         self._set_cap_override(data["designator"], **{key: value * scale})
 
+    def _edit_cap_capacitance(self, data: dict) -> None:
+        """Override one capacitor's value. Empty input restores the value
+        parsed from the part's Altium parameters."""
+        parsed = data.get("capacitance_parsed_f")
+        current = data.get("capacitance_f")
+        note = (
+            f"Leave empty to use the value read from the part "
+            f"({parsed * 1e6:.4g} µF)." if parsed is not None else
+            "Nothing could be read from this part's parameters, so leaving "
+            "it empty keeps the capacitor out of the impedance model.")
+        text, ok = QInputDialog.getText(
+            self, f"Capacitance — {data['designator']}",
+            f"Capacitance (µF, or a unit suffix such as 100n):\n{note}",
+            text="" if current is None else f"{current * 1e6:.4g}")
+        if not ok:
+            return
+
+        text = text.strip()
+        if not text:
+            self._set_cap_override(data["designator"], capacitance_f=None)
+            return
+        try:
+            value = _parse_capacitance_f(text)
+        except ValueError:
+            QMessageBox.warning(
+                self, "Not a capacitance",
+                f"{text!r} is not a capacitance. Enter a number in µF "
+                f"(0.1), or a number with a unit (100n, 4.7uF, 220pF). "
+                f"Use a dot decimal separator.")
+            return
+        if value <= 0.0:
+            QMessageBox.warning(self, "Out of range",
+                                "The capacitance must be greater than zero.")
+            return
+        self._set_cap_override(data["designator"], capacitance_f=value)
+
+    def _show_cap_package_menu(self, row: dict) -> None:
+        """Popup listing every case size in the SMD package library plus an
+        "(automatic)" reset. The chosen value persists as a CapOverride.
+
+        Only library case sizes are offered: the package exists to select an
+        ESL / ESR pair, so a name the library doesn't hold would select
+        nothing. A part with no case size at all (a tantalum brick) still
+        needs the ESL / ESR editors.
+        """
+        from fypa.caploop.packages import format_package_label
+
+        convention = self._footprint_convention()
+        detected = row.get("package_detected")
+        menu = QMenu(self)
+        auto = menu.addAction(
+            "(automatic — from the footprint: "
+            f"{format_package_label(detected, convention)})" if detected else
+            "(automatic — the footprint names no case size)")
+        auto.setCheckable(True)
+        auto.setChecked(not row.get("package_is_override"))
+        menu.addSeparator()
+        by_action = {}
+        for model in self._caploop_package_library():
+            act = menu.addAction(format_package_label(model.name, convention))
+            act.setCheckable(True)
+            act.setChecked(bool(row.get("package_is_override"))
+                           and row.get("package") == model.name)
+            by_action[act] = model.name
+        chosen = menu.exec(QCursor.pos())
+        if chosen is None:
+            return
+        package = None if chosen is auto else by_action[chosen]
+        # Persist only a deviation from detection, exactly as the include
+        # checkbox does: pinning the case size the footprint already names
+        # would leave a no-op record in the .fypa that survives a footprint
+        # rename and then silently contradicts it.
+        self._set_cap_override(
+            row["designator"],
+            package=None if package == detected else package)
+
     def _show_cap_target_menu(self, row: dict) -> None:
         """Popup listing every eligible target directive for the cap's rail
         plus an "(automatic)" reset. Chosen value persists as a CapOverride."""
@@ -27228,18 +27505,27 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                                    target_label=chosen.text())
 
     def _set_cap_override(self, designator: str, *, include=...,
-                          target_label=..., esl_h=..., esr_ohm=...) -> None:
+                          target_label=..., esl_h=..., esr_ohm=...,
+                          capacitance_f=..., package=...) -> None:
         """Write one override into the project file (created on first edit),
         mark the display dirty (no re-solve — analysis state only), and
         rebuild the cap rows so every derived value reflects the change."""
         proj = self._ensure_project()
         proj.upsert_cap_override(designator, include=include,
                                  target_label=target_label,
-                                 esl_h=esl_h, esr_ohm=esr_ohm)
+                                 esl_h=esl_h, esr_ohm=esr_ohm,
+                                 capacitance_f=capacitance_f,
+                                 package=package)
         # Display-dirty, not project-dirty: an include/target choice never
         # stales the FEM solve, it only changes this tab's analysis.
         self._display_dirty = True
         self._invalidate_caps_cache()
+        # Every one of these overrides is an input to the impedance model --
+        # C and the parasitics directly, include/target through which branches
+        # exist and how long their mounting loop is — so a plot already on
+        # screen is now stale. Same guard the package-library editor uses.
+        if getattr(self, "_impedance_populated", False):
+            self._replot_impedance()
 
     def _update_caps_tab_title(self, warn_count: int) -> None:
         idx = getattr(self, "_caps_tab_index", -1)
@@ -28326,9 +28612,15 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                      + (f", plane-pair {result.c_plane_f * 1e9:.3g} nF"
                         if result.c_plane_f > 0 else ""))
         if result.skipped:
-            shown = "; ".join(f"{d} ({r})" for d, r in result.skipped[:3])
-            more = (f" +{len(result.skipped) - 3} more"
-                    if len(result.skipped) > 3 else "")
+            # Collapse capacitors sharing a reason into one comma-delimited
+            # group so a whole footprint family reads as a single clause.
+            grouped: dict[str, list[str]] = {}
+            for des, reason in result.skipped:
+                grouped.setdefault(reason, []).append(des)
+            groups = list(grouped.items())
+            shown = "; ".join(f"{', '.join(d)} ({r})" for r, d in groups[:3])
+            hidden = sum(len(d) for _, d in groups[3:])
+            more = f" +{hidden} more" if hidden else ""
             parts.append(
                 f"<span style='color:{t['warn_fg']};'>Excluded: "
                 f"{_esc(shown)}{more}.</span>")
@@ -29391,6 +29683,49 @@ def _maybe_warn_connectivity_breaks(parent_win, metadata) -> None:
         + "\n\nMove the markers onto the same copper island, or connect the "
         "islands (a via or a SERIES link), then press Resolve.",
     )
+
+
+def _maybe_warn_unannotated_bridges(parent_win, metadata) -> None:
+    """Pop a one-time, non-blocking notice listing parts that conduct between
+    a solved rail and copper the FEM leaves out.
+
+    The solve only meshes nets a PDN directive touches. A ferrite, fuse,
+    shunt or connector joining such a rail to an un-annotated net is a real
+    parallel current path the model cannot see, so the reported return-path
+    resistance is an over-estimate. Nothing is bridged automatically here —
+    only the user knows the part's DC resistance (a ferrite's "0 Ω" is
+    20-200 mΩ of DCR) — so this is advisory.
+
+    Information, not a warning: the solve is still valid for the copper it
+    does model, and on many boards these parts genuinely are open at DC.
+    Reads ``metadata['unannotated_bridges']``, which round-trips through the
+    solve cache, so it also fires on a cache hit.
+    """
+    if not isinstance(metadata, dict):
+        return
+    bridges = metadata.get("unannotated_bridges") or []
+    if not bridges:
+        return
+    shown = list(bridges[:8])
+    more = len(bridges) - len(shown)
+    bullets = "\n\n".join(f"  \u2022 {b}" for b in shown)
+    body = (
+        "These parts connect a solved rail to copper that no PDN directive "
+        "touches, so that copper is left out of the simulation and any "
+        "current it really carries is missing (the return-path resistance "
+        "reads high):\n\n"
+        + bullets
+    )
+    if more > 0:
+        body += f"\n\n  \u2026 and {more} more (see the Messages tab)."
+    body += (
+        "\n\nThis is advisory \u2014 nothing was changed. If a part conducts "
+        "at DC, annotate it in Altium with PDN_ROLE=SERIES and PDN_R set to "
+        "its real DC resistance, then re-import. Genuine 0 \u03a9 links and "
+        "Net Ties are already bridged automatically."
+    )
+    QMessageBox.information(parent_win, "Unannotated net bridges", body)
+
 
 
 def _build_stub_lean_solution_from_loaded(loaded):

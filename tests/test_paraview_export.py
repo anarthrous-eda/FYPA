@@ -1,6 +1,8 @@
 """ParaView VTU export — scalar fields, vias, and voltage_drop reference."""
 from __future__ import annotations
 
+import base64
+import binascii
 import re
 
 import numpy as np
@@ -41,9 +43,30 @@ def _solution(*layers: tuple[str, list[float]]) -> LeanSolution:
 
 
 def _read_field(vtu_text: str, name: str) -> list[float]:
+    """Decode one DataArray back to floats.
+
+    The writers emit VTK's base64 ``binary`` encoding (an 8-char base64
+    UInt32 byte-count header followed by the base64 payload, each block
+    encoded independently), which is both far faster to write and exact —
+    no decimal round trip. Plain ASCII arrays are still accepted so this
+    helper keeps working against a hand-written or legacy file.
+    """
     m = re.search(rf'Name="{name}"[^>]*>([^<]+)<', vtu_text)
     assert m is not None, f"field {name!r} not found"
-    return [float(v) for v in m.group(1).split()]
+    txt = "".join(m.group(1).split())
+    if not txt:
+        return []
+    try:
+        header = base64.b64decode(txt[:8])
+        n_bytes = int(np.frombuffer(header, dtype="<u4")[0])
+        raw = base64.b64decode(txt[8:])
+        assert len(raw) == n_bytes, (
+            f"{name}: header claims {n_bytes} bytes, payload has {len(raw)}"
+        )
+        return np.frombuffer(raw, dtype="<f8").tolist()
+    except (ValueError, AssertionError, binascii.Error):
+        # Legacy / hand-written ASCII DataArray.
+        return [float(v) for v in txt.split()]
 
 
 class TestGlobalVoltageMax:

@@ -207,6 +207,33 @@ class SolveSettings:
     # coarse in plane interiors. Off by default — it helps boards with
     # large quiet copper but gives little benefit on via-stitched planes.
     adaptive_mesh: bool = False
+    # --- Coupled electro-thermal solve ---------------------------------
+    # Off by default: with it off the solve is bit-identical to an
+    # isothermal run. On, the solver iterates self-heating (copper gets
+    # hotter, so more resistive, so it drops more and heats further) using
+    # a local lumped cooling model — see pdnsolver.solver.ThermalConfig for
+    # exactly what is and is not modelled.
+    electrothermal: bool = False
+    # Combined both-faces heat transfer coefficient, W/(m²·K). ~20 is a bare
+    # board in still air; 50-100 with forced air or a chassis heatsink.
+    heat_transfer_w_per_m2k: float = 20.0
+    electrothermal_max_iterations: int = 8
+    electrothermal_tolerance_c: float = 0.25
+
+    def thermal_config(self):
+        """Build the solver's :class:`~pdnsolver.solver.ThermalConfig` from
+        these settings, reusing the same ambient temperature and copper
+        temperature coefficient the isothermal conductance already uses so
+        the two models never disagree."""
+        from pdnsolver.solver import ThermalConfig
+        return ThermalConfig(
+            enabled=bool(self.electrothermal),
+            ambient_c=float(self.temperature_c),
+            heat_transfer_w_per_m2k=float(self.heat_transfer_w_per_m2k),
+            alpha_per_c=float(self.copper_temp_coefficient_per_c),
+            max_iterations=int(self.electrothermal_max_iterations),
+            tolerance_c=float(self.electrothermal_tolerance_c),
+        )
 
     @property
     def copper_conductivity_s_per_mm(self) -> float:
@@ -299,6 +326,15 @@ class SolveSettings:
             s.mesh_max_size_mm = float(mesher["maximum_size_mm"])
         if "adaptive_mesh" in mesher:
             s.adaptive_mesh = bool(mesher["adaptive_mesh"])
+        thermal = metadata.get("thermal_config") or {}
+        if "enabled" in thermal:
+            s.electrothermal = bool(thermal["enabled"])
+        if "heat_transfer_w_per_m2k" in thermal:
+            s.heat_transfer_w_per_m2k = float(thermal["heat_transfer_w_per_m2k"])
+        if "max_iterations" in thermal:
+            s.electrothermal_max_iterations = int(thermal["max_iterations"])
+        if "tolerance_c" in thermal:
+            s.electrothermal_tolerance_c = float(thermal["tolerance_c"])
         return s
 
 
@@ -538,6 +574,9 @@ def clone_loaded_for_edit(loaded: LoadedProject) -> LoadedProject:
     new_annotations.infos = list(getattr(loaded.annotations, "infos", []))
     new_annotations.open_loop_rails = list(
         getattr(loaded.annotations, "open_loop_rails", [])
+    )
+    new_annotations.unannotated_bridges = list(
+        getattr(loaded.annotations, "unannotated_bridges", [])
     )
     new_annotations.connectivity_breaks = list(
         getattr(loaded.annotations, "connectivity_breaks", [])
@@ -941,7 +980,10 @@ def _barrel_segment_resistance_ohm(
 
     Falls back to :data:`FALLBACK_VIA_RESISTANCE_OHM` when geometry is missing
     or degenerate, so a missing drill size never produces a divide-by-zero or
-    an unrealistic 0 Ω short.
+    an unrealistic 0 Ω short. Each fallback is counted and reported by
+    :func:`_coupling_networks` at INFO — a silently substituted 1 mΩ on a
+    high-current via is exactly the kind of error a user cannot spot in the
+    result.
     """
     if drill_diameter_mm <= 0.0 or hop_length_mm <= 0.0:
         return FALLBACK_VIA_RESISTANCE_OHM
@@ -1135,6 +1177,11 @@ def _coupling_networks(
     networks: list[_pp.Network] = []
     segment_records: list[dict] = []
     skipped_unknown_net = 0
+    # Hops that fell back to the fixed resistance instead of the
+    # physical barrel model — reported at INFO below.
+    fallback_hops = 0
+    fallback_no_drill = 0
+    fallback_no_z = 0
     skipped_missing_layer = 0
     skipped_xy_outside_copper = 0
 
@@ -1211,6 +1258,12 @@ def _coupling_networks(
                 site.drill_diameter_mm, hop_length_mm, plating_thickness_mm,
                 conductive_fill_resistivity_ohm_mm=fill_rho,
             )
+            if r_hop == FALLBACK_VIA_RESISTANCE_OHM:
+                fallback_hops += 1
+                if site.drill_diameter_mm <= 0.0:
+                    fallback_no_drill += 1
+                elif hop_length_mm <= 0.0:
+                    fallback_no_z += 1
             node_a, node_b = _pp.NodeID(), _pp.NodeID()
             element = _pp.Resistor(a=node_a, b=node_b, resistance=r_hop)
             conns = [
@@ -1230,6 +1283,23 @@ def _coupling_networks(
                 "is_conductive_fill": is_conductive_fill,
             })
 
+    if fallback_hops:
+        # INFO, not DEBUG: a substituted fixed resistance on a high-current via
+        # silently changes the answer, and the user has no way to spot it in
+        # the result. The Vias tab shows the same value per hop.
+        detail = []
+        if fallback_no_drill:
+            detail.append(f"{fallback_no_drill} with no drill size")
+        if fallback_no_z:
+            detail.append(f"{fallback_no_z} with no stackup z-data")
+        log.info(
+            "Used the fallback via resistance (%.4g Ω) on %d via hop(s)%s. "
+            "These hops are NOT physically modelled — set the drill size in "
+            "Altium, or the layer thicknesses in Settings > Stackup, for a "
+            "correct barrel resistance.",
+            FALLBACK_VIA_RESISTANCE_OHM, fallback_hops,
+            f" ({', '.join(detail)})" if detail else "",
+        )
     if skipped_unknown_net:
         log.debug("Skipped %d via/TH-pad coupling site(s) with no net assignment.",
                   skipped_unknown_net)
@@ -1846,15 +1916,89 @@ def _replace_regulator_gains(
     loaded.annotations.directives = updated
 
 
+def _retune_problem_regulator_gains(problem, loaded) -> bool:
+    """Push the current ``RegulatorSpec`` gains into an already-built
+    :class:`Problem`, in place. Returns ``True`` on success.
+
+    Why this exists: the adaptive-SMPS-gain loop changes nothing but the
+    regulators' ``gain`` between iterations. Rebuilding the whole Problem to
+    carry that one float re-runs the entire geometry pipeline — copper
+    buffering, per-net unions, meshing inputs, via coupling — which is by far
+    the most expensive part of a solve and is bit-for-bit identical every
+    time. Up to 12 iterations of that is minutes of wasted work.
+
+    ``VoltageRegulator`` is a frozen dataclass, so the element is swapped for
+    a :func:`dataclasses.replace` copy carrying the new gain. That is safe:
+    the copy keeps the *same* ``NodeID`` objects, so every ``Connection``
+    still resolves, and ``Network``'s derived ``nodes`` / ``has_source``
+    depend only on the terminals and ``is_source``, neither of which moves.
+
+    Pairing is positional — :func:`build_problem` emits one
+    ``VoltageRegulator`` per ``RegulatorSpec`` in directive order — but that
+    is only assumed, never trusted: the element's ``voltage`` must also match
+    its spec's. On any count or voltage mismatch this returns ``False`` and
+    the caller falls back to a full rebuild, so a future change to how
+    regulators are stamped can cost performance but cannot produce a wrong
+    answer.
+    """
+    from dataclasses import replace as _dc_replace
+
+    specs = [d for d in loaded.annotations.directives
+             if isinstance(d, RegulatorSpec)]
+    if not specs:
+        return False
+
+    sites: list[tuple[object, int, _pp.VoltageRegulator]] = []
+    for net in problem.networks:
+        for i, elem in enumerate(net.elements):
+            if isinstance(elem, _pp.VoltageRegulator):
+                sites.append((net, i, elem))
+
+    if len(sites) != len(specs):
+        log.info(
+            "Adaptive gain: %d regulator element(s) but %d spec(s) — "
+            "rebuilding the problem instead of retuning in place.",
+            len(sites), len(specs),
+        )
+        return False
+
+    for spec, (_net, _i, elem) in zip(specs, sites):
+        if not math.isclose(float(elem.voltage), float(spec.voltage),
+                            rel_tol=1e-12, abs_tol=1e-12):
+            log.info(
+                "Adaptive gain: regulator pairing mismatch (element %.6g V vs "
+                "spec %.6g V) — rebuilding the problem instead.",
+                elem.voltage, spec.voltage,
+            )
+            return False
+
+    changed = 0
+    for spec, (net, i, elem) in zip(specs, sites):
+        if elem.gain != spec.gain:
+            net.elements[i] = _dc_replace(elem, gain=spec.gain)
+            changed += 1
+    log.debug("Adaptive gain: retuned %d regulator element(s) in place",
+              changed)
+    return True
+
+
 def solve_problem_adaptive(
     loaded: LoadedProject,
     mesher_config,
     *,
     adaptive_regulator_gain: bool = False,
     stage_callback=None,
+    thermal_config=None,
 ) -> tuple[object, _pp.Problem, list[dict],
            dict[tuple[int, int], list], list[GeometryLayer], dict]:
     """Build, solve, and optionally iterate SMPS regulator gains.
+
+    ``thermal_config`` is an optional
+    :class:`pdnsolver.solver.ThermalConfig`. When it is enabled every solve
+    below runs the coupled electro-thermal loop; when it is ``None`` or
+    disabled the solve is bit-identical to an isothermal run. It composes
+    with adaptive SMPS gain — each gain iteration solves to thermal
+    convergence, so the regulator sees the hot rail's real input voltage.
 
     Returns ``(padne_solution, problem, via_segment_records,
     stub_pieces_by_pair, per_net_layers, adaptive_info)``.
@@ -1887,7 +2031,8 @@ def solve_problem_adaptive(
         if stage_callback is not None:
             stage_callback(msg)
         try:
-            return _pdn_solver.solve(problem, mesher_config=mesher_config)
+            return _pdn_solver.solve(problem, mesher_config=mesher_config,
+                                     thermal=thermal_config)
         except _pdn_mesh.MeshingException as exc:
             # Meshing failed after the Problem was already built. Hand the
             # built geometry to the caller's failure path (attributes on the
@@ -2009,11 +2154,15 @@ def solve_problem_adaptive(
             )
             break
 
-        # Advance the gains and rebuild so the next iteration solves with them.
+        # Advance the gains so the next iteration solves with them. Only the
+        # regulators' gain changes, so patch the existing Problem rather than
+        # rebuilding it — see _retune_problem_regulator_gains. The rebuild is
+        # kept as the fallback for any case that function declines.
         _replace_regulator_gains(loaded, new_gains)
-        problem, via_segment_records, stub_pieces_by_pair, per_net_layers = (
-            build_problem(loaded)
-        )
+        if not _retune_problem_regulator_gains(problem, loaded):
+            problem, via_segment_records, stub_pieces_by_pair, per_net_layers = (
+                build_problem(loaded)
+            )
 
     adaptive_info["converged"] = converged
     # Report the gains the returned solution was actually solved with — i.e.
@@ -2041,6 +2190,7 @@ def build_solve_metadata(
     regulator_adaptive_gain: dict | None = None,
     mesh_failures: list[dict] | None = None,
     mesh_failed: bool = False,
+    thermal_config=None,
 ) -> dict:
     """Collect every input the solve depended on into a serialisable dict.
 
@@ -2670,6 +2820,11 @@ def build_solve_metadata(
         "connectivity_breaks": list(
             getattr(loaded.annotations, "connectivity_breaks", [])
         ),
+        # Parts joining a solved rail to copper outside the FEM — advisory,
+        # surfaced by the viewer as a non-blocking notice.
+        "unannotated_bridges": list(
+            getattr(loaded.annotations, "unannotated_bridges", [])
+        ),
         # ``mesh_failures`` carries the records the viewer highlights; it can
         # legitimately be EMPTY on a real failure, because the degenerate
         # sliver that makes Triangle abort is the same geometry
@@ -2691,6 +2846,17 @@ def build_solve_metadata(
                 "maximum_size_mm": mesher_config.maximum_size,
                 "adaptive_mesh": mesher_config.is_variable_density,
             } if mesher_config is not None else None
+        ),
+        # Electro-thermal settings actually used, so reopening a cached
+        # solve restores the checkbox and the reported rise means something.
+        "thermal_config": (
+            {
+                "enabled": bool(thermal_config.enabled),
+                "heat_transfer_w_per_m2k": float(
+                    thermal_config.heat_transfer_w_per_m2k),
+                "max_iterations": int(thermal_config.max_iterations),
+                "tolerance_c": float(thermal_config.tolerance_c),
+            } if thermal_config is not None else None
         ),
         "solver_stats": (
             {
@@ -3326,6 +3492,123 @@ def _analyze_open_loop_rails(
     return excluded_idx, warnings
 
 
+# Designator prefixes for parts that can carry DC between two nets. An IC
+# spanning two nets is not a conduction path, so the sweep is restricted to
+# these rather than reporting every multi-net component on the board.
+_BRIDGE_DESIGNATOR_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("FB", "ferrite bead"),
+    ("JP", "jumper"),
+    ("TP", "test point"),
+    ("R", "resistor"),
+    ("F", "fuse"),
+    ("L", "inductor / ferrite"),
+    ("J", "connector"),
+    ("P", "connector"),
+    ("CN", "connector"),
+    ("SW", "switch"),
+)
+# A bridging part has two terminals. Allow a few more pads for Kelvin-sense
+# shunts and multi-pin connectors that still only span two nets.
+_BRIDGE_MAX_PADS: int = 8
+
+
+def _bridge_part_kind(designator: str) -> str | None:
+    """Human-readable part kind for a designator, or ``None`` when the
+    prefix isn't one that conducts between nets."""
+    des = (designator or "").strip().upper()
+    if not des:
+        return None
+    # Longest prefix first so FB / JP / CN win over F / J / C.
+    for prefix, kind in sorted(_BRIDGE_DESIGNATOR_PREFIXES,
+                               key=lambda kv: -len(kv[0])):
+        if des.startswith(prefix) and des[len(prefix):len(prefix) + 1].isdigit():
+            return kind
+    return None
+
+
+def _flag_unannotated_bridges(loaded: LoadedProject) -> list[str]:
+    """Report parts that join a solved rail to copper the FEM never sees.
+
+    The FEM is restricted to *active* nets — those a PDN directive's
+    terminal actually touches (:func:`_collect_active_nets`). Copper on
+    every other net is excluded, which is right for signal nets but wrong
+    whenever a component physically conducts between an active net and an
+    excluded one: a ferrite between GND and AGND, a fuse ahead of VIN, a
+    sense resistor to a `_SENSE` net, a connector to a daughter board. That
+    path carries real current, so leaving it out overstates the rail's
+    return resistance.
+
+    This is advisory only. Nothing is bridged automatically, because only
+    the user knows the part's DC resistance — a ferrite's datasheet "0 Ω"
+    is 20-200 mΩ of DCR, and guessing would be worse than omitting it. The
+    fix the message recommends is ``PDN_ROLE=SERIES`` + ``PDN_R``, which
+    pulls the far-side net into the solve. (Parts that are genuinely a piece
+    of metal — Net Ties and 0 Ω links — are bridged automatically before
+    this runs, so they never appear here.)
+
+    Returns one message per bridging part, most-connected net first.
+    """
+    proj = loaded.extracted
+    directives = loaded.annotations.directives
+    active = _collect_active_nets(directives, proj)
+    if not active:
+        return []
+
+    # Designators that already carry a directive — they are annotated, so
+    # whatever they bridge is already in the model.
+    annotated = {
+        (d.designator or "").strip().upper()
+        for d in directives if getattr(d, "designator", None)
+    }
+
+    pads_by_comp: dict[int, list] = {}
+    for pad in proj.pads:
+        idx = getattr(pad, "component_index", None)
+        if idx is not None and idx >= 0:
+            pads_by_comp.setdefault(int(idx), []).append(pad)
+
+    messages: list[str] = []
+    for comp_idx, pads in pads_by_comp.items():
+        if not (0 <= comp_idx < len(proj.pcb_components)):
+            continue
+        if len(pads) > _BRIDGE_MAX_PADS:
+            continue
+        comp = proj.pcb_components[comp_idx]
+        des = (comp.source_designator or comp.designator or "").strip()
+        if not des or des.upper() in annotated:
+            continue
+        kind = _bridge_part_kind(des)
+        if kind is None:
+            continue
+
+        net_idxs = {
+            int(p.net_index) for p in pads
+            if p.net_index != NO_NET and 0 <= p.net_index < len(proj.nets)
+        }
+        if len(net_idxs) != 2:
+            continue  # not a two-terminal bridge
+        on_rail = sorted(net_idxs & active)
+        off_rail = sorted(net_idxs - active)
+        if not on_rail or not off_rail:
+            continue  # wholly inside or wholly outside the model
+
+        rail_name = proj.nets[on_rail[0]].name
+        other_name = proj.nets[off_rail[0]].name
+        messages.append(
+            f"{des} ({kind}) connects the solved rail {rail_name!r} to "
+            f"{other_name!r}, which no PDN directive touches — so that copper "
+            f"is left out of the FEM and any current it really carries is "
+            f"missing. If it conducts at DC, annotate {des} with "
+            f"PDN_ROLE=SERIES and PDN_R set to its actual DC resistance "
+            f"(a ferrite's DCR, a fuse's cold resistance, a shunt's marked "
+            f"value); the return path through {other_name!r} is then solved "
+            f"too. Ignore this if the part is genuinely open at DC."
+        )
+
+    messages.sort()
+    return messages
+
+
 def _flag_open_loop_rails(loaded: LoadedProject) -> list[str]:
     """Find rails that can't carry current — an analysis group holding only
     sources (``SourceSpec`` / ``RegulatorSpec``) or only sinks (``SinkSpec``)
@@ -3379,6 +3662,31 @@ def _flag_open_loop_rails(loaded: LoadedProject) -> list[str]:
     for w in warnings:
         log.warning("%s", w)
     return warnings
+
+
+def _log_build_timings(stages: list[tuple[str, float]], total: float) -> None:
+    """Log a build_problem stage breakdown, slowest first.
+
+    Mirrors :func:`pdnsolver.solver._log_timing_breakdown` so a solve log
+    reads consistently across the geometry and FEM halves. Before this,
+    build_problem reported a single geometry line and everything else — via
+    coupling, stub filtering, the background-union join — was invisible,
+    which is why the largest remaining costs in the pipeline could only be
+    found by reading wall-clock gaps between log lines.
+    """
+    if not stages:
+        return
+    lines = [f"build_problem breakdown (total {total:.2f}s):"]
+    accounted = 0.0
+    for name, dt in sorted(stages, key=lambda kv: -kv[1]):
+        accounted += dt
+        pct = (100.0 * dt / total) if total > 0 else 0.0
+        lines.append(f"    {dt:7.2f}s  {pct:5.1f}%  {name}")
+    other = total - accounted
+    if other > 0.005:
+        pct = (100.0 * other / total) if total > 0 else 0.0
+        lines.append(f"    {other:7.2f}s  {pct:5.1f}%  (untimed)")
+    log.info("\n".join(lines))
 
 
 def build_problem(
@@ -3448,10 +3756,20 @@ def build_problem(
     # other ~thousands of nets (the viewer's "all copper" overlay) are
     # unioned on a background thread that overlaps the rest of this
     # function. _rest_geom_future is joined just before the return.
+    _build_t0 = time.monotonic()
+    _build_stages: list[tuple[str, float]] = []
+
+    def _stage(name: str, since: float) -> float:
+        """Record a stage and return a fresh timestamp for the next one."""
+        now = time.monotonic()
+        _build_stages.append((name, now - since))
+        return now
+
     _t_geom = time.monotonic()
     active_layers, _rest_geom_future = build_per_net_geometry_layers_split(
         loaded.extracted, active_nets,
     )
+    _t_mark = _stage("Active-net geometry (union)", _t_geom)
     log.info("build_problem: active-net geometry built in %.2fs "
              "(non-active nets unioning in background)",
              time.monotonic() - _t_geom)
@@ -3773,6 +4091,22 @@ def build_problem(
     loaded.annotations.connectivity_breaks = list(connectivity_warnings)
     loaded.annotations.warnings.extend(connectivity_warnings)
 
+    # Parts that conduct between a solved rail and copper the active-net
+    # filter excluded. Re-derived from scratch every build_problem call and
+    # assigned (not appended) for the same reason as the breaks above:
+    # annotating the part must make the notice disappear on the next Resolve.
+    prev_bridges = set(getattr(loaded.annotations, "unannotated_bridges", []))
+    if prev_bridges:
+        loaded.annotations.warnings = [
+            w for w in loaded.annotations.warnings if w not in prev_bridges
+        ]
+    bridge_warnings = _flag_unannotated_bridges(loaded)
+    loaded.annotations.unannotated_bridges = list(bridge_warnings)
+    loaded.annotations.warnings.extend(bridge_warnings)
+    if bridge_warnings:
+        log.info("Found %d unannotated net bridge(s) touching solved rails",
+                 len(bridge_warnings))
+
     # Log every resolved directive at INFO level so the solve log always
     # shows what's in the FEM — makes it easy to spot wrong resistance
     # values, unexpected net connections, or missing elements.
@@ -3991,7 +4325,12 @@ def build_problem(
     # Join the backgrounded non-active-net union — it has been running while
     # the FEM assembly above ran. per_net_layers must carry every net: the
     # viewer's "all copper" overlay needs the non-active ones too.
+    _t_mark = _stage("Problem assembly (layers, vias, networks)", _t_mark)
+    # Joining the background union: this is the viewer's display-only overlay
+    # geometry, so any time spent here is time the FEM did not need.
     per_net_layers = active_layers + _rest_geom_future.result()
+    _t_mark = _stage("Join background overlay union", _t_mark)
+    _log_build_timings(_build_stages, time.monotonic() - _build_t0)
     return problem, segment_records, stub_pieces_by_pair, per_net_layers
 
 

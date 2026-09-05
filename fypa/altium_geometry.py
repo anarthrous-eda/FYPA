@@ -44,6 +44,7 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import math
+import threading
 import time
 from dataclasses import dataclass
 
@@ -76,6 +77,44 @@ log = logging.getLogger(__name__)
 # Padne's convention: conductivity stored in S/mm so that
 #   surface_conductance [S] = thickness [mm] × conductivity [S/mm]
 COPPER_CONDUCTIVITY_S_PER_MM: float = 5.95e4
+
+# Copper weight assumed when the Altium stackup carries no thickness for a
+# layer. altium_monkey initialises ``copper_thickness`` to 0 mils when the
+# .PcbDoc has no COPTHICK field, and a zero thickness means zero sheet
+# conductance — an infinitely resistive layer, which shows up downstream as a
+# nonsense solve or a ZeroDivisionError building the metadata rather than as
+# an obvious "your stackup is missing" error. 35 µm (1 oz) is the overwhelming
+# default for signal layers, so substituting it and saying so loudly is far
+# more useful than either failing or silently solving an open circuit.
+DEFAULT_COPPER_THICKNESS_MM: float = 0.035
+# Designators of layers already warned about, so a board missing its whole
+# stackup logs once per layer instead of once per (layer, net) bucket.
+_thickness_warned: set = set()
+
+
+def _layer_conductance(stackup) -> float:
+    """Sheet conductance (S) for a stackup layer: thickness x conductivity.
+
+    Substitutes :data:`DEFAULT_COPPER_THICKNESS_MM` when the stackup reports
+    no usable thickness, warning once per layer. Without this a stackup-less
+    board silently produces zero-conductance copper.
+    """
+    t_mm = float(getattr(stackup, "copper_thickness_mm", 0.0) or 0.0)
+    if t_mm <= 0.0:
+        key = (getattr(stackup, "layer_id", None), getattr(stackup, "name", ""))
+        if key not in _thickness_warned:
+            _thickness_warned.add(key)
+            log.warning(
+                "Layer %s (id %s) has no copper thickness in the Altium "
+                "stackup - assuming %.0f um (1 oz). Set the layer's copper "
+                "weight in Altium, or override it in Settings > Stackup, "
+                "for a correct IR drop.",
+                getattr(stackup, "name", "?"),
+                getattr(stackup, "layer_id", "?"),
+                DEFAULT_COPPER_THICKNESS_MM * 1000.0,
+            )
+        t_mm = DEFAULT_COPPER_THICKNESS_MM
+    return t_mm * COPPER_CONDUCTIVITY_S_PER_MM
 
 # Altium layer-id sentinels.
 MULTI_LAYER_PAD_LAYER_ID: int = 74
@@ -1135,7 +1174,7 @@ def build_layer_geometry(proj: ExtractedProject, layer_id: int,
             layer_id=layer_id,
             name=stackup.name,
             shape=shape,
-            conductance=stackup.copper_thickness_mm * COPPER_CONDUCTIVITY_S_PER_MM,
+            conductance=_layer_conductance(stackup),
             is_plane=True,
             plane_net_index=_net_index_by_name(proj, stackup.plane_net_name),
         )
@@ -1260,7 +1299,7 @@ def build_layer_geometry(proj: ExtractedProject, layer_id: int,
         layer_id=layer_id,
         name=stackup.name,
         shape=shape,
-        conductance=stackup.copper_thickness_mm * COPPER_CONDUCTIVITY_S_PER_MM,
+        conductance=_layer_conductance(stackup),
         is_plane=False,
         plane_net_index=NO_NET,
     )
@@ -1372,7 +1411,7 @@ def _shapes_to_geometry_layers(
             layer_id=lid,
             name=f"{stackup.name}|{net_name}",
             shape=mp,
-            conductance=stackup.copper_thickness_mm * COPPER_CONDUCTIVITY_S_PER_MM,
+            conductance=_layer_conductance(stackup),
             is_plane=is_plane,
             plane_net_index=net_index if is_plane else NO_NET,
             net_index=net_index,
@@ -1536,6 +1575,38 @@ def _batch_buffer_arcs(arcs: list[RawArc]) -> list[shapely.geometry.Polygon]:
     return list(polys)
 
 
+# Single-slot memo for the bucketing/buffering pass. Keyed on the identity of
+# the ExtractedProject plus the arguments that change the result.
+#
+# The reference is strong, not weak: ExtractedProject is a frozen slots
+# dataclass without ``__weakref__``, and adding ``weakref_slot=True`` would
+# make it unpicklable — which the design-info cache depends on. A single slot
+# bounds the cost to one extraction, the same one the viewer holds for the
+# session anyway, and clear_net_layer_bucket_cache() releases it on demand.
+#
+# Why it exists: one session runs this pass at least twice over the same
+# extraction — once when the viewer builds its stub metadata and again inside
+# build_problem — and it is the single most expensive step in the geometry
+# pipeline (buffering every track, arc, pad and via on the board). The second
+# run is pure repetition. A single slot is enough: the two calls are
+# back-to-back on the same project, and holding only one keeps a large board's
+# polygon lists from accumulating.
+_bucket_cache_proj: ExtractedProject | None = None
+_bucket_cache_key: tuple | None = None
+_bucket_cache_value: dict | None = None
+_bucket_cache_lock = threading.Lock()
+
+
+def clear_net_layer_bucket_cache() -> None:
+    """Drop the memoised bucketing result. Call when the extraction a cached
+    entry was built from is being replaced and the memory matters."""
+    global _bucket_cache_proj, _bucket_cache_key, _bucket_cache_value
+    with _bucket_cache_lock:
+        _bucket_cache_proj = None
+        _bucket_cache_key = None
+        _bucket_cache_value = None
+
+
 def _build_net_layer_buckets(
     proj: ExtractedProject,
     enabled_layers: list[int],
@@ -1549,8 +1620,27 @@ def _build_net_layer_buckets(
     separately (see :func:`build_per_net_geometry_layers_split`) can share
     this single buffering pass instead of paying for it twice.
 
+    The result is memoised on the project's identity (see
+    :func:`clear_net_layer_bucket_cache`) because a single session calls this
+    at least twice over the same extraction — the viewer's stub-metadata build
+    and ``build_problem`` — and the polygons it returns are a pure function of
+    ``(proj, enabled_layers, include_vias)``. Callers treat the returned dict
+    as read-only; they partition it into new dicts rather than mutating it.
+
     ``include_vias`` — see :func:`build_net_layer_shapes`.
     """
+    global _bucket_cache_proj, _bucket_cache_key, _bucket_cache_value
+    cache_key = (tuple(enabled_layers), bool(include_vias))
+    with _bucket_cache_lock:
+        if (_bucket_cache_proj is proj
+                and _bucket_cache_key == cache_key
+                and _bucket_cache_value is not None):
+            log.info(
+                "Reusing cached (layer, net) buckets for %s (%d bucket(s))",
+                proj.prjpcb_path.name, len(_bucket_cache_value),
+            )
+            return _bucket_cache_value
+
     buckets: dict[tuple[int, int], list[shapely.geometry.base.BaseGeometry]] = {}
     enabled_set = set(enabled_layers)
     # On a negative internal-plane layer, tracks / arcs / regions / fills are
@@ -1672,6 +1762,12 @@ def _build_net_layer_buckets(
 
     log.info("build_net_layer_shapes: buffered primitives into %d (layer, net) "
              "bucket(s) in %.2fs", len(buckets), time.monotonic() - _t_buckets)
+    # Memoise for the second caller in the session (see the docstring).
+    # Replacing the slot drops the previous project's polygons.
+    with _bucket_cache_lock:
+        _bucket_cache_proj = proj
+        _bucket_cache_key = cache_key
+        _bucket_cache_value = buckets
     return buckets
 
 

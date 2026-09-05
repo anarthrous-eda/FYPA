@@ -97,6 +97,15 @@ _MATRIX_INDEX_MAX = int(np.iinfo(np.int32).max)
 _MESH_PARALLEL_THRESHOLD: int = int(
     os.environ.get("PDNSOLVER_MESH_PARALLEL_THRESHOLD", "4"),
 )
+# A piece *count* alone is a poor proxy for meshing work: five 3-vertex
+# slivers spawn a pool for nothing, while three million-vertex pours stay
+# serial. Alongside the count gate we require a minimum amount of actual
+# work, estimated as the total boundary-coordinate count across the batch
+# (Triangle's cost scales with input segments and the output triangles they
+# imply). Below this, meshing in-process beats paying for spawn.
+_MESH_PARALLEL_MIN_COORDS: int = int(
+    os.environ.get("PDNSOLVER_MESH_PARALLEL_MIN_COORDS", "2000"),
+)
 # Cap workers — meshing is CPU-bound and triangulate is single-threaded
 # inside one call, so going above the physical core count just adds
 # context-switching overhead. Use cpu_count() // 2 as a rough heuristic
@@ -257,9 +266,16 @@ def _pad_seed_points(
         return pts
     n = int(perimeter / _PAD_SEED_SPACING_MM)
     n = max(_PAD_SEED_MIN_POINTS, min(_PAD_SEED_MAX_POINTS, n))
-    for i in range(n):
-        sample = exterior.interpolate(perimeter * i / n)
-        pts.append(shapely.geometry.Point(sample.x, sample.y))
+    # One vectorised shapely dispatch for all n samples rather than n
+    # separate ``exterior.interpolate`` calls (each a Python->GEOS round
+    # trip). ``line_interpolate_point`` is bit-identical to ``.interpolate``
+    # for the same distance, so the arithmetic below must stay written as
+    # ``perimeter * i / n`` — reassociating it to ``i * (perimeter / n)``
+    # shifts seeds by ~1 ULP, which moves Triangle's output and drifts the
+    # golden regression fingerprints.
+    fractions = perimeter * np.arange(n, dtype=np.float64) / n
+    samples = shapely.line_interpolate_point(exterior, fractions)
+    pts.extend(samples.tolist())
     return pts
 
 
@@ -268,15 +284,19 @@ def _vertices_under_pad(
     globals_arr: np.ndarray,
     region: shapely.geometry.Polygon,
     point: shapely.geometry.Point,
-    claimed: set[int],
+    claimed: np.ndarray | None,
 ) -> np.ndarray:
     """Global indices of the mesh vertices that lie under ``region`` (a pad
     outline), with the vertex nearest ``point`` placed first as the group's
     representative.
 
-    Vertices already in ``claimed`` are excluded so pad groups stay disjoint
-    and the contraction in :func:`solve` is a clean partition. Returns an
-    empty array when the pad catches no free vertex.
+    Vertices already claimed are excluded so pad groups stay disjoint and
+    the contraction in :func:`solve` is a clean partition. ``claimed`` is a
+    length-``n_vertices`` boolean mask (``True`` == already taken) rather
+    than a Python ``set``: the membership test is then a single vectorised
+    fancy-index instead of one interpreter round trip per candidate vertex,
+    which matters on boards with many pad directives on a fine mesh.
+    Returns an empty array when the pad catches no free vertex.
 
     The membership polygon is ``region`` buffered out by
     :data:`_PAD_MEMBERSHIP_EPS_MM` so pad-outline seed vertices — which sit
@@ -309,11 +329,8 @@ def _vertices_under_pad(
         return np.empty(0, dtype=np.int64)
 
     sel_globals = globals_arr[sel_local].astype(np.int64, copy=False)
-    if claimed:
-        free = np.fromiter(
-            (g not in claimed for g in sel_globals),
-            dtype=bool, count=sel_globals.size,
-        )
+    if claimed is not None:
+        free = ~claimed[sel_globals]
         sel_local = sel_local[free]
         sel_globals = sel_globals[free]
     if sel_globals.size == 0:
@@ -393,37 +410,126 @@ class SolveCancelled(Exception):
     ``RuntimeError`` leaking out of :func:`solve`."""
 
 
+# How long an idle worker pool is kept alive between solves. On Windows the
+# ``spawn`` start method re-imports numpy / shapely / triangle in every
+# worker, measured at ~1.3 s of a ~2 s meshing stage — paid again on every
+# re-solve, every adaptive-gain iteration and every cap-loop port solve.
+# Keeping the pool warm across solves removes that entirely; the timeout
+# stops a long-idle GUI session from holding N processes forever.
+_MESH_POOL_IDLE_TIMEOUT_S: float = float(
+    os.environ.get("PDNSOLVER_MESH_POOL_IDLE_TIMEOUT", "300"),
+)
+# Set PDNSOLVER_MESH_POOL_PERSIST=0 to restore the old behaviour (a fresh
+# pool per solve) — useful when debugging worker-state issues.
+_MESH_POOL_PERSIST: bool = (
+    os.environ.get("PDNSOLVER_MESH_POOL_PERSIST", "1") != "0"
+)
+
+
 class _SharedMeshPool:
     """A meshing pool created lazily on first parallel use and reused across the
     connected AND disconnected meshing passes, so one solve spawns the worker
     processes (and re-imports numpy/shapely/triangle into them) at most once
     instead of once per pass. Registered as the active pool for the GUI cancel
-    path for its whole lifetime; the owner (``solve``) closes it once."""
+    path for its whole lifetime.
 
-    __slots__ = ("pool",)
+    When :data:`_MESH_POOL_PERSIST` is set (the default) the pool is also
+    kept alive *between* solves — :meth:`release` parks it in a module-level
+    slot instead of shutting it down, and the next solve adopts it if the
+    worker count matches and it hasn't been idle longer than
+    :data:`_MESH_POOL_IDLE_TIMEOUT_S`. The cancel path
+    (:func:`cancel_active_mesh_pool`) still tears it down hard, so a
+    cancelled solve never leaves half-dispatched work behind.
+    """
+
+    __slots__ = ("pool", "max_workers")
 
     def __init__(self) -> None:
         self.pool: ProcessPoolExecutor | None = None
+        self.max_workers: int | None = None
 
     def get(self, max_workers: int) -> ProcessPoolExecutor:
         global _active_mesh_pool, _active_shared_pool
         if self.pool is None:
-            self.pool = ProcessPoolExecutor(max_workers=max_workers)
+            self.pool = _acquire_pooled_executor(max_workers)
+            self.max_workers = max_workers
             with _active_mesh_pool_lock:
                 _active_mesh_pool = self.pool
                 _active_shared_pool = self
         return self.pool
 
-    def close(self) -> None:
+    def release(self) -> None:
+        """Finish with the pool: park it for reuse, or shut it down when
+        persistence is disabled."""
         global _active_mesh_pool, _active_shared_pool
         pool, self.pool = self.pool, None
-        if pool is not None:
-            with _active_mesh_pool_lock:
-                if _active_mesh_pool is pool:
-                    _active_mesh_pool = None
-                if _active_shared_pool is self:
-                    _active_shared_pool = None
+        workers, self.max_workers = self.max_workers, None
+        if pool is None:
+            return
+        with _active_mesh_pool_lock:
+            if _active_mesh_pool is pool:
+                _active_mesh_pool = None
+            if _active_shared_pool is self:
+                _active_shared_pool = None
+        if _MESH_POOL_PERSIST and workers is not None:
+            _park_pooled_executor(pool, workers)
+        else:
             pool.shutdown(cancel_futures=True, wait=True)
+
+    # Back-compat alias: older call sites (and the cancel path) say ``close``.
+    def close(self) -> None:
+        self.release()
+
+
+# Parked (idle but alive) executor, reused by the next solve.
+_idle_pool: "ProcessPoolExecutor | None" = None
+_idle_pool_workers: int = 0
+_idle_pool_parked_at: float = 0.0
+
+
+def _acquire_pooled_executor(max_workers: int) -> ProcessPoolExecutor:
+    """Adopt the parked executor when it matches and is still fresh,
+    otherwise spawn a new one."""
+    global _idle_pool, _idle_pool_workers, _idle_pool_parked_at
+    with _active_mesh_pool_lock:
+        pool = _idle_pool
+        if pool is not None:
+            fresh = (time.monotonic() - _idle_pool_parked_at) < _MESH_POOL_IDLE_TIMEOUT_S
+            if _idle_pool_workers == max_workers and fresh:
+                _idle_pool = None
+                _idle_pool_workers = 0
+                log.debug("Reusing warm mesh pool (%d workers)", max_workers)
+                return pool
+            # Stale or wrong size — drop it and build a fresh one below.
+            _idle_pool = None
+            _idle_pool_workers = 0
+    if pool is not None:
+        pool.shutdown(cancel_futures=True, wait=False)
+    return ProcessPoolExecutor(max_workers=max_workers)
+
+
+def _park_pooled_executor(pool: ProcessPoolExecutor, max_workers: int) -> None:
+    """Keep ``pool`` alive for the next solve. Any previously parked pool is
+    shut down (only one is ever held)."""
+    global _idle_pool, _idle_pool_workers, _idle_pool_parked_at
+    with _active_mesh_pool_lock:
+        stale, _idle_pool = _idle_pool, pool
+        _idle_pool_workers = max_workers
+        _idle_pool_parked_at = time.monotonic()
+    if stale is not None and stale is not pool:
+        stale.shutdown(cancel_futures=True, wait=False)
+
+
+def shutdown_idle_mesh_pool() -> None:
+    """Shut down the parked mesh pool, if any. Called by the cancel path and
+    available to hosts that want to reclaim the worker processes eagerly
+    (e.g. on application exit)."""
+    global _idle_pool, _idle_pool_workers
+    with _active_mesh_pool_lock:
+        pool, _idle_pool = _idle_pool, None
+        _idle_pool_workers = 0
+    if pool is not None:
+        pool.shutdown(cancel_futures=True, wait=False)
 
 
 def cancel_active_mesh_pool() -> None:
@@ -451,11 +557,18 @@ def cancel_active_mesh_pool() -> None:
         # builds a fresh executor instead of submitting to this dead one.
         if _active_shared_pool is not None:
             _active_shared_pool.pool = None
+            _active_shared_pool.max_workers = None
     if pool is not None:
         try:
             pool.shutdown(cancel_futures=True, wait=False)
         except Exception as e:
             log.warning(f"cancel_active_mesh_pool: shutdown failed ({e})")
+    # A cancel must not leave a warm pool behind either: the parked executor
+    # may hold queued work from the cancelled solve.
+    try:
+        shutdown_idle_mesh_pool()
+    except Exception as e:  # pragma: no cover - defensive
+        log.warning(f"cancel_active_mesh_pool: idle-pool shutdown failed ({e})")
 
 
 class SolverWarning(Warning):
@@ -484,6 +597,68 @@ class SolverInfo:
     # lean solutions) still load: pickle restores the old __dict__ and
     # attribute lookup falls back to this class-level default.
     method: str = "unknown"
+    # Electro-thermal loop outcome. ``thermal_iterations`` is 0 when the
+    # loop did not run (the default isothermal solve). Defaulted so older
+    # pickled SolverInfo objects still load.
+    thermal_iterations: int = 0
+    thermal_converged: bool = True
+    max_temperature_rise_c: float = 0.0
+
+
+@dataclass(frozen=True)
+class ThermalConfig:
+    """Settings for the optional coupled electro-thermal solve.
+
+    Copper resistivity rises about 0.39 %/K, so a rail that dissipates real
+    power is more resistive than the isothermal solve assumes — and the
+    error compounds, because the extra resistance dissipates more power.
+    With ``enabled`` set, :func:`solve` runs a fixed-point loop: solve,
+    convert each triangle's areal power density into a local temperature
+    rise, rescale that triangle's sheet conductance, re-solve, repeat until
+    the temperature field stops moving.
+
+    The thermal model is deliberately **local and lumped**: each triangle
+    sheds its heat straight to ambient through
+    ``heat_transfer_w_per_m2k`` (both board faces combined), so
+
+        ΔT [K] = p [W/mm²] · 1e6 / h [W/(m²·K)]
+
+    There is no lateral heat spreading — a hot neck does not warm its
+    neighbours, and a copper pour does not act as the heatsink it really
+    is. That makes the result an *upper* bound on local rise for small hot
+    features and a reasonable estimate for broad ones. Modelling spreading
+    properly needs a second Laplace solve for temperature on the same mesh
+    with stackup thermal conductivities, which is a separate tier of work;
+    this tier exists because it is cheap, honest about its assumptions and
+    still captures the first-order effect that commercial DC-IR tools
+    model and an isothermal solve misses entirely.
+
+    ``h`` of 20 W/(m²·K) is typical for a bare board in still air counting
+    both faces; forced air or a chassis heatsink is higher (50-100), a
+    conformally coated board in a sealed box lower.
+    """
+
+    enabled: bool = False
+    # Ambient / board reference temperature in °C. The isothermal solve has
+    # already applied this to the layer conductances handed to solve(), so
+    # it is used here only to evaluate rho(T) consistently at T = ambient + rise.
+    ambient_c: float = 20.0
+    # Combined both-faces heat transfer coefficient, W/(m²·K).
+    heat_transfer_w_per_m2k: float = 20.0
+    # Copper temperature coefficient of resistance, per K.
+    alpha_per_c: float = 0.00393
+    max_iterations: int = 8
+    # Converged when the largest per-triangle temperature change between
+    # iterations falls below this.
+    tolerance_c: float = 0.25
+    # Under-relaxation on the temperature update. The coupling is mildly
+    # positive-feedback, so damping keeps a hot spot from oscillating.
+    relaxation: float = 0.7
+    # Safety rail: a near-zero h, or a micro-sliver triangle carrying a
+    # numerically enormous gradient, would otherwise drive the conductance
+    # to zero and the matrix singular. Rises are clamped here and the clamp
+    # is reported.
+    max_rise_c: float = 300.0
 
 
 @dataclass
@@ -492,6 +667,9 @@ class LayerSolution:
     potentials: list[mesh.ZeroForm]
     power_densities: list[mesh.TwoForm] = field(default_factory=list)
     disconnected_meshes: list[mesh.Mesh] = field(default_factory=list)
+    # Per-triangle temperature rise above ambient (K), parallel to
+    # ``power_densities``. Empty unless the electro-thermal loop ran.
+    temperature_rises: list[mesh.TwoForm] = field(default_factory=list)
 
 
 @dataclass
@@ -860,6 +1038,24 @@ def find_connected_layer_geom_indices(connectivity_graph: ConnectivityGraph
     return layer_mesh_pairs
 
 
+def _estimate_mesh_work(polys: list[shapely.geometry.Polygon]) -> int:
+    """Rough meshing-work estimate for a batch: total boundary coordinate
+    count across every exterior and interior ring.
+
+    Triangle's cost scales with the constrained segments it is given and
+    the triangles they imply, so coordinate count tracks work far better
+    than the piece count does. Used only to decide serial-vs-parallel, so
+    an approximation is fine; ``shapely.get_num_coordinates`` is one
+    vectorised call over the whole batch.
+    """
+    if not polys:
+        return 0
+    try:
+        return int(np.sum(shapely.get_num_coordinates(np.asarray(polys, dtype=object))))
+    except Exception:  # pragma: no cover - defensive; fall back to a count proxy
+        return len(polys) * 64
+
+
 def _mesh_polygons_in_parallel(
     polys: list[shapely.geometry.Polygon],
     seed_xys: list[np.ndarray | None],
@@ -877,9 +1073,12 @@ def _mesh_polygons_in_parallel(
     Vertex / Face Python stubs) would dominate runtime and erase the
     parallelism win.
 
-    For < ``_MESH_PARALLEL_THRESHOLD`` polygons the pool is skipped and
-    Triangle runs in-process — spawning workers for two or three pieces
-    on a small board is a net loss.
+    The pool is skipped and Triangle runs in-process when the batch is
+    too small to pay for it — fewer than ``_MESH_PARALLEL_THRESHOLD``
+    pieces, or less than ``_MESH_PARALLEL_MIN_COORDS`` boundary
+    coordinates in total. The second gate matters because a piece *count*
+    is a poor proxy for meshing work: a handful of micro-slivers would
+    otherwise spawn a full worker pool for microseconds of Triangle time.
 
     ``switches`` is one Triangle switches string *per polygon* — callers
     that don't need per-polygon variation should broadcast a single
@@ -940,8 +1139,15 @@ def _mesh_polygons_in_parallel(
         except mesh.MeshingException as exc:
             raise _enrich_failure(idx, exc) from exc
 
-    # Fall back to serial when the pool wouldn't pay for itself.
-    if n < _MESH_PARALLEL_THRESHOLD:
+    # Fall back to serial when the pool wouldn't pay for itself: too few
+    # pieces, or too little actual boundary work across them.
+    _work = _estimate_mesh_work(polys)
+    if n < _MESH_PARALLEL_THRESHOLD or _work < _MESH_PARALLEL_MIN_COORDS:
+        if n >= _MESH_PARALLEL_THRESHOLD:
+            log.debug(
+                "%s: %d pieces but only ~%d boundary coords — meshing serially",
+                log_label, n, _work,
+            )
         results: list[tuple[np.ndarray, np.ndarray]] = []
         for i in range(n):
             results.append(_mesh_one(i))
@@ -1463,7 +1669,10 @@ class NodeIndexer:
         # Global vertex indices already assigned to a pad group. Keeping
         # groups disjoint guarantees the contraction in solve() is a clean
         # partition (no vertex pulled into two pads).
-        claimed: set[int] = set()
+        # Boolean occupancy mask over global vertex indices (see
+        # _vertices_under_pad) — replaces a Python set so membership and
+        # marking are both vectorised.
+        claimed = np.zeros(vindex.n_vertices, dtype=bool)
         connections = [
             conn for network in filtered_networks for conn in network.connections
         ]
@@ -1483,7 +1692,7 @@ class NodeIndexer:
         # calls; instead handle the (order-sensitive) equipotential-patch path
         # here and DEFER the point lookups, then batch them per layer below.
         # Same result as the per-connection loop: identical nearest vertices,
-        # ``claimed`` set, and ``vertex_groups``.
+        # ``claimed`` mask, and ``vertex_groups``.
         deferred: list = []  # (conn, globals_arr, kdtree)
         for conn in connections:
             # A connection's layer may have no meshed copper at all — e.g. a
@@ -1515,7 +1724,7 @@ class NodeIndexer:
                     kdtree, globals_arr, conn.region, conn.point, claimed,
                 )
                 if group.size:
-                    claimed.update(int(g) for g in group)
+                    claimed[group] = True
                     if group.size >= 2:
                         vertex_groups.append(group)
                     _assign(conn.node_id, int(group[0]))
@@ -1728,6 +1937,7 @@ def process_mesh_laplace_operators(
     meshes: list[mesh.Mesh],
     conductances: list[float],
     vindex: VertexIndexer,
+    tri_conductance: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Assemble every mesh's cotangent Laplacian at once, returning one
     concatenated ``(rows, cols, vals)`` triple in GLOBAL vertex indices, ready
@@ -1749,6 +1959,23 @@ def process_mesh_laplace_operators(
     global ``np.add.at`` accumulates its diagonal in the same order the
     per-mesh scatter did; the final CSC is identical because off-diagonal
     duplicates (≤2 per edge) sum commutatively.
+
+    ``tri_conductance`` (optional) overrides the per-mesh scalar with one
+    sheet conductance **per global triangle**, in the concatenated triangle
+    order :func:`global_triangle_arrays` produces. This is what the
+    electro-thermal loop uses: copper that heats up becomes more resistive,
+    and the rise is local (a hot neck, a via farm) rather than uniform over
+    a layer. When it is ``None`` the original per-mesh scalar path runs
+    unchanged and bit-identically.
+
+    Note the diagonal differs subtly between the two paths. With a uniform
+    per-mesh conductance, ``(Σ w_ij)·cond`` and ``Σ (w_ij·cond)`` are the
+    same number, and the scalar path uses the former to stay bit-identical
+    to the historical per-mesh assembly. With per-triangle conductance they
+    are *not* the same, and only the latter gives a row that sums to zero
+    (the discrete conservation property the FEM needs), so the
+    per-triangle path accumulates the diagonal from the already-scaled
+    off-diagonals.
     """
     # int32 indices halve the transient COO row/col memory (there are 6·T of
     # them). Safe because a FEM matrix never has anywhere near 2³¹ rows; the
@@ -1783,6 +2010,8 @@ def process_mesh_laplace_operators(
             tris_list.append(tris + base)  # local → global vertex indices
             tri_cond_list.append(np.full(tris.shape[0], cond, dtype=DTYPE))
 
+    per_triangle = tri_conductance is not None
+
     xys_all = (np.concatenate(xys_list, axis=0) if xys_list
                else np.empty((0, 2), dtype=DTYPE))
 
@@ -1792,7 +2021,15 @@ def process_mesh_laplace_operators(
 
     if tris_list:
         tris_all = np.concatenate(tris_list, axis=0).astype(idx_dtype, copy=False)
-        tri_cond = np.concatenate(tri_cond_list)
+        if per_triangle:
+            tri_cond = np.asarray(tri_conductance, dtype=DTYPE)
+            if tri_cond.shape[0] != tris_all.shape[0]:
+                raise ValueError(
+                    f"tri_conductance has {tri_cond.shape[0]} entries but the "
+                    f"board has {tris_all.shape[0]} triangles"
+                )
+        else:
+            tri_cond = np.concatenate(tri_cond_list)
         v0 = tris_all[:, 0]
         v1 = tris_all[:, 1]
         v2 = tris_all[:, 2]
@@ -1808,23 +2045,36 @@ def process_mesh_laplace_operators(
         cols_off = np.concatenate([v2, v1, v0, v2, v1, v0])
         vals_off = np.concatenate([w12, w12, w20, w20, w01, w01])
 
-        # Diagonal (UNSCALED): L[i, i] = -Σ outgoing weights from i. Done before
-        # conductance scaling so a vertex's diagonal is (Σ weights)·cond, matching
-        # the per-mesh path exactly rather than Σ(weight·cond). bincount is the
-        # vectorised weighted scatter-add (far faster than np.add.at's unbuffered
-        # element-by-element loop); minlength keeps orphan vertices in range.
-        diag = (-np.bincount(rows_off, weights=vals_off, minlength=n_total)).astype(
-            DTYPE, copy=False)
-
-        # Scale: each off-diagonal entry by its triangle's conductance (the
-        # 6 edge sub-blocks all index the same triangle set), each diagonal by
-        # its vertex's conductance. Scale the 6 T-sized blocks in place rather
-        # than building `np.concatenate([tri_cond] * 6)` — that temporary is 6·T
-        # entries (~200 MB on a multi-million-triangle board).
         n_tri = tri_cond.shape[0]
-        for _b in range(6):
-            vals_off[_b * n_tri:(_b + 1) * n_tri] *= tri_cond
-        diag = diag * vert_cond
+        if per_triangle:
+            # Scale first, then accumulate: with a conductance that varies
+            # triangle-to-triangle the diagonal must be Σ(w_ij·cond_ij) for
+            # the row to sum to zero.
+            for _b in range(6):
+                vals_off[_b * n_tri:(_b + 1) * n_tri] *= tri_cond
+            diag = (-np.bincount(
+                rows_off, weights=vals_off, minlength=n_total,
+            )).astype(DTYPE, copy=False)
+        else:
+            # Diagonal (UNSCALED): L[i, i] = -Σ outgoing weights from i. Done
+            # before conductance scaling so a vertex's diagonal is
+            # (Σ weights)·cond, matching the per-mesh path exactly rather than
+            # Σ(weight·cond). bincount is the vectorised weighted scatter-add
+            # (far faster than np.add.at's unbuffered element-by-element
+            # loop); minlength keeps orphan vertices in range.
+            diag = (-np.bincount(
+                rows_off, weights=vals_off, minlength=n_total,
+            )).astype(DTYPE, copy=False)
+
+            # Scale: each off-diagonal entry by its triangle's conductance (the
+            # 6 edge sub-blocks all index the same triangle set), each diagonal
+            # by its vertex's conductance. Scale the 6 T-sized blocks in place
+            # rather than building `np.concatenate([tri_cond] * 6)` — that
+            # temporary is 6·T entries (~200 MB on a multi-million-triangle
+            # board).
+            for _b in range(6):
+                vals_off[_b * n_tri:(_b + 1) * n_tri] *= tri_cond
+            diag = diag * vert_cond
 
         diag_idx = np.arange(n_total, dtype=idx_dtype)
         row_chunks += [rows_off, diag_idx]
@@ -1853,12 +2103,96 @@ def process_mesh_laplace_operators(
             np.empty(0, dtype=DTYPE))
 
 
+def global_triangle_arrays(
+    meshes: list[mesh.Mesh],
+    vindex: VertexIndexer,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Concatenated board-wide triangle soup, in the exact order
+    :func:`process_mesh_laplace_operators` builds it.
+
+    Returns ``(xys_all, tris_all, tri_mesh_ids)`` — global vertex
+    coordinates, triangles in global vertex indices, and the owning mesh
+    index per triangle. The electro-thermal loop needs all three: the first
+    two to take the potential gradient per triangle, the third to map a
+    triangle back to its layer (and hence its reference conductance).
+
+    Kept as a separate public helper rather than an extra return value from
+    the Laplacian builder so the (cached) Laplacian path is unaffected.
+    """
+    offsets = vindex.mesh_vertex_offsets
+    xys_list: list[np.ndarray] = []
+    tris_list: list[np.ndarray] = []
+    ids_list: list[np.ndarray] = []
+    for mesh_i, msh in enumerate(meshes):
+        base = int(offsets[mesh_i])
+        xys, tris = _mesh_source_arrays(msh)
+        xys_list.append(xys)
+        if tris.shape[0] > 0:
+            tris_list.append(tris + base)
+            ids_list.append(np.full(tris.shape[0], mesh_i, dtype=np.int32))
+    xys_all = (np.concatenate(xys_list, axis=0) if xys_list
+               else np.empty((0, 2), dtype=DTYPE))
+    tris_all = (np.concatenate(tris_list, axis=0) if tris_list
+                else np.empty((0, 3), dtype=np.int64))
+    ids_all = (np.concatenate(ids_list) if ids_list
+               else np.empty(0, dtype=np.int32))
+    return xys_all, tris_all, ids_all
+
+
+def triangle_power_density(
+    xys_all: np.ndarray,
+    tris_all: np.ndarray,
+    tri_cond: np.ndarray,
+    v: np.ndarray,
+) -> np.ndarray:
+    """Areal power density (W/mm²) per global triangle: ``σ_sheet·|∇V|²``.
+
+    The P1 gradient of a linear triangle is constant over the element and
+    has the closed form used by :func:`compute_power_density`; this is the
+    same expression evaluated for the whole board in one vectorised pass,
+    so the electro-thermal loop never materialises per-mesh TwoForms just
+    to decide whether it has converged.
+
+    Degenerate (zero-area) triangles yield 0 rather than a division blow-up,
+    matching :func:`compute_power_density`.
+    """
+    if tris_all.shape[0] == 0:
+        return np.empty(0, dtype=DTYPE)
+    p0 = xys_all[tris_all[:, 0]]
+    p1 = xys_all[tris_all[:, 1]]
+    p2 = xys_all[tris_all[:, 2]]
+    f0 = v[tris_all[:, 0]]
+    f1 = v[tris_all[:, 1]]
+    f2 = v[tris_all[:, 2]]
+
+    # Identical closed form to :func:`compute_power_density` so the two never
+    # disagree on the same triangle.
+    y23 = p1[:, 1] - p2[:, 1]
+    x32 = p2[:, 0] - p1[:, 0]
+    y31 = p2[:, 1] - p0[:, 1]
+    x13 = p0[:, 0] - p2[:, 0]
+    y12 = p0[:, 1] - p1[:, 1]
+    x21 = p1[:, 0] - p0[:, 0]
+    D = y23 * (p0[:, 0] - p2[:, 0]) + x32 * (p0[:, 1] - p2[:, 1])
+
+    Ex = np.zeros_like(D)
+    Ey = np.zeros_like(D)
+    nz = D != 0
+    invD = np.zeros_like(D)
+    invD[nz] = 1.0 / D[nz]
+    Ex[nz] = (y23[nz] * f0[nz] + y31[nz] * f1[nz] + y12[nz] * f2[nz]) * invD[nz]
+    Ey[nz] = (x32[nz] * f0[nz] + x13[nz] * f1[nz] + x21[nz] * f2[nz]) * invD[nz]
+    return (tri_cond * (Ex * Ex + Ey * Ey)).astype(DTYPE, copy=False)
+
+
 def produce_layer_solutions(layers: list[problem.Layer],
                             vindex: VertexIndexer,
                             meshes: list[mesh.Mesh],
                             mesh_index_to_layer_index: list[int],
                             v: np.ndarray,
-                            disconnected_meshes_by_layer: list[list[mesh.Mesh]]) -> list[LayerSolution]:
+                            disconnected_meshes_by_layer: list[list[mesh.Mesh]],
+                            tri_temperature_rise: np.ndarray | None = None,
+                            ) -> list[LayerSolution]:
     """Pack the flat solution vector ``v`` back into per-layer LayerSolution
     objects.
 
@@ -1868,6 +2202,12 @@ def produce_layer_solutions(layers: list[problem.Layer],
     ZeroForm's underlying ``values`` array. No per-vertex Python loop, no
     half-edge walk. Same trick lets us also build per-mesh buckets in a
     single pass instead of an O(layers × meshes) outer-loop scan.
+
+    ``tri_temperature_rise`` (optional) is the electro-thermal loop's
+    per-triangle rise above ambient, in the board-wide concatenated
+    triangle order :func:`global_triangle_arrays` produces. It is sliced
+    back out per mesh into ``LayerSolution.temperature_rises`` so the
+    viewer can render it exactly like the power density it parallels.
     """
     # Bucket mesh indices by layer once — replaces the O(L × M) inner
     # filter ``if mesh_index_to_layer_index[mesh_i] != layer_i``.
@@ -1882,11 +2222,25 @@ def produce_layer_solutions(layers: list[problem.Layer],
     for m in meshes:
         offsets.append(offsets[-1] + len(m.vertices))
 
+    # Triangle offsets parallel to the vertex offsets above — only meshes
+    # that actually carry triangles contribute, matching how
+    # global_triangle_arrays concatenates them.
+    tri_offsets: dict[int, tuple[int, int]] = {}
+    if tri_temperature_rise is not None:
+        _cursor = 0
+        for mesh_i, msh in enumerate(meshes):
+            _, tris = _mesh_source_arrays(msh)
+            n_t = int(tris.shape[0])
+            if n_t > 0:
+                tri_offsets[mesh_i] = (_cursor, _cursor + n_t)
+                _cursor += n_t
+
     layer_solutions: list[LayerSolution] = []
     for layer_i, layer in enumerate(layers):
         layer_meshes: list[mesh.Mesh] = []
         layer_values: list[mesh.ZeroForm] = []
         layer_power_densities: list[mesh.TwoForm] = []
+        layer_temperature_rises: list[mesh.TwoForm] = []
         for mesh_i in meshes_by_layer.get(layer_i, ()):
             msh = meshes[mesh_i]
             base = offsets[mesh_i]
@@ -1901,11 +2255,23 @@ def produce_layer_solutions(layers: list[problem.Layer],
             layer_meshes.append(msh)
             layer_power_densities.append(power_density)
 
+            if tri_temperature_rise is not None:
+                rise = mesh.TwoForm(msh)
+                span = tri_offsets.get(mesh_i)
+                if span is not None:
+                    chunk = tri_temperature_rise[span[0]:span[1]]
+                    if rise.values.size != chunk.size:
+                        rise.values = np.asarray(chunk, dtype=np.float64)
+                    else:
+                        np.copyto(rise.values, chunk)
+                layer_temperature_rises.append(rise)
+
         layer_solutions.append(LayerSolution(
             meshes=layer_meshes,
             potentials=layer_values,
             power_densities=layer_power_densities,
-            disconnected_meshes=disconnected_meshes_by_layer[layer_i]
+            disconnected_meshes=disconnected_meshes_by_layer[layer_i],
+            temperature_rises=layer_temperature_rises,
         ))
 
     return layer_solutions
@@ -2881,13 +3247,20 @@ def _log_timing_breakdown(timings: list, total: float) -> None:
     log.info(f"  {total:8.2f}s  100.0%  TOTAL")
 
 
-def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None) -> Solution:
+def solve(prob: problem.Problem,
+          mesher_config: mesh.Mesher.Config | None = None,
+          thermal: "ThermalConfig | None" = None) -> Solution:
     """
     Solve the given PCB problem to find voltage and current distribution.
 
     Args:
         problem: The Problem object containing layers and lumped elements
         mesher_config: Configuration for mesh generation, uses defaults if None
+        thermal: Optional :class:`ThermalConfig`. When present and enabled,
+            the isothermal solve is followed by a coupled electro-thermal
+            fixed-point loop (self-heating raises copper resistivity, which
+            raises the drop, which raises the heating). Omitted or disabled
+            leaves the solve bit-identical to before.
 
     Returns:
         A Solution object with the computed results
@@ -3262,6 +3635,134 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
     _record_stage(timings, "Linear solve", _t0,
                   f" (method={solver_method}, iter={solver_iterations}, N={M})")
 
+    # --- Coupled electro-thermal loop (opt-in) ----------------------------
+    # Re-solves with per-triangle conductance derived from the previous
+    # iteration's power density. Everything geometric is reused: the meshes,
+    # the vertex indexer, the KDTrees, the node indexing, the network stamps
+    # and the contraction map are all unchanged, because only the copper's
+    # conductance moves. Per iteration we rebuild just the mesh Laplacian
+    # values, restitch the COO triple and refactorise.
+    thermal_iterations = 0
+    thermal_converged = True
+    tri_rise: np.ndarray | None = None
+    max_rise_c = 0.0
+    if thermal is not None and thermal.enabled and meshes:
+        _t0 = time.monotonic()
+        log.info("Starting coupled electro-thermal iteration")
+        xys_all, tris_all, tri_mesh_ids = global_triangle_arrays(meshes, vindex)
+        if tris_all.shape[0] == 0:
+            log.info("Electro-thermal: no triangles to heat; skipping")
+        else:
+            # Reference (ambient) sheet conductance per triangle, and the
+            # denominator that undoes the ambient correction already baked
+            # into it so rho(T) stays consistent as T moves.
+            # Recomputed from the problem rather than reusing the
+            # cache-miss branch's local: on a value-only re-solve the mesh
+            # assembly comes from cache and that local never exists.
+            _layer_cond = np.asarray(
+                [prob.layers[mesh_index_to_layer_index[i]].conductance
+                 for i in range(len(meshes))],
+                dtype=DTYPE,
+            )
+            base_tri_cond = _layer_cond[tri_mesh_ids]
+            alpha = float(thermal.alpha_per_c)
+            amb = float(thermal.ambient_c)
+            # sigma(T) = sigma_ref · (1 + a(T_amb - 20)) / (1 + a(T_amb + dT - 20))
+            amb_factor = 1.0 + alpha * (amb - 20.0)
+            h = float(thermal.heat_transfer_w_per_m2k)
+            # p is W/mm²; h is W/(m²·K) → 1e6 mm²/m². R_th [K·mm²/W] = 1e6/h.
+            r_th = (1.0e6 / h) if h > 0.0 else 0.0
+            tri_rise = np.zeros(tris_all.shape[0], dtype=DTYPE)
+            clamped_any = False
+
+            for _it in range(int(thermal.max_iterations)):
+                # Power density from the *current* solution and the
+                # conductance that produced it.
+                cur_cond = base_tri_cond * (
+                    amb_factor / (1.0 + alpha * (amb + tri_rise - 20.0))
+                )
+                p_areal = triangle_power_density(
+                    xys_all, tris_all, cur_cond, v,
+                )
+                raw_rise = p_areal * r_th
+                n_clamped = int(np.count_nonzero(raw_rise > thermal.max_rise_c))
+                if n_clamped:
+                    clamped_any = True
+                    np.clip(raw_rise, 0.0, thermal.max_rise_c, out=raw_rise)
+                new_rise = (
+                    thermal.relaxation * raw_rise
+                    + (1.0 - thermal.relaxation) * tri_rise
+                )
+                delta = float(np.max(np.abs(new_rise - tri_rise))) \
+                    if new_rise.size else 0.0
+                tri_rise = new_rise
+                thermal_iterations = _it + 1
+
+                # Re-assemble with the updated conductance and re-solve.
+                upd_cond = base_tri_cond * (
+                    amb_factor / (1.0 + alpha * (amb + tri_rise - 20.0))
+                )
+                mesh_rows_t, mesh_cols_t, mesh_vals_t = \
+                    process_mesh_laplace_operators(
+                        meshes, _layer_cond.tolist(), vindex,
+                        tri_conductance=upd_cond,
+                    )
+                all_vals_t = np.concatenate([
+                    mesh_vals_t, np.asarray(net_vals, dtype=DTYPE),
+                ])
+                all_rows_t = np.concatenate([
+                    mesh_rows_t, np.asarray(net_rows, dtype=mesh_rows_t.dtype),
+                ])
+                all_cols_t = np.concatenate([
+                    mesh_cols_t, np.asarray(net_cols, dtype=mesh_cols_t.dtype),
+                ])
+                if inverse is not None:
+                    rows_t = inverse[all_rows_t]
+                    cols_t = inverse[all_cols_t]
+                else:
+                    rows_t, cols_t = all_rows_t, all_cols_t
+                L_t = scipy.sparse.coo_matrix(
+                    (all_vals_t, (rows_t, cols_t)), shape=(M, M), dtype=DTYPE,
+                ).tocsc()
+                v_solve, solver_method, solver_iterations, residual_norm = \
+                    _solve_robust(
+                        L_t, r_solve, symmetric=matrix_is_symmetric,
+                        row_describer=_describe_solver_row,
+                    )
+                v = v_solve[inverse] if inverse is not None else v_solve
+                L_csc = L_t
+
+                max_rise_c = float(np.max(tri_rise)) if tri_rise.size else 0.0
+                log.info(
+                    "  thermal iter %d: max rise %.2f K (moved %.3f K)",
+                    thermal_iterations, max_rise_c, delta,
+                )
+                if delta < thermal.tolerance_c:
+                    break
+            else:
+                thermal_converged = False
+                warnings.warn(
+                    f"Electro-thermal iteration did not converge in "
+                    f"{thermal.max_iterations} iterations (last change "
+                    f"{delta:.3f} K > tolerance {thermal.tolerance_c} K). "
+                    f"The reported temperature rise and IR drop are the last "
+                    f"iterate, not a converged answer.",
+                    SolverWarning, stacklevel=2,
+                )
+            if clamped_any:
+                warnings.warn(
+                    f"Electro-thermal: one or more triangles hit the "
+                    f"{thermal.max_rise_c:.0f} K rise clamp. That usually "
+                    f"means a micro-sliver of copper carrying an unphysical "
+                    f"current density, or a heat-transfer coefficient set far "
+                    f"too low — treat the hot spots as suspect.",
+                    SolverWarning, stacklevel=2,
+                )
+        _record_stage(
+            timings, "Electro-thermal iteration", _t0,
+            f" ({thermal_iterations} iter, max rise {max_rise_c:.2f} K)",
+        )
+
     # --- Solver diagnostics ----------------------------------------------
     # The residual is measured against the system actually solved (reduced
     # when a contraction was applied). ``_solve_robust`` already computed
@@ -3279,6 +3780,9 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
         ground_node_current=ground_node_current,
         residual_norm=residual_norm,
         method=solver_method,
+        thermal_iterations=thermal_iterations,
+        thermal_converged=thermal_converged,
+        max_temperature_rise_c=max_rise_c,
     )
     _record_stage(timings, "Solver diagnostics", _t0)
 
@@ -3334,7 +3838,8 @@ def solve(prob: problem.Problem, mesher_config: mesh.Mesher.Config | None = None
         meshes,
         mesh_index_to_layer_index,
         v,
-        disconnected_meshes_by_layer
+        disconnected_meshes_by_layer,
+        tri_temperature_rise=tri_rise,
     )
     _record_stage(timings, "Solution object", _t0)
 

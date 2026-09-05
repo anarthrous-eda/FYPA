@@ -159,3 +159,68 @@ def test_unparseable_parasitics_degrade_to_none(tmp_path):
     }), encoding="utf-8")
     only = ProjectFile.load(path).cap_overrides[0]
     assert only.esl_h is None and only.include is False
+
+
+# --- part value and case size (overrides of what extraction found) ------------
+
+
+def test_value_and_package_overrides_round_trip(tmp_path):
+    proj = ProjectFile()
+    proj.upsert_cap_override("C1", capacitance_f=4.7e-6, package="0805")
+    loaded = _saved(tmp_path, proj)
+    only = loaded.cap_overrides[0]
+    assert only.capacitance_f == 4.7e-6 and only.package == "0805"
+    assert loaded.cap_value_overrides() == ({"C1": 4.7e-6}, {"C1": "0805"})
+
+
+def test_value_and_package_merge_onto_the_same_override():
+    proj = ProjectFile()
+    proj.upsert_cap_override("C1", include=False)
+    proj.upsert_cap_override("C1", capacitance_f=1e-7)
+    proj.upsert_cap_override("C1", package="0603")
+    proj.upsert_cap_override("C1", esr_ohm=5e-3)
+    assert len(proj.cap_overrides) == 1
+    only = proj.cap_overrides[0]
+    assert (only.include, only.capacitance_f, only.package, only.esr_ohm) == \
+        (False, 1e-7, "0603", 5e-3)
+
+
+def test_clearing_the_value_and_the_package_removes_the_override():
+    proj = ProjectFile()
+    proj.upsert_cap_override("C1", capacitance_f=1e-7, package="0603")
+    proj.upsert_cap_override("C1", capacitance_f=None)
+    assert proj.cap_overrides                      # package still set
+    proj.upsert_cap_override("C1", package=None)
+    assert proj.cap_overrides == []
+
+
+def test_an_empty_package_string_is_not_an_override():
+    """The picker sends None to clear; a stray "" must not create a record
+    that then resolves to no library entry at all."""
+    proj = ProjectFile()
+    proj.upsert_cap_override("C1", package="")
+    assert proj.cap_overrides == []
+
+
+def test_legacy_override_without_value_or_package_loads(tmp_path):
+    import json
+    path = tmp_path / "old.fypa"
+    path.write_text(json.dumps({
+        "schema_version": SCHEMA_VERSION,
+        "cap_overrides": [{"designator": "C1", "esl_h": 1e-9}],
+    }), encoding="utf-8")
+    only = ProjectFile.load(path).cap_overrides[0]
+    assert only.esl_h == 1e-9
+    assert only.capacitance_f is None and only.package is None
+
+
+def test_unparseable_capacitance_degrades_to_none(tmp_path):
+    import json
+    path = tmp_path / "bad.fypa"
+    path.write_text(json.dumps({
+        "schema_version": SCHEMA_VERSION,
+        "cap_overrides": [{"designator": "C1", "capacitance_f": "banana",
+                           "package": "0805"}],
+    }), encoding="utf-8")
+    only = ProjectFile.load(path).cap_overrides[0]
+    assert only.capacitance_f is None and only.package == "0805"

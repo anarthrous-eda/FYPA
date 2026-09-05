@@ -6,12 +6,18 @@ extension (``padne._cgal``). This module replaces that wrapper with the
 
 Behavioural differences from upstream
 -------------------------------------
-* **Variable-density meshing is not implemented.** The
-  ``variable_density_*`` and ``variable_size_maximum_factor`` config fields are
-  accepted for API compatibility but ignored — meshes are uniform-density,
-  sized by ``maximum_size``. Re-introducing variable density on top of Triangle
-  is possible (pre-seed extra Steiner points near boundaries, or use the
-  ``triunsuitable`` C callback) but deferred until profiling shows it matters.
+* **Variable-density meshing is implemented differently.** Upstream leans on
+  CGAL's sizing field; here it is a two-pass graded approach on top of
+  Triangle (:func:`_triangulate_adaptive`): pass 1 builds a uniform *coarse*
+  mesh, then pass 2 refines it with per-triangle area caps graded by each
+  triangle's distance to the nearest feature (copper boundary or seed point),
+  so the Steiner points Triangle inserts are pre-seeded where the field
+  actually varies. It is **off by default** — ``variable_size_maximum_factor``
+  defaults to ``1.0``, which means uniform meshing at ``maximum_size`` — and is
+  enabled by setting that factor > 1 (the interior may then coarsen up to
+  ``factor`` × the fine size). The ``variable_density_*`` fields control the
+  grading ramp and are multiples of the local fine element size, not mm; see
+  :class:`Mesher.Config`.
 * ``MeshingException`` is still raised on geometry that Triangle cannot mesh
   (self-intersections, duplicate vertices, etc.).
 """
@@ -1063,12 +1069,34 @@ class Mesher:
 
     @dataclass(frozen=True)
     class Config:
-        """Configuration parameters for mesh generation."""
+        """Configuration parameters for mesh generation.
+
+        Variable-density grading
+        ------------------------
+        ``variable_density_min_distance`` / ``variable_density_max_distance``
+        are the ends of the grading ramp used by
+        :func:`_triangulate_adaptive`: elements closer to a feature (copper
+        boundary or seed point) than the min stay at the fine size, elements
+        beyond the max reach the coarse size (fine ×
+        ``variable_size_maximum_factor``), and in between the size ramps
+        linearly.
+
+        **Units: multiples of the local fine element size, not millimetres.**
+        The fine size is per-polygon (see
+        :meth:`Mesher.polygon_adaptive_max_size`), so absolute mm distances
+        mis-scale — at ``maximum_size=0.1`` a 0.5 mm band is 5+ elements wide
+        (wasteful) while at ``maximum_size=1.0`` it is under one element, so
+        the ramp has no room to work. Expressing them as multiples makes the
+        graded band a fixed number of elements wide at every scale. The
+        defaults (0.75 / 5.0) reproduce roughly the previous absolute
+        0.5 mm / 3.0 mm behaviour at the default ``maximum_size`` of 0.6 mm.
+        """
         minimum_angle: float = 20.0
         maximum_size: float = 0.6
-        # Variable density parameters
-        variable_density_min_distance: float = 0.5
-        variable_density_max_distance: float = 3.0
+        # Variable density parameters — in units of the local fine element
+        # size (see the class docstring), NOT millimetres.
+        variable_density_min_distance: float = 0.75
+        variable_density_max_distance: float = 5.0
         # 1.0 == uniform meshing (the default). Set > 1 to enable adaptive
         # variable-density meshing — triangles in plane interiors may grow
         # up to this factor larger than the fine size near features.
@@ -1199,10 +1227,13 @@ class Mesher:
 
         The width estimator
         -------------------
-        ``2 × polygon.area / polygon.length`` ≈ the local width for thin
-        shapes (perimeter ≈ 2L for L >> W, area = L·W, so 2·L·W/2·L = W).
+        ``2 × polygon.area / polygon.exterior.length`` ≈ the local width for
+        thin shapes (perimeter ≈ 2L for L >> W, area = L·W, so 2·L·W/2·L = W).
         For a 1 mm × 20 mm trace it returns ~0.95 mm; for a 50×50 mm pour
         it returns ~25 mm.
+
+        Only the **exterior** ring contributes to the perimeter, while the
+        area stays the true hole-subtracted one — see the Limitation note.
 
         The width estimate is divided by ``width_refinement_factor`` (5 by
         default — i.e. aim for ~5 triangles across the width) and clamped
@@ -1215,6 +1246,18 @@ class Mesher:
         or per-region max-area attributes — deferred until profile-level
         accuracy on mixed geometry actually matters.
 
+        Holes are excluded from the perimeter (``exterior.length`` rather
+        than ``length``). ``polygon.length`` sums *every* ring, so a
+        via-perforated ground plane with thousands of clearance holes has an
+        enormous perimeter, the estimated width collapses toward zero and the
+        mesher over-refines the whole plane — the pathological slowdown this
+        docstring used to merely warn about. The exterior ring alone measures
+        the outline the "thin shape" approximation is actually about, and
+        keeping ``polygon.area`` hole-subtracted still lets perforation pull
+        the estimate down honestly (Swiss cheese *is* narrower than solid
+        copper), just proportionally instead of catastrophically. Degenerate
+        polygons with no usable exterior fall back to ``polygon.length``.
+
         Lower clamp: a long micro-sliver (e.g. a 5 µm × 20 mm spur that
         survives the loader's stub filter because it's electrically
         connected) drives ``width_based`` toward zero, and the √3/4·size²
@@ -1225,7 +1268,13 @@ class Mesher:
         """
         if polygon.length <= 0.0 or polygon.area <= 0.0:
             return config_max_size  # degenerate; defer to global
-        characteristic_width = 2.0 * polygon.area / polygon.length
+        # Exterior ring only: interior rings (via clearances) inflate
+        # ``polygon.length`` without making the copper narrower.
+        exterior = getattr(polygon, "exterior", None)
+        perimeter = float(exterior.length) if exterior is not None else 0.0
+        if not (perimeter > 0.0):
+            perimeter = float(polygon.length)  # no usable exterior; fall back
+        characteristic_width = 2.0 * polygon.area / perimeter
         width_based = characteristic_width / width_refinement_factor
         if config_max_size <= 0:
             return width_based  # no global cap — just use the width-based size
@@ -1505,15 +1554,25 @@ def _triangulate_adaptive(
     so this keeps full resolution where it matters and far fewer unknowns
     where it doesn't — as accurate as the uniform mesh, far smaller.
 
-    ``adaptive`` = ``(minimum_angle, maximum_size, factor, min_dist,
-    max_dist)``. The fine size is the width-aware per-polygon value; the
+    ``adaptive`` = ``(minimum_angle, maximum_size, factor, min_mult,
+    max_mult)``. The fine size is the width-aware per-polygon value; the
     coarse size is ``fine * factor``.
+
+    ``min_mult`` / ``max_mult`` are the ends of the grading ramp expressed
+    as **multiples of the local fine size**, not absolute mm: the fine size
+    is per-polygon, so a fixed-mm ramp is many elements wide on a finely
+    meshed board and narrower than a single element on a coarse one. The
+    effective distances are therefore ``fine_size * min_mult`` and
+    ``fine_size * max_mult``, which keeps the graded band a constant number
+    of elements wide at every ``maximum_size``.
     """
-    minimum_angle, maximum_size, factor, min_dist, max_dist = adaptive
+    minimum_angle, maximum_size, factor, min_mult, max_mult = adaptive
     fine_size = Mesher.polygon_adaptive_max_size(poly, maximum_size)
     if not (fine_size > 0):
         fine_size = maximum_size if maximum_size > 0 else 0.6
     coarse_size = fine_size * max(factor, 1.0)
+    min_dist = fine_size * max(min_mult, 0.0)
+    max_dist = fine_size * max(max_mult, 0.0)
     _AREA = math.sqrt(3.0) / 4.0          # equilateral-triangle area / size²
     q = f"q{minimum_angle:g}" if minimum_angle > 0 else ""
 

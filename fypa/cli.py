@@ -187,6 +187,20 @@ def _build_parser() -> argparse.ArgumentParser:
                 help="Force adaptive SMPS gain off for this run, whatever the "
                      "Settings-tab preference says",
             )
+        # Coupled electro-thermal solve. Off unless asked for, so headless
+        # runs reproduce existing numbers exactly by default.
+        sp_.add_argument(
+            "--electrothermal", dest="electrothermal", action="store_true",
+            default=None,
+            help="Iterate self-heating: hot copper is more resistive, so the "
+                 "drop grows and heats it further",
+        )
+        sp_.add_argument(
+            "--heat-transfer", dest="heat_transfer_w_per_m2k", type=float,
+            default=None, metavar="W_PER_M2K",
+            help="Board heat transfer coefficient for --electrothermal, both "
+                 "faces combined (default 20; 50-100 with forced air)",
+        )
 
     sp = sub.add_parser("solve", help="Solve the FEM problem and pickle the solution")
     sp.add_argument("prjpcb", type=Path)
@@ -358,6 +372,10 @@ def _solve_loaded(loaded, args) -> tuple[LeanSolution, dict]:
     settings = _SolveSettings()
     settings.mesh_min_angle_deg = float(args.mesh_angle)
     settings.mesh_max_size_mm = float(args.mesh_size)
+    if getattr(args, "electrothermal", None):
+        settings.electrothermal = True
+    if getattr(args, "heat_transfer_w_per_m2k", None) is not None:
+        settings.heat_transfer_w_per_m2k = float(args.heat_transfer_w_per_m2k)
     mesher_config = _pdn_mesh.Mesher.Config(
         minimum_angle=settings.mesh_min_angle_deg,
         maximum_size=settings.mesh_max_size_mm,
@@ -370,6 +388,7 @@ def _solve_loaded(loaded, args) -> tuple[LeanSolution, dict]:
                 loaded,
                 mesher_config,
                 adaptive_regulator_gain=adaptive,
+                thermal_config=settings.thermal_config(),
             )
         )
     except _pdn_mesh.MeshingException as mesh_exc:
