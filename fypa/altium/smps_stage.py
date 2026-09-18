@@ -245,11 +245,13 @@ def _assign_sw_chain_roles(
 
     # Reconstruct edge sequence start → found.
     edges: list[PathSpec] = []
+    route_nets: set[int] = {found}
     cur = found
     while cur != start:
         prev, path = came_from[cur]
         edges.append(path)
         cur = prev
+        route_nets.add(cur)
     edges.reverse()
     if not edges:
         return {}
@@ -265,8 +267,7 @@ def _assign_sw_chain_roles(
         if id(path) in on_chain:
             continue
         pad_nets = _spec_pad_net_indices(path, net_remap)
-        chain_nets = set(came_from.keys()) | {start, found}
-        if pad_nets & chain_nets:
+        if pad_nets & route_nets:
             _append_error_once(
                 result,
                 f"PATH on {path.designator}: ambiguous SW1↔SW2 chain on host "
@@ -321,7 +322,7 @@ def _classify_path(
     # Single SW-node topologies (BUCK/BOOST) that declare only SW1:
     if sw1_nets and not sw2_nets:
         if all_nets & out_p_nets and all_nets & sw1_nets:
-            return "ls_out"
+            return "hs_out"
         if all_nets & sw1_nets and all_nets & out_n_nets:
             return "ls_out"
 
@@ -513,6 +514,14 @@ def finalize_smps_stages(
                             coeff=ls_in_coeff,
                         )
                     )
+                else:
+                    result.warnings.append(
+                        f"PATH on {path.designator}: {role} leg coefficient is "
+                        f"zero for {topo} at gain {host.gain:.3f}, so the part "
+                        f"carries no averaged current and is left out of the "
+                        f"model entirely — its copper is not solved and any "
+                        f"PDN_R on it is ignored"
+                    )
             elif role == "ls_out":
                 if ls_out_coeff > 0:
                     sw2_nets = _net_index_set(proj, host.sw2_net, net_remap)
@@ -533,6 +542,14 @@ def finalize_smps_stages(
                             n=n_term,
                             coeff=ls_out_coeff,
                         )
+                    )
+                else:
+                    result.warnings.append(
+                        f"PATH on {path.designator}: {role} leg coefficient is "
+                        f"zero for {topo} at gain {host.gain:.3f}, so the part "
+                        f"carries no averaged current and is left out of the "
+                        f"model entirely — its copper is not solved and any "
+                        f"PDN_R on it is ignored"
                     )
             elif role == "inductor":
                 if inductor_path is not None:

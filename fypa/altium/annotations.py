@@ -4915,6 +4915,12 @@ def _resolve_regulator_gain(
         )
         return None
 
+    if v_out <= 0:
+        result.errors.append(
+            f"{role_diag}: PDN_V must be positive, got {v_out}"
+        )
+        return None
+
     # INVERTER topology: gain = 1/eff, no upstream Vin needed. The output
     # voltage is irrelevant for gain derivation — the inverter converts
     # power with a fixed duty model and no reference to Vin.
@@ -4922,12 +4928,6 @@ def _resolve_regulator_gain(
     topo_raw = _ci_get(params, topo_key)
     if topo_raw is not None and topo_raw.strip().upper() == "INVERTER":
         return 1.0 / eff, reg_type, eff, False
-
-    if v_out <= 0:
-        result.errors.append(
-            f"{role_diag}: PDN_V must be positive, got {v_out}"
-        )
-        return None
 
     lookup_map = (
         {k: v for k, v in supply_map.items() if k in declared_supply}

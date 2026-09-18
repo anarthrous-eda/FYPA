@@ -657,3 +657,159 @@ def test_buck_topology_ls_in_coeff():
     assert len(reg.switch_path_legs) == 1
     assert reg.switch_path_legs[0].kind == "ls_in"
     assert reg.switch_path_legs[0].coeff == pytest.approx(1.0 - reg.gain)
+
+
+# ---------------------------------------------------------------------------
+# BOOST regression (see review of PR #54)
+# ---------------------------------------------------------------------------
+
+
+def _boost_proj():
+    """Textbook boost: VIN-L1-SW1, HS FET SW1->VOUT, LS FET SW1->GND.
+
+    Nets: GND=0, VIN=1, SW1=2, VOUT=3.
+    """
+    sch = (
+        RawSchComponent(
+            designator="J1",
+            schdoc_name="Pwr.SchDoc",
+            parameters={
+                "PDN_ROLE": "SOURCE",
+                "PDN_V": "12",
+                "PDN_P_NET": "VIN",
+                "PDN_N_NET": "GND",
+            },
+            pin_designators=("1", "2"),
+        ),
+        RawSchComponent(
+            designator="U2",
+            schdoc_name="Pwr.SchDoc",
+            parameters={
+                "PDN_ROLE": "REGULATOR",
+                "PDN_REGULATOR_TYPE": "SMPS",
+                "PDN_REGULATOR_EFFICIENCY": "0.9",
+                "PDN_V": "24",
+                "PDN_SMPS_TOPOLOGY": "BOOST",
+                "PDN_IN_P_NET": "VIN",
+                "PDN_IN_N_NET": "GND",
+                "PDN_OUT_P_NET": "VOUT",
+                "PDN_OUT_N_NET": "GND",
+                "PDN_SW1_NET": "SW1",
+                "PDN_SW2_NET": "VOUT",
+                "PDN_IN_P_PINS": "1",
+                "PDN_IN_N_PINS": "2",
+                "PDN_OUT_P_PINS": "3",
+                "PDN_OUT_N_PINS": "4",
+            },
+            pin_designators=("1", "2", "3", "4"),
+        ),
+        RawSchComponent(
+            designator="L1",
+            schdoc_name="Pwr.SchDoc",
+            parameters={"PDN_ROLE": "PATH", "PDN_R": "7m"},
+            pin_designators=("1", "2"),
+        ),
+        RawSchComponent(
+            designator="Q_HS",
+            schdoc_name="Pwr.SchDoc",
+            parameters={
+                "PDN_ROLE": "PATH",
+                "PDN_R": "12m",
+                "PDN_P_PINS": "3",
+                "PDN_N_PINS": "2",
+            },
+            pin_designators=("1", "2", "3"),
+        ),
+        RawSchComponent(
+            designator="Q_LS",
+            schdoc_name="Pwr.SchDoc",
+            parameters={
+                "PDN_ROLE": "PATH",
+                "PDN_R": "8m",
+                "PDN_P_PINS": "3",
+                "PDN_N_PINS": "2",
+            },
+            pin_designators=("1", "2", "3"),
+        ),
+        RawSchComponent(
+            designator="LOAD",
+            schdoc_name="Pwr.SchDoc",
+            parameters={
+                "PDN_ROLE": "SINK",
+                "PDN_I": "2A",
+                "PDN_P_NET": "VOUT",
+                "PDN_N_NET": "GND",
+            },
+            pin_designators=("1", "2"),
+        ),
+    )
+    pcb = tuple(
+        _pcb(d, i)
+        for i, d in enumerate(["J1", "U2", "L1", "Q_HS", "Q_LS", "LOAD"])
+    )
+    _B_VOUT = 3
+    pads = (
+        _pad(0, "1", _VIN),
+        _pad(0, "2", _GND),
+        _pad(1, "1", _VIN),
+        _pad(1, "2", _GND),
+        _pad(1, "3", _B_VOUT),
+        _pad(1, "4", _GND),
+        _pad(2, "1", _VIN),
+        _pad(2, "2", _SW1),
+        _pad(3, "1", _GND),
+        _pad(3, "2", _SW1),
+        _pad(3, "3", _B_VOUT),
+        _pad(4, "1", _GND),
+        _pad(4, "2", _GND),
+        _pad(4, "3", _SW1),
+        _pad(5, "1", _B_VOUT),
+        _pad(5, "2", _GND),
+    )
+    return _minimal_proj(
+        nets=(
+            RawNet("GND"),
+            RawNet("VIN"),
+            RawNet("SW1"),
+            RawNet("VOUT"),
+        ),
+        sch_components=sch,
+        pcb_components=pcb,
+        pads=pads,
+    )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "PR #54 BOOST defect: _classify_path checks SW1<->SW2 before IN_P, so "
+        "L1 (VIN<->SW1) becomes hs_in and Q_HS (SW1<->VOUT) becomes the "
+        "inductor/cut. Q_LS then classifies as ls_in, but _compute_ls_coeffs "
+        "gives BOOST ls_in_coeff=0, so the only current-carrying leg is "
+        "dropped. Needs a topology-aware classifier and a coefficient table "
+        "that agree on which leg a boost switches."
+    ),
+)
+def test_boost_stage_classifies_inductor_and_ls_leg():
+    """A boost must cut at L1, bridge through Q_HS, and switch through Q_LS."""
+    result = parse_annotations(_boost_proj(), enabled_layers=[1])
+    assert result.ok, result.errors
+
+    reg = next(d for d in result.directives if isinstance(d, RegulatorSpec))
+    assert reg.smps_topology == "BOOST"
+
+    # The inductor is the cut, and carries its own DCR.
+    assert reg.inductor_dcr == pytest.approx(0.007)
+
+    # The high-side FET is a plain resistive bridge; the inductor is not.
+    bridge_des = {
+        d.designator for d in result.directives if isinstance(d, ResistorSpec)
+    }
+    assert "Q_HS" in bridge_des
+    assert "L1" not in bridge_des
+
+    # The low-side FET is the switch leg and carries real current.
+    assert len(reg.switch_path_legs) == 1
+    leg = reg.switch_path_legs[0]
+    assert leg.designator == "Q_LS"
+    assert leg.coeff == pytest.approx(reg.gain - 1.0)
