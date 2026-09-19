@@ -362,10 +362,11 @@ Set `PDN_REGULATOR_TYPE` (`LDO` or `SMPS`) and optionally
 Use **Adaptive SMPS gain** in the viewer (or `--adaptive-regulator-gain` on
 the CLI) to refine SMPS gain from the solved input voltage.
 
-External FETs: put `PDN_SMPS_TOPOLOGY` (`BUCK` / `BOOST` / `BUCKBOOST` /
-`INVERTER`) and switch-node nets on the controller; mark FETs / shunt / L as
-`PDN_ROLE=PATH` with `PDN_R`. Host binding is automatic; `PDN_SMPS_HOST` is
-only a disambiguation fallback. See
+External FETs: put `PDN_SMPS_TOPOLOGY` (`BUCK` / `BOOST` / `BUCKBOOST` —
+not `INVERTER`, which is internal-FET only) and switch-node nets on the
+controller; mark FETs / shunt / L as `PDN_ROLE=PATH` with `PDN_R`. Host
+binding is automatic among controllers that declare a switch stage;
+`PDN_SMPS_HOST` is only a disambiguation fallback. See
 [External-FET SMPS](docs/user-guide/04-regulators.md#47-external-fet-smps-path--topology).
 
 | Regulator type            | Gain                                              |

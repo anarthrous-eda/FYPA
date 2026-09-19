@@ -261,7 +261,12 @@ def _buckboost_proj_with_ls():
     )
 
 
-def test_buckboost_path_binds_and_cuts_at_inductor():
+def test_buckboost_path_binds_and_cuts_at_output_fet():
+    """The cut is the part carrying i_v: the output-side HS FET, not L1.
+
+    The inductor of a boosting stage carries gain*i_v, so cutting there would
+    make the element draw the wrong current through its own DCR.
+    """
     result = parse_annotations(_buckboost_proj_with_ls(), enabled_layers=[1])
     assert result.ok, result.errors
     assert not any(isinstance(d, PathSpec) for d in result.directives)
@@ -269,19 +274,19 @@ def test_buckboost_path_binds_and_cuts_at_inductor():
     reg = next(d for d in result.directives if isinstance(d, RegulatorSpec))
     assert reg.smps_topology == "BUCKBOOST"
     assert abs(reg.gain - (24.0 / (12.0 * 0.9))) < 1e-6
-    assert reg.inductor_dcr == pytest.approx(0.007)
-    # IN/OUT relocated to inductor pads (MID / SW2).
+    assert reg.cut_resistance == pytest.approx(0.012)  # Q_HS_OUT RDSon
+    # IN/OUT relocated to the cut part's pads (SW2 / VOUT).
     in_nets = {p.net_index for p in reg.in_p.pins}
     out_nets = {p.net_index for p in reg.out_p.pins}
-    assert in_nets == {_MID}
-    assert out_nets == {_SW2}
+    assert in_nets == {_SW2}
+    assert out_nets == {_VOUT}
 
     bridges = [d for d in result.directives if isinstance(d, ResistorSpec)]
     bridge_des = {d.designator for d in bridges}
     assert "Q_HS_IN" in bridge_des
-    assert "Q_HS_OUT" in bridge_des
     assert "R_SHUNT" in bridge_des
-    assert "L1" not in bridge_des  # inductor is the cut, not a bridge
+    assert "L1" in bridge_des  # inductor is a plain conductor here
+    assert "Q_HS_OUT" not in bridge_des  # it is the cut
 
     assert len(reg.switch_path_legs) == 1
     leg = reg.switch_path_legs[0]
@@ -295,7 +300,7 @@ def test_buckboost_auto_host_without_smps_host():
     result = parse_annotations(_buckboost_proj(include_ls=False), enabled_layers=[1])
     assert result.ok, result.errors
     reg = next(d for d in result.directives if isinstance(d, RegulatorSpec))
-    assert reg.inductor_dcr is not None
+    assert reg.cut_resistance is not None
     assert not reg.switch_path_legs
 
 
@@ -779,37 +784,284 @@ def _boost_proj():
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "PR #54 BOOST defect: _classify_path checks SW1<->SW2 before IN_P, so "
-        "L1 (VIN<->SW1) becomes hs_in and Q_HS (SW1<->VOUT) becomes the "
-        "inductor/cut. Q_LS then classifies as ls_in, but _compute_ls_coeffs "
-        "gives BOOST ls_in_coeff=0, so the only current-carrying leg is "
-        "dropped. Needs a topology-aware classifier and a coefficient table "
-        "that agree on which leg a boost switches."
-    ),
-)
-def test_boost_stage_classifies_inductor_and_ls_leg():
-    """A boost must cut at L1, bridge through Q_HS, and switch through Q_LS."""
+def test_boost_stage_cuts_at_hs_fet_and_switches_through_ls():
+    """A boost cuts at Q_HS, bridges through L1, and switches through Q_LS.
+
+    The boost inductor carries the *input* current (gain*i_v), so the part
+    carrying i_v -- and therefore the cut -- is the high-side FET.
+    """
     result = parse_annotations(_boost_proj(), enabled_layers=[1])
     assert result.ok, result.errors
 
     reg = next(d for d in result.directives if isinstance(d, RegulatorSpec))
     assert reg.smps_topology == "BOOST"
 
-    # The inductor is the cut, and carries its own DCR.
-    assert reg.inductor_dcr == pytest.approx(0.007)
+    # The high-side FET is the cut and contributes its RDSon.
+    assert reg.cut_resistance == pytest.approx(0.012)
+    assert {p.net_index for p in reg.in_p.pins} == {_SW1}
+    assert {p.net_index for p in reg.out_p.pins} == {3}  # VOUT
 
-    # The high-side FET is a plain resistive bridge; the inductor is not.
+    # The inductor is a plain resistive bridge; the HS FET is not a bridge.
     bridge_des = {
         d.designator for d in result.directives if isinstance(d, ResistorSpec)
     }
-    assert "Q_HS" in bridge_des
-    assert "L1" not in bridge_des
+    assert "L1" in bridge_des
+    assert "Q_HS" not in bridge_des
 
-    # The low-side FET is the switch leg and carries real current.
+    # The low-side FET pulls (gain-1)*i_v down into the ground plane.
     assert len(reg.switch_path_legs) == 1
     leg = reg.switch_path_legs[0]
     assert leg.designator == "Q_LS"
+    assert leg.kind == "ls_out"
     assert leg.coeff == pytest.approx(reg.gain - 1.0)
+    # Current flows switch node -> ground, so p is the SW1 pad.
+    assert {p.net_index for p in leg.p.pins} == {_SW1}
+    assert {p.net_index for p in leg.n.pins} == {_GND}
+
+
+def test_switch_leg_stamp_is_balanced_and_draws_i_v():
+    """A leg must draw exactly what it injects, and the input must draw i_v.
+
+    COO assembly *sums* duplicate (row, col) entries rather than keeping them
+    separate, so a stamp that writes -coeff and +coeff at the same node
+    cancels itself: the switch node then contributes nothing and the leg's
+    other end injects current no one draws.
+    """
+    import numpy as np
+
+    from pdnsolver import problem as pp
+    from pdnsolver.solver import stamp_network_into_system
+
+    v_p, v_n, s_f, s_t = pp.NodeID(), pp.NodeID(), pp.NodeID(), pp.NodeID()
+    leg_f, leg_t = pp.NodeID(), pp.NodeID()
+    reg = pp.VoltageRegulator(
+        v_p=v_p, v_n=v_n, s_f=s_f, s_t=s_t,
+        voltage=3.3, gain=0.4, input_gain=1.0,
+        switch_legs=((leg_f, leg_t, 0.6),),
+    )
+    nodes = [v_p, v_n, s_f, s_t, leg_f, leg_t]
+    idx = {n: i for i, n in enumerate(nodes)}
+    i_v = len(nodes)
+
+    class _Indexer:
+        node_to_global_index = idx
+        extra_source_to_global_index = {reg: i_v}
+
+    rows: list = []
+    cols: list = []
+    vals: list = []
+    r = np.zeros(i_v + 1)
+    stamp_network_into_system(
+        pp.Network(connections=[], elements=[reg]), _Indexer(),
+        rows, cols, vals, r,
+    )
+
+    # Collapse the i_v column the way coo_matrix.tocsc() would.
+    col: dict[int, float] = {}
+    for rr, cc, vv in zip(rows, cols, vals):
+        if cc == i_v:
+            col[rr] = col.get(rr, 0.0) + vv
+
+    # The leg: f loses coeff*i_v, t receives it.
+    assert col[idx[leg_f]] == pytest.approx(-0.6)
+    assert col[idx[leg_t]] == pytest.approx(0.6)
+
+    # input_gain=1.0 means the cut element is a conductor: it draws i_v, not
+    # gain*i_v, because the conversion ratio lives in the legs.
+    assert col[idx[s_f]] == pytest.approx(-1.0)
+    assert col[idx[s_t]] == pytest.approx(1.0)
+
+    # Nothing is injected into the network overall.
+    assert sum(col.values()) == pytest.approx(0.0)
+
+
+def test_internal_fet_regulator_still_draws_gain_i_v():
+    """With no external cut, input_gain is None and the draw stays gain*i_v."""
+    import numpy as np
+
+    from pdnsolver import problem as pp
+    from pdnsolver.solver import stamp_network_into_system
+
+    v_p, v_n, s_f, s_t = pp.NodeID(), pp.NodeID(), pp.NodeID(), pp.NodeID()
+    reg = pp.VoltageRegulator(
+        v_p=v_p, v_n=v_n, s_f=s_f, s_t=s_t, voltage=3.3, gain=0.4,
+    )
+    nodes = [v_p, v_n, s_f, s_t]
+    idx = {n: i for i, n in enumerate(nodes)}
+    i_v = len(nodes)
+
+    class _Indexer:
+        node_to_global_index = idx
+        extra_source_to_global_index = {reg: i_v}
+
+    rows: list = []
+    cols: list = []
+    vals: list = []
+    r = np.zeros(i_v + 1)
+    stamp_network_into_system(
+        pp.Network(connections=[], elements=[reg]), _Indexer(),
+        rows, cols, vals, r,
+    )
+    col: dict[int, float] = {}
+    for rr, cc, vv in zip(rows, cols, vals):
+        if cc == i_v:
+            col[rr] = col.get(rr, 0.0) + vv
+
+    assert col[idx[s_f]] == pytest.approx(-0.4)
+    assert col[idx[s_t]] == pytest.approx(0.4)
+
+
+def _buck_with_unrelated_ldo_proj():
+    """External-FET buck plus an ordinary LDO sharing the VIN rail.
+
+    Nets: GND=0, VIN=1, SW1=2, VOUT=3, V1V8=4.
+    """
+    _B_VOUT, _V1V8 = 3, 4
+    sch = (
+        RawSchComponent(
+            designator="J1",
+            schdoc_name="Pwr.SchDoc",
+            parameters={
+                "PDN_ROLE": "SOURCE", "PDN_V": "12",
+                "PDN_P_NET": "VIN", "PDN_N_NET": "GND",
+            },
+            pin_designators=("1", "2"),
+        ),
+        RawSchComponent(
+            designator="U2",
+            schdoc_name="Pwr.SchDoc",
+            parameters={
+                "PDN_ROLE": "REGULATOR",
+                "PDN_REGULATOR_TYPE": "SMPS",
+                "PDN_REGULATOR_EFFICIENCY": "0.9",
+                "PDN_V": "5",
+                "PDN_SMPS_TOPOLOGY": "BUCK",
+                "PDN_IN_P_NET": "VIN", "PDN_IN_N_NET": "GND",
+                "PDN_OUT_P_NET": "VOUT", "PDN_OUT_N_NET": "GND",
+                "PDN_SW1_NET": "SW1",
+                "PDN_IN_P_PINS": "1", "PDN_IN_N_PINS": "2",
+                "PDN_OUT_P_PINS": "3", "PDN_OUT_N_PINS": "4",
+            },
+            pin_designators=("1", "2", "3", "4"),
+        ),
+        # Plain internal-FET LDO on the same input rail. It declares no
+        # switch stage, so it must never be considered a PATH host.
+        RawSchComponent(
+            designator="U3",
+            schdoc_name="Pwr.SchDoc",
+            parameters={
+                "PDN_ROLE": "REGULATOR",
+                "PDN_REGULATOR_TYPE": "LDO",
+                "PDN_V": "1.8",
+                "PDN_IN_P_NET": "VIN", "PDN_IN_N_NET": "GND",
+                "PDN_OUT_P_NET": "V1V8", "PDN_OUT_N_NET": "GND",
+                "PDN_IN_P_PINS": "1", "PDN_IN_N_PINS": "2",
+                "PDN_OUT_P_PINS": "3", "PDN_OUT_N_PINS": "4",
+            },
+            pin_designators=("1", "2", "3", "4"),
+        ),
+        RawSchComponent(
+            designator="Q_HS",
+            schdoc_name="Pwr.SchDoc",
+            parameters={
+                "PDN_ROLE": "PATH", "PDN_R": "10m",
+                "PDN_P_PINS": "3", "PDN_N_PINS": "2",
+            },
+            pin_designators=("1", "2", "3"),
+        ),
+        RawSchComponent(
+            designator="Q_LS",
+            schdoc_name="Pwr.SchDoc",
+            parameters={
+                "PDN_ROLE": "PATH", "PDN_R": "8m",
+                "PDN_P_PINS": "3", "PDN_N_PINS": "2",
+            },
+            pin_designators=("1", "2", "3"),
+        ),
+        RawSchComponent(
+            designator="L1",
+            schdoc_name="Pwr.SchDoc",
+            parameters={"PDN_ROLE": "PATH", "PDN_R": "7m"},
+            pin_designators=("1", "2"),
+        ),
+        RawSchComponent(
+            designator="LOAD",
+            schdoc_name="Pwr.SchDoc",
+            parameters={
+                "PDN_ROLE": "SINK", "PDN_I": "2A",
+                "PDN_P_NET": "VOUT", "PDN_N_NET": "GND",
+            },
+            pin_designators=("1", "2"),
+        ),
+        RawSchComponent(
+            designator="LOAD2",
+            schdoc_name="Pwr.SchDoc",
+            parameters={
+                "PDN_ROLE": "SINK", "PDN_I": "100mA",
+                "PDN_P_NET": "V1V8", "PDN_N_NET": "GND",
+            },
+            pin_designators=("1", "2"),
+        ),
+    )
+    pcb = tuple(
+        _pcb(d, i)
+        for i, d in enumerate(
+            ["J1", "U2", "U3", "Q_HS", "Q_LS", "L1", "LOAD", "LOAD2"]
+        )
+    )
+    pads = (
+        _pad(0, "1", _VIN), _pad(0, "2", _GND),
+        _pad(1, "1", _VIN), _pad(1, "2", _GND),
+        _pad(1, "3", _B_VOUT), _pad(1, "4", _GND),
+        _pad(2, "1", _VIN), _pad(2, "2", _GND),
+        _pad(2, "3", _V1V8), _pad(2, "4", _GND),
+        _pad(3, "1", _GND), _pad(3, "2", _SW1), _pad(3, "3", _VIN),
+        _pad(4, "1", _GND), _pad(4, "2", _GND), _pad(4, "3", _SW1),
+        _pad(5, "1", _SW1), _pad(5, "2", _B_VOUT),
+        _pad(6, "1", _B_VOUT), _pad(6, "2", _GND),
+        _pad(7, "1", _V1V8), _pad(7, "2", _GND),
+    )
+    return _minimal_proj(
+        nets=(
+            RawNet("GND"), RawNet("VIN"), RawNet("SW1"),
+            RawNet("VOUT"), RawNet("V1V8"),
+        ),
+        sch_components=sch,
+        pcb_components=pcb,
+        pads=pads,
+    )
+
+
+def test_second_regulator_on_the_input_rail_is_not_a_path_host():
+    """An LDO sharing VIN must not make every high-side part ambiguous.
+
+    Host candidates are restricted to regulators that declare a switch
+    stage, and matching prefers the switch nets over the shared rails.
+    """
+    result = parse_annotations(_buck_with_unrelated_ldo_proj(), enabled_layers=[1])
+    assert result.ok, result.errors
+    assert not any("ambiguous host" in e for e in result.errors)
+
+    regs = {d.designator: d for d in result.directives
+            if isinstance(d, RegulatorSpec)}
+    assert set(regs) == {"U2", "U3"}
+    # The LDO is untouched: no legs, no relocated cut.
+    assert not regs["U3"].switch_path_legs
+    assert regs["U3"].cut_resistance is None
+
+    # The buck bound its parts: L1 is the cut, Q_HS a bridge, Q_LS the leg.
+    u2 = regs["U2"]
+    assert u2.cut_resistance == pytest.approx(0.007)
+    assert len(u2.switch_path_legs) == 1
+    leg = u2.switch_path_legs[0]
+    assert leg.designator == "Q_LS"
+    assert leg.kind == "ls_in"
+    assert leg.coeff == pytest.approx(1.0 - u2.gain)
+    # Buck freewheel: current flows out of the ground plane into SW1.
+    assert {p.net_index for p in leg.p.pins} == {_GND}
+    assert {p.net_index for p in leg.n.pins} == {_SW1}
+
+    bridge_des = {d.designator for d in result.directives
+                  if isinstance(d, ResistorSpec)}
+    assert "Q_HS" in bridge_des
+    assert "L1" not in bridge_des

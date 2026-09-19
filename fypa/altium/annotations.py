@@ -32,7 +32,7 @@ REGULATOR      PDN_V                           PDN_OUT_P_NET, PDN_OUT_N_NET,
                PDN_REGULATOR_EFFICIENCY        *or* PDN_GAIN (fixed override)
                PDN_QUIESCENT (optional)
                PDN_SMPS_TOPOLOGY (optional)    PDN_SW1_NET, PDN_SW2_NET (optional)
-               BUCK|BOOST|BUCKBOOST|INVERTER   PDN_SW1_PINS, PDN_SW2_PINS (optional)
+               BUCK|BOOST|BUCKBOOST|INVERTER
 ============   =============================   ==================================================
 
 Multi-connector P / N pads (``*_DES``)
@@ -340,7 +340,7 @@ _KNOWN_SUFFIXES_BY_ROLE: dict[str, frozenset[str]] = {
         "OUT_P_NET", "OUT_N_NET", "OUT_P_PINS", "OUT_N_PINS",
         "IN_P_NET", "IN_N_NET", "IN_P_PINS", "IN_N_PINS",
         "IGNORE_PINS",
-        "SMPS_TOPOLOGY", "SW1_NET", "SW2_NET", "SW1_PINS", "SW2_PINS",
+        "SMPS_TOPOLOGY", "SW1_NET", "SW2_NET",
     }) | _PART_WIDE_PIN_FILTER_SUFFIXES,
     "SERIES": frozenset({
         "R", "P_NET", "N_NET", "P_PINS", "N_PINS", "IGNORE_PINS",
@@ -3550,7 +3550,11 @@ class RegulatorSpec(_BaseSpec):
     switch_path_legs: tuple[SwitchPathLeg, ...] = ()
     vin_sense_p: TerminalSpec | None = None  # VIN-side sense pads (from HS bridge)
     vin_sense_n: TerminalSpec | None = None
-    inductor_dcr: float | None = None  # from PATH inductor PDN_R
+    # Series resistance of the PATH part the regulator element replaces
+    # (the "cut"): inductor DCR for a buck, RDSon for a boost's high-side
+    # FET. Not None also means the cut was relocated onto an external part,
+    # which is what makes the element's input draw i_v rather than gain*i_v.
+    cut_resistance: float | None = None
 
 
 DirectiveSpec = SourceSpec | SinkSpec | ResistorSpec | RegulatorSpec | PathSpec
@@ -4269,13 +4273,17 @@ def _parse_sink(comp, proj, enabled_layers, result,
     return specs
 
 
-def _parse_resistance(comp, proj, enabled_layers, result,
-                      net_remap=None, supply_map=None, only_indices=None,
-                      series_graph=None):
-    # This parser only ever handles SERIES-role channels (part-wide or a
-    # PDN<n>_ROLE=SERIES override), so the role for diagnostics is always
-    # SERIES regardless of the part-wide PDN_ROLE.
-    role_raw = "SERIES"
+def _parse_two_terminal(comp, proj, enabled_layers, result,
+                        net_remap=None, supply_map=None, only_indices=None,
+                        series_graph=None, *, role_raw, spec_factory):
+    """Shared parser for the two-terminal roles (SERIES and PATH).
+
+    They differ only in the role label used in diagnostics and in the spec
+    each channel produces, so *spec_factory* builds the spec from the
+    resolved terminals plus that channel's parameters. Keeping one body is
+    the point: the pin filters, auto-inference and multi-channel
+    diagnostics below were duplicated once already.
+    """
     role_diag_base = f"{role_raw} on {comp.designator}"
     discovery = _discovery_pdn_params(comp, proj)
     if _has_single_net_params(discovery, only_indices):
@@ -4310,7 +4318,7 @@ def _parse_resistance(comp, proj, enabled_layers, result,
             f"{len(pcb_indices)} multi-channel PCB instances ({names})"
         )
 
-    specs: list[ResistorSpec] = []
+    specs: list = []
     multi = _sibling_pcb_count(proj, comp.lookup_designator) > 1
     logical = comp.lookup_designator
     # Hoisted: a linear scan of every schematic component, independent of
@@ -4394,11 +4402,39 @@ def _parse_resistance(comp, proj, enabled_layers, result,
             )
             if pair is None:
                 continue
-            specs.append(ResistorSpec(
+            specs.append(spec_factory(
                 designator=pcb_des, schdoc_name=comp.schdoc_name,
                 resistance=r, p=pair[0], n=pair[1], channel_index=idx,
+                params=params,
             ))
     return specs
+
+
+def _resistor_spec_factory(*, params, **kw):
+    return ResistorSpec(**kw)
+
+
+def _path_spec_factory(*, params, channel_index, **kw):
+    smps_host_raw = _ci_get(params, _channel_key("SMPS_HOST", channel_index))
+    return PathSpec(
+        channel_index=channel_index,
+        smps_host=smps_host_raw.strip() if smps_host_raw else None,
+        **kw,
+    )
+
+
+def _parse_resistance(comp, proj, enabled_layers, result,
+                      net_remap=None, supply_map=None, only_indices=None,
+                      series_graph=None):
+    # This parser only ever handles SERIES-role channels (part-wide or a
+    # PDN<n>_ROLE=SERIES override), so the role for diagnostics is always
+    # SERIES regardless of the part-wide PDN_ROLE.
+    return _parse_two_terminal(
+        comp, proj, enabled_layers, result,
+        net_remap=net_remap, supply_map=supply_map,
+        only_indices=only_indices, series_graph=series_graph,
+        role_raw="SERIES", spec_factory=_resistor_spec_factory,
+    )
 
 
 
@@ -5168,131 +5204,12 @@ def _parse_path(comp, proj, enabled_layers, result,
                 net_remap=None, supply_map=None, only_indices=None,
                 series_graph=None, **_kw):
     """Parse ``PDN_ROLE=PATH`` channels — external-FET SMPS path elements."""
-    role_raw = "PATH"
-    role_diag_base = f"{role_raw} on {comp.designator}"
-    discovery = _discovery_pdn_params(comp, proj)
-    if _has_single_net_params(discovery, only_indices):
-        result.errors.append(
-            f"{role_diag_base}: PDN_NET is only valid on SOURCE/SINK — a "
-            f"PATH directive bridges two nets, use PDN_P_NET and PDN_N_NET"
-        )
-        return []
-    if only_indices is not None:
-        indices = list(only_indices)
-    else:
-        indices = _discover_channel_indices(discovery, "R")
-        if not indices:
-            _append_error_once(
-                result,
-                f"PATH on {comp.lookup_designator}: missing PDN_R "
-                f"(or PDN<n>_R for an indexed channel)",
-            )
-            return []
-
-    pcb_indices = _pcb_indices_for_source(comp, proj)
-    if not pcb_indices:
-        result.errors.append(
-            f"{role_diag_base}: component {comp.designator!r} is not placed "
-            f"on the PCB"
-        )
-        return []
-    if len(pcb_indices) > 1:
-        names = ", ".join(proj.pcb_components[i].designator for i in pcb_indices)
-        result.warnings.append(
-            f"{role_raw} on {comp.designator}: expanding to "
-            f"{len(pcb_indices)} multi-channel PCB instances ({names})"
-        )
-
-    specs: list[PathSpec] = []
-    multi = _sibling_pcb_count(proj, comp.lookup_designator) > 1
-    logical = comp.lookup_designator
-    sch_ignored = _sch_ignored_pins(
-        proj, comp.lookup_designator, comp.schdoc_name,
+    return _parse_two_terminal(
+        comp, proj, enabled_layers, result,
+        net_remap=net_remap, supply_map=supply_map,
+        only_indices=only_indices, series_graph=series_graph,
+        role_raw="PATH", spec_factory=_path_spec_factory,
     )
-    for idx in indices:
-        role_diag = f"{role_raw} on {_channel_label(logical, idx)}"
-        for pcb_idx in pcb_indices:
-            params = _materialize_channel_params(
-                _instance_pdn_params(comp, proj, pcb_idx, result=result),
-                idx, role_raw,
-            )
-            ignore_pins = _ignore_pins_for_channel(params, idx, sch_ignored)
-            allow_pins = _allow_pins_for_part(params)
-            pcb_des = proj.pcb_components[pcb_idx].designator
-            inst_diag = (
-                f"{role_raw} on {_channel_label(pcb_des, idx)}"
-                if multi else role_diag
-            )
-            value_diag = role_diag if multi else inst_diag
-            r = _require_value(
-                params, _channel_key("R", idx), value_diag, result,
-            )
-            if r is None:
-                continue
-            if r <= 0:
-                _append_error_once(
-                    result,
-                    f"{value_diag}: {_channel_key('R', idx)} must be positive, "
-                    f"got {r}",
-                )
-                continue
-            given = any(
-                _ci_get(params, _channel_key(k, idx)) is not None
-                for k in ("P_NET", "N_NET", "P_PINS", "N_PINS")
-            )
-            resolve_params = dict(params)
-            if not given:
-                if len(indices) > 1:
-                    _append_error_once(
-                        result,
-                        f"{value_diag}: multi-channel PATH requires explicit "
-                        f"{_channel_key('P_NET', idx)} / {_channel_key('N_NET', idx)} "
-                        f"or {_channel_key('P_PINS', idx)} / "
-                        f"{_channel_key('N_PINS', idx)} per channel",
-                    )
-                    continue
-                inferred = _autoinfer_2pin_nets(proj, pcb_idx)
-                if inferred is None:
-                    reason = _autoinfer_failure_reason(proj, pcb_idx)
-                    result.errors.append(
-                        f"{inst_diag}: {_channel_key('P_NET', idx)} and "
-                        f"{_channel_key('N_NET', idx)} are required "
-                        f"({reason}, so the two nets cannot be auto-inferred) — "
-                        f"set them explicitly (or use "
-                        f"{_channel_key('P_PINS', idx)} / "
-                        f"{_channel_key('N_PINS', idx)})"
-                    )
-                    continue
-                resolve_params[_channel_key("P_NET", idx)] = inferred[0]
-                resolve_params[_channel_key("N_NET", idx)] = inferred[1]
-                result.warnings.append(
-                    f"{inst_diag}: auto-inferred "
-                    f"{_channel_key('P_NET', idx)}={inferred[0]!r}, "
-                    f"{_channel_key('N_NET', idx)}={inferred[1]!r} "
-                    f"from 2-pin connectivity"
-                )
-            pair = _resolve_two_terminal(
-                proj, pcb_idx, resolve_params,
-                _channel_key("P_NET", idx), _channel_key("N_NET", idx),
-                _channel_key("P_PINS", idx), _channel_key("N_PINS", idx),
-                enabled_layers, inst_diag, result,
-                net_remap=net_remap,
-                sch_lookup_designator=comp.lookup_designator,
-                schdoc_name=comp.schdoc_name,
-                param_diag=value_diag,
-                ignore_pins=ignore_pins,
-                allow_pins=allow_pins,
-            )
-            if pair is None:
-                continue
-            smps_host_raw = _ci_get(params, _channel_key("SMPS_HOST", idx))
-            smps_host = smps_host_raw.strip() if smps_host_raw else None
-            specs.append(PathSpec(
-                designator=pcb_des, schdoc_name=comp.schdoc_name,
-                resistance=r, p=pair[0], n=pair[1], channel_index=idx,
-                smps_host=smps_host,
-            ))
-    return specs
 
 
 _PARSER_BY_ROLE = {
@@ -6220,8 +6137,8 @@ def _describe_directive(d: DirectiveSpec) -> str:
             extra += f", topo={d.smps_topology}"
         if d.switch_path_legs:
             extra += f", {len(d.switch_path_legs)} LS leg(s)"
-        if d.inductor_dcr is not None:
-            extra += f", Ldcr={d.inductor_dcr:g} Ω"
+        if d.cut_resistance is not None:
+            extra += f", Rcut={d.cut_resistance:g} Ω"
         return head + f"  V={d.voltage:g} V, gain={d.gain:g}{extra}\n" + \
             _describe_terminal("OUT_P", d.out_p) + "\n" + _describe_terminal("OUT_N", d.out_n) + "\n" + \
             _describe_terminal("IN_P", d.in_p) + "\n" + _describe_terminal("IN_N", d.in_n)

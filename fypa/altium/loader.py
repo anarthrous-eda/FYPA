@@ -918,29 +918,37 @@ def _directive_to_network(
         switch_leg_nodes: list[tuple[_pp.NodeID, _pp.NodeID, float]] = []
         leg_terminals: list[tuple] = []
         for leg in getattr(d, "switch_path_legs", ()) or ():
-            if leg.coeff == 0.0:
-                continue
+            # Zero-coeff legs are kept so the element's leg list stays index-
+            # aligned with the spec's across an adaptive-gain retune; the
+            # solver stamp skips them.
             node_f, node_t = _pp.NodeID(), _pp.NodeID()
             switch_leg_nodes.append((node_f, node_t, float(leg.coeff)))
-            # Drain (switch node) → f, source (GND) → t.
+            # Current flows leg.p → f → t → leg.n, so the two couplings are
+            # in series: each carries half the part's resistance, or the whole
+            # RDSon would be counted twice.
             r_coup = (
-                float(leg.resistance)
+                float(leg.resistance) / 2.0
                 if leg.resistance and leg.resistance > 0
                 else COUPLING_RESISTANCE_OHM
             )
             leg_terminals.append((leg.p, node_f, r_coup, f"LS_{leg.kind}_P"))
             leg_terminals.append((leg.n, node_t, r_coup, f"LS_{leg.kind}_N"))
+        # An external-FET stage relocates the cut onto the part that carries
+        # the full output current, so the element spans a conductor and its
+        # input draws i_v. The conversion ratio lives in the switch legs.
+        cut_r = getattr(d, "cut_resistance", None)
         element = _pp.VoltageRegulator(
             v_p=node_vp, v_n=node_vn, s_f=node_sf, s_t=node_st,
             voltage=d.voltage, gain=d.gain,
+            input_gain=1.0 if cut_r is not None else None,
             switch_legs=tuple(switch_leg_nodes),
         )
-        # Optional inductor DCR on the input-side coupling (never bridges
-        # IN↔OUT — the lumped regulator *is* the cut).
+        # The cut part's own series resistance (inductor DCR, or RDSon for a
+        # boost's high-side FET) sits on the input-side coupling, where the
+        # element draws i_v — the current that part really carries.
         in_coup = COUPLING_RESISTANCE_OHM
-        dcr = getattr(d, "inductor_dcr", None)
-        if dcr is not None and dcr > 0:
-            in_coup = float(dcr)
+        if cut_r is not None and cut_r > 0:
+            in_coup = float(cut_r)
         conns, aux = _gather(
             (d.out_p, node_vp, SOURCE_COUPLING_RESISTANCE_OHM, "OUT_P"),
             (d.out_n, node_vn, SOURCE_COUPLING_RESISTANCE_OHM, "OUT_N"),
@@ -2002,12 +2010,25 @@ def _replace_regulator_gains(
     loaded: LoadedProject,
     new_gains: dict[tuple[str, int | None], float],
 ) -> None:
+    from fypa.altium.smps_stage import _compute_ls_coeffs
+
     updated: list[DirectiveSpec] = []
     for d in loaded.annotations.directives:
         if isinstance(d, RegulatorSpec):
             key = (d.designator, d.channel_index)
             if key in new_gains:
-                d = dataclasses.replace(d, gain=new_gains[key])
+                gain = new_gains[key]
+                legs = d.switch_path_legs
+                if legs and d.smps_topology:
+                    ls_in, ls_out = _compute_ls_coeffs(d.smps_topology, gain)
+                    legs = tuple(
+                        dataclasses.replace(
+                            leg,
+                            coeff=ls_in if leg.kind == "ls_in" else ls_out,
+                        )
+                        for leg in legs
+                    )
+                d = dataclasses.replace(d, gain=gain, switch_path_legs=legs)
         updated.append(d)
     loaded.annotations.directives = updated
 
@@ -2068,10 +2089,26 @@ def _retune_problem_regulator_gains(problem, loaded) -> bool:
             )
             return False
 
+    for spec, (_net, _i, elem) in zip(specs, sites):
+        if len(elem.switch_legs) != len(spec.switch_path_legs):
+            log.info(
+                "Adaptive gain: switch-leg count changed (%d element vs %d "
+                "spec) — rebuilding the problem instead.",
+                len(elem.switch_legs), len(spec.switch_path_legs),
+            )
+            return False
+
     changed = 0
     for spec, (net, i, elem) in zip(specs, sites):
-        if elem.gain != spec.gain:
-            net.elements[i] = _dc_replace(elem, gain=spec.gain)
+        # Leg coefficients are functions of the gain, so they move with it.
+        new_legs = tuple(
+            (f, t, float(sl.coeff))
+            for (f, t, _c), sl in zip(elem.switch_legs, spec.switch_path_legs)
+        )
+        if elem.gain != spec.gain or new_legs != elem.switch_legs:
+            net.elements[i] = _dc_replace(
+                elem, gain=spec.gain, switch_legs=new_legs,
+            )
             changed += 1
     log.debug("Adaptive gain: retuned %d regulator element(s) in place",
               changed)

@@ -116,6 +116,18 @@ def _regulator_stage_nets(
     return frozenset(filtered)
 
 
+def _regulator_sw_nets(
+    reg: RegulatorSpec,
+    proj: ExtractedProject,
+    net_remap: dict[int, int] | None,
+) -> frozenset[int]:
+    """Net indices of a regulator's declared switch nodes."""
+    nets: set[int] = set()
+    for sw_name in (reg.sw1_net, reg.sw2_net):
+        nets |= _net_index_set(proj, sw_name, net_remap)
+    return frozenset(nets)
+
+
 def _find_host_regulator(
     path: PathSpec,
     regulators: list[RegulatorSpec],
@@ -145,12 +157,34 @@ def _find_host_regulator(
             return None
         return candidates[0]
 
-    # Auto-match: intersect PATH pad nets with each regulator's stage nets.
-    matches: list[RegulatorSpec] = []
-    for reg in regulators:
-        stage_nets = _regulator_stage_nets(reg, proj, net_remap)
-        if pad_nets & stage_nets:
-            matches.append(reg)
+    # Only a regulator that declares a switch stage can host a PATH part.
+    # Without this, any second regulator hanging off the same input rail —
+    # an LDO, an internal-FET SMPS — matches on VIN alone and makes every
+    # high-side part "ambiguous", which is most boards.
+    hosts = [
+        r for r in regulators
+        if r.sw1_net or r.sw2_net or r.smps_topology
+    ]
+    if not hosts:
+        _append_error_once(
+            result,
+            f"{diag}: could not bind to a REGULATOR host — no REGULATOR "
+            f"declares a switch stage (set PDN_SW1_NET and "
+            f"PDN_SMPS_TOPOLOGY on the controller)",
+        )
+        return None
+
+    # A switch node names exactly one stage; the IN/OUT rails are shared, so
+    # they are only a fallback for parts with no pad on a switch node.
+    matches = [
+        r for r in hosts
+        if pad_nets & _regulator_sw_nets(r, proj, net_remap)
+    ]
+    if not matches:
+        matches = [
+            r for r in hosts
+            if pad_nets & _regulator_stage_nets(r, proj, net_remap)
+        ]
     if not matches:
         _append_error_once(
             result,
@@ -178,105 +212,6 @@ def _find_host_regulator(
 # ---------------------------------------------------------------------------
 
 
-def _path_edge_nets(
-    path: PathSpec,
-    net_remap: dict[int, int] | None,
-) -> tuple[frozenset[int], frozenset[int]]:
-    return (
-        _terminal_net_indices(path.p, net_remap),
-        _terminal_net_indices(path.n, net_remap),
-    )
-
-
-def _assign_sw_chain_roles(
-    unclassified: list[PathSpec],
-    sw1_nets: frozenset[int],
-    sw2_nets: frozenset[int],
-    net_remap: dict[int, int] | None,
-    host_des: str,
-    result: AnnotationResult,
-) -> dict[int, str]:
-    """Walk PATH edges from SW1 to SW2; last edge = inductor, earlier = shunt.
-
-    Returns ``{id(path): role}`` for paths that sit on the chain.
-    """
-    if not unclassified or not sw1_nets or not sw2_nets:
-        return {}
-
-    # Graph: net_index -> list of (other_net_index, path)
-    adj: dict[int, list[tuple[int, PathSpec]]] = defaultdict(list)
-    for path in unclassified:
-        p_nets, n_nets = _path_edge_nets(path, net_remap)
-        # 2-pin idealisation: each terminal contributes one net (take any).
-        if not p_nets or not n_nets:
-            continue
-        # Connect every p-net to every n-net (normally one each).
-        for a in p_nets:
-            for b in n_nets:
-                if a == b:
-                    continue
-                adj[a].append((b, path))
-                adj[b].append((a, path))
-
-    # BFS from SW1 looking for SW2; record parent edge path.
-    start = next(iter(sw1_nets))
-    goals = set(sw2_nets)
-    queue = [start]
-    visited: set[int] = {start}
-    # net -> (prev_net, path_used)
-    came_from: dict[int, tuple[int, PathSpec]] = {}
-    found: int | None = None
-    while queue:
-        cur = queue.pop(0)
-        if cur in goals and cur != start:
-            found = cur
-            break
-        for nxt, path in adj.get(cur, []):
-            if nxt in visited:
-                continue
-            visited.add(nxt)
-            came_from[nxt] = (cur, path)
-            queue.append(nxt)
-
-    if found is None:
-        # Direct SW1↔SW2 single-part inductor already classified elsewhere;
-        # leftover unknown parts are reported by the caller.
-        return {}
-
-    # Reconstruct edge sequence start → found.
-    edges: list[PathSpec] = []
-    route_nets: set[int] = {found}
-    cur = found
-    while cur != start:
-        prev, path = came_from[cur]
-        edges.append(path)
-        cur = prev
-        route_nets.add(cur)
-    edges.reverse()
-    if not edges:
-        return {}
-
-    roles: dict[int, str] = {}
-    for path in edges[:-1]:
-        roles[id(path)] = "shunt"
-    roles[id(edges[-1])] = "inductor"
-
-    # Ambiguous extra PATH parts touching the chain but not on the unique path.
-    on_chain = {id(p) for p in edges}
-    for path in unclassified:
-        if id(path) in on_chain:
-            continue
-        pad_nets = _spec_pad_net_indices(path, net_remap)
-        if pad_nets & route_nets:
-            _append_error_once(
-                result,
-                f"PATH on {path.designator}: ambiguous SW1↔SW2 chain on host "
-                f"{host_des} — part touches the inductor path but is not on "
-                f"the unique shortest route; check PDN_P_NET / PDN_N_NET",
-            )
-    return roles
-
-
 def _classify_path(
     path: PathSpec,
     reg: RegulatorSpec,
@@ -285,13 +220,27 @@ def _classify_path(
 ) -> str:
     """Classify a bound PATH element's role in the stage.
 
-    Returns one of:
-        ``"hs_in"`` / ``"ls_in"`` / ``"hs_out"`` / ``"ls_out"`` /
-        ``"inductor"`` / ``"shunt"`` / ``"unknown"``
+    The regulator element replaces the one PATH part that carries the full
+    output current *and* blocks the DC path from IN to OUT — the **cut**. That
+    is always the part with a terminal on OUT_P: the inductor in a buck, the
+    high-side FET in a boost, the output-side high-side FET in a buck-boost.
+    Picking it this way is what lets the element be a plain conductor there
+    (it draws ``i_v``, not ``gain·i_v``), with the conversion ratio carried by
+    the low-side legs instead.
+
+    Everything else is either a **low-side leg** — it reaches a ground net
+    from a switch node, and carries a topology-dependent fraction of ``i_v``
+    — or a plain resistive **bridge** whose current KCL settles on its own.
+    A boost's inductor and a sense shunt in the inductor chain are both just
+    bridges; nothing needs to tell them apart.
+
+    Returns one of ``"cut"`` / ``"ls_in"`` / ``"ls_out"`` / ``"bridge"`` /
+    ``"unknown"``.
     """
-    p_nets = _terminal_net_indices(path.p, net_remap)
-    n_nets = _terminal_net_indices(path.n, net_remap)
-    all_nets = p_nets | n_nets
+    all_nets = (
+        _terminal_net_indices(path.p, net_remap)
+        | _terminal_net_indices(path.n, net_remap)
+    )
 
     in_p_nets = _terminal_net_indices(reg.in_p, net_remap)
     in_n_nets = _terminal_net_indices(reg.in_n, net_remap)
@@ -299,34 +248,56 @@ def _classify_path(
     out_n_nets = _terminal_net_indices(reg.out_n, net_remap)
     sw1_nets = _net_index_set(proj, reg.sw1_net, net_remap)
     sw2_nets = _net_index_set(proj, reg.sw2_net, net_remap)
+    gnd_nets = in_n_nets | out_n_nets
+    sw_nets = sw1_nets | sw2_nets
 
-    # Direct SW1↔SW2 bridge (no intermediate net) → inductor.
-    # Checked before HS_OUT: when SW2_NET aliases OUT_P (common BUCK
-    # annotation), a SW1↔VOUT inductor would otherwise look like hs_out.
-    if sw1_nets and sw2_nets:
-        if all_nets & sw1_nets and all_nets & sw2_nets:
-            return "inductor"
+    # The cut. Checked first: when a buck aliases SW2_NET to OUT_P its
+    # inductor matches the switch-node tests below as well.
+    if all_nets & out_p_nets and all_nets & sw_nets:
+        return "cut"
 
-    # IN_P ∩ SW1 → hs_in (bridge)
-    if all_nets & in_p_nets and all_nets & sw1_nets:
-        return "hs_in"
-    # SW1 ∩ IN_N → ls_in (switch leg)
-    if all_nets & sw1_nets and all_nets & in_n_nets:
-        return "ls_in"
-    # SW2 ∩ OUT_P → hs_out (bridge)
-    if all_nets & sw2_nets and all_nets & out_p_nets:
-        return "hs_out"
-    # SW2 ∩ OUT_N → ls_out
-    if all_nets & out_n_nets and all_nets & sw2_nets:
-        return "ls_out"
-    # Single SW-node topologies (BUCK/BOOST) that declare only SW1:
-    if sw1_nets and not sw2_nets:
-        if all_nets & out_p_nets and all_nets & sw1_nets:
-            return "hs_out"
-        if all_nets & sw1_nets and all_nets & out_n_nets:
+    # A switch node down to a ground net. Which side of the inductor that
+    # switch node sits on decides the coefficient, and with only one switch
+    # node the net names cannot say: a buck switches on the input side
+    # (VIN–HS–SW–L–OUT) and a boost on the output side (VIN–L–SW–HS–OUT).
+    # Only the topology distinguishes them. A SW2_NET aliased onto OUT_P or
+    # IN_P is an annotation convenience, not a second switch node.
+    real_sw2 = sw2_nets - out_p_nets - in_p_nets
+    if all_nets & gnd_nets and all_nets & sw_nets:
+        if real_sw2:
+            return "ls_out" if all_nets & real_sw2 else "ls_in"
+        topo = reg.smps_topology or ""
+        if topo == "BOOST" or (topo == "BUCKBOOST" and reg.gain >= 1.0):
             return "ls_out"
+        return "ls_in"
+
+    # Any other annotated two-terminal part touching the stage is copper the
+    # solve should see. Being permissive here is deliberate: the alternative
+    # is dropping a conductor the user explicitly annotated.
+    stage_nets = in_p_nets | out_p_nets | gnd_nets | sw_nets
+    if all_nets & stage_nets and len(all_nets) >= 2:
+        return "bridge"
 
     return "unknown"
+
+
+def _orient_leg(
+    path: PathSpec,
+    gnd_nets: frozenset[int],
+    net_remap: dict[int, int] | None,
+    *,
+    from_ground: bool,
+) -> tuple[TerminalSpec, TerminalSpec]:
+    """Return ``(p, n)`` for a leg carrying current from *p* to *n*.
+
+    A buck's low-side FET freewheels: current flows out of the ground plane,
+    through the FET, into the switch node (``from_ground=True``). A boost's
+    low-side FET is the opposite — it pulls the inductor current down into
+    the ground plane.
+    """
+    p_on_gnd = bool(_terminal_net_indices(path.p, net_remap) & gnd_nets)
+    gnd_term, sw_term = (path.p, path.n) if p_on_gnd else (path.n, path.p)
+    return (gnd_term, sw_term) if from_ground else (sw_term, gnd_term)
 
 
 # ---------------------------------------------------------------------------
@@ -364,15 +335,17 @@ def finalize_smps_stages(
 ) -> None:
     """Bind PATH elements to REGULATOR hosts, mutating *result.directives*.
 
-    * PATH elements classified as **hs_in** / **hs_out** / **shunt** become
-      :class:`ResistorSpec` so the downstream net-merge and rail_groups logic
-      handles them as ordinary series bridges.
-    * PATH elements classified as **ls_in** / **ls_out** become
+    * The **cut** — the PATH part joining a switch node to OUT_P — is
+      replaced by the regulator element itself: its resistance becomes
+      ``cut_resistance`` and its two pads become the host's in_p / out_p.
+      Because that part carries the full output current, the element is a
+      plain conductor across it and draws ``i_v``, not ``gain·i_v``.
+    * PATH elements reaching a ground net from a switch node become
       :class:`SwitchPathLeg` entries on the host :class:`RegulatorSpec`
-      (``switch_path_legs``).
-    * The inductor PATH becomes ``inductor_dcr`` on the host and its
-      terminals replace the regulator's in_p/out_p (depending on SW1/SW2
-      orientation).
+      (``switch_path_legs``), carrying the rest of the switch-node current.
+    * Every other bound PATH element becomes a :class:`ResistorSpec` so the
+      downstream net-merge and rail_groups logic handles it as an ordinary
+      series bridge; KCL settles its current on its own.
     * Vin-sense terminals are propagated from hs_in's P-side (or the
       regulator's original in_p if no hs_in exists).
     """
@@ -408,10 +381,15 @@ def finalize_smps_stages(
             )
             continue
         if topo and topo == "INVERTER":
-            result.warnings.append(
+            # Not a warning: every bound PATH is dropped from the directive
+            # list, so "skipping" would solve a board with the phase FETs
+            # missing and no indication of why the phase net floats.
+            _append_error_once(
+                result,
                 f"PATH on {p.designator}: host {host.designator} uses INVERTER "
-                f"topology — external-FET binding is not yet supported for "
-                f"INVERTER; skipping",
+                f"topology — external-FET binding is not supported for "
+                f"INVERTER, so this part cannot be modelled; remove the PATH "
+                f"annotation or model the stage as BUCK / BOOST / BUCKBOOST",
             )
             continue
         if topo and topo not in _BINDABLE_TOPOLOGIES:
@@ -427,27 +405,13 @@ def finalize_smps_stages(
         path_groups[host_key].append((p, role))
         bound_path_ids.add(id(p))
 
-    # Second pass: resolve SW1↔SW2 chain for parts still classified unknown.
+    # A bound part that matches none of the host's stage nets: report it
+    # rather than quietly dropping copper the user annotated.
     for host_key, grouped in list(path_groups.items()):
         host = host_map[host_key]
-        sw1_nets = _net_index_set(proj, host.sw1_net, net_remap)
-        sw2_nets = _net_index_set(proj, host.sw2_net, net_remap)
-        unknowns = [p for p, role in grouped if role == "unknown"]
-        if not unknowns:
-            continue
-        chain_roles = _assign_sw_chain_roles(
-            unknowns,
-            sw1_nets,
-            sw2_nets,
-            net_remap,
-            host.designator,
-            result,
-        )
-        new_grouped: list[tuple[PathSpec, str]] = []
+        kept: list[tuple[PathSpec, str]] = []
         for path, role in grouped:
-            if role == "unknown" and id(path) in chain_roles:
-                new_grouped.append((path, chain_roles[id(path)]))
-            elif role == "unknown":
+            if role == "unknown":
                 _append_error_once(
                     result,
                     f"PATH on {path.designator}: could not classify pad nets "
@@ -457,17 +421,11 @@ def finalize_smps_stages(
                 )
                 bound_path_ids.discard(id(path))
             else:
-                new_grouped.append((path, role))
-        path_groups[host_key] = new_grouped
+                kept.append((path, role))
+        path_groups[host_key] = kept
 
-    # Drop host groups that lost every path after chain resolution.
+    # Drop host groups that lost every path.
     path_groups = {k: v for k, v in path_groups.items() if v}
-
-    # Check for unbound PATH elements.
-    for p in paths:
-        if id(p) not in bound_path_ids:
-            # Error already appended by _find_host_regulator or topology check.
-            pass
 
     # Build replacement directives.
     new_directives: list = []
@@ -475,18 +433,70 @@ def finalize_smps_stages(
 
     for host_key, grouped in path_groups.items():
         host = host_map[host_key]
-        topo = host.smps_topology or "BUCK"
+        topo = host.smps_topology
+        if topo is None:
+            _append_error_once(
+                result,
+                f"REGULATOR on {host.designator}: PATH parts are bound to it "
+                f"but PDN_SMPS_TOPOLOGY is not set — set it to one of "
+                f"{', '.join(sorted(_BINDABLE_TOPOLOGIES))} so the switch-leg "
+                f"currents can be derived",
+            )
+            continue
         ls_in_coeff, ls_out_coeff = _compute_ls_coeffs(topo, host.gain)
+        gnd_nets = (
+            _terminal_net_indices(host.in_n, net_remap)
+            | _terminal_net_indices(host.out_n, net_remap)
+        )
+        in_p_nets = _terminal_net_indices(host.in_p, net_remap)
+        out_p_nets = _terminal_net_indices(host.out_p, net_remap)
 
-        hs_bridges: list[ResistorSpec] = []
+        bridges: list[ResistorSpec] = []
         ls_legs: list[SwitchPathLeg] = []
-        inductor_path: PathSpec | None = None
-        inductor_dcr: float | None = None
+        cut_path: PathSpec | None = None
         hs_in_spec: PathSpec | None = None
 
         for path, role in grouped:
-            if role in ("hs_in", "hs_out", "shunt"):
-                hs_bridges.append(
+            if role == "cut":
+                if cut_path is not None:
+                    _append_error_once(
+                        result,
+                        f"PATH on {path.designator}: host {host.designator} "
+                        f"already has {cut_path.designator} between a switch "
+                        f"node and OUT_P — only one output-side part per "
+                        f"stage is supported",
+                    )
+                    continue
+                cut_path = path
+            elif role in ("ls_in", "ls_out"):
+                coeff = ls_in_coeff if role == "ls_in" else ls_out_coeff
+                if coeff <= 0.0:
+                    result.warnings.append(
+                        f"PATH on {path.designator}: {role} leg coefficient is "
+                        f"zero for {topo} at gain {host.gain:.3f}, so the part "
+                        f"carries no averaged current and is left out of the "
+                        f"model entirely — its copper is not solved and any "
+                        f"PDN_R on it is ignored"
+                    )
+                    continue
+                p_term, n_term = _orient_leg(
+                    path,
+                    gnd_nets,
+                    net_remap,
+                    from_ground=(role == "ls_in"),
+                )
+                ls_legs.append(
+                    SwitchPathLeg(
+                        designator=path.designator,
+                        kind=role,
+                        resistance=path.resistance,
+                        p=p_term,
+                        n=n_term,
+                        coeff=coeff,
+                    )
+                )
+            else:
+                bridges.append(
                     ResistorSpec(
                         designator=path.designator,
                         schdoc_name=path.schdoc_name,
@@ -496,116 +506,33 @@ def finalize_smps_stages(
                         channel_index=path.channel_index,
                     )
                 )
-                if role == "hs_in":
+                if hs_in_spec is None and (
+                    _terminal_net_indices(path.p, net_remap) & in_p_nets
+                    or _terminal_net_indices(path.n, net_remap) & in_p_nets
+                ):
                     hs_in_spec = path
-            elif role == "ls_in":
-                if ls_in_coeff > 0:
-                    sw1_nets = _net_index_set(proj, host.sw1_net, net_remap)
-                    p_term, n_term = path.p, path.n
-                    if not (_terminal_net_indices(p_term, net_remap) & sw1_nets):
-                        p_term, n_term = path.n, path.p
-                    ls_legs.append(
-                        SwitchPathLeg(
-                            designator=path.designator,
-                            kind="ls_in",
-                            resistance=path.resistance,
-                            p=p_term,
-                            n=n_term,
-                            coeff=ls_in_coeff,
-                        )
-                    )
-                else:
-                    result.warnings.append(
-                        f"PATH on {path.designator}: {role} leg coefficient is "
-                        f"zero for {topo} at gain {host.gain:.3f}, so the part "
-                        f"carries no averaged current and is left out of the "
-                        f"model entirely — its copper is not solved and any "
-                        f"PDN_R on it is ignored"
-                    )
-            elif role == "ls_out":
-                if ls_out_coeff > 0:
-                    sw2_nets = _net_index_set(proj, host.sw2_net, net_remap)
-                    sw_nets = sw2_nets or _net_index_set(
-                        proj,
-                        host.sw1_net,
-                        net_remap,
-                    )
-                    p_term, n_term = path.p, path.n
-                    if sw_nets and not (_terminal_net_indices(p_term, net_remap) & sw_nets):
-                        p_term, n_term = path.n, path.p
-                    ls_legs.append(
-                        SwitchPathLeg(
-                            designator=path.designator,
-                            kind="ls_out",
-                            resistance=path.resistance,
-                            p=p_term,
-                            n=n_term,
-                            coeff=ls_out_coeff,
-                        )
-                    )
-                else:
-                    result.warnings.append(
-                        f"PATH on {path.designator}: {role} leg coefficient is "
-                        f"zero for {topo} at gain {host.gain:.3f}, so the part "
-                        f"carries no averaged current and is left out of the "
-                        f"model entirely — its copper is not solved and any "
-                        f"PDN_R on it is ignored"
-                    )
-            elif role == "inductor":
-                if inductor_path is not None:
-                    _append_error_once(
-                        result,
-                        f"PATH on {path.designator}: multiple inductors between "
-                        f"SW1 and SW2 on host {host.designator} — only one "
-                        f"inductor PATH per stage is supported",
-                    )
-                    continue
-                inductor_path = path
-                inductor_dcr = path.resistance
 
-        if (
-            host.sw1_net
-            and host.sw2_net
-            and any(
-                r in ("hs_in", "hs_out", "ls_in", "ls_out", "shunt", "inductor") for _, r in grouped
-            )
-            and inductor_path is None
-        ):
+        if cut_path is None:
             _append_error_once(
                 result,
-                f"REGULATOR on {host.designator}: PATH stage with SW1/SW2 "
-                f"needs exactly one inductor between those nets — none found",
+                f"REGULATOR on {host.designator}: no PATH part joins a switch "
+                f"node to OUT_P, so nothing cuts the DC path from IN to OUT "
+                f"— annotate the inductor (buck) or the output-side high-side "
+                f"FET (boost) with PDN_ROLE=PATH",
             )
+            continue
 
-        # Determine inductor terminals orientation (which side is SW1, which SW2).
-        updated_in_p = host.in_p
-        updated_out_p = host.out_p
-        if inductor_path is not None:
-            sw1_nets = _net_index_set(proj, host.sw1_net, net_remap)
-            ind_p_nets = _terminal_net_indices(inductor_path.p, net_remap)
-            if ind_p_nets & sw1_nets:
-                updated_in_p = inductor_path.p
-                updated_out_p = inductor_path.n
-            else:
-                # N on SW1, or intermediate-net inductor (P toward SW1 via chain).
-                # Prefer the pad whose net is closer to SW1: if neither pad is
-                # on SW1 (shunt in between), keep schematic P→SW1 convention
-                # from chain walk (inductor is last edge; P/N already set).
-                sw2_nets = _net_index_set(proj, host.sw2_net, net_remap)
-                ind_n_nets = _terminal_net_indices(inductor_path.n, net_remap)
-                if ind_n_nets & sw1_nets:
-                    updated_in_p = inductor_path.n
-                    updated_out_p = inductor_path.p
-                elif ind_p_nets & sw2_nets:
-                    updated_in_p = inductor_path.n
-                    updated_out_p = inductor_path.p
-                else:
-                    updated_in_p = inductor_path.p
-                    updated_out_p = inductor_path.n
+        # The cut element replaces the regulator's own IN_P / OUT_P: OUT_P
+        # moves to its output-side pad, IN_P to its switch-node-side pad. The
+        # element is then a conductor across that part, carrying i_v.
+        if _terminal_net_indices(cut_path.p, net_remap) & out_p_nets:
+            updated_out_p, updated_in_p = cut_path.p, cut_path.n
+        else:
+            updated_out_p, updated_in_p = cut_path.n, cut_path.p
 
-        # Vin sense: VIN-side pad of hs_in, else original regulator IN.
+        # Vin sense: the IN_P-side pad of the high-side input bridge, so the
+        # sensed voltage includes that part's drop.
         if hs_in_spec is not None:
-            in_p_nets = _terminal_net_indices(host.in_p, net_remap)
             if _terminal_net_indices(hs_in_spec.p, net_remap) & in_p_nets:
                 vin_sense_p = hs_in_spec.p
             else:
@@ -614,21 +541,18 @@ def finalize_smps_stages(
             vin_sense_p = host.in_p
         vin_sense_n = host.in_n
 
-        # Build the updated RegulatorSpec.
         updated_reg = replace(
             host,
-            in_p=updated_in_p if inductor_path else host.in_p,
-            out_p=updated_out_p if inductor_path else host.out_p,
+            in_p=updated_in_p,
+            out_p=updated_out_p,
             switch_path_legs=tuple(ls_legs),
             vin_sense_p=vin_sense_p,
             vin_sense_n=vin_sense_n,
-            inductor_dcr=inductor_dcr,
+            cut_resistance=cut_path.resistance,
         )
         replaced_reg_ids.add(id(host))
 
-        # Emit HS bridges as ResistorSpec.
-        new_directives.extend(hs_bridges)
-        # The updated regulator replaces the original.
+        new_directives.extend(bridges)
         new_directives.append(updated_reg)
 
     # Rebuild the directive list: keep non-PATH/non-replaced-regulator as-is,

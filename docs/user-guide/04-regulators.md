@@ -285,7 +285,6 @@ stage map:
 |-----------|---------|
 | `PDN_SMPS_TOPOLOGY` | `BUCK`, `BOOST`, `BUCKBOOST`, or `INVERTER` |
 | `PDN_SW1_NET` / `PDN_SW2_NET` | Switch-node nets (buck-boost: both sides of L) |
-| `PDN_SW1_PINS` / `PDN_SW2_PINS` | Optional pins **on the controller** only |
 
 Do **not** put RDSon, shunt R, or DCR on the controller — those live on
 `PATH` parts.
@@ -301,9 +300,14 @@ On each FET, sense resistor, and inductor in the stage:
 | `PDN_P_PINS` / `PDN_N_PINS` / allowlists | Optional — drop gate or Kelvin pads |
 
 FYPA classifies each part from pad-net intersection with the host stage
-nets (HS_IN, LS_IN, HS_OUT, LS_OUT, shunt, inductor). Host binding is
-automatic when the part's non-GND pads hit exactly one REGULATOR's stage
-nets. Set `PDN_SMPS_HOST` only if that match is ambiguous.
+nets. One part is the **cut**: the one joining a switch node to `OUT_P`.
+The regulator element replaces it, because it is the part that carries the
+full output current — the inductor in a buck, the high-side FET in a boost,
+the output-side high-side FET in a buck-boost. Parts reaching a ground net
+from a switch node become averaged current legs; everything else is an
+ordinary resistive bridge. Host binding is automatic when the part's
+non-GND pads hit exactly one REGULATOR's stage nets. Set `PDN_SMPS_HOST`
+only if that match is ambiguous.
 
 Example — buck-boost controller with external FETs (generic nets):
 
@@ -325,10 +329,11 @@ Q_HS_IN / Q_HS_OUT / Q_LS_* / R_SHUNT / L1:
 
 Rules of thumb:
 
-- **Inductor** between SW1 and SW2 is the cut — not a rail-merging
-  `SERIES`.
-- **High-side / shunt** stay island bridges (`SERIES`-like) on VIN or VOUT
-  copper.
+- **The part between a switch node and `OUT_P`** is the cut — not a
+  rail-merging `SERIES`. That is the inductor in a buck, but the high-side
+  FET in a boost, whose inductor carries the *input* current instead.
+- **Inductor (when it is not the cut), high-side and shunt** stay island
+  bridges (`SERIES`-like); KCL settles their current.
 - **Low-side** FETs must not `SERIES` SW to GND (that would short the
   switch node). FYPA stamps them as averaged current sources instead.
 - Adaptive Vin senses at the HS_IN / input island, including FET and shunt
@@ -338,8 +343,13 @@ Rules of thumb:
 
 Same switch-stage idea, different gain: the DC bus is not stepped to a
 second `PDN_V`. Use `PDN_SMPS_TOPOLOGY=INVERTER` with one `OUT_*` channel
-per phase. Internal FETs need no `PATH` parts; external HS/LS use `PATH`
-bound via phase nets. Do not model the stage as `BUCKBOOST`.
+per phase, and a positive `PDN_V` per phase. Do not model the stage as
+`BUCKBOOST`.
+
+Internal FETs need no `PATH` parts. **External HS/LS FETs are not yet
+supported on an `INVERTER` host** — a `PATH` bound to one is an error
+rather than a silent omission, because the phase net would otherwise solve
+with its only conductive path missing.
 
 ## 4.8 Troubleshooting
 
