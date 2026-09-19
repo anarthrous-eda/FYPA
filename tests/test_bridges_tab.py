@@ -196,12 +196,26 @@ def test_remove_also_lifts_an_opt_out(viewer):
     assert viewer._project.no_auto_bridge == []
 
 
-def test_modelling_a_part_also_lifts_its_opt_out(viewer):
-    """Otherwise a part could be both disabled and modelled at once."""
+def test_modelling_a_part_suppresses_its_auto_bridge(viewer):
+    """An explicit resistance has to switch the automatic short OFF.
+
+    The auto-bridge fires while annotations are parsed and merges the two
+    nets there and then. An editor SERIES directive is applied afterwards
+    and names a net pair that, post-merge, no longer exists — so leaving
+    the auto-bridge enabled means the typed resistance is silently dropped
+    and the rail still reads as a dead short.
+    """
+    import fypa.altium_viewer as V
+    V.PdnViewer._apply_bridge_series(viewer, _candidates()[1], 0.02)
+    assert viewer._project.no_auto_bridge == ["R9"]
+
+
+def test_modelling_a_part_does_not_stack_opt_outs(viewer):
+    """Re-editing a part must not add its designator twice."""
     import fypa.altium_viewer as V
     viewer._project.no_auto_bridge = ["R9"]
     V.PdnViewer._apply_bridge_series(viewer, _candidates()[1], 0.02)
-    assert viewer._project.no_auto_bridge == []
+    assert viewer._project.no_auto_bridge == ["R9"]
 
 
 # --- footguns --------------------------------------------------------------
@@ -238,3 +252,107 @@ def test_two_different_supplies_prompt_and_can_be_declined(viewer):
     viewer._test_dialogs.clear()
     assert V.PdnViewer._warn_if_shorting_power_rails(viewer, rec) is False
     assert any("supplies" in str(d[1]).lower() for d in viewer._test_dialogs)
+
+
+# --- a rejected edit must change nothing -----------------------------------
+
+def _existing_series(viewer, des: str, p: str, n: str, ohms: float) -> None:
+    from fypa.project_file import EditorDirective
+    viewer._project.upsert_directive(EditorDirective(
+        kind="component", role="SERIES", designator=des, single_net=False,
+        p_net=p, n_net=n, resistance=ohms, overrides_designator=des))
+
+
+def _series_for(viewer, des: str) -> list:
+    return [d for d in (viewer._project.editor_directives or [])
+            if d.role == "SERIES"
+            and (d.designator or "").strip().upper() == des.upper()]
+
+
+def test_cancelled_supply_short_keeps_the_saved_resistance(viewer):
+    """Cancelling the confirmation must not destroy the existing value.
+
+    The old order dropped the directive first and only then asked, so
+    answering "no" silently threw away a resistance the user had already
+    entered, with nothing on screen saying so.
+    """
+    import fypa.altium_viewer as V
+    rec = {"designator": "FB7", "kind": "ferrite bead", "net_a": "+5V",
+           "net_b": "+3V3", "state": "series", "resistance_ohm": 0.05}
+    _existing_series(viewer, "FB7", "+5V", "+3V3", 0.05)
+
+    # The fixture's stubbed QMessageBox.warning answers Cancel.
+    V.PdnViewer._apply_bridge_series(viewer, rec, 0.08)
+
+    kept = _series_for(viewer, "FB7")
+    assert len(kept) == 1
+    assert kept[0].resistance == pytest.approx(0.05)
+
+
+def test_rejected_non_positive_resistance_keeps_the_saved_resistance(viewer):
+    """Same for the value check — it also used to run after the delete."""
+    import fypa.altium_viewer as V
+    rec = {"designator": "FB8", "kind": "ferrite bead", "net_a": "GND",
+           "net_b": "AGND", "state": "series", "resistance_ohm": 0.05}
+    _existing_series(viewer, "FB8", "GND", "AGND", 0.05)
+
+    V.PdnViewer._apply_bridge_series(viewer, rec, 0.0)
+
+    kept = _series_for(viewer, "FB8")
+    assert len(kept) == 1
+    assert kept[0].resistance == pytest.approx(0.05)
+
+
+def test_accepted_edit_replaces_rather_than_stacks(viewer):
+    """The happy path still has to overwrite the old directive."""
+    import fypa.altium_viewer as V
+    rec = {"designator": "FB9", "kind": "ferrite bead", "net_a": "GND",
+           "net_b": "AGND", "state": "series", "resistance_ohm": 0.05}
+    _existing_series(viewer, "FB9", "GND", "AGND", 0.05)
+
+    V.PdnViewer._apply_bridge_series(viewer, rec, 0.08)
+
+    kept = _series_for(viewer, "FB9")
+    assert len(kept) == 1
+    assert kept[0].resistance == pytest.approx(0.08)
+
+
+# --- button state tracks the real selection --------------------------------
+
+def test_disable_button_follows_keyboard_selection(viewer):
+    """``cellClicked`` never fires for arrow keys, so it cannot be the only
+    thing that refreshes the buttons — otherwise "Disable auto-bridge"
+    stays live over a row that was never auto-bridged."""
+    table = viewer.bridges_table
+
+    def row_of(des):
+        return next(i for i in range(table.rowCount())
+                    if table.item(i, 0).text() == des)
+
+    table.selectRow(row_of("R9"))          # auto-bridged
+    assert viewer.bridges_disable_btn.isEnabled()
+    table.selectRow(row_of("FB1"))         # not modelled
+    assert not viewer.bridges_disable_btn.isEnabled()
+
+
+# --- supply identity -------------------------------------------------------
+
+def test_paired_analog_supply_is_not_a_short_warning():
+    """VDD / VDDA is a textbook ferrite, not two different supplies.
+
+    The suffix rule used to take the final D off VDD, leaving "VD", while
+    VDDA correctly became "VDD" — so the commonest paired analog supply on
+    any board compared unequal and warned.
+    """
+    import fypa.altium_viewer as V
+    assert V._supply_net_key("VDD") == V._supply_net_key("VDDA")
+    assert V._supply_net_key("VCC") == V._supply_net_key("VCCA")
+    assert V._supply_net_key("+3V3") == V._supply_net_key("+3V3_SW")
+    assert V._supply_net_key("+1V8") == V._supply_net_key("+1V8D")
+
+
+def test_genuinely_different_supplies_still_differ():
+    """The warning has to keep firing for the case it exists for."""
+    import fypa.altium_viewer as V
+    assert V._supply_net_key("+5V") != V._supply_net_key("+3V3")
+    assert V._supply_net_key("VDD") != V._supply_net_key("VBAT")

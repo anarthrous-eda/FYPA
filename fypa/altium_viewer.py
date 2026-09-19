@@ -5209,6 +5209,22 @@ class _SolveWorker(QThread):
                     )
                     loaded = None
 
+            # The auto-bridge opt-out takes effect while annotations are
+            # parsed — the merge it suppresses has already happened by the
+            # time anything here could veto it — so a LoadedProject built
+            # with a different set cannot be patched up, only rebuilt. This
+            # is what makes the Bridges tab's "Disable auto-bridge" button
+            # take effect on the very next Resolve, as its hint promises.
+            if loaded is not None:
+                _want_open = frozenset(
+                    d.strip().upper() for d in (self._no_auto_bridge or ()))
+                _have_open = getattr(
+                    loaded, "no_auto_bridge_applied", frozenset())
+                if _want_open != _have_open:
+                    self.stage_changed.emit(
+                        "Auto-bridge opt-out changed; reloading design info…")
+                    loaded = None
+
             if loaded is None:
                 self.stage_changed.emit("Loading project from disk…")
                 with _timer.stage("Extract + load project"):
@@ -9591,6 +9607,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             self._vias_table_populated = False
             self._vias_warn_init_scheduled = False
             self._nodes_warn_init_scheduled = False
+            # bridge_candidates came in with the new metadata, so the table
+            # and the tab's warning count are both stale.
+            self._bridges_table_populated = False
+            self._update_bridges_tab_title()
             # Capacitor rows derive from the (re)loaded extracted design +
             # directives — drop the identification and copper shapes with
             # them, and recompute on next tab activation.
@@ -25699,6 +25719,11 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                               list[tuple[int, float, float]]] = {}
         for d in self.metadata.get("directives", []):
             role = d.get("role", "")
+            # An auto-bridge is a synthetic record for the marker overlay,
+            # not a terminal pair anyone can inspect: both of its pins
+            # report the post-merge net and zero pad area.
+            if role == "AUTO_BRIDGE":
+                continue
             desig = d.get("designator", "?")
             # ``label`` disambiguates multi-channel SOURCE/SINK pins
             # ("U5" vs "U5#1") in the Nodes-tab table.
@@ -25915,15 +25940,6 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             self._apply_bridges_filter)
         filter_row.addWidget(self.bridges_state_combo)
 
-        filter_row.addSpacing(12)
-        self.bridges_two_net_box = QCheckBox("Two-net parts only")
-        self.bridges_two_net_box.setChecked(True)
-        self.bridges_two_net_box.setToolTip(
-            "Only parts whose pads touch exactly two distinct nets — the "
-            "ones that can actually bridge. Off shows every candidate part."
-        )
-        self.bridges_two_net_box.toggled.connect(self._apply_bridges_filter)
-        filter_row.addWidget(self.bridges_two_net_box)
 
         filter_row.addStretch(1)
         self.bridges_summary_label = QLabel("")
@@ -25959,6 +25975,11 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             f"    background-color: {_t['bg_selection']}; }}"
         )
         self.bridges_table.cellClicked.connect(self._on_bridges_cell_clicked)
+        # cellClicked does not fire for arrow-key navigation, and a
+        # repopulate clears the selection entirely; without this the action
+        # buttons stay enabled for a row that is no longer selected.
+        self.bridges_table.itemSelectionChanged.connect(
+            self._refresh_bridge_buttons)
         self.bridges_table.itemChanged.connect(self._on_bridges_item_changed)
         outer.addWidget(self.bridges_table, 1)
 
@@ -26055,6 +26076,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         "auto": "auto",
         "off": "off",
         "unmodelled": "not modelled",
+        "annotated": "annotated",
     }
 
     def _populate_bridges_table(self) -> None:
@@ -26062,7 +26084,6 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         if table is None:
             return
         rows = self._bridge_rows()
-        self._bridges_rows_cache = rows
         # Sorting and itemChanged both fire during a populate; suppress them
         # or every setItem re-sorts the model out from under the loop and the
         # R column's edit handler fires on rows the user never touched.
@@ -26105,13 +26126,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             table.setSortingEnabled(True)
         table.resizeColumnsToContents()
         self._apply_bridges_filter()
+        self._refresh_bridge_buttons()
 
     def _apply_bridges_filter(self) -> None:
         table = getattr(self, "bridges_table", None)
         if table is None:
             return
         mode = self.bridges_state_combo.currentText()
-        two_net_only = self.bridges_two_net_box.isChecked()
         shown = 0
         impacted = 0
         for i in range(table.rowCount()):
@@ -26131,8 +26152,6 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 keep = state in ("unmodelled", "off")
             elif mode == "Affects a solved rail":
                 keep = bool(r.get("impact"))
-            if keep and two_net_only and r.get("net_a") == r.get("net_b"):
-                keep = False
             table.setRowHidden(i, not keep)
             shown += int(keep)
         total = table.rowCount()
@@ -26302,31 +26321,43 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         des = rec["designator"]
         key = des.strip().upper()
 
-        # Drop any existing editor SERIES for this part first, so repeated
-        # edits replace rather than accumulate.
-        for ed in list(getattr(project, "editor_directives", []) or []):
-            if (ed.role == "SERIES"
-                    and (ed.designator or "").strip().upper() == key):
-                project.remove_directive(ed.id)
+        def _drop_existing_series() -> None:
+            """Remove this part's editor SERIES so edits replace, not stack."""
+            for ed in list(getattr(project, "editor_directives", []) or []):
+                if (ed.role == "SERIES"
+                        and (ed.designator or "").strip().upper() == key):
+                    project.remove_directive(ed.id)
+
+        def _set_opt_out(enabled: bool) -> None:
+            opted = [d for d in (getattr(project, "no_auto_bridge", []) or [])
+                     if d.strip().upper() != key]
+            if enabled:
+                opted.append(des)
+            project.no_auto_bridge = opted
 
         if resistance is None:
             # "Remove" also lifts an opt-out, so one button undoes either.
-            opted = list(getattr(project, "no_auto_bridge", []) or [])
-            project.no_auto_bridge = [
-                d for d in opted if d.strip().upper() != key]
+            _drop_existing_series()
+            _set_opt_out(False)
             self._after_bridge_edit(f"{des}: reverted to FYPA's default.")
             return
 
-        if not self._warn_if_shorting_power_rails(rec):
-            return
+        # Validate and confirm BEFORE touching the project. Dropping the old
+        # directive first means a cancelled confirmation silently destroys
+        # the resistance the user had already saved.
         if resistance <= 0.0:
             QMessageBox.warning(
                 self, "Resistance must be positive",
                 "A zero or negative resistance would short the pads through "
                 "an ideal wire. For a true wire link, leave it to the "
                 "automatic bridge.")
+            self._populate_bridges_table()
+            return
+        if not self._warn_if_shorting_power_rails(rec):
+            self._populate_bridges_table()
             return
 
+        _drop_existing_series()
         project.upsert_directive(EditorDirective(
             kind="component", role="SERIES", designator=des,
             single_net=False,
@@ -26334,11 +26365,12 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             resistance=float(resistance),
             overrides_designator=des,
         ))
-        # An explicit directive supersedes the automatic short, so clear any
-        # opt-out too — otherwise the part would be both disabled and modelled.
-        opted = list(getattr(project, "no_auto_bridge", []) or [])
-        project.no_auto_bridge = [
-            d for d in opted if d.strip().upper() != key]
+        # The explicit directive has to SUPPRESS the automatic short, not sit
+        # alongside it. The auto-bridge fires while annotations are parsed and
+        # merges the two nets there and then; this directive is applied after
+        # that and would name a net pair which no longer exists, so the
+        # resistance would be silently ignored.
+        _set_opt_out(True)
         note = (f"{des}: modelled as a {resistance * 1e3:g} m\u03a9 SERIES "
                 f"element.")
         if resistance < self._BRIDGE_MERGE_THRESHOLD_OHM:
@@ -26355,6 +26387,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._mark_project_dirty()
         self._update_pending_rails()
         self._populate_bridges_table()
+        self._update_bridges_tab_title()
         self.bridges_hint_label.setText(
             f"<span style='color:{_T()['fg_muted']};'>{_esc(message)} "
             f"Press Resolve to apply.</span>")
@@ -30348,9 +30381,18 @@ def _supply_net_key(name: str) -> str:
     key = re.sub(r"[^A-Z0-9]", "", str(name).upper())
     for suffix in ("SW", "FILT", "FILTERED", "SENSE", "SNS", "IN", "OUT",
                    "A", "D", "F"):
-        if len(key) > len(suffix) + 1 and key.endswith(suffix):
-            key = key[: -len(suffix)]
-            break
+        if len(key) <= len(suffix) + 1 or not key.endswith(suffix):
+            continue
+        stripped = key[: -len(suffix)]
+        # Only strip when what is left still reads as a supply. Otherwise
+        # "VDD" loses its final D to the analog/digital suffix rule and
+        # becomes "VD", which no longer matches "VDDA" -> "VDD" — so the
+        # commonest paired analog supply on any board looks like two
+        # different rails and warns on a textbook ferrite.
+        if not _looks_like_supply_net(stripped):
+            continue
+        key = stripped
+        break
     return key
 
 
@@ -31000,7 +31042,12 @@ def _format_setup_html(solution, metadata: dict | None,
                      "</table>")
 
     # Directives — each heading is a clickable toggle (collapsed by default).
-    directives = metadata.get("directives", [])
+    # Synthetic AUTO_BRIDGE records are excluded: they carry no annotation
+    # the user wrote, and the "Bridged / shorted nets" table above already
+    # lists each one. Counting them here inflates the number people read as
+    # "how many parts did I annotate".
+    directives = [d for d in metadata.get("directives", [])
+                  if d.get("role") != "AUTO_BRIDGE"]
     parts.append(f"<h2>PDN directives <span class='muted'>({len(directives)} — click a heading to expand)</span></h2>")
     if not directives:
         parts.append("<p class='warn'>No directives parsed — nothing to solve.</p>")

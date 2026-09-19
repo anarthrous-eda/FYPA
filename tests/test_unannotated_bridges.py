@@ -311,3 +311,132 @@ def test_project_file_without_the_key_loads_with_an_empty_opt_out(tmp_path):
     path = tmp_path / "old.fypa"
     path.write_text(json.dumps({"schema": 1}), encoding="utf-8")
     assert ProjectFile.load(path).no_auto_bridge == []
+
+
+# ---------------------------------------------------------------------------
+# Bridge candidates: what the Bridges tab and the load-time advisory report
+# ---------------------------------------------------------------------------
+
+from fypa.altium.loader import (  # noqa: E402
+    LoadedProject,
+    _AbsorbedBridge,
+    _flag_unannotated_bridges,
+    collect_bridge_candidates,
+)
+
+
+def _bridge_proj(designator: str, params: dict, *, value: str = "600R",
+                 footprint: str = "0603") -> ExtractedProject:
+    """One two-pin part on SHIELD/VBUS, plus a connector sourcing VBUS.
+
+    Net order matters: SHIELD is index 1 and VBUS index 2, so the *active*
+    rail sorts second. A record that assumed the excluded net was always
+    ``net_b`` names the live rail back at the user instead.
+    """
+    return ExtractedProject(
+        prjpcb_path=Path("t.PrjPcb"), pcbdoc_path=Path("t.PcbDoc"),
+        tracks=(), arcs=(), vias=(), regions=(), shape_based_regions=(),
+        fills=(), stackup=_stackup(), compiled_netlist=None,
+        nets=(RawNet("GND"), RawNet("SHIELD"), RawNet("VBUS")),
+        sch_components=(
+            RawSchComponent(
+                designator=designator, schdoc_name="Pwr.SchDoc",
+                parameters=dict(params, Value=value),
+                pin_designators=("1", "2"),
+            ),
+            RawSchComponent(
+                designator="J9", schdoc_name="Pwr.SchDoc",
+                parameters={"PDN_ROLE": "SOURCE", "PDN_V": "5",
+                            "PDN_P_NET": "VBUS", "PDN_N_NET": "GND"},
+                pin_designators=("1", "2"),
+            ),
+        ),
+        pcb_components=(
+            RawPcbComponent(
+                designator=designator, center=Pt2D(0, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint=footprint,
+                source_designator=designator),
+            RawPcbComponent(
+                designator="J9", center=Pt2D(9, 0), rotation_deg=0.0,
+                layer_name="TOP", footprint="HDR2",
+                source_designator="J9"),
+        ),
+        pads=(_pad(0, "1", 1, 0.0), _pad(0, "2", 2, 1.0),
+              _pad(1, "1", 2, 9.0), _pad(1, "2", 0, 10.0)),
+    )
+
+
+def _one_candidate(proj, designator, *, skip=None, **kw):
+    # ``skip_designators`` is what the real second pass uses for a link the
+    # net merge absorbed: its directive is gone, but the bridge record stays.
+    ann = parse_annotations(proj, enabled_layers=[1],
+                            skip_designators=skip or set())
+    loaded = LoadedProject(extracted=proj, annotations=ann, **kw)
+    recs = collect_bridge_candidates(loaded)
+    return loaded, next(r for r in recs if r["designator"] == designator)
+
+
+def test_advisory_names_the_net_that_is_missing_not_the_live_rail():
+    """The excluded copper is whichever end is *not* already solved."""
+    proj = _bridge_proj("FB1", {})
+    loaded, rec = _one_candidate(proj, "FB1")
+
+    assert rec["state"] == "unmodelled"
+    assert rec["impact"]
+    # VBUS is the solved rail; SHIELD is the copper the FEM never sees.
+    assert rec["excluded_net"] == "SHIELD"
+    assert rec["net_b"] == "VBUS"
+
+    message = "\n".join(_flag_unannotated_bridges(loaded))
+    assert "'SHIELD' is then solved too" in message
+    assert "'VBUS' is then solved too" not in message
+
+
+def test_a_part_annotated_with_any_role_is_not_reported_unmodelled():
+    """A connector carrying PDN_ROLE=SOURCE is already in the model.
+
+    Narrowing the "already annotated" test to SERIES told the author of a
+    perfectly good annotation to go and annotate it.
+    """
+    proj = _bridge_proj("J1", {"PDN_ROLE": "SOURCE", "PDN_V": "5",
+                               "PDN_NET": "VBUS"})
+    _loaded, rec = _one_candidate(proj, "J1")
+
+    assert rec["state"] == "annotated"
+    assert not rec["impact"]
+
+
+def test_absorbed_link_is_not_blamed_on_altium_metadata():
+    """A sub-milliohm PDN_R the user wrote is not an Altium Net Tie.
+
+    Claiming ComponentKind sends them hunting for a property the part does
+    not carry.
+    """
+    proj = _bridge_proj("R7", {}, value="0.5m", footprint="R0603")
+    absorbed = _AbsorbedBridge(
+        designator="R7", resistance=0.0005,
+        p_layer_id=1, p_x_mm=0.0, p_y_mm=0.0,
+        n_layer_id=1, n_x_mm=1.0, n_y_mm=0.0,
+        canonical_net_index=2, p_net_index=1, n_net_index=2,
+    )
+    _loaded, rec = _one_candidate(proj, "R7", absorbed_bridges=[absorbed])
+
+    assert rec["state"] == "auto"
+    assert "Net Tie" not in rec["why"]
+    assert "below" in rec["why"] and "merged" in rec["why"]
+
+
+def test_a_real_zero_ohm_link_still_explains_itself():
+    """The honest cases must keep their specific reason."""
+    proj = _bridge_proj("R8", {}, value="0R", footprint="R0603")
+    absorbed = _AbsorbedBridge(
+        designator="R8", resistance=0.0005,
+        p_layer_id=1, p_x_mm=0.0, p_y_mm=0.0,
+        n_layer_id=1, n_x_mm=1.0, n_y_mm=0.0,
+        canonical_net_index=2, p_net_index=1, n_net_index=2,
+    )
+    _loaded, rec = _one_candidate(proj, "R8", skip={"R8"},
+                                  absorbed_bridges=[absorbed])
+    assert rec["state"] == "auto"
+    assert "0" in rec["why"] and "link" in rec["why"]
+    assert "Net Tie" not in rec["why"]

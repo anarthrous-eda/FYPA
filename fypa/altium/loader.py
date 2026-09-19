@@ -363,6 +363,7 @@ class LoadedProject:
         geometry: list[GeometryLayer] | None = None,
         absorbed_bridges: list[_AbsorbedBridge] | None = None,
         merged_net_names: frozenset[str] | None = None,
+        no_auto_bridge_applied: frozenset[str] | None = None,
     ) -> None:
         self.extracted = extracted
         self.annotations = annotations
@@ -377,6 +378,14 @@ class LoadedProject:
         # owning no copper — anything reasoning about "nets that exist" (the
         # rail list's alias folding, say) has to subtract them.
         self.merged_net_names: frozenset[str] = merged_net_names or frozenset()
+        # Designators the auto-bridge was told to leave open, as applied when
+        # this object was built. The opt-out takes effect during annotation
+        # parsing — the merge it suppresses has already happened by the time
+        # anything downstream could veto it — so a caller reusing a cached
+        # LoadedProject with a *different* set must reload rather than patch.
+        self.no_auto_bridge_applied: frozenset[str] = (
+            no_auto_bridge_applied or frozenset()
+        )
         if geometry is not None:
             # Seed the cached_property's slot so the lazy compute is skipped.
             # Used by altium_viewer._apply_stackup_overrides, which already
@@ -589,6 +598,8 @@ def clone_loaded_for_edit(loaded: LoadedProject) -> LoadedProject:
         annotations=new_annotations,
         geometry=loaded.__dict__.get("geometry"),
         absorbed_bridges=list(loaded.absorbed_bridges),
+        no_auto_bridge_applied=getattr(
+            loaded, "no_auto_bridge_applied", frozenset()),
     )
 
 
@@ -3643,11 +3654,6 @@ _BRIDGE_DESIGNATOR_PREFIXES: tuple[tuple[str, str], ...] = (
     ("CN", "connector"),
     ("SW", "switch"),
 )
-# A bridging part has two terminals. Allow a few more pads for Kelvin-sense
-# shunts and multi-pin connectors that still only span two nets.
-_BRIDGE_MAX_PADS: int = 8
-
-
 def _bridge_part_kind(designator: str) -> str | None:
     """Human-readable part kind for a designator, or ``None`` when the
     prefix isn't one that conducts between nets."""
@@ -3684,6 +3690,7 @@ def collect_bridge_candidates(loaded: LoadedProject) -> list[dict]:
     """
     from fypa.altium.annotations import (
         _component_value_text,
+        _is_nettie_component_kind,
         _zero_ohm_bridge_reason,
     )
 
@@ -3696,6 +3703,15 @@ def collect_bridge_candidates(loaded: LoadedProject) -> list[dict]:
     for d in directives:
         if isinstance(d, ResistorSpec) and d.designator:
             series_by_des[d.designator.strip().upper()] = d
+    # Any directive at all means the user has already told FYPA about this
+    # part, so its copper is in the model however it got there. Narrowing
+    # this to SERIES reports a connector annotated PDN_ROLE=SOURCE as an
+    # unmodelled bridge and tells its author to annotate it.
+    annotated_des = {
+        d.designator.strip().upper()
+        for d in directives
+        if getattr(d, "designator", None)
+    }
     # Designator -> the link the net merge absorbed, if any.
     absorbed_by_des = {
         b.designator.strip().upper(): b
@@ -3759,8 +3775,25 @@ def collect_bridge_candidates(loaded: LoadedProject) -> list[dict]:
         elif absorbed is not None:
             state = "auto"
             resistance = float(absorbed.resistance)
-            why = (_zero_ohm_bridge_reason(params, comp.footprint)
-                   or "Altium ComponentKind marks it a Net Tie")
+            reason = _zero_ohm_bridge_reason(params, comp.footprint)
+            is_nettie = any(
+                _is_nettie_component_kind(getattr(c, "component_kind", 0) or 0)
+                for c in (sch, comp) if c is not None
+            )
+            if reason:
+                why = reason
+            elif is_nettie:
+                why = "Altium ComponentKind marks it a Net Tie"
+            else:
+                # A sub-threshold PDN_R the user wrote themselves lands here.
+                # Blaming Altium metadata the part does not carry sends them
+                # looking in the wrong place.
+                why = (f"its resistance is below {NET_MERGE_RESISTANCE_THRESHOLD_OHM * 1e3:g} "
+                       f"mΩ, so FYPA merged the two nets")
+        elif key in annotated_des:
+            state = "annotated"
+            resistance = None
+            why = "already annotated in Altium — its copper is in the model"
         else:
             state = "unmodelled"
             resistance = None
@@ -3768,10 +3801,15 @@ def collect_bridge_candidates(loaded: LoadedProject) -> list[dict]:
 
         a_active = pair[0] in active
         b_active = pair[1] in active
+        excluded_net = ""
         if state == "unmodelled" and (a_active != b_active):
+            # Whichever end is NOT on a solved rail is the copper the FEM
+            # never sees. Callers quote it back to the user, so it has to be
+            # carried explicitly rather than assumed to be net_b.
+            excluded_net = _net_name(pair[1] if a_active else pair[0])
             impact = (
                 f"joins the solved rail {_net_name(pair[0] if a_active else pair[1])!r} "
-                f"to {_net_name(pair[1] if a_active else pair[0])!r}, which no "
+                f"to {excluded_net!r}, which no "
                 f"directive touches — that copper is left out of the FEM, so "
                 f"the rail's return resistance reads high"
             )
@@ -3791,6 +3829,7 @@ def collect_bridge_candidates(loaded: LoadedProject) -> list[dict]:
             "resistance_ohm": resistance,
             "why": why,
             "impact": impact,
+            "excluded_net": excluded_net,
             "touches_active_rail": bool(a_active or b_active),
             "x_mm": float(anchor.center.x),
             "y_mm": float(anchor.center.y),
@@ -3819,7 +3858,7 @@ def _flag_unannotated_bridges(loaded: LoadedProject) -> list[str]:
             f"annotate it in Altium with PDN_ROLE=SERIES and PDN_R set to "
             f"its actual DC resistance — a ferrite's DCR, a fuse's cold "
             f"resistance, a shunt's marked value); the return path through "
-            f"{rec['net_b']!r} is then solved too. Ignore this if the part "
+            f"{rec['excluded_net']!r} is then solved too. Ignore this if the part "
             f"is genuinely open at DC."
         )
     messages.sort()
@@ -4974,6 +5013,9 @@ def load_project(prjpcb_path: str | Path,
     return LoadedProject(
         extracted=extracted,
         annotations=annotations,
+        no_auto_bridge_applied=frozenset(
+            d.strip().upper() for d in (no_auto_bridge or ())
+        ),
         absorbed_bridges=absorbed_bridges if net_remap else [],
         merged_net_names=frozenset(
             extracted.nets[old].name
