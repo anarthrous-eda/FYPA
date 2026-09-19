@@ -1868,7 +1868,9 @@ def stamp_network_into_system(network: problem.Network,
             case problem.VoltageRegulator(v_p=v_p, v_n=v_n,
                                           s_f=s_f, s_t=s_t,
                                           voltage=voltage,
-                                          gain=gain):
+                                          gain=gain,
+                                          input_gain=input_gain,
+                                          switch_legs=switch_legs):
                 i_v_p = node_indexer.node_to_global_index[v_p]
                 i_v_n = node_indexer.node_to_global_index[v_n]
                 i_s_f = node_indexer.node_to_global_index[s_f]
@@ -1887,9 +1889,27 @@ def stamp_network_into_system(network: problem.Network,
                 # draws at n via its −1). i_v solves to the output current
                 # delivered at v_p, so the input pin s_f needs the −gain
                 # coefficient (draw) and the return s_t the +gain (inject).
+                # An external-FET stage cuts at the part carrying i_v, so
+                # the element is a conductor there and draws i_v, not gain·i_v;
+                # the conversion ratio is carried by the switch legs below.
+                draw = gain if input_gain is None else input_gain
                 rows.extend((i_s_f, i_s_t))
                 cols.extend((i_v, i_v))
-                vals.extend((-gain, gain))
+                vals.extend((-draw, draw))
+                # External-FET switch legs: coeff·i_v flows f→t, so f loses it
+                # and t receives it. The pair must sum to zero over i_v — two
+                # entries at the same (row, col) would cancel under the COO
+                # duplicate summation in assemble(), not add.
+                for leg_f, leg_t, coeff in switch_legs:
+                    if coeff == 0.0:
+                        continue
+                    i_f = node_indexer.node_to_global_index[leg_f]
+                    i_t = node_indexer.node_to_global_index[leg_t]
+                    if i_f == i_t:
+                        continue
+                    rows.extend((i_f, i_t))
+                    cols.extend((i_v, i_v))
+                    vals.extend((-coeff, coeff))
             case _:
                 raise NotImplementedError(f"Unsupported node type {element}")
 

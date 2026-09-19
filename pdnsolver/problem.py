@@ -80,7 +80,7 @@ class BaseLumped:
 
     @property
     def terminals(self) -> list[NodeID]:
-        ...
+        raise NotImplementedError
 
     @property
     def is_source(self) -> bool:
@@ -180,10 +180,26 @@ class VoltageRegulator(BaseLumped):
 
     voltage: float
     gain: float
+    # Current drawn at ``s_f`` (and returned at ``s_t``) as a multiple of
+    # ``i_v``. ``None`` means "use :attr:`gain`", which is the internal-FET
+    # case: the element spans IN↔OUT and converts, so the input draws
+    # ``gain * i_v``. An external-FET stage instead cuts at the part that
+    # carries the full output current, so the element is a plain conductor
+    # there and ``input_gain`` is 1.0 — the switching ratio is carried by
+    # :attr:`switch_legs` instead.
+    input_gain: float | None = None
+    # Averaged switch legs for external-FET stages (LS FETs): each entry is
+    # ``(f, t, coeff)``, a current of ``coeff * i_v`` flowing from *f* to *t*.
+    # *f* loses that current and *t* receives it, so each leg is balanced on
+    # its own and injects nothing into the rest of the network.
+    switch_legs: tuple[tuple[NodeID, NodeID, float], ...] = ()
 
     @property
     def terminals(self) -> list[NodeID]:
-        return [self.v_p, self.v_n, self.s_f, self.s_t]
+        nodes = [self.v_p, self.v_n, self.s_f, self.s_t]
+        for f, t, _coeff in self.switch_legs:
+            nodes.extend((f, t))
+        return nodes
 
     @property
     def is_source(self) -> bool:

@@ -11,6 +11,7 @@
 #   uv sync --group build    # adds PyInstaller for packaging
 #   uv run pytest
 #   uv run ruff check .
+#   uv run ty check
 
 [project]
 name = "fypa"
@@ -73,6 +74,7 @@ spacemouse = [
 dev = [
     "pytest==9.0.3",
     "ruff==0.15.13",
+    "ty>=0.0.79",
 ]
 # Opt-in via `uv sync --group build`. Only needed by whoever is producing
 # the PyInstaller bundle, not by end users.
@@ -123,4 +125,46 @@ ignore = [
     # imports mid-file (lazy heavy deps, conditional fallbacks). Placement is
     # intentional, so this E4 sub-rule is silenced rather than enforced.
     "E402",
+]
+
+[tool.ty.src]
+# Same spirit as ruff: keep interactive/debug surfaces out of the first
+# type-check gate. The OpenGL viewers and Qt UI predate typed adoption and
+# dominate the diagnostic count; burn them down separately.
+exclude = [
+    "fypa/altium_viewer.py",
+    "fypa/gl_mesh_viewer.py",
+    "pdnsolver/ui.py",
+    "scripts/**",
+    "altium_monkey/**",
+    # Fixture helpers build ExtractedProject via **dict; type those tests
+    # in a dedicated pass rather than blocking the library gate.
+    "tests/**",
+    # Qt enum stubs / optional SpaceMouse bindings — separate cleanup.
+    "fypa/gerber/import_ui.py",
+    "fypa/spacemouse_nav.py",
+    # Pre-existing untyped surfaces outside External-FET SMPS. Narrow later.
+    "fypa/cli.py",
+    "fypa/altium_geometry.py",
+    "fypa/altium/extract.py",
+    "fypa/altium/loader.py",
+    "fypa/rail_groups.py",
+    "fypa/solve_subprocess.py",
+    "fypa/project_file.py",
+    "fypa/paraview_export.py",
+    "fypa/editor_directives.py",
+    "fypa/caploop/**",
+    "fypa/topology/**",
+    "pdnsolver/mesh.py",
+    "pdnsolver/paraview.py",
+    "pdnsolver/solver.py",
+]
+
+[tool.ty.analysis]
+# Optional / stub-incomplete third-party surfaces.
+allowed-unresolved-imports = [
+    "scipy.spatial.**",
+    "lxml.**",
+    "lxml.etree",
+    "pynavlib.**",
 ]

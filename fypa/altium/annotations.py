@@ -25,10 +25,14 @@ SOURCE         PDN_V                           PDN_P_NET, PDN_N_NET  (overrides:
 SINK           PDN_I                           PDN_P_NET, PDN_N_NET  (overrides: *_PINS, *_DES)
                                                *or* PDN_NET         (overrides: PDN_PINS)
 SERIES         PDN_R                           PDN_P_NET, PDN_N_NET (optional) (overrides: *_PINS)
+PATH           PDN_R                           PDN_P_NET, PDN_N_NET (optional) (overrides: *_PINS)
+                                               PDN_SMPS_HOST (optional)
 REGULATOR      PDN_V                           PDN_OUT_P_NET, PDN_OUT_N_NET,
                PDN_REGULATOR_TYPE              PDN_IN_P_NET,  PDN_IN_N_NET    (overrides: *_PINS)
                PDN_REGULATOR_EFFICIENCY        *or* PDN_GAIN (fixed override)
                PDN_QUIESCENT (optional)
+               PDN_SMPS_TOPOLOGY (optional)    PDN_SW1_NET, PDN_SW2_NET (optional)
+               BUCK|BOOST|BUCKBOOST|INVERTER
 ============   =============================   ==================================================
 
 Multi-connector P / N pads (``*_DES``)
@@ -272,7 +276,9 @@ _SHEET_OVERRIDE_KEY_RE = re.compile(
 # two nets).
 _RESISTOR_LIKE_ROLES: frozenset[str] = frozenset({"SERIES"})
 
-VALID_ROLES: frozenset[str] = frozenset({"SOURCE", "SINK", "REGULATOR"}) | _RESISTOR_LIKE_ROLES
+VALID_ROLES: frozenset[str] = (
+    frozenset({"SOURCE", "SINK", "REGULATOR", "PATH"}) | _RESISTOR_LIKE_ROLES
+)
 
 # Altium ``ComponentKind`` values that are Net Ties (altium_monkey.ComponentKind).
 COMPONENT_KIND_NET_TIE_BOM: int = 3
@@ -334,9 +340,14 @@ _KNOWN_SUFFIXES_BY_ROLE: dict[str, frozenset[str]] = {
         "OUT_P_NET", "OUT_N_NET", "OUT_P_PINS", "OUT_N_PINS",
         "IN_P_NET", "IN_N_NET", "IN_P_PINS", "IN_N_PINS",
         "IGNORE_PINS",
+        "SMPS_TOPOLOGY", "SW1_NET", "SW2_NET",
     }) | _PART_WIDE_PIN_FILTER_SUFFIXES,
     "SERIES": frozenset({
         "R", "P_NET", "N_NET", "P_PINS", "N_PINS", "IGNORE_PINS",
+    }) | _PART_WIDE_PIN_FILTER_SUFFIXES,
+    "PATH": frozenset({
+        "R", "P_NET", "N_NET", "P_PINS", "N_PINS", "IGNORE_PINS",
+        "SMPS_HOST",
     }) | _PART_WIDE_PIN_FILTER_SUFFIXES,
 }
 
@@ -386,6 +397,7 @@ _TERMINAL_SUFFIXES_BY_ROLE: dict[str, frozenset[str]] = {
         "OUT_P_NET", "OUT_N_NET", "OUT_P_PINS", "OUT_N_PINS",
     }),
     "SERIES": _TWO_TERMINAL_SUFFIXES,
+    "PATH": _TWO_TERMINAL_SUFFIXES,
 }
 
 
@@ -855,7 +867,7 @@ def _unindexed_has_defining_terminals(
             or _ci_get(params, _channel_key("N_PINS", None)) is not None
         )
         return has_p and has_n
-    if role == "SERIES":
+    if role in ("SERIES", "PATH"):
         has_p = (
             _ci_get(params, _channel_key("P_NET", None)) is not None
             or _ci_get(params, _channel_key("P_PINS", None)) is not None
@@ -938,6 +950,7 @@ def _channel_label(designator: str, index: int | None) -> str:
 # channel itself or inherited from the unindexed template) to be present.
 _VALUE_SUFFIX_BY_ROLE: dict[str, str] = {
     "SOURCE": "V", "SINK": "I", "SERIES": "R", "REGULATOR": "V",
+    "PATH": "R",
 }
 
 
@@ -2475,8 +2488,8 @@ def _resolve_local_net_pins(
         return [], _LOCAL_NET_TIER_ALIAS
     des_candidates = _designator_candidates(sch_designator, pcb_designator)
 
-    # (tier, pin) candidates; lower tier wins.
-    scored: list[tuple[int, str]] = []
+    # (tier, pin, unscoped) candidates; lower tier wins.
+    scored: list[tuple[int, str, bool]] = []
     unscoped_used = False
     for net in netlist.nets:
         aliases = list(getattr(net, "aliases", ()) or ())
@@ -2489,7 +2502,7 @@ def _resolve_local_net_pins(
         )
         if not name_match and not alias_match:
             continue
-        net_sheets = list(getattr(net, "source_sheets", ()) or ())
+        net_sheets: list[str] = list(getattr(net, "source_sheets", ()) or ())
         if not _sheet_name_matches(schdoc_name, net_sheets,
                                    sheet_map=sheet_map):
             continue
@@ -3476,7 +3489,44 @@ class ResistorSpec(_BaseSpec):
     solve_excluded: bool = False  # see SourceSpec.solve_excluded
 
 
+@dataclass(frozen=True)
+class PathSpec(_BaseSpec):
+    """External-FET SMPS path element (inductor, HS/LS FET).
+
+    Parsed from ``PDN_ROLE=PATH``. Similar to :class:`ResistorSpec` with an
+    optional ``smps_host`` designator that binds this part to a specific
+    REGULATOR controller. ``finalize_smps_stages`` consumes these after the
+    main parse loop and replaces them with :class:`ResistorSpec` (HS bridges)
+    or :class:`SwitchPathLeg` entries on the host :class:`RegulatorSpec`.
+    """
+
+    resistance: float
+    p: TerminalSpec
+    n: TerminalSpec
+    channel_index: int | None = None
+    smps_host: str | None = None  # explicit PDN_SMPS_HOST designator
+
+
 _REGULATOR_TYPES: frozenset[str] = frozenset({"LDO", "SMPS"})
+
+_SMPS_TOPOLOGIES: frozenset[str] = frozenset({
+    "BUCK",
+    "BOOST",
+    "BUCKBOOST",
+    "INVERTER",
+})
+
+
+@dataclass(frozen=True)
+class SwitchPathLeg:
+    """One low-side switch leg bound to a REGULATOR from a PATH element."""
+
+    designator: str
+    kind: str  # "ls_in" | "ls_out"
+    resistance: float
+    p: TerminalSpec
+    n: TerminalSpec
+    coeff: float  # multiplier on i_v (output current)
 
 
 @dataclass(frozen=True)
@@ -3493,9 +3543,21 @@ class RegulatorSpec(_BaseSpec):
     efficiency: float = 1.0
     adaptive_gain_eligible: bool = False  # SMPS without explicit PDN_GAIN
     quiescent_current: float = 0.0  # constant input current (A), optional PDN_QUIESCENT
+    # External-FET SMPS extensions (set by finalize_smps_stages)
+    smps_topology: str | None = None  # BUCK | BOOST | BUCKBOOST | INVERTER
+    sw1_net: str | None = None  # switch-node net name (annotation)
+    sw2_net: str | None = None  # second switch-node net name (BUCKBOOST)
+    switch_path_legs: tuple[SwitchPathLeg, ...] = ()
+    vin_sense_p: TerminalSpec | None = None  # VIN-side sense pads (from HS bridge)
+    vin_sense_n: TerminalSpec | None = None
+    # Series resistance of the PATH part the regulator element replaces
+    # (the "cut"): inductor DCR for a buck, RDSon for a boost's high-side
+    # FET. Not None also means the cut was relocated onto an external part,
+    # which is what makes the element's input draw i_v rather than gain*i_v.
+    cut_resistance: float | None = None
 
 
-DirectiveSpec = SourceSpec | SinkSpec | ResistorSpec | RegulatorSpec
+DirectiveSpec = SourceSpec | SinkSpec | ResistorSpec | RegulatorSpec | PathSpec
 
 
 @dataclass
@@ -4211,13 +4273,17 @@ def _parse_sink(comp, proj, enabled_layers, result,
     return specs
 
 
-def _parse_resistance(comp, proj, enabled_layers, result,
-                      net_remap=None, supply_map=None, only_indices=None,
-                      series_graph=None):
-    # This parser only ever handles SERIES-role channels (part-wide or a
-    # PDN<n>_ROLE=SERIES override), so the role for diagnostics is always
-    # SERIES regardless of the part-wide PDN_ROLE.
-    role_raw = "SERIES"
+def _parse_two_terminal(comp, proj, enabled_layers, result,
+                        net_remap=None, supply_map=None, only_indices=None,
+                        series_graph=None, *, role_raw, spec_factory):
+    """Shared parser for the two-terminal roles (SERIES and PATH).
+
+    They differ only in the role label used in diagnostics and in the spec
+    each channel produces, so *spec_factory* builds the spec from the
+    resolved terminals plus that channel's parameters. Keeping one body is
+    the point: the pin filters, auto-inference and multi-channel
+    diagnostics below were duplicated once already.
+    """
     role_diag_base = f"{role_raw} on {comp.designator}"
     discovery = _discovery_pdn_params(comp, proj)
     if _has_single_net_params(discovery, only_indices):
@@ -4252,7 +4318,7 @@ def _parse_resistance(comp, proj, enabled_layers, result,
             f"{len(pcb_indices)} multi-channel PCB instances ({names})"
         )
 
-    specs: list[ResistorSpec] = []
+    specs: list = []
     multi = _sibling_pcb_count(proj, comp.lookup_designator) > 1
     logical = comp.lookup_designator
     # Hoisted: a linear scan of every schematic component, independent of
@@ -4336,11 +4402,39 @@ def _parse_resistance(comp, proj, enabled_layers, result,
             )
             if pair is None:
                 continue
-            specs.append(ResistorSpec(
+            specs.append(spec_factory(
                 designator=pcb_des, schdoc_name=comp.schdoc_name,
                 resistance=r, p=pair[0], n=pair[1], channel_index=idx,
+                params=params,
             ))
     return specs
+
+
+def _resistor_spec_factory(*, params, **kw):
+    return ResistorSpec(**kw)
+
+
+def _path_spec_factory(*, params, channel_index, **kw):
+    smps_host_raw = _ci_get(params, _channel_key("SMPS_HOST", channel_index))
+    return PathSpec(
+        channel_index=channel_index,
+        smps_host=smps_host_raw.strip() if smps_host_raw else None,
+        **kw,
+    )
+
+
+def _parse_resistance(comp, proj, enabled_layers, result,
+                      net_remap=None, supply_map=None, only_indices=None,
+                      series_graph=None):
+    # This parser only ever handles SERIES-role channels (part-wide or a
+    # PDN<n>_ROLE=SERIES override), so the role for diagnostics is always
+    # SERIES regardless of the part-wide PDN_ROLE.
+    return _parse_two_terminal(
+        comp, proj, enabled_layers, result,
+        net_remap=net_remap, supply_map=supply_map,
+        only_indices=only_indices, series_graph=series_graph,
+        role_raw="SERIES", spec_factory=_resistor_spec_factory,
+    )
 
 
 
@@ -4505,7 +4599,7 @@ def _collect_supply_voltages_by_net(
     parameter_sources: list[PdnParameterSource],
     proj: ExtractedProject,
     net_remap: dict[int, int] | None = None,
-) -> dict[str, float]:
+) -> tuple[dict[str, float], frozenset[str]]:
     """Map canonical supply net names to nominal voltages from SOURCE /
     REGULATOR schematic parameters (before pad resolution).
 
@@ -4518,6 +4612,8 @@ def _collect_supply_voltages_by_net(
     (e.g. ``LX`` → ``LX.2``) so multi-channel regulators with different
     ``PDN_V`` do not collide on the shared child-sheet label. Unique voltages
     then propagate along SERIES edges to fixpoint.
+
+    Returns ``(supply_map, declared_supply_names)``.
     """
     raw: dict[str, set[float]] = {}
 
@@ -4861,6 +4957,14 @@ def _resolve_regulator_gain(
         )
         return None
 
+    # INVERTER topology: gain = 1/eff, no upstream Vin needed. The output
+    # voltage is irrelevant for gain derivation — the inverter converts
+    # power with a fixed duty model and no reference to Vin.
+    topo_key = _channel_key("SMPS_TOPOLOGY", idx)
+    topo_raw = _ci_get(params, topo_key)
+    if topo_raw is not None and topo_raw.strip().upper() == "INVERTER":
+        return 1.0 / eff, reg_type, eff, False
+
     lookup_map = (
         {k: v for k, v in supply_map.items() if k in declared_supply}
         if declared_supply is not None else supply_map
@@ -5062,6 +5166,23 @@ def _parse_regulator(comp, proj, enabled_layers, result,
             )
             if out is None or in_ is None:
                 continue
+            # SMPS_TOPOLOGY and switch-node net names (annotation-level only;
+            # finalize_smps_stages binds PATH elements to these later).
+            topo_key = _channel_key("SMPS_TOPOLOGY", idx)
+            topo_raw = _ci_get(params, topo_key)
+            smps_topology: str | None = None
+            if topo_raw is not None:
+                topo_val = topo_raw.strip().upper()
+                if topo_val not in _SMPS_TOPOLOGIES:
+                    _append_error_once(
+                        result,
+                        f"{value_diag}: {topo_key}={topo_raw!r} — must be one "
+                        f"of {sorted(_SMPS_TOPOLOGIES)}",
+                    )
+                    continue
+                smps_topology = topo_val
+            sw1_net = _ci_get(params, _channel_key("SW1_NET", idx))
+            sw2_net = _ci_get(params, _channel_key("SW2_NET", idx))
             specs.append(RegulatorSpec(
                 designator=pcb_des, schdoc_name=comp.schdoc_name,
                 voltage=v, gain=g,
@@ -5072,8 +5193,23 @@ def _parse_regulator(comp, proj, enabled_layers, result,
                 efficiency=eff,
                 adaptive_gain_eligible=adaptive,
                 quiescent_current=quiescent,
+                smps_topology=smps_topology,
+                sw1_net=sw1_net,
+                sw2_net=sw2_net,
             ))
     return specs
+
+
+def _parse_path(comp, proj, enabled_layers, result,
+                net_remap=None, supply_map=None, only_indices=None,
+                series_graph=None, **_kw):
+    """Parse ``PDN_ROLE=PATH`` channels — external-FET SMPS path elements."""
+    return _parse_two_terminal(
+        comp, proj, enabled_layers, result,
+        net_remap=net_remap, supply_map=supply_map,
+        only_indices=only_indices, series_graph=series_graph,
+        role_raw="PATH", spec_factory=_path_spec_factory,
+    )
 
 
 _PARSER_BY_ROLE = {
@@ -5081,6 +5217,7 @@ _PARSER_BY_ROLE = {
     "SINK": _parse_sink,
     "SERIES": _parse_resistance,
     "REGULATOR": _parse_regulator,
+    "PATH": _parse_path,
 }
 
 
@@ -5091,9 +5228,12 @@ def _spec_terminals(d: DirectiveSpec) -> list[TerminalSpec]:
     no N terminal (its return is ideal), so only its P terminal is listed."""
     if isinstance(d, RegulatorSpec):
         return [d.out_p, d.out_n, d.in_p, d.in_n]
-    terms = [d.p]
-    if getattr(d, "n", None) is not None:
-        terms.append(d.n)
+    if isinstance(d, PathSpec):
+        return [d.p, d.n]
+    terms: list[TerminalSpec] = [d.p]
+    n_term = getattr(d, "n", None)
+    if isinstance(n_term, TerminalSpec):
+        terms.append(n_term)
     return terms
 
 
@@ -5164,9 +5304,13 @@ def _validate_directive_groups(result: AnnotationResult,
     for root, members in groups.items():
         single = [d for d in members
                   if isinstance(d, (SourceSpec, SinkSpec)) and d.n is None]
-        two = [d for d in members
-               if isinstance(d, (SourceSpec, SinkSpec)) and d.n is not None]
-        two += [d for d in members if isinstance(d, RegulatorSpec)]
+        two: list[DirectiveSpec] = [
+            d for d in members
+            if isinstance(d, (SourceSpec, SinkSpec)) and d.n is not None
+        ]
+        two.extend(
+            d for d in members if isinstance(d, (RegulatorSpec, PathSpec))
+        )
         labels = ", ".join(sorted(
             _channel_label(d.designator, getattr(d, "channel_index", None))
             for d in members
@@ -5932,6 +6076,12 @@ def parse_annotations(proj: ExtractedProject,
         no_auto_bridge={d.strip().upper() for d in (no_auto_bridge or set())},
     ))
 
+    # External-FET SMPS binding: consume PathSpec directives, emit
+    # ResistorSpec bridges and update host RegulatorSpec with switch legs.
+    from fypa.altium.smps_stage import finalize_smps_stages
+
+    finalize_smps_stages(result, proj, net_remap=net_remap)
+
     # Cross-directive checks (mode consistency, open-loop) + return grouping.
     _validate_directive_groups(result, proj, parameter_sources)
     return result
@@ -5971,6 +6121,10 @@ def _describe_directive(d: DirectiveSpec) -> str:
     if isinstance(d, ResistorSpec):
         return head + f"  R={d.resistance:g} Ω\n" + \
             _describe_terminal("P", d.p) + "\n" + _describe_terminal("N", d.n)
+    if isinstance(d, PathSpec):
+        host = f", host={d.smps_host}" if d.smps_host else ""
+        return head + f"  R={d.resistance:g} Ω{host}\n" + \
+            _describe_terminal("P", d.p) + "\n" + _describe_terminal("N", d.n)
     if isinstance(d, RegulatorSpec):
         extra = ""
         if d.regulator_type:
@@ -5979,6 +6133,12 @@ def _describe_directive(d: DirectiveSpec) -> str:
                 extra += f", eff={d.efficiency:g}"
             if d.adaptive_gain_eligible:
                 extra += ", adaptive"
+        if d.smps_topology:
+            extra += f", topo={d.smps_topology}"
+        if d.switch_path_legs:
+            extra += f", {len(d.switch_path_legs)} LS leg(s)"
+        if d.cut_resistance is not None:
+            extra += f", Rcut={d.cut_resistance:g} Ω"
         return head + f"  V={d.voltage:g} V, gain={d.gain:g}{extra}\n" + \
             _describe_terminal("OUT_P", d.out_p) + "\n" + _describe_terminal("OUT_N", d.out_n) + "\n" + \
             _describe_terminal("IN_P", d.in_p) + "\n" + _describe_terminal("IN_N", d.in_n)

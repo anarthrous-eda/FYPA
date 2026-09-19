@@ -262,7 +262,96 @@ regulator, so a 500 mA `+3V3` load shows as 500 mA on the `+5V` rail
 between U2 and U3, and 250 mA on the `+12V` rail between J1 and U2
 (via the buck's gain).
 
-## 4.7 Troubleshooting
+## 4.7 External-FET SMPS (`PATH` + topology)
+
+An integrated SMPS can put `PDN_IN_*` / `PDN_OUT_*` on the same IC: those
+pads are the current boundaries. With **external** FETs, shunt, and
+inductor, those boundaries sit on the path parts — not on the controller.
+A plain `SERIES` chain `VIN → HS → L → HS → VOUT` would bridge two
+voltage-forced rails and short them through RDSon.
+
+FYPA keeps the same `VoltageRegulator` element, moves its ports to the
+**inductor cut**, and stamps MOSFET / shunt path currents as multiples of
+the regulator's output current. Without any `PATH` parts, behaviour is
+unchanged (internal FETs on the controller).
+
+### Controller (`REGULATOR`)
+
+Keep the usual SMPS parameters (`PDN_V`, `PDN_REGULATOR_TYPE=SMPS`,
+efficiency, `PDN_IN_*` / `PDN_OUT_*`, optional pins and quiescent). Add the
+stage map:
+
+| Parameter | Purpose |
+|-----------|---------|
+| `PDN_SMPS_TOPOLOGY` | `BUCK`, `BOOST`, `BUCKBOOST`, or `INVERTER` |
+| `PDN_SW1_NET` / `PDN_SW2_NET` | Switch-node nets (buck-boost: both sides of L) |
+
+Do **not** put RDSon, shunt R, or DCR on the controller — those live on
+`PATH` parts.
+
+### Path parts (`PDN_ROLE=PATH`)
+
+On each FET, sense resistor, and inductor in the stage:
+
+| Parameter | Purpose |
+|-----------|---------|
+| `PDN_ROLE` | `PATH` |
+| `PDN_R` | RDSon, shunt, or inductor DCR |
+| `PDN_P_PINS` / `PDN_N_PINS` / allowlists | Optional — drop gate or Kelvin pads |
+
+FYPA classifies each part from pad-net intersection with the host stage
+nets. One part is the **cut**: the one joining a switch node to `OUT_P`.
+The regulator element replaces it, because it is the part that carries the
+full output current — the inductor in a buck, the high-side FET in a boost,
+the output-side high-side FET in a buck-boost. Parts reaching a ground net
+from a switch node become averaged current legs; everything else is an
+ordinary resistive bridge. Host binding is automatic when the part's
+non-GND pads hit exactly one REGULATOR's stage nets. Set `PDN_SMPS_HOST`
+only if that match is ambiguous.
+
+Example — buck-boost controller with external FETs (generic nets):
+
+```text
+U2 (controller):
+  PDN_ROLE                  = REGULATOR
+  PDN_REGULATOR_TYPE        = SMPS
+  PDN_SMPS_TOPOLOGY         = BUCKBOOST
+  PDN_V                     = 24
+  PDN_REGULATOR_EFFICIENCY  = 0.9
+  PDN_IN_P_NET  = VIN     PDN_IN_N_NET  = GND
+  PDN_OUT_P_NET = VOUT    PDN_OUT_N_NET = GND
+  PDN_SW1_NET   = SW1     PDN_SW2_NET   = SW2
+
+Q_HS_IN / Q_HS_OUT / Q_LS_* / R_SHUNT / L1:
+  PDN_ROLE = PATH
+  PDN_R    = <RDSon or shunt or DCR>
+```
+
+Rules of thumb:
+
+- **The part between a switch node and `OUT_P`** is the cut — not a
+  rail-merging `SERIES`. That is the inductor in a buck, but the high-side
+  FET in a boost, whose inductor carries the *input* current instead.
+- **Inductor (when it is not the cut), high-side and shunt** stay island
+  bridges (`SERIES`-like); KCL settles their current.
+- **Low-side** FETs must not `SERIES` SW to GND (that would short the
+  switch node). FYPA stamps them as averaged current sources instead.
+- Adaptive Vin senses at the HS_IN / input island, including FET and shunt
+  drop.
+
+### `INVERTER` (motor / multi-phase driver)
+
+Same switch-stage idea, different gain: the DC bus is not stepped to a
+second `PDN_V`. Use `PDN_SMPS_TOPOLOGY=INVERTER` with one `OUT_*` channel
+per phase, and a positive `PDN_V` per phase. Do not model the stage as
+`BUCKBOOST`.
+
+Internal FETs need no `PATH` parts. **External HS/LS FETs are not yet
+supported on an `INVERTER` host** — a `PATH` bound to one is an error
+rather than a silent omission, because the phase net would otherwise solve
+with its only conductive path missing.
+
+## 4.8 Troubleshooting
 
 | Message or symptom                                                 | Likely cause                                                                | Fix                                                                          |
 |--------------------------------------------------------------------|------------------------------------------------------------------------------|------------------------------------------------------------------------------|
@@ -270,6 +359,8 @@ between U2 and U3, and 250 mA on the `+12V` rail between J1 and U2
 | `REGULATOR on U2: missing PDN_GAIN or PDN_REGULATOR_TYPE`            | Neither manual gain nor regulator type was set.                               | Add `PDN_REGULATOR_TYPE=LDO` or `SMPS` (and `PDN_REGULATOR_EFFICIENCY` for SMPS), or set `PDN_GAIN` explicitly. |
 | Input rail still solves to a flat voltage everywhere                | The regulator was added as a `SOURCE`, not a `REGULATOR`.                   | Change `PDN_ROLE` to `REGULATOR` and add the input-side net parameters.      |
 | Output voltage in the solve is not `PDN_V`                          | A SINK on the output rail has its `PDN_P_NET` mis-spelled, so the rail has no closed loop and the solver falls back to a degenerate result. | Check spelling against the PCB netlist (see [1.5](01-sources-and-sinks.md#15-pre-import-checks)). |
+| `PATH stage with SW1/SW2 needs exactly one inductor`                | No unique SW1↔SW2 inductor PATH, or SW2 aliased so L looked like HS_OUT.   | Annotate L as `PATH` with pads on SW1 and SW2; fix stage nets.               |
+| `PATH … matches multiple regulators; set PDN_SMPS_HOST`           | Pad nets hit more than one stage.                                           | Set `PDN_SMPS_HOST` to the controller designator.                            |
 
 ## Next steps
 

@@ -123,7 +123,8 @@ define the power-delivery topology:
 | `SOURCE`     | `PDN_V`, `PDN_P_NET`, `PDN_N_NET` — *or* `PDN_V`, `PDN_NET`                                              | Voltage source (e.g. a connector pin or regulator)            |
 | `SINK`       | `PDN_I`, `PDN_P_NET`, `PDN_N_NET` — *or* `PDN_I`, `PDN_NET`                                              | Current sink  (e.g. an IC load)                   |
 | `SERIES`     | `PDN_R`, `PDN_P_NET`\*, `PDN_N_NET`\*                                                                   | Series resistance / fuse / ferrite / inductor DCR (rail bridge)       |
-| `REGULATOR`  | `PDN_V`, `PDN_REGULATOR_TYPE`, `PDN_REGULATOR_EFFICIENCY`, optional `PDN_QUIESCENT` — *or* `PDN_GAIN`, plus `PDN_OUT_*` / `PDN_IN_*` nets | On-board regulator (LDO / buck) — models BOTH input and output rails  |
+| `PATH`       | `PDN_R`; optional pin filters; optional `PDN_SMPS_HOST`                                               | External-FET SMPS path (HS/LS/shunt/L) — bound to a REGULATOR stage   |
+| `REGULATOR`  | `PDN_V`, `PDN_REGULATOR_TYPE`, `PDN_REGULATOR_EFFICIENCY`, optional `PDN_QUIESCENT` — *or* `PDN_GAIN`, plus `PDN_OUT_*` / `PDN_IN_*` nets; for external FETs also `PDN_SMPS_TOPOLOGY` and `PDN_SW1_NET` / `PDN_SW2_NET` | On-board regulator (LDO / buck / boost / inverter) — models BOTH input and output rails  |
 
 Optional two-terminal helpers (SOURCE / SINK):
 
@@ -360,6 +361,13 @@ Set `PDN_REGULATOR_TYPE` (`LDO` or `SMPS`) and optionally
 `PDN_REGULATOR_EFFICIENCY` to auto-compute gain, or set `PDN_GAIN` manually.
 Use **Adaptive SMPS gain** in the viewer (or `--adaptive-regulator-gain` on
 the CLI) to refine SMPS gain from the solved input voltage.
+
+External FETs: put `PDN_SMPS_TOPOLOGY` (`BUCK` / `BOOST` / `BUCKBOOST` —
+not `INVERTER`, which is internal-FET only) and switch-node nets on the
+controller; mark FETs / shunt / L as `PDN_ROLE=PATH` with `PDN_R`. Host
+binding is automatic among controllers that declare a switch stage;
+`PDN_SMPS_HOST` is only a disambiguation fallback. See
+[External-FET SMPS](docs/user-guide/04-regulators.md#47-external-fet-smps-path--topology).
 
 | Regulator type            | Gain                                              |
 |---------------------------|---------------------------------------------------|
