@@ -17,6 +17,60 @@ class RailTreeNode:
     children: tuple[RailTreeNode, ...] = ()
 
 
+def unique_requested_net_aliases(
+    directives: list[dict] | None,
+    canon_map: dict[str, str] | None = None,
+) -> frozenset[str]:
+    """``requested_net`` labels safe to use as a global rail-alias key.
+
+    A label is safe when every terminal that uses it shares at least one
+    canonical pin net — e.g. ``5V_LOCAL`` → ``+5V`` everywhere, or a
+    multi-pin SOURCE whose pads all sit on ``VIN`` / ``VIN_ALIAS``.
+
+    Labels that resolve onto *disjoint* copper across terminals (REPEAT
+    ``P_IN`` → ``P_IN.1`` on one room and ``P_IN.2`` on another) are
+    excluded so they cannot hub unconnected PCB nets.
+    """
+    if not directives:
+        return frozenset()
+    canon_map = canon_map or {}
+
+    def _canonical(net: str) -> str:
+        if not net:
+            return net
+        return canon_map.get(net.upper(), net)
+
+    # req -> pin-net sets, one frozenset per terminal occurrence
+    occs: dict[str, list[frozenset[str]]] = {}
+    for d in directives:
+        for t in (d.get("terminals") or {}).values():
+            req = t.get("requested_net")
+            if not req:
+                continue
+            nets = frozenset(
+                _canonical(p.get("net"))
+                for p in (t.get("pins") or [])
+                if p.get("net")
+            )
+            if not nets:
+                continue
+            occs.setdefault(req, []).append(nets)
+
+    safe: set[str] = set()
+    for req, groups in occs.items():
+        if len(groups) == 1:
+            safe.add(req)
+            continue
+        common = set(groups[0])
+        for g in groups[1:]:
+            common &= set(g)
+            if not common:
+                break
+        if common:
+            safe.add(req)
+    return frozenset(safe)
+
+
 def compute_rail_groups(
     metadata: TopologyMetadata | None,
 ) -> tuple[list[str], dict[str, list[str]]]:
@@ -37,6 +91,9 @@ def compute_rail_groups(
     resolved (via the bridge) onto ``+DM_SW1`` still gives a rail named
     ``GND``, not ``+DM_SW1``. Returns
     ``(rail_names_sorted, {primary_name: [all member nets]})``.
+
+    Local ``requested_net`` labels that resolve onto *different* PCB nets
+    across REPEAT rooms are display-only: they do not union those nets.
     """
     if metadata is None:
         return [], {}
@@ -60,6 +117,8 @@ def compute_rail_groups(
     regulator_in_rails: set[str] = set()
     regulator_out_rails: set[str] = set()
     canon_map: dict[str, str] = metadata.get("net_canonical") or {}
+    directives = metadata.get("directives") or []
+    safe_aliases = unique_requested_net_aliases(directives, canon_map)
 
     def _canonical(net: str) -> str:
         if not net:
@@ -73,7 +132,7 @@ def compute_rail_groups(
         if net:
             primary_candidates.add(_note_rail(net))
 
-    for d in metadata.get("directives", []):
+    for d in directives:
         role = d.get("role", "")
         terms = d.get("terminals") or {}
         for tname, t in terms.items():
@@ -81,12 +140,15 @@ def compute_rail_groups(
             req = t.get("requested_net")
             for n in nets:
                 find(n)  # ensure presence in union-find
-            if req:
+            # Only alias-union when the label names one copper net. A shared
+            # REPEAT local name (P_IN → P_IN.1 and P_IN.2) must not hub rooms.
+            if req and req in safe_aliases:
                 find(req)
                 for n in nets:
                     union(req, n)
             if role in ("SOURCE", "SINK", "REGULATOR"):
-                if t.get("resolved_via_local") and nets:
+                if (t.get("resolved_via_local") or (
+                        req and req not in safe_aliases)) and nets:
                     for n in nets:
                         _add_primary(n)
                 elif req:
@@ -98,21 +160,24 @@ def compute_rail_groups(
                     for n in nets:
                         _add_primary(n)
             if role == "SOURCE" and tname == "P":
-                if t.get("resolved_via_local") and nets:
+                if (t.get("resolved_via_local") or (
+                        req and req not in safe_aliases)) and nets:
                     source_rails.update(_note_rail(n) for n in nets)
                 elif req:
                     source_rails.add(_note_rail(req))
                 elif nets:
                     source_rails.update(_note_rail(n) for n in nets)
             if role == "REGULATOR" and tname == "IN_P":
-                if t.get("resolved_via_local") and nets:
+                if (t.get("resolved_via_local") or (
+                        req and req not in safe_aliases)) and nets:
                     regulator_in_rails.update(_note_rail(n) for n in nets)
                 elif req:
                     regulator_in_rails.add(_note_rail(req))
                 elif nets:
                     regulator_in_rails.update(_note_rail(n) for n in nets)
             if role == "REGULATOR" and tname == "OUT_P":
-                if t.get("resolved_via_local") and nets:
+                if (t.get("resolved_via_local") or (
+                        req and req not in safe_aliases)) and nets:
                     regulator_out_rails.update(_note_rail(n) for n in nets)
                 elif req:
                     regulator_out_rails.add(_note_rail(req))
@@ -257,12 +322,15 @@ def _rail_tree_adjacency(
       rail grouper uses), plus each name ↔ its ``net_canonical`` form
 
     Alias edges let BFS start at the primary and still walk bridges that
-    were annotated only on a local label.
+    were annotated only on a local label. Shared REPEAT local names that
+    resolve onto multiple PCB nets are not aliased into a cross-room hub.
     """
     adj: dict[str, set[str]] = {}
     if metadata is None:
         return adj
     canon_map: dict[str, str] = metadata.get("net_canonical") or {}
+    directives = metadata.get("directives") or []
+    safe_aliases = unique_requested_net_aliases(directives, canon_map)
 
     def _canonical(net: str) -> str:
         if not net:
@@ -275,13 +343,13 @@ def _rail_tree_adjacency(
                 continue
             _add_undirected_edge(adj, net, _canonical(net))
 
-    for d in metadata.get("directives", []):
+    for d in directives:
         terms = d.get("terminals") or {}
         for t in terms.values():
             nets = {p.get("net") for p in t.get("pins", []) if p.get("net")}
             req = t.get("requested_net")
             _note_aliases(*(nets or set()), req or "")
-            if req:
+            if req and req in safe_aliases:
                 for n in nets:
                     _add_undirected_edge(adj, req, n)
         for a, b in resistor_bridge_pairs(d):

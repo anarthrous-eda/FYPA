@@ -137,7 +137,12 @@ def test_topology_sink_multi_pin_port_lists_all_nets():
 
 
 def test_topology_port_labels_not_rail_primaries():
-    """Pin nets on labels even when rails merge members (not rail primary names)."""
+    """Pin nets on labels even when rails merge members (not rail primary names).
+
+    A shared ``requested_net`` with disjoint pin nets is not a global alias;
+    SERIES still unions the copper. The rail primary is then a pin net, not
+    the annotation label — port labels must still show each pin net.
+    """
     meta = {
         "directives": [
             {
@@ -178,10 +183,27 @@ def test_topology_port_labels_not_rail_primaries():
                     "N": {"requested_net": "GND", "pins": [{"net": "GND", "pad": "2"}]},
                 },
             },
+            {
+                "role": "RESISTOR",
+                "designator": "R1",
+                "terminals": {
+                    "P": {"pins": [{"net": "VDD_48V_IN"}]},
+                    "N": {"pins": [{"net": "VDD_48V_RP"}]},
+                },
+            },
+            {
+                "role": "RESISTOR",
+                "designator": "R2",
+                "terminals": {
+                    "P": {"pins": [{"net": "VOUT"}]},
+                    "N": {"pins": [{"net": "VDD_48V_PORT.1"}]},
+                },
+            },
         ],
     }
     _, members = compute_rail_groups(meta)
-    assert {"VDD_48V_IN", "VDD_48V_RP"} <= set(members["VDD_48V"])
+    assert {"VDD_48V_IN", "VDD_48V_RP"} <= set(members["VDD_48V_IN"])
+    assert "VDD_48V" not in members
     assert "VDD_48V_PORT.1" in members["VOUT"]
     model = build_topology_model(meta)
     j1 = next(n for n in model.nodes if n.designator == "J1")

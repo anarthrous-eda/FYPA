@@ -247,3 +247,121 @@ def test_rail_groups_prefer_source_rail_over_bridged_led_nets():
     assert "LED_R" in members["VDD_3V3_PWR"]
     assert "VDD_3V3_PWR" in members["VDD_3V3_PWR"]
     assert members["VDD_1V8"] == ["VDD_1V8"]
+
+
+def test_rail_groups_keep_repeat_series_instances_separate():
+    """Shared local P_IN/P_OUT labels must not hub distinct REPEAT rooms."""
+    metadata = {
+        "directives": [
+            {
+                "role": "SINK",
+                "terminals": {
+                    "P": {
+                        "requested_net": "P_OUT",
+                        "resolved_via_local": True,
+                        "pins": [{"net": "P_OUT.1"}],
+                    },
+                    "N": {"requested_net": "GND", "pins": [{"net": "GND"}]},
+                },
+            },
+            {
+                "role": "SINK",
+                "terminals": {
+                    "P": {
+                        "requested_net": "P_OUT",
+                        "resolved_via_local": True,
+                        "pins": [{"net": "P_OUT.2"}],
+                    },
+                    "N": {"requested_net": "GND", "pins": [{"net": "GND"}]},
+                },
+            },
+            {
+                "role": "RESISTOR",
+                "terminals": {
+                    "P": {
+                        "requested_net": "P_IN",
+                        "resolved_via_local": True,
+                        "pins": [{"net": "P_IN.1"}],
+                    },
+                    "N": {
+                        "requested_net": "P_OUT",
+                        "resolved_via_local": True,
+                        "pins": [{"net": "P_OUT.1"}],
+                    },
+                },
+            },
+            {
+                "role": "RESISTOR",
+                "terminals": {
+                    "P": {
+                        "requested_net": "P_IN",
+                        "resolved_via_local": True,
+                        "pins": [{"net": "P_IN.2"}],
+                    },
+                    "N": {
+                        "requested_net": "P_OUT",
+                        "resolved_via_local": True,
+                        "pins": [{"net": "P_OUT.2"}],
+                    },
+                },
+            },
+        ],
+    }
+    names, members = compute_rail_groups(metadata)
+    assert "P_OUT.1" in names
+    assert "P_OUT.2" in names
+    assert set(members["P_OUT.1"]) == {"P_IN.1", "P_OUT.1"}
+    assert set(members["P_OUT.2"]) == {"P_IN.2", "P_OUT.2"}
+    assert "P_IN.2" not in members["P_OUT.1"]
+    assert "P_OUT.2" not in members["P_OUT.1"]
+
+
+def test_rail_groups_keep_repeat_regulator_outs_separate():
+    """REGULATOR OUT local labels stay per-instance; shared IN stays one rail."""
+    metadata = {
+        "directives": [
+            {
+                "role": "REGULATOR",
+                "terminals": {
+                    "IN_P": {
+                        "requested_net": "VDD_MOTOR",
+                        "pins": [{"net": "VDD_MOTOR"}],
+                    },
+                    "IN_N": {"requested_net": "GND", "pins": [{"net": "GND"}]},
+                    "OUT_P": {
+                        "requested_net": "P_IN1",
+                        "resolved_via_local": True,
+                        "pins": [{"net": "P_IN1.1"}],
+                    },
+                    "OUT_N": {"requested_net": "GND", "pins": [{"net": "GND"}]},
+                },
+            },
+            {
+                "role": "REGULATOR",
+                "terminals": {
+                    "IN_P": {
+                        "requested_net": "VDD_MOTOR",
+                        "pins": [{"net": "VDD_MOTOR"}],
+                    },
+                    "IN_N": {"requested_net": "GND", "pins": [{"net": "GND"}]},
+                    "OUT_P": {
+                        "requested_net": "P_IN1",
+                        "resolved_via_local": True,
+                        "pins": [{"net": "P_IN1.2"}],
+                    },
+                    "OUT_N": {"requested_net": "GND", "pins": [{"net": "GND"}]},
+                },
+            },
+        ],
+    }
+    names, members = compute_rail_groups(metadata)
+    assert "VDD_MOTOR" in names
+    assert "P_IN1.1" in names
+    assert "P_IN1.2" in names
+    assert members["VDD_MOTOR"] == ["VDD_MOTOR"]
+    assert members["P_IN1.1"] == ["P_IN1.1"]
+    assert members["P_IN1.2"] == ["P_IN1.2"]
+    assert "P_IN1.2" not in members["P_IN1.1"]
+    # Shared local label must not appear as a cross-room hub member.
+    assert "P_IN1" not in members["P_IN1.1"]
+    assert "P_IN1" not in members["P_IN1.2"]
