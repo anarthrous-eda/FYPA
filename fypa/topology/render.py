@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import NamedTuple
+
 from fypa.topology.constants import (
     GND_NET,
     GND_SYMBOL_OFFSET,
     GND_WIRE_COLOR,
+    HEADER_FONT_SIZE,
+    HEADER_FONT_STEP,
     HEADER_H,
+    HEADER_LABEL_MIN_FONT,
+    HEADER_LABEL_SHRINK_FLOOR,
+    HEADER_TEXT_GAP,
+    HEADER_TEXT_PAD,
     JUNCTION_R,
     NON_GND_WIRE_COLOR,
     PORT_R,
@@ -38,7 +47,12 @@ def _segment_net_at(segments, x: float, y: float) -> str:
 
 
 from fypa.topology.types import TopologyModel, TopologyNode, TopologyWire
-from fypa.topology.util import esc, truncate_label
+from fypa.topology.util import (
+    esc,
+    estimate_text_width,
+    truncate_label,
+    truncate_text_to_width,
+)
 
 
 def _draw_wire(
@@ -257,6 +271,69 @@ def _role_color(role: str, *, single_net: bool, fg: str) -> str:
     return ROLE_COLORS.get(role, fg)
 
 
+def _largest_font_size(
+    measure: Callable[[float], float],
+    max_width: float,
+    *,
+    floor: float,
+) -> float | None:
+    """Largest size down to ``floor`` where ``measure(size) <= max_width``."""
+    size = HEADER_FONT_SIZE
+    while size >= floor - 1e-9:
+        if measure(size) <= max_width:
+            return size
+        size -= HEADER_FONT_STEP
+    return None
+
+
+class _HeaderText(NamedTuple):
+    """What fits in one header band: role word, designator, and their size."""
+
+    role: str | None
+    label: str | None
+    font_size: float
+
+
+def _fit_header_texts(role_title: str, label: str | None, w: float) -> _HeaderText:
+    """Fit the role word and designator into a header band of width ``w``.
+
+    Nodes are a fixed width, so a long designator would otherwise run straight
+    through the role word. Both texts shrink together (keeping the band's text
+    one size) until that would make them too small to read; past that point the
+    designator wins, taking the whole band on its own — the band colour still
+    names the role via the legend. Only a designator too long for the full band
+    is truncated, and the hover tooltip always carries the untruncated name.
+    """
+    full = w - 2 * HEADER_TEXT_PAD
+    if not label:
+        return _HeaderText(role_title, None, HEADER_FONT_SIZE)
+
+    size = _largest_font_size(
+        lambda s: (
+            estimate_text_width(role_title, s)
+            + HEADER_TEXT_GAP
+            + estimate_text_width(label, s)
+        ),
+        full,
+        floor=HEADER_LABEL_SHRINK_FLOOR,
+    )
+    if size is not None:
+        return _HeaderText(role_title, label, size)
+
+    size = _largest_font_size(
+        lambda s: estimate_text_width(label, s),
+        full,
+        floor=HEADER_LABEL_MIN_FONT,
+    )
+    if size is not None:
+        return _HeaderText(None, label, size)
+    return _HeaderText(
+        None,
+        truncate_text_to_width(label, full, HEADER_LABEL_MIN_FONT),
+        HEADER_LABEL_MIN_FONT,
+    )
+
+
 def _draw_section_header(
     parts: list[str],
     *,
@@ -287,16 +364,19 @@ def _draw_section_header(
             f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{HEADER_H:.1f}"'
             f' fill="{esc(color)}"/>'
         )
-    parts.append(
-        f'<text x="{x + 8:.1f}" y="{y + 15:.1f}" fill="#ffffff"'
-        f' font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">'
-        f"{esc(_role_display_title(role))}</text>"
-    )
-    if label:
+    fitted = _fit_header_texts(_role_display_title(role), label, w)
+    size = fitted.font_size
+    if fitted.role:
         parts.append(
-            f'<text x="{x + w - 8:.1f}" y="{y + 15:.1f}" fill="#ffffff"'
+            f'<text x="{x + HEADER_TEXT_PAD:.1f}" y="{y + 15:.1f}" fill="#ffffff"'
+            f' font-family="Segoe UI,sans-serif" font-size="{size:g}"'
+            f' font-weight="600">{esc(fitted.role)}</text>'
+        )
+    if fitted.label:
+        parts.append(
+            f'<text x="{x + w - HEADER_TEXT_PAD:.1f}" y="{y + 15:.1f}" fill="#ffffff"'
             f' text-anchor="end" font-family="Segoe UI,sans-serif"'
-            f' font-size="10" font-weight="600">{esc(label)}</text>'
+            f' font-size="{size:g}" font-weight="600">{esc(fitted.label)}</text>'
         )
 
 

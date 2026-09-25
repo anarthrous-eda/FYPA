@@ -32,6 +32,19 @@ GND_NET = "__GND__"
 MARGIN = 36.0
 NODE_W = 128.0
 HEADER_H = 22.0
+# Header band text: the role word sits at HEADER_TEXT_PAD from the left edge,
+# the designator at the same inset from the right, with at least
+# HEADER_TEXT_GAP between them. A designator too long for the space beside the
+# role word shrinks to HEADER_LABEL_SHRINK_FLOOR; below that the role word is
+# dropped and the label gets the whole band, down to HEADER_LABEL_MIN_FONT.
+HEADER_FONT_SIZE = 10.0
+HEADER_TEXT_PAD = 8.0
+HEADER_TEXT_GAP = 6.0
+# Whole-pixel sizes only: Qt's SVG font handling rounds a fractional
+# ``font-size``, which would paint text wider than it was fitted for.
+HEADER_FONT_STEP = 1.0
+HEADER_LABEL_SHRINK_FLOOR = 9.0
+HEADER_LABEL_MIN_FONT = 7.0
 BODY_PAD = 8.0
 PORT_ROW_H = 18.0
 PORT_R = 5.0

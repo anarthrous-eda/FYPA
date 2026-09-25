@@ -378,6 +378,14 @@ class GLMeshViewer(QOpenGLWidget):
     editorDragStarted = Signal(float, float)
     editorDragMoved = Signal(float, float)
     editorDragReleased = Signal(float, float)
+    # Editor-mode marquee (rubber-band) selection. A left drag that starts
+    # on empty space - not on a draggable marker - sweeps a dashed box;
+    # the release fires this with the box in world mm plus the modifier
+    # keys held at press time, so the host can replace / extend / trim its
+    # selection. 2D editor mode only, and never alongside ``clicked``
+    # (past the drag threshold the click is already suppressed).
+    #   x0_mm, y0_mm, x1_mm, y1_mm, additive, toggle
+    editorMarqueeSelected = Signal(float, float, float, float, bool, bool)
     # Top-right legend chip row clicked. Carries the row's ``key`` as
     # supplied via :meth:`set_overlay_top_right_legend`. The host uses it
     # to toggle the corresponding marker category's visibility.
@@ -679,11 +687,19 @@ class GLMeshViewer(QOpenGLWidget):
         # unmistakable which mode the user is in. ``paintGL`` picks the
         # clear colour each frame from ``_editor_mode``.
         self._editor_mode: bool = False
-        # World-space (x0, y0, x1, y1) bbox of the selected editor-mode
-        # component, drawn as a yellow selection box; None when nothing
-        # (or a non-component) is selected.
-        self._editor_selection_bbox: tuple[
-            float, float, float, float] | None = None
+        # World-space (x0, y0, x1, y1) bboxes of the selected editor-mode
+        # component(s), each drawn as a yellow selection box. Empty when
+        # nothing (or nothing component-shaped) is selected - a single
+        # click puts one box here, a marquee one per enclosed component.
+        self._editor_selection_bboxes: list[
+            tuple[float, float, float, float]] = []
+        # Live marquee rectangle in *widget pixels* while a rubber-band
+        # drag is in flight, else ``None``. Kept in pixels rather than
+        # world mm so the band tracks the cursor exactly even though a
+        # marquee drag never pans the view.
+        self._marquee_px: tuple[float, float, float, float] | None = None
+        # Modifiers held when the marquee drag began: (additive, toggle).
+        self._marquee_mods: tuple[bool, bool] = (False, False)
         # World-mm closed rings outlining a click-selected copper primitive
         # (viewer mode). Drawn as a dashed yellow polygon over the copper.
         # ``None`` when nothing is selected. A track / arc gets one ring; a
@@ -1811,6 +1827,8 @@ class GLMeshViewer(QOpenGLWidget):
         if on == self._editor_mode:
             return
         self._editor_mode = on
+        # A mode flip mid-drag would otherwise strand the rubber band.
+        self._marquee_px = None
         # Leaving editor mode cancels any in-progress free-marker drag.
         if not on:
             self._editor_drag_active = False
@@ -1843,15 +1861,22 @@ class GLMeshViewer(QOpenGLWidget):
             self.unsetCursor()
 
     def set_editor_selection_bbox(self, bbox) -> None:
-        """Set (or clear, with ``None``) the component bounding box drawn
-        as the editor-mode yellow selection box. ``bbox`` is
-        ``(x0, y0, x1, y1)`` in world mm. A no-op when unchanged so the
-        per-render push doesn't trigger a redundant repaint."""
-        new = (tuple(float(v) for v in bbox)
-               if bbox is not None else None)
-        if new == self._editor_selection_bbox:
+        """Set (or clear, with ``None``) the single component bounding box
+        drawn as the editor-mode yellow selection box. ``bbox`` is
+        ``(x0, y0, x1, y1)`` in world mm. Thin wrapper over
+        :meth:`set_editor_selection_bboxes` for single-selection callers."""
+        self.set_editor_selection_bboxes([] if bbox is None else [bbox])
+
+    def set_editor_selection_bboxes(self, bboxes) -> None:
+        """Set the component bounding boxes drawn as editor-mode yellow
+        selection boxes - one per multi-selected component, or empty to
+        clear. Each is ``(x0, y0, x1, y1)`` in world mm. A no-op when
+        unchanged so the per-render push does not trigger a redundant
+        repaint."""
+        new = [tuple(float(v) for v in b) for b in (bboxes or [])]
+        if new == self._editor_selection_bboxes:
             return
-        self._editor_selection_bbox = new
+        self._editor_selection_bboxes = new
         self.update()
 
     def set_primitive_selection_outline(self, rings) -> None:
@@ -3032,6 +3057,7 @@ class GLMeshViewer(QOpenGLWidget):
         painter.setRenderHint(QPainter.Antialiasing, True)
         self._draw_editor_grid(painter)
         self._draw_editor_selection(painter)
+        self._draw_editor_marquee(painter)
         self._draw_mesh_failure_outline(painter)
         self._draw_primitive_selection(painter)
         self._draw_overlay_labels(painter, on_top=False)
@@ -3104,26 +3130,51 @@ class GLMeshViewer(QOpenGLWidget):
         painter.restore()
 
     def _draw_editor_selection(self, painter: QPainter) -> None:
-        """Yellow box around the editor-mode component selection — the
+        """Yellow box around each editor-mode component selection - the
         component's world-space bounding box projected to the screen, so
         it tracks pan / zoom (and the camera in 3D). Same yellow + pixel
-        thickness as the selected source / sink marker's box."""
-        if not self._editor_mode or self._editor_selection_bbox is None:
+        thickness as the selected source / sink marker's box. A marquee
+        selection draws one box per enclosed component."""
+        if not self._editor_mode or not self._editor_selection_bboxes:
             return
-        x0, y0, x1, y1 = self._editor_selection_bbox
-        poly = QPolygonF()
-        for wx, wy in ((x0, y0), (x1, y0), (x1, y1), (x0, y1)):
-            px, py = self.world_to_screen(wx, wy, 0.0)
-            if px < -1e8 or py < -1e8:   # a corner is behind the camera
-                return
-            poly.append(QPointF(px, py))
         painter.save()
         pen = QPen(QColor("#ffff00"))
         pen.setWidthF(_EDITOR_SELECTION_BOX_PX)
         pen.setJoinStyle(Qt.MiterJoin)
         painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
-        painter.drawPolygon(poly)
+        for x0, y0, x1, y1 in self._editor_selection_bboxes:
+            poly = QPolygonF()
+            behind = False
+            for wx, wy in ((x0, y0), (x1, y0), (x1, y1), (x0, y1)):
+                px, py = self.world_to_screen(wx, wy, 0.0)
+                if px < -1e8 or py < -1e8:   # a corner is behind the camera
+                    behind = True
+                    break
+                poly.append(QPointF(px, py))
+            if not behind:
+                painter.drawPolygon(poly)
+        painter.restore()
+
+    def _draw_editor_marquee(self, painter: QPainter) -> None:
+        """Dashed rubber-band rectangle for an in-flight marquee drag.
+
+        Drawn in widget pixels (the band follows the cursor, and a marquee
+        drag never pans) with a faint translucent fill so the swept area
+        reads at a glance against the copper underneath."""
+        if self._marquee_px is None:
+            return
+        x0, y0, x1, y1 = self._marquee_px
+        rect = QRectF(QPointF(min(x0, x1), min(y0, y1)),
+                      QPointF(max(x0, x1), max(y0, y1)))
+        painter.save()
+        painter.setBrush(QColor(255, 255, 0, 28))
+        pen = QPen(QColor("#ffff00"))
+        pen.setWidthF(1.0)
+        pen.setCosmetic(True)
+        pen.setStyle(Qt.DashLine)
+        painter.setPen(pen)
+        painter.drawRect(rect)
         painter.restore()
 
     def _draw_mesh_failure_outline(self, painter: QPainter) -> None:
@@ -3669,6 +3720,15 @@ class GLMeshViewer(QOpenGLWidget):
             self._press_origin = QPointF(ev.position())
             self._press_center = (self._view_center_x, self._view_center_y)
             self._is_panning = False
+            # Editor-mode marquee: the press landed on empty space (the
+            # marker hit-test above already claimed a press over a marker),
+            # so this drag becomes a rubber band. Latch the modifiers now -
+            # the user may release Shift mid-drag and still expect the
+            # gesture they started.
+            self._marquee_px = None
+            mods = ev.modifiers()
+            self._marquee_mods = (bool(mods & Qt.ShiftModifier),
+                                  bool(mods & Qt.ControlModifier))
             ev.accept()
             return
         if ev.button() == Qt.RightButton:
@@ -3741,6 +3801,15 @@ class GLMeshViewer(QOpenGLWidget):
                 or abs(dy_px) > self._CLICK_DRAG_THRESHOLD_PX
             ):
                 self._is_panning = True
+            # Past the threshold in 2D editor mode the drag is a marquee.
+            # ``_is_panning`` already suppresses the release-click, so the
+            # band costs nothing but the repaint.
+            if (self._is_panning and self._editor_mode
+                    and self._view_mode == "2d"):
+                self._marquee_px = (float(self._press_origin.x()),
+                                    float(self._press_origin.y()),
+                                    float(pos.x()), float(pos.y()))
+                self.update()
 
         # --- Right-button drag ---
         # 2D: pan the orthographic view.
@@ -3847,8 +3916,22 @@ class GLMeshViewer(QOpenGLWidget):
                 ev.accept()
                 return
             was_panning = self._is_panning
+            band = self._marquee_px
             self._press_origin = None
             self._is_panning = False
+            if band is not None:
+                # Commit the marquee. The band is in widget pixels; convert
+                # both corners to world mm here so the host never has to
+                # know about the widget's coordinate system.
+                self._marquee_px = None
+                self.update()
+                wx0, wy0 = self.screen_to_world(band[0], band[1])
+                wx1, wy1 = self.screen_to_world(band[2], band[3])
+                additive, toggle = self._marquee_mods
+                self.editorMarqueeSelected.emit(
+                    wx0, wy0, wx1, wy1, additive, toggle)
+                ev.accept()
+                return
             if not was_panning:
                 wx, wy = self.screen_to_world(ev.position().x(),
                                                 ev.position().y())

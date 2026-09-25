@@ -54,6 +54,8 @@ Three things change when editor mode is active:
    (**SOURCE**) and a blue down-triangle (**SINK**). These are the free
    marker buttons, covered in 2.4.
 3. The **PDN Editor** panel slides in on the right-hand side.
+4. Left-drag on empty board sweeps a selection box, for editing several
+   sinks in one go — see 2.6.
 
 Press `E` again — or click the toggle off — to leave editor mode. Any
 edits you applied remain in the project; only the transient selection
@@ -200,7 +202,117 @@ Apply it changes to: *Overrides the schematic directive.*
 > select the component and click **Remove** — the schematic directive
 > takes over again on the next resolve.
 
-## 2.6 Re-solving and saving
+## 2.6 Editing several sinks at once
+
+Setting the same current on twelve DDR loads one form at a time is the
+kind of job that invites a typo. Editor mode borrows Altium's selection
+convention so you can do the whole group in one Apply.
+
+**Step 1 — Drag a box on empty viewport.**
+
+Press the left button on bare board (not on a marker) and drag. A dashed
+yellow rubber band follows the cursor. Release to select.
+
+A marker joins the selection only when **every one of its pins is inside
+the box**. That matters for parts that glyph at several pads — a big
+connector clipped at one corner is not selected, so you never edit
+something you only half-caught.
+
+The box picks up **PDN markers only** — sources, sinks and series
+elements. Copper and components with no PDN role are ignored on purpose:
+the board is wall-to-wall copper and passives, so counting them would
+make every drag a mixed bag.
+
+> The marquee is 2D only. In the 3D view a swept box would not mean what
+> it looks like, so left-drag stays inert there.
+
+**Step 2 — Adjust the selection if you need to.**
+
+| Gesture              | Effect                                  |
+|----------------------|-----------------------------------------|
+| Drag                 | Replace the selection                   |
+| **Shift**+drag       | Add the enclosed markers                |
+| **Ctrl**+drag        | Remove the enclosed markers             |
+| **Shift**+click      | Add one marker                          |
+| **Ctrl**+click       | Toggle one marker out                   |
+| Plain click          | Back to a single selection              |
+
+Every selected marker gets a yellow box in the viewport, and each
+selected component gets one round its footprint, so you can see exactly
+what an Apply would write to before you press it. Copper stays lit for
+the union of every selected sink's nets.
+
+**Step 3 — Read the form.**
+
+With two or more markers selected, and **every one of them a SINK**, the
+panel shows the same form a single sink gives, headed `4 SINKs selected`
+with the designators listed below it:
+
+- A row the sinks **agree** on shows that shared value.
+- A row they **disagree** on shows **`*`**. For the current-model radios
+  that means neither button is checked.
+- A row every sink leaves unset (typically Min V) shows **blank**, not
+  `*` — blank is agreement.
+
+Four rows are editable together: **Current (A)**, **Min V (V)**, the
+current model, and **P net** / **N net**. The per-part fields — Pins, N
+pins, P DES, N DES — are deliberately absent: pushing one pad list
+across several different footprints is never what you mean. Role is
+shown but not offered, because re-pointing a batch of sinks at SOURCE
+would silently reinterpret every Current as a Voltage.
+
+**Step 4 — Edit the rows you care about and Apply.**
+
+**Apply writes only the rows you touched.** A row still showing `*` — or
+a shared value you did not retype — is left exactly as it is on every
+sink. So you can set one common current across a group whose Min V
+limits all differ, without flattening those limits.
+
+> **Current is per sink, not shared between them.** Applying 2 A to four
+> sinks adds 8 A of load to the rail, not 2 A split four ways.
+
+To **clear** Min V across the group, empty the field and Apply — an
+edited-but-empty Min V writes "no check" to all of them. To leave it
+alone, do not touch it.
+
+Two things Apply refuses rather than half-doing:
+
+- A non-numeric Current or Min V — nothing is written.
+- Switching to **Two nets** when some selected sink would end up with no
+  N net. The whole batch rolls back and the status line names the
+  offenders, rather than leaving half the selection unsolvable. Set N
+  net in the same Apply, or choose Single net.
+
+Sinks whose values still come from the Altium schematic can be selected
+too. The panel warns you how many, and Apply unlocks them in the same
+step — each override is seeded from its own schematic values, so rows
+you did not touch keep what the schematic said for that part. The
+schematic file is never modified.
+
+**Step 5 — One undo step.**
+
+A batch Apply or Remove is a **single** entry on the undo stack:
+`Ctrl+Z` puts all of them back at once, and `Ctrl+Shift+Z` / `Ctrl+Y`
+redoes the batch. The panel carries **↶ Undo** / **↷ Redo** buttons too.
+
+**Remove** deletes every selected sink's editor directive, after a
+confirmation that names the count. Sinks that only exist in the
+schematic have nothing to delete and are left alone (the confirmation
+says how many). `Delete` / `Backspace` does the same thing.
+
+### When the selection is not all sinks
+
+If the box catches anything other than sinks — a source, a series
+element, or a mix — the panel shows just:
+
+> **Multiple objects selected**
+
+with a count and a role tally, and **no controls at all**. There is no
+one set of properties that applies across different roles, so offering
+a form would only invite a wrong edit. Drag a box round sinks alone, or
+click a single object to edit it.
+
+## 2.7 Re-solving and saving
 
 Editor edits do not run the solver themselves — they queue up changes
 that the **Resolve** button then applies.
@@ -231,7 +343,7 @@ Save Project As…* writes to a new location.
 > many times as you like during one session and only save when you
 > are happy with the result.
 
-## 2.7 The `.fypa` project file
+## 2.8 The `.fypa` project file
 
 The `.fypa` is a small human-readable JSON document. It contains:
 
@@ -257,7 +369,7 @@ re-running the FEM.
 > present if you intend to **re-solve** on the new machine; pure
 > viewing works from the pickles alone.
 
-## 2.8 Troubleshooting
+## 2.9 Troubleshooting
 
 | Message or symptom                                                           | Likely cause                                                                 | Fix                                                                          |
 |------------------------------------------------------------------------------|------------------------------------------------------------------------------|------------------------------------------------------------------------------|
@@ -266,6 +378,9 @@ re-running the FEM.
 | `P net '+5V' not found on the board; skipped`                                | The chosen net name does not exist in the current PCB extraction.            | Re-check the net name against the dropdown options — only nets present on the PCB are listed. |
 | Form opens read-only with an Unlock button even though I want a fresh directive | The component already has a schematic `PDN_*` directive.                   | Click **Unlock** — see 2.5.                                                  |
 | `SERIES` option missing from the role dropdown                                | A free marker is selected (SERIES is component-bound only).                  | Click the component instead, or pick a different role.                       |
+| My drag box selected nothing                                                  | A marker counts only when *every* one of its pins is inside the box, and copper / roleless parts are never selected. | Draw the box wider so it fully encloses each marker you want. |
+| Panel says *Multiple objects selected* with no controls                       | The box caught something other than sinks (a source, a series element, or a mix). | Drag a box round sinks alone, or click one object to edit it. |
+| Left-drag does nothing in the 3D view                                         | The marquee is 2D only.                                                      | Switch to the 2D view to use it.                                             |
 | Marker dropped on the wrong layer                                             | Free markers are placed on the currently active layer.                       | Select the marker and use the **Layer** drop-down in its Location block to move it to another layer carrying the same net at that spot. If the net only exists on one layer there, remove the marker, switch the active layer in the side panel, and drop a new one. |
 
 ## Next steps

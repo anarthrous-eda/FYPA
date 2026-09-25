@@ -166,7 +166,7 @@ did not abort the run but is worth knowing about. Examples:
 - Net names referenced in `PDN_*` parameters that were not found on
   the PCB (and were therefore skipped).
 - Editor directives that could not be applied (skipped, not aborted —
-  see [Section 2.8](02-sources-and-sinks-editor.md#28-troubleshooting)).
+  see [Section 2.9](02-sources-and-sinks-editor.md#29-troubleshooting)).
 - Solver warnings about near-singular matrices, suspicious gradients,
   etc.
 
@@ -195,7 +195,8 @@ controls, node / via tables, messages, and settings.
 | Clamp the colour scale          | Drag the two handles on the colour strip, or type values into the **Min** / **Max** boxes on the Setup tab. |
 | Click a piece of copper         | Selects it — the bottom bar reports the net, the area, and (where applicable) the layer-local current. |
 | Click a marker                  | Reports the directive value (source voltage, sink current, etc.) in the bottom bar. |
-| Resolve after editor edits      | Click the green **↻ Resolve** button at the top-left of the viewport (see [Section 2.6](02-sources-and-sinks-editor.md#26-re-solving-and-saving)). |
+| Left-drag on empty board (editor mode, 2D) | Rubber-band selects every PDN marker fully inside the box, for editing several sinks at once (see [Section 2.6](02-sources-and-sinks-editor.md#26-editing-several-sinks-at-once)). |
+| Resolve after editor edits      | Click the green **↻ Resolve** button at the top-left of the viewport (see [Section 2.7](02-sources-and-sinks-editor.md#27-re-solving-and-saving)). |
 
 ## 5.11 Hotkeys worth remembering
 

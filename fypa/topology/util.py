@@ -19,6 +19,67 @@ def truncate_label(label: str, *, max_len: int = LABEL_MAX_LEN) -> str:
     return label[: max_len - 1] + "…"
 
 
+# Advance widths for the header font (Segoe UI, weight 600), as a fraction of
+# the font size. Measured with QFontMetricsF over both the Semibold and Bold
+# faces -- Qt resolves weight 600 to either, depending on what the system has
+# installed -- keeping the wider of the two and rounding up to the next 0.04,
+# so an estimate is never narrower than the glyphs Qt paints. Grouped by width
+# to keep the table readable: in proportional text a character count says
+# nothing, "WWW" being three times the width of "lll".
+_CHAR_WIDTH_GROUPS: tuple[tuple[float, str], ...] = (
+    (0.28, " ,.:;"),
+    (0.32, "'I`ijl"),
+    (0.36, "!|"),
+    (0.40, "()[]frt{}"),
+    (0.44, r"-\_s"),
+    (0.48, "*/?Jcz"),
+    (0.52, '"FL'),
+    (0.56, "Eaevxy"),
+    (0.60, "#$0123456789STk"),
+    (0.64, "BCPYZbdghnopquµ"),
+    (0.68, "KRVX"),
+    (0.72, "+<=>AG^~"),
+    (0.76, "DOQU"),
+    (0.80, "HNwΩ"),
+    (0.88, "%&"),
+    (0.92, "m…"),
+    (0.96, "@M"),
+    (1.04, "W"),
+)
+_CHAR_WIDTHS: dict[str, float] = {
+    ch: width for width, chars in _CHAR_WIDTH_GROUPS for ch in chars
+}
+# Anything the table misses (other scripts, box drawing) may be full-width.
+_CHAR_WIDTH_DEFAULT = 1.0
+_ELLIPSIS = "…"
+
+
+def estimate_text_width(text: str, font_size: float) -> float:
+    """Approximate rendered width of ``text`` in the header font."""
+    return font_size * sum(
+        _CHAR_WIDTHS.get(ch, _CHAR_WIDTH_DEFAULT) for ch in text
+    )
+
+
+def truncate_text_to_width(text: str, max_width: float, font_size: float) -> str:
+    """Longest leading run of ``text`` plus an ellipsis that fits ``max_width``.
+
+    The head is kept because designators differ early ("PART_2b37..." against
+    "PART_7c86..."); the hover tooltip still carries the name in full.
+    """
+    if estimate_text_width(text, font_size) <= max_width:
+        return text
+    budget = max_width - estimate_text_width(_ELLIPSIS, font_size)
+    kept = 0
+    used = 0.0
+    for ch in text:
+        used += font_size * _CHAR_WIDTHS.get(ch, _CHAR_WIDTH_DEFAULT)
+        if used > budget:
+            break
+        kept += 1
+    return text[: max(kept, 1)] + _ELLIPSIS
+
+
 def _fmt_compact(value: float) -> str:
     """Decimal string without scientific notation; trim trailing zeros."""
     if value == 0:
