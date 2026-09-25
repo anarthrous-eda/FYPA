@@ -442,15 +442,23 @@ class SpaceMouseController(QObject):
         self._linux = None
         self._active = False
         self._logged_unavailable = False
+        # Set once NavLib has been reported as having no device, so the
+        # message is not repeated on every window activation. Cleared again
+        # by a successful call, so plugging a SpaceMouse in and later pulling
+        # it out still says so once.
+        self._logged_no_device = False
 
         if _PYNAVLIB_AVAILABLE and FypaNavlibClient is not None:
             try:
                 self._navlib_client = FypaNavlibClient(viewer, on_fit)
-                self._navlib_client.enable_navigation(False)
-                _log.info("SpaceMouse: pynavlib backend ready (3DxWare required)")
             except Exception as exc:
                 _log.info("SpaceMouse: pynavlib init failed: %s", exc)
                 self._navlib_client = None
+            else:
+                if self._set_navlib_enabled(False):
+                    _log.info(
+                        "SpaceMouse: pynavlib backend ready "
+                        "(3DxWare required)")
 
         if sys.platform == "linux":
             self._linux = _LinuxSpnavPoller(viewer, on_fit, self)
@@ -489,12 +497,55 @@ class SpaceMouseController(QObject):
                 "SpaceMouse: not available — install spacenavd + libspnav0",
             )
 
+    def _set_navlib_enabled(self, enable: bool) -> bool:
+        """Turn NavLib navigation on / off, returning whether it took.
+
+        pynavlib's own ``enable_navigation`` catches the RuntimeError NavLib
+        raises when no 3D mouse is connected and re-emits it through the ROOT
+        logger as an ERROR with a full traceback. On the overwhelmingly common
+        machine — one with no SpaceMouse plugged in — that turns a non-event
+        into console noise at every launch and every window activation, and it
+        is noise we cannot see the outcome of either.
+
+        So drive the native call directly and own the result: report it once,
+        at INFO, in the same voice as the other "SpaceMouse: not available"
+        messages. The client is kept rather than dropped, so a SpaceMouse
+        plugged in later still starts working on the next activation.
+        """
+        client = self._navlib_client
+        if client is None:
+            return False
+        # ``_enable_navigation`` is the native method pynavlib's wrapper calls
+        # inside its own try/except; going straight to it is what lets the
+        # error reach us. Fall back to the wrapper if a future pynavlib drops
+        # the private name — noisier, but never broken.
+        native = getattr(client, "_enable_navigation", None)
+        try:
+            if callable(native):
+                native(enable)
+            else:
+                client.enable_navigation(enable)
+        except Exception as exc:
+            if not self._logged_no_device:
+                self._logged_no_device = True
+                _log.info(
+                    "SpaceMouse: NavLib navigation unavailable (%s) — "
+                    "check that a 3D mouse is connected and 3DxWare is "
+                    "running", exc,
+                )
+            else:
+                _log.debug("SpaceMouse: enable_navigation(%s) failed: %s",
+                           enable, exc)
+            return False
+        self._logged_no_device = False
+        return True
+
     def set_active(self, active: bool) -> None:
         if active == self._active:
             return
         self._active = active
         if self._navlib_client is not None:
-            self._navlib_client.enable_navigation(active)
+            self._set_navlib_enabled(active)
         if self._linux is not None:
             self._linux.set_enabled(active)
 
@@ -508,9 +559,6 @@ class SpaceMouseController(QObject):
     def shutdown(self) -> None:
         self.set_active(False)
         if self._navlib_client is not None:
-            try:
-                self._navlib_client.enable_navigation(False)
-            except Exception:
-                pass
+            self._set_navlib_enabled(False)
         if self._linux is not None:
             self._linux.stop()

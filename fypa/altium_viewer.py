@@ -1384,6 +1384,64 @@ def _eye_pixmap(open_: bool, size: int = 16, *, partial: bool = False) -> QPixma
     return cached
 
 
+# --- Editor net-focus ("show only this net") icon ---------------------------
+
+_FOCUS_PIXMAP_CACHE: dict[tuple[str, bool, int], QPixmap] = {}
+
+
+def _make_focus_pixmap(on: bool, *, size: int = 16) -> QPixmap:
+    """Draw the net-table focus toggle — a crosshair / target glyph.
+
+    Deliberately NOT an eye. The layer eyes are additive, per-layer and
+    independent of each other; this control is exclusive and sticky — while
+    it is on, every net but its own is gone from the viewport and no click
+    in the canvas can release it. A different silhouette keeps the two from
+    reading as the same kind of switch.
+
+    ``on`` fills the bullseye and switches to the accent colour so the
+    focused row is obvious; off is a hollow ring in the muted eye grey.
+    """
+    px = QPixmap(size, size)
+    px.fill(Qt.transparent)
+    p = QPainter(px)
+    p.setRenderHint(QPainter.Antialiasing, True)
+
+    t = current_theme()
+    color = QColor(t["accent"] if on else t["eye_closed"])
+    pen = QPen(color)
+    pen.setWidthF(max(1.0, size * (0.12 if on else 0.09)))
+    pen.setCapStyle(Qt.RoundCap)
+    p.setPen(pen)
+    p.setBrush(Qt.NoBrush)
+
+    c = size / 2.0
+    r = size * 0.30
+    p.drawEllipse(QPointF(c, c), r, r)
+    # Four crosshair arms from the ring out to the icon edge.
+    arm_in = r + size * 0.06
+    arm_out = size * 0.47
+    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        p.drawLine(QPointF(c + dx * arm_in, c + dy * arm_in),
+                   QPointF(c + dx * arm_out, c + dy * arm_out))
+
+    p.setPen(Qt.NoPen)
+    p.setBrush(color)
+    dot = size * (0.15 if on else 0.09)
+    p.drawEllipse(QPointF(c, c), dot, dot)
+
+    p.end()
+    return px
+
+
+def _focus_pixmap(on: bool, size: int = 16) -> QPixmap:
+    key = (current_theme_mode(), on, size)
+    cached = _FOCUS_PIXMAP_CACHE.get(key)
+    if cached is None:
+        cached = _make_focus_pixmap(on, size=size)
+        _FOCUS_PIXMAP_CACHE[key] = cached
+    return cached
+
+
 # Capacitor traces beyond this many carry no legend label. A rail with dozens
 # of decoupling caps otherwise produces a legend taller than the axes, hiding
 # the |Z| trace and the anti-resonance markers the tab exists to show; the
@@ -3761,9 +3819,6 @@ class _ClickAbsorbingPanel(QWidget):
                  **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.setAttribute(Qt.WA_StyledBackground, True)
-        # Needed so the cursor can switch to the resize shape on hover over
-        # the grip zone even with no button pressed.
-        self.setMouseTracking(True)
         self._resizing = False
         self._resize_start_global_x = 0.0
         self._resize_start_w = 0
@@ -3777,7 +3832,17 @@ class _ClickAbsorbingPanel(QWidget):
         # parked inside the left content margin so it never overlaps the
         # form widgets. Geometry tracked in :meth:`resizeEvent`.
         self._grip_line: QFrame | None = None
+        # Invisible hot zone over the grip that owns the resize cursor, so
+        # Qt picks the cursor by the widget under the mouse. Setting it on
+        # the panel itself (and unsetting on a later panel mouseMove) left
+        # it stuck: children inherit the panel cursor, and when the mouse
+        # jumped from the grip straight onto a child that consumes move
+        # events the reset never ran. The zone ignores mouse events, so
+        # press / move / release still propagate up to the panel handlers.
+        self._grip_zone: QWidget | None = None
         if self._left_edge_resizable:
+            self._grip_zone = QWidget(self)
+            self._grip_zone.setCursor(Qt.SizeHorCursor)
             self._grip_line = QFrame(self)
             self._grip_line.setStyleSheet(
                 f"background-color: {_T()['border']};"
@@ -3793,6 +3858,9 @@ class _ClickAbsorbingPanel(QWidget):
         if self._grip_line is not None:
             self._grip_line.setGeometry(2, 0, 2, self.height())
             self._grip_line.raise_()
+        if self._grip_zone is not None:
+            self._grip_zone.setGeometry(0, 0, self._GRIP_W + 1, self.height())
+            self._grip_zone.raise_()
 
     def mousePressEvent(self, ev) -> None:
         if ev.button() == Qt.LeftButton and self._in_grip(ev.position().x()):
@@ -3810,10 +3878,6 @@ class _ClickAbsorbingPanel(QWidget):
                 int(round(self._resize_start_w + delta)))
             ev.accept()
             return
-        if self._in_grip(ev.position().x()):
-            self.setCursor(Qt.SizeHorCursor)
-        else:
-            self.unsetCursor()
         super().mouseMoveEvent(ev)
 
     def mouseReleaseEvent(self, ev) -> None:
@@ -9028,6 +9092,21 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         # (e.g. Gerber-sourced ``"(none)"`` copper) so the dim mask can
         # still distinguish the picked rail from disjoint unnamed pieces.
         self._editor_highlight_polys: set[tuple[int, int]] = set()
+        # Net-focus ("show only this net", the net table's crosshair
+        # column). Unlike the highlight above — which is a by-product of
+        # whatever is selected and dies with it — focus is sticky: only
+        # the crosshair, the F hotkey or leaving editor mode releases it,
+        # so a stray click in the canvas can't cost the user the view they
+        # set up. While it is on, copper outside the focused net is not
+        # drawn at all (not merely dimmed): ``_editor_focus_nets`` holds
+        # the net names that survive and ``_editor_focus_polys`` the
+        # ``(layer_id, id(poly_dict))`` identities, the latter carrying
+        # unnamed / synthetic copper whose "(none)" net name can't
+        # identify it. ``_editor_focus_net`` is the table row's display
+        # name, kept for the release chip and the icon sync.
+        self._editor_focus_net: str | None = None
+        self._editor_focus_nets: set[str] = set()
+        self._editor_focus_polys: set[tuple[int, int]] = set()
         # "drop a free marker of this role on the next viewport click" —
         # None, or "SOURCE" / "SINK".
         self._editor_pending_marker: str | None = None
@@ -9402,6 +9481,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         # doesn't highlight / rename the wrong copper.
         self._editor_selection = None
         self._editor_highlight_polys = set()
+        self._clear_editor_focus(render=False)
         self._copper_selection = None
         for attr in ("_nodes_rows_cache", "_vias_rows_cache"):
             if hasattr(self, attr):
@@ -12110,6 +12190,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             bool(self._editor_mode),
             frozenset(self._editor_highlight_nets),
             frozenset(self._editor_highlight_polys),
+            # Net focus removes copper from the batch outright, so a focus
+            # change is a geometry change — not just a colour one.
+            frozenset(self._editor_focus_nets),
+            frozenset(self._editor_focus_polys),
             self._selected_layer,
             via_span,
             tuple(rows),
@@ -12528,19 +12612,31 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 editor_dim_active = (self._editor_mode and (
                     self._editor_highlight_nets
                     or self._editor_highlight_polys))
+                # Net focus drops polygons, so it needs the same per-rec
+                # path for the same reason: the merge collapses the per-net
+                # distinction the skip test depends on.
                 if (solid and layer_alpha < 1.0
-                        and not editor_dim_active):
+                        and not editor_dim_active
+                        and not self._editor_focus_active()):
                     merged = self._merged_solid_all_copper_tris(
                         name, recs, ac_rail_members)
                     if merged is not None:
                         _emit(merged, z, lrgb, alpha=layer_alpha,
                               **ac_bucket)
                     continue
+                focus_on = self._editor_focus_active()
                 for rec in recs:
                     net = rec.get("net")
                     if net in ac_rail_members:
                         continue
                     rec_layer_id = rec.get("layer_id")
+                    # Net focus: a record whose net is focused is wholly in,
+                    # and one whose net is a *different* real net is wholly
+                    # out — only the "(none)" sentinel needs the per-polygon
+                    # test below, so skip the whole record when we can.
+                    if (focus_on and net and net != "(none)"
+                            and net not in self._editor_focus_nets):
+                        continue
                     # Per-rec pump — a single layer on Corvette can have
                     # hundreds of all-copper records; without a pump in
                     # this loop the marquee freezes for the duration of
@@ -12555,6 +12651,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                     # one piece of unnamed copper but other disjoint
                     # ``"(none)"`` pieces share the same record.
                     for poly in rec.get("polygons", []):
+                        if focus_on and self._editor_focus_hides(
+                                net, rec_layer_id, poly):
+                            continue
                         rgb = self._editor_dim_rgb(
                             lrgb, net, rec_layer_id, poly)
                         if solid:
@@ -14572,16 +14671,19 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         rail_members = set(self._effective_rail_members(rail_names))
         in_3d = self._gl_viewer.view_mode() == "3d"
 
+        focus_nets = (frozenset(self._editor_focus_nets)
+                      if self._editor_focus_active() else None)
         # Reuse cached positions when the visible stub set + z mode are
         # unchanged (e.g. this call arrived via a colour-scheme toggle).
         geom_key = (frozenset(visible_layer_ids), frozenset(rail_members),
-                    in_3d)
+                    in_3d, focus_nets)
         cache = self._stub_geom_cache
         if cache is not None and cache[0] == geom_key:
             positions, spans = cache[1], cache[2]
         else:
             positions, spans = self._build_stub_geometry(
-                stubs, visible_layer_ids, rail_members, in_3d)
+                stubs, visible_layer_ids, rail_members, in_3d,
+                focus_nets=focus_nets)
             self._stub_geom_cache = (geom_key, positions, spans)
 
         if positions is None:
@@ -14593,6 +14695,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
     def _build_stub_geometry(
         self, stubs: list[dict], visible_layer_ids: dict[int, str],
         rail_members: set[str], in_3d: bool,
+        *, focus_nets: frozenset | None = None,
     ) -> tuple[np.ndarray | None, list[tuple[dict, str | None, int]]]:
         """Aggregate the stub triangle positions for the visible stub set.
 
@@ -14602,6 +14705,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         ``(stub, net, vertex_count)`` so :meth:`_bake_stub_colors` can
         rebuild the colour array without re-triangulating. Triangulation
         itself is cached per stub by :meth:`_triangulate_stub`.
+
+        ``focus_nets``: the editor net focus, when one is held — stubs
+        outside it are dropped from the batch, matching the all-copper skip
+        in :meth:`_refresh_overlay_geometry`.
         """
         pos_chunks: list[np.ndarray] = []
         spans: list[tuple[dict, str | None, int]] = []
@@ -14611,6 +14718,8 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 continue
             net = stub.get("net")
             if rail_members and net not in rail_members:
+                continue
+            if focus_nets is not None and net not in focus_nets:
                 continue
             tris = self._triangulate_stub(stub)
             if tris.size == 0:
@@ -16417,6 +16526,12 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         if (self.metadata is not None
                 and (target_layer_ids or copper_layer_ids)):
             rail_members = set(self._effective_rail_members(rail_names))
+            # Solved SOURCE / SINK / SERIES markers follow the net focus the
+            # same way the editor-directive ones do (see
+            # :meth:`_directive_focus_visible`). ``None`` when no focus is
+            # held, so the ordinary viewer is untouched.
+            focus_marker_nets = (self._editor_focus_nets
+                                 if self._editor_focus_active() else None)
 
             # Keyed (role, is_n_side): the P side and N side of a
             # directive draw as separate groups so the N side can carry
@@ -16508,6 +16623,15 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                         # Its own legend row provides the off switch instead.
                         if (role != "AUTO_BRIDGE"
                                 and pin.get("net") not in rail_members):
+                            continue
+                        # Net focus narrows this further to the focused net:
+                        # the whole point of focusing is to see one net's
+                        # sources and sinks without the neighbours'. Unlike
+                        # the rail test above, this one also takes
+                        # AUTO_BRIDGE — an inferred short on other copper is
+                        # exactly the kind of clutter focus is clearing.
+                        if focus_marker_nets is not None \
+                                and pin.get("net") not in focus_marker_nets:
                             continue
                         xs, ys, zs, rcs = per_role.setdefault(
                             (role, is_n_side), ([], [], [], []))
@@ -16974,10 +17098,22 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 continue
             if rail_scoped and v.get("net") not in rail_members:
                 continue
+            if self._focus_hides_net(v.get("net")):
+                continue
             xs.append(v.get("x_mm", 0.0))
             ys.append(v.get("y_mm", 0.0))
             diams.append(self._via_marker_diameter_mm(v))
         return xs, ys, diams
+
+    def _focus_hides_net(self, net: str | None) -> bool:
+        """Net-name-only form of :meth:`_editor_focus_hides`, for the
+        annotations that carry a net but no polygon to test by identity
+        (via and PTH dots). A focus on synthetic copper holds no real net
+        name, so it hides all of them — none of them is the copper the user
+        asked to see."""
+        if not self._editor_focus_active():
+            return False
+        return net not in self._editor_focus_nets
 
     def _collect_pth_positions(self, target_layer_id: int | None,
                                rail_members: set[str], *,
@@ -17010,6 +17146,8 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             if not (lo <= target_layer_id <= hi):
                 continue
             if rail_scoped and p.get("net") not in rail_members:
+                continue
+            if self._focus_hides_net(p.get("net")):
                 continue
             xs.append(p.get("x_mm", 0.0))
             ys.append(p.get("y_mm", 0.0))
@@ -17255,6 +17393,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             # the viewport triangle buttons; no-ops outside editor mode.
             ("S", self._hotkey_arm_source_marker),
             ("L", self._hotkey_arm_sink_marker),
+            # Focus / unfocus the selected net ("show only this net"); the
+            # keyboard twin of the net table's crosshair column. No-op
+            # outside editor mode.
+            ("F", self._hotkey_toggle_net_focus),
             # Free-marker edit undo / redo (move + delete) — no-ops outside
             # editor mode.
             ("Ctrl+Z", self._undo_marker_action),
@@ -17737,6 +17879,25 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._editor_hint.setStyleSheet(f"color: {t['fg_muted']};")
         lay.addWidget(self._editor_hint)
 
+        # Net-focus release chip — visible for as long as a net focus is
+        # held, whatever else the panel is showing. The net table (which owns
+        # the crosshair that sets focus) is the panel's idle view and hides on
+        # any selection, so without this the only way back to all-copper would
+        # be to clear the selection first. See :meth:`_update_editor_focus_chip`.
+        self._editor_focus_chip = QLabel("")
+        self._editor_focus_chip.setWordWrap(True)
+        self._editor_focus_chip.setTextFormat(Qt.RichText)
+        self._editor_focus_chip.setOpenExternalLinks(False)
+        self._editor_focus_chip.linkActivated.connect(
+            self._on_editor_focus_chip_link)
+        self._editor_focus_chip.setStyleSheet(
+            f"QLabel {{ border: 1px solid {t['accent']}; border-radius: 4px;"
+            f" padding: 4px 6px; background-color: {t['bg_alt']};"
+            f" color: {t['fg']}; }}"
+        )
+        self._editor_focus_chip.hide()
+        lay.addWidget(self._editor_focus_chip)
+
         # Attached-PDN summary — the sources / sinks / series elements that
         # couple into the selected copper's rail group, filled by
         # :meth:`_update_editor_panel` on a named-copper selection and
@@ -17784,9 +17945,16 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
 
         # Net inventory table (editor mode only) — every net on the board
         # with its total copper area, ordered by area descending. Clicking
-        # a row lights up that net's copper in the viewport. See
+        # a row lights up that net's copper in the viewport; the crosshair
+        # column shows only that net (see :meth:`_set_editor_focus`). See
         # :meth:`_refresh_net_table`.
         self._net_table_label = QLabel("<b>Nets</b>")
+        # The focus release link is appended to this line while a focus is
+        # held (see :meth:`_update_net_table_label`).
+        self._net_table_label.setTextFormat(Qt.RichText)
+        self._net_table_label.setOpenExternalLinks(False)
+        self._net_table_label.linkActivated.connect(
+            self._on_editor_focus_chip_link)
         lay.addWidget(self._net_table_label)
         # Live name filter — hides non-matching rows as the user types
         # (case-insensitive substring). Inherits the panel's themed
@@ -17799,9 +17967,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             self._on_net_table_filter_changed)
         self._net_table_filter.hide()
         lay.addWidget(self._net_table_filter)
-        self._net_table = QTableWidget(0, 2, panel)
+        self._net_table = QTableWidget(0, 3, panel)
         self._net_table.setObjectName("NetTable")
-        self._net_table.setHorizontalHeaderLabels(["Net", "Area (mm²)"])
+        self._net_table.setHorizontalHeaderLabels(
+            ["", "Net", "Area (mm²)"])
+        self._net_table.horizontalHeaderItem(
+            self._NET_COL_FOCUS).setToolTip(
+                "Focus — show only one net's copper at a time")
         self._net_table.verticalHeader().setVisible(False)
         self._net_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._net_table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -17810,11 +17982,20 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         # re-applies the user's chosen sort afterwards.
         self._net_table.setSortingEnabled(True)
         self._net_table.horizontalHeader().setSortIndicator(
-            1, Qt.DescendingOrder)
+            self._NET_COL_AREA, Qt.DescendingOrder)
         self._net_table.setAlternatingRowColors(True)
         hh = self._net_table.horizontalHeader()
-        hh.setSectionResizeMode(0, QHeaderView.Stretch)
-        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        # The focus crosshair is a fixed-width icon gutter; the name column
+        # takes the slack. A QTableWidgetItem icon (not a cell widget) is
+        # what carries the glyph, because setCellWidget widgets do NOT move
+        # with sortItems — they would stay put while the rows beneath them
+        # re-ordered, leaving every crosshair on the wrong net.
+        hh.setSectionResizeMode(
+            self._NET_COL_FOCUS, QHeaderView.Fixed)
+        self._net_table.setColumnWidth(self._NET_COL_FOCUS, 26)
+        hh.setSectionResizeMode(self._NET_COL_NAME, QHeaderView.Stretch)
+        hh.setSectionResizeMode(
+            self._NET_COL_AREA, QHeaderView.ResizeToContents)
         # A manual header-click re-sort rearranges items but the hidden-row
         # state is tracked per row position, so re-apply the filter after a
         # sort to keep the right rows masked.
@@ -17843,6 +18024,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._net_table.itemSelectionChanged.connect(
             self._on_net_table_selection)
         self._net_table.itemChanged.connect(self._on_net_table_item_changed)
+        # The crosshair cells are enabled but not selectable, so a click on
+        # one reaches cellClicked without disturbing the row selection (and
+        # so without hiding the table the crosshair lives in).
+        self._net_table.cellClicked.connect(self._on_net_table_cell_clicked)
         self._net_table_label.hide()
         self._net_table.hide()
         lay.addWidget(self._net_table, 1)
@@ -17869,6 +18054,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             return
         self._editor_panel_title.setText("<b>Copper Properties</b>")
         self._editor_hint.hide()
+        self._editor_focus_chip.hide()
         self._editor_net_summary.hide()
         self._editor_form_host.hide()
         self._multi_form_host.hide()
@@ -17910,6 +18096,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             self._editor_multi = []
             self._editor_pending_marker = None
             self._marker_drag = None
+            # Focus hides copper, and there is no control for it outside
+            # editor mode — leaving must not strand the user with two thirds
+            # of the board missing from the viewer.
+            self._clear_editor_focus(render=False)
             self._clear_editor_highlight()
         else:
             self._update_pending_rails()
@@ -18282,6 +18472,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 self._net_table_label.hide()
                 self._net_table_filter.hide()
                 self._net_table.hide()
+            self._update_editor_focus_chip()
             self._sync_marker_buttons()
             return
         self._multi_form_host.hide()
@@ -18320,6 +18511,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             self._net_table_label.setVisible(show_table)
             self._net_table_filter.setVisible(show_table)
             self._net_table.setVisible(show_table)
+        self._update_editor_focus_chip()
         self._sync_marker_buttons()
 
     _MARKER_TIPS: dict = {
@@ -18484,9 +18676,14 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
     def _editor_alpha_array(self, layer_probes: list[dict],
                             total_vertices: int) -> np.ndarray | None:
         """Per-vertex alpha for editor-mode copper dimming: 1.0 for copper
-        in the connectivity highlight, 0.1 for the rest. Returns ``None``
-        when no highlight is active (the mesh then draws fully opaque)."""
-        if not self._editor_mode or not self._editor_highlight_nets:
+        in the connectivity highlight, 0.1 for the rest — or a hard 0.0 for
+        everything outside the focused net while a net focus is held.
+        Returns ``None`` when neither is active (the mesh then draws fully
+        opaque)."""
+        focus_nets = (self._editor_focus_nets
+                      if self._editor_focus_active() else None)
+        if focus_nets is None and (
+                not self._editor_mode or not self._editor_highlight_nets):
             return None
         hi = self._editor_highlight_nets
         parts: list[np.ndarray] = []
@@ -18496,7 +18693,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             n = int(p.get("n_vertices", 0))
             if n <= 0:
                 continue
-            a = 1.0 if p.get("net") in hi else 0.1
+            if focus_nets is not None:
+                a = 1.0 if p.get("net") in focus_nets else 0.0
+            else:
+                a = 1.0 if p.get("net") in hi else 0.1
             parts.append(np.full(n, a, dtype=np.float32))
         if not parts:
             return None
@@ -18521,6 +18721,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         editor_hi = (self._editor_highlight_nets
                       if (self._editor_mode
                           and self._editor_highlight_nets) else None)
+        # Net focus takes the mesh to alpha 0 outside the focused net — the
+        # mesh is per-(layer, net), so the net name alone decides. A focus on
+        # synthetic / unnamed copper has no real net in ``_editor_focus_nets``
+        # and correctly blanks the whole mesh: none of the solved rails is the
+        # copper the user asked to see.
+        focus_nets = (self._editor_focus_nets
+                      if self._editor_focus_active() else None)
 
         # Cheap pre-check — bail out to the fast path when nothing wants a
         # non-1.0 alpha. The mesh shader's constant attribute is faster
@@ -18530,7 +18737,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
              and transp_by_name[lp.get("physical")].alpha() < 1.0)
             for lp in layer_probes
         )
-        if not layer_dim and editor_hi is None:
+        if not layer_dim and editor_hi is None and focus_nets is None:
             return None
 
         parts: list[np.ndarray] = []
@@ -18542,7 +18749,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 continue
             tb = transp_by_name.get(lp.get("physical"))
             layer_a = tb.alpha() if tb is not None else 1.0
-            if editor_hi is not None:
+            if focus_nets is not None:
+                editor_a = 1.0 if lp.get("net") in focus_nets else 0.0
+            elif editor_hi is not None:
                 editor_a = 1.0 if lp.get("net") in editor_hi else 0.1
             else:
                 editor_a = 1.0
@@ -19831,14 +20040,18 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             return
         hit = self._primitive_at_point(world_x, world_y,
                                        require_pad_visible=True)
-        if hit is not None and hit.get("net"):
+        if hit is not None and hit.get("net") \
+                and not self._focus_blocks_pick(hit.get("net")):
             self._select_copper(hit["net"], hit,
                                 anchor_xy=(world_x, world_y))
             return
         # No visible primitive — fall back to the more permissive
         # visible-only picker (rail mesh / stub / visible all-copper).
         pick = self._visible_editor_copper_pick(world_x, world_y)
-        if pick is not None and pick.get("net"):
+        if pick is not None and pick.get("net") \
+                and not self._focus_blocks_pick(
+                    pick.get("net"), world_x, world_y,
+                    pick.get("layer_id")):
             self._select_copper(pick["net"],
                                 anchor_xy=(world_x, world_y),
                                 layer_id=pick.get("layer_id"))
@@ -19875,6 +20088,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         best_d2 = radius * radius
         for d in self._project.editor_directives:
             if d.kind != "free" or d.anchor_xy is None:
+                continue
+            # A marker the net focus has taken off screen must not be
+            # clickable or draggable either.
+            if not self._directive_focus_visible(d):
                 continue
             dx = world_x - float(d.anchor_xy[0])
             dy = world_y - float(d.anchor_xy[1])
@@ -19996,7 +20213,249 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             self._render()
         self._gl_viewer.set_primitive_selection_outline(None)
 
+    # --- Editor mode: net focus ("show only this net") ----------------------
+
+    # Class-level "no focus held" defaults, so the render / panel paths that
+    # read them stay safe on a viewer built with ``__new__`` (the test stubs,
+    # which skip ``__init__``). Frozen, because every write replaces the set
+    # rather than mutating it — an in-place mutation of a shared class
+    # attribute would leak one viewer's focus into the next, so make it fail
+    # loudly instead.
+    _editor_focus_net: str | None = None
+    _editor_focus_nets: frozenset | set = frozenset()
+    _editor_focus_polys: frozenset | set = frozenset()
+
+    def _editor_focus_active(self) -> bool:
+        """True while a net focus is held — i.e. copper outside the focused
+        net is being suppressed. Requires editor mode: focus is an editor
+        control and must not leak into the viewer-mode heatmap."""
+        return bool(
+            self._editor_mode
+            and (self._editor_focus_nets or self._editor_focus_polys)
+        )
+
+    def _editor_focus_hides(self, net: str | None,
+                            layer_id: int | None = None,
+                            poly: dict | None = None) -> bool:
+        """Whether net focus suppresses this piece of copper entirely.
+
+        The counterpart of :meth:`_editor_dim_rgb`'s dim test, but a hard
+        skip rather than a colour blend — focus means the other nets are
+        gone, not faded. ``net`` alone settles it for real nets; unnamed /
+        synthetic copper shares the ``"(none)"`` sentinel, so the
+        polygon-identity set is what keeps the focused region drawn while
+        disjoint unnamed pieces disappear.
+        """
+        if not self._editor_focus_active():
+            return False
+        if net and net in self._editor_focus_nets:
+            return False
+        if (poly is not None and layer_id is not None
+                and (int(layer_id), id(poly)) in self._editor_focus_polys):
+            return False
+        return True
+
+    def _focus_blocks_pick(self, net: str | None,
+                           world_x: float | None = None,
+                           world_y: float | None = None,
+                           layer_id: int | None = None) -> bool:
+        """Whether a click at this point should be treated as landing on bare
+        substrate because net focus has hidden the copper there.
+
+        Losing a hard-won view to a stray click is the problem focus exists to
+        solve, so a click that resolves to copper the user can no longer see
+        must not select it. For the ``"(none)"`` sentinel the net name proves
+        nothing, so the polygon under the cursor is resolved and tested by
+        identity; without a point to resolve, an unnamed pick is let through
+        rather than silently swallowed."""
+        if not self._editor_focus_active():
+            return False
+        if net and net != "(none)":
+            return net not in self._editor_focus_nets
+        if world_x is None or world_y is None or layer_id is None:
+            return False
+        poly = self._copper_poly_under_point(
+            float(world_x), float(world_y), int(layer_id))
+        if poly is None:
+            return False
+        return (int(layer_id), id(poly)) not in self._editor_focus_polys
+
+    def _focus_row_is_focused(self, row: dict) -> bool:
+        """Whether ``row`` (a :meth:`_compute_net_table_rows` payload) is the
+        one currently focused. Matched on name so the flag survives the table
+        rebuild a rename triggers."""
+        return (self._editor_focus_net is not None
+                and row.get("name") == self._editor_focus_net)
+
+    def _set_editor_focus(self, row: dict | None) -> None:
+        """Focus the net described by ``row`` — from here on only its copper
+        draws — or release the focus when ``row`` is ``None``. Passing the
+        already-focused row toggles it off, so the crosshair is its own
+        release.
+
+        Selection is deliberately left alone: the crosshair lives in the net
+        table, and the table is the panel's idle view (see
+        :meth:`_update_editor_panel`), so selecting the row from here would
+        hide the very control the user needs to click again.
+        """
+        if row is None or self._focus_row_is_focused(row):
+            self._clear_editor_focus()
+            return
+        name = row.get("name") or ""
+        # A real net focuses by name so SERIES-bridged copper comes along;
+        # synthetic / unnamed copper has no usable name and focuses by
+        # polygon identity alone.
+        nets = self._connected_nets(name) if row.get("real") else set()
+        self._editor_focus_net = name
+        self._editor_focus_nets = set(nets)
+        self._editor_focus_polys = set(row.get("poly_keys") or ())
+        self._sync_net_focus_column()
+        self._update_editor_focus_chip()
+        self._render()
+        self.statusBar().showMessage(
+            f"Focused on {name}. Click the crosshair again (or press F) "
+            "to show everything.", 6000)
+
+    def _clear_editor_focus(self, *, render: bool = True) -> None:
+        """Release the net focus; all copper comes back."""
+        had = bool(self._editor_focus_nets or self._editor_focus_polys
+                   or self._editor_focus_net)
+        self._editor_focus_net = None
+        self._editor_focus_nets = set()
+        self._editor_focus_polys = set()
+        if not had:
+            return
+        self._sync_net_focus_column()
+        self._update_editor_focus_chip()
+        if render:
+            self._render()
+
+    def _hotkey_toggle_net_focus(self) -> None:
+        """F — release an active net focus, or focus the net the current
+        editor selection sits on. A no-op outside editor mode, and on a
+        selection with no single net to focus."""
+        if not self._editor_mode:
+            return
+        if self._editor_focus_net:
+            self._clear_editor_focus()
+            self.statusBar().showMessage("Net focus released.", 3000)
+            return
+        row = self._focus_row_for_selection()
+        if row is None:
+            self.statusBar().showMessage(
+                "Select a net (or a component / marker on one) first, then "
+                "press F to show only that net's copper.", 4000)
+            return
+        self._set_editor_focus(row)
+
+    def _focus_row_for_selection(self) -> dict | None:
+        """The net-table row the current editor selection implies, or ``None``
+        when the selection names no single net. Lets the F hotkey focus what
+        is already selected instead of making the user find the row."""
+        sel = self._editor_selection
+        name: str | None = None
+        if sel:
+            kind = sel.get("kind")
+            if kind == "copper":
+                name = sel.get("net")
+            elif kind == "free":
+                d = (self._project.directive_by_id(sel.get("id") or "")
+                     if self._project is not None else None)
+                name = getattr(d, "p_net", None) if d is not None else None
+            elif kind == "component":
+                nets = {n for n in (sel.get("nets") or []) if n}
+                # Only an unambiguous single-net component can focus; a part
+                # bridging two rails has no one net to show.
+                if len(nets) == 1:
+                    name = next(iter(nets))
+        if not name or name == "(none)":
+            # Fall back to the highlighted table row — the user may have
+            # clicked a row rather than the canvas.
+            return self._selected_net_table_row()
+        for r in getattr(self, "_net_table_rows", ()) or ():
+            if r.get("name") == name:
+                return r
+        return None
+
+    def _selected_net_table_row(self) -> dict | None:
+        """The row payload for the net table's currently highlighted row, or
+        ``None`` when no row is selected / the table isn't built."""
+        table = getattr(self, "_net_table", None)
+        if table is None:
+            return None
+        i = table.currentRow()
+        if i < 0:
+            return None
+        item = table.item(i, self._NET_COL_NAME)
+        return item.data(_NET_TABLE_ROW_ROLE) if item is not None else None
+
+    def _sync_net_focus_column(self) -> None:
+        """Repaint the net table's crosshair column from the focus state."""
+        table = getattr(self, "_net_table", None)
+        if table is None:
+            return
+        prev = self._net_table_populating
+        self._net_table_populating = True
+        try:
+            for i in range(table.rowCount()):
+                cell = table.item(i, self._NET_COL_FOCUS)
+                name_item = table.item(i, self._NET_COL_NAME)
+                if cell is None or name_item is None:
+                    continue
+                r = name_item.data(_NET_TABLE_ROW_ROLE) or {}
+                self._paint_focus_cell(cell, self._focus_row_is_focused(r))
+        finally:
+            self._net_table_populating = prev
+
+    def _paint_focus_cell(self, cell, on: bool) -> None:
+        """Set one crosshair cell's icon, tooltip and sort key."""
+        cell.setIcon(QIcon(_focus_pixmap(on)))
+        # Sort key: a click on this column's header floats the focused net to
+        # the top rather than shuffling rows by an empty display string.
+        cell.setData(Qt.UserRole, 0 if on else 1)
+        cell.setToolTip(
+            "Showing only this net — click to show all copper again (F)"
+            if on else
+            "Show only this net's copper, hiding every other net until "
+            "clicked again. Keyboard: F"
+        )
+
+    def _update_editor_focus_chip(self) -> None:
+        """Sync the "focused on <net>" release chip.
+
+        The chip covers exactly the state the net table cannot: a
+        selection hides the table (see :meth:`_update_editor_panel`),
+        taking the header's release link with it. While the table IS up
+        the header carries the link and the chip stays down, so focusing
+        never inserts a widget above the table and never shifts the rows
+        under the cursor."""
+        chip = getattr(self, "_editor_focus_chip", None)
+        if chip is None:
+            return
+        self._update_net_table_label()
+        table = getattr(self, "_net_table", None)
+        table_up = table is not None and not table.isHidden()
+        name = self._editor_focus_net
+        show = bool(self._editor_mode and name and not table_up)
+        if show:
+            chip.setText(
+                f"◉ Focused on <b>{_esc(name)}</b>"
+                f" &nbsp;<a href='#release'>Show all</a>"
+            )
+        chip.setVisible(show)
+
+    def _on_editor_focus_chip_link(self, _href: str) -> None:
+        """"Show all" in the focus chip — release the focus."""
+        self._clear_editor_focus()
+
     # --- Editor mode: net inventory table -----------------------------------
+
+    # Net-table column order. The focus crosshair sits first, matching the
+    # layer panel's eye-on-the-left convention, so the name column keeps the
+    # stretchy slot it had when the table had two columns.
+    _NET_COL_FOCUS = 0
+    _NET_COL_NAME = 1
+    _NET_COL_AREA = 2
 
     def _all_copper_poly_maps(self) -> tuple[dict, dict]:
         """``(shape_by_key, net_by_key)`` over every ``all_copper`` polygon,
@@ -20169,8 +20628,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         hdr = table.horizontalHeader()
         sort_col = hdr.sortIndicatorSection()
         sort_order = hdr.sortIndicatorOrder()
-        if sort_col not in (0, 1):
-            sort_col, sort_order = 1, Qt.DescendingOrder
+        if sort_col not in (self._NET_COL_FOCUS, self._NET_COL_NAME,
+                            self._NET_COL_AREA):
+            sort_col, sort_order = self._NET_COL_AREA, Qt.DescendingOrder
         self._net_table_populating = True
         try:
             # Sorting OFF while writing cells, else each setItem re-sorts the
@@ -20187,13 +20647,23 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 # Carry the row payload on the item so click / rename stay
                 # correct after the user re-sorts by a header click.
                 name_item.setData(_NET_TABLE_ROW_ROLE, r)
-                table.setItem(i, 0, name_item)
+                table.setItem(i, self._NET_COL_NAME, name_item)
+                # Focus crosshair. Enabled (so it takes clicks) but NOT
+                # selectable: clicking it must not select the row, because
+                # _update_editor_panel hides the whole table as soon as
+                # anything is selected.
+                focus_item = _MessagesSortItem("")
+                focus_item.setFlags(Qt.ItemIsEnabled)
+                focus_item.setTextAlignment(Qt.AlignCenter)
+                self._paint_focus_cell(
+                    focus_item, self._focus_row_is_focused(r))
+                table.setItem(i, self._NET_COL_FOCUS, focus_item)
                 area_item = _MessagesSortItem(f"{r['area']:,.2f}")
                 area_item.setData(Qt.UserRole, float(r["area"]))
                 area_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
                 area_item.setTextAlignment(
                     Qt.AlignRight | Qt.AlignVCenter)
-                table.setItem(i, 1, area_item)
+                table.setItem(i, self._NET_COL_AREA, area_item)
             table.setSortingEnabled(True)
             table.sortItems(sort_col, sort_order)
         finally:
@@ -20219,19 +20689,51 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         needle = edit.text().strip().lower() if edit is not None else ""
         visible = 0
         for i in range(table.rowCount()):
-            item = table.item(i, 0)
+            item = table.item(i, self._NET_COL_NAME)
             name = item.text().lower() if item is not None else ""
             hide = bool(needle) and needle not in name
             table.setRowHidden(i, hide)
             if not hide:
                 visible += 1
-        if hasattr(self, "_net_table_label"):
-            total = len(getattr(self, "_net_table_rows", ()))
-            if needle:
-                self._net_table_label.setText(
-                    f"<b>Nets</b> ({visible} of {total})")
-            else:
-                self._net_table_label.setText(f"<b>Nets</b> ({total})")
+        self._update_net_table_label(visible=visible, filtered=bool(needle))
+
+    def _update_net_table_label(self, *, visible: int | None = None,
+                                filtered: bool | None = None) -> None:
+        """Rewrite the net table's header line — the row count, plus the focus
+        release link while a focus is held.
+
+        The link lives here rather than in a banner of its own because the
+        header is already present, at a fixed single-line height, immediately
+        above the table. A banner above the table would instead push it down at
+        the exact moment the user is reaching back to the crosshair to undo a
+        mis-click, which is how they would end up focusing a second wrong net.
+        """
+        label = getattr(self, "_net_table_label", None)
+        if label is None:
+            return
+        total = len(getattr(self, "_net_table_rows", ()))
+        if visible is None or filtered is None:
+            edit = getattr(self, "_net_table_filter", None)
+            filtered = bool(edit is not None and edit.text().strip())
+            visible = total
+            table = getattr(self, "_net_table", None)
+            if filtered and table is not None:
+                visible = sum(not table.isRowHidden(i)
+                              for i in range(table.rowCount()))
+        head = (f"<b>Nets</b> ({visible} of {total})" if filtered
+                else f"<b>Nets</b> ({total})")
+        name = self._editor_focus_net
+        if name:
+            # Elided: the panel is a fixed 300 px and this label does not
+            # wrap, so a long net name would push the release link off the
+            # edge instead of growing the line.
+            shown = name if len(name) <= 16 else name[:15] + "\u2026"
+            head += (
+                f" &nbsp;\u00b7&nbsp; <a href='#release'"
+                f" title='Show all copper again'>"
+                f"\u25c9 {_esc(shown)} \u2715</a>"
+            )
+        label.setText(head)
 
     def _on_net_table_selection(self) -> None:
         """Light up the clicked net's copper in the viewport (dim the rest),
@@ -20244,18 +20746,31 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         row = table.currentRow()
         if row < 0:
             return
-        name_item = table.item(row, 0)
+        name_item = table.item(row, self._NET_COL_NAME)
         r = name_item.data(_NET_TABLE_ROW_ROLE) if name_item else None
         if not r:
             return
         nets = self._connected_nets(r["name"]) if r["real"] else set()
         self._apply_editor_highlight(nets, polys=r["poly_keys"])
 
+    def _on_net_table_cell_clicked(self, row: int, col: int) -> None:
+        """Toggle net focus when the click landed in the crosshair column."""
+        if col != self._NET_COL_FOCUS or not self._editor_mode:
+            return
+        table = getattr(self, "_net_table", None)
+        if table is None:
+            return
+        name_item = table.item(row, self._NET_COL_NAME)
+        r = name_item.data(_NET_TABLE_ROW_ROLE) if name_item else None
+        if r:
+            self._set_editor_focus(r)
+
     def _on_net_table_item_changed(self, item) -> None:
         """Commit an in-place net rename from the table. Only synthetic /
         user-named copper is editable; the new name is written back to the
         backing :class:`CopperName`(s) so it persists to the project."""
-        if self._net_table_populating or item is None or item.column() != 0:
+        if (self._net_table_populating or item is None
+                or item.column() != self._NET_COL_NAME):
             return
         r = item.data(_NET_TABLE_ROW_ROLE)
         if not r:
@@ -20296,6 +20811,11 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             return
         self._all_net_names_cache = None
         self._mark_project_dirty()
+        # Focus is tracked by display name; carry it over so a rename of the
+        # focused net doesn't silently orphan the crosshair and the chip.
+        if self._editor_focus_net == old:
+            self._editor_focus_net = new
+            self._update_editor_focus_chip()
         self._refresh_net_table()
         self.statusBar().showMessage(f"Renamed net to {new}.", 3000)
 
@@ -21955,8 +22475,62 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         except RuntimeError:
             pass   # form rebuilt out from under us — harmless
 
+    def _directive_focus_visible(self, d) -> bool:
+        """Whether an editor directive survives the net focus.
+
+        Focus is "work on this one net": its sources and sinks are the only
+        ones that belong on screen, and a marker for some other rail is both
+        clutter and a mis-click waiting to happen. Gated through
+        :meth:`_directive_rail_visible`, so the drawn markers, the clickable
+        ones and the hover bar all follow the same rule.
+
+        An unresolved marker (no net yet, or the ``"(none)"`` sentinel) is
+        matched by the copper under its anchor instead; one whose anchor
+        cannot be resolved stays visible, since a marker the user just
+        dropped vanishing is worse than one extra glyph."""
+        if not self._editor_focus_active():
+            return True
+        net = d.p_net
+        if net and net != "(none)":
+            return bool(self._connected_nets(net) & self._editor_focus_nets)
+        if d.anchor_xy is None or d.layer_id is None:
+            return True
+        poly = self._copper_poly_under_point(
+            float(d.anchor_xy[0]), float(d.anchor_xy[1]), int(d.layer_id))
+        if poly is None:
+            return True
+        return (int(d.layer_id), id(poly)) in self._editor_focus_polys
+
+    def _directive_copper_visible(self, d) -> bool:
+        """Whether the copper an editor directive is anchored to is itself on
+        screen — i.e. the marker has somewhere visible to sit.
+
+        Only the all-copper (second eye) layers count. The heatmap eyes are
+        the rail view, which :meth:`_directive_rail_visible` has already
+        tested and rejected by the time this is asked; answering "yes"
+        from them would make that test meaningless.
+        """
+        copper_ids = set(self._visible_all_copper_layer_ids())
+        if not copper_ids:
+            return False
+        if d.kind == "free":
+            return self._free_marker_layer_id(d) in copper_ids
+        if d.kind != "component" or not d.designator:
+            return False
+        # A component-bound directive shows wherever one of its terminals has
+        # a pad on a visible all-copper layer.
+        if self._component_pad_points(
+                d.designator, [d.p_net], copper_ids, pin_filter=d.p_pins):
+            return True
+        return bool(
+            not d.single_net and d.n_net
+            and self._component_pad_points(
+                d.designator, [d.n_net], copper_ids, pin_filter=d.n_pins))
+
     def _directive_rail_visible(self, d) -> bool:
-        """Whether an editor directive belongs to a currently-visible rail.
+        """Whether an editor directive's marker should be drawn: its rail is
+        visible, or (in editor mode) the copper it sits on is — and, while
+        one is held, it belongs to the focused net.
 
         Source / sink markers track the rail eyes the same way the solved
         markers do: a directive on a hidden rail (or hidden subnet within a
@@ -21964,12 +22538,22 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         markers no longer bleed in alongside every other rail's. A directive that isn't part of any solved rail
         yet (freshly placed, not-yet-resolved) always shows so the user can
         still see what they've just dropped while editing."""
+        if not self._directive_focus_visible(d):
+            return False
         net = d.p_net
         if not net:
             return True
         conn = self._connected_nets(net)
         visible_members = set(self._effective_rail_members(self._visible_rails()))
         if conn & visible_members:
+            return True
+        # Editor mode: seeing the copper is reason enough. Editing is done
+        # one net at a time, usually a net with no solved rail yet (or whose
+        # rail is switched off because the user is working from the
+        # all-copper view), so gating purely on rail visibility hid the very
+        # markers being placed. Outside editor mode the rail test stands on
+        # its own — the heatmap is what the markers annotate there.
+        if self._editor_mode and self._directive_copper_visible(d):
             return True
         solved_members: set[str] = set()
         for members in self._rail_to_members.values():

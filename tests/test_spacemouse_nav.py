@@ -161,21 +161,75 @@ class TestSpaceMouseController:
             ctrl = SpaceMouseController(viewer, lambda: None)
             assert not ctrl.available()
 
-    def test_window_activate_enables_navlib(self):
-        top = MagicMock()
+    @staticmethod
+    def _bare_controller(client):
+        """A controller with just enough wired up to drive enable / disable,
+        without the __init__ that would reach for a real NavLib."""
         ctrl = SpaceMouseController.__new__(SpaceMouseController)
-        ctrl._top_level = top
-        ctrl._navlib_client = MagicMock()
+        ctrl._top_level = MagicMock()
+        ctrl._navlib_client = client
         ctrl._linux = None
         ctrl._active = False
+        ctrl._logged_no_device = False
         ctrl.set_active = SpaceMouseController.set_active.__get__(ctrl)
+        ctrl._set_navlib_enabled = (
+            SpaceMouseController._set_navlib_enabled.__get__(ctrl))
+        return ctrl
+
+    def test_window_activate_enables_navlib(self):
+        client = MagicMock()
+        ctrl = self._bare_controller(client)
 
         from PySide6.QtCore import QEvent
         activate = MagicMock()
         activate.type.return_value = QEvent.Type.WindowActivate
-        SpaceMouseController.eventFilter(ctrl, top, activate)
+        SpaceMouseController.eventFilter(ctrl, ctrl._top_level, activate)
         assert ctrl._active
-        ctrl._navlib_client.enable_navigation.assert_called_once_with(True)
+        # The native call, not pynavlib's wrapper: the wrapper swallows the
+        # no-device RuntimeError and re-emits it as a root-logger ERROR with
+        # a traceback, so we would never see the outcome.
+        client._enable_navigation.assert_called_once_with(True)
+        client.enable_navigation.assert_not_called()
+
+    def test_a_missing_native_call_falls_back_to_the_wrapper(self):
+        """A future pynavlib without the private name must still work — the
+        console just goes back to being noisy."""
+        client = MagicMock(spec=["enable_navigation"])
+        ctrl = self._bare_controller(client)
+        assert ctrl._set_navlib_enabled(True) is True
+        client.enable_navigation.assert_called_once_with(True)
+
+    def test_no_device_is_reported_once_not_on_every_activation(self, caplog):
+        """The bug this replaced: an ERROR traceback per launch and per window
+        activation on any machine with no SpaceMouse plugged in."""
+        import logging
+
+        client = MagicMock()
+        client._enable_navigation.side_effect = RuntimeError(
+            "Cannot create a connection to the 3DMouse.: not connected")
+        ctrl = self._bare_controller(client)
+
+        with caplog.at_level(logging.DEBUG, logger="fypa.spacemouse_nav"):
+            for _ in range(5):
+                assert ctrl._set_navlib_enabled(True) is False
+
+        infos = [r for r in caplog.records if r.levelno >= logging.INFO]
+        assert len(infos) == 1
+        assert "3D mouse" in infos[0].getMessage()
+        assert not [r for r in caplog.records
+                    if r.levelno >= logging.WARNING]
+
+    def test_a_device_appearing_later_still_works(self):
+        """The client is kept on failure, so plugging one in mid-session is
+        picked up on the next activation."""
+        client = MagicMock()
+        client._enable_navigation.side_effect = RuntimeError("not connected")
+        ctrl = self._bare_controller(client)
+        assert ctrl._set_navlib_enabled(True) is False
+        client._enable_navigation.side_effect = None
+        assert ctrl._set_navlib_enabled(True) is True
+        # ...and a later unplug is reported again, having been re-armed.
+        assert ctrl._logged_no_device is False
 
 
 class TestNavlib3DPan:

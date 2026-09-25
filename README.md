@@ -590,6 +590,10 @@ Users follow the
 [Download (prebuilt Windows binary)](#download-prebuilt-windows-binary)
 instructions above.
 
+For the step-by-step version of this — the pre-tag checklist, TortoiseGit
+steps for creating and pushing the tag, and how to recover from a failed
+run — see [docs/release-process.md](docs/release-process.md).
+
 To build and share a zip without publishing a release, run
 `packaging\build_dist.bat` and send `dist\FYPA.zip` directly.
 
