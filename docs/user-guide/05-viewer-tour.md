@@ -213,6 +213,7 @@ controls, node / via tables, messages, and settings.
 | **2 / 3**    | Switch the viewport to 2-D / 3-D mode.                                |
 | **0**        | Reset the 3-D camera.                                                 |
 | **E**        | Toggle editor mode (see [Section 2.2](02-sources-and-sinks-editor.md#22-entering-editor-mode)). |
+| **S** / **L** | In editor mode, arm a free **S**OURCE / sink (**L**oad) drop — the keyboard equivalent of the red / blue triangle buttons. |
 | **Ctrl+S**   | Save the project (the dialog offers project-only or project+solution). |
 
 The Help tab inside the viewer has the authoritative, always-current

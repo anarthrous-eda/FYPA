@@ -9886,7 +9886,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         # copper (that's what the outline pass traces), so it lives on the
         # "All Rails" row below. Replaces the old "Show layer outlines (O)"
         # side-panel checkbox.
-        self._outlines_btn = OutlineToggleButton(on=False)
+        self._outlines_btn = OutlineToggleButton(on=True)
         all_row = self._build_layer_row_widget(
             self._all_layers_eye, swatch_color=None,
             label_text="All Layers", bold=True,
@@ -17251,6 +17251,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             ("Shift+H", self._hotkey_cycle_colormap_reverse),
             ("B", self._toggle_sidebar),
             ("E", self._hotkey_toggle_editor),
+            # Arm a free SOURCE / SINK placement — keyboard equivalents of
+            # the viewport triangle buttons; no-ops outside editor mode.
+            ("S", self._hotkey_arm_source_marker),
+            ("L", self._hotkey_arm_sink_marker),
             # Free-marker edit undo / redo (move + delete) — no-ops outside
             # editor mode.
             ("Ctrl+Z", self._undo_marker_action),
@@ -17491,11 +17495,12 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         # button: a free marker has a single anchor point, but a SERIES
         # element bridges two separate copper points, so SERIES is
         # component-bound only — assign it by selecting the part.
-        for role, attr, up, tip in (
-            ("SOURCE", "_editor_add_source_btn", True,
-             "Drop a free SOURCE — click, then click copper"),
-            ("SINK", "_editor_add_sink_btn", False,
-             "Drop a free SINK — click, then click copper"),
+        # Tooltips come from _MARKER_TIPS so the build-time text and the
+        # live text _sync_marker_buttons re-applies (enabled / disabled)
+        # can't drift apart — notably over the S / L hotkey hints.
+        for role, attr, up in (
+            ("SOURCE", "_editor_add_source_btn", True),
+            ("SINK", "_editor_add_sink_btn", False),
         ):
             style = self._ROLE_MARKER_STYLE[role]
             mbtn = QToolButton(self._gl_viewer)
@@ -17504,7 +17509,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             mbtn.setIcon(_triangle_icon(style["color"], up=up))
             mbtn.setIconSize(QSize(18, 18))
             mbtn.setFixedSize(34, 34)
-            mbtn.setToolTip(tip)
+            mbtn.setToolTip(self._MARKER_TIPS[role])
             mbtn.clicked.connect(
                 lambda _checked=False, r=role: self._on_editor_add_marker(r)
             )
@@ -17943,6 +17948,26 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
     def _hotkey_toggle_editor(self) -> None:
         self._editor_toggle_btn.toggle()
 
+    def _hotkey_arm_source_marker(self) -> None:
+        self._hotkey_arm_marker("SOURCE")
+
+    def _hotkey_arm_sink_marker(self) -> None:
+        self._hotkey_arm_marker("SINK")
+
+    def _hotkey_arm_marker(self, role: str) -> None:
+        """S / L equivalent of clicking the viewport SOURCE / SINK button:
+        arm "drop a free <role> on the next copper click", or disarm it
+        when that role is already armed.
+
+        A no-op outside editor mode, where the buttons are hidden anyway.
+        Inside it the work goes through :meth:`_on_editor_add_marker`, so
+        the keyboard hits the same named-copper guard and the same button
+        sync as the mouse — the pressed key lights the button up.
+        """
+        if not getattr(self, "_editor_mode", False):
+            return
+        self._on_editor_add_marker(role)
+
     _EDITOR_DEFAULT_HINT = (
         "Click a component or a copper region in the viewport to assign a "
         "PDN role, or use the red / blue triangle buttons at the top-left "
@@ -18298,8 +18323,8 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._sync_marker_buttons()
 
     _MARKER_TIPS: dict = {
-        "SOURCE": "Drop a free SOURCE — click, then click copper",
-        "SINK": "Drop a free SINK — click, then click copper",
+        "SOURCE": "Drop a free SOURCE (S) — click, then click copper",
+        "SINK": "Drop a free SINK (L) — click, then click copper",
     }
     _MARKER_TIP_DISABLED = (
         "At least one piece of copper needs a net name in the project "
@@ -30770,6 +30795,8 @@ def _help_tab_style() -> str:
 _HELP_TAB_BODY = """
 
 <h2>Keyboard shortcuts</h2>
+
+<h3>Heatmap tab</h3>
 <table>
   <tr><th>Key</th><th>Action</th></tr>
   <tr><td><kbd>2</kbd></td><td>Switch to 2D mode <span class='muted'>(re-fits to data)</span></td></tr>
@@ -30790,7 +30817,9 @@ _HELP_TAB_BODY = """
 </table>
 <p class='muted'>Shortcuts are window-scoped — they fire when the viewer
 window has focus but defer to text inputs (e.g. the Min/Max boxes)
-when one of those has focus.</p>
+when one of those has focus. The editor-mode keys
+(<kbd>E</kbd>, <kbd>S</kbd>, <kbd>L</kbd>, <kbd>Delete</kbd>, undo / redo)
+are listed under <i>Mouse controls &rarr; Editor mode</i> below.</p>
 
 <h2>Topology tab</h2>
 <p>The <b>Topology</b> tab shows an abstract Flow diagram of the PDN
@@ -30833,8 +30862,14 @@ focused. The diagram is vector-rendered — zoom stays sharp.</p>
 
 <h3>Editor mode <span class='muted'>(2D only)</span></h3>
 <table>
-  <tr><th>Gesture</th><th>Action</th></tr>
+  <tr><th>Gesture / key</th><th>Action</th></tr>
   <tr><td><kbd>E</kbd></td><td>Enter / leave editor mode</td></tr>
+  <tr><td><kbd>S</kbd></td><td>Drop a free <b>SOURCE</b> &mdash; same as the red triangle
+      button at the top-left of the viewport. Then click copper to place it;
+      press <kbd>S</kbd> again to cancel.</td></tr>
+  <tr><td><kbd>L</kbd></td><td>Drop a free <b>SINK</b> &mdash; same as the blue triangle
+      button at the top-left of the viewport. Then click copper to place it;
+      press <kbd>L</kbd> again to cancel.</td></tr>
   <tr><td>Left click</td><td>Select the component, marker or copper under the cursor</td></tr>
   <tr><td>Left drag on a marker</td><td>Move that free marker (constrained to copper)</td></tr>
   <tr><td>Left drag on empty board</td><td>Rubber-band select every PDN marker <i>fully</i> inside the box. Copper and roleless parts are never selected.</td></tr>
