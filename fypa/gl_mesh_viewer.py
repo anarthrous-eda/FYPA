@@ -706,6 +706,10 @@ class GLMeshViewer(QOpenGLWidget):
         # region-with-holes gets the outer ring plus one ring per hole.
         self._primitive_selection_rings: list[
             list[tuple[float, float]]] | None = None
+        # The same rings flattened to one (N, 2) array plus each ring's start
+        # index, so the draw projects every point in one numpy pass.
+        self._primitive_selection_xy: np.ndarray | None = None
+        self._primitive_selection_starts: np.ndarray | None = None
         # Red dashed rings around copper that failed FEM meshing — set by the
         # host when a solve aborts on invalid geometry.
         self._mesh_failure_rings: list[
@@ -1891,6 +1895,18 @@ class GLMeshViewer(QOpenGLWidget):
         if new == self._primitive_selection_rings:
             return
         self._primitive_selection_rings = new
+        # Flattened copy for the per-frame draw: a Tab-expanded selection
+        # can outline a whole net (thousands of rings), too many to project
+        # one point at a time in Python every repaint.
+        kept = [r for r in (new or []) if len(r) >= 2]
+        if kept:
+            self._primitive_selection_xy = np.array(
+                [p for r in kept for p in r], dtype=np.float64)
+            self._primitive_selection_starts = np.cumsum(
+                [0] + [len(r) for r in kept[:-1]], dtype=np.int64)
+        else:
+            self._primitive_selection_xy = None
+            self._primitive_selection_starts = None
         self.update()
 
     def set_mesh_failure_outline(self, rings) -> None:
@@ -3210,9 +3226,37 @@ class GLMeshViewer(QOpenGLWidget):
         World-mm rings (set via :meth:`set_primitive_selection_outline`)
         projected to screen each frame, so the dashes track pan / zoom and
         the 3D camera. Works in any view mode; same yellow + thickness as
-        the editor-mode selection box."""
-        if self._primitive_selection_rings is None:
+        the editor-mode selection box.
+
+        Projection is one numpy pass over every ring; rings wholly off
+        screen or behind the 3D camera are culled, and consecutive points
+        landing on the same pixel are dropped, so a Tab-expanded whole-net
+        outline costs roughly what is visible rather than what is selected."""
+        xy = getattr(self, "_primitive_selection_xy", None)
+        starts = getattr(self, "_primitive_selection_starts", None)
+        if xy is None or starts is None or not len(xy):
             return
+        xs, ys = self._project_points_screen(xy[:, 0], xy[:, 1])
+        n = len(xs)
+        ends = np.append(starts[1:], n)
+        # Per-ring screen bbox, and whether any point fell behind the camera.
+        min_x = np.minimum.reduceat(xs, starts)
+        max_x = np.maximum.reduceat(xs, starts)
+        min_y = np.minimum.reduceat(ys, starts)
+        max_y = np.maximum.reduceat(ys, starts)
+        w, h = float(self.width()), float(self.height())
+        on_screen = ((min_x > -1e8) & (min_y > -1e8)
+                     & (max_x >= 0.0) & (min_x <= w)
+                     & (max_y >= 0.0) & (min_y <= h))
+        if not on_screen.any():
+            return
+        # Drop a point when it rounds to the same pixel as its predecessor
+        # in the same ring (ring starts are always kept).
+        rx = np.rint(xs)
+        ry = np.rint(ys)
+        keep = np.ones(n, dtype=bool)
+        keep[1:] = (rx[1:] != rx[:-1]) | (ry[1:] != ry[:-1])
+        keep[starts] = True
         painter.save()
         pen = QPen(QColor("#ffff00"))
         pen.setWidthF(_EDITOR_SELECTION_BOX_PX)
@@ -3221,20 +3265,15 @@ class GLMeshViewer(QOpenGLWidget):
         pen.setCosmetic(True)
         painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
-        for ring in self._primitive_selection_rings:
-            if len(ring) < 2:
+        for i in np.flatnonzero(on_screen):
+            s, e = int(starts[i]), int(ends[i])
+            m = keep[s:e]
+            px = xs[s:e][m].tolist()
+            py = ys[s:e][m].tolist()
+            if len(px) < 2:
                 continue
-            poly = QPolygonF()
-            ok = True
-            for wx, wy in ring:
-                px, py = self.world_to_screen(wx, wy, 0.0)
-                if px < -1e8 or py < -1e8:   # behind 3D camera
-                    ok = False
-                    break
-                poly.append(QPointF(px, py))
-            if not ok or poly.size() < 2:
-                continue
-            painter.drawPolygon(poly)
+            painter.drawPolygon(QPolygonF(
+                [QPointF(x, y) for x, y in zip(px, py)]))
         painter.restore()
 
     def _draw_measurement_line(self, painter: QPainter) -> None:

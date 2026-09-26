@@ -271,6 +271,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QAbstractSpinBox,
     QApplication,
     QButtonGroup,
     QCheckBox,
@@ -294,6 +295,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QPlainTextEdit,
     QProgressDialog,
     QPushButton,
     QRadioButton,
@@ -301,11 +303,13 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QSpinBox,
+    QStackedWidget,
     QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
     QTextBrowser,
+    QTextEdit,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -9712,6 +9716,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             self._vias_table_populated = False
             self._vias_warn_init_scheduled = False
             self._nodes_warn_init_scheduled = False
+            self._sync_placeholder_tabs()
             # bridge_candidates came in with the new metadata, so the table
             # and the tab's warning count are both stale.
             self._bridges_table_populated = False
@@ -19971,6 +19976,226 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 # is gone (see :meth:`_position_editor_panel`).
                 self._position_editor_panel()
 
+    # --- Tab: expand the dashed-yellow selection along its net -------------
+    #
+    # With a copper primitive selected (the dashed-yellow outline, in viewer
+    # or editor mode), Tab steps the outline out through three levels and
+    # back round: the clicked primitive -> every same-net primitive on its
+    # layer -> every same-net primitive on all visible layers -> the clicked
+    # primitive again. Shift+Tab steps the other way. "Connected" is by net
+    # name, not copper geometry, so disjoint same-net islands are included.
+    # Display only: nothing downstream (Apply, Delete) reads the expansion.
+
+    # ``{"seed": <selection object>, "level": 0..2}``. The seed is the
+    # selection dict itself (``_copper_selection`` in viewer mode, the
+    # ``_editor_selection`` copper dict in editor mode), compared by
+    # identity: any new click replaces that object, so the level falls back
+    # to 0 without every clear / select path having to reset it.
+    _tab_expand: dict | None = None
+
+    _TAB_LEVELS = 3
+
+    def _tab_expand_seed(self) -> tuple[object, str, int, dict | None] | None:
+        """``(seed_obj, net, layer_id, hit)`` for the current copper
+        selection, or ``None`` when nothing Tab can expand is selected.
+        ``hit`` is the primitive-picker record whose outline level 0
+        restores — editor mode can hold a copper selection with no
+        primitive (the rail-mesh fallback picker), which has no outline."""
+        if self._editor_mode:
+            sel = self._editor_selection
+            if not sel or sel.get("kind") != "copper" or self._editor_multi:
+                return None
+            if sel.get("layer_id") is None:
+                return None
+            return (sel, str(sel.get("net") or ""), int(sel["layer_id"]),
+                    sel.get("hit"))
+        hit = self._copper_selection
+        if hit is None or hit.get("layer_id") is None:
+            return None
+        return (hit, str(hit.get("net") or ""), int(hit["layer_id"]), hit)
+
+    def _same_net_copper_hits(self, net: str, layer_ids: set[int]
+                              ) -> list[dict]:
+        """Every copper primitive on ``net`` touching any of ``layer_ids``,
+        as primitive-picker-shaped dicts (``{"kind", "record", "layer_id",
+        "net"}``) so :meth:`_primitive_outline_rings` can outline them.
+
+        Covers what the picker can select: tracks / arcs / fills / regions /
+        planes, vias and through-hole pads whose span crosses a listed
+        layer, and pads. Each record appears once even when it sits on
+        several listed layers (a via, a multi-layer pad). Keepouts and
+        board cutouts carry no current, so they are left out. In editor
+        mode pads hidden by the Pads overlay are skipped, matching the
+        click picker's ``require_pad_visible``."""
+        md = self.metadata or {}
+        out: list[dict] = []
+        seen: set[int] = set()
+
+        def take(kind: str, rec: dict, lid: int) -> None:
+            if id(rec) in seen:
+                return
+            seen.add(id(rec))
+            out.append({"kind": kind, "record": rec,
+                        "layer_id": int(lid), "net": net})
+
+        index = self._primitives_index()
+        for lid in sorted(layer_ids):
+            for rec in index.get((int(lid), net)) or []:
+                if rec.get("is_keepout") or rec.get("is_board_cutout"):
+                    continue
+                take(rec.get("kind") or "region", rec, lid)
+        for kind, bucket in (("via", md.get("vias") or []),
+                             ("pth", md.get("pths") or [])):
+            for rec in bucket:
+                if (rec.get("net") or "") != net:
+                    continue
+                if float(rec.get("diameter_mm", 0.0) or 0.0) <= 0.0:
+                    continue
+                ls = int(rec.get("layer_start", 0) or 0)
+                le = int(rec.get("layer_end", 0) or 0)
+                if not (ls and le):
+                    continue
+                lo, hi = min(ls, le), max(ls, le)
+                hits = [lid for lid in layer_ids if lo <= lid <= hi]
+                if hits:
+                    take(kind, rec, min(hits))
+        for rec in md.get("pads") or []:
+            if (rec.get("net") or "") != net:
+                continue
+            if len(rec.get("outline") or []) < 3:
+                continue
+            hits = [int(lid) for lid in (rec.get("layer_ids") or [])
+                    if int(lid) in layer_ids]
+            if not hits:
+                continue
+            if self._editor_mode and not self._pad_overlay_visible(rec):
+                continue
+            take("pad", rec, min(hits))
+        return out
+
+    def _cycle_tab_expand(self, step: int = 1) -> bool:
+        """Advance the Tab expansion one level (``step=-1`` for Shift+Tab)
+        and push the new outline. Returns ``False`` when there is no copper
+        selection to expand, so the key press can fall through to Qt's
+        normal focus handling."""
+        seed = self._tab_expand_seed()
+        if seed is None:
+            return False
+        seed_obj, net, layer_id, hit = seed
+        state = self._tab_expand
+        level = state["level"] if (state and state["seed"] is seed_obj) else 0
+        if not net or net == "(none)":
+            # Unnamed copper shares one sentinel "net", so expanding by name
+            # would outline every unrelated scrap of no-net copper.
+            self.statusBar().showMessage(
+                "Tab expands along a net — this copper has no net name.",
+                4000)
+            return True
+        level = (level + step) % self._TAB_LEVELS
+        self._tab_expand = {"seed": seed_obj, "level": level}
+        gl = self._gl_viewer
+        if level == 0:
+            gl.set_primitive_selection_outline(
+                self._primitive_outline_rings(hit) if hit else None)
+            if not self._editor_mode and hit is not None:
+                self._populate_copper_props_form(hit)
+            self.statusBar().clearMessage()
+            return True
+        if level == 1:
+            layers = {layer_id}
+        else:
+            layers = self._tab_visible_layer_ids() | {layer_id}
+        hits = self._same_net_copper_hits(net, layers)
+        rings: list[list[tuple[float, float]]] = []
+        for h in hits:
+            rings.extend(self._primitive_outline_rings(h))
+        gl.set_primitive_selection_outline(rings or None)
+        where = (self._layer_name_for_id(layer_id) if level == 1
+                 else f"{len(layers)} visible layer"
+                      f"{'' if len(layers) == 1 else 's'}")
+        self.statusBar().showMessage(
+            f"{net}: {len(hits)} primitive{'' if len(hits) == 1 else 's'} "
+            f"on {where} — Tab to "
+            f"{'expand to all visible layers' if level == 1 else 'go back'}"
+            ".")
+        if not self._editor_mode:
+            self._populate_copper_group_form(net, layers, hits)
+        return True
+
+    def _tab_visible_layer_ids(self) -> set[int]:
+        """Copper layers that actually show something, for the last Tab
+        level. The all-copper eyes always count. A physical-layer (rail
+        heatmap) eye counts only while a rail is visible: with no rails
+        (unsolved, or every rail eye off) that eye draws nothing, so an
+        open one must not pull its layer into the selection."""
+        ids = set(self._visible_all_copper_layer_ids().keys())
+        if self._visible_rails():
+            for name in self._visible_layers():
+                lid = self._phys_name_to_layer_id.get(name)
+                if lid is not None:
+                    ids.add(lid)
+        return ids
+
+    def _populate_copper_group_form(self, net: str, layer_ids: set[int],
+                                    hits: list[dict]) -> None:
+        """Right-panel summary for a Tab-expanded viewer-mode selection:
+        net, layers, and a per-kind primitive count."""
+        if not hasattr(self, "_copper_props_layout"):
+            return
+        lay = self._copper_props_layout
+        self._clear_layout(lay)
+        lay.addWidget(QLabel(f"<b>{len(hits)} copper primitives</b>"))
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(4)
+
+        def add(label: str, value: str) -> None:
+            v = QLabel(value)
+            v.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            v.setWordWrap(True)
+            form.addRow(QLabel(label), v)
+
+        add("Net", net)
+        names = [self._layer_name_for_id(lid)
+                 for lid in sorted(layer_ids,
+                                   key=lambda i: self._phys_stackup_rank.get(
+                                       self._layer_name_for_id(i), 1 << 30))]
+        add("Layers" if len(names) > 1 else "Layer", ", ".join(names))
+        labels = (("track", "Tracks"), ("arc", "Arcs"), ("fill", "Fills"),
+                  ("region", "Regions"),
+                  ("shape_based_region", "Regions (shape-based)"),
+                  ("plane", "Planes"), ("via", "Vias"),
+                  ("pth", "Through-hole pads"), ("pad", "Pads"))
+        counts: dict[str, int] = {}
+        for h in hits:
+            counts[h["kind"]] = counts.get(h["kind"], 0) + 1
+        for kind, label in labels:
+            if counts.get(kind):
+                add(label, str(counts[kind]))
+        lay.addLayout(form)
+
+    def _tab_targets_viewport(self) -> bool:
+        """Whether a Tab press belongs to the viewport rather than Qt's
+        focus chain: the GL view has keyboard focus, or the cursor is over
+        it and no text entry has focus (Tab in a text box must still move
+        to the next field)."""
+        gl = getattr(self, "_gl_viewer", None)
+        if gl is None:
+            return False
+        fw = QApplication.focusWidget()
+        if fw is gl:
+            return True
+        if not gl.underMouse():
+            return False
+        if isinstance(fw, QAbstractSpinBox):
+            return False
+        if (isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit))
+                and not fw.isReadOnly()):
+            return False
+        if isinstance(fw, QComboBox) and fw.isEditable():
+            return False
+        return True
+
     def _on_editor_click(self, world_x: float, world_y: float) -> None:
         """Editor-mode left-click: drop a pending free marker if one is
         armed, else select the component / placed marker / copper under
@@ -20174,6 +20399,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             layer_id = int(hit["layer_id"])
         if layer_id is not None:
             sel["layer_id"] = int(layer_id)
+        if hit is not None:
+            # Kept so a Tab cycle (see _cycle_tab_expand) can restore the
+            # single-primitive outline after expanding along the net.
+            sel["hit"] = hit
         self._editor_selection = sel
         rings = self._primitive_outline_rings(hit) if hit else None
         self._gl_viewer.set_primitive_selection_outline(rings)
@@ -23896,6 +24125,18 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             # so it doesn't bubble up and close the window.
             self._clear_copper_selection()
             return True
+        elif (et == QEvent.KeyPress
+              and event.key() in (Qt.Key_Tab, Qt.Key_Backtab)
+              and not event.isAutoRepeat() and self.isActiveWindow()
+              and not (event.modifiers() & (Qt.ControlModifier
+                                            | Qt.AltModifier))
+              and self._tab_targets_viewport()):
+            # Tab / Shift+Tab step the copper selection out along its net
+            # (see _cycle_tab_expand). Consumed only when there is a copper
+            # selection to expand; otherwise Qt's focus chain gets the key.
+            step = -1 if event.key() == Qt.Key_Backtab else 1
+            if self._cycle_tab_expand(step):
+                return True
         elif et == QEvent.KeyRelease and event.key() == Qt.Key_Shift:
             if (not event.isAutoRepeat()
                     and self._measure_anchor_xy is not None):
@@ -26916,6 +27157,21 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             self._topology_hint.setText("")
             self._topology_model = None
             return
+        if not any(
+            d.get("role") in ("SOURCE", "SINK", "REGULATOR")
+            for d in preview_md.get("directives") or []
+        ):
+            # Without a source or sink there's no power flow to draw — at
+            # most a few orphan SERIES boxes, which reads as a broken diagram.
+            self._topology_view.set_empty_message(
+                "No sources or sinks set up yet.\n\n"
+                "Place SOURCE and SINK directives in the PDN editor (or "
+                "annotate them on the schematic)\n"
+                "to see the PDN topology."
+            )
+            self._topology_hint.setText("")
+            self._topology_model = None
+            return
 
         model = build_topology_model(preview_md)
         self._topology_model = model
@@ -26924,15 +27180,25 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         n_dir = len((preview_md or {}).get("directives") or [])
         n_nodes = sum(1 for n in model.nodes if n.role != "GND")
         n_wires = len(model.wires)
-        pending = self._topology_live_preview_needed()
+        # Not merely "live preview": a stub previews its own annotations
+        # with no edits pending.
+        pending = self._topology_live_preview_needed() and bool(
+            self._project_dirty
+            or self._project.editor_directives
+            or self._project.copper_names
+        )
         suffix = " (pending edits)" if pending else ""
         self._topology_hint.setText(
             f"{n_dir} directive(s), {n_nodes} node(s), {n_wires} wire(s){suffix}"
         )
 
     def _topology_live_preview_needed(self) -> bool:
-        """True when unsaved editor state should override solve metadata."""
-        if not self._project_dirty:
+        """True when editor state should override solve metadata: unsaved
+        edits, or saved ones the loaded solve predates (a stub, or a project
+        whose editor directives were never solved). Without the second case
+        a saved-but-unsolved source reads as "no sources or sinks"."""
+        if not (self._project_dirty
+                or getattr(self, "_initial_solve_stale", False)):
             return False
         if self._project is None:
             return False
@@ -27154,7 +27420,103 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         outer.addWidget(self.nodes_table, 1)
         # Deliberately NOT calling _populate_nodes_table() here — the row build
         # is deferred to first tab activation (see __init__ + _on_tabs_current_changed).
-        return widget
+        self._nodes_stack = self._wrap_placeholder(widget)
+        self._sync_placeholder_tabs()
+        return self._nodes_stack
+
+    def _has_solve_results(self) -> bool:
+        """False while the viewer holds a stub: a load-only import, a design
+        still missing directives, or a solve that failed to mesh. A stub's
+        layers carry no mesh, so anything sampled from the FEM is blank."""
+        solution = getattr(self, "solution", None)
+        if solution is None:
+            return False
+        return not getattr(solution, "solver_info", {}).get("stub")
+
+    def _needs_solve_text(self, shows: str) -> str:
+        """Placeholder for a tab whose every value comes from the FEM, or
+        "" once there is a solve. ``shows`` ends the sentence."""
+        if self._has_solve_results():
+            return ""
+        if (getattr(self, "metadata", None) or {}).get("mesh_failed"):
+            return ("The last solve failed to mesh — see the Messages tab. "
+                    f"Fix the reported copper and re-solve to show {shows}.")
+        return f"Run a solve first to show {shows}."
+
+    def _has_editor_sources_or_sinks(self) -> bool:
+        project = getattr(self, "_project", None)
+        return any(
+            getattr(ed, "role", None) in ("SOURCE", "SINK")
+            for ed in (getattr(project, "editor_directives", None) or [])
+        )
+
+    def _needs_rails_text(self, shows: str) -> str:
+        """Placeholder for a tab grouped by rail, or "" when rails exist.
+
+        Rails come from SOURCE / SINK / REGULATOR directives in the metadata,
+        not from the solve — a schematic-annotated design has them before any
+        solve. Sources and sinks placed in the PDN editor only reach the
+        metadata on the next solve, so those need one first."""
+        if getattr(self, "_rails", None):
+            return ""
+        extracted = getattr(getattr(self, "_loaded_project", None),
+                            "extracted", None)
+        if extracted is not None and not extracted.pcb_components:
+            # No rail would help — say the thing that actually would.
+            return ("Capacitor analysis needs component data, which Gerber "
+                    "imports don't carry — import the Altium design instead.")
+        if self._has_editor_sources_or_sinks():
+            return (f"Run a solve first to show {shows} — capacitors are "
+                    "grouped by rail, and the sources and sinks placed in "
+                    "the PDN editor only define rails once solved.")
+        return ("No sources or sinks set up yet. Capacitors are grouped by "
+                "the rails they define — place SOURCE and SINK directives in "
+                f"the PDN editor, then run a solve to show {shows}.")
+
+    # (stack attribute, placeholder-text method, end of its sentence)
+    _PLACEHOLDER_TABS: tuple[tuple[str, str, str], ...] = (
+        ("_nodes_stack", "_needs_solve_text",
+         "the voltage, drop and current density at each directive pin"),
+        ("_vias_stack", "_needs_solve_text",
+         "the current and power dissipated in each via"),
+        ("_caps_stack", "_needs_rails_text",
+         "each decoupling capacitor's loop inductance"),
+        ("_impedance_stack", "_needs_rails_text",
+         "each rail's impedance against its target"),
+    )
+
+    def _wrap_placeholder(self, content: QWidget) -> QStackedWidget:
+        """Stack *content* over a centred placeholder sentence — a table of
+        blank cells says less than a sentence saying why they're blank.
+        :meth:`_sync_placeholder_tabs` picks which one shows."""
+        stack = QStackedWidget(self.tabs)
+        stack.addWidget(content)
+        label = QLabel("")
+        label.setAlignment(Qt.AlignCenter)
+        label.setWordWrap(True)
+        label.setStyleSheet(f"QLabel {{ color: {_T()['fg_muted']}; }}")
+        stack.addWidget(label)
+        return stack
+
+    def _placeholder_text(self, stack_attr: str) -> str:
+        """The placeholder a tab is showing, or "" when it shows its content.
+        Also what the lazy populate checks, so a placeholder tab isn't built."""
+        for attr, method, shows in self._PLACEHOLDER_TABS:
+            if attr == stack_attr:
+                return getattr(self, method)(shows)
+        return ""
+
+    def _sync_placeholder_tabs(self) -> None:
+        """Show or hide each tab's placeholder. Run when the tab is built,
+        when a solve lands, and on every tab switch (editor edits can change
+        the rail-less wording)."""
+        for attr, _method, _shows in self._PLACEHOLDER_TABS:
+            stack = getattr(self, attr, None)
+            if stack is None or not _qt_widget_alive(stack):
+                continue
+            text = self._placeholder_text(attr)
+            stack.widget(1).setText(text)
+            stack.setCurrentIndex(1 if text else 0)
 
     def _update_bridges_tab_title(self) -> None:
         """Badge the tab with the number of parts that affect a solved rail.
@@ -27178,8 +27540,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         opens them. On a 7 000-via board the Vias populate alone takes
         ~35 s of blocked GUI thread; doing it on initial viewer open was
         the freeze users were seeing under the "saving cache" label.
-        Done once per tab — the populated flags guard against re-runs."""
+        Done once per tab — the populated flags guard against re-runs.
+        A tab showing its placeholder stays unpopulated — there's nothing
+        to fill it with yet, and its populated flag stays False so it
+        builds once the placeholder clears."""
+        self._sync_placeholder_tabs()
         if (index == getattr(self, "_nodes_tab_index", -1)
+                and not self._placeholder_text("_nodes_stack")
                 and not getattr(self, "_nodes_table_populated", True)):
             self._nodes_table_populated = True
             QApplication.setOverrideCursor(Qt.WaitCursor)
@@ -27188,6 +27555,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             finally:
                 QApplication.restoreOverrideCursor()
         elif (index == getattr(self, "_vias_tab_index", -1)
+                and not self._placeholder_text("_vias_stack")
                 and not getattr(self, "_vias_table_populated", True)):
             self._vias_table_populated = True
             QApplication.setOverrideCursor(Qt.WaitCursor)
@@ -27200,6 +27568,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             self._bridges_table_populated = True
             self._populate_bridges_table()
         elif (index == getattr(self, "_caps_tab_index", -1)
+                and not self._placeholder_text("_caps_stack")
                 and not getattr(self, "_caps_table_populated", True)):
             # The row build is seconds of geometry work — run it behind a busy
             # dialog rather than freezing on the GUI thread. The populated flag
@@ -27210,6 +27579,7 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 self._populate_caps_table()
             self._ensure_cap_rows_async(_populate)
         elif (index == getattr(self, "_impedance_tab_index", -1)
+                and not self._placeholder_text("_impedance_stack")
                 and not getattr(self, "_impedance_populated", True)):
             self._impedance_populated = True
             self._populate_impedance_tab()
@@ -27240,6 +27610,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         Mirrors :meth:`_init_vias_warn_count`. The warning count is the
         number of pins on a SINK with a ``PDN_MIN_V`` annotation whose
         measured voltage is below that minimum."""
+        if not self._has_solve_results():
+            self._nodes_warn_count = 0
+            self._update_nodes_tab_title(0)
+            return
         rows = self._get_or_compute_node_rows()
         warn_count = sum(1 for r in rows if r.get("status") == "FAIL")
         self._nodes_warn_count = warn_count
@@ -28257,7 +28631,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         # _compute_via_report + the ~7 000 QTableWidgetItem creations took 35 s
         # on a big board, blocking the whole viewer open. Tab title's warning
         # count will appear once the user first opens the tab.
-        return widget
+        self._vias_stack = self._wrap_placeholder(widget)
+        self._sync_placeholder_tabs()
+        return self._vias_stack
 
     def _get_or_compute_via_rows(self) -> list[dict]:
         """Run :meth:`_compute_via_report` at most once per viewer and
@@ -28277,6 +28653,10 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         the tab title shows the alert badge before the user navigates to
         the tab. The row dicts are cached for the eventual table populate
         so we never pay the compute cost twice."""
+        if not self._has_solve_results():
+            self._vias_warn_count = 0
+            self._update_vias_tab_title(0)
+            return
         rows = self._get_or_compute_via_rows()
         warn_count = sum(
             1 for r in rows
@@ -28981,7 +29361,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             f"QTableWidget::item:selected {{ background-color: {_t['bg_selection']}; }}"
         )
         outer.addWidget(self.caps_table, 1)
-        return widget
+        self._caps_stack = self._wrap_placeholder(widget)
+        self._sync_placeholder_tabs()
+        return self._caps_stack
 
     def _caploop_package_library(self):
         """The editable SMD package library (typical ESL / ESR per case size),
@@ -30359,7 +30741,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             Qt.TextSelectableByMouse)
         right.addWidget(self.imp_summary_label)
         outer.addLayout(right, 1)
-        return widget
+        self._impedance_stack = self._wrap_placeholder(widget)
+        self._sync_placeholder_tabs()
+        return self._impedance_stack
 
     def _build_package_library_box(self) -> QWidget:
         """The editable SMD case-size table: typical ESL / ESR per package.
