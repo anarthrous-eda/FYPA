@@ -60,6 +60,12 @@ dependencies = [
     # import path and are excluded from the PyInstaller bundle (see
     # packaging/FYPA.spec).
     "gerbonara==1.5.0",
+
+    # --- Design report PDF (File > Export > Report…, and `FYPA report` CLI) ---
+    # Pure-Python PDF layout engine: page headers / footers, table headers
+    # that repeat across page breaks, keep-together blocks. The HTML report
+    # needs nothing extra.
+    "reportlab==4.4.4",
 ]
 
 [project.optional-dependencies]

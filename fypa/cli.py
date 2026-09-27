@@ -11,6 +11,7 @@ CLI entry point. Subcommands:
   show          Open the interactive solution viewer for a pickled solution.
   gui           Open the viewer and import a .PrjPcb (same as File > Import).
   paraview      Export a pickled solution to ParaView VTK.
+  report        Write a design report (HTML or PDF) for a pickled solution.
 """
 from __future__ import annotations
 
@@ -226,6 +227,43 @@ def _build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("paraview", help="Export a pickled solution to ParaView VTK")
     sp.add_argument("solution", type=Path)
     sp.add_argument("output_dir", type=Path)
+
+    sp = sub.add_parser(
+        "report",
+        help="Write a design report (HTML or PDF) for a pickled solution — "
+             "same as File > Export > Report…, without the capacitor / "
+             "impedance analysis, which needs the viewer.")
+    sp.add_argument("solution", type=Path)
+    sp.add_argument("output", type=Path,
+                    help="Report file; .html or .pdf picks the format.")
+    sp.add_argument("--format", choices=("html", "pdf"), default=None,
+                    help="Override the format the output suffix implies.")
+    sp.add_argument("--json", action="store_true",
+                    help="Also write the numbers to <output>.json.")
+    sp.add_argument("--detail", choices=("failing", "all", "summary"),
+                    default="failing",
+                    help="failing (default): full detail for rails with "
+                         "issues; all: every rail in full; summary: "
+                         "executive summary only.")
+    sp.add_argument("--via-limit", type=float, default=1.0, metavar="A",
+                    help="Via current limit in amps (default 1).")
+    sp.add_argument("--margin-warn-pct", type=float, default=1.0,
+                    metavar="PCT",
+                    help="Warn when a load meets PDN_MIN_V by less than this "
+                         "share of nominal (default 1).")
+    sp.add_argument("--drop-budget-pct", type=float, default=None,
+                    metavar="PCT",
+                    help="Fail any load whose drop exceeds this share of "
+                         "nominal (default: no budget).")
+    sp.add_argument("--j-limit", type=float, default=None, metavar="A_PER_MM",
+                    help="Warn on copper current density above this "
+                         "(default: no limit).")
+    sp.add_argument("--author", default="")
+    sp.add_argument("--revision", default="")
+    sp.add_argument("--fail-on", choices=("fail", "warn", "never"),
+                    default="never",
+                    help="Exit with status 1 when the report has a failure "
+                         "(fail) or a failure or warning (warn) — for CI.")
 
     sp = sub.add_parser(
         "gerber-gui",
@@ -1321,6 +1359,35 @@ def do_paraview(args: argparse.Namespace) -> int:
     return 0
 
 
+def do_report(args: argparse.Namespace) -> int:
+    from fypa.report import ReportSettings, build_report, write_report
+    from fypa.report.model import FAIL, WARN
+    solution, metadata = _load_solution_pickle(args.solution, lean_ify=True)
+    if metadata is None:
+        print("This solution pickle carries no metadata (a very old run); "
+              "re-solve it to generate a report.", file=sys.stderr)
+        return 2
+    settings = ReportSettings(
+        via_limit_a=args.via_limit, margin_warn_pct=args.margin_warn_pct,
+        drop_budget_pct=args.drop_budget_pct, j_limit_a_per_mm=args.j_limit,
+        detail=args.detail, author=args.author, revision=args.revision)
+    report = build_report(
+        solution, metadata, settings,
+        decoupling_note="Capacitor and impedance analysis runs in the viewer "
+                        "(File > Export > Report…), not from the command "
+                        "line.")
+    written = write_report(report, args.output, args.format,
+                           json_sidecar=args.json)
+    severity, headline, _why = report.verdict()
+    print(f"{headline}. Report written to "
+          + ", ".join(str(p) for p in written))
+    if args.fail_on == "fail" and severity == FAIL:
+        return 1
+    if args.fail_on == "warn" and severity in (FAIL, WARN):
+        return 1
+    return 0
+
+
 _DISPATCH = {
     "extract": do_extract,
     "geometry": do_geometry,
@@ -1331,6 +1398,7 @@ _DISPATCH = {
     "gui": do_gui,
     "gerber-gui": do_gerber_gui,
     "paraview": do_paraview,
+    "report": do_report,
 }
 
 

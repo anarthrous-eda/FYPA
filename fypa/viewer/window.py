@@ -40,6 +40,7 @@ from fypa.viewer.panels.overlays import _OverlayPanelMixin
 from fypa.viewer.prefs import load_via_no_current_opacity
 from fypa.viewer.probes import _ProbeMixin
 from fypa.viewer.render import _RenderMixin
+from fypa.viewer.report_export import _ReportExportMixin
 from fypa.viewer.session import _viewer_has_adaptive_smps
 from fypa.viewer.settings_tab import _SettingsTabMixin
 from fypa.viewer.tabs.bridges import _BridgesTabMixin
@@ -84,6 +85,7 @@ class PdnViewer(
     _PendingRailsMixin,
     _ProbeMixin,
     _FileMenuMixin,
+    _ReportExportMixin,
     _SetupTabMixin,
     _TopologyTabMixin,
     _NodesTabMixin,

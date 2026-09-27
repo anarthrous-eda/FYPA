@@ -426,6 +426,7 @@ python FYPA.py load        YourBoard.PrjPcb           # full pipeline, readiness
 python FYPA.py solve       YourBoard.PrjPcb out.pkl   # solve + pickle
 python FYPA.py show        out.pkl                    # open viewer on a saved pickle
 python FYPA.py paraview    out.pkl out_dir\           # export to ParaView VTK (writes into a folder)
+python FYPA.py report      out.pkl report.pdf         # design report (.html or .pdf); --fail-on fail for CI
 python FYPA.py gerber-gui  path\to\gerber_folder      # import a board from Gerber + Excellon files
 ```
 
@@ -644,6 +645,7 @@ fypa/                    Application package:
     editor/                Editor mode: form, selection, marquee, net focus, ...
     tabs/                  One module per tab (setup, nodes, vias, bridges, ...)
     file_menu.py           File menu and project save / open
+    report_export.py       File > Export > Report… dialog and export flow
     settings_tab.py        Settings tab (shared with the launcher)
     launcher.py, app.py    Launcher window and the main() entry point
     project_open.py        Opening projects / solutions / Altium imports
@@ -653,6 +655,10 @@ fypa/                    Application package:
     widgets.py, ...        Shared widgets and helpers (display, overlays, ...)
   gl_mesh_viewer.py      Custom QOpenGLWidget — mesh-on-GPU heatmap canvas
   paraview_export.py     ParaView VTU export
+  report/                Design report: model, pass/fail rules, figures,
+                         HTML and PDF renderers (File > Export > Report…)
+  solution_sampling.py   Pin / via voltage sampling shared by the Nodes and
+                         Vias tabs and the report
   spacemouse_nav.py      3Dconnexion SpaceMouse integration
   navlib_camera.py       NavLib camera adapter for the SpaceMouse
   log_buffer.py          In-memory log capture for the Messages tab

@@ -13,6 +13,7 @@ material (every parameter, every CLI flag), see the
 5. [The viewer tour](05-viewer-tour.md)
 6. [Exporting to ParaView](06-paraview-export.md)
 7. [Importing a board from Gerber files](07-gerber-import.md)
+8. [Generating a design report](08-design-report.md)
 
 ## Conventions
 

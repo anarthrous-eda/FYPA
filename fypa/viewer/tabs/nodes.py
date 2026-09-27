@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import logging
-import math
 import time
-import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
@@ -21,7 +19,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fypa.viewer.display import _power_density_per_vertex
 from fypa.viewer.theme import _T
 from fypa.viewer.widgets import _qt_widget_alive
 
@@ -502,222 +499,13 @@ class _NodesTabMixin:
     def _compute_node_report(self) -> list[dict]:
         """Build one row per directive-terminal node with V / drop / |J| / P.
 
-        Voltage and power-density are sampled from the per-
-        (physical_layer, net) padne Layer's mesh using a
-        ``scipy.spatial.cKDTree`` nearest-vertex lookup, batched across
-        every pin. Padne adds directive-pin coupling sites as Steiner
-        points to the Triangle mesher — so each pin's ``(x, y)`` IS a mesh
-        vertex and the nearest-vertex value is the exact mesh-side
-        potential at the pin. This replaces the original per-pin
-        ``LinearTriInterpolator`` sampling, whose lazy
-        ``TrapezoidMapTriFinder`` build dominated the runtime: ~3 s for
-        175 pins → < 0.1 s after the refactor. ``drop`` is voltage minus
-        the rail group's source voltage (max V at any directive pin on
-        the same rail). Current density |J| = sqrt(power_density × sheet
-        conductance).
+        The sampling lives in :func:`fypa.solution_sampling.compute_node_rows`
+        so the design report reads exactly the numbers this table shows.
         """
         if self.metadata is None:
             return []
-        from scipy.spatial import cKDTree
-
-        layer_index_by_pair = self._index_by_pair  # already keyed (phys, net)
-        id_to_phys = {v: k for k, v in self._phys_name_to_layer_id.items()}
-
-        # Per-(physical, net) cache of (cKDTree, potentials_1d,
-        # pd_per_vertex_1d, sheet_conductance). Built lazily — only built
-        # for (phys, net) combinations that actually have a pin sample.
-        kdtree_cache: dict[tuple[str, str], tuple] = {}
-        # Tolerance for "this pin xy matches a mesh vertex". Same value as
-        # the Vias report — 0.01 mm is well below any Altium grid and
-        # comfortably above float noise.
-        _MATCH_TOL_MM = 0.01
-
-        def _get_v_pd_kdtree(phys_name: str, net_name: str):
-            """Return ``(tree, vs_arr, pds_arr, conductance)``, or
-            ``(None, None, None, 0.0)`` if no mesh exists for this pair."""
-            key = (phys_name, net_name)
-            if key in kdtree_cache:
-                return kdtree_cache[key]
-            li = layer_index_by_pair.get(key)
-            if li is None:
-                kdtree_cache[key] = (None, None, None, 0.0)
-                return kdtree_cache[key]
-            ls = self.solution.layer_solutions[li]
-            layer = self.solution.problem.layers[li]
-            xs_parts, ys_parts, vs_parts, pd_parts = [], [], [], []
-            for xys, tris_local, pot, pd in zip(
-                ls.vertex_xys, ls.triangles,
-                ls.potentials, ls.power_densities,
-            ):
-                n = xys.shape[0]
-                if n == 0 or tris_local.size == 0:
-                    continue
-                # Power density is stored per-face; convert to per-vertex
-                # for nearest-vertex lookup. Mirrors the original logic
-                # used inside the LinearTriInterpolator path.
-                if pd is not None:
-                    pd_per_v = _power_density_per_vertex(
-                        tris_local, pot, pd, layer.conductance, n,
-                    )
-                else:
-                    pd_per_v = np.zeros(n, dtype=np.float64)
-                # Drop orphan vertices — those not referenced by any
-                # triangle. Padne pins them to V=0 to keep the linear
-                # system non-singular; including them in the kdtree
-                # would let a pin sample V=0 instead of the real
-                # voltage when its (x,y) sits within the match
-                # tolerance of an orphan.
-                used = np.unique(tris_local.ravel())
-                xs_parts.append(xys[used, 0])
-                ys_parts.append(xys[used, 1])
-                vs_parts.append(pot[used])
-                pd_parts.append(pd_per_v[used])
-            if not xs_parts:
-                kdtree_cache[key] = (None, None, None, layer.conductance)
-                return kdtree_cache[key]
-            pts = np.column_stack([
-                np.concatenate(xs_parts), np.concatenate(ys_parts),
-            ])
-            vs = np.concatenate(vs_parts)
-            pds = np.concatenate(pd_parts)
-            kdtree_cache[key] = (cKDTree(pts), vs, pds, layer.conductance)
-            return kdtree_cache[key]
-
-        # --- Pass 1: prep each pin + bucket sample requests by (phys, net) ---
-        # preps[i] holds everything needed to assemble row i once voltages
-        # and power densities for that pin are known.
-        preps: list[dict] = []
-        sample_requests: dict[tuple[str, str],
-                              list[tuple[int, float, float]]] = {}
-        for d in self.metadata.get("directives", []):
-            role = d.get("role", "")
-            # An auto-bridge is a synthetic record for the marker overlay,
-            # not a terminal pair anyone can inspect: both of its pins
-            # report the post-merge net and zero pad area.
-            if role == "AUTO_BRIDGE":
-                continue
-            desig = d.get("designator", "?")
-            # ``label`` disambiguates multi-channel SOURCE/SINK pins
-            # ("U5" vs "U5#1") in the Nodes-tab table.
-            display_desig = str(d.get("label") or desig)
-            schdoc = d.get("schdoc", "")
-            # PDN_MIN_V is a per-directive limit on the SINK's rail (P) side.
-            # Carry it only onto SINK P-terminal pins so the per-pin margin
-            # check doesn't fire on the return (N) terminal or on non-sinks.
-            directive_min_v = (d.get("min_voltage")
-                               if role == "SINK" else None)
-            for term_name, term in (d.get("terminals") or {}).items():
-                pin_min_v = (directive_min_v
-                             if term_name == "P" else None)
-                for pin in term.get("pins", []):
-                    layer_id = pin.get("layer_id")
-                    net = pin.get("net", "")
-                    x = pin.get("x_mm")
-                    y = pin.get("y_mm")
-                    phys = id_to_phys.get(layer_id)
-                    prep_idx = len(preps)
-                    preps.append({
-                        "role": role,
-                        "designator": display_desig,
-                        "schdoc": schdoc,
-                        "terminal": term_name,
-                        "pad": self._pin_display_pad(pin),
-                        "net": net,
-                        "layer_id": layer_id,
-                        "x_mm": x,
-                        "y_mm": y,
-                        "phys": phys,
-                        "min_voltage": pin_min_v,
-                    })
-                    if (phys is not None and x is not None and y is not None):
-                        sample_requests.setdefault((phys, net), []).append(
-                            (prep_idx, float(x), float(y))
-                        )
-
-        # --- Pass 2: batched nearest-vertex lookup per (phys, net) -------
-        # samples[(prep_idx)] = (voltage_or_None, pd_or_None, conductance)
-        samples: dict[int, tuple[float | None, float | None, float]] = {}
-        for key, reqs in sample_requests.items():
-            tree, vs_arr, pds_arr, cond = _get_v_pd_kdtree(*key)
-            if tree is None:
-                for (p, _x, _y) in reqs:
-                    samples[p] = (None, None, cond)
-                continue
-            pts = np.empty((len(reqs), 2), dtype=np.float64)
-            for i, r in enumerate(reqs):
-                pts[i, 0] = r[1]
-                pts[i, 1] = r[2]
-            distances, indices = tree.query(pts)
-            for i, (p, _x, _y) in enumerate(reqs):
-                if distances[i] > _MATCH_TOL_MM:
-                    samples[p] = (None, None, cond)
-                else:
-                    idx = indices[i]
-                    v = float(vs_arr[idx])
-                    pd_v = float(pds_arr[idx])
-                    samples[p] = (
-                        v if np.isfinite(v) else None,
-                        pd_v if np.isfinite(pd_v) else None,
-                        cond,
-                    )
-
-        # --- Pass 3: assemble rows from preps + samples ------------------
-        rows: list[dict] = []
-        for prep_idx, prep in enumerate(preps):
-            voltage, pd_val, conductance = samples.get(
-                prep_idx, (None, None, 0.0)
-            )
-            cd_val = (math.sqrt(max(pd_val * conductance, 0.0))
-                      if pd_val is not None else None)
-            min_v = prep["min_voltage"]
-            # Margin = actual sample - declared minimum; ``None`` whenever
-            # either side is missing (no PDN_MIN_V on the directive, or the
-            # mesh sample failed and the row's voltage is None). Status is
-            # "PASS" when the margin is >=0 and "FAIL" when negative; left
-            # ``None`` so the table cell renders as "—" otherwise.
-            if min_v is None or voltage is None:
-                margin = None
-                status = None
-            else:
-                margin = voltage - min_v
-                status = "PASS" if margin >= 0 else "FAIL"
-            rows.append({
-                "role": prep["role"],
-                "designator": prep["designator"],
-                "schdoc": prep["schdoc"],
-                "terminal": prep["terminal"],
-                "pad": prep["pad"],
-                "net": prep["net"],
-                "layer_id": prep["layer_id"],
-                "x_mm": prep["x_mm"],
-                "y_mm": prep["y_mm"],
-                "voltage": voltage,
-                "power_density": pd_val,
-                "current_density": cd_val,
-                "min_voltage": min_v,
-                "margin": margin,
-                "status": status,
-            })
-
-        # Now compute Drop per row: V - max(V on the same rail group).
-        # We use the rail-group lookup the heatmap already builds at init.
-        net_to_rail: dict[str, str] = {}
-        for rail, members in self._rail_to_members.items():
-            for n in members:
-                net_to_rail[n] = rail
-        rail_max_v: dict[str, float] = {}
-        for r in rows:
-            rail = net_to_rail.get(r["net"])
-            if rail is None or r["voltage"] is None:
-                continue
-            cur = rail_max_v.get(rail)
-            if cur is None or r["voltage"] > cur:
-                rail_max_v[rail] = r["voltage"]
-        for r in rows:
-            rail = net_to_rail.get(r["net"])
-            if rail is None or r["voltage"] is None or rail not in rail_max_v:
-                r["drop"] = None
-            else:
-                r["drop"] = r["voltage"] - rail_max_v[rail]
-
-        return rows
+        from fypa.solution_sampling import SolutionSampler, compute_node_rows
+        return compute_node_rows(
+            SolutionSampler(self.solution, self.metadata),
+            self._rail_to_members,
+        )

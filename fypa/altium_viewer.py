@@ -397,7 +397,7 @@ from fypa.viewer.diagnostics import (
     _phys_name_for_layer_id,
     _primary_mesh_failure_layer_id,
 )
-from fypa.viewer.tabs.help import _HELP_TAB_BODY, _help_tab_html, _help_tab_style
+from fypa.viewer.tabs.help import _HELP_SECTIONS, _help_tab_html, _help_tab_style
 from fypa.viewer.tabs.messages import _MessagesSortItem, _MessagesTabMixin
 from fypa.viewer.tabs.topology import (
     _TOPOLOGY_MAX_SCALE,

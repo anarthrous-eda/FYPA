@@ -4,7 +4,7 @@ from __future__ import annotations
 from PySide6.QtWidgets import QTextBrowser, QVBoxLayout, QWidget
 
 from fypa.viewer.display import _FILL_MODE_REPORT_LABELS
-from fypa.viewer.tabs.help import _help_tab_html
+from fypa.viewer.tabs.help import _HELP_SECTIONS, _help_tab_html
 from fypa.viewer.theme import _T, current_theme
 from fypa.viewer.widgets import _contrasting_text_color, _esc
 
@@ -336,20 +336,43 @@ class _SetupTabMixin:
     # --- Setup tab ----------------------------------------------------------
 
     def _build_help_tab(self) -> QWidget:
-        """Static HTML reference for keyboard shortcuts + mouse controls."""
+        """Static HTML reference, one collapsible section per tab. Clicking a
+        heading re-renders with that section toggled in / out of
+        :attr:`_help_expanded` (all collapsed to start)."""
         widget = QWidget(self.tabs)
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(8, 8, 8, 8)
 
-        browser = QTextBrowser()
-        browser.setOpenExternalLinks(False)
+        self._help_expanded: set[str] = set()
+        self.help_browser = QTextBrowser()
+        self.help_browser.setOpenExternalLinks(False)
+        self.help_browser.setOpenLinks(False)
+        self.help_browser.anchorClicked.connect(self._on_help_anchor_clicked)
         _t = _T()
-        browser.setStyleSheet(
+        self.help_browser.setStyleSheet(
             f"QTextBrowser {{ background-color: {_t['bg']}; color: {_t['fg']}; }}"
         )
-        browser.setHtml(_help_tab_html())
-        layout.addWidget(browser)
+        self.help_browser.setHtml(_help_tab_html(self._help_expanded))
+        layout.addWidget(self.help_browser)
         return widget
+
+    def _on_help_anchor_clicked(self, url) -> None:
+        """Toggle a Help section (or all of them) and re-render in place."""
+        href = url.toString()
+        prefix = "toggle:"
+        if not href.startswith(prefix):
+            return
+        key = href[len(prefix):]
+        if key == "*":
+            self._help_expanded = {title for title, _ in _HELP_SECTIONS}
+        elif key == "-":
+            self._help_expanded.clear()
+        else:
+            self._help_expanded ^= {key}
+        scroll_bar = self.help_browser.verticalScrollBar()
+        scroll_pos = scroll_bar.value()
+        self.help_browser.setHtml(_help_tab_html(self._help_expanded))
+        scroll_bar.setValue(scroll_pos)
 
     def _build_setup_tab(self) -> QWidget:
         """Build the Setup tab — a scrollable HTML view of everything the

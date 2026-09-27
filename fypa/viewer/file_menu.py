@@ -194,6 +194,17 @@ class _FileMenuMixin:
         export_paraview.triggered.connect(self._on_menu_export_paraview)
         export_menu.addAction(export_paraview)
 
+        export_report = QAction("&Report…", self)
+        export_report.setShortcut("Ctrl+Shift+R")
+        export_report.setStatusTip(
+            "Write a design report (HTML or PDF) documenting the solved "
+            "rails: an executive summary of every rail's pass / fail status, "
+            "then each rail's voltage at loads, heatmaps, vias and "
+            "decoupling."
+        )
+        export_report.triggered.connect(self._on_menu_export_report)
+        export_menu.addAction(export_report)
+
         file_menu.addSeparator()
         close_proj = QAction("&Close Project", self)
         close_proj.setShortcut("Ctrl+W")

@@ -30,11 +30,13 @@ def _help_tab_style() -> str:
 
 
 
-_HELP_TAB_BODY = """
+# Top-level sections, one per viewer tab in tab-strip order. Each renders
+# as a collapsible heading — see :func:`_help_tab_html`.
+_HELP_SECTIONS: tuple[tuple[str, str], ...] = (
+    ("Heatmap", """
+<p>The interactive viewport.</p>
 
-<h2>Keyboard shortcuts</h2>
-
-<h3>Heatmap tab</h3>
+<h3>Keyboard shortcuts</h3>
 <table>
   <tr><th>Key</th><th>Action</th></tr>
   <tr><td><kbd>2</kbd></td><td>Switch to 2D mode <span class='muted'>(re-fits to data)</span></td></tr>
@@ -57,39 +59,26 @@ _HELP_TAB_BODY = """
 window has focus but defer to text inputs (e.g. the Min/Max boxes)
 when one of those has focus. The editor-mode keys
 (<kbd>E</kbd>, <kbd>S</kbd>, <kbd>L</kbd>, <kbd>Delete</kbd>, undo / redo)
-are listed under <i>Mouse controls &rarr; Editor mode</i> below.</p>
+are listed under <i>Editor mode</i> below.</p>
 
-<h2>Topology tab</h2>
-<p>The <b>Topology</b> tab shows an abstract Flow diagram of the PDN
-simulation model (not the PCB layout). Click a component box to jump
-to its pad on the Heatmap.</p>
-<table>
-  <tr><th>Gesture / key</th><th>Action</th></tr>
-  <tr><td>Mouse wheel</td><td>Scroll vertically</td></tr>
-  <tr><td><kbd>Shift</kbd> + mouse wheel</td><td>Scroll horizontally</td></tr>
-  <tr><td><kbd>Ctrl</kbd> + mouse wheel</td><td>Zoom in / out around the cursor</td></tr>
-  <tr><td><kbd>Ctrl</kbd>+<kbd>+</kbd> / <kbd>Ctrl</kbd>+<kbd>&minus;</kbd></td>
-      <td>Zoom in / out (viewport centre)</td></tr>
-  <tr><td><kbd>Ctrl</kbd>+<kbd>0</kbd></td><td>Fit the whole diagram in view</td></tr>
-  <tr><td><b>+</b> / <b>&minus;</b> / <b>Fit</b> toolbar buttons</td><td>Zoom in, zoom out, fit</td></tr>
-  <tr><td>Middle-button drag</td><td>Pan</td></tr>
-  <tr><td><kbd>Space</kbd> + left-button drag</td><td>Pan</td></tr>
-  <tr><td>Arrow keys</td><td>Pan; <kbd>Shift</kbd> or <kbd>Ctrl</kbd> for larger steps</td></tr>
-  <tr><td>Hover</td><td>Tooltip with port / component values</td></tr>
-  <tr><td>Left click on a box</td><td>Jump to that component on the Heatmap</td></tr>
-</table>
-<p class='muted'>Topology shortcuts require the Topology tab to be
-focused. The diagram is vector-rendered — zoom stays sharp.</p>
-
-<h2>Mouse controls</h2>
-
-<h3>Heatmap viewport (both modes)</h3>
+<h3>Mouse controls</h3>
 <table>
   <tr><th>Gesture</th><th>Action</th></tr>
   <tr><td>Right-button drag</td><td>Pan the view</td></tr>
   <tr><td>Mouse wheel</td><td>Zoom in / out (around cursor in 2D, dolly camera in 3D)</td></tr>
   <tr><td>Middle-button drag &uarr;/&darr;</td><td>Exponential zoom — drag up = zoom in, down = zoom out</td></tr>
   <tr><td>Left click</td><td>Clear the yellow jump highlight (from a Vias/Nodes-tab Go)</td></tr>
+</table>
+
+<h3>Voltage / Voltage Drop mode only <span class='muted'>(2D only)</span></h3>
+<table>
+  <tr><th>Gesture</th><th>Action</th></tr>
+  <tr><td>Hold <kbd>Shift</kbd></td><td>Anchor a voltage probe at the cursor and draw a thin white
+    line from there to the live mouse position. The probe bar gains a
+    <code>Difference = X V</code> readout — the live cursor's voltage
+    minus the anchor's. Press only takes effect when the cursor is
+    over copper that has a voltage value; release <kbd>Shift</kbd> to
+    clear the line.</td></tr>
 </table>
 
 <h3>3D mode only</h3>
@@ -137,18 +126,7 @@ no one set of properties applies across roles.</p>
     keeps the FYPA profile selected</li>
 </ul>
 
-<h3>Voltage / Voltage Drop mode only <span class='muted'>(2D only)</span></h3>
-<table>
-  <tr><th>Gesture</th><th>Action</th></tr>
-  <tr><td>Hold <kbd>Shift</kbd></td><td>Anchor a voltage probe at the cursor and draw a thin white
-    line from there to the live mouse position. The probe bar gains a
-    <code>Difference = X V</code> readout — the live cursor's voltage
-    minus the anchor's. Press only takes effect when the cursor is
-    over copper that has a voltage value; release <kbd>Shift</kbd> to
-    clear the line.</td></tr>
-</table>
-
-<h2>Side-panel controls</h2>
+<h3>Side-panel controls</h3>
 <ul>
   <li><b>Physical layers</b> &mdash; tick checkboxes to stack multiple
     copper layers in the view. Each layer has its own swatch colour
@@ -208,34 +186,140 @@ no one set of properties applies across roles.</p>
     handles, type exact values in the side-panel boxes, or click the
     <b>&#8634;</b> reset button to restore the data range.</li>
 </ul>
+"""),
+    ("Setup", """
+<p>HTML report of the solved problem: stackup,
+physics constants, parsed PDN_* directives (collapsible), solver
+diagnostics, warnings / errors.</p>
+"""),
+    ("Topology", """
+<p>An abstract Flow diagram of the PDN simulation model (not the PCB
+layout). Click a component box to jump to its pad on the Heatmap.</p>
 
-<h2>Tabs</h2>
-<ul>
-  <li><b>Heatmap</b> &mdash; the interactive viewport.</li>
-  <li><b>Setup</b> &mdash; HTML report of the solved problem: stackup,
-    physics constants, parsed PDN_* directives (collapsible), solver
-    diagnostics, warnings / errors.</li>
-  <li><b>Nodes</b> &mdash; sortable table of every directive node with
-    its voltage, drop, current density, and power density. Filter by
-    role or rail. The <b>Go &#9654;</b> button jumps to that node in
-    the Heatmap tab (enables its layer, zooms in, drops a yellow
-    highlight ring &mdash; left-click anywhere to clear).</li>
-  <li><b>Vias</b> &mdash; sortable table of every via with worst-segment
-    current + power dissipation. The <b>Go &#9654;</b> button jumps to
-    that via in the Heatmap tab (enables its layer, zooms in, drops a
-    yellow highlight ring &mdash; left-click anywhere to clear).
-    The tab title also shows a warning count if any via current
-    reaches the threshold.</li>
-  <li><b>Settings</b> &mdash; tunable physics, meshing, and display
-    options, plus per-layer copper thicknesses. Edits apply on the next
-    solve: <b>Re-run Solver</b> re-solves with the new settings and
-    opens a fresh viewer.</li>
-</ul>
-"""
+<h3>Keyboard shortcuts</h3>
+<table>
+  <tr><th>Key</th><th>Action</th></tr>
+  <tr><td><kbd>Ctrl</kbd>+<kbd>+</kbd> / <kbd>Ctrl</kbd>+<kbd>&minus;</kbd></td>
+      <td>Zoom in / out (viewport centre)</td></tr>
+  <tr><td><kbd>Ctrl</kbd>+<kbd>0</kbd></td><td>Fit the whole diagram in view</td></tr>
+  <tr><td>Arrow keys</td><td>Pan; <kbd>Shift</kbd> or <kbd>Ctrl</kbd> for larger steps</td></tr>
+</table>
+
+<h3>Mouse controls</h3>
+<table>
+  <tr><th>Gesture</th><th>Action</th></tr>
+  <tr><td>Mouse wheel</td><td>Scroll vertically</td></tr>
+  <tr><td><kbd>Shift</kbd> + mouse wheel</td><td>Scroll horizontally</td></tr>
+  <tr><td><kbd>Ctrl</kbd> + mouse wheel</td><td>Zoom in / out around the cursor</td></tr>
+  <tr><td><b>+</b> / <b>&minus;</b> / <b>Fit</b> toolbar buttons</td><td>Zoom in, zoom out, fit</td></tr>
+  <tr><td>Middle-button drag</td><td>Pan</td></tr>
+  <tr><td><kbd>Space</kbd> + left-button drag</td><td>Pan</td></tr>
+  <tr><td>Hover</td><td>Tooltip with port / component values</td></tr>
+  <tr><td>Left click on a box</td><td>Jump to that component on the Heatmap</td></tr>
+</table>
+<p class='muted'>Topology shortcuts require the Topology tab to be
+focused. The diagram is vector-rendered — zoom stays sharp.</p>
+"""),
+    ("Nodes", """
+<p>Sortable table of every directive node with
+its voltage, drop, current density, and power density. Filter by
+role or rail. The <b>Go &#9654;</b> button jumps to that node in
+the Heatmap tab (enables its layer, zooms in, drops a yellow
+highlight ring &mdash; left-click anywhere to clear).</p>
+"""),
+    ("Vias", """
+<p>Sortable table of every via with worst-segment
+current + power dissipation. The <b>Go &#9654;</b> button jumps to
+that via in the Heatmap tab (enables its layer, zooms in, drops a
+yellow highlight ring &mdash; left-click anywhere to clear).
+The tab title also shows a warning count if any via current
+reaches the threshold.</p>
+"""),
+    ("Bridges", """
+<p>Every part that joins two nets, and what FYPA did with it:
+modelled as a SERIES element, shorted automatically (Net Ties, 0&nbsp;&Omega;
+parts), or not modelled at all. The <b>Go &#9654;</b> button jumps to the
+part on the Heatmap.</p>
+<p>To model a part as a resistance: select its row, type its real DC
+resistance into <i>Selected part</i>, and click <b>Model as SERIES</b>.
+<b>Disable auto-bridge</b> leaves an automatically shorted part open at DC;
+<b>Remove</b> undoes either. Changes are saved to the .fypa and take effect
+on the next Resolve.</p>
+<p class='muted'>Filter to <i>Affects a solved rail</i> first &mdash; those
+parts join a solved rail to copper no directive touches, so that copper is
+missing from the solve and the rail's resistance reads high.</p>
+"""),
+    ("Capacitors", """
+<p>Every decoupling capacitor with its mounted loop inductance,
+sorted worst first. The <b>Go &#9654;</b> button jumps to the part on the
+Heatmap; untick <b>Use</b> to leave a part out of the analysis. <i>Show on
+heatmap</i> colours each included capacitor's pads by its loop inductance.</p>
+
+<h3>Mouse controls</h3>
+<table>
+  <tr><th>Gesture</th><th>Action</th></tr>
+  <tr><td>Double-click <b>C (&micro;F)</b></td><td>Override the capacitance. A part with no readable value is left out of the impedance model until you set one.</td></tr>
+  <tr><td>Double-click <b>Pkg</b></td><td>Pin the case size, which picks the default ESL / ESR</td></tr>
+  <tr><td>Double-click <b>ESL</b> / <b>ESR</b></td><td>Override the part's own ESL / ESR</td></tr>
+  <tr><td>Click <b>Target</b></td><td>Choose which sink the loop closes to (default: the largest-current sink on the rail)</td></tr>
+</table>
+<p class='muted'>Leave an override field empty to go back to the value read
+from the part or the package default.</p>
+
+<h3>Tiers</h3>
+<p><b>L1</b> is a closed-form estimate, filled in straight away.
+<b>Compute Tier 2/3</b> runs a 2-D FEM of the plane-pair spreading
+inductance (L2) and assembles the full capacitor &rarr; plane &rarr; IC loop
+(L3). It is slower, but accurate on split and perforated planes where L1
+is not.</p>
+"""),
+    ("Impedance", """
+<p>A rail's |Z(f)| &mdash; regulator, decoupling capacitors and
+plane-pair capacitance in parallel &mdash; plotted against a target mask of
+Z<sub>target</sub> = V &middot; ripple&nbsp;% / I<sub>transient</sub> up to
+F_MAX. Set the ripple, transient current, F_MAX and regulator R / L in the
+left panel, then click <b>Apply &amp; Recompute</b>; the values are saved in
+the .fypa per rail. The package library below sets the default ESL / ESR
+for each case size.</p>
+<p><i>Show individual capacitors</i> draws each part's own curve faintly;
+hover a curve to highlight it and show its designator. The capacitors come
+from the Capacitors tab, including its <b>Use</b> ticks and overrides.</p>
+"""),
+    ("Messages", """
+<p>Every log message since FYPA started (loader, solver, editor),
+filterable by level. <b>Clear</b> empties the list without touching
+<code>fypa.log</code>.</p>
+"""),
+    ("Settings", """
+<p>Tunable physics, meshing, and display
+options, plus per-layer copper thicknesses. Edits apply on the next
+solve: <b>Re-run Solver</b> re-solves with the new settings and
+opens a fresh viewer.</p>
+"""),
+)
 
 
 
 
-def _help_tab_html() -> str:
-    """Render the Help tab — theme-aware <style> block + static body."""
-    return _help_tab_style() + _HELP_TAB_BODY
+def _help_tab_html(expanded: set[str]) -> str:
+    """Render the Help tab — theme-aware <style> block + one collapsible
+    section per tab. Only the titles in *expanded* show their body; each
+    heading is a ``toggle:<title>`` anchor the browser's anchorClicked
+    handler flips. ``toggle:*`` expands everything, ``toggle:-`` collapses it."""
+    t = current_theme()
+    link = f"color:{t['accent']}; text-decoration:none;"
+    parts = [
+        _help_tab_style(),
+        f"<p class='muted'>"
+        f"<a href='toggle:*' style='{link}'>Expand all</a> &nbsp;&middot;&nbsp; "
+        f"<a href='toggle:-' style='{link}'>Collapse all</a></p>",
+    ]
+    for title, body in _HELP_SECTIONS:
+        is_open = title in expanded
+        arrow = "&#9662;" if is_open else "&#9656;"  # ▼ / ▶
+        parts.append(
+            f"<h2><a href='toggle:{title}' style='color:{t['fg_strong']};"
+            f" text-decoration:none;'>{arrow} {title}</a></h2>")
+        if is_open:
+            parts.append(body)
+    return "".join(parts)
