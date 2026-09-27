@@ -318,15 +318,16 @@ def test_reject_if_background_load_running() -> None:
     from unittest.mock import MagicMock, patch
 
     import fypa.altium_viewer as av
+    from fypa.viewer import session
 
     owner = MagicMock()
     running = MagicMock()
     running.isRunning.return_value = True
-    with patch.object(av, "_BACKGROUND_LOADERS", {running}):
-        with patch.object(av, "QMessageBox") as mb:
+    with patch.object(session, "_BACKGROUND_LOADERS", {running}):
+        with patch.object(session, "QMessageBox") as mb:
             assert av._reject_if_background_load_running(owner) is True
             mb.information.assert_called_once()
-    with patch.object(av, "_BACKGROUND_LOADERS", set()):
+    with patch.object(session, "_BACKGROUND_LOADERS", set()):
         assert av._reject_if_background_load_running(owner) is False
 
 
@@ -353,7 +354,7 @@ def test_confirm_replace_project_cancel() -> None:
     box = MagicMock()
     box.addButton.side_effect = [save_btn, discard_btn, cancel_btn]
     box.clickedButton.return_value = cancel_btn
-    with patch("fypa.altium_viewer.QMessageBox", return_value=box):
+    with patch("fypa.viewer.session.QMessageBox", return_value=box):
         assert _confirm_replace_project(viewer) is False
 
 
@@ -371,7 +372,7 @@ def test_confirm_replace_project_discard() -> None:
     box = MagicMock()
     box.addButton.side_effect = [save_btn, discard_btn, cancel_btn]
     box.clickedButton.return_value = discard_btn
-    with patch("fypa.altium_viewer.QMessageBox", return_value=box):
+    with patch("fypa.viewer.session.QMessageBox", return_value=box):
         assert _confirm_replace_project(viewer) is True
 
 
@@ -394,9 +395,9 @@ def test_confirm_replace_project_save_project() -> None:
     dlg = MagicMock()
     dlg.exec.return_value = 1  # QDialog.Accepted
     dlg.choice = "project"
-    with patch("fypa.altium_viewer.QMessageBox", return_value=box), patch(
-        "fypa.altium_viewer._ProjectSaveDialog", return_value=dlg,
-    ), patch("fypa.altium_viewer.QDialog") as qd:
+    with patch("fypa.viewer.session.QMessageBox", return_value=box), patch(
+        "fypa.viewer.file_menu._ProjectSaveDialog", return_value=dlg,
+    ), patch("fypa.viewer.session.QDialog") as qd:
         qd.Accepted = 1
         assert _confirm_replace_project(viewer) is True
     viewer._save_project.assert_called_once()
@@ -421,9 +422,9 @@ def test_confirm_replace_project_save_cancelled() -> None:
     dlg = MagicMock()
     dlg.exec.return_value = 0  # rejected
     dlg.choice = None
-    with patch("fypa.altium_viewer.QMessageBox", return_value=box), patch(
-        "fypa.altium_viewer._ProjectSaveDialog", return_value=dlg,
-    ), patch("fypa.altium_viewer.QDialog") as qd:
+    with patch("fypa.viewer.session.QMessageBox", return_value=box), patch(
+        "fypa.viewer.file_menu._ProjectSaveDialog", return_value=dlg,
+    ), patch("fypa.viewer.session.QDialog") as qd:
         qd.Accepted = 1
         assert _confirm_replace_project(viewer) is False
     viewer._save_project.assert_not_called()
@@ -443,7 +444,7 @@ def test_open_recent_altium_uses_cached_import_by_default(
         "pcbdoc_path": str(pcbdoc),
     }
     window = MagicMock()
-    with patch("fypa.altium_viewer._open_altium_project_at") as mock_open:
+    with patch("fypa.viewer.project_open._open_altium_project_at") as mock_open:
         _open_recent_project(window, entry)
     mock_open.assert_called_once_with(
         window, prjpcb, pcbdoc, clean=False, from_recent=True,
@@ -467,7 +468,7 @@ def test_open_recent_altium_honours_clean_preference(tmp_path: Path) -> None:
     entry = {"kind": "altium", "prjpcb_path": str(prjpcb)}
     window = MagicMock()
     try:
-        with patch("fypa.altium_viewer._open_altium_project_at") as mock_open:
+        with patch("fypa.viewer.project_open._open_altium_project_at") as mock_open:
             _open_recent_project(window, entry)
         mock_open.assert_called_once_with(
             window, prjpcb, None, clean=True, from_recent=True,

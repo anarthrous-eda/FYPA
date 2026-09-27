@@ -396,6 +396,7 @@ def test_schedule_cli_altium_import_skips_unset_mesh(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
     from fypa import altium_viewer as av
+    from fypa.viewer import project_open
     from fypa.altium.loader import SolveSettings
 
     settings = SolveSettings()
@@ -405,7 +406,7 @@ def test_schedule_cli_altium_import_skips_unset_mesh(monkeypatch, tmp_path):
     opened = {}
 
     monkeypatch.setattr(
-        av, "_open_altium_project_at",
+        project_open, "_open_altium_project_at",
         lambda win, prj, pcb, *, clean=False, force_solve=False: opened.update(
             {"prj": prj, "pcb": pcb, "clean": clean,
              "force_solve": force_solve},
@@ -512,8 +513,9 @@ def test_cli_adaptive_flag_is_consumed_by_one_import(monkeypatch):
     from types import SimpleNamespace
 
     import fypa.altium_viewer as av
+    from fypa.viewer import project_open
 
-    monkeypatch.setattr(av, "load_adaptive_regulator_gain", lambda: False)
+    monkeypatch.setattr(project_open, "load_adaptive_regulator_gain", lambda: False)
     window = SimpleNamespace(_cli_adaptive_regulator_gain=True)
 
     assert av._consume_cli_adaptive_flag(window) is True
@@ -527,8 +529,9 @@ def test_cli_can_force_adaptive_gain_off(monkeypatch):
     from types import SimpleNamespace
 
     import fypa.altium_viewer as av
+    from fypa.viewer import project_open
 
-    monkeypatch.setattr(av, "load_adaptive_regulator_gain", lambda: True)
+    monkeypatch.setattr(project_open, "load_adaptive_regulator_gain", lambda: True)
     window = SimpleNamespace(_cli_adaptive_regulator_gain=False)
     assert av._consume_cli_adaptive_flag(window) is False
 
@@ -537,8 +540,9 @@ def test_no_cli_flag_uses_the_persisted_preference(monkeypatch):
     from types import SimpleNamespace
 
     import fypa.altium_viewer as av
+    from fypa.viewer import project_open
 
-    monkeypatch.setattr(av, "load_adaptive_regulator_gain", lambda: True)
+    monkeypatch.setattr(project_open, "load_adaptive_regulator_gain", lambda: True)
     assert av._consume_cli_adaptive_flag(SimpleNamespace()) is True
 
 
@@ -549,6 +553,7 @@ def test_cli_mesh_overrides_resync_the_settings_widgets(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
     import fypa.altium_viewer as av
+    from fypa.viewer import project_open
     from fypa.altium.loader import SolveSettings
 
     class _Edit:
@@ -567,7 +572,7 @@ def test_cli_mesh_overrides_resync_the_settings_widgets(monkeypatch, tmp_path):
     )
     opened: dict = {}
     monkeypatch.setattr(
-        av, "_open_altium_project_at",
+        project_open, "_open_altium_project_at",
         lambda win, prj, pcb, *, clean=False, force_solve=False:
             opened.update({"force_solve": force_solve}),
     )
@@ -592,9 +597,10 @@ def test_cli_mesh_overrides_warn_when_there_is_nothing_to_apply_them_to(
     from types import SimpleNamespace
 
     import fypa.altium_viewer as av
+    from fypa.viewer import project_open
 
     monkeypatch.setattr(
-        av, "_open_altium_project_at",
+        project_open, "_open_altium_project_at",
         lambda *_a, **_k: None,
     )
     pcb = tmp_path / "Main.PcbDoc"

@@ -78,7 +78,7 @@ def viewer(qapp):
     # open here, as they are by default) must not count.
     v._visible_all_copper_layer_ids = lambda: {1: "Top", 2: "Inner"}
     v._visible_layers = lambda: ["Top", "Inner", "Bottom"]
-    v._visible_rails = lambda: []
+    v._visible_rails = list
     v._gl_viewer = _GL()
     host = QWidget()
     v._test_host = host

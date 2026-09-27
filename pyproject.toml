@@ -127,12 +127,18 @@ ignore = [
     "E402",
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# Compatibility facade: re-exports the fypa.viewer package under the old
+# module name, so every import in it is "unused" by design.
+"fypa/altium_viewer.py" = ["F401"]
+
 [tool.ty.src]
 # Same spirit as ruff: keep interactive/debug surfaces out of the first
 # type-check gate. The OpenGL viewers and Qt UI predate typed adoption and
 # dominate the diagnostic count; burn them down separately.
 exclude = [
     "fypa/altium_viewer.py",
+    "fypa/viewer/**",
     "fypa/gl_mesh_viewer.py",
     "pdnsolver/ui.py",
     "scripts/**",

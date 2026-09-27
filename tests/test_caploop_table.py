@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (  # noqa: E402
 )
 
 import fypa.altium_viewer as av  # noqa: E402
+import fypa.viewer.tabs.capacitors as capacitors_tab  # noqa: E402
 from fypa.caploop.identify import has_flag  # noqa: E402
 from fypa.caploop.tier3 import Tier3Result  # noqa: E402
 from fypa.project_file import ProjectFile  # noqa: E402
@@ -635,7 +636,7 @@ def _stub_menu(monkeypatch, label=None):
                          if not a.isSeparator())
             return next((a for a in self.actions() if a.text() == label), None)
 
-    monkeypatch.setattr(av, "QMenu", _Menu)
+    monkeypatch.setattr(capacitors_tab, "QMenu", _Menu)
     return shown
 
 
@@ -720,7 +721,7 @@ def test_double_clicking_a_plain_cell_opens_nothing(viewer, monkeypatch):
     class _Menu(av.QMenu):
         exec = _boom
 
-    monkeypatch.setattr(av, "QMenu", _Menu)
+    monkeypatch.setattr(capacitors_tab, "QMenu", _Menu)
     for col in ("Designator", "Rail", "L1 (nH)", "Flags"):
         _dbl(viewer, col)
     assert viewer._project.cap_overrides == []

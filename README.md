@@ -631,7 +631,26 @@ fypa/                    Application package:
   _clipper_fuse.py       Clipper2-based polygon fuse helper (fast union path)
   editor_directives.py   Editor-mode SOURCE / SINK / SERIES directives
   project_file.py        Read / write the sidecar .fypa project file
-  altium_viewer.py       Qt viewer (side panel, tabs, scale controller)
+  altium_viewer.py       Compatibility facade: re-exports fypa.viewer
+  viewer/                Qt viewer, split by feature:
+    window.py              PdnViewer main window, assembled from the mixins below
+    ui_build.py            Widget tree: sidebar, tab pages, heatmap canvas
+    panels/                Sidebar: physical layers / rails, overlays
+    render.py              Heatmap rendering, current arrows, scale controller
+    markers.py, vias.py    Directive-pin markers, via cylinders / current markers
+    viewport.py            Viewport, hover, 3D toggle, hotkeys
+    probes.py              Voltage-difference tool and hover probes
+    copper_pick.py         Copper click-select and Tab expansion
+    editor/                Editor mode: form, selection, marquee, net focus, ...
+    tabs/                  One module per tab (setup, nodes, vias, bridges, ...)
+    file_menu.py           File menu and project save / open
+    settings_tab.py        Settings tab (shared with the launcher)
+    launcher.py, app.py    Launcher window and the main() entry point
+    project_open.py        Opening projects / solutions / Altium imports
+    solve_worker.py        Background solve + cap-loop workers, solve cache
+    session.py             Window registry, background loaders, replace guards
+    theme.py, prefs.py     Dark / light theme; persisted preferences
+    widgets.py, ...        Shared widgets and helpers (display, overlays, ...)
   gl_mesh_viewer.py      Custom QOpenGLWidget — mesh-on-GPU heatmap canvas
   paraview_export.py     ParaView VTU export
   spacemouse_nav.py      3Dconnexion SpaceMouse integration

@@ -159,8 +159,9 @@ Concretely, all of these answers are "yes":
   copper layer — so via resistance and copper sheet resistance stay
   consistent.
 
-The Settings-tab field schema and the matching parameter docs live at
-[fypa/altium_viewer.py:17241-17296](../fypa/altium_viewer.py#L17241-L17296).
+The Settings-tab field schema and the matching parameter docs live in
+`_SETTINGS_FIELDS` at
+[fypa/viewer/settings_tab.py:78-142](../fypa/viewer/settings_tab.py#L78-L142).
 
 ## Where each hop "lands"
 
