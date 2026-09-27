@@ -55,7 +55,7 @@ from fypa.viewer.theme import _T
 from fypa.viewer.ui_build import _UiBuildMixin
 from fypa.viewer.vias import _ViaRenderMixin
 from fypa.viewer.viewport import _ViewportMixin
-from fypa.viewer.copper_roi_panel import _CopperRoiMixin
+from fypa.viewer.tabs.fixes import _FixesTabMixin
 from fypa.viewer.widgets import _esc
 
 
@@ -95,7 +95,7 @@ class PdnViewer(
     _CapacitorsTabMixin,
     _ImpedanceTabMixin,
     _MessagesTabMixin,
-    _CopperRoiMixin,
+    _FixesTabMixin,
     _SettingsTabMixin,
     QMainWindow,
 ):

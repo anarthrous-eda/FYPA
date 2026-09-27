@@ -144,14 +144,13 @@ class _NodesTabMixin:
             return
         designator = des_item.text()
         menu = QMenu(self.nodes_table)
-        act = menu.addAction(f"Where would copper help {designator}?")
+        act = menu.addAction(f"Show fixes for {designator}")
         if not self._roi_available():
             act.setEnabled(False)
-            act.setText(f"Where would copper help {designator}? "
-                        "(re-solve first)")
+            act.setText(f"Show fixes for {designator} (re-solve first)")
         chosen = menu.exec(self.nodes_table.viewport().mapToGlobal(pos))
         if chosen is act and act.isEnabled():
-            self._show_copper_roi_for(designator)
+            self._show_fixes_for(designator)
 
     def _has_solve_results(self) -> bool:
         """False while the viewer holds a stub: a load-only import, a design
@@ -208,6 +207,8 @@ class _NodesTabMixin:
          "the voltage, drop and current density at each directive pin"),
         ("_vias_stack", "_needs_solve_text",
          "the current and power dissipated in each via"),
+        ("_fixes_stack", "_needs_fixes_text",
+         "which copper changes would help each load most"),
         ("_caps_stack", "_needs_rails_text",
          "each decoupling capacitor's loop inductance"),
         ("_impedance_stack", "_needs_rails_text",
@@ -290,6 +291,15 @@ class _NodesTabMixin:
             QApplication.setOverrideCursor(Qt.WaitCursor)
             try:
                 self._populate_vias_table()
+            finally:
+                QApplication.restoreOverrideCursor()
+        elif (index == getattr(self, "_fixes_tab_index", -1)
+                and not self._placeholder_text("_fixes_stack")
+                and not getattr(self, "_fixes_populated", True)):
+            self._fixes_populated = True
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                self._populate_fixes_tab()
             finally:
                 QApplication.restoreOverrideCursor()
         elif (index == getattr(self, "_bridges_tab_index", -1)

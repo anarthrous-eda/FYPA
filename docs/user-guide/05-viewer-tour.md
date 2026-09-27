@@ -121,50 +121,11 @@ to cycle back) changes what each mesh vertex's colour represents:
 | **Current Density**| A / mm   | Magnitude of the current density vector `|J|` at every node. Highlights bottlenecks. |
 | **Power Density**  | W / mm²  | Resistive power dissipation per unit area. Highlights hot spots — where copper will warm up. |
 | **Via Current**    | A        | Current through each via; the copper is drawn grey as context. |
-| **Copper ROI**     | V / mm²  | Where more copper would raise one chosen load's voltage the most — see below. |
 
 > Current Density and Power Density tend to spike sharply at narrow
 > tracks and pad corners. The colour scale auto-clips the top end on
 > these modes so a single 10× spike does not flatten the rest of the
 > board into one colour. Use the Min / Max boxes to override.
-
-### Copper ROI — where would copper help?
-
-The other modes show where current flows. **Copper ROI** answers the
-question you ask next: *for this load, where would extra copper cut its
-drop the most?* Copper carrying another load's current, or copper beyond
-the load, scores nothing — so the map is often very different from the
-Current Density view.
-
-When the mode is selected the sidebar shows:
-
-- **Target load** — every SINK, worst first, ranked by how much of its
-  drop budget it uses. The budget is `nominal − PDN_MIN_V` when the sink
-  has a `PDN_MIN_V`, otherwise 5 % of the rail's nominal voltage. The
-  worst load is picked by default. The drop is the same number the
-  design report shows.
-- **Best fixes** — ranked, with an estimate of the voltage each gains:
-  - **Widen** — push this copper edge out by 0.25 mm (drawn as a line
-    along the edge). For a trace, either edge.
-  - **Add layer** — a stitched parallel copy of the copper, same weight,
-    on another layer (drawn as a dashed outline). The layers with room
-    for it are named.
-  - **Add via** — another via beside this one (drawn as a ring).
-
-  Click a fix to zoom to it. Fixes that would run into another net's
-  copper are greyed and listed last.
-
-You can also right-click a SINK row in the **Nodes** tab and choose
-*Where would copper help …?*.
-
-The heatmap value is the voltage the load would gain per mm² of
-parallel copper at that spot. The ranking comes from one extra
-("adjoint") solve per load, done with the main solve, so it adds little
-to solve time. The estimates are **first order**: they hold well for
-modest changes (a widen estimate on a test trace was within 1 % of
-re-solving with the trace widened; a parallel-layer estimate within
-10 %) and are optimistic for large ones. Re-solve to confirm a fix.
-Solutions saved before this feature existed need a re-solve to use it.
 
 ## 5.5 The Nodes tab
 
@@ -183,6 +144,45 @@ REGULATOR / SERIES directive). Columns:
 The table is sortable — click a column header to sort by it. Sorting
 by Margin ascending is the fastest way to find which pin is closest
 to falling below its limit.
+
+Right-click a SINK row and choose *Show fixes for …* to open the
+**Fixes** tab on that load.
+
+### The Fixes tab — where would copper help?
+
+The heatmap shows where current flows. The **Fixes** tab answers the
+question you ask next: *for this load, where would extra copper cut its
+drop the most?* Copper carrying another load's current, or copper beyond
+the load, scores nothing.
+
+- **Loads** (left) — every SINK, worst first, by how much of its drop
+  budget it uses. The budget is `nominal − PDN_MIN_V` when the sink has
+  a `PDN_MIN_V`, otherwise 5 % of the rail's nominal voltage. Over-budget
+  loads are red. The drop is the same number the design report shows.
+- **Fixes** (right) — for the selected load, ranked by the voltage each
+  would gain:
+  - **Widen** — push this copper edge out by 0.25 mm. For a trace,
+    either edge.
+  - **Add layer** — a stitched parallel copy of the copper, same weight,
+    on another layer. The layers with room for it are named.
+  - **Add via** — another via beside this one.
+
+  Fixes that would run into another net's copper are greyed and listed
+  last. Click **Go** to jump to a fix on the heatmap.
+
+**Show fixes on the heatmap** draws every fix of the selected load over
+whatever mode the heatmap is in — a line along an edge to widen, a dashed
+outline round copper to parallel, a ring on a via — numbered as in the
+table. **Show value map** colours the heatmap by where parallel copper
+would help the load most (volts gained per mm²) instead of the Mode
+quantity; choosing a mode turns it off.
+
+The ranking comes from one extra ("adjoint") solve per load, done with
+the main solve, so it adds little to solve time. The estimates are
+**first order**: they hold well for modest changes (a widen estimate on
+a test trace was within 1 % of re-solving with the trace widened; a
+parallel-layer estimate within 10 %) and are optimistic for large ones.
+Re-solve to confirm a fix.
 
 ## 5.6 The Vias tab
 

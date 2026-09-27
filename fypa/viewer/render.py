@@ -13,7 +13,9 @@ from matplotlib.tri import Triangulation
 
 from fypa.viewer.diagnostics import _apply_mesh_failure_highlights
 from fypa.viewer.display import (
+    _COPPER_ROI_MODE,
     _copper_roi_per_vertex,
+    _VALUE_MAP_MODE_ENTRY,
     _LOG_ELIGIBLE_MODES,
     _LOG_SCALE_DECADES,
     _MODES,
@@ -36,10 +38,12 @@ class _RenderMixin:
         layers = self._visible_layers()
         rails = self._visible_rails()
         mode = self.mode_combo.currentText()
+        if getattr(self, "_roi_value_map", False):
+            mode = _COPPER_ROI_MODE  # the Fixes tab's value map
         return layers, rails, mode
 
     def _mode_derive_fn(self, mode: str):
-        for label, unit, fn in _MODES:
+        for label, unit, fn in (*_MODES, _VALUE_MAP_MODE_ENTRY):
             if label == mode:
                 return label, unit, fn
         raise KeyError(mode)

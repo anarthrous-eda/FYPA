@@ -213,8 +213,6 @@ class _UiBuildMixin:
         self.mode_combo = QComboBox()
         self.mode_combo.addItems([m[0] for m in _MODES])
         side.addWidget(self.mode_combo)
-        # Target load + ranked fixes; shown only in Copper ROI mode.
-        side.addWidget(self._build_roi_panel())
         # No rails → no PDN data, so the metric picker is meaningless.
         # Hide it alongside the colour-scale controls (see below).
         if not self._rails:
@@ -572,6 +570,11 @@ class _UiBuildMixin:
         self._nodes_tab_index = self.tabs.addTab(self._build_nodes_tab(), "Nodes")
         self._init_log.info("PdnViewer init: Nodes tab (%.2fs)", time.monotonic() - _t)
 
+        # Fixes — where extra copper would help each load most. Ranking the
+        # loads samples every pin, so it's populated on first open.
+        self._fixes_populated = False
+        self._fixes_tab_index = self.tabs.addTab(self._build_fixes_tab(), "Fixes")
+
         # Vias tab — sortable, filterable table of every via's worst-segment
         # current + power dissipation. Same lazy-populate treatment as the
         # Nodes tab; on a 7 000-via board the populate step alone took
@@ -656,9 +659,8 @@ class _UiBuildMixin:
         # layer_list.itemChanged is wired in _build_ui via
         # _on_layer_visibility_changed so we can pause-and-resume during
         # programmatic checks without spamming renders.
-        # Copper ROI first: it analyses the target so the re-render below
-        # has a value field to draw.
-        self.mode_combo.currentTextChanged.connect(self._on_mode_changed_for_roi)
+        # A mode pick turns the Fixes tab's value map off before re-rendering.
+        self.mode_combo.currentTextChanged.connect(self._clear_roi_value_map)
         self.mode_combo.currentTextChanged.connect(self._render_with_busy_popup)
         self.rail_only_box.toggled.connect(self._render_with_busy_popup)
         self.src_ref_box.toggled.connect(self._render_with_busy_popup)
