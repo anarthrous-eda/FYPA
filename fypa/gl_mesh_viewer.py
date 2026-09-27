@@ -43,6 +43,7 @@ Vector-field arrows (drawn via the line shader, in world space):
 from __future__ import annotations
 
 import math
+import sys
 from dataclasses import dataclass
 
 import numpy as np
@@ -51,11 +52,13 @@ from PySide6.QtCore import QElapsedTimer, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
+    QCursor,
     QFont,
     QFontMetricsF,
     QMatrix4x4,
     QPainter,
     QPen,
+    QPixmap,
     QPolygonF,
     QSurfaceFormat,
     QTextDocument,
@@ -271,6 +274,168 @@ _EDITOR_SELECTION_BOX_PX = 2.0 #3.6
 # uniform at every zoom (a world-space ribbon would turn finely
 # tessellated copper outlines spiky). Coder-tunable.
 _OUTLINE_WIDTH_PX = 2.0
+
+
+_MARKER_DROP_CURSOR_CACHE: dict = {}
+
+
+def _system_cursor_px() -> int:
+    """Physical pixel size of the platform's pointer image, so a custom
+    cursor matches the real arrow. Windows does NOT scale the pointer with
+    display scaling (125 % still shows a 32 px arrow); only the
+    Accessibility "pointer size" setting, stored as ``CursorBaseSize``,
+    changes it. 32 elsewhere or when the lookup fails."""
+    if sys.platform == "win32":
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                r"Control Panel\Cursors") as k:
+                px = int(winreg.QueryValueEx(k, "CursorBaseSize")[0])
+            if 16 <= px <= 256:
+                return px
+        except (OSError, ValueError):
+            pass
+    return 32
+
+
+def _windows_arrow_image(px: int):
+    """The live Windows arrow pointer as ``(QImage, hot_x, hot_y)`` at
+    ``px`` physical pixels, or ``None`` off Windows / on any failure.
+    Reading the real bitmap (rather than drawing a look-alike) keeps the
+    badged cursor pixel-identical to the arrow it replaces, hotspot
+    included, under whatever pointer scheme the user has chosen."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes as W
+
+        from PySide6.QtGui import QImage
+
+        class ICONINFO(ctypes.Structure):
+            _fields_ = [("fIcon", W.BOOL), ("xHotspot", W.DWORD),
+                        ("yHotspot", W.DWORD), ("hbmMask", W.HBITMAP),
+                        ("hbmColor", W.HBITMAP)]
+
+        class BITMAPINFOHEADER(ctypes.Structure):
+            _fields_ = [("biSize", W.DWORD), ("biWidth", W.LONG),
+                        ("biHeight", W.LONG), ("biPlanes", W.WORD),
+                        ("biBitCount", W.WORD), ("biCompression", W.DWORD),
+                        ("biSizeImage", W.DWORD), ("biXPelsPerMeter", W.LONG),
+                        ("biYPelsPerMeter", W.LONG), ("biClrUsed", W.DWORD),
+                        ("biClrImportant", W.DWORD)]
+
+        user32 = ctypes.windll.user32
+        gdi32 = ctypes.windll.gdi32
+        user32.LoadImageW.restype = W.HANDLE
+        user32.LoadImageW.argtypes = [W.HINSTANCE, W.LPVOID, W.UINT,
+                                      ctypes.c_int, ctypes.c_int, W.UINT]
+        user32.GetIconInfo.argtypes = [W.HANDLE, ctypes.c_void_p]
+        user32.GetDC.restype = W.HDC
+        user32.GetDC.argtypes = [W.HWND]
+        user32.ReleaseDC.argtypes = [W.HWND, W.HDC]
+        gdi32.GetDIBits.argtypes = [W.HDC, W.HBITMAP, W.UINT, W.UINT,
+                                    ctypes.c_void_p, ctypes.c_void_p, W.UINT]
+        gdi32.DeleteObject.argtypes = [W.HGDIOBJ]
+
+        OCR_NORMAL, IMAGE_CURSOR, LR_SHARED = 32512, 2, 0x8000
+        hcur = user32.LoadImageW(None, ctypes.c_void_p(OCR_NORMAL),
+                                 IMAGE_CURSOR, px, px, LR_SHARED)
+        ii = ICONINFO()
+        if not hcur or not user32.GetIconInfo(hcur, ctypes.byref(ii)):
+            return None
+        try:
+            if not ii.hbmColor:
+                return None  # monochrome scheme — use the drawn arrow
+            hdr = BITMAPINFOHEADER()
+            hdr.biSize = ctypes.sizeof(hdr)
+            hdc = user32.GetDC(None)
+            try:
+                # First call fills in the bitmap's real width / height.
+                if not gdi32.GetDIBits(hdc, ii.hbmColor, 0, 0, None,
+                                       ctypes.byref(hdr), 0):
+                    return None
+                w, h = hdr.biWidth, abs(hdr.biHeight)
+                hdr.biHeight = -h            # top-down rows
+                hdr.biBitCount, hdr.biCompression = 32, 0
+                buf = (ctypes.c_ubyte * (w * h * 4))()
+                if gdi32.GetDIBits(hdc, ii.hbmColor, 0, h, buf,
+                                   ctypes.byref(hdr), 0) != h:
+                    return None
+            finally:
+                user32.ReleaseDC(None, hdc)
+            if not any(buf[3::4]):
+                return None  # colour cursor without alpha — rare; fall back
+            # BGRA bytes == QImage.Format_ARGB32 on little-endian.
+            img = QImage(bytes(buf), w, h, w * 4,
+                         QImage.Format_ARGB32).copy()
+            return img, int(ii.xHotspot), int(ii.yHotspot)
+        finally:
+            for hbm in (ii.hbmMask, ii.hbmColor):
+                if hbm:
+                    gdi32.DeleteObject(hbm)
+    except Exception:
+        return None
+
+
+def _marker_drop_cursor(color: str, up: bool, dpr: float) -> QCursor:
+    """Arrow cursor badged with a small filled role triangle (up for
+    SOURCE, down for SINK) below-right of the tip, so an armed free-marker
+    drop reads at the pointer. The badge sits clear of the hotspot so it
+    never covers the copper being picked.
+
+    On Windows the arrow is the system's own bitmap and hotspot (see
+    :func:`_windows_arrow_image`), so switching cursors doesn't nudge the
+    tip; elsewhere a look-alike is drawn with its tip on pixel (0, 0).
+
+    Built at the platform pointer's *physical* size: Qt scales a cursor
+    pixmap's logical size by the screen's ``dpr``, so the pixmap carries
+    that ratio to cancel it out — otherwise it comes out ``dpr`` times
+    larger than the arrow it stands in for."""
+    px = _system_cursor_px()
+    key = (color, up, round(dpr, 2), px)
+    cur = _MARKER_DROP_CURSOR_CACHE.get(key)
+    if cur is not None:
+        return cur
+    system = _windows_arrow_image(px)
+    if system is not None:
+        img, hot_x, hot_y = system
+        pm = QPixmap.fromImage(img)
+        px = pm.width()
+    else:
+        hot_x = hot_y = 0
+        pm = QPixmap(px, px)
+        pm.fill(Qt.transparent)
+    pm.setDevicePixelRatio(dpr)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    # Drawn on a 32-unit grid (the standard pointer frame), scaled to fit.
+    unit = px / dpr / 32.0
+    p.scale(unit, unit)
+    if system is None:
+        # White-with-black-outline pointer; vertices on pixel centres so
+        # the 1 px outline lands crisp, tip pixel at (0, 0).
+        arrow = [QPointF(0.5, 0.5), QPointF(0.5, 16.5), QPointF(4.5, 12.5),
+                 QPointF(7.5, 18.5), QPointF(9.5, 17.5), QPointF(6.5, 11.5),
+                 QPointF(11.5, 11.5)]
+        p.setPen(QPen(QColor("#000000"), 1.0))
+        p.setBrush(QColor("#ffffff"))
+        p.drawPolygon(QPolygonF(arrow))
+    # Role badge, the same red / blue triangle as the viewport buttons.
+    if up:
+        tri = [QPointF(18.5, 14), QPointF(25, 25), QPointF(12, 25)]
+    else:
+        tri = [QPointF(12, 14.5), QPointF(25, 14.5), QPointF(18.5, 25.5)]
+    p.setPen(QPen(QColor("#101010"), 1.2))
+    p.setBrush(QColor(color))
+    p.drawPolygon(QPolygonF(tri))
+    p.end()
+    # Qt takes the hotspot in logical pixels and multiplies it by ``dpr``
+    # on the way to the platform, so hand it the physical hotspot divided
+    # back down.
+    cur = QCursor(pm, round(hot_x / dpr), round(hot_y / dpr))
+    _MARKER_DROP_CURSOR_CACHE[key] = cur
+    return cur
 
 
 @dataclass
@@ -722,6 +887,11 @@ class GLMeshViewer(QOpenGLWidget):
         self._editor_drag_hit_test = None
         self._editor_drag_active: bool = False
         self._editor_cursor_state: str = "default"
+        # Armed free-marker drop — ``(role, colour)`` while the host's
+        # SOURCE / SINK button (or S / L hotkey) waits for a copper click,
+        # else ``None``. Swaps the idle cursor for an arrow badged with the
+        # role's triangle so the armed state is visible at the pointer.
+        self._armed_marker: tuple[str, str] | None = None
         self._bg_normal = (self._bg_r, self._bg_g, self._bg_b)
         # Editor-mode clear colour, from the coder-tunable _EDITOR_BG_HEX.
         self._bg_editor = QColor(_EDITOR_BG_HEX).getRgbF()[:3]
@@ -1839,6 +2009,21 @@ class GLMeshViewer(QOpenGLWidget):
         self._apply_editor_cursor("default")
         self.update()
 
+    def set_armed_marker(self, role: str | None,
+                         color: str | None = None) -> None:
+        """Show (``role`` + ``color``) or clear (``None``) the armed
+        free-marker drop cursor: the arrow with a small SOURCE up-triangle
+        or SINK down-triangle at its lower right. Only shown in editor
+        mode and only when no other cursor (legend chip hover) applies."""
+        armed = (role, color or "#ffffff") if role else None
+        if armed == self._armed_marker:
+            return
+        self._armed_marker = armed
+        # Re-resolve the idle cursor against the new armed state.
+        if (self._editor_cursor_state == "default"
+                or self._editor_cursor_state.startswith("armed:")):
+            self._apply_editor_cursor("default")
+
     def set_editor_drag_hit_test(self, hit_test) -> None:
         """Register the host's free-marker hit-test — a callable
         ``(world_x, world_y) -> bool`` that reports whether a draggable
@@ -1852,10 +2037,17 @@ class GLMeshViewer(QOpenGLWidget):
         dragging one) and for the top-right legend chip (``"pointing"``
         hovering a clickable row). ``"default"`` resets to the inherited
         cursor. A no-op when unchanged so per-move calls don't churn."""
+        if (state == "default" and self._editor_mode
+                and self._armed_marker is not None):
+            state = "armed:" + self._armed_marker[0]
         if state == self._editor_cursor_state:
             return
         self._editor_cursor_state = state
-        if state == "open":
+        if state.startswith("armed:"):
+            role, color = self._armed_marker
+            self.setCursor(_marker_drop_cursor(
+                color, role != "SINK", self.devicePixelRatioF()))
+        elif state == "open":
             self.setCursor(Qt.OpenHandCursor)
         elif state == "closed":
             self.setCursor(Qt.ClosedHandCursor)

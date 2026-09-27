@@ -18569,6 +18569,14 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
                 b.setChecked(pend == role and has_named)
         if not has_named and self._editor_pending_marker is not None:
             self._editor_pending_marker = None
+        # Badge the viewport cursor with the armed role's triangle so the
+        # "next click drops a marker" state is visible at the pointer.
+        set_armed = getattr(getattr(self, "_gl_viewer", None),
+                            "set_armed_marker", None)
+        if set_armed is not None:
+            pend = self._editor_pending_marker
+            style = self._ROLE_MARKER_STYLE.get(pend) if pend else None
+            set_armed(pend, style["color"] if style else None)
 
     def _on_editor_add_marker(self, role: str) -> None:
         """Arm 'drop a free <role> marker on the next viewport click'.
@@ -24116,6 +24124,14 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             if (not event.isAutoRepeat()
                     and self.isActiveWindow()):
                 self._on_shift_pressed()
+        elif (et == QEvent.KeyPress and event.key() == Qt.Key_Escape
+              and not event.isAutoRepeat() and self.isActiveWindow()
+              and self._editor_mode
+              and self._editor_pending_marker is not None):
+            # Escape disarms a pending free-marker drop (same as clicking
+            # its button again). Consumed so it doesn't close the window.
+            self._on_editor_add_marker(self._editor_pending_marker)
+            return True
         elif (et == QEvent.KeyPress and event.key() == Qt.Key_Escape
               and not event.isAutoRepeat() and self.isActiveWindow()
               and self._copper_selection is not None
@@ -31834,10 +31850,10 @@ focused. The diagram is vector-rendered — zoom stays sharp.</p>
   <tr><td><kbd>E</kbd></td><td>Enter / leave editor mode</td></tr>
   <tr><td><kbd>S</kbd></td><td>Drop a free <b>SOURCE</b> &mdash; same as the red triangle
       button at the top-left of the viewport. Then click copper to place it;
-      press <kbd>S</kbd> again to cancel.</td></tr>
+      press <kbd>S</kbd> again or <kbd>Esc</kbd> to cancel.</td></tr>
   <tr><td><kbd>L</kbd></td><td>Drop a free <b>SINK</b> &mdash; same as the blue triangle
       button at the top-left of the viewport. Then click copper to place it;
-      press <kbd>L</kbd> again to cancel.</td></tr>
+      press <kbd>L</kbd> again or <kbd>Esc</kbd> to cancel.</td></tr>
   <tr><td>Left click</td><td>Select the component, marker or copper under the cursor</td></tr>
   <tr><td>Left drag on a marker</td><td>Move that free marker (constrained to copper)</td></tr>
   <tr><td>Left drag on empty board</td><td>Rubber-band select every PDN marker <i>fully</i> inside the box. Copper and roleless parts are never selected.</td></tr>

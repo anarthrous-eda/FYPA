@@ -150,8 +150,11 @@ instead. A free marker is a SOURCE or SINK that lives at a specific
 **Step 1 — Click the red triangle (SOURCE) or blue triangle (SINK)
 button.**
 
-The button highlights to show it is armed. The status bar reminds you:
-*Click copper to drop a free source / sink.*
+The button highlights to show it is armed, and the viewport cursor
+carries a small red (SOURCE) or blue (SINK) triangle beside its tip for
+as long as it stays armed. The status bar reminds you:
+*Click copper to drop a free source / sink.* Click the button again, or
+press **Esc**, to cancel.
 
 ![Free marker buttons in the toolbar](screenshots/02-free-marker-buttons.png)
 
