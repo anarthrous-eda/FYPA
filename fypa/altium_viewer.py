@@ -10281,11 +10281,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         side_scroll.setFixedWidth(
             self._sidebar_content_w + self._SIDEBAR_SCROLLBAR_W,
         )
-        side_scroll.setStyleSheet(
-            f"QScrollArea {{ background-color: {_T()['bg']}; }}"
-        )
         outer.addWidget(side_scroll)
         self._sidebar_scroll = side_scroll
+        self._apply_sidebar_scroll_theme()
 
         # Slim vertical splitter: click toggles collapse; drag resizes width.
         # Hotkey "B" mirrors the click.
@@ -17839,6 +17837,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
             else:
                 bg.hide()
 
+    def _apply_sidebar_scroll_theme(self) -> None:
+        """Pin the side panel's scroll-area background to the active theme
+        (also re-run on a theme switch by :meth:`_refresh_inline_theme`)."""
+        self._sidebar_scroll.setStyleSheet(
+            f"QScrollArea {{ background-color: {_T()['bg']}; }}"
+        )
+
     def _build_editor_panel(self) -> QWidget:
         """Right-hand panel — multi-purpose. In editor mode it hosts the
         PDN-role form (filled by :meth:`_populate_editor_form` on
@@ -17848,28 +17853,13 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         copper primitive). The two contents live in sibling host
         widgets, swapped by :meth:`_show_pdn_editor_layout` /
         :meth:`_show_copper_props_layout`."""
-        t = _T()
         panel = _ClickAbsorbingPanel()
         panel.setObjectName("EditorSidePanel")
         panel.setFixedWidth(self._editor_panel_width)
         # User can drag the panel's left edge to resize it; the owner
         # clamps the proposed width against the live viewport size.
         panel.leftEdgeResized.connect(self._on_editor_panel_resized)
-        # QLineEdit children (copper-name, loc X / Y) need explicit theming
-        # or they fall back to the platform default (white bg, black text,
-        # near-black placeholder) which is unreadable against the dark
-        # panel background. The #id selector keeps the bg rule from
-        # cascading to every descendant.
-        panel.setStyleSheet(
-            f"QWidget#EditorSidePanel {{ background-color: {t['bg']}; }}"
-            f"QLineEdit {{ background-color: {t['bg_input']};"
-            f"            color: {t['fg']};"
-            f"            border: 1px solid {t['border']};"
-            f"            padding: 2px 4px;"
-            f"            selection-background-color: {t['bg_selection']}; }}"
-            f"QLineEdit:focus {{ border: 1px solid {t['accent']}; }}"
-            f"QLineEdit {{ placeholder-text-color: {t['fg_hint']}; }}"
-        )
+        self._editor_panel_widget = panel
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(8)
@@ -17881,7 +17871,6 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
 
         self._editor_hint = QLabel(self._EDITOR_DEFAULT_HINT)
         self._editor_hint.setWordWrap(True)
-        self._editor_hint.setStyleSheet(f"color: {t['fg_muted']};")
         lay.addWidget(self._editor_hint)
 
         # Net-focus release chip — visible for as long as a net focus is
@@ -17895,11 +17884,6 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._editor_focus_chip.setOpenExternalLinks(False)
         self._editor_focus_chip.linkActivated.connect(
             self._on_editor_focus_chip_link)
-        self._editor_focus_chip.setStyleSheet(
-            f"QLabel {{ border: 1px solid {t['accent']}; border-radius: 4px;"
-            f" padding: 4px 6px; background-color: {t['bg_alt']};"
-            f" color: {t['fg']}; }}"
-        )
         self._editor_focus_chip.hide()
         lay.addWidget(self._editor_focus_chip)
 
@@ -17914,11 +17898,6 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         self._editor_net_summary.setOpenExternalLinks(False)
         self._editor_net_summary.linkActivated.connect(
             self._on_net_summary_link)
-        self._editor_net_summary.setStyleSheet(
-            f"QLabel {{ border: 1px solid {t['border']}; border-radius: 4px;"
-            f" padding: 6px; background-color: {t['bg_alt']};"
-            f" color: {t['fg']}; }}"
-        )
         self._editor_net_summary.hide()
         lay.addWidget(self._editor_net_summary)
 
@@ -18006,19 +17985,6 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         # sort to keep the right rows masked.
         hh.sortIndicatorChanged.connect(
             lambda *_: self._apply_net_table_filter())
-        self._net_table.setStyleSheet(
-            f"QTableWidget#NetTable {{ background-color: {t['bg_input']};"
-            f"            color: {t['fg']};"
-            f"            gridline-color: {t['border']};"
-            f"            border: 1px solid {t['border']}; }}"
-            f"QTableWidget#NetTable::item:selected {{"
-            f"            background-color: {t['bg_selection']};"
-            f"            color: {t['fg']}; }}"
-            f"QHeaderView::section {{ background-color: {t['bg']};"
-            f"            color: {t['fg_muted']};"
-            f"            border: 0px; border-bottom: 1px solid {t['border']};"
-            f"            padding: 2px 4px; }}"
-        )
         # Re-built each time the editor opens; populated rows here keep the
         # per-row {name, area, poly_keys, renameable} payload so a click /
         # rename doesn't have to recompute the connectivity index.
@@ -18038,7 +18004,62 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         lay.addWidget(self._net_table, 1)
 
         lay.addStretch(0)
+        self._apply_editor_panel_theme()
         return panel
+
+    def _apply_editor_panel_theme(self) -> None:
+        """(Re)pin the active theme's colours onto the right-hand panel's
+        inline-styled widgets. Called once at build time and again from
+        :meth:`_refresh_inline_theme` on a theme switch — the panel lives
+        on the GL canvas, so it is restyled in place rather than rebuilt."""
+        panel = getattr(self, "_editor_panel_widget", None)
+        if panel is None:
+            return
+        t = _T()
+        # QLineEdit children (copper-name, loc X / Y) need explicit theming
+        # or they fall back to the platform default (white bg, black text,
+        # near-black placeholder) which is unreadable against the dark
+        # panel background. The #id selector keeps the bg rule from
+        # cascading to every descendant.
+        panel.setStyleSheet(
+            f"QWidget#EditorSidePanel {{ background-color: {t['bg']}; }}"
+            f"QLineEdit {{ background-color: {t['bg_input']};"
+            f"            color: {t['fg']};"
+            f"            border: 1px solid {t['border']};"
+            f"            padding: 2px 4px;"
+            f"            selection-background-color: {t['bg_selection']}; }}"
+            f"QLineEdit:focus {{ border: 1px solid {t['accent']}; }}"
+            f"QLineEdit {{ placeholder-text-color: {t['fg_hint']}; }}"
+        )
+        self._editor_hint.setStyleSheet(f"color: {t['fg_muted']};")
+        self._editor_focus_chip.setStyleSheet(
+            f"QLabel {{ border: 1px solid {t['accent']}; border-radius: 4px;"
+            f" padding: 4px 6px; background-color: {t['bg_alt']};"
+            f" color: {t['fg']}; }}"
+        )
+        self._editor_net_summary.setStyleSheet(
+            f"QLabel {{ border: 1px solid {t['border']}; border-radius: 4px;"
+            f" padding: 6px; background-color: {t['bg_alt']};"
+            f" color: {t['fg']}; }}"
+        )
+        # alternate-background-color is pinned here too: left to the app
+        # palette it can disagree with the inline bg on a theme switch.
+        self._net_table.setStyleSheet(
+            f"QTableWidget#NetTable {{ background-color: {t['bg_input']};"
+            f"            color: {t['fg']};"
+            f"            alternate-background-color: {t['bg_alt']};"
+            f"            gridline-color: {t['border']};"
+            f"            border: 1px solid {t['border']}; }}"
+            f"QTableWidget#NetTable::item:selected {{"
+            f"            background-color: {t['bg_selection']};"
+            f"            color: {t['fg']}; }}"
+            f"QHeaderView::section {{ background-color: {t['bg']};"
+            f"            color: {t['fg_muted']};"
+            f"            border: 0px; border-bottom: 1px solid {t['border']};"
+            f"            padding: 2px 4px; }}"
+        )
+        # Crosshair icons are cached per theme mode; repaint for the new one.
+        self._sync_net_focus_column()
 
     def _show_pdn_editor_layout(self) -> None:
         """Switch the right panel to its editor-mode contents (title,
@@ -25455,6 +25476,9 @@ class PdnViewer(_SettingsTabMixin, QMainWindow):
         # their click-absorbing backdrop) pin their colours inline at build
         # time, so re-apply the active theme to them here.
         self._restyle_editor_overlay_buttons()
+        if getattr(self, "_sidebar_scroll", None) is not None:
+            self._apply_sidebar_scroll_theme()
+        self._apply_editor_panel_theme()
 
         if (getattr(self, "probe_label_widget", None) is not None):
             self.probe_label_widget.setStyleSheet(

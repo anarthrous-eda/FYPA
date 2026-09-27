@@ -769,3 +769,23 @@ def test_vias_are_untouched_outside_editor_mode(viewer):
     viewer._editor_mode = False
     xs, _ys, _d = viewer._collect_via_positions(1, set(), rail_scoped=False)
     assert xs == [1.0, 2.0]
+
+
+# --- theme switch -----------------------------------------------------------
+
+def test_theme_switch_restyles_the_panel_in_place(viewer, monkeypatch):
+    """The panel lives on the GL canvas, so a theme switch restyles it rather
+    than rebuilding it; left alone it kept the old theme's background, and
+    the net table's alternate rows took the new palette's colour."""
+    import fypa.altium_viewer as V
+
+    monkeypatch.setattr(V, "_current_theme_mode", "dark")
+    viewer._apply_editor_panel_theme()
+    monkeypatch.setattr(V, "_current_theme_mode", "light")
+    viewer._apply_editor_panel_theme()
+    light = V._THEME_PRESETS["light"]
+    assert (f"background-color: {light['bg']}"
+            in viewer._editor_panel_widget.styleSheet())
+    table_qss = viewer._net_table.styleSheet()
+    assert f"background-color: {light['bg_input']}" in table_qss
+    assert f"alternate-background-color: {light['bg_alt']}" in table_qss
