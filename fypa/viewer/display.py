@@ -39,6 +39,13 @@ def _current_density_per_vertex(tris, potentials, power_density, conductance, n_
 
 
 
+def _copper_roi_per_vertex(tris, potentials, power_density, conductance, n_verts):
+    # Placeholder identity for the Copper ROI mode: the render path spots it
+    # and reads the target's value density instead (it needs the mesh index
+    # and the selected load, which this signature doesn't carry).
+    return np.zeros(n_verts)
+
+
 _MODES = [
     ("Voltage",         "V",     _voltage_per_vertex),
     ("Voltage Drop",    "V",     _voltage_per_vertex),  # values are shifted in _render
@@ -49,6 +56,11 @@ _MODES = [
     # to the via cylinders / markers. Scale range = (min, max) of every
     # visible via's max-segment |I| on the selected rails.
     ("Via Current",     "A",     _voltage_per_vertex),
+    # Copper ROI: where more copper raises the target load's voltage most
+    # (V per mm² of parallel copper). Its values come from the adjoint field
+    # of the selected target, not from this function — see
+    # PdnViewer._layer_arrays and fypa.copper_roi.
+    ("Copper ROI",      "V/mm^2", _copper_roi_per_vertex),
 ]
 
 
@@ -73,7 +85,11 @@ _VIA_CURRENT_MODE: str = "Via Current"
 # than the absolute max so the rest of the board isn't crushed to black.
 # The full data range is still exposed on the scale controller so the user
 # can drag/type up to the real max if they want to see the spike.
-_SPIKE_PRONE_MODES: frozenset[str] = frozenset({"Current Density", "Power Density"})
+# Mode label of the copper return-on-investment view.
+_COPPER_ROI_MODE: str = "Copper ROI"
+
+_SPIKE_PRONE_MODES: frozenset[str] = frozenset(
+    {"Current Density", "Power Density", _COPPER_ROI_MODE})
 
 
 
@@ -85,7 +101,7 @@ _SPIKE_PRONE_MODES: frozenset[str] = frozenset({"Current Density", "Power Densit
 # these. Voltage sits in a narrow band and Voltage Drop is signed, so a
 # log scale is useless or undefined for them.
 _LOG_ELIGIBLE_MODES: frozenset[str] = frozenset(
-    {"Current Density", "Power Density", _VIA_CURRENT_MODE}
+    {"Current Density", "Power Density", _VIA_CURRENT_MODE, _COPPER_ROI_MODE}
 )
 
 

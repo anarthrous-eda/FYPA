@@ -215,3 +215,9 @@ class Problem:
     layers: list[Layer]
     networks: list[Network]
     project_name: str | None = None
+    # Loads whose supply voltage the solver differentiates with respect to the
+    # copper (see pdnsolver.sensitivity): ``(key, CurrentSource)`` pairs, the
+    # key being the caller's label for the load ("U5", "U7#1"). For each one
+    # the solve also returns the adjoint field that ranks where extra copper
+    # would raise V(f) - V(t) the most. Empty by default: no extra work.
+    sensitivity_targets: tuple[tuple[str, BaseLumped], ...] = ()

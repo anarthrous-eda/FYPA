@@ -879,6 +879,9 @@ class GLMeshViewer(QOpenGLWidget):
         # host when a solve aborts on invalid geometry.
         self._mesh_failure_rings: list[
             list[tuple[float, float]]] | None = None
+        # Copper ROI suggestions drawn over the heatmap (see
+        # set_roi_highlights); None when the mode is off.
+        self._roi_highlights: list[dict] | None = None
         # Free-marker drag: the host registers a pure hit-test callback
         # (``world_x, world_y -> bool``); a left press over a marker is
         # claimed as a drag gesture instead of a pan / click, and the
@@ -2114,6 +2117,16 @@ class GLMeshViewer(QOpenGLWidget):
         self._mesh_failure_rings = new
         self.update()
 
+    def set_roi_highlights(self, items) -> None:
+        """Set (or clear, with ``None``) the Copper ROI suggestions drawn
+        over the heatmap. Each item is a dict with ``kind`` ("widen" — an
+        open polyline along the copper edge, in ``coords``; "parallel" —
+        closed outlines of a region, in ``rings``; "via" — a point),
+        ``x`` / ``y`` (the label anchor), ``rank`` (1-based, drawn as the
+        label), ``selected`` and ``blocked``."""
+        self._roi_highlights = list(items) if items else None
+        self.update()
+
     def set_measurement_line(self, x0: float, y0: float,
                               x1: float, y1: float) -> None:
         """Show a thin white line from world-mm ``(x0, y0)`` to ``(x1, y1)``.
@@ -3267,6 +3280,7 @@ class GLMeshViewer(QOpenGLWidget):
         self._draw_editor_selection(painter)
         self._draw_editor_marquee(painter)
         self._draw_mesh_failure_outline(painter)
+        self._draw_roi_highlights(painter)
         self._draw_primitive_selection(painter)
         self._draw_overlay_labels(painter, on_top=False)
         self._draw_markers(painter)
@@ -3411,6 +3425,75 @@ class GLMeshViewer(QOpenGLWidget):
             if not ok or poly.size() < 2:
                 continue
             painter.drawPolygon(poly)
+        painter.restore()
+
+    # Copper ROI overlay colours: widen / parallel / via, and the blocked
+    # (not feasible as drawn) variant of any of them.
+    _ROI_COLORS: dict[str, str] = {
+        "widen": "#00e5ff", "parallel": "#ff4fd8", "via": "#ffd600",
+    }
+    _ROI_BLOCKED_COLOR: str = "#9e9e9e"
+
+    def _draw_roi_highlights(self, painter: QPainter) -> None:
+        """Copper ROI suggestions: a solid line along an edge worth widening,
+        a dashed outline round a region worth a parallel layer, a ring on a
+        via worth doubling — each tagged with its rank in the list."""
+        items = self._roi_highlights
+        if not items:
+            return
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        font = painter.font()
+        font.setBold(True)
+        painter.setFont(font)
+
+        def _proj(wx, wy):
+            px, py = self.world_to_screen(wx, wy, 0.0)
+            if px < -1e8 or py < -1e8:
+                return None
+            return QPointF(px, py)
+
+        # Unselected first, so the selected one is drawn on top.
+        for item in sorted(items, key=lambda it: bool(it.get("selected"))):
+            sel = bool(item.get("selected"))
+            color = QColor(self._ROI_BLOCKED_COLOR if item.get("blocked")
+                           else self._ROI_COLORS.get(item.get("kind"), "#ffffff"))
+            pen = QPen(QColor("#ffffff") if sel else color)
+            pen.setCosmetic(True)
+            pen.setWidthF(5.0 if sel else 3.0)
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            kind = item.get("kind")
+            if kind == "parallel":
+                pen.setStyle(Qt.DashLine)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            if kind == "via":
+                c = _proj(item.get("x", 0.0), item.get("y", 0.0))
+                if c is not None:
+                    r = 11.0 if sel else 8.0
+                    painter.drawEllipse(c, r, r)
+            elif kind == "parallel":
+                for ring in item.get("rings") or []:
+                    pts = [p for p in (_proj(x, y) for x, y in ring)
+                           if p is not None]
+                    if len(pts) >= 3:
+                        painter.drawPolygon(QPolygonF(pts))
+            else:
+                pts = [p for p in (_proj(x, y)
+                                   for x, y in item.get("coords") or [])
+                       if p is not None]
+                if len(pts) >= 2:
+                    painter.drawPolyline(QPolygonF(pts))
+            anchor = _proj(item.get("x", 0.0), item.get("y", 0.0))
+            if anchor is not None and item.get("rank"):
+                text = str(item["rank"])
+                rect = QRectF(anchor.x() + 8, anchor.y() - 22, 20, 18)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QColor(0, 0, 0, 170))
+                painter.drawRoundedRect(rect, 4, 4)
+                painter.setPen(QPen(QColor("#ffffff") if sel else color))
+                painter.drawText(rect, Qt.AlignCenter, text)
         painter.restore()
 
     def _draw_primitive_selection(self, painter: QPainter) -> None:

@@ -55,6 +55,7 @@ from fypa.viewer.theme import _T
 from fypa.viewer.ui_build import _UiBuildMixin
 from fypa.viewer.vias import _ViaRenderMixin
 from fypa.viewer.viewport import _ViewportMixin
+from fypa.viewer.copper_roi_panel import _CopperRoiMixin
 from fypa.viewer.widgets import _esc
 
 
@@ -94,6 +95,7 @@ class PdnViewer(
     _CapacitorsTabMixin,
     _ImpedanceTabMixin,
     _MessagesTabMixin,
+    _CopperRoiMixin,
     _SettingsTabMixin,
     QMainWindow,
 ):
@@ -576,6 +578,7 @@ class PdnViewer(
         """Drop render / report caches tied to the previous solution."""
         self._layer_cache.clear()
         self._layer_geom_cache.clear()
+        self._reset_copper_roi()
         self._layer_vec_cache.clear()
         self._rail_geom_cache = None  # combined batch is solve-specific
         self._overlay_geom_sig = None  # overlay batch is solve-specific too

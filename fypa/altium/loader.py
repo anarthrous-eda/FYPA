@@ -792,6 +792,13 @@ def _sink_pin_coupling(d) -> float:
     return value
 
 
+def directive_label(d) -> str:
+    """A directive's display label: its designator, plus ``#<channel>`` for
+    an indexed multi-channel directive ("U5", "U7#1")."""
+    ch_idx = getattr(d, "channel_index", None)
+    return d.designator if ch_idx is None else f"{d.designator}#{ch_idx}"
+
+
 def _directive_to_network(
     d: DirectiveSpec,
     layer_by_layer_and_net: dict[tuple[int, int], _pp.Layer],
@@ -2413,7 +2420,7 @@ def build_solve_metadata(
     directives = []
     for d in loaded.annotations.directives:
         ch_idx = getattr(d, "channel_index", None)
-        label = d.designator if ch_idx is None else f"{d.designator}#{ch_idx}"
+        label = directive_label(d)
         common = {
             "role": type(d).__name__.replace("Spec", "").upper(),
             "designator": d.designator,
@@ -4570,6 +4577,9 @@ def build_problem(
                  "ideal 0 Ω return.", len(return_ref_nodes))
 
     networks: list[_pp.Network] = []
+    # Every SINK is a copper-sensitivity target, keyed by the same label the
+    # solve metadata gives it ("U5", "U7#1") so the viewer can match them.
+    sensitivity_targets: list[tuple[str, _pp.BaseLumped]] = []
     for d in loaded.annotations.directives:
         if getattr(d, "solve_excluded", False):
             # Single-type rail (only sources or only sinks) — kept for display
@@ -4581,6 +4591,9 @@ def build_problem(
                         type(d).__name__, d.designator)
             continue
         networks.append(net)
+        if isinstance(d, SinkSpec) and isinstance(
+                net.elements[0], _pp.CurrentSource):
+            sensitivity_targets.append((directive_label(d), net.elements[0]))
 
     # Warn when a REGULATOR draws input current from a net that is also
     # downstream of a SERIES element (ferrite bead, inductor DCR, etc.).
@@ -4732,6 +4745,7 @@ def build_problem(
         layers=pp_layers,
         networks=networks,
         project_name=loaded.project_name,
+        sensitivity_targets=tuple(sensitivity_targets),
     )
     # Join the backgrounded non-active-net union — it has been running while
     # the FEM assembly above ran. per_net_layers must carry every net: the

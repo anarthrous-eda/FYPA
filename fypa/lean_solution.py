@@ -58,6 +58,15 @@ class LeanLayerSolution:
     triangles: list[np.ndarray]
     potentials: list[np.ndarray]
     power_densities: list[np.ndarray | None]
+    # Per-triangle sheet conductance per mesh; empty unless the
+    # electro-thermal loop ran (otherwise the layer's ``conductance``).
+    tri_conductances: list[np.ndarray] = field(default_factory=list)
+    # Copper-sensitivity adjoint fields: key -> per-mesh float32 deltas plus
+    # the per-mesh float64 offsets (pdnsolver.sensitivity.mesh_adjoint).
+    # Pickles from before these existed lack the attributes entirely — read
+    # them with getattr(..., None).
+    adjoints: dict[str, list[np.ndarray]] = field(default_factory=dict)
+    adjoint_offsets: dict[str, list[float]] = field(default_factory=dict)
 
 
 @dataclass
@@ -74,6 +83,9 @@ class LeanSolution:
     problem: LeanProblem
     layer_solutions: list[LeanLayerSolution]
     solver_info: dict = field(default_factory=dict)
+    # key -> {"objective_v", "current_a"} per solved sensitivity target (see
+    # pdnsolver.solver.Solution.sensitivity). Absent on older pickles.
+    sensitivity: dict = field(default_factory=dict)
 
 
 def to_lean_solution(padne_solution) -> LeanSolution:
@@ -158,6 +170,12 @@ def to_lean_solution(padne_solution) -> LeanSolution:
             triangles=tris_list,
             potentials=pots_list,
             power_densities=pds_list,
+            tri_conductances=[np.asarray(c, dtype=np.float64) for c in
+                              (getattr(ls, "tri_conductances", None) or [])],
+            adjoints={k: list(v) for k, v in
+                      (getattr(ls, "adjoints", None) or {}).items()},
+            adjoint_offsets={k: list(v) for k, v in
+                             (getattr(ls, "adjoint_offsets", None) or {}).items()},
         ))
 
     # solver_info on padne is a SolverInfo dataclass; on lean we store
@@ -176,4 +194,5 @@ def to_lean_solution(padne_solution) -> LeanSolution:
         problem=lean_problem,
         layer_solutions=lean_layer_solutions,
         solver_info=info_dict,
+        sensitivity=dict(getattr(padne_solution, "sensitivity", None) or {}),
     )
