@@ -195,6 +195,76 @@ def test_rail_tree_local_label_series_nests_via_alias():
     ]
 
 
+def test_rail_tree_repeat_local_labels_do_not_cross_instances():
+    """Shared P_IN/P_OUT labels must not nest one REPEAT room under another."""
+    metadata = {
+        "directives": [
+            {
+                "role": "SINK",
+                "terminals": {
+                    "P": {
+                        "requested_net": "P_OUT",
+                        "resolved_via_local": True,
+                        "pins": [{"net": "P_OUT.1"}],
+                    },
+                    "N": {"requested_net": "GND", "pins": [{"net": "GND"}]},
+                },
+            },
+            {
+                "role": "SINK",
+                "terminals": {
+                    "P": {
+                        "requested_net": "P_OUT",
+                        "resolved_via_local": True,
+                        "pins": [{"net": "P_OUT.2"}],
+                    },
+                    "N": {"requested_net": "GND", "pins": [{"net": "GND"}]},
+                },
+            },
+            {
+                "role": "RESISTOR",
+                "terminals": {
+                    "P": {
+                        "requested_net": "P_IN",
+                        "resolved_via_local": True,
+                        "pins": [{"net": "P_IN.1"}],
+                    },
+                    "N": {
+                        "requested_net": "P_OUT",
+                        "resolved_via_local": True,
+                        "pins": [{"net": "P_OUT.1"}],
+                    },
+                },
+            },
+            {
+                "role": "RESISTOR",
+                "terminals": {
+                    "P": {
+                        "requested_net": "P_IN",
+                        "resolved_via_local": True,
+                        "pins": [{"net": "P_IN.2"}],
+                    },
+                    "N": {
+                        "requested_net": "P_OUT",
+                        "resolved_via_local": True,
+                        "pins": [{"net": "P_OUT.2"}],
+                    },
+                },
+            },
+        ],
+    }
+    _, members = compute_rail_groups(metadata)
+    trees = build_rail_trees(metadata, members)
+    assert set(trees) >= {"P_OUT.1", "P_OUT.2"}
+    flat1 = flatten_rail_tree(trees["P_OUT.1"])
+    flat2 = flatten_rail_tree(trees["P_OUT.2"])
+    names1 = {n for n, _ in flat1}
+    names2 = {n for n, _ in flat2}
+    assert names1 == {"P_OUT.1", "P_IN.1"}
+    assert names2 == {"P_OUT.2", "P_IN.2"}
+    assert names1.isdisjoint(names2)
+
+
 def test_rail_tree_orphan_component_keeps_series_nesting():
     """SERIES chain unreachable from primary stays nested under an orphan root."""
     # Explicit membership (not from compute_rail_groups): PRIMARY shares the
