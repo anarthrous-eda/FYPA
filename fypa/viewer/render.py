@@ -13,6 +13,7 @@ from matplotlib.tri import Triangulation
 
 from fypa.viewer.diagnostics import _apply_mesh_failure_highlights
 from fypa.viewer.display import (
+    _copper_roi_per_vertex,
     _LOG_ELIGIBLE_MODES,
     _LOG_SCALE_DECADES,
     _MODES,
@@ -384,7 +385,8 @@ class _RenderMixin:
                     # the hover probe builds the interpolator on first cursor
                     # move, it writes back to the cache entry so subsequent
                     # renders of the same (layer, mode) reuse it.
-                    "_cache_key": (layer_index, id(derive_fn)),
+                    "_cache_key": self._layer_cache_key(layer_index,
+                                                        derive_fn),
                     "values": entry["vs"],
                     "prepared_shape": entry["prepared_shape"],
                     "outline_segments": entry["outline_segments"],
@@ -426,6 +428,13 @@ class _RenderMixin:
             self._rail_geom_cache = (geom_sig, (xs, ys, zs, tris, no_current))
         return xs, ys, zs, vs, tris, layer_probes, no_current
 
+    def _layer_cache_key(self, layer_index: int, derive_fn) -> tuple:
+        """Key of one layer's per-mode values in ``_layer_cache``. The Copper
+        ROI mode's values also depend on the selected target load."""
+        if derive_fn is _copper_roi_per_vertex:
+            return (layer_index, id(derive_fn), getattr(self, "_roi_key", None))
+        return (layer_index, id(derive_fn))
+
     def _layer_arrays(self, layer_index: int, derive_fn) -> dict:
         """Assemble (and cache) per-layer arrays + Triangulation +
         _FastTriSampler + prepared shapely shape for one
@@ -441,7 +450,7 @@ class _RenderMixin:
         Drop's shift is applied later, downstream in ``_render``) —
         share a single cache entry.
         """
-        key = (layer_index, id(derive_fn))
+        key = self._layer_cache_key(layer_index, derive_fn)
         cached = self._layer_cache.get(key)
         if cached is not None:
             return cached
@@ -452,11 +461,14 @@ class _RenderMixin:
         # over the EXACT same kept-mesh set and order — vs stays aligned to xs.
         geom = self._layer_geometry(layer_index)
         conductance = geom["_conductance"]
-        vs_parts = [
-            np.asarray(derive_fn(tris_local, pot, pd, conductance, n),
-                       dtype=np.float64)
-            for (tris_local, pot, pd, n) in geom["_kept"]
-        ]
+        if derive_fn is _copper_roi_per_vertex:
+            vs_parts = self._roi_vertex_values(layer_index, geom)
+        else:
+            vs_parts = [
+                np.asarray(derive_fn(tris_local, pot, pd, conductance, n),
+                           dtype=np.float64)
+                for (tris_local, pot, pd, n) in geom["_kept"]
+            ]
         vs = (np.concatenate(vs_parts) if vs_parts
               else np.empty(0, dtype=np.float64))
 
@@ -496,6 +508,7 @@ class _RenderMixin:
         # Per-kept-mesh (tris_local, pot, pd, n) for the mode-specific value
         # pass — keeps vs aligned to xs with the identical skip logic.
         kept: list[tuple[np.ndarray, np.ndarray, np.ndarray, int]] = []
+        kept_mesh_idx: list[int] = []
         nc_set = self._no_current_mesh_set()
         offset = 0
         for mesh_i, (xys, tris_local, pot, pd) in enumerate(zip(
@@ -511,6 +524,7 @@ class _RenderMixin:
                 dtype=np.float32,
             ))
             kept.append((tris_local, pot, pd, n))
+            kept_mesh_idx.append(mesh_i)
             # Re-base local indices into the per-layer combined batch.
             mtris_parts.append(tris_local + offset)
             offset += n
@@ -559,6 +573,9 @@ class _RenderMixin:
             # Per-vertex 0/1 mask (parallel to xs) for "Grey no current copper".
             "no_current_mask": no_current_mask,
             "_kept": kept,
+            # Source mesh index of each _kept entry (for per-mesh fields such
+            # as the Copper ROI density).
+            "_kept_mesh_idx": kept_mesh_idx,
             "_conductance": layer.conductance,
         }
         self._layer_geom_cache[layer_index] = geom

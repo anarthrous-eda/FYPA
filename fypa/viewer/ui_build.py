@@ -213,6 +213,8 @@ class _UiBuildMixin:
         self.mode_combo = QComboBox()
         self.mode_combo.addItems([m[0] for m in _MODES])
         side.addWidget(self.mode_combo)
+        # Target load + ranked fixes; shown only in Copper ROI mode.
+        side.addWidget(self._build_roi_panel())
         # No rails → no PDN data, so the metric picker is meaningless.
         # Hide it alongside the colour-scale controls (see below).
         if not self._rails:
@@ -654,6 +656,9 @@ class _UiBuildMixin:
         # layer_list.itemChanged is wired in _build_ui via
         # _on_layer_visibility_changed so we can pause-and-resume during
         # programmatic checks without spamming renders.
+        # Copper ROI first: it analyses the target so the re-render below
+        # has a value field to draw.
+        self.mode_combo.currentTextChanged.connect(self._on_mode_changed_for_roi)
         self.mode_combo.currentTextChanged.connect(self._render_with_busy_popup)
         self.rail_only_box.toggled.connect(self._render_with_busy_popup)
         self.src_ref_box.toggled.connect(self._render_with_busy_popup)

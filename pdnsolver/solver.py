@@ -670,6 +670,17 @@ class LayerSolution:
     # Per-triangle temperature rise above ambient (K), parallel to
     # ``power_densities``. Empty unless the electro-thermal loop ran.
     temperature_rises: list[mesh.TwoForm] = field(default_factory=list)
+    # Per-triangle sheet conductance (S) the final solve used, per mesh.
+    # Only set when the electro-thermal loop ran (the conductance then varies
+    # triangle to triangle); otherwise every triangle has the layer's.
+    tri_conductances: list[np.ndarray] = field(default_factory=list)
+    # Adjoint field per sensitivity target (see Problem.sensitivity_targets),
+    # units V/A (ohms): key -> one per-vertex array per mesh, parallel to
+    # ``potentials``, stored as float32 deltas from the per-mesh float64
+    # offset in ``adjoint_offsets[key][i]`` (see
+    # :func:`pdnsolver.sensitivity.mesh_adjoint`).
+    adjoints: dict[str, list[np.ndarray]] = field(default_factory=dict)
+    adjoint_offsets: dict[str, list[float]] = field(default_factory=dict)
 
 
 @dataclass
@@ -677,6 +688,10 @@ class Solution:
     problem: problem.Problem
     layer_solutions: list[LayerSolution]
     solver_info: SolverInfo
+    # Per sensitivity target that was solved: key -> {"objective_v": the
+    # load's V(f) - V(t), "current_a": its current}. Targets whose network
+    # was dropped from the solve (a dead terminal) are absent.
+    sensitivity: dict[str, dict] = field(default_factory=dict)
 
 
 def construct_strtrees_from_layers(layers: list[problem.Layer]
@@ -2212,6 +2227,9 @@ def produce_layer_solutions(layers: list[problem.Layer],
                             v: np.ndarray,
                             disconnected_meshes_by_layer: list[list[mesh.Mesh]],
                             tri_temperature_rise: np.ndarray | None = None,
+                            tri_conductance: np.ndarray | None = None,
+                            adjoints: dict[str, tuple[np.ndarray, np.ndarray]]
+                            | None = None,
                             ) -> list[LayerSolution]:
     """Pack the flat solution vector ``v`` back into per-layer LayerSolution
     objects.
@@ -2228,6 +2246,10 @@ def produce_layer_solutions(layers: list[problem.Layer],
     triangle order :func:`global_triangle_arrays` produces. It is sliced
     back out per mesh into ``LayerSolution.temperature_rises`` so the
     viewer can render it exactly like the power density it parallels.
+    ``tri_conductance`` (same order) is sliced the same way into
+    ``LayerSolution.tri_conductances``, and each ``adjoints`` entry — a
+    (float32 per-vertex delta in global vertex order, float64 per-mesh
+    offset) pair — into ``LayerSolution.adjoints`` / ``adjoint_offsets``.
     """
     # Bucket mesh indices by layer once — replaces the O(L × M) inner
     # filter ``if mesh_index_to_layer_index[mesh_i] != layer_i``.
@@ -2246,7 +2268,7 @@ def produce_layer_solutions(layers: list[problem.Layer],
     # that actually carry triangles contribute, matching how
     # global_triangle_arrays concatenates them.
     tri_offsets: dict[int, tuple[int, int]] = {}
-    if tri_temperature_rise is not None:
+    if tri_temperature_rise is not None or tri_conductance is not None:
         _cursor = 0
         for mesh_i, msh in enumerate(meshes):
             _, tris = _mesh_source_arrays(msh)
@@ -2261,6 +2283,13 @@ def produce_layer_solutions(layers: list[problem.Layer],
         layer_values: list[mesh.ZeroForm] = []
         layer_power_densities: list[mesh.TwoForm] = []
         layer_temperature_rises: list[mesh.TwoForm] = []
+        layer_tri_conductances: list[np.ndarray] = []
+        layer_adjoints: dict[str, list[np.ndarray]] = {
+            key: [] for key in (adjoints or {})
+        }
+        layer_adjoint_offsets: dict[str, list[float]] = {
+            key: [] for key in (adjoints or {})
+        }
         for mesh_i in meshes_by_layer.get(layer_i, ()):
             msh = meshes[mesh_i]
             base = offsets[mesh_i]
@@ -2286,12 +2315,25 @@ def produce_layer_solutions(layers: list[problem.Layer],
                         np.copyto(rise.values, chunk)
                 layer_temperature_rises.append(rise)
 
+            if tri_conductance is not None:
+                span = tri_offsets.get(mesh_i)
+                layer_tri_conductances.append(
+                    np.asarray(tri_conductance[span[0]:span[1]], dtype=DTYPE)
+                    if span is not None else np.zeros(0, dtype=DTYPE))
+
+            for key, (delta, means) in (adjoints or {}).items():
+                layer_adjoints[key].append(delta[base:base + n_v].copy())
+                layer_adjoint_offsets[key].append(float(means[mesh_i]))
+
         layer_solutions.append(LayerSolution(
             meshes=layer_meshes,
             potentials=layer_values,
             power_densities=layer_power_densities,
             disconnected_meshes=disconnected_meshes_by_layer[layer_i],
             temperature_rises=layer_temperature_rises,
+            tri_conductances=layer_tri_conductances,
+            adjoints=layer_adjoints,
+            adjoint_offsets=layer_adjoint_offsets,
         ))
 
     return layer_solutions
@@ -3267,6 +3309,57 @@ def _log_timing_breakdown(timings: list, total: float) -> None:
     log.info(f"  {total:8.2f}s  100.0%  TOTAL")
 
 
+def _solve_transposed_multi(
+    L_csc: "scipy.sparse.csc_matrix",
+    G: np.ndarray,
+    symmetric: bool,
+    row_describer: Callable[[int], str] | None = None,
+) -> np.ndarray:
+    """Solve ``Lᵀ·Λ = G`` for every column of ``G`` — the adjoint systems.
+
+    A symmetric ``L`` is its own transpose, so the symmetric PARDISO path
+    finds the factorisation the forward solve just cached and runs only the
+    solve phase, all columns in one call. An unsymmetric ``L`` (regulators)
+    costs one factorisation of ``Lᵀ``, shared by every column. Columns whose
+    residual misses the forward solve's tolerance are re-solved one at a
+    time through :func:`_solve_robust`'s fallback ladder.
+    """
+    A = L_csc if symmetric else L_csc.T.tocsc()
+    tol = np.maximum(_DIRECT_SOLVE_ABS_TOL_FLOOR,
+                     _DIRECT_SOLVE_REL_TOL * np.linalg.norm(G, axis=0))
+    lam: np.ndarray | None = None
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # singular-matrix notices
+            if _HAVE_PARDISO:
+                _configure_mkl_threads()
+                lam = (_pardiso_solve_sym(A, G) if symmetric
+                       else _pardiso_solve_unsym(A, G))
+            else:
+                lam = scipy.sparse.linalg.splu(A).solve(G)
+    except Exception as e:
+        log.warning("Batched adjoint solve raised (%s) — solving each "
+                    "target separately.", e)
+    if lam is None:
+        lam = np.zeros_like(G)
+        bad = np.arange(G.shape[1])
+    else:
+        lam = np.asarray(lam, dtype=DTYPE).reshape(G.shape)
+        resid = np.linalg.norm(A @ lam - G, axis=0)
+        bad = np.flatnonzero(resid > tol)
+    for j in bad:
+        lam[:, j], *_ = _solve_robust(
+            A, np.ascontiguousarray(G[:, j]), symmetric=symmetric,
+            row_describer=row_describer,
+        )
+    return lam
+
+
+# Adjoint right-hand sides solved per batch. Bounds the dense (DOF × batch)
+# float64 work arrays: 16 columns of a 2M-DOF board is ~256 MB.
+_ADJOINT_BATCH: int = 16
+
+
 def solve(prob: problem.Problem,
           mesher_config: mesh.Mesher.Config | None = None,
           thermal: "ThermalConfig | None" = None) -> Solution:
@@ -3665,6 +3758,9 @@ def solve(prob: problem.Problem,
     thermal_iterations = 0
     thermal_converged = True
     tri_rise: np.ndarray | None = None
+    # The per-triangle conductance the final L_csc was assembled with (only
+    # when the thermal loop ran; otherwise it is each mesh's layer value).
+    final_tri_cond: np.ndarray | None = None
     max_rise_c = 0.0
     if thermal is not None and thermal.enabled and meshes:
         _t0 = time.monotonic()
@@ -3751,6 +3847,7 @@ def solve(prob: problem.Problem,
                     )
                 v = v_solve[inverse] if inverse is not None else v_solve
                 L_csc = L_t
+                final_tri_cond = upd_cond
 
                 max_rise_c = float(np.max(tri_rise)) if tri_rise.size else 0.0
                 log.info(
@@ -3782,6 +3879,64 @@ def solve(prob: problem.Problem,
             timings, "Electro-thermal iteration", _t0,
             f" ({thermal_iterations} iter, max rise {max_rise_c:.2f} K)",
         )
+
+    # --- Adjoint (sensitivity) solves -------------------------------------
+    # For each target load, J = V(f) - V(t) = gᵀv with g = e_f - e_t. Its
+    # derivative with respect to any conductance in L follows from one extra
+    # solve, Lᵀλ = g: dJ/dp = -λᵀ(∂L/∂p)v. The copper-ROI analysis turns
+    # λ and v into "where would more copper help this load" (see
+    # pdnsolver.sensitivity). Solved against the final L_csc, so thermal
+    # conductances are held at their converged values.
+    sensitivity: dict[str, dict] = {}
+    adjoint_fields: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    targets = []
+    for key, elem in prob.sensitivity_targets:
+        if not isinstance(elem, problem.CurrentSource):
+            continue
+        i_f = node_indexer.node_to_global_index.get(elem.f)
+        i_t = node_indexer.node_to_global_index.get(elem.t)
+        if i_f is None or i_t is None or i_f == i_t:
+            continue  # its network was dropped (dead terminal)
+        targets.append((key, elem, i_f, i_t))
+    if targets:
+        _t0 = time.monotonic()
+        log.info("Solving %d adjoint system(s) for copper sensitivity",
+                 len(targets))
+        n_vert = vindex.n_vertices
+        for b0 in range(0, len(targets), _ADJOINT_BATCH):
+            batch = targets[b0:b0 + _ADJOINT_BATCH]
+            G = np.zeros((M, len(batch)), dtype=DTYPE)
+            for j, (_key, _elem, i_f, i_t) in enumerate(batch):
+                # The contraction sums rows the same way it sums r.
+                rf = inverse[i_f] if inverse is not None else i_f
+                rt = inverse[i_t] if inverse is not None else i_t
+                G[rf, j] += 1.0
+                G[rt, j] -= 1.0
+            lam_red = _solve_transposed_multi(
+                L_csc, G, matrix_is_symmetric,
+                row_describer=_describe_solver_row,
+            )
+            offs = vindex.mesh_vertex_offsets
+            counts = np.diff(offs)
+            for j, (key, elem, i_f, i_t) in enumerate(batch):
+                col = lam_red[:, j]
+                full = (col[inverse] if inverse is not None else col)[:n_vert]
+                # Store float32 deltas from a float64 per-mesh mean: the ROI
+                # reads differences between neighbouring vertices, which a
+                # plain float32 of a large absolute λ would round away.
+                sums = np.zeros(len(counts), dtype=DTYPE)
+                nz = counts > 0
+                if n_vert:
+                    sums[nz] = np.add.reduceat(full, offs[:-1][nz])
+                means = np.divide(sums, np.maximum(counts, 1))
+                delta = (full - np.repeat(means, counts)).astype(np.float32)
+                adjoint_fields[key] = (delta, means)
+                sensitivity[key] = {
+                    "objective_v": float(v[i_f] - v[i_t]),
+                    "current_a": float(elem.current),
+                }
+        _record_stage(timings, "Adjoint (sensitivity) solves", _t0,
+                      f" ({len(targets)} target(s))")
 
     # --- Solver diagnostics ----------------------------------------------
     # The residual is measured against the system actually solved (reduced
@@ -3860,6 +4015,8 @@ def solve(prob: problem.Problem,
         v,
         disconnected_meshes_by_layer,
         tri_temperature_rise=tri_rise,
+        tri_conductance=final_tri_cond,
+        adjoints=adjoint_fields,
     )
     _record_stage(timings, "Solution object", _t0)
 
@@ -3868,4 +4025,5 @@ def solve(prob: problem.Problem,
              f"(from inside pdnsolver.solver.solve)")
     _log_timing_breakdown(timings, _total)
 
-    return Solution(problem=prob, layer_solutions=layer_solutions, solver_info=solver_info)
+    return Solution(problem=prob, layer_solutions=layer_solutions,
+                    solver_info=solver_info, sensitivity=sensitivity)

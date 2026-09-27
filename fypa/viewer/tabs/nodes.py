@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMenu,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -121,12 +122,36 @@ class _NodesTabMixin:
             f"                       padding: 4px; border: 1px solid {_t['border']}; }}"
             f"QTableWidget::item:selected {{ background-color: {_t['bg_selection']}; }}"
         )
+        # Right-click a SINK row to see where copper would help that load.
+        self.nodes_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.nodes_table.customContextMenuRequested.connect(
+            self._on_nodes_context_menu)
         outer.addWidget(self.nodes_table, 1)
         # Deliberately NOT calling _populate_nodes_table() here — the row build
         # is deferred to first tab activation (see __init__ + _on_tabs_current_changed).
         self._nodes_stack = self._wrap_placeholder(widget)
         self._sync_placeholder_tabs()
         return self._nodes_stack
+
+    def _on_nodes_context_menu(self, pos) -> None:
+        """Offer the Copper ROI view for a SINK row's load."""
+        row = self.nodes_table.rowAt(pos.y())
+        if row < 0:
+            return
+        role_item = self.nodes_table.item(row, 1)
+        des_item = self.nodes_table.item(row, 2)
+        if role_item is None or des_item is None or role_item.text() != "SINK":
+            return
+        designator = des_item.text()
+        menu = QMenu(self.nodes_table)
+        act = menu.addAction(f"Where would copper help {designator}?")
+        if not self._roi_available():
+            act.setEnabled(False)
+            act.setText(f"Where would copper help {designator}? "
+                        "(re-solve first)")
+        chosen = menu.exec(self.nodes_table.viewport().mapToGlobal(pos))
+        if chosen is act and act.isEnabled():
+            self._show_copper_roi_for(designator)
 
     def _has_solve_results(self) -> bool:
         """False while the viewer holds a stub: a load-only import, a design

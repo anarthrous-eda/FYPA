@@ -878,7 +878,29 @@ def _try_load_cached_solution(
             "Solve cache", cache_path, cached_fp, current_fp,
         )
         return None
-    return blob.get("solution"), blob.get("metadata")
+    solution, metadata = blob.get("solution"), blob.get("metadata")
+    if _cache_predates_copper_roi(solution, metadata):
+        logging.getLogger(__name__).info(
+            "Solve cache at %s predates copper sensitivity (Copper ROI); "
+            "re-solving.", cache_path,
+        )
+        return None
+    return solution, metadata
+
+
+def _cache_predates_copper_roi(solution, metadata) -> bool:
+    """True for a cached solve written before solves carried copper
+    sensitivity, on a design with loads to rank — serving it would leave the
+    Copper ROI mode empty until the user thought to re-solve. A solution
+    pickled before the field existed lacks the attribute outright (pickle
+    restores the old ``__dict__``); a newer one with no loads has ``{}``."""
+    if solution is None or hasattr(solution, "sensitivity"):
+        return False
+    info = getattr(solution, "solver_info", None)
+    if isinstance(info, dict) and info.get("stub"):
+        return False  # nothing was solved; there is nothing to add
+    return any(d.get("role") == "SINK"
+               for d in ((metadata or {}).get("directives") or []))
 
 
 def _log_fingerprint_diff(
