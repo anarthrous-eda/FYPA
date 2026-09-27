@@ -56,12 +56,14 @@ _MODES = [
     # to the via cylinders / markers. Scale range = (min, max) of every
     # visible via's max-segment |I| on the selected rails.
     ("Via Current",     "A",     _voltage_per_vertex),
-    # Copper ROI: where more copper raises the target load's voltage most
-    # (V per mm² of parallel copper). Its values come from the adjoint field
-    # of the selected target, not from this function — see
-    # PdnViewer._layer_arrays and fypa.copper_roi.
-    ("Copper ROI",      "V/mm^2", _copper_roi_per_vertex),
 ]
+
+# The Fixes tab's value map: where more copper raises the selected load's
+# voltage most (V per mm² of parallel copper). Not in the Mode combo — the
+# tab's "Show value map" box turns it on (see PdnViewer._current_selection).
+# Its values come from the load's adjoint field, not from this function —
+# see PdnViewer._layer_arrays and fypa.copper_roi.
+_VALUE_MAP_MODE_ENTRY = ("Copper ROI", "V/mm^2", _copper_roi_per_vertex)
 
 
 

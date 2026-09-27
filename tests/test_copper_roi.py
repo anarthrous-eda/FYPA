@@ -183,19 +183,19 @@ def test_short_cool_gaps_join_runs():
 def test_viewer_values_follow_kept_meshes_and_clip_negative():
     """The heatmap reads the target's density per *kept* mesh (the viewer
     skips degenerate meshes), averaged onto vertices and clipped at 0."""
-    from fypa.viewer.copper_roi_panel import _CopperRoiMixin
+    from fypa.viewer.tabs.fixes import _FixesTabMixin
 
     tris = np.array([[0, 1, 2]])
     density = {7: [np.array([-1.0]), None, np.array([2.0])]}
     stub = SimpleNamespace(_roi_result=SimpleNamespace(density=density))
     geom = {"_kept": [(tris, None, None, 3), (tris, None, None, 3)],
             "_kept_mesh_idx": [0, 2]}
-    out = _CopperRoiMixin._roi_vertex_values(stub, 7, geom)
+    out = _FixesTabMixin._roi_vertex_values(stub, 7, geom)
     assert [a.tolist() for a in out] == [[0.0, 0.0, 0.0], [2.0, 2.0, 2.0]]
     # No analysis yet: zeros, not an error.
     stub._roi_result = None
     assert all(not a.any() for a in
-               _CopperRoiMixin._roi_vertex_values(stub, 7, geom))
+               _FixesTabMixin._roi_vertex_values(stub, 7, geom))
 
 
 # --- solve cache --------------------------------------------------------------
