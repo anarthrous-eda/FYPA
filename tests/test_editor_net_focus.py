@@ -778,10 +778,11 @@ def test_theme_switch_restyles_the_panel_in_place(viewer, monkeypatch):
     than rebuilding it; left alone it kept the old theme's background, and
     the net table's alternate rows took the new palette's colour."""
     import fypa.altium_viewer as V
+    from fypa.viewer import theme
 
-    monkeypatch.setattr(V, "_current_theme_mode", "dark")
+    monkeypatch.setattr(theme, "_current_theme_mode", "dark")
     viewer._apply_editor_panel_theme()
-    monkeypatch.setattr(V, "_current_theme_mode", "light")
+    monkeypatch.setattr(theme, "_current_theme_mode", "light")
     viewer._apply_editor_panel_theme()
     light = V._THEME_PRESETS["light"]
     assert (f"background-color: {light['bg']}"
