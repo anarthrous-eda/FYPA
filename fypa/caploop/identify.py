@@ -34,6 +34,7 @@ from fypa.altium.loader import _layer_z_centers_mm, _via_pad_layer_span
 from fypa.altium_geometry import _pad_polygon
 from fypa.caploop.constants import CapLoopSettings
 from fypa.caploop.packages import detect_package
+from fypa.rail_groups import unique_requested_net_aliases
 from fypa.topology.net_aliases import is_gnd_alias
 
 # Altium layer ids (see fypa.altium_geometry / fypa.altium.annotations).
@@ -646,10 +647,19 @@ def select_reference_cavity(
 
 # --- rail metadata lookups ----------------------------------------------------
 
-def _terminal_nets(term: dict) -> set[str]:
+def _terminal_nets(
+    term: dict,
+    *,
+    unique_aliases: frozenset[str] = frozenset(),
+) -> set[str]:
+    """PCB nets (and safe ``requested_net`` aliases) for rail membership.
+
+    Shared REPEAT local labels that resolve onto multiple PCB nets are
+    excluded — they must not match every room's rail group.
+    """
     nets = {p.get("net") for p in term.get("pins", []) if p.get("net")}
     req = term.get("requested_net")
-    if req:
+    if req and (req in nets or req in unique_aliases):
         nets.add(req)
     return nets
 
@@ -662,12 +672,13 @@ def design_voltage_for_rail(
     any member net of the cap's rail group."""
     if not directives:
         return None
+    unique_aliases = unique_requested_net_aliases(directives)
     for want_role, term_name in (("SOURCE", "P"), ("REGULATOR", "OUT_P")):
         for d in directives:
             if d.get("role") != want_role:
                 continue
             term = (d.get("terminals") or {}).get(term_name) or {}
-            if _terminal_nets(term) & rail_members:
+            if _terminal_nets(term, unique_aliases=unique_aliases) & rail_members:
                 value = d.get("value")
                 if value is not None:
                     return float(value)
@@ -695,12 +706,13 @@ def default_target_for_rail(
     """
     if not directives:
         return None, (), ()
+    unique_aliases = unique_requested_net_aliases(directives)
     best: dict | None = None
     for d in directives:
         if d.get("role") != "SINK":
             continue
         term = (d.get("terminals") or {}).get("P") or {}
-        if not (_terminal_nets(term) & rail_members):
+        if not (_terminal_nets(term, unique_aliases=unique_aliases) & rail_members):
             continue
         if best is None or float(d.get("value") or 0.0) > \
                 float(best.get("value") or 0.0):
@@ -718,6 +730,7 @@ def eligible_target_labels(
     """Directive labels a cap on this rail may target: every SINK or
     REGULATOR whose consuming terminal lands on a member net. Feeds the
     Capacitors tab's target picker."""
+    unique_aliases = unique_requested_net_aliases(directives)
     out: list[str] = []
     for d in directives or []:
         if d.get("role") not in ("SINK", "REGULATOR"):
@@ -725,7 +738,9 @@ def eligible_target_labels(
         terms = d.get("terminals") or {}
         term = terms.get("P") or terms.get("OUT_P") or {}
         label = d.get("label")
-        if label and (_terminal_nets(term) & rail_members) \
+        if label and (
+                _terminal_nets(term, unique_aliases=unique_aliases)
+                & rail_members) \
                 and label not in out:
             out.append(label)
     return out

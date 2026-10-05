@@ -163,9 +163,12 @@ The viewer labels indexed channels `FB1#1`, `FB1#2`, and so on.
 
 Once a SERIES directive is in place:
 
-- The two rails it bridges are treated as **one rail** in the side
-  panel — the solver propagates current from a source on one side to a
-  sink on the other through the lumped resistor.
+- The two nets of **that instance** are treated as **one rail** in the
+  side panel — the solver propagates current from a source on one side
+  to a sink on the other through the lumped resistor. On repeated
+  sheets, a local label such as `P_IN` still resolves per room; it does
+  **not** merge rails across rooms that share the same local name but
+  are not connected on the PCB.
 - A SERIES marker is drawn on the board at the part location.
 - The Nodes tab shows the voltage on each side of the SERIES part, and
   hovering over the marker reports the current through it.
@@ -186,7 +189,8 @@ for the full explanation, VIP example, and troubleshooting table.
 
 Auto-inference of P/N nets on 2-pin SERIES parts (Section 3.2) works per
 PCB instance the same way: each repeated `R63.N` infers from its own
-pads.
+pads. Rail grouping follows the same rule: a shared local name does not
+create a rail bridge between rooms whose copper is separate on the PCB.
 
 ## 3.5 Troubleshooting
 
