@@ -610,6 +610,10 @@ class PdnViewer(
         self._all_copper_bridges_cache = None
         self._layer_strtrees_cache = None
         self._cc_cache = None
+        # The editor N-net picker's name list is built from the old metadata;
+        # left in place, an Import of a different board offers the previous
+        # board's nets and hides the new one's (issue #58).
+        self._all_net_names_cache = None
         # Editor selection / connectivity highlight also reference the previous
         # board (``_editor_highlight_polys`` and ``_copper_selection`` hold
         # ``id(poly)`` keys into the stale metadata). Reset them so a re-solve

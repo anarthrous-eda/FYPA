@@ -216,6 +216,43 @@ class _EditorFormMixin:
             return sorted(self._connected_nets(d.p_net)) or [d.p_net]
         return self._all_net_names()
 
+    def _form_n_nets(self, sel: dict, role: str) -> list[str]:
+        """Candidate N-net names for the form's N picker. A component SERIES
+        element bridges two of its own pads, so it offers only the
+        component's pin nets; SOURCE / SINK keep every board net because
+        their N terminal can sit on another part (PDN_N_DES)."""
+        if role == "SERIES" and sel.get("kind") == "component":
+            nets = [n for n in (sel.get("nets", []) or [])
+                    if n and n != "(none)"]
+            if nets:
+                return nets
+        return self._all_net_names()
+
+    def _refresh_nnet_items(self, role: str) -> None:
+        """Repopulate the N picker for ``role``, keeping the current pick
+        when it is still offered (or is the loaded directive's own N net).
+        When a SERIES pick would land on the P net, move it to the
+        component's other net."""
+        combo = getattr(self, "_ef_nnet", None)
+        sel = self._editor_selection
+        if combo is None or not sel:
+            return
+        items = self._form_n_nets(sel, role)
+        cur = combo.currentText()
+        keep = getattr(self, "_ef_nnet_keep", None)
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            combo.addItems(items)
+            if cur and (cur in items or cur == keep):
+                self._set_combo(combo, cur)
+            elif role == "SERIES" and len(items) > 1:
+                p = self._ef_pnet.currentText()
+                combo.setCurrentText(next((n for n in items if n != p),
+                                          items[0]))
+        finally:
+            combo.blockSignals(False)
+
     @staticmethod
     def _terminal_net_label(term: dict | None) -> str:
         """Human label for a metadata directive terminal — its named net,
@@ -794,6 +831,8 @@ class _EditorFormMixin:
         self._ef_pnet_label = QLabel("Net")
         form2.addRow(self._ef_pnet_label, self._ef_pnet)
         self._ef_nnet = QComboBox()
+        # Filled per role by _refresh_nnet_items (via _on_editor_role_changed).
+        self._ef_nnet_keep = None
         self._ef_nnet.addItems(self._all_net_names())
         self._ef_nnet_label = QLabel("N net")
         form2.addRow(self._ef_nnet_label, self._ef_nnet)
@@ -880,6 +919,7 @@ class _EditorFormMixin:
                 self._set_combo(self._ef_pnet, existing.p_net)
             if existing.n_net:
                 self._set_combo(self._ef_nnet, existing.n_net)
+                self._ef_nnet_keep = existing.n_net
             self._ef_pins.setText(", ".join(existing.p_pins or []))
             self._ef_npins.setText(", ".join(existing.n_pins or []))
             self._ef_pdes.setText(", ".join(
@@ -916,6 +956,7 @@ class _EditorFormMixin:
             n_net = self._terminal_primary_net(n_term)
             if n_net:
                 self._set_combo(self._ef_nnet, n_net)
+                self._ef_nnet_keep = n_net
             # Seed the pin restriction from the schematic directive's pads so
             # an Altium PDN_PINS source (e.g. J23 pin 1 only) stays on those
             # pins through the override — instead of spreading to every pad on
@@ -965,6 +1006,7 @@ class _EditorFormMixin:
                 self._ef_two.setChecked(True)
             self._ef_single.setEnabled(not is_series)
             self._ef_two.setEnabled(not is_series)
+            self._refresh_nnet_items(role)
             self._on_editor_model_changed()
 
     def _on_editor_model_changed(self, *_args) -> None:

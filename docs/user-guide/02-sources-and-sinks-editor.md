@@ -117,8 +117,11 @@ two-net.
 
 - In two-net mode, both **P net** and **N net** dropdowns are shown.
   P net lists the nets this component is connected to (when bound to a
-  component) or every net on the board (free marker); N net always
-  lists every net on the board.
+  component) or every net on the board (free marker). For `SOURCE` and
+  `SINK`, N net lists every net on the board, since the return can sit
+  on another part (**N DES**). For `SERIES`, N net lists only the
+  component's own pin nets and defaults to the one that isn't the P
+  net.
 - In single-net mode, the second dropdown is hidden and the remaining
   one is just labelled **Net**.
 
