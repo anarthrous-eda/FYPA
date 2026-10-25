@@ -240,8 +240,14 @@ def test_real_resistor_is_not_auto_bridged():
 
 def test_small_but_nonzero_resistor_is_not_auto_bridged():
     """0R01 is a 10 mohm shunt, not a link — shorting it would erase a real
-    measurable drop."""
-    assert _resistors(parse_annotations(_link_proj("0R01"), enabled_layers=[1])) == []
+    measurable drop. With auto-SERIES on it is modelled at its own value;
+    with it off, nothing touches it."""
+    specs = _resistors(parse_annotations(_link_proj("0R01"), enabled_layers=[1]))
+    assert len(specs) == 1
+    assert specs[0].resistance == pytest.approx(0.01)
+    assert specs[0].resistance != NET_TIE_BRIDGE_RESISTANCE_OHM
+    assert _resistors(parse_annotations(
+        _link_proj("0R01"), enabled_layers=[1], auto_series_max_ohm=0)) == []
 
 
 def test_auto_bridge_is_reported_not_silent():

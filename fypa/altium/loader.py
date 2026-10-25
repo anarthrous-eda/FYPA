@@ -29,6 +29,7 @@ import shapely.geometry
 import shapely.strtree
 
 from fypa.altium.annotations import (
+    DEFAULT_AUTO_SERIES_MAX_OHM,
     AnnotationResult,
     DirectiveSpec,
     RegulatorSpec,
@@ -364,6 +365,7 @@ class LoadedProject:
         absorbed_bridges: list[_AbsorbedBridge] | None = None,
         merged_net_names: frozenset[str] | None = None,
         no_auto_bridge_applied: frozenset[str] | None = None,
+        auto_series_max_ohm_applied: float | None = None,
     ) -> None:
         self.extracted = extracted
         self.annotations = annotations
@@ -385,6 +387,12 @@ class LoadedProject:
         # LoadedProject with a *different* set must reload rather than patch.
         self.no_auto_bridge_applied: frozenset[str] = (
             no_auto_bridge_applied or frozenset()
+        )
+        # The low-value resistor auto-SERIES limit this object was built with.
+        # Same reasoning as ``no_auto_bridge_applied``: it acts during
+        # annotation parsing, so a different limit means a reload.
+        self.auto_series_max_ohm_applied: float | None = (
+            auto_series_max_ohm_applied
         )
         if geometry is not None:
             # Seed the cached_property's slot so the lazy compute is skipped.
@@ -600,6 +608,8 @@ def clone_loaded_for_edit(loaded: LoadedProject) -> LoadedProject:
         absorbed_bridges=list(loaded.absorbed_bridges),
         no_auto_bridge_applied=getattr(
             loaded, "no_auto_bridge_applied", frozenset()),
+        auto_series_max_ohm_applied=getattr(
+            loaded, "auto_series_max_ohm_applied", None),
     )
 
 
@@ -3862,7 +3872,17 @@ def collect_bridge_candidates(loaded: LoadedProject) -> list[dict]:
         params = getattr(sch, "parameters", None) or comp.parameters
         value = _component_value_text(params)
 
-        if series is not None:
+        if (series is not None and absorbed is None
+                and getattr(series, "auto_reason", None)):
+            # A low-value resistor FYPA modelled on its own: "auto", so the
+            # Bridges tab offers "Disable auto-bridge" for it like a 0 Ω link.
+            # One the merge absorbed (sub-0.9 mΩ) is explained by the absorbed
+            # branch instead — its nets really were merged.
+            state = "auto"
+            resistance = float(series.resistance)
+            why = f"modelled as SERIES: {series.auto_reason}"
+        elif series is not None and not (
+                absorbed is not None and getattr(series, "auto_reason", None)):
             state = "series"
             resistance = float(series.resistance)
             why = "annotated PDN_ROLE=SERIES"
@@ -5025,6 +5045,7 @@ def _apply_net_remap(
 def load_project(prjpcb_path: str | Path,
                  pcbdoc_selector: str | Path | None = None,
                  no_auto_bridge: set[str] | None = None,
+                 auto_series_max_ohm: float | None = DEFAULT_AUTO_SERIES_MAX_OHM,
                  ) -> LoadedProject:
     """Load and prepare an Altium project for PDN analysis.
 
@@ -5045,6 +5066,11 @@ def load_project(prjpcb_path: str | Path,
     parsing, so by the time editor directives are applied the two nets have
     already been collapsed into one.
 
+    ``auto_series_max_ohm`` models unannotated resistors at or below this
+    value as SERIES with their own value (the ``.fypa``'s
+    ``auto_series_max_ohm``); ``None`` or 0 turns it off. Applied during
+    annotation parsing for the same reason as ``no_auto_bridge``.
+
     Auto-merge pass: SERIES directives below
     :data:`NET_MERGE_RESISTANCE_THRESHOLD_OHM` are detected as electrical
     shorts and their two nets are merged into one before geometry
@@ -5061,7 +5087,8 @@ def load_project(prjpcb_path: str | Path,
     log.info("Stage 2/2: parsing PDN_* annotations (pass 1: discover merges)")
     _t = time.monotonic()
     initial_annotations = parse_annotations(
-        extracted, enabled_layers=enabled, no_auto_bridge=no_auto_bridge)
+        extracted, enabled_layers=enabled, no_auto_bridge=no_auto_bridge,
+        auto_series_max_ohm=auto_series_max_ohm)
     log.info("Stage 2/2: annotations (pass 1) done in %.2fs",
              time.monotonic() - _t)
 
@@ -5094,6 +5121,7 @@ def load_project(prjpcb_path: str | Path,
             skip_designators=skipped_designators,
             net_remap=net_remap,
             no_auto_bridge=no_auto_bridge,
+            auto_series_max_ohm=auto_series_max_ohm,
         )
         log.info("Stage 2/2: annotations (pass 2) done in %.2fs",
                  time.monotonic() - _t)
@@ -5119,6 +5147,7 @@ def load_project(prjpcb_path: str | Path,
         no_auto_bridge_applied=frozenset(
             d.strip().upper() for d in (no_auto_bridge or ())
         ),
+        auto_series_max_ohm_applied=auto_series_max_ohm,
         absorbed_bridges=absorbed_bridges if net_remap else [],
         merged_net_names=frozenset(
             extracted.nets[old].name

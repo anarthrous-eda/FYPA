@@ -292,6 +292,28 @@ NET_TIE_COMPONENT_KINDS: frozenset[int] = frozenset({
 # loader merges the two nets instead of inserting a fragile lumped short.
 NET_TIE_BRIDGE_RESISTANCE_OHM: float = 0.5e-3
 
+# Unannotated resistors whose value is at or below this are modelled as SERIES
+# with their own value as PDN_R (current-sense shunts, mostly), instead of
+# being left open at DC. Unlike the 0 Ω bridge this keeps the two nets apart
+# unless the value is also under the loader's 0.9 mΩ merge threshold. Per
+# project (``ProjectFile.auto_series_max_ohm``); 0 turns it off.
+DEFAULT_AUTO_SERIES_MAX_OHM: float = 0.1
+
+# A resistor value written in ohms and nothing else: "5m", "5mR", "5 mΩ",
+# "0.005", "0R005", "5E-3", "10 mOhm". Anything with another unit ("500mA",
+# "10uF") or extra text ("600R@100MHz") is refused — the part is then left
+# alone rather than guessed at.
+_OHM_ONLY_VALUE_PATTERN = re.compile(
+    r"^(?:"
+    r"(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?\s*[pnuµμmkKMG]?\s*"
+    r"(?:R|r|Ω|Ω|[Oo][Hh][Mm][Ss]?)?"
+    r"|\d+[RrkKmMuµμ]\d+(?:R|r|Ω|Ω|[Oo][Hh][Mm][Ss]?)?"
+    r")$"
+)
+# Designators treated as resistors when the value comes from Value / Val /
+# Comment rather than a dedicated Resistance parameter: R12, RS3, RSNS1.
+_RESISTOR_DESIGNATOR_PATTERN = re.compile(r"^R(?:S|SNS|SENSE)?\d", re.IGNORECASE)
+
 # Component parameters searched, in order, for a part's value when deciding
 # whether it is a 0 ohm link. Mirrors fypa.caploop.identify's key list so the
 # two agree on where an Altium part keeps its value.
@@ -1122,6 +1144,9 @@ class PdnParameterSource:
     # Schematic designator used for local-net lookup (source_designator when
     # the directive is PCB-sourced).
     sch_lookup_designator: str = ""
+    # Set when FYPA synthesised this source itself (a low-value resistor with
+    # no PDN_* parameters): why it did, for diagnostics and the Bridges tab.
+    auto_reason: str | None = None
 
     @property
     def lookup_designator(self) -> str:
@@ -3487,6 +3512,9 @@ class ResistorSpec(_BaseSpec):
     n: TerminalSpec
     channel_index: int | None = None  # None = legacy unindexed; int = PDN<n>_*
     solve_excluded: bool = False  # see SourceSpec.solve_excluded
+    # Non-None when FYPA modelled an unannotated low-value resistor on its own
+    # (see DEFAULT_AUTO_SERIES_MAX_OHM); the text says why.
+    auto_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -5762,6 +5790,124 @@ def _synth_nettie_bridge_for_instance(
     return specs
 
 
+def _low_ohm_resistor_value(
+    parameters: dict[str, str] | None,
+    designator: str,
+) -> tuple[float, str] | None:
+    """``(ohms, value_text)`` when this part is a resistor with a usable value.
+
+    A dedicated ``Resistance`` parameter is trusted on any part. Otherwise the
+    generic value (Value / Val / Comment) is only read on an R-designator
+    part — a capacitor's "10m" or a fuse's "500mA" must never become a
+    resistance. The text must be ohms and nothing else
+    (:data:`_OHM_ONLY_VALUE_PATTERN`).
+    """
+    if not parameters:
+        return None
+    lowered = {str(k).strip().lower(): v for k, v in parameters.items()}
+    text = str(lowered.get("resistance") or "").strip()
+    if not text:
+        if not _RESISTOR_DESIGNATOR_PATTERN.match(designator.strip()):
+            return None
+        text = _component_value_text(parameters)
+    # Drop a trailing tolerance / power field ("5mR, 1%, 2W").
+    text = text.split(",")[0].strip()
+    if not text or not _OHM_ONLY_VALUE_PATTERN.match(text):
+        return None
+    try:
+        ohms = parse_si_value(text)
+    except ValueError:
+        return None
+    return ohms, text
+
+
+def _synth_low_ohm_series_sources(
+    proj: ExtractedProject,
+    existing: list[PdnParameterSource],
+    result: AnnotationResult,
+    max_ohm: float | None,
+    skip_set: set[str],
+    no_auto_bridge: set[str],
+) -> list[PdnParameterSource]:
+    """Parameter sources for unannotated resistors at or below ``max_ohm``.
+
+    Each becomes ``PDN_ROLE=SERIES`` with its own value as ``PDN_R`` and no
+    nets, so the ordinary SERIES parser auto-infers the pair from its two
+    pads. Built as *sources* rather than finished directives (unlike the 0 Ω
+    bridge) because a link that is not merged has to be visible to everything
+    that walks SERIES sources: regulator Vin inference, analysis-group
+    union, the open-loop check. The inferred pair is undirected, so the Vin
+    walk may cross it either way but never reads power flow out of pad order.
+
+    Skipped: any part with a ``PDN_*`` parameter (schematic or PCB), Net
+    Ties, 0 Ω values (the 0 Ω bridge owns those), parts the user opted out
+    of in the Bridges tab, and anything not on exactly two pads on two
+    different nets.
+    """
+    if not max_ohm or max_ohm <= 0:
+        return []
+    covered = {s.lookup_designator.upper() for s in existing}
+    covered |= {s.designator.upper() for s in existing}
+    sch_by_des: dict[str, object] = {}
+    for sch in proj.sch_components:
+        sch_by_des.setdefault(sch.designator.upper(), sch)
+
+    out: list[PdnParameterSource] = []
+    for pcb_idx, pcb in enumerate(proj.pcb_components):
+        lookup_des = pcb.source_designator or pcb.designator
+        key = lookup_des.upper()
+        if (key in covered or pcb.designator.upper() in covered
+                or pcb.designator.upper() in skip_set):
+            continue
+        sch = sch_by_des.get(key)
+        params = (getattr(sch, "parameters", None) or {}) or pcb.parameters or {}
+        if _has_any_pdn_params(params) or _has_any_pdn_params(pcb.parameters or {}):
+            continue
+        if any(_is_nettie_component_kind(getattr(c, "component_kind", 0) or 0)
+               for c in (sch, pcb) if c is not None):
+            continue
+        found = _low_ohm_resistor_value(params, lookup_des)
+        if found is None:
+            continue
+        ohms, text = found
+        if ohms <= 0 or ohms > max_ohm or _looks_like_zero_ohm_value(text):
+            continue
+        schdoc = (getattr(sch, "schdoc_name", None)
+                  or _schdoc_for_pcb_instance(proj, pcb_idx, lookup_des))
+        if key in no_auto_bridge:
+            result.note_absorbed(
+                f"{pcb.designator}: auto-SERIES disabled by the user "
+                f"(Bridges tab) — left open at DC."
+            )
+            continue
+        nets = _autoinfer_2pin_nets(proj, pcb_idx)
+        if nets is None:
+            result.note_absorbed(
+                f"{pcb.designator} ({schdoc}): value {text!r} is at or below "
+                f"the {max_ohm * 1e3:g} mΩ auto-SERIES limit but not modelled — "
+                f"{_autoinfer_failure_reason(proj, pcb_idx)}. Annotate it "
+                f"PDN_ROLE=SERIES with PDN_P_NET / PDN_N_NET to include it."
+            )
+            continue
+        reason = (f"value {text!r} is at or below the "
+                  f"{max_ohm * 1e3:g} mΩ auto-SERIES limit")
+        result.note_absorbed(
+            f"{pcb.designator} ({schdoc}): auto-modelled as SERIES "
+            f"{ohms * 1e3:g} mΩ between {nets[0]} / {nets[1]} because its "
+            f"{reason}. Annotate it, or disable it in the Bridges tab, to "
+            f"override."
+        )
+        out.append(PdnParameterSource(
+            designator=pcb.designator,
+            schdoc_name=schdoc,
+            parameters={"PDN_ROLE": "SERIES", "PDN_R": repr(float(ohms))},
+            pcb_index=pcb_idx,
+            sch_lookup_designator=lookup_des,
+            auto_reason=reason,
+        ))
+    return out
+
+
 def _synth_nettie_directives(
     proj: ExtractedProject,
     enabled_layers: list[int],
@@ -5905,6 +6051,7 @@ def parse_annotations(proj: ExtractedProject,
                       skip_designators: set[str] | None = None,
                       net_remap: dict[int, int] | None = None,
                       no_auto_bridge: set[str] | None = None,
+                      auto_series_max_ohm: float | None = DEFAULT_AUTO_SERIES_MAX_OHM,
                       ) -> AnnotationResult:
     """Scan schematic and PCB components for PDN_* parameters and build directives.
 
@@ -5930,7 +6077,12 @@ def parse_annotations(proj: ExtractedProject,
     and 0 Ω links are otherwise bridged on sight; a part listed here is left
     open at DC. This is the only way to veto an auto-bridge, because the
     bridge (and the net merge that absorbs it) happens here, long before any
-    editor directive is applied.
+    editor directive is applied. It also vetoes the low-value resistor
+    auto-SERIES below.
+
+    `auto_series_max_ohm`: unannotated resistors whose value is at or below
+    this many ohms are modelled as SERIES with their own value (see
+    :func:`_synth_low_ohm_series_sources`). ``None`` or 0 turns it off.
     """
     if enabled_layers is None:
         enabled_layers = proj.enabled_copper_layer_ids()
@@ -5978,12 +6130,21 @@ def parse_annotations(proj: ExtractedProject,
     parameter_sources = _expand_sheet_bound_parameter_sources(
         proj, parameter_sources, result,
     )
+    no_auto_bridge_u = {d.strip().upper() for d in (no_auto_bridge or set())}
+    # Low-value resistors FYPA models on its own. Kept out of the main loop
+    # below (parsed separately so their failures stay warnings), but every
+    # whole-design pass over SERIES sources has to see them.
+    auto_series_sources = _synth_low_ohm_series_sources(
+        proj, parameter_sources, result, auto_series_max_ohm,
+        skip_set, no_auto_bridge_u,
+    )
+    all_sources = parameter_sources + auto_series_sources
 
     supply_map, declared_supply = _collect_supply_voltages_by_net(
         parameter_sources, proj, net_remap=net_remap,
     )
     series_graph = _collect_series_upstream_map(
-        parameter_sources, proj, net_remap=net_remap,
+        all_sources, proj, net_remap=net_remap,
         skip_designators=skip_set,
     )
     for net in series_graph.ambiguous:
@@ -6068,12 +6229,32 @@ def parse_annotations(proj: ExtractedProject,
                 # to resolve, one element per resolved channel otherwise.
                 result.directives.extend(specs)
 
+    # Auto-SERIES resistors. Nobody annotated these, so a part that fails to
+    # resolve is a warning, not an error that blocks the solve; and the
+    # parser's "auto-inferred P/N nets" warning is dropped because the
+    # synthesis note already names the nets.
+    for comp in auto_series_sources:
+        scratch = AnnotationResult()
+        specs = _parse_resistance(
+            comp, proj, enabled_layers, scratch,
+            net_remap=net_remap, supply_map=supply_map,
+            series_graph=series_graph,
+        )
+        for w in scratch.warnings:
+            if ": auto-inferred " not in w:
+                result.warnings.append(w)
+        for err in scratch.errors:
+            result.note_absorbed(f"{err} (auto-SERIES skipped)")
+        result.directives.extend(
+            replace(s, auto_reason=comp.auto_reason) for s in specs
+        )
+
     # Altium Net Ties short their pads by ComponentKind — synthesise low-Ω
     # SERIES bridges so the loader merge path connects those nets without
     # requiring a PDN_ROLE=SERIES on every NetTie symbol.
     result.directives.extend(_synth_nettie_directives(
         proj, enabled_layers, result, skip_set, net_remap=net_remap,
-        no_auto_bridge={d.strip().upper() for d in (no_auto_bridge or set())},
+        no_auto_bridge=no_auto_bridge_u,
     ))
 
     # External-FET SMPS binding: consume PathSpec directives, emit
@@ -6083,7 +6264,7 @@ def parse_annotations(proj: ExtractedProject,
     finalize_smps_stages(result, proj, net_remap=net_remap)
 
     # Cross-directive checks (mode consistency, open-loop) + return grouping.
-    _validate_directive_groups(result, proj, parameter_sources)
+    _validate_directive_groups(result, proj, all_sources)
     return result
 
 

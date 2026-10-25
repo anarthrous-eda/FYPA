@@ -25,7 +25,7 @@ Altium project files.
 
 You annotate components in your Altium schematic with a small set of
 `PDN_*` parameters (which net is the input, which is the output, the current
-or voltage), point this tool at the `.PrjPcb`, and it:
+or voltage), either manually or using the Altium script provided (OR setup this information within FYPA using the built in editor mode) then point this tool at the `.PrjPcb`,  and it:
 
 1. Extracts every copper feature (tracks, arcs, regions, pads, vias) along
    with the net assignments.

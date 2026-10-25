@@ -25,9 +25,9 @@ FEM — you do **not** need `PDN_ROLE=SERIES` on every Net Tie.
 - Override: if the Net Tie already carries any `PDN_*` parameter (for
   example an explicit `SERIES` with a measured resistance, or incomplete
   PDN fields), the auto-bridge is skipped and your annotation wins.
-- Jumpers and bare `0R` resistors that are still `Component Kind =
-  Standard` are **not** auto-detected; annotate those as `SERIES` as
-  usual.
+- `0R` resistors and wire links (a zero value such as `0`, `0R`, `0R0`,
+  `JUMPER`, or an empty value on a jumper / solder-bridge footprint) are
+  auto-bridged the same way, even with `Component Kind = Standard`.
 - The kind is read from the PCB footprint as well as the schematic
   symbol, so a Net Tie that only exists on the board (added by ECO, or a
   board opened without its schematics) is bridged too.
@@ -38,6 +38,35 @@ FEM — you do **not** need `PDN_ROLE=SERIES` on every Net Tie.
   that tie is left unbridged — auto-detected ties never fail a load or
   `fypa annotations`, because you did not annotate them. Annotate the
   part with explicit `PDN_*` parameters to take over.
+
+## 3.0a Low-value resistors (automatic)
+
+An unannotated resistor whose value is **at or below 100 mΩ** is modelled
+as `SERIES` with **its own value** as `PDN_R`. This is mostly for current-sense
+shunts. Unlike a Net Tie, the two nets stay separate, so the shunt's drop
+shows up in the solve, and a regulator downstream of it can still find its
+input voltage through it.
+
+- The value comes from the part's `Resistance` parameter on any part, or
+  from `Value` / `Val` / `Comment` on an `R`-designator part. It must be
+  ohms and nothing else (`5mR`, `0R005`, `0.005`, `5 mΩ`). Anything else
+  (`500mA`, `10uF`, `600R@100MHz`) is ignored.
+- Only parts with exactly two pads on two different nets are modelled.
+  Otherwise the part is skipped and a warning says why.
+- Any `PDN_*` parameter on the part turns this off for that part, and your
+  annotation wins.
+- The limit is per project: **Bridges** tab, *Auto-SERIES resistors up to
+  … Ω*, saved in the `.fypa`. Set it to `0` to turn the feature off.
+  *Disable auto-bridge* on a row turns it off for that one part.
+- A value below 0.9 mΩ still merges the two nets, the same as a `0R`
+  link.
+- Every auto-SERIES part is logged in **Setup -> Annotation log** as
+  `auto-modelled as SERIES`.
+
+The two nets are inferred from the pads, so the part has no direction.
+Regulator Vin inference can still cross it, but only when the path is
+unambiguous. Annotate the part with `PDN_P_NET` (supply side) and
+`PDN_N_NET` (load side) to state the direction explicitly.
 
 > Read [Section 1](01-sources-and-sinks.md) first if you have not — the
 > parameter mechanics (where to add them, hiding them, library-symbol
@@ -52,9 +81,12 @@ FEM — you do **not** need `PDN_ROLE=SERIES` on every Net Tie.
 | `PDN_P_NET` | The net on one side of the part — *optional for 2-pin parts* | `+5V_RAW` |
 | `PDN_N_NET` | The net on the other side — *optional for 2-pin parts*   | `+5V`     |
 
-Which side is `P` and which is `N` is arbitrary for a SERIES element;
-the model is symmetric. The labels matter only when reading the result
-in the viewer ("voltage on the `P` side of F1 is X V").
+For the resistance, which side is `P` and which is `N` makes no
+difference; the model is symmetric. It **does** matter for regulator Vin
+inference, which treats `P` as upstream (the supply side) and `N` as
+downstream. If an SMPS regulator is fed through this part, put the
+supply-side net in `PDN_P_NET`. The labels also appear in the viewer
+("voltage on the `P` side of F1 is X V").
 
 > A SERIES resistance of zero is rejected — the solver would treat it as
 > a short and merge the two nets, which defeats the purpose of having a

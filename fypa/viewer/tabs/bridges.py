@@ -94,6 +94,22 @@ class _BridgesTabMixin:
             self._apply_bridges_filter)
         filter_row.addWidget(self.bridges_state_combo)
 
+        filter_row.addSpacing(16)
+        filter_row.addWidget(QLabel("Auto-SERIES resistors up to"))
+        self.bridges_auto_series_edit = QLineEdit()
+        self.bridges_auto_series_edit.setValidator(
+            _numeric_validator(self, top=1e6))
+        self.bridges_auto_series_edit.setFixedWidth(80)
+        self.bridges_auto_series_edit.setToolTip(
+            "Resistors with no PDN_* parameters whose value is at or below "
+            "this (ohms) are modelled as SERIES with their own value — "
+            "current-sense shunts, mostly. 0 turns it off. Values under "
+            f"{self._BRIDGE_MERGE_THRESHOLD_OHM * 1e3:g} mΩ merge the two "
+            "nets like a 0 Ω link. Applied on the next Resolve.")
+        self.bridges_auto_series_edit.editingFinished.connect(
+            self._on_bridge_auto_series_changed)
+        filter_row.addWidget(self.bridges_auto_series_edit)
+        filter_row.addWidget(QLabel("Ω"))
 
         filter_row.addStretch(1)
         self.bridges_summary_label = QLabel("")
@@ -237,6 +253,7 @@ class _BridgesTabMixin:
         table = getattr(self, "bridges_table", None)
         if table is None:
             return
+        self._sync_bridge_auto_series_edit()
         rows = self._bridge_rows()
         # Sorting and itemChanged both fire during a populate; suppress them
         # or every setItem re-sorts the model out from under the loop and the
@@ -445,6 +462,43 @@ class _BridgesTabMixin:
         rec = self._selected_bridge_row()
         if rec:
             self._apply_bridge_series(rec, None)
+
+    def _sync_bridge_auto_series_edit(self) -> None:
+        """Show the project's auto-SERIES limit, unless the user is typing."""
+        edit = getattr(self, "bridges_auto_series_edit", None)
+        if edit is None or edit.hasFocus():
+            return
+        project = getattr(self, "_project", None)
+        if project is None:
+            from fypa.altium.annotations import DEFAULT_AUTO_SERIES_MAX_OHM
+            value = DEFAULT_AUTO_SERIES_MAX_OHM
+        else:
+            value = float(getattr(project, "auto_series_max_ohm", 0.1))
+        edit.setText(f"{value:g}")
+
+    def _on_bridge_auto_series_changed(self) -> None:
+        edit = self.bridges_auto_series_edit
+        text = edit.text().strip()
+        try:
+            value = _parse_numeric_text(text) if text else 0.0
+        except ValueError:
+            QMessageBox.warning(self, "Not a number",
+                                f"{text!r} is not a resistance in ohms.")
+            self._sync_bridge_auto_series_edit()
+            return
+        if value < 0:
+            value = 0.0
+        project = self._ensure_project()
+        if float(getattr(project, "auto_series_max_ohm", 0.1)) == value:
+            return
+        project.auto_series_max_ohm = value
+        if value == 0:
+            msg = "Auto-SERIES for low-value resistors turned off."
+        else:
+            msg = (f"Unannotated resistors up to {value * 1e3:g} mΩ will be "
+                   f"modelled as SERIES with their own value.")
+        edit.clearFocus()
+        self._after_bridge_edit(msg)
 
     def _on_bridge_disable(self) -> None:
         rec = self._selected_bridge_row()

@@ -334,6 +334,7 @@ class _SolveWorker(QThread):
                   load_only: bool = False,
                   adaptive_regulator_gain: bool = False,
                   no_auto_bridge: set[str] | None = None,
+                  auto_series_max_ohm: float | None = None,
                   parent=None) -> None:
         super().__init__(parent)
         self._prjpcb_path = prjpcb_path
@@ -343,6 +344,12 @@ class _SolveWorker(QThread):
         # path: the auto-bridge and the net merge it triggers both happen
         # while annotations are parsed, before editor directives exist.
         self._no_auto_bridge = set(no_auto_bridge or ())
+        # Low-value resistor auto-SERIES limit (Bridges tab). Same path and
+        # same reason as the opt-out above; None = FYPA's default.
+        if auto_series_max_ohm is None:
+            from fypa.altium.annotations import DEFAULT_AUTO_SERIES_MAX_OHM
+            auto_series_max_ohm = DEFAULT_AUTO_SERIES_MAX_OHM
+        self._auto_series_max_ohm = float(auto_series_max_ohm)
         # ``{(designator, schdoc, channel_index): current_amperes}`` —
         # substituted into the parsed AnnotationResult before build_problem
         # so the FEM sees the new currents. ``channel_index`` is None for
@@ -645,6 +652,17 @@ class _SolveWorker(QThread):
                     self.stage_changed.emit(
                         "Auto-bridge opt-out changed; reloading design info…")
                     loaded = None
+            # Same for the low-value resistor auto-SERIES limit. ``None``
+            # means "not recorded" — a Gerber project (no Altium parameters to
+            # act on, and nothing load_project could reload it from) or a
+            # design-info cache written before the setting existed — and is
+            # left alone rather than forcing an Altium reload.
+            _have_limit = (getattr(loaded, "auto_series_max_ohm_applied", None)
+                           if loaded is not None else None)
+            if _have_limit is not None and _have_limit != self._auto_series_max_ohm:
+                self.stage_changed.emit(
+                    "Auto-SERIES limit changed; reloading design info…")
+                loaded = None
 
             if loaded is None:
                 self.stage_changed.emit("Loading project from disk…")
@@ -652,7 +670,8 @@ class _SolveWorker(QThread):
                     loaded = load_project(
                         self._prjpcb_path,
                         pcbdoc_selector=self._pcbdoc_selector,
-                        no_auto_bridge=self._no_auto_bridge or None)
+                        no_auto_bridge=self._no_auto_bridge or None,
+                        auto_series_max_ohm=self._auto_series_max_ohm)
                 # Persist the freshly-loaded design info so the next run
                 # (e.g. a Re-run that only changes physics) can skip the
                 # extract step. Failures are non-fatal.
@@ -1161,6 +1180,8 @@ class _SolveWorker(QThread):
             extracted=new_extracted,
             annotations=loaded.annotations,
             geometry=new_geometry,
+            auto_series_max_ohm_applied=getattr(
+                loaded, "auto_series_max_ohm_applied", None),
         )
 
     def _apply_sink_overrides(self, loaded) -> None:

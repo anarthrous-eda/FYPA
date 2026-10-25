@@ -701,7 +701,8 @@ Begin
     Else If Role = 'SERIES' Then
         Result := 'Resistive element between two nets (shunt, ferrite, fuse, FET ...).  ' +
                   'PDN_R > 0 is required.  Nets may be left blank on a single-channel ' +
-                  'two-pad part - FYPA infers them.  P / N orientation does not matter.'
+                  'two-pad part - FYPA infers them.  P = upstream (supply side), ' +
+                  'N = downstream: regulators find Vin by walking N -> P.'
     Else If Role = 'REGULATOR' Then
         Result := 'Regulator.  PDN_V plus output and input P/N terminals are required.  ' +
                   'Set REGULATOR_TYPE (LDO or SMPS), or an explicit GAIN which overrides it.'
@@ -734,8 +735,8 @@ End;
 Procedure AddTerminalsTwoNet(Dummy : Integer);
 Begin
     AddHeader('Terminals');
-    AddField('P_NET',  'P net',  'NET',  False, 'side A net', '');
-    AddField('N_NET',  'N net',  'NET',  False, 'side B net', '');
+    AddField('P_NET',  'P net',  'NET',  False, 'upstream (supply) net', '');
+    AddField('N_NET',  'N net',  'NET',  False, 'downstream (load) net', '');
     AddField('P_PINS', 'P pins', 'PINS', False, 'overrides P net', '');
     AddField('N_PINS', 'N pins', 'PINS', False, 'overrides N net', '');
 End;
