@@ -255,9 +255,9 @@ def _build_parser() -> argparse.ArgumentParser:
                     metavar="PCT",
                     help="Fail any load whose drop exceeds this share of "
                          "nominal (default: no budget).")
-    sp.add_argument("--j-limit", type=float, default=None, metavar="A_PER_MM",
-                    help="Warn on copper current density above this "
-                         "(default: no limit).")
+    sp.add_argument("--j-limit", type=float, default=None, metavar="A_PER_MM2",
+                    help="Warn on copper current density above this, in A/mm² "
+                         "of copper cross-section (default: no limit).")
     sp.add_argument("--author", default="")
     sp.add_argument("--revision", default="")
     sp.add_argument("--fail-on", choices=("fail", "warn", "never"),
@@ -1373,10 +1373,13 @@ def do_paraview(args: argparse.Namespace) -> int:
     # longer built by the solver). ``lean_ify=True`` normalises both current
     # lean pickles and legacy padne pickles to that form. This is the same
     # writer File > Export > ParaView uses, so CLI and GUI output match.
+    from fypa.altium_geometry import solve_copper_conductivity
     from fypa.paraview_export import export_lean_solution
-    solution, _ = _load_solution_pickle(args.solution, lean_ify=True)
+    solution, metadata = _load_solution_pickle(args.solution, lean_ify=True)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    n_files = export_lean_solution(solution, args.output_dir)
+    n_files = export_lean_solution(
+        solution, args.output_dir,
+        copper_conductivity=solve_copper_conductivity(metadata))
     print(f"ParaView export complete: {n_files} file(s) in {args.output_dir}")
     return 0
 
@@ -1391,7 +1394,7 @@ def do_report(args: argparse.Namespace) -> int:
         return 2
     settings = ReportSettings(
         via_limit_a=args.via_limit, margin_warn_pct=args.margin_warn_pct,
-        drop_budget_pct=args.drop_budget_pct, j_limit_a_per_mm=args.j_limit,
+        drop_budget_pct=args.drop_budget_pct, j_limit_a_per_mm2=args.j_limit,
         detail=args.detail, author=args.author, revision=args.revision)
     report = build_report(
         solution, metadata, settings,

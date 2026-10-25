@@ -24,6 +24,10 @@ from typing import cast
 
 import numpy as np
 
+from fypa.altium_geometry import (
+    solve_copper_conductivity,
+    volume_current_density,
+)
 from fypa.rail_groups import compute_rail_groups
 from fypa.report import checks
 from fypa.report.model import (
@@ -212,6 +216,7 @@ class _Context:
                  net_to_rail, settings):
         self.sampler = sampler
         self.metadata = metadata
+        self.sigma = solve_copper_conductivity(metadata)
         self.directives = directives
         self.pin_v = pin_v
         self.rail_to_members = rail_to_members
@@ -302,6 +307,8 @@ class _Context:
             return None
         ls = self.sampler.solution.layer_solutions[li]
         cond = float(self.sampler.solution.problem.layers[li].conductance)
+        # Sheet |J| (A/mm of width) → A/mm² of copper cross-section.
+        j_scale = volume_current_density(1.0, cond, self.sigma)
         parts = []
         loss = 0.0
         v_min = (math.inf, None)
@@ -327,9 +334,9 @@ class _Context:
             pd_arr = (np.asarray(pd, dtype=np.float64) if pd is not None
                       else np.zeros(tri.shape[0]))
             loss += float(np.nansum(pd_arr * area))
-            j_faces.append(np.sqrt(np.maximum(pd_arr * cond, 0.0)))
+            j_faces.append(np.sqrt(np.maximum(pd_arr * cond, 0.0)) * j_scale)
             j_xy.append(p.mean(axis=1))
-            parts.append((xys, tri, pot, pd_arr, cond))
+            parts.append((xys, tri, pot, pd_arr, cond, j_scale))
         if not parts:
             self._layer_cache[key] = None
             return None
@@ -541,7 +548,7 @@ class _Context:
                 by_phys[phys] = LayerResult(
                     layer=phys, nets=[net], copper=self.copper_label(phys),
                     drop_across_v=st["v_max"] - st["v_min"],
-                    peak_j_a_per_mm=st["peak_j"], peak_j_xy=st["peak_j_xy"],
+                    peak_j_a_per_mm2=st["peak_j"], peak_j_xy=st["peak_j_xy"],
                     loss_w=st["loss"], share=0.0)
                 v_range[phys] = (st["v_min"], st["v_max"])
             else:
@@ -551,15 +558,15 @@ class _Context:
                 v_range[phys] = (lo, hi)
                 lr.drop_across_v = hi - lo
                 lr.loss_w += st["loss"]
-                if st["peak_j"] > lr.peak_j_a_per_mm:
-                    lr.peak_j_a_per_mm = st["peak_j"]
+                if st["peak_j"] > lr.peak_j_a_per_mm2:
+                    lr.peak_j_a_per_mm2 = st["peak_j"]
                     lr.peak_j_xy = st["peak_j_xy"]
         for lr in by_phys.values():
             lr.share = lr.loss_w / total_loss if total_loss > 0 else 0.0
         rail.layers = list(by_phys.values())
         rail.loss_w = total_loss if results else None
-        rail.peak_j_a_per_mm = max(
-            (lr.peak_j_a_per_mm for lr in rail.layers), default=None)
+        rail.peak_j_a_per_mm2 = max(
+            (lr.peak_j_a_per_mm2 for lr in rail.layers), default=None)
         if worst is not None and worst[2] is not None:
             rail.worst_point = (worst[1], float(worst[2][0]),
                                 float(worst[2][1]))
@@ -651,7 +658,7 @@ class _Context:
                 if phys != drop_layer:
                     continue
                 st = self.layer_stats(phys, net)
-                for xys, tri, pot, _pd, _c in (st or {}).get("parts", []):
+                for xys, tri, pot, _pd, _c, _js in (st or {}).get("parts", []):
                     drop = setpoint - (pot - src_ret)
                     parts.append((xys, tri, drop[tri].mean(axis=1)))
             pins = [(ld.worst_xy[0], ld.worst_xy[1], ld.label)
@@ -673,22 +680,24 @@ class _Context:
                                     if share is not None else "")
                 + ". Squares mark load pins; the circle marks the lowest point.")
         # Current-density map on the layer with the highest peak.
-        top = max(rail.layers, key=lambda lr: lr.peak_j_a_per_mm)
+        top = max(rail.layers, key=lambda lr: lr.peak_j_a_per_mm2)
         parts = []
         for phys, net in self.rail_layers(rail.name):
             if phys != top.layer:
                 continue
             st = self.layer_stats(phys, net)
-            for xys, tri, _pot, pd, cond in (st or {}).get("parts", []):
-                parts.append((xys, tri, np.sqrt(np.maximum(pd * cond, 0.0))))
+            for xys, tri, _pot, pd, cond, j_scale in (st or {}).get(
+                    "parts", []):
+                parts.append((xys, tri,
+                              np.sqrt(np.maximum(pd * cond, 0.0)) * j_scale))
         marker = None
         if top.peak_j_xy:
             marker = (top.peak_j_xy[0], top.peak_j_xy[1],
-                      f"peak {top.peak_j_a_per_mm:.3g} A/mm")
+                      f"peak {top.peak_j_a_per_mm2:.3g} A/mm²")
         rail.figures["j_map"] = figures.mesh_map_png(
             parts, title=f"Current density · {top.layer}",
-            unit_label="|J| (A/mm)", cmap="inferno", vmin=0.0,
-            vmax=top.peak_j_a_per_mm, marker=marker)
+            unit_label="|J| (A/mm²)", cmap="inferno", vmin=0.0,
+            vmax=top.peak_j_a_per_mm2, marker=marker)
         rail.captions["j_map"] = (
             f"Current density on {top.layer}. The scale is clipped at the "
             f"{_PEAK_PERCENTILE:g}th percentile so pin singularities don't "
@@ -762,8 +771,8 @@ def _setup_rows(metadata: dict, solution, settings: ReportSettings,
     if settings.drop_budget_pct is not None:
         rules.insert(2, f"drop ≤ {settings.drop_budget_pct:g} % of nominal "
                         "(FAIL)")
-    if settings.j_limit_a_per_mm is not None:
-        rules.append(f"peak |J| ≤ {settings.j_limit_a_per_mm:g} A/mm (WARN)")
+    if settings.j_limit_a_per_mm2 is not None:
+        rules.append(f"peak |J| ≤ {settings.j_limit_a_per_mm2:g} A/mm² (WARN)")
     rows.append(("Pass rules", " · ".join(rules)))
     rows.append(("Definitions",
                  "Voltage at a load = lowest supply pin minus highest return "

@@ -1,6 +1,8 @@
 """Via cylinders (3D) and the 2D via-current markers."""
 from __future__ import annotations
 
+import math
+
 import numpy as np
 from fypa.gl_mesh_viewer import LegendRow, MarkerGroup
 
@@ -445,6 +447,20 @@ class _ViaRenderMixin:
             return [(pos, col)]
         return chunks
 
+    def _barrel_wall_area_mm2(self, via: dict) -> float:
+        """Copper cross-section (mm²) of a round plated barrel: an annulus
+        of the solve's plating thickness inside the drill, or a solid rod
+        when the plating closes the hole. Matches the wall the FEM's hop
+        resistance is built from. 0 when the drill is unknown."""
+        r_outer = 0.5 * float(via.get("hole_diameter_mm") or 0.0)
+        if r_outer <= 0.0:
+            return 0.0
+        plating = float(
+            ((self.metadata or {}).get("physics_constants") or {})
+            .get("plating_thickness_mm", 0.025))
+        r_inner = max(r_outer - max(plating, 0.0), 0.0)
+        return math.pi * (r_outer * r_outer - r_inner * r_inner)
+
     def _heatmap_via_chunks(
         self, via: dict, x: float, y: float, radius: float,
         lo_id: int, hi_id: int,
@@ -458,12 +474,22 @@ class _ViaRenderMixin:
         Voltage / Voltage Drop produce a smooth top↔bottom gradient on
         each segment; Current Density / Power Density produce a single
         colour per segment (the value is constant along the resistor).
+        Current Density is |I| over the plated wall's cross-section
+        (A/mm², the copper's own unit).
         Returns an empty list when the via has fewer than two sampleable
-        layers — caller falls back to the solid-orange path.
+        layers, or in Current Density mode when the barrel area is unknown
+        (no drill, or a slotted bore) — caller falls back to the
+        solid-orange path.
         """
         net = via.get("net", "")
         if not net or net in ("?", "NO_NET"):
             return []
+        wall_area_mm2 = 0.0
+        if mode == "Current Density":
+            wall_area_mm2 = (self._barrel_wall_area_mm2(via)
+                             if slot is None else 0.0)
+            if wall_area_mm2 <= 0.0:
+                return []
         try:
             i_start = stackup_ids.index(lo_id)
             i_end = stackup_ids.index(hi_id)
@@ -562,7 +588,7 @@ class _ViaRenderMixin:
                 )
                 i_seg = (v_a - v_b) / r_seg if r_seg > 0 else 0.0
                 if mode == "Current Density":
-                    val = abs(i_seg)
+                    val = abs(i_seg) / wall_area_mm2
                 else:  # Power Density (and any unexpected mode → power)
                     val = i_seg * i_seg * r_seg
                 c = self._shade(lut, val, vmin, vmax)

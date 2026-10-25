@@ -551,6 +551,7 @@ class _FileMenuMixin:
             return
         n_files: int | None = None
         try:
+            from fypa.altium_geometry import solve_copper_conductivity
             from fypa.paraview_export import export_lean_solution
             via_rows: list[dict] | None = None
             try:
@@ -563,6 +564,7 @@ class _FileMenuMixin:
                 Path(out_dir_str),
                 via_rows=via_rows,
                 voltage_drop_reference=self._last_drop_reference,
+                copper_conductivity=solve_copper_conductivity(self.metadata),
             )
         except Exception:
             log.exception(

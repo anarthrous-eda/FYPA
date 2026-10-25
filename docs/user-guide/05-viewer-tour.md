@@ -118,7 +118,7 @@ to cycle back) changes what each mesh vertex's colour represents:
 |--------------------|----------|------------------------------------------------------------------------------------------------|
 | **Voltage**        | V        | Absolute potential at every node. The hottest colour is the supply, the coldest is the return. |
 | **Voltage Drop**   | V        | Signed drop relative to the rail's source. Useful for "how much voltage have I lost between J1 and U5?" |
-| **Current Density**| A / mm   | Magnitude of the current density vector `|J|` at every node. Highlights bottlenecks. |
+| **Current Density**| A / mm²  | Magnitude of the current density `|J|` per mm² of copper cross-section at every node, so layers of different copper weight compare directly. Highlights bottlenecks. Via barrels show their current over the plated wall's cross-section; series resistors are drawn grey. |
 | **Power Density**  | W / mm²  | Resistive power dissipation per unit area. Highlights hot spots — where copper will warm up. |
 | **Via Current**    | A        | Current through each via; the copper is drawn grey as context. |
 

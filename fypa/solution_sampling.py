@@ -18,6 +18,11 @@ from collections.abc import Callable
 
 import numpy as np
 
+from fypa.altium_geometry import (
+    solve_copper_conductivity,
+    volume_current_density,
+)
+
 # Tolerance for "this xy matches a mesh vertex". 0.01 mm is well below any
 # Altium grid and comfortably above float noise. Anything farther is treated
 # as off-mesh (the sample comes back ``None``).
@@ -194,7 +199,8 @@ def compute_node_rows(sampler: SolutionSampler,
     """One row per directive-terminal pin with V / drop / |J| / P.
 
     ``drop`` is voltage minus the rail group's highest directive-pin voltage.
-    Current density |J| = sqrt(power_density × sheet conductance), in A/mm.
+    Current density |J| = sqrt(power_density × sheet conductance) / copper
+    thickness, in A/mm² of copper cross-section.
     ``min_voltage`` / ``margin`` / ``status`` come from ``PDN_MIN_V`` and are
     carried on SINK P-terminal pins only, so the margin check never fires on
     a return (N) terminal or on a non-sink.
@@ -240,11 +246,14 @@ def compute_node_rows(sampler: SolutionSampler,
                         (prep_idx, float(x), float(y)))
 
     samples = sampler.sample_batch(requests)
+    sigma = solve_copper_conductivity(metadata)
 
     rows: list[dict] = []
     for prep_idx, prep in enumerate(preps):
         voltage, pd_val, conductance = samples.get(prep_idx, (None, None, 0.0))
-        cd_val = (math.sqrt(max(pd_val * conductance, 0.0))
+        cd_val = (volume_current_density(
+                      math.sqrt(max(pd_val * conductance, 0.0)),
+                      conductance, sigma)
                   if pd_val is not None else None)
         min_v = prep["min_voltage"]
         # Margin = actual sample - declared minimum; ``None`` whenever either

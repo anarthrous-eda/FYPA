@@ -116,6 +116,36 @@ def _layer_conductance(stackup) -> float:
         t_mm = DEFAULT_COPPER_THICKNESS_MM
     return t_mm * COPPER_CONDUCTIVITY_S_PER_MM
 
+
+def solve_copper_conductivity(metadata: dict | None) -> float:
+    """Copper conductivity (S/mm) the solve behind ``metadata`` used.
+
+    Read from ``physics_constants`` (written at solve time, so it carries any
+    Settings-tab temperature / resistivity override); falls back to the
+    current module value for metadata that doesn't record it (Gerber
+    imports, old pickles).
+    """
+    phys = (metadata or {}).get("physics_constants") or {}
+    try:
+        sigma = float(phys.get("copper_conductivity_S_per_mm") or 0.0)
+    except (TypeError, ValueError):
+        sigma = 0.0
+    return sigma if sigma > 0.0 else COPPER_CONDUCTIVITY_S_PER_MM
+
+
+def volume_current_density(sheet_j, conductance: float, sigma: float):
+    """Convert sheet current density (A/mm of width) to volume current
+    density (A/mm² of cross-section) by dividing by the copper thickness.
+
+    The layer's thickness is ``conductance / sigma`` — exact, since the sheet
+    conductance was built as thickness × sigma (including the 1 oz default
+    substituted for a stackup with no thickness). Works on scalars and numpy
+    arrays; a non-positive conductance gives zero.
+    """
+    if conductance <= 0.0 or sigma <= 0.0:
+        return sheet_j * 0.0
+    return sheet_j * (sigma / conductance)
+
 # Altium layer-id sentinels.
 MULTI_LAYER_PAD_LAYER_ID: int = 74
 

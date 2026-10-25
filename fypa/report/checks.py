@@ -113,13 +113,13 @@ def rail_findings(rail: RailReport, s: ReportSettings) -> None:
              if worst else "") + share,
             rail.name, "via current over limit", "via-current"))
 
-    if (s.j_limit_a_per_mm is not None and rail.peak_j_a_per_mm is not None
-            and rail.peak_j_a_per_mm > s.j_limit_a_per_mm):
-        top = max(rail.layers, key=lambda lr: lr.peak_j_a_per_mm)
+    if (s.j_limit_a_per_mm2 is not None and rail.peak_j_a_per_mm2 is not None
+            and rail.peak_j_a_per_mm2 > s.j_limit_a_per_mm2):
+        top = max(rail.layers, key=lambda lr: lr.peak_j_a_per_mm2)
         out.append(Finding(
             WARN,
-            f"Peak current density {rail.peak_j_a_per_mm:.3g} A/mm, limit "
-            f"{s.j_limit_a_per_mm:g} A/mm",
+            f"Peak current density {rail.peak_j_a_per_mm2:.3g} A/mm², limit "
+            f"{s.j_limit_a_per_mm2:g} A/mm²",
             f"On {top.layer} at {fmt_xy(top.peak_j_xy)}."
             if top.peak_j_xy else "", rail.name,
             "current density over limit", "current-density"))

@@ -25,6 +25,7 @@ from typing import Any
 
 import numpy as np
 
+from fypa.altium_geometry import solve_copper_conductivity
 from pdnsolver.vtu_fields import (
     VTK_HEADER_TYPE,
     global_voltage_max,
@@ -187,12 +188,19 @@ def export_lean_solution(
     *,
     via_rows: list[dict] | None = None,
     voltage_drop_reference: float | None = None,
+    copper_conductivity: float | None = None,
 ) -> int:
     """Write one ``.vtu`` per padne layer of ``solution`` into ``output_dir``.
 
     Each layer file carries per-vertex ``voltage``, ``voltage_drop``,
-    ``current_density`` and ``power_density`` arrays. When ``via_rows`` is
-    given, an extra ``vias.vtu`` point cloud is written.
+    ``current_density`` (A/mm²), ``sheet_current_density`` (A/mm) and
+    ``power_density`` arrays. When ``via_rows`` is given, an extra
+    ``vias.vtu`` point cloud is written.
+
+    ``copper_conductivity`` (S/mm) turns each layer's sheet conductance back
+    into its copper thickness for the A/mm² field; pass the solve's value
+    (:func:`fypa.altium_geometry.solve_copper_conductivity` of its metadata).
+    Unset, the current module value is used.
 
     ``voltage_drop`` is measured against ``voltage_drop_reference`` (pass the
     viewer's drop reference so the export matches the interactive heatmap).
@@ -207,6 +215,8 @@ def export_lean_solution(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    if copper_conductivity is None:
+        copper_conductivity = solve_copper_conductivity(None)
     if voltage_drop_reference is None:
         all_pots = [
             pots
@@ -238,6 +248,7 @@ def export_lean_solution(
         for xys, tris, pots, pd in components:
             fields = per_vertex_fields(
                 tris, pots, pd, conductance,
+                copper_conductivity=copper_conductivity,
                 voltage_drop_reference=voltage_drop_reference,
             )
             pieces.append(_write_piece(xys, tris, fields))

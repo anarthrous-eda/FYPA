@@ -44,7 +44,7 @@ class _NodesTabMixin:
         ("Y (mm)",     True),
         ("Voltage (V)",        True),
         ("Drop (V)",           True),
-        ("|J| (A/mm)",         True),
+        ("|J| (A/mm^2)",       True),
         ("Power (W/mm^2)",     True),
         # PDN_MIN_V check (SINK only): the declared minimum acceptable rail
         # voltage, the measured-vs-declared margin, and the per-pin pass/fail

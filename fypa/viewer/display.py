@@ -7,22 +7,25 @@ import matplotlib.cm as _mpl_cm
 import matplotlib.colors
 import numpy as np
 
+from fypa.altium_geometry import volume_current_density
+
 
 # Modes the viewer offers. Each is (label, unit, derive_fn). The derive_fn
-# takes (tris, potentials, power_density, conductance, n_verts) and
+# takes (tris, potentials, power_density, conductance, n_verts, sigma) and
 # returns a numpy array of values per vertex.
 #   tris            — (M, 3) int32, vertex indices into the mesh
 #   potentials      — (N,) float64, per-vertex voltage (V)
 #   power_density   — (M,) float64 or None, per-face power density (W/mm²)
 #   conductance     — sheet conductance (S) of the layer
 #   n_verts         — vertex count of the mesh (== potentials.size)
-def _voltage_per_vertex(tris, potentials, power_density, conductance, n_verts):
+#   sigma           — copper conductivity (S/mm) the solve used
+def _voltage_per_vertex(tris, potentials, power_density, conductance, n_verts, sigma):
     return potentials.copy()
 
 
 
 
-def _power_density_per_vertex(tris, potentials, power_density, conductance, n_verts):
+def _power_density_per_vertex(tris, potentials, power_density, conductance, n_verts, sigma):
     if power_density is None:
         return np.zeros(n_verts)
     return _face_to_vertex_average(tris, power_density, n_verts)
@@ -30,16 +33,20 @@ def _power_density_per_vertex(tris, potentials, power_density, conductance, n_ve
 
 
 
-def _current_density_per_vertex(tris, potentials, power_density, conductance, n_verts):
-    # |J| = sqrt(power_density * sheet_conductance). power_density is W/mm^2;
-    # sheet_conductance is S (= A/V); product is A^2/mm^2; sqrt → A/mm.
-    p = _power_density_per_vertex(tris, potentials, power_density, conductance, n_verts)
-    return np.sqrt(np.maximum(p * conductance, 0.0))
+def _current_density_per_vertex(tris, potentials, power_density, conductance, n_verts, sigma):
+    # Sheet |J| = sqrt(power_density * sheet_conductance). power_density is
+    # W/mm^2; sheet_conductance is S (= A/V); product is A^2/mm^2; sqrt →
+    # A/mm of width. Dividing by the copper thickness (conductance / sigma)
+    # gives A/mm^2 of cross-section, so layers of different copper weight
+    # compare directly.
+    p = _power_density_per_vertex(tris, potentials, power_density, conductance, n_verts, sigma)
+    return volume_current_density(
+        np.sqrt(np.maximum(p * conductance, 0.0)), conductance, sigma)
 
 
 
 
-def _copper_roi_per_vertex(tris, potentials, power_density, conductance, n_verts):
+def _copper_roi_per_vertex(tris, potentials, power_density, conductance, n_verts, sigma):
     # Placeholder identity for the Copper ROI mode: the render path spots it
     # and reads the target's value density instead (it needs the mesh index
     # and the selected load, which this signature doesn't carry).
@@ -49,7 +56,7 @@ def _copper_roi_per_vertex(tris, potentials, power_density, conductance, n_verts
 _MODES = [
     ("Voltage",         "V",     _voltage_per_vertex),
     ("Voltage Drop",    "V",     _voltage_per_vertex),  # values are shifted in _render
-    ("Current Density", "A/mm",  _current_density_per_vertex),
+    ("Current Density", "A/mm^2", _current_density_per_vertex),
     ("Power Density",   "W/mm^2", _power_density_per_vertex),
     # Via Current: copper renders neutral grey (the derive_fn output is
     # ignored — see :meth:`PdnViewer._render`), and the heatmap belongs

@@ -431,7 +431,7 @@ class _Builder:
             if unchecked:
                 status += (f'<br/><font color="#5f6670">– {unchecked}'
                            ' unchecked</font>')
-            row += [H.fmt_a(rail.max_via_a), H.fmt_j(rail.peak_j_a_per_mm),
+            row += [H.fmt_a(rail.max_via_a), H.fmt_j(rail.peak_j_a_per_mm2),
                     e(imp), status]
             rows.append(row)
             row_status.append(rail.status)
@@ -612,7 +612,7 @@ class _Builder:
         if not rail.layers:
             return [self.na("No solved copper on this rail.")]
         rows = [[e(lr.layer), e(", ".join(lr.nets)), e(lr.copper),
-                 H.fmt_mv(lr.drop_across_v), H.fmt_j(lr.peak_j_a_per_mm),
+                 H.fmt_mv(lr.drop_across_v), H.fmt_j(lr.peak_j_a_per_mm2),
                  H.fmt_xy(lr.peak_j_xy), H.fmt_w(lr.loss_w), f"{lr.share:.0%}"]
                 for lr in rail.layers]
         return [self.table(["Layer", "Nets", "Copper", "V spread", "Peak |J|",

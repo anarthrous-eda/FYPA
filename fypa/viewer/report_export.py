@@ -121,12 +121,13 @@ class ReportDialog(QDialog):
             "Optional. Any load whose drop from the setpoint exceeds this "
             "share of nominal fails. Leave blank to check only PDN_MIN_V.")
         form.addRow("Drop budget (% of nominal)", self.drop_edit)
-        self.j_edit = QLineEdit(_opt(settings.j_limit_a_per_mm))
+        self.j_edit = QLineEdit(_opt(settings.j_limit_a_per_mm2))
         self.j_edit.setPlaceholderText("none")
         self.j_edit.setToolTip(
-            "Optional. Copper whose peak current density exceeds this is a "
-            "warning. Leave blank to report the peak without checking it.")
-        form.addRow("Current density limit (A/mm)", self.j_edit)
+            "Optional. Copper whose peak current density (per mm² of copper "
+            "cross-section) exceeds this is a warning. Leave blank to report "
+            "the peak without checking it.")
+        form.addRow("Current density limit (A/mm²)", self.j_edit)
         root.addWidget(limits)
 
         who = QGroupBox("Document")
@@ -165,7 +166,7 @@ class ReportDialog(QDialog):
             return
         self.result_settings = ReportSettings(
             via_limit_a=via, margin_warn_pct=margin or 0.0,
-            drop_budget_pct=drop, j_limit_a_per_mm=j,
+            drop_budget_pct=drop, j_limit_a_per_mm2=j,
             detail=self.detail_combo.currentData(),
             sections=[k for k, cb in self.section_checks.items()
                       if cb.isChecked()],

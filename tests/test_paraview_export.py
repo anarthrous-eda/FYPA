@@ -91,6 +91,7 @@ class TestPerVertexFields:
             np.array([[0, 1, 2]], dtype=np.int32),
             np.array([3.3, 3.2, 3.1]),
             None, 58.0,
+            copper_conductivity=5.95e4,
             voltage_drop_reference=5.0,
         )
         assert np.allclose(fields["voltage_drop"], [-1.7, -1.8, -1.9])
@@ -103,6 +104,7 @@ class TestPerVertexFields:
             np.array([[0, 1, 2]], dtype=np.int32),
             np.array([5.0, 4.0, 3.0]),
             None, 58.0,
+            copper_conductivity=5.95e4,
         )
         assert np.allclose(fields["voltage_drop"], [0.0, -1.0, -2.0])
 
@@ -113,8 +115,8 @@ class TestExportLeanSolution:
         n = export_lean_solution(sol, tmp_path)
         assert n == 1
         text = (tmp_path / "Top.vtu").read_text()
-        for field in ("voltage", "voltage_drop",
-                      "current_density", "power_density"):
+        for field in ("voltage", "voltage_drop", "current_density",
+                      "sheet_current_density", "power_density"):
             assert f'Name="{field}"' in text
 
     def test_explicit_reference_matches_heatmap(self, tmp_path):

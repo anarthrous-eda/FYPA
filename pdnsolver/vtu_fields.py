@@ -116,9 +116,15 @@ def per_vertex_fields(
     power_density: np.ndarray | None,
     conductance: float,
     *,
+    copper_conductivity: float,
     voltage_drop_reference: float | None = None,
 ) -> dict[str, np.ndarray]:
-    """Compute viewer heatmap quantities at mesh vertices."""
+    """Compute viewer heatmap quantities at mesh vertices.
+
+    ``current_density`` is A/mm² of copper cross-section (sheet density
+    divided by the layer thickness ``conductance / copper_conductivity``);
+    ``sheet_current_density`` is the raw A/mm of copper width.
+    """
     n_verts = int(pots.shape[0])
     voltage = np.asarray(pots, dtype=np.float64)
     if voltage_drop_reference is None:
@@ -133,12 +139,19 @@ def per_vertex_fields(
         pd_at_verts = face_to_vertex_average(
             tris, np.asarray(power_density, dtype=np.float64), n_verts,
         )
-    current_density = np.sqrt(np.maximum(pd_at_verts * conductance, 0.0))
+    sheet_current_density = np.sqrt(
+        np.maximum(pd_at_verts * conductance, 0.0))
+    if conductance > 0.0 and copper_conductivity > 0.0:
+        current_density = (sheet_current_density
+                           * (copper_conductivity / conductance))
+    else:
+        current_density = np.zeros(n_verts, dtype=np.float64)
 
     return {
         "voltage": voltage,
         "voltage_drop": voltage_drop,
         "current_density": current_density,
+        "sheet_current_density": sheet_current_density,
         "power_density": pd_at_verts,
     }
 

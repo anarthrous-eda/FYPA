@@ -81,7 +81,7 @@ def fmt_xy(xy) -> str:
 
 
 def fmt_j(j: float | None) -> str:
-    return "—" if j is None else f"{j:.3g} A/mm"
+    return "—" if j is None else f"{j:.3g} A/mm²"
 
 
 def chip(status: str, text: str | None = None) -> str:
@@ -290,7 +290,7 @@ def _rail_table(r: Report) -> str:
         via_cls = "bad" if rail.vias_over else ""
         j_cls = "caution" if "current-density" in codes else ""
         cells += [f'<td class="num {via_cls}">{fmt_a(rail.max_via_a)}</td>',
-                  f'<td class="num {j_cls}">{fmt_j(rail.peak_j_a_per_mm)}</td>',
+                  f'<td class="num {j_cls}">{fmt_j(rail.peak_j_a_per_mm2)}</td>',
                   _impedance_cell(rail)]
         st = chip(rail.status)
         unchecked = rail.count(UNCHECKED)
@@ -474,9 +474,9 @@ def kpi_tiles(rail: RailReport) -> list[tuple[str, str, str, str]]:
                       f"target {fmt_ohm(dec.target_ohm)}"
                       + ("" if dec.meets_target
                          else f" · {fmt_hz(dec.worst_f_hz)}")))
-    elif rail.peak_j_a_per_mm is not None:
+    elif rail.peak_j_a_per_mm2 is not None:
         tiles.append((WARN if "current-density" in codes else "", "Peak |J|",
-                      fmt_j(rail.peak_j_a_per_mm), "current density"))
+                      fmt_j(rail.peak_j_a_per_mm2), "current density"))
     return tiles
 
 
@@ -559,7 +559,7 @@ def _sec_layers(rail: RailReport, r: Report) -> str:
         f'<tr><td>{esc(lr.layer)}</td><td>{esc(", ".join(lr.nets))}</td>'
         f'<td>{esc(lr.copper)}</td>'
         f'<td class="num">{fmt_mv(lr.drop_across_v)}</td>'
-        f'<td class="num">{fmt_j(lr.peak_j_a_per_mm)}</td>'
+        f'<td class="num">{fmt_j(lr.peak_j_a_per_mm2)}</td>'
         f'<td class="num">{fmt_xy(lr.peak_j_xy)}</td>'
         f'<td class="num">{fmt_w(lr.loss_w)}</td>'
         f'<td class="num">{lr.share:.0%}</td></tr>'

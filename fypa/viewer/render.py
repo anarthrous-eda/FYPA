@@ -6,6 +6,7 @@ import math
 import time
 import numpy as np
 import shapely.prepared as _sp
+from fypa.altium_geometry import solve_copper_conductivity
 from fypa.rail_groups import resolve_rail_member_nets
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QApplication, QProgressDialog
@@ -468,8 +469,10 @@ class _RenderMixin:
         if derive_fn is _copper_roi_per_vertex:
             vs_parts = self._roi_vertex_values(layer_index, geom)
         else:
+            sigma = solve_copper_conductivity(self.metadata)
             vs_parts = [
-                np.asarray(derive_fn(tris_local, pot, pd, conductance, n),
+                np.asarray(derive_fn(tris_local, pot, pd, conductance, n,
+                                     sigma),
                            dtype=np.float64)
                 for (tris_local, pot, pd, n) in geom["_kept"]
             ]

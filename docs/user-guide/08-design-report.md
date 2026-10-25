@@ -85,7 +85,7 @@ a black-and-white printout still reads.
 | Load meets `PDN_MIN_V` by less than the margin setting (default 1 % of nominal) | WARN |
 | Drop above the drop budget (optional, % of nominal) | FAIL |
 | A via carrying more than the via current limit | FAIL |
-| Peak current density above the limit (optional, A/mm) | WARN |
+| Peak current density above the limit (optional, A/mm² of copper cross-section) | WARN |
 | \|Z\| above the target mask anywhere up to F_MAX | FAIL |
 | Capacitor flagged, or its loop inductance over the warning level | WARN |
 | Annotation errors, mesh failures, copper connectivity breaks | FAIL |
@@ -106,7 +106,11 @@ Impedance tab.
 - **Load current** is the sum of the rail's sinks plus the estimated input
   current of any regulator it feeds (gain × output current + quiescent).
 - **Peak current density** is the 99.9th percentile over the mesh, so a
-  single-vertex spike at a pin doesn't stand in for the copper.
+  single-vertex spike at a pin doesn't stand in for the copper. It is in
+  A/mm² of copper cross-section (the sheet current divided by the layer's
+  copper thickness), so one limit applies fairly to 1 oz and 2 oz layers.
+  Earlier versions used A/mm of width; a limit saved in those units is
+  not carried over, so re-enter it in A/mm².
 
 > The decoupling section uses the loop inductances already computed in the
 > Capacitors tab. Run **Tier 2/3** there first if you want FEM values in the

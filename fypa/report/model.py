@@ -55,8 +55,8 @@ class ReportSettings:
     margin_warn_pct: float = 1.0
     # Optional: the most drop, as a share of nominal, any load may see.
     drop_budget_pct: float | None = None
-    # Optional: current-density limit for copper (A per mm of width).
-    j_limit_a_per_mm: float | None = None
+    # Optional: current-density limit for copper (A per mm² of cross-section).
+    j_limit_a_per_mm2: float | None = None
     detail: str = "failing"
     sections: list[str] = field(
         default_factory=lambda: [k for k, _ in SECTIONS])
@@ -118,7 +118,7 @@ class LayerResult:
     nets: list[str]
     copper: str                   # "1 oz"
     drop_across_v: float          # max V - min V on this layer's rail copper
-    peak_j_a_per_mm: float
+    peak_j_a_per_mm2: float
     peak_j_xy: tuple[float, float] | None
     loss_w: float
     share: float                  # of the rail's total copper loss
@@ -209,7 +209,7 @@ class RailReport:
     ground_rise_v: float | None = None   # return rails only
     layers: list[LayerResult] = field(default_factory=list)
     loss_w: float | None = None
-    peak_j_a_per_mm: float | None = None
+    peak_j_a_per_mm2: float | None = None
     worst_point: tuple[str, float, float] | None = None  # layer, x, y
     vias_total: int = 0
     vias: list[ViaResult] = field(default_factory=list)   # top N by current

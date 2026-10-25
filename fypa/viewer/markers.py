@@ -524,7 +524,8 @@ class _MarkerOverlayMixin:
 
         * **Voltage / Voltage Drop** — smooth gradient from the P-side
           heatmap colour to the N-side colour.
-        * **Current Density** — uniform colour computed from I = ΔV / R.
+        * **Current Density** — neutral grey: a resistor has no copper
+          cross-section, so it has no A/mm² to put on the scale.
         * **Power Density** — uniform colour from P = I² · R.
         """
         if self.metadata is None or not phys_list:
@@ -676,21 +677,19 @@ class _MarkerOverlayMixin:
                 val2 = v2 - drop_ref
                 c1 = self._shade(lut, val1, vmin, vmax)
                 c2 = self._shade(lut, val2, vmin, vmax)
-            elif mode == _VIA_CURRENT_MODE:
-                # Via Current mode doesn't define a value for series
-                # resistors — colour them with the same neutral shade
-                # the copper uses so they read as context, not data.
+            elif mode in (_VIA_CURRENT_MODE, "Current Density"):
+                # Neither mode defines a value for series resistors (a
+                # resistor has no copper cross-section, so no A/mm²) —
+                # colour them with the same neutral shade the copper uses
+                # in Via Current mode so they read as context, not data.
                 neutral_rgb = tuple(c / 255.0 for c in (160, 160, 160))
                 c1 = c2 = neutral_rgb
-            else:
+            else:  # Power Density
                 r_ohm = float(d.get("value") or 0.0)
                 if r_ohm <= 0.0:
                     r_ohm = 1e-3
                 i_abs = abs(v1 - v2) / r_ohm
-                if mode == "Current Density":
-                    val = i_abs
-                else:  # Power Density
-                    val = i_abs * i_abs * r_ohm
+                val = i_abs * i_abs * r_ohm
                 c = self._shade(lut, val, vmin, vmax)
                 c1 = c2 = c
 
