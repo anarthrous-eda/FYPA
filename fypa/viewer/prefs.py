@@ -72,6 +72,11 @@ _MAX_RECENT_PROJECTS = 10
 _RECENT_OPEN_CLEAN_QS_KEY = "projects/recent_open_clean"
 
 
+# Whether the "Unannotated net bridges" notice pops up after a solve. On by
+# default; the Bridges tab and the Messages tab list the parts either way.
+_BRIDGE_NOTICE_QS_KEY = "ui/show_bridge_notice"
+
+
 
 
 def _recent_settings():
@@ -346,6 +351,41 @@ def save_auto_solve_on_import(enabled: bool) -> None:
         logging.getLogger(__name__).debug(
             "Could not persist auto-solve-on-import preference (%s); ignoring.",
             e,
+        )
+
+
+
+
+def load_show_bridge_notice() -> bool:
+    """Read whether the unannotated-bridges notice pops up. Defaults to
+    ``True``."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        val = qs.value(_BRIDGE_NOTICE_QS_KEY, True)
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            return val.strip().lower() in ("1", "true", "yes", "on")
+        return bool(int(val))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not read bridge-notice preference (%s); using default.", e,
+        )
+    return True
+
+
+
+
+def save_show_bridge_notice(enabled: bool) -> None:
+    """Persist whether the unannotated-bridges notice pops up."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        qs.setValue(_BRIDGE_NOTICE_QS_KEY, bool(enabled))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not persist bridge-notice preference (%s); ignoring.", e,
         )
 
 

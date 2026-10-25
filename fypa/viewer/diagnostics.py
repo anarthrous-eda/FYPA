@@ -3,6 +3,9 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QMessageBox
 
+from fypa.viewer.list_dialog import show_list_notice
+from fypa.viewer.prefs import load_show_bridge_notice, save_show_bridge_notice
+
 from fypa.viewer.overlays import _overlay_circle_ring
 
 
@@ -230,19 +233,14 @@ def _maybe_show_annotation_errors(parent_win, metadata) -> None:
     errors = metadata.get("annotation_errors") or []
     if not errors:
         return
-    max_show = 12
-    body = "\n".join(f"  • {e}" for e in errors[:max_show])
-    if len(errors) > max_show:
-        body += f"\n  … and {len(errors) - max_show} more"
-    QMessageBox.warning(
-        parent_win,
-        "Some directives were skipped",
+    show_list_notice(
+        parent_win, "Some directives were skipped",
         "These PDN directives could not be resolved and were skipped — the "
-        "other valid rails were still solved:\n\n"
-        f"{body}\n\n"
+        "other valid rails were still solved:",
+        list(errors),
         "Fix them (usually a net-name typo) to include these directives in "
         "the analysis. Details also in Setup → Annotation log.",
-    )
+        warning=True)
 
 
 
@@ -262,17 +260,15 @@ def _maybe_warn_open_loop_rails(parent_win, metadata) -> None:
     rails = metadata.get("open_loop_rails") or []
     if not rails:
         return
-    QMessageBox.warning(
-        parent_win,
-        "Some rails won't be solved",
+    show_list_notice(
+        parent_win, "Some rails won't be solved",
         "These rails contain only one type of element (only sources or only "
-        "sinks), so no current can flow and they were left out of the "
-        "solve:\n\n"
-        + "\n".join(f"  • {r}" for r in rails)
-        + "\n\nThe markers are kept on the design. Add the missing element "
+        "sinks), so no current can flow and they were left out of the solve:",
+        list(rails),
+        "The markers are kept on the design. Add the missing element "
         "(a sink for a source-only rail, or a source for a sink-only rail) "
         "and press Resolve to solve the rail.",
-    )
+        warning=True)
 
 
 
@@ -293,16 +289,15 @@ def _maybe_warn_connectivity_breaks(parent_win, metadata) -> None:
     breaks = metadata.get("connectivity_breaks") or []
     if not breaks:
         return
-    QMessageBox.warning(
-        parent_win,
-        "Source and sink on disconnected copper",
+    show_list_notice(
+        parent_win, "Source and sink on disconnected copper",
         "On these nets the source and sink markers are NOT on the same "
         "connected copper, so no current can flow between them. The rail was "
-        "solved but the result is unreliable (the sink reads about 0 V):\n\n"
-        + "\n".join(f"  • {r}" for r in breaks)
-        + "\n\nMove the markers onto the same copper island, or connect the "
+        "solved but the result is unreliable (the sink reads about 0 V):",
+        list(breaks),
+        "Move the markers onto the same copper island, or connect the "
         "islands (a via or a SERIES link), then press Resolve.",
-    )
+        warning=True)
 
 
 
@@ -326,24 +321,17 @@ def _maybe_warn_unannotated_bridges(parent_win, metadata) -> None:
     if not isinstance(metadata, dict):
         return
     bridges = metadata.get("unannotated_bridges") or []
-    if not bridges:
+    if not bridges or not load_show_bridge_notice():
         return
-    shown = list(bridges[:8])
-    more = len(bridges) - len(shown)
-    bullets = "\n\n".join(f"  \u2022 {b}" for b in shown)
-    body = (
+    show_list_notice(
+        parent_win, "Unannotated net bridges",
         "These parts connect a solved rail to copper that no PDN directive "
         "touches, so that copper is left out of the simulation and any "
         "current it really carries is missing (the return-path resistance "
-        "reads high):\n\n"
-        + bullets
-    )
-    if more > 0:
-        body += f"\n\n  \u2026 and {more} more (see the Messages tab)."
-    body += (
-        "\n\nThis is advisory \u2014 nothing was changed. If a part conducts "
+        "reads high):",
+        list(bridges),
+        "This is advisory \u2014 nothing was changed. If a part conducts "
         "at DC, annotate it in Altium with PDN_ROLE=SERIES and PDN_R set to "
         "its real DC resistance, then re-import. Genuine 0 \u03a9 links and "
-        "Net Ties are already bridged automatically."
-    )
-    QMessageBox.information(parent_win, "Unannotated net bridges", body)
+        "Net Ties are already bridged automatically.",
+        on_dont_show=lambda: save_show_bridge_notice(False))

@@ -5014,6 +5014,8 @@ def _apply_net_remap(
         regions=_rebuild(proj.regions),
         shape_based_regions=_rebuild(proj.shape_based_regions),
         fills=_rebuild(proj.fills),
+        # Split-plane regions carry their net by index, like the primitives.
+        split_planes=_rebuild(getattr(proj, "split_planes", ())),
         stackup=tuple(_canonical_plane_name(s) for s in proj.stackup),
         # nets unchanged — both canonical and non-canonical names still
         # resolve, and parse_annotations applies the remap after lookup.

@@ -1061,6 +1061,78 @@ def _dedupe_ring_coords(coords: np.ndarray, tol: float) -> np.ndarray:
     return arr
 
 
+def _weld_shared_ring_vertices(
+    vertices: np.ndarray,
+    segments: np.ndarray,
+    tol: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Give every boundary point Triangle sees exactly one vertex index.
+
+    A valid Shapely polygon may have a hole that touches the exterior (or
+    another hole) at a single point — copper that pinches to zero width
+    between two clearances, as ``buffer(0)`` produces when it repairs a
+    self-touching pour outline. Each ring then lists that point as its own
+    vertex, so the PSLG carries two coincident input vertices. Triangle
+    discards the second as a duplicate but the segments still name it, and
+    inserting those segments reads a vertex that is not in the mesh: an
+    intermittent hard crash (segfault) rather than a catchable error.
+
+    Coincident vertices (closer than *tol*) are merged onto the first
+    occurrence and the segments remapped; segments that collapse to a
+    point or repeat an existing segment are dropped. The copper outline is
+    unchanged — only its vertex numbering is.
+    """
+    n = vertices.shape[0]
+    if n < 2:
+        return vertices, segments
+    pairs = scipy.spatial.cKDTree(vertices).query_pairs(
+        tol, output_type="ndarray")
+    if pairs.shape[0] == 0:
+        return vertices, segments
+    parent = np.arange(n)
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for a, b in pairs:
+        ra, rb = find(int(a)), find(int(b))
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+    rep = np.array([find(i) for i in range(n)])
+    keep = rep == np.arange(n)
+    new_index = np.cumsum(keep) - 1
+    remap = new_index[rep].astype(np.int32)
+    segs = remap[segments]
+    segs = segs[segs[:, 0] != segs[:, 1]]
+    _, first = np.unique(np.sort(segs, axis=1), axis=0, return_index=True)
+    segs = np.ascontiguousarray(segs[np.sort(first)], dtype=np.int32)
+    return np.ascontiguousarray(vertices[keep]), segs
+
+
+def _drop_seeds_on_vertices(
+    seeds: np.ndarray,
+    ring_vertices: np.ndarray,
+) -> np.ndarray:
+    """Remove seed points that sit exactly on a ring vertex or repeat an
+    earlier seed. Triangle discards such an input vertex as a duplicate
+    anyway (see :func:`_weld_shared_ring_vertices`), and the mesh still has
+    a node at that location, so dropping it here changes no mesh. Seeds
+    merely *near* a vertex are kept: they are distinct Triangle inputs and
+    the mesh around them is unchanged by this guard."""
+    if seeds.shape[0] == 0:
+        return seeds
+    keep = np.ones(seeds.shape[0], dtype=bool)
+    if ring_vertices.shape[0] > 0:
+        d, _ = scipy.spatial.cKDTree(ring_vertices).query(seeds)
+        keep &= d > 0.0
+    for a, b in scipy.spatial.cKDTree(seeds).query_pairs(0.0):
+        keep[max(a, b)] = False
+    return seeds[keep]
+
+
 class Mesher:
     """
     This class is responsible for generating a mesh from a Shapely polygon.
@@ -1434,10 +1506,6 @@ def _prepare_polygon_for_triangle_arrays(
         hp = shapely.geometry.Polygon(hole_ring).representative_point()
         holes_list.append((float(hp.x), float(hp.y)))
 
-    if seed_xy is not None and seed_xy.size > 0:
-        seeds = np.ascontiguousarray(seed_xy, dtype=np.float64).reshape(-1, 2)
-        vertex_chunks.append(seeds)
-
     if vertex_chunks:
         vertices = np.vstack(vertex_chunks)
     else:
@@ -1446,6 +1514,17 @@ def _prepare_polygon_for_triangle_arrays(
         segments = np.vstack(segment_chunks)
     else:
         segments = np.empty((0, 2), dtype=np.int32)
+    # A hole touching the exterior (or another hole) at a point puts that
+    # point in two rings; Triangle must see it as one vertex.
+    vertices, segments = _weld_shared_ring_vertices(
+        vertices, segments, _MESH_VERTEX_SIMPLIFY_TOL_MM,
+    )
+
+    if seed_xy is not None and seed_xy.size > 0:
+        seeds = np.ascontiguousarray(seed_xy, dtype=np.float64).reshape(-1, 2)
+        seeds = _drop_seeds_on_vertices(seeds, vertices)
+        if seeds.shape[0] > 0:
+            vertices = np.vstack([vertices, seeds])
     if holes_list:
         holes = np.asarray(holes_list, dtype=np.float64)
     else:

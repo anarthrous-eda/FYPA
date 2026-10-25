@@ -32,6 +32,7 @@ from fypa.viewer.prefs import (
     load_mesh_max_workers,
     load_minres_budget_s,
     load_recent_open_clean,
+    load_show_bridge_notice,
     load_solve_in_subprocess,
     load_supersampling_enabled,
     load_via_no_current_opacity,
@@ -40,6 +41,7 @@ from fypa.viewer.prefs import (
     save_mesh_max_workers,
     save_minres_budget_s,
     save_recent_open_clean,
+    save_show_bridge_notice,
     save_solve_in_subprocess,
     save_supersampling_enabled,
     save_via_no_current_opacity,
@@ -468,6 +470,18 @@ class _SettingsTabMixin:
         self._settings_recent_clean_check.toggled.connect(
             lambda checked: save_recent_open_clean(bool(checked)))
         gen_layout.addWidget(self._settings_recent_clean_check)
+
+        self._settings_bridge_notice_check = QCheckBox(
+            "Show the unannotated net bridges notice")
+        self._settings_bridge_notice_check.setChecked(load_show_bridge_notice())
+        self._settings_bridge_notice_check.setToolTip(
+            "When checked, a notice lists the parts that join a solved rail "
+            "to copper outside the solve. The Bridges and Messages tabs list "
+            "them either way. Persists across launches."
+        )
+        self._settings_bridge_notice_check.toggled.connect(
+            lambda checked: save_show_bridge_notice(bool(checked)))
+        gen_layout.addWidget(self._settings_bridge_notice_check)
 
         # No-current via opacity — fade level (3D) of via-barrel sections that
         # carry no current on the selected rail. Persisted immediately and

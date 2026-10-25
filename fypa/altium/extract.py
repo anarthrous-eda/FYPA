@@ -318,6 +318,24 @@ class RawFill:
 
 
 @dataclass(frozen=True, slots=True)
+class RawSplitPlane:
+    """One region of a split internal plane (a ``Polygons6`` record with
+    ``POLYGONTYPE=Split Plane``).
+
+    A plane layer split between several nets has ``(Multiple Nets)`` as its
+    plane net name; each region's copper and net come from these records.
+    ``outline`` is the region's boundary in mm, origin-corrected, arcs
+    discretised. Altium draws the split line's width as the gap between
+    neighbouring outlines; a region drawn inside another (an island) is cut
+    out of the larger one, so a point belongs to the smallest region that
+    contains it."""
+    layer_id: int
+    net_index: int
+    outline: tuple[Pt2D, ...]
+    holes: tuple[tuple[Pt2D, ...], ...] = ()  # the polygon's cutouts
+
+
+@dataclass(frozen=True, slots=True)
 class RawText:
     """A PCB text string (from Altium's ``Texts6`` stream).
 
@@ -522,6 +540,9 @@ class ExtractedProject:
     # Non-plated through holes (mounting / mechanical holes). Empty default
     # so older callers that build ExtractedProject without them keep working.
     npth_holes: tuple[RawHole, ...] = ()
+    # Regions of split internal planes (``(Multiple Nets)`` plane layers),
+    # each with its own net. Empty when no plane is split.
+    split_planes: tuple[RawSplitPlane, ...] = ()
     # Internal-plane modelling rules, sourced from the Altium design rules.
     # ``plane_clearance_mm`` is the anti-pad gap punched around a foreign-net
     # through feature (PlaneClearance). The ``plane_relief_*`` fields describe
@@ -1225,6 +1246,70 @@ def _extract_board_outline(pcb, ox_mm: float, oy_mm: float) -> tuple[Pt2D, ...]:
             pts.append(Pt2D(cx + r_mm * math.cos(ang),
                             cy + r_mm * math.sin(ang)))
     return tuple(pts)
+
+
+def _polygon_ring_mm(verts, ox_mm: float, oy_mm: float) -> tuple[Pt2D, ...]:
+    """A ``Polygons6`` vertex ring as a closed polyline in mm. A vertex of
+    ``kind == 1`` begins an arc to the next vertex; it is discretised the way
+    :func:`_extract_board_outline` discretises the board outline."""
+    from altium_monkey.altium_board import resolve_outline_arc_segment
+    n = len(verts)
+    pts: list[Pt2D] = []
+    for i, v in enumerate(verts):
+        x0 = mils_to_mm(v.x_mils) - ox_mm
+        y0 = mils_to_mm(v.y_mils) - oy_mm
+        pts.append(Pt2D(x0, y0))
+        r_mm = mils_to_mm(getattr(v, "radius_mils", 0.0) or 0.0)
+        if int(getattr(v, "kind", 0) or 0) != 1 or r_mm <= 0.0:
+            continue
+        clockwise, sweep_deg = resolve_outline_arc_segment(v, verts[(i + 1) % n])
+        if sweep_deg <= 0.0:
+            continue
+        cx = mils_to_mm(v.center_x_mils) - ox_mm
+        cy = mils_to_mm(v.center_y_mils) - oy_mm
+        start_ang = math.atan2(y0 - cy, x0 - cx)
+        sweep_rad = math.radians(sweep_deg) * (-1.0 if clockwise else 1.0)
+        steps = max(4, int(abs(sweep_rad) * r_mm / 0.1))
+        for k in range(1, steps):
+            ang = start_ang + sweep_rad * (k / steps)
+            pts.append(Pt2D(cx + r_mm * math.cos(ang), cy + r_mm * math.sin(ang)))
+    return tuple(pts)
+
+
+# Altium's ``Polygons6`` layer token for internal plane n is ``PLANE<n>``.
+_PLANE_LAYER_TOKEN = re.compile(r"^PLANE(\d+)$", re.IGNORECASE)
+
+
+def _extract_split_planes(pcb, ox_mm: float, oy_mm: float
+                          ) -> tuple[RawSplitPlane, ...]:
+    """Every split-plane region (``POLYGONTYPE=Split Plane``) with its net.
+
+    A plane layer whose net is ``(Multiple Nets)`` is divided between nets by
+    these records; without them the layer has no copper at all, and every via
+    that reaches a net only through the plane is an island."""
+    from altium_monkey.altium_record_types import PcbLayer
+    internal_plane_1 = int(PcbLayer.INTERNAL_PLANE_1.value)
+    out: list[RawSplitPlane] = []
+    for poly in list(getattr(pcb, "polygons", None) or ()):
+        if str(getattr(poly, "polygon_type", "")).strip().lower() != "split plane":
+            continue
+        m = _PLANE_LAYER_TOKEN.match(str(getattr(poly, "layer", "")).strip())
+        net = _polygon_net_of(poly)
+        verts = list(getattr(poly, "outline", None) or ())
+        if m is None or net is None or len(verts) < 3:
+            log.warning("Split-plane region on layer %r (net %r, %d vertices) "
+                        "skipped: no plane layer, net or outline",
+                        getattr(poly, "layer", None), net, len(verts))
+            continue
+        out.append(RawSplitPlane(
+            layer_id=internal_plane_1 + int(m.group(1)) - 1,
+            net_index=net,
+            outline=_polygon_ring_mm(verts, ox_mm, oy_mm),
+            holes=tuple(_polygon_ring_mm(list(c), ox_mm, oy_mm)
+                        for c in (getattr(poly, "cutouts", None) or ())
+                        if len(c) >= 3),
+        ))
+    return tuple(out)
 
 
 def _v9_dielectric_gaps(pcb) -> dict[str, tuple[float | None, float | None]]:
@@ -1998,6 +2083,7 @@ def extract_project(prjpcb_path: str | Path,
         physical_sheet_names=physical_sheet_names,
         board_origin_mm=Pt2D(ox_mm, oy_mm),
         board_outline=_extract_board_outline(pcb, ox_mm, oy_mm),
+        split_planes=_extract_split_planes(pcb, ox_mm, oy_mm),
         **_plane_rule_kwargs(pcb),
     )
 

@@ -37,7 +37,9 @@ Geometry rules
 * **Plane layers** (``stackup.is_plane``) are flooded with their net's copper
   over the board outline (see :func:`_plane_sheet_polygon`). Anti-pad and
   thermal-relief detail around foreign-net through features is a deferred
-  fidelity refinement; it does not affect per-net connectivity.
+  fidelity refinement; it does not affect per-net connectivity. A **split**
+  plane (``(Multiple Nets)``) is flooded region by region, each region on its
+  own net (see :func:`_plane_net_sheets`).
 """
 from __future__ import annotations
 
@@ -1041,8 +1043,15 @@ def _plane_sheet_polygon(
     stackup,
     enabled_layers: list[int],
     through_cache: _ThroughFeatureCache | None = None,
+    net_index: int | None = None,
+    region: shapely.geometry.base.BaseGeometry | None = None,
 ) -> shapely.geometry.base.BaseGeometry | None:
     """Negative-copper sheet for one internal plane.
+
+    ``region`` / ``net_index`` build one region of a split plane: the sheet is
+    confined to ``region`` (relief spokes too, so none crosses a split line)
+    and ``net_index`` decides which through features are same-net. Without
+    them the whole plane is flooded on the stackup's plane net.
 
     Built as: the board outline inset by the plane's pullback, minus an
     anti-pad (footprint + ``plane_clearance``) around every foreign-net through
@@ -1069,10 +1078,13 @@ def _plane_sheet_polygon(
     pullback = float(getattr(stackup, "plane_pullback_mm", 0.0) or 0.0)
     if pullback > 0.0:
         base = base.buffer(-pullback, join_style="mitre")
+    if region is not None:
+        base = base.intersection(region)
     if base.is_empty:
         return None
 
-    net_index = _net_index_by_name(proj, stackup.plane_net_name)
+    if net_index is None:
+        net_index = _net_index_by_name(proj, stackup.plane_net_name)
     clearance = float(proj.plane_clearance_mm)
     air_gap = float(proj.plane_relief_air_gap_mm)
     conductor = float(proj.plane_relief_conductor_width_mm)
@@ -1088,8 +1100,16 @@ def _plane_sheet_polygon(
     footprints: list[shapely.geometry.base.BaseGeometry] = []
     distances: list[float] = []
     spokes: list[shapely.geometry.base.BaseGeometry] = []
-    for footprint, fnet in _through_features_on_layer(
-            proj, stackup.layer_id, enabled_layers, through_cache):
+    feats = _through_features_on_layer(
+        proj, stackup.layer_id, enabled_layers, through_cache)
+    if region is not None and feats:
+        # One region of a split plane: a feature whose anti-pad cannot reach
+        # the region changes nothing in it, so skip the rest of the board.
+        reach = max(clearance, air_gap + conductor) + 1e-3
+        near = shapely.intersects(
+            np.array([f for f, _n in feats], dtype=object), base.buffer(reach))
+        feats = [ft for ft, keep in zip(feats, near) if keep]
+    for footprint, fnet in feats:
         footprints.append(footprint)
         if net_index != NO_NET and fnet == net_index:
             distances.append(air_gap)
@@ -1145,7 +1165,8 @@ def _plane_sheet_polygon(
     # corpus split-plane board to validate the region→net mapping and the
     # flood subtraction; it is deliberately deferred rather than shipped blind.
     foreign_net_names: set[str] = set()
-    for stream in (proj.regions, proj.shape_based_regions):
+    for stream in ((proj.regions, proj.shape_based_regions)
+                   if region is None else ()):
         for r in stream:
             if (r.layer_id == plane_lid and r.kind == 0 and not r.is_keepout
                     and not getattr(r, "is_polygon_outline", False)
@@ -1179,6 +1200,97 @@ def _plane_sheet_polygon(
     return mp if not mp.is_empty else None
 
 
+def _split_plane_records(proj: ExtractedProject, stackup) -> list:
+    """The split-plane regions of a plane layer that is really split: its
+    regions carry another net than the plane's own, or the plane's net name
+    is no net (``(Multiple Nets)``). A plane whose only region is its own
+    net is flooded whole, as before."""
+    recs = [sp for sp in getattr(proj, "split_planes", ())
+            if sp.layer_id == stackup.layer_id]
+    own = _net_index_by_name(proj, stackup.plane_net_name)
+    if not recs or {sp.net_index for sp in recs} == {own}:
+        return []
+    return recs
+
+
+def _split_plane_regions(
+    proj: ExtractedProject, stackup,
+) -> dict[int, shapely.geometry.base.BaseGeometry]:
+    """Per-net copper area of a split plane layer, before anti-pads; empty
+    when the layer is not split.
+
+    A point belongs to the smallest split-plane polygon that contains it (an
+    island drawn inside a larger region is cut out of it, as Altium pours
+    it), so the polygons are claimed smallest first. The split lines are
+    already the gaps between neighbouring outlines."""
+    recs = _split_plane_records(proj, stackup)
+    if not recs:
+        return {}
+    polys: list[tuple[float, int, shapely.geometry.base.BaseGeometry]] = []
+    for sp in recs:
+        if len(sp.outline) < 3:
+            continue
+        poly = shapely.geometry.Polygon(
+            [(p.x, p.y) for p in sp.outline],
+            [[(p.x, p.y) for p in h] for h in sp.holes if len(h) >= 3])
+        if not poly.is_valid:
+            poly = shapely.make_valid(poly)
+        if not poly.is_empty:
+            polys.append((poly.area, sp.net_index, poly))
+    polys.sort(key=lambda t: t[0])
+    pieces: dict[int, list[shapely.geometry.base.BaseGeometry]] = {}
+    claimed: shapely.geometry.base.BaseGeometry | None = None
+    for _area, net, poly in polys:
+        piece = poly if claimed is None else poly.difference(claimed)
+        claimed = poly if claimed is None else claimed.union(poly)
+        if not piece.is_empty:
+            pieces.setdefault(net, []).append(piece)
+    return {net: shapely.ops.unary_union(p) for net, p in pieces.items()}
+
+
+def _plane_nets(proj: ExtractedProject, stackup) -> set[int]:
+    """The nets a plane layer carries: its split regions' nets, or the one
+    net its plane net name resolves to."""
+    split = {sp.net_index for sp in _split_plane_records(proj, stackup)}
+    if split:
+        return split
+    net = _net_index_by_name(proj, stackup.plane_net_name)
+    return set() if net == NO_NET else {net}
+
+
+def _plane_net_sheets(
+    proj: ExtractedProject,
+    stackup,
+    enabled_layers: list[int],
+    through_cache: _ThroughFeatureCache | None = None,
+    wanted=None,
+) -> dict[int, shapely.geometry.base.BaseGeometry]:
+    """``{net_index: sheet}`` for one plane layer: the whole layer on its plane
+    net, or, for a split plane (``(Multiple Nets)``), one sheet per net from
+    its split-plane regions. ``wanted(net)`` (optional) skips nets the caller
+    has no use for before any sheet is built.
+
+    Read as one net, a split plane is no copper at all (``(Multiple Nets)`` is
+    not a net), and every via that reaches its net only through the plane is
+    an island: one board's GND on P1-GND / P2-GND solved as 35 islands."""
+    regions = _split_plane_regions(proj, stackup)
+    if not regions:
+        net = _net_index_by_name(proj, stackup.plane_net_name)
+        if net == NO_NET or (wanted is not None and not wanted(net)):
+            return {}
+        sheet = _plane_sheet_polygon(proj, stackup, enabled_layers, through_cache)
+        return {} if sheet is None else {net: sheet}
+    out: dict[int, shapely.geometry.base.BaseGeometry] = {}
+    for net, region in regions.items():
+        if net == NO_NET or (wanted is not None and not wanted(net)):
+            continue
+        sheet = _plane_sheet_polygon(proj, stackup, enabled_layers, through_cache,
+                                     net_index=net, region=region)
+        if sheet is not None:
+            out[net] = sheet
+    return out
+
+
 def build_layer_geometry(proj: ExtractedProject, layer_id: int,
                          enabled_layers: list[int],
                          through_cache: _ThroughFeatureCache | None = None,
@@ -1192,7 +1304,10 @@ def build_layer_geometry(proj: ExtractedProject, layer_id: int,
         # Planes are negative copper: the board outline (inset by the plane
         # pullback) flooded on the plane's net, cleared around foreign features
         # and thermal-relieved to same-net features (see _plane_sheet_polygon).
-        sheet = _plane_sheet_polygon(proj, stackup, enabled_layers, through_cache)
+        sheets = list(_plane_net_sheets(
+            proj, stackup, enabled_layers, through_cache).values())
+        sheet = (None if not sheets else sheets[0] if len(sheets) == 1
+                 else shapely.ops.unary_union(sheets))
         if sheet is None:
             log.warning("Layer %d (%s) is a plane (net=%s) but the board has no"
                         " outline to flood — emitting empty layer.",
@@ -1424,6 +1539,7 @@ def _shapes_to_geometry_layers(
     the plane net by :func:`_build_net_layer_buckets`); the resulting layer is
     tagged ``is_plane`` with ``plane_net_index`` set to its net."""
     stackup_by_id = {s.layer_id: s for s in proj.stackup}
+    plane_nets = {s.layer_id: _plane_nets(proj, s) for s in proj.stackup if s.is_plane}
     out: list[GeometryLayer] = []
     for (lid, net_index), raw_shape in shapes.items():
         if raw_shape.is_empty:
@@ -1435,8 +1551,7 @@ def _shapes_to_geometry_layers(
         if mp.is_empty:
             continue
         net_name = proj.nets[net_index].name if 0 <= net_index < len(proj.nets) else "?"
-        is_plane = stackup.is_plane and net_index == _net_index_by_name(
-            proj, stackup.plane_net_name)
+        is_plane = stackup.is_plane and net_index in plane_nets.get(lid, ())
         out.append(GeometryLayer(
             layer_id=lid,
             name=f"{stackup.name}|{net_name}",
@@ -1850,19 +1965,17 @@ def _build_net_layer_buckets(
     for s in proj.stackup:
         if not s.is_plane or s.layer_id not in enabled_set:
             continue
-        net_index = _net_index_by_name(proj, s.plane_net_name)
-        if net_index == NO_NET:
-            continue
-        if not _passes(net_index):
-            # Building a plane sheet subtracts every anti-pad and thermal
-            # relief on the layer, so skipping an unwanted plane's net here
-            # is the single largest saving the filter makes.
+        # Building a plane sheet subtracts every anti-pad and thermal relief
+        # on the layer, so skipping an unwanted plane net here is the single
+        # largest saving the filter makes.
+        if not any(_passes(n) for n in _plane_nets(proj, s)):
             continue
         if _through_cache is None:
             _through_cache = _ThroughFeatureCache(proj)
-        # Per-plane: pullback and net differ, so the sheet is built per layer.
-        plane_sheet = _plane_sheet_polygon(proj, s, enabled_layers, _through_cache)
-        if plane_sheet is not None:
+        # Per-plane: pullback and net differ, so the sheet is built per layer
+        # (per net, on a split plane).
+        for net_index, plane_sheet in _plane_net_sheets(
+                proj, s, enabled_layers, _through_cache, wanted=_passes).items():
             _add(s.layer_id, net_index, plane_sheet)
 
     log.info("build_net_layer_shapes: buffered primitives into %d (layer, net) "
