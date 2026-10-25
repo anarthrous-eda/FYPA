@@ -336,7 +336,7 @@ class _TopologyView(QGraphicsView):
 
     def mouseMoveEvent(self, event) -> None:
         if self._panning and (
-            event.buttons() & Qt.MiddleButton
+            event.buttons() & (Qt.MiddleButton | Qt.RightButton)
             or (event.buttons() & Qt.LeftButton and self._space_pan)
         ):
             if self._pan_anchor is not None:
@@ -373,7 +373,7 @@ class _TopologyView(QGraphicsView):
         super().leaveEvent(event)
 
     def mousePressEvent(self, event) -> None:
-        if event.button() == Qt.MiddleButton or (
+        if event.button() in (Qt.MiddleButton, Qt.RightButton) or (
             event.button() == Qt.LeftButton and self._space_pan
         ):
             self._panning = True
@@ -390,7 +390,7 @@ class _TopologyView(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
-        if event.button() in (Qt.MiddleButton, Qt.LeftButton):
+        if event.button() in (Qt.MiddleButton, Qt.RightButton, Qt.LeftButton):
             self._panning = False
             if self._space_pan:
                 self.setCursor(Qt.OpenHandCursor)
@@ -424,7 +424,7 @@ class _TopologyTabMixin:
             "directive is a box with input/output ports wired by net. "
             "Click a box to jump to its pad on the Heatmap. "
             "Ctrl+wheel to zoom; wheel to scroll; Shift+wheel horizontal; "
-            "middle-drag or Space+drag to pan; arrow keys to scroll."
+            "right-drag, middle-drag or Space+drag to pan; arrow keys to scroll."
         )
         intro.setWordWrap(True)
         intro.setStyleSheet(f"QLabel {{ color: {_T()['fg_muted']}; }}")

@@ -153,7 +153,6 @@ class _RenderMixin:
         cached = getattr(self, "_src_return_offset_cache", None)
         if cached is not None:
             return cached
-        from scipy.spatial import cKDTree
 
         offsets: dict[str, float] = {}
         meta = self.metadata or {}
@@ -162,49 +161,7 @@ class _RenderMixin:
             self._src_return_offset_cache = offsets
             return offsets
 
-        id_to_phys = {v: k for k, v in self._phys_name_to_layer_id.items()}
-        # Per-(phys, net) lazily-built (kdtree, potentials) over the slab's
-        # non-orphan vertices — orphans are pinned to V=0 and would shadow
-        # the real pin value. 0.01 mm match tol matches _compute_node_report.
-        tree_cache: dict[tuple[str, str], tuple] = {}
-        _TOL_MM = 0.01
-
-        def _sample(layer_id, net: str, x, y) -> float | None:
-            phys = id_to_phys.get(layer_id)
-            if phys is None or x is None or y is None or not net:
-                return None
-            key = (phys, net)
-            if key not in tree_cache:
-                li = self._index_by_pair.get(key)
-                tree = vs = None
-                if li is not None:
-                    ls = sol.layer_solutions[li]
-                    xs_p, ys_p, vs_p = [], [], []
-                    for xys, tris_local, pot in zip(
-                        ls.vertex_xys, ls.triangles, ls.potentials,
-                    ):
-                        xys = np.asarray(xys)
-                        tris_local = np.asarray(tris_local)
-                        if xys.shape[0] == 0 or tris_local.size == 0:
-                            continue
-                        used = np.unique(tris_local.ravel())
-                        xs_p.append(xys[used, 0])
-                        ys_p.append(xys[used, 1])
-                        vs_p.append(np.asarray(pot)[used])
-                    if xs_p:
-                        pts = np.column_stack(
-                            [np.concatenate(xs_p), np.concatenate(ys_p)])
-                        tree = cKDTree(pts)
-                        vs = np.concatenate(vs_p)
-                tree_cache[key] = (tree, vs)
-            tree, vs = tree_cache[key]
-            if tree is None:
-                return None
-            dist, idx = tree.query((float(x), float(y)))
-            if dist > _TOL_MM:
-                return None
-            v = float(vs[idx])
-            return v if np.isfinite(v) else None
+        _sample = self._solution_pin_potential
 
         # net -> (ranking + pin voltage, return-pin offset).
         best: dict[str, tuple[float, float]] = {}
@@ -239,6 +196,62 @@ class _RenderMixin:
         offsets = {net: off for net, (_rank, off) in best.items()}
         self._src_return_offset_cache = offsets
         return offsets
+
+    def _solution_pin_potential(self, layer_id, net: str,
+                                x, y) -> float | None:
+        """Absolute potential of the solution vertex at a pin on
+        ``(layer_id, net)``, or None if no vertex lies within 0.01 mm.
+
+        Reads the full solution, independent of which physical layers /
+        rails are visible — used for references (source-return offset,
+        Voltage Drop anchor) that must not move when a layer is hidden.
+        The per-(phys, net) KD-tree is built over the slab's non-orphan
+        vertices (orphans are pinned to V=0 and would shadow the real pin
+        value) and cached until the next solve.
+        """
+        sol = getattr(self, "solution", None)
+        if sol is None or x is None or y is None or not net:
+            return None
+        phys = next((k for k, v in self._phys_name_to_layer_id.items()
+                     if v == layer_id), None)
+        if phys is None:
+            return None
+        tree_cache = getattr(self, "_pin_potential_tree_cache", None)
+        if tree_cache is None:
+            tree_cache = self._pin_potential_tree_cache = {}
+        key = (phys, net)
+        if key not in tree_cache:
+            from scipy.spatial import cKDTree
+            li = self._index_by_pair.get(key)
+            tree = vs = None
+            if li is not None:
+                ls = sol.layer_solutions[li]
+                xs_p, ys_p, vs_p = [], [], []
+                for xys, tris_local, pot in zip(
+                    ls.vertex_xys, ls.triangles, ls.potentials,
+                ):
+                    xys = np.asarray(xys)
+                    tris_local = np.asarray(tris_local)
+                    if xys.shape[0] == 0 or tris_local.size == 0:
+                        continue
+                    used = np.unique(tris_local.ravel())
+                    xs_p.append(xys[used, 0])
+                    ys_p.append(xys[used, 1])
+                    vs_p.append(np.asarray(pot)[used])
+                if xs_p:
+                    pts = np.column_stack(
+                        [np.concatenate(xs_p), np.concatenate(ys_p)])
+                    tree = cKDTree(pts)
+                    vs = np.concatenate(vs_p)
+            tree_cache[key] = (tree, vs)
+        tree, vs = tree_cache[key]
+        if tree is None:
+            return None
+        dist, idx = tree.query((float(x), float(y)))
+        if dist > 0.01:  # mm; matches _compute_node_report
+            return None
+        v = float(vs[idx])
+        return v if np.isfinite(v) else None
 
     def _build_rail_arrays(
         self, phys_list: list[str], rail_names: list[str], derive_fn,
@@ -1181,7 +1194,7 @@ class _RenderMixin:
                 vmax = vmin + 1e-12
 
         # Voltage Drop mode: anchor the reference at the SOURCE (highest
-        # voltage on the rail across any visible layer) and subtract it
+        # voltage on the rail across every layer, visible or not) and subtract it
         # so the heatmap reads 0 V at the source and goes NEGATIVE
         # toward the sinks. Pin voltages are sampled from the
         # *per-layer* interpolator matching each pin's layer_id, so the
@@ -1230,14 +1243,21 @@ class _RenderMixin:
                     for term in (d.get("terminals") or {}).values():
                         for pin in term.get("pins", []):
                             lid = pin.get("layer_id")
-                            if lid not in target_layer_ids:
-                                continue
                             pnet = pin.get("net", "")
                             if rail_members and pnet not in rail_members:
                                 continue
-                            v_at = _sample_pin_voltage(
-                                lid, pin.get("x_mm"), pin.get("y_mm"), pnet,
-                            )
+                            # Pins on hidden layers still anchor the drop:
+                            # hiding the source's layer must not lose the
+                            # reference and fall back to absolute voltage.
+                            v_at = None
+                            if lid in target_layer_ids:
+                                v_at = _sample_pin_voltage(
+                                    lid, pin.get("x_mm"), pin.get("y_mm"), pnet,
+                                )
+                            if v_at is None:
+                                v_at = self._solution_pin_potential(
+                                    lid, pnet, pin.get("x_mm"), pin.get("y_mm"),
+                                )
                             if v_at is None:
                                 continue
                             out.append(

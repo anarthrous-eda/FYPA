@@ -590,6 +590,7 @@ class PdnViewer(
         # be dropped on re-solve or Voltage-mode readouts and via hovers report
         # the old solve's numbers against the new field.
         self._src_return_offset_cache = None
+        self._pin_potential_tree_cache = None
         self._via_hover_index_cache = None
         self._metadata_marker_hover_rows.clear()
         self._via_current_lookup.clear()
