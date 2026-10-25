@@ -48,13 +48,22 @@ def component_tooltip(
     return "\n".join(lines)
 
 
-def port_tooltip(net_label: str, directive: DirectiveDict | None, terminal: str) -> str:
+def port_tooltip(
+    net_label: str,
+    directive: DirectiveDict | None,
+    terminal: str,
+    current_line: str = "",
+) -> str:
+    """``current_line`` is an extra estimated-current line (regulator in/out,
+    source out); SINK ports already show their current as the value."""
     parts = [net_label]
     if directive is None:
         return net_label
     fv = format_directive_value(directive)
     if fv:
         parts.append(fv)
+    if current_line:
+        parts.append(current_line)
     ch = directive.get("channel_index")
     if ch is not None:
         parts.insert(0, f"ch {ch} · {terminal}")

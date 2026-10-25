@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 
+from fypa.rail_currents import RailCurrents
 from fypa.topology.constants import GND_NET, RETURN_PORT_SORT_BASE
 from fypa.topology.metadata.nets import (
     canonical_net,
@@ -25,9 +27,14 @@ from fypa.topology.metadata.specs import (
     spec_series_terms,
 )
 from fypa.topology.metadata.tooltips import port_tooltip
-from fypa.topology.metadata_schema import NodeSpec, TerminalDict, TopologyMetadata
+from fypa.topology.metadata_schema import (
+    DirectiveDict,
+    NodeSpec,
+    TerminalDict,
+    TopologyMetadata,
+)
 from fypa.topology.terminal_roles import is_output_port, is_power_input_port
-from fypa.topology.util import truncate_label
+from fypa.topology.util import format_current_a, truncate_label
 
 
 @dataclass(frozen=True)
@@ -830,7 +837,36 @@ def specs_by_column(
     return by_col, max_col
 
 
-def _enrich_resolved_ports(spec: NodeSpec) -> None:
+def _port_current_line(
+    pname: str,
+    directive: DirectiveDict | None,
+    currents: RailCurrents | None,
+) -> str:
+    """Estimated current into a regulator input, or out of a regulator /
+    source output. Empty when unknown (e.g. no sinks downstream)."""
+    if directive is None or currents is None:
+        return ""
+    role = directive.get("role")
+    base = re.sub(r"\d+$", "", pname)
+    if role == "REGULATOR" and base == "IN_P":
+        amps = currents.regulator_input_current(directive)
+        return "" if amps is None else f"in: {format_current_a(amps)}"
+    out_term = {"REGULATOR": "OUT_P", "SOURCE": "P"}.get(str(role))
+    if out_term is None or base != out_term:
+        return ""
+    rail = currents.rail_of(directive, out_term)
+    amps = currents.rail_load(rail) if rail is not None else None
+    if amps is None:
+        return ""
+    n = currents.supplier_count(rail)
+    shared = f" (rail total, {n} supplies)" if n > 1 else ""
+    return f"out: {format_current_a(amps)}{shared}"
+
+
+def _enrich_resolved_ports(
+    spec: NodeSpec,
+    currents: RailCurrents | None = None,
+) -> None:
     """Resolve wire net (``wnet``) and display label (``plabel``) per port.
 
     ``wnet`` always comes from :func:`terminal_net` (first pin when pads
@@ -850,10 +886,16 @@ def _enrich_resolved_ports(spec: NodeSpec) -> None:
         if not wnet:
             continue
         label = port_display_net(term, raw, channel_row=pname in channel_ports)
+        directive = port_directives.get(pname)
         resolved[pname] = ResolvedPort(
             wnet=wnet,
             plabel=truncate_label(label),
-            tooltip=port_tooltip(label, port_directives.get(pname), pname),
+            tooltip=port_tooltip(
+                label,
+                directive,
+                pname,
+                _port_current_line(pname, directive, currents),
+            ),
         )
     spec["resolved_ports"] = resolved
 
@@ -871,10 +913,14 @@ def parse_topology_directives(metadata: TopologyMetadata) -> ParsedLayoutInput:
         metadata.get("directives") or [],
         key=lambda d: natural_sort_key(str(d.get("designator") or d.get("label", ""))),
     )
+    currents = RailCurrents(
+        [d for d in directives if d.get("role") != "AUTO_BRIDGE"],
+        rail_to_members,
+    )
     node_specs = directives_to_component_specs(directives, errors, net_to_rail)
     needs_gnd = False
     for spec in node_specs:
-        _enrich_resolved_ports(spec)
+        _enrich_resolved_ports(spec, currents)
         for pname, _, _ in spec["port_defs"]:
             term = (spec["terms"] or {}).get(pname)
             if canonical_net(terminal_net(term), net_to_rail) == GND_NET:

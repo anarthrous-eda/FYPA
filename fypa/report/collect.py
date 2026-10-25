@@ -28,6 +28,7 @@ from fypa.altium_geometry import (
     solve_copper_conductivity,
     volume_current_density,
 )
+from fypa.rail_currents import RailCurrents
 from fypa.rail_groups import compute_rail_groups
 from fypa.report import checks
 from fypa.report.model import (
@@ -222,7 +223,7 @@ class _Context:
         self.rail_to_members = rail_to_members
         self.net_to_rail = net_to_rail
         self.settings = settings
-        self._load_cache: dict[str, float | None] = {}
+        self._currents = RailCurrents(directives, rail_to_members)
         self._layer_cache: dict[tuple[str, str], dict | None] = {}
         self.stackup_by_name = {r.get("name"): r
                                 for r in metadata.get("stackup", [])}
@@ -259,41 +260,12 @@ class _Context:
         v = _mean(self.volts(di, term))
         return 0.0 if v is None else v
 
-    def rail_load(self, rail: str, _stack: frozenset = frozenset()
-                  ) -> float | None:
-        """Total DC current drawn from a rail: its SINK currents plus the
-        estimated input current of every regulator it feeds (KCL)."""
-        if rail in self._load_cache:
-            return self._load_cache[rail]
-        if rail in _stack:
-            return None
-        members = set(self.rail_to_members.get(rail, [rail]))
-        total, found = 0.0, False
-        for d in self.directives:
-            role = d.get("role")
-            if role == "SINK" and _pin_nets(d, "P") & members:
-                total += _float(d.get("value")) or 0.0
-                found = True
-            elif role == "REGULATOR" and _pin_nets(d, "IN_P") & members:
-                i_in = self.regulator_input_current(d, _stack | {rail})
-                if i_in is not None:
-                    total += i_in
-                    found = True
-        result = total if found else None
-        self._load_cache[rail] = result
-        return result
+    def rail_load(self, rail: str) -> float | None:
+        """Total DC current drawn from a rail (see :mod:`fypa.rail_currents`)."""
+        return self._currents.rail_load(rail)
 
-    def regulator_input_current(self, d: dict, _stack=frozenset()
-                                ) -> float | None:
-        out_rail = self.rail_of(d, "OUT_P")
-        if out_rail is None:
-            return None
-        i_out = self.rail_load(out_rail, _stack)
-        if i_out is None:
-            return None
-        gain = _float(d.get("gain"))
-        gain = 1.0 if gain is None else gain
-        return gain * i_out + (_float(d.get("quiescent_current")) or 0.0)
+    def regulator_input_current(self, d: dict) -> float | None:
+        return self._currents.regulator_input_current(d)
 
     # --- per-layer mesh stats -----------------------------------------------
 
