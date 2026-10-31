@@ -1,9 +1,11 @@
-"""External-FET SMPS stage binding — connect PATH elements to REGULATOR hosts.
+# Portions Copyright (c) 2026 Tomachie LLC.
+"""SMPS stage binding — connect PATH and FREEWHEEL elements to REGULATOR hosts.
 
 Called by :func:`fypa.altium.annotations.parse_annotations` after the main
 parse loop to replace :class:`PathSpec` directives with :class:`ResistorSpec`
 (high-side bridges) and :class:`SwitchPathLeg` entries on the host
-:class:`RegulatorSpec`.
+:class:`RegulatorSpec`, and each :class:`FreewheelSpec` (a non-synchronous
+buck's catch diode) with a ``"freewheel"`` :class:`SwitchPathLeg`.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from dataclasses import replace
 
 from fypa.altium.annotations import (
     AnnotationResult,
+    FreewheelSpec,
     PathSpec,
     RegulatorSpec,
     ResistorSpec,
@@ -569,3 +572,132 @@ def finalize_smps_stages(
         rebuilt.append(d)
     rebuilt.extend(new_directives)
     result.directives = rebuilt
+
+
+# ---------------------------------------------------------------------------
+# Non-synchronous buck: the freewheel diode
+# ---------------------------------------------------------------------------
+
+
+def freewheel_coeff(duty: float) -> float:
+    """The freewheel leg's current as a multiple of the regulator's own
+    current ``i_v``. The element carries the switch pins' share D x I_out,
+    the diode (1 - D) x I_out = (1 - D) / D x i_v."""
+    return (1.0 - duty) / duty
+
+
+def _freewheel_host(
+    fw: FreewheelSpec,
+    regulators: list[RegulatorSpec],
+    net_remap: dict[int, int] | None,
+    result: AnnotationResult,
+) -> RegulatorSpec | None:
+    """The regulator a freewheel diode belongs to: its ``PDN_SMPS_HOST``
+    channel whose switch node (OUT_P) the cathode sits on."""
+    diag = f"FREEWHEEL on {fw.designator}"
+    cathode = _terminal_net_indices(fw.n, net_remap)
+    pool = regulators
+    if fw.smps_host:
+        host_u = fw.smps_host.strip().upper()
+        pool = [r for r in regulators if r.designator.upper() == host_u]
+        if not pool:
+            _append_error_once(
+                result,
+                f"{diag}: PDN_SMPS_HOST={fw.smps_host!r} does not match any "
+                f"REGULATOR designator — the diode is left out and the "
+                f"regulator's switch pins carry the whole output current",
+            )
+            return None
+    matches = [r for r in pool
+               if cathode & _terminal_net_indices(r.out_p, net_remap)]
+    if len(matches) != 1:
+        why = ("its cathode is not on the switch node (OUT_P) of "
+               + (fw.smps_host or "any REGULATOR")) if not matches else (
+            "its cathode is on the switch node of several REGULATOR "
+            "channels (" + ", ".join(m.designator for m in matches) + ")")
+        _append_error_once(
+            result,
+            f"{diag}: {why} — the diode is left out and the regulator's "
+            f"switch pins carry the whole output current",
+        )
+        return None
+    return matches[0]
+
+
+def finalize_freewheel_diodes(
+    result: AnnotationResult,
+    proj: ExtractedProject,
+    net_remap: dict[int, int] | None = None,
+) -> None:
+    """Bind each FREEWHEEL diode to its regulator, mutating *result.directives*.
+
+    A non-synchronous buck's switch conducts D = Vout / Vin of the period;
+    for the rest the inductor current comes up through the freewheel diode,
+    from its anode (ground) into the switch node. Averaged over a period the
+    switch pins deliver D x I_out and the diode (1 - D) x I_out. The host's
+    element keeps its terminals (it forces the switch node at its pins), so
+    its own current ``i_v`` becomes the switch pins' share; the diode is a
+    ``"freewheel"`` :class:`SwitchPathLeg` carrying ``(1 - D) / D x i_v``
+    from anode to cathode, and ``freewheel_duty`` makes the input draw
+    ``gain / D x i_v`` = ``gain x I_out``, the input current it drew before.
+
+    A diode that cannot be bound is reported and dropped, which leaves its
+    regulator exactly as it is without one.
+    """
+    diodes = [d for d in result.directives if isinstance(d, FreewheelSpec)]
+    if not diodes:
+        return
+    regulators = [d for d in result.directives if isinstance(d, RegulatorSpec)]
+    updated: dict[int, RegulatorSpec] = {}
+    for fw in diodes:
+        diag = f"FREEWHEEL on {fw.designator}"
+        original = _freewheel_host(fw, regulators, net_remap, result)
+        if original is None:
+            continue
+        host = updated.get(id(original), original)
+        if host.regulator_type != "SMPS":
+            _append_error_once(
+                result,
+                f"{diag}: host {host.designator} is not a switching "
+                f"regulator (PDN_REGULATOR_TYPE=SMPS) — the diode is left out",
+            )
+            continue
+        if host.cut_resistance is not None or any(
+                leg.kind != "freewheel" for leg in host.switch_path_legs):
+            _append_error_once(
+                result,
+                f"{diag}: host {host.designator} is an external-FET stage "
+                f"(PDN_ROLE=PATH parts), which models its own low side — "
+                f"the diode is left out",
+            )
+            continue
+        if host.freewheel_duty is not None:
+            _append_error_once(
+                result,
+                f"{diag}: host {host.designator} already has a freewheel "
+                f"diode — only one per regulator is supported; this one is "
+                f"left out",
+            )
+            continue
+        leg = SwitchPathLeg(
+            designator=fw.designator,
+            kind="freewheel",
+            resistance=fw.resistance,
+            p=fw.p,
+            n=fw.n,
+            coeff=freewheel_coeff(fw.duty),
+        )
+        updated[id(original)] = replace(
+            host,
+            switch_path_legs=host.switch_path_legs + (leg,),
+            freewheel_duty=fw.duty,
+        )
+        log.info(
+            "%s: freewheel diode of %s, D=%.4g - the switch pins carry D of "
+            "the output current, the diode %.4g",
+            diag, host.designator, fw.duty, 1.0 - fw.duty,
+        )
+    result.directives = [
+        updated.get(id(d), d) for d in result.directives
+        if not isinstance(d, FreewheelSpec)
+    ]

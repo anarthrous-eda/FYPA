@@ -1,3 +1,4 @@
+# Portions Copyright (c) 2026 Tomachie LLC.
 """Editor mode: entering / leaving it and its viewport buttons."""
 from __future__ import annotations
 
@@ -114,6 +115,17 @@ class _EditorModeMixin:
         rbtn.clicked.connect(self._on_resolve_clicked)
         rbtn.hide()
         self._resolve_btn = rbtn
+
+        # Always on the canvas, top right: set up the whole PDN from a
+        # Tomachie pdn.json (fypa.viewer.tomachie_menu).
+        from fypa.viewer.tomachie_menu import on_load_tomachie_pdn
+        pbtn = QPushButton("Load Tomachie PDN\u2026", self._gl_viewer)
+        pbtn.setCursor(Qt.PointingHandCursor)
+        pbtn.setToolTip(
+            "Set up every source, regulator, series part and load from a Tomachie "
+            "pdn.json, read from the schematic and the parts' datasheets")
+        pbtn.clicked.connect(lambda: on_load_tomachie_pdn(self))
+        self._tomachie_pdn_btn = pbtn
         self._restyle_editor_overlay_buttons()
         self._position_editor_overlays()
 
@@ -135,7 +147,7 @@ class _EditorModeMixin:
                 f" border-radius: 8px;"
             )
         for attr in ("_editor_toggle_btn", "_editor_add_source_btn",
-                     "_editor_add_sink_btn"):
+                     "_editor_add_sink_btn", "_tomachie_pdn_btn"):
             b = getattr(self, attr, None)
             if b is not None:
                 b.setStyleSheet(qss)
@@ -252,6 +264,11 @@ class _EditorModeMixin:
             rbtn.adjustSize()
             rbtn.move(x + 2, margin)
             rbtn.raise_()
+        pbtn = getattr(self, "_tomachie_pdn_btn", None)
+        if pbtn is not None:
+            pbtn.adjustSize()
+            pbtn.move(max(margin, gl.width() - pbtn.width() - margin), margin)
+            pbtn.raise_()
 
         # Size the click-absorbing backdrop to wrap the edit toggle + the two
         # free-marker buttons (not the Resolve button, which sits apart), with

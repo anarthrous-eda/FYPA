@@ -384,7 +384,21 @@ def _one_candidate(proj, designator, *, skip=None, **kw):
 
 def test_advisory_names_the_net_that_is_missing_not_the_live_rail():
     """The excluded copper is whichever end is *not* already solved."""
+    import dataclasses
     proj = _bridge_proj("FB1", {})
+    # A second ferrite from SHIELD to GND: the excluded copper joins two solved
+    # nets and carries current, so it is an advisory (one ferrite alone, or two
+    # back to the same net, is a dead end and is not).
+    proj = dataclasses.replace(
+        proj,
+        sch_components=proj.sch_components + (RawSchComponent(
+            designator="FB2", schdoc_name="Pwr.SchDoc",
+            parameters={"Value": "600R"}, pin_designators=("1", "2")),),
+        pcb_components=proj.pcb_components + (RawPcbComponent(
+            designator="FB2", center=Pt2D(5, 0), rotation_deg=0.0,
+            layer_name="TOP", footprint="0603", source_designator="FB2"),),
+        pads=proj.pads + (_pad(2, "1", 1, 5.0), _pad(2, "2", 0, 6.0)),
+    )
     loaded, rec = _one_candidate(proj, "FB1")
 
     assert rec["state"] == "unmodelled"
@@ -446,3 +460,39 @@ def test_a_real_zero_ohm_link_still_explains_itself():
     assert rec["state"] == "auto"
     assert "0" in rec["why"] and "link" in rec["why"]
     assert "Net Tie" not in rec["why"]
+
+
+# ---------------------------------------------------------------------------
+# Dead-end branches are not advisories
+# ---------------------------------------------------------------------------
+
+def _rec(des, a, b, active):
+    excluded = (b if a in active else a) if (a in active) != (b in active) else None
+    return {"designator": des, "state": "unmodelled", "_pair": (a, b),
+            "excluded_net": f"N{excluded}" if excluded is not None else "",
+            "impact": "joins ..." if excluded is not None else "", "why": ""}
+
+
+def test_ferrite_into_a_dead_end_is_not_reported():
+    from fypa.altium.loader import _clear_dead_end_impacts
+    active = {0}
+    recs = [_rec("L1", 0, 5, active)]
+    _clear_dead_end_impacts(recs, active)
+    assert recs[0]["impact"] == "" and "dead-end" in recs[0]["why"]
+
+
+def test_copper_rejoining_the_rail_is_still_reported():
+    from fypa.altium.loader import _clear_dead_end_impacts
+    active = {0, 1}
+    recs = [_rec("L1", 0, 5, active), _rec("L2", 6, 1, active),
+            _rec("FB1", 5, 6, active)]
+    _clear_dead_end_impacts(recs, active)
+    assert recs[0]["impact"] and recs[1]["impact"]
+
+
+def test_two_resistors_from_one_node_to_the_same_ground_are_a_dead_end():
+    from fypa.altium.loader import _clear_dead_end_impacts
+    active = {0}
+    recs = [_rec("R33", 5, 0, active), _rec("R34", 5, 0, active)]
+    _clear_dead_end_impacts(recs, active)
+    assert not recs[0]["impact"] and not recs[1]["impact"]
