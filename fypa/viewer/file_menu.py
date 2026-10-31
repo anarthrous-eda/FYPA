@@ -1,8 +1,11 @@
+# Portions Copyright (c) 2026 Tomachie LLC.
 """File menu, and project file save / open."""
 from __future__ import annotations
 
 import logging
 from pathlib import Path
+
+from fypa.viewer.tomachie_menu import pdn_choice as _tomachie_pdn_choice
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
@@ -123,6 +126,14 @@ class _FileMenuMixin:
             lambda: self._on_menu_open_project(clean=True)
         )
         file_menu.addAction(open_proj_clean)
+
+        from fypa.viewer.tomachie_menu import SHORTCUT, on_load_tomachie_pdn
+        load_pdn = QAction("Load &Tomachie pdn.json…", self)
+        load_pdn.setShortcut(SHORTCUT)
+        load_pdn.setStatusTip(
+            "Set up sources, regulators, series parts and loads from a Tomachie pdn.json")
+        load_pdn.triggered.connect(lambda: on_load_tomachie_pdn(self))
+        file_menu.addAction(load_pdn)
 
         # "Solve automatically on import" is set in Settings > General options,
         # not the File menu; the import flow reads the persisted pref directly.
@@ -1077,6 +1088,8 @@ class _FileMenuMixin:
                 for d in (getattr(getattr(self, "_project", None),
                                   "no_auto_bridge", []) or [])
             },
+            pdn_json=_tomachie_pdn_choice(self)[0],
+            pdn_corner=_tomachie_pdn_choice(self)[1],
             auto_series_max_ohm=getattr(
                 getattr(self, "_project", None), "auto_series_max_ohm", None),
             parent=self,

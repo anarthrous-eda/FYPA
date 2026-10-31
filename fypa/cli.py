@@ -1,3 +1,4 @@
+# Portions Copyright (c) 2026 Tomachie LLC.
 """FYPA — DC power-delivery-network analysis for Altium PCB designs.
 
 CLI entry point. Subcommands:
@@ -123,6 +124,18 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub = p.add_subparsers(dest="command", required=True)
 
+    def _add_pdn_json_arg(sp_: argparse.ArgumentParser) -> None:
+        sp_.add_argument(
+            "--pdn-json", type=Path, default=None, metavar="FILE",
+            help="A Tomachie power-tree file (<design>.pdn.json): PDN_* sources, "
+                 "regulators, series parts and sinks for every component the "
+                 "schematic does not annotate itself.")
+        sp_.add_argument(
+            "--pdn-corner", choices=("typ", "max"), default="typ",
+            help="With --pdn-json: solve each load at its typical (default) or "
+                 "maximum current, each series part at its typical or maximum "
+                 "resistance.")
+
     def _add_pcbdoc_arg(sp_: argparse.ArgumentParser) -> None:
         sp_.add_argument(
             "--pcbdoc", default=None,
@@ -150,6 +163,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--png", type=Path, default=None,
                     help="Optional path for a per-layer geometry quicklook PNG.")
     _add_pcbdoc_arg(sp)
+    _add_pdn_json_arg(sp)
 
     def _add_mesh_args(
         sp_: argparse.ArgumentParser, *, optional: bool = False,
@@ -208,6 +222,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("output", type=Path, help="Path to write the pickled solution to")
     _add_mesh_args(sp)
     _add_pcbdoc_arg(sp)
+    _add_pdn_json_arg(sp)
 
     sp = sub.add_parser("show", help="Open the interactive solution viewer")
     sp.add_argument("solution", type=Path)
@@ -223,6 +238,7 @@ def _build_parser() -> argparse.ArgumentParser:
                          "(Clean).")
     _add_mesh_args(sp, optional=True)
     _add_pcbdoc_arg(sp)
+    _add_pdn_json_arg(sp)
 
     sp = sub.add_parser("paraview", help="Export a pickled solution to ParaView VTK")
     sp.add_argument("solution", type=Path)
@@ -364,7 +380,9 @@ def do_annotations(args: argparse.Namespace) -> int:
 
 
 def do_load(args: argparse.Namespace) -> int:
-    loaded = load_project(args.prjpcb, pcbdoc_selector=args.pcbdoc)
+    loaded = load_project(args.prjpcb, pcbdoc_selector=args.pcbdoc,
+                          pdn_json=getattr(args, "pdn_json", None),
+                          pdn_corner=getattr(args, "pdn_corner", "typ"))
     print(loaded.diagnostic_summary())
     if args.png:
         args.png.parent.mkdir(parents=True, exist_ok=True)
@@ -1256,7 +1274,9 @@ def save_solution_file(path: Path, solution, metadata: dict | None) -> None:
 
 
 def do_solve(args: argparse.Namespace) -> int:
-    loaded = load_project(args.prjpcb, pcbdoc_selector=args.pcbdoc)
+    loaded = load_project(args.prjpcb, pcbdoc_selector=args.pcbdoc,
+                          pdn_json=getattr(args, "pdn_json", None),
+                          pdn_corner=getattr(args, "pdn_corner", "typ"))
     solution, metadata = _solve_loaded(loaded, args)
     # ``mesh_failed``, not the records list: a failure whose geometry was too
     # degenerate to record leaves the list empty, and testing that would pickle
@@ -1326,6 +1346,8 @@ def do_gui(args: argparse.Namespace) -> int:
         # counterpart was passed; the launcher then uses the persisted
         # Settings-tab preference (same as File > Import).
         "adaptive_regulator_gain": adaptive,
+        "pdn_json": getattr(args, "pdn_json", None),
+        "pdn_corner": getattr(args, "pdn_corner", "typ"),
     }
     # Only override Settings-tab mesh values when the user passed the flags.
     if getattr(args, "mesh_angle", None) is not None:

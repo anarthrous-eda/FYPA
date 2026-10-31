@@ -1,3 +1,4 @@
+# Portions Copyright (c) 2026 Tomachie LLC.
 """Opening projects, solutions and Altium imports into a viewer window."""
 from __future__ import annotations
 
@@ -333,6 +334,8 @@ def _start_launcher_altium_solve(
 
     adaptive = _consume_cli_adaptive_flag(window)
 
+    from fypa.viewer.tomachie_menu import pdn_choice
+    pdn_json, pdn_corner = pdn_choice(window)
     worker = _SolveWorker(
         prjpcb_path, settings,
         pcbdoc_selector=str(pcbdoc_path) if pcbdoc_path else None,
@@ -340,6 +343,8 @@ def _start_launcher_altium_solve(
         try_solve_cache_first=imp["try_solve_cache_first"],
         load_only=imp["load_only"],
         adaptive_regulator_gain=bool(adaptive),
+        pdn_json=pdn_json,
+        pdn_corner=pdn_corner,
         parent=window,
     )
     _stash_pending_altium_recent(
@@ -398,6 +403,10 @@ def _schedule_cli_altium_import(window, target: dict) -> None:
     adaptive = target.get("adaptive_regulator_gain")
     if adaptive is not None:
         window._cli_adaptive_regulator_gain = bool(adaptive)
+    if target.get("pdn_json"):
+        # The power tree the import loads (what Tomachie > Use pdn.json would set).
+        window._tomachie_pdn = (Path(target["pdn_json"]).resolve(),
+                                target.get("pdn_corner") or "typ")
     pcbdoc = target.get("pcbdoc_path")
     window._cli_import_pending = True
     _open_altium_project_at(

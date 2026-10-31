@@ -1,3 +1,4 @@
+# Portions Copyright (c) 2026 Tomachie LLC.
 """PDN_* annotation parser for FYPA.
 
 Reads :class:`fypa.altium.extract.ExtractedProject` and produces typed lumped-element
@@ -277,7 +278,8 @@ _SHEET_OVERRIDE_KEY_RE = re.compile(
 _RESISTOR_LIKE_ROLES: frozenset[str] = frozenset({"SERIES"})
 
 VALID_ROLES: frozenset[str] = (
-    frozenset({"SOURCE", "SINK", "REGULATOR", "PATH"}) | _RESISTOR_LIKE_ROLES
+    frozenset({"SOURCE", "SINK", "REGULATOR", "PATH", "FREEWHEEL"})
+    | _RESISTOR_LIKE_ROLES
 )
 
 # Altium ``ComponentKind`` values that are Net Ties (altium_monkey.ComponentKind).
@@ -365,10 +367,18 @@ _KNOWN_SUFFIXES_BY_ROLE: dict[str, frozenset[str]] = {
         "SMPS_TOPOLOGY", "SW1_NET", "SW2_NET",
     }) | _PART_WIDE_PIN_FILTER_SUFFIXES,
     "SERIES": frozenset({
-        "R", "P_NET", "N_NET", "P_PINS", "N_PINS", "IGNORE_PINS",
+        "R", "VF", "VF_CURVE", "P_NET", "N_NET", "P_PINS", "N_PINS", "IGNORE_PINS",
     }) | _PART_WIDE_PIN_FILTER_SUFFIXES,
     "PATH": frozenset({
         "R", "P_NET", "N_NET", "P_PINS", "N_PINS", "IGNORE_PINS",
+        "SMPS_HOST",
+    }) | _PART_WIDE_PIN_FILTER_SUFFIXES,
+    # A non-synchronous buck's freewheel diode, bound to its regulator by
+    # SMPS_HOST: P = anode (the ground side), N = cathode (the switch node),
+    # DUTY = the stage's duty cycle Vout / Vin. R is optional: the pads'
+    # coupling only (the diode's forward drop is not modelled).
+    "FREEWHEEL": frozenset({
+        "DUTY", "R", "P_NET", "N_NET", "P_PINS", "N_PINS", "IGNORE_PINS",
         "SMPS_HOST",
     }) | _PART_WIDE_PIN_FILTER_SUFFIXES,
 }
@@ -420,6 +430,7 @@ _TERMINAL_SUFFIXES_BY_ROLE: dict[str, frozenset[str]] = {
     }),
     "SERIES": _TWO_TERMINAL_SUFFIXES,
     "PATH": _TWO_TERMINAL_SUFFIXES,
+    "FREEWHEEL": _TWO_TERMINAL_SUFFIXES,
 }
 
 
@@ -889,7 +900,7 @@ def _unindexed_has_defining_terminals(
             or _ci_get(params, _channel_key("N_PINS", None)) is not None
         )
         return has_p and has_n
-    if role in ("SERIES", "PATH"):
+    if role in ("SERIES", "PATH", "FREEWHEEL"):
         has_p = (
             _ci_get(params, _channel_key("P_NET", None)) is not None
             or _ci_get(params, _channel_key("P_PINS", None)) is not None
@@ -972,7 +983,7 @@ def _channel_label(designator: str, index: int | None) -> str:
 # channel itself or inherited from the unindexed template) to be present.
 _VALUE_SUFFIX_BY_ROLE: dict[str, str] = {
     "SOURCE": "V", "SINK": "I", "SERIES": "R", "REGULATOR": "V",
-    "PATH": "R",
+    "PATH": "R", "FREEWHEEL": "DUTY",
 }
 
 
@@ -3512,6 +3523,12 @@ class ResistorSpec(_BaseSpec):
     n: TerminalSpec
     channel_index: int | None = None  # None = legacy unindexed; int = PDN<n>_*
     solve_excluded: bool = False  # see SourceSpec.solve_excluded
+    # A diode (PDN_VF): its forward drop from P (anode) to N when it conducts, volts;
+    # None = a plain resistance. Solved as forward_v + I x resistance (the slope).
+    forward_v: float | None = None
+    # Its datasheet Vf-vs-If curve (PDN_VF_CURVE, "amps:volts;amps:volts..."): the solve
+    # moves the line onto the curve at the current it carries (fypa.altium.diode_curve).
+    vf_curve: tuple[tuple[float, float], ...] | None = None
     # Non-None when FYPA modelled an unannotated low-value resistor on its own
     # (see DEFAULT_AUTO_SERIES_MAX_OHM); the text says why.
     auto_reason: str | None = None
@@ -3535,6 +3552,27 @@ class PathSpec(_BaseSpec):
     smps_host: str | None = None  # explicit PDN_SMPS_HOST designator
 
 
+@dataclass(frozen=True)
+class FreewheelSpec(_BaseSpec):
+    """A non-synchronous buck's freewheel (catch) diode.
+
+    Parsed from ``PDN_ROLE=FREEWHEEL``: ``p`` is the anode (the ground side),
+    ``n`` the cathode (the switch node), ``duty`` the stage's duty cycle
+    D = Vout / Vin. While the switch is off (1 - D of the period) the
+    inductor current comes up through the diode, not out of the regulator's
+    switch pin. ``finalize_freewheel_diodes`` consumes these after the main
+    parse loop and turns each into a :class:`SwitchPathLeg` of kind
+    ``"freewheel"`` on its host :class:`RegulatorSpec`.
+    """
+
+    duty: float
+    resistance: float  # pad coupling only; 0 = the default coupling
+    p: TerminalSpec
+    n: TerminalSpec
+    channel_index: int | None = None
+    smps_host: str | None = None
+
+
 _REGULATOR_TYPES: frozenset[str] = frozenset({"LDO", "SMPS"})
 
 _SMPS_TOPOLOGIES: frozenset[str] = frozenset({
@@ -3547,10 +3585,11 @@ _SMPS_TOPOLOGIES: frozenset[str] = frozenset({
 
 @dataclass(frozen=True)
 class SwitchPathLeg:
-    """One low-side switch leg bound to a REGULATOR from a PATH element."""
+    """One low-side switch leg bound to a REGULATOR: a PATH element (an
+    external low-side FET) or a FREEWHEEL diode."""
 
     designator: str
-    kind: str  # "ls_in" | "ls_out"
+    kind: str  # "ls_in" | "ls_out" | "freewheel"
     resistance: float
     p: TerminalSpec
     n: TerminalSpec
@@ -3583,9 +3622,33 @@ class RegulatorSpec(_BaseSpec):
     # FET. Not None also means the cut was relocated onto an external part,
     # which is what makes the element's input draw i_v rather than gain*i_v.
     cut_resistance: float | None = None
+    # Non-synchronous buck (set by finalize_freewheel_diodes): the duty cycle
+    # D = Vout / Vin. The element's own current i_v is then the switch pins'
+    # share, D of the output current; the freewheel leg carries the rest,
+    # (1 - D) / D x i_v, and the input still draws gain x the output current,
+    # i.e. gain / D x i_v (see regulator_input_gain).
+    freewheel_duty: float | None = None
 
 
-DirectiveSpec = SourceSpec | SinkSpec | ResistorSpec | RegulatorSpec | PathSpec
+def regulator_input_gain(d: RegulatorSpec) -> float | None:
+    """The element's input draw as a multiple of its own current ``i_v``,
+    or ``None`` for ``gain`` (the internal-FET case).
+
+    * An external-FET stage moved the element onto the cut part, which
+      carries the whole output current: it draws ``i_v``.
+    * A non-synchronous buck's element carries only the switch pins' share
+      ``D x I_out`` of the output current, so its input draws
+      ``gain x I_out = gain / D x i_v`` - the same input current as without
+      the diode."""
+    if d.cut_resistance is not None:
+        return 1.0
+    if d.freewheel_duty:
+        return d.gain / d.freewheel_duty
+    return None
+
+
+DirectiveSpec = (SourceSpec | SinkSpec | ResistorSpec | RegulatorSpec | PathSpec
+                 | FreewheelSpec)
 
 
 @dataclass
@@ -4303,15 +4366,22 @@ def _parse_sink(comp, proj, enabled_layers, result,
 
 def _parse_two_terminal(comp, proj, enabled_layers, result,
                         net_remap=None, supply_map=None, only_indices=None,
-                        series_graph=None, *, role_raw, spec_factory):
-    """Shared parser for the two-terminal roles (SERIES and PATH).
+                        series_graph=None, *, role_raw, spec_factory,
+                        value_suffix="R", value_rule=None):
+    """Shared parser for the two-terminal roles (SERIES, PATH, FREEWHEEL).
 
-    They differ only in the role label used in diagnostics and in the spec
-    each channel produces, so *spec_factory* builds the spec from the
-    resolved terminals plus that channel's parameters. Keeping one body is
-    the point: the pin filters, auto-inference and multi-channel
-    diagnostics below were duplicated once already.
+    They differ only in the role label used in diagnostics, in the value
+    parameter (``R``; ``DUTY`` for a FREEWHEEL) and in the spec each channel
+    produces, so *spec_factory* builds the spec from the resolved terminals,
+    the channel's ``value`` and its parameters. *value_rule* returns why a
+    value is out of range (``None`` when it is fine); the default asks for a
+    positive resistance. Keeping one body is the point: the pin filters,
+    auto-inference and multi-channel diagnostics below were duplicated once
+    already.
     """
+    if value_rule is None:
+        def value_rule(v):
+            return None if v > 0 else "must be positive"
     role_diag_base = f"{role_raw} on {comp.designator}"
     discovery = _discovery_pdn_params(comp, proj)
     if _has_single_net_params(discovery, only_indices):
@@ -4323,12 +4393,13 @@ def _parse_two_terminal(comp, proj, enabled_layers, result,
     if only_indices is not None:
         indices = list(only_indices)
     else:
-        indices = _discover_channel_indices(discovery, "R")
+        indices = _discover_channel_indices(discovery, value_suffix)
         if not indices:
             _append_error_once(
                 result,
-                f"SERIES on {comp.lookup_designator}: missing PDN_R "
-                f"(or PDN<n>_R for an indexed channel)",
+                f"{role_raw} on {comp.lookup_designator}: missing "
+                f"PDN_{value_suffix} (or PDN<n>_{value_suffix} for an indexed "
+                f"channel)",
             )
             return []
 
@@ -4370,14 +4441,15 @@ def _parse_two_terminal(comp, proj, enabled_layers, result,
             )
             value_diag = role_diag if multi else inst_diag
             r = _require_value(
-                params, _channel_key("R", idx), value_diag, result,
+                params, _channel_key(value_suffix, idx), value_diag, result,
             )
             if r is None:
                 continue
-            if r <= 0:
+            why = value_rule(r)
+            if why is not None:
                 _append_error_once(
                     result,
-                    f"{value_diag}: {_channel_key('R', idx)} must be positive, "
+                    f"{value_diag}: {_channel_key(value_suffix, idx)} {why}, "
                     f"got {r}",
                 )
                 continue
@@ -4432,22 +4504,82 @@ def _parse_two_terminal(comp, proj, enabled_layers, result,
                 continue
             specs.append(spec_factory(
                 designator=pcb_des, schdoc_name=comp.schdoc_name,
-                resistance=r, p=pair[0], n=pair[1], channel_index=idx,
-                params=params,
+                value=r, p=pair[0], n=pair[1], channel_index=idx,
+                params=params, result=result, diag=value_diag,
             ))
     return specs
 
 
-def _resistor_spec_factory(*, params, **kw):
-    return ResistorSpec(**kw)
+def _resistor_spec_factory(*, params, value, result, diag, **kw):
+    vf_key = _channel_key("VF", kw.get("channel_index"))
+    vf = None
+    if _ci_get(params, vf_key) is not None:
+        parsed = _optional_value(params, vf_key, diag, result)
+        if parsed is not None and parsed > 0:
+            vf = parsed
+    curve = _vf_curve(params, _channel_key("VF_CURVE", kw.get("channel_index")), diag,
+                      result) if vf is not None else None
+    return ResistorSpec(resistance=value, forward_v=vf, vf_curve=curve, **kw)
 
 
-def _path_spec_factory(*, params, channel_index, **kw):
+def _vf_curve(params, key: str, diag: str,
+              result: AnnotationResult) -> tuple[tuple[float, float], ...] | None:
+    """A diode's Vf-vs-If curve, "amps:volts;amps:volts...", two points at least."""
+    raw = _ci_get(params, key)
+    if raw is None:
+        return None
+    try:
+        pts = tuple((float(i), float(v)) for i, v in
+                    (p.split(":") for p in str(raw).split(";") if p.strip()))
+    except ValueError:
+        pts = ()
+    if len(pts) < 2 or any(i <= 0 for i, _ in pts):
+        _append_error_once(result, f"{diag}: {key}={raw!r} - expected two or more "
+                                   "amps:volts points with positive currents")
+        return None
+    return pts
+
+
+def _path_spec_factory(*, params, value, channel_index, result, diag, **kw):
     smps_host_raw = _ci_get(params, _channel_key("SMPS_HOST", channel_index))
     return PathSpec(
+        resistance=value,
         channel_index=channel_index,
         smps_host=smps_host_raw.strip() if smps_host_raw else None,
         **kw,
+    )
+
+
+def _freewheel_spec_factory(*, params, value, channel_index, result, diag,
+                            **kw):
+    smps_host_raw = _ci_get(params, _channel_key("SMPS_HOST", channel_index))
+    r_key = _channel_key("R", channel_index)
+    r = 0.0
+    if _ci_get(params, r_key) is not None:
+        parsed = _optional_value(params, r_key, diag, result)
+        if parsed is not None and parsed > 0:
+            r = parsed
+    return FreewheelSpec(
+        duty=value,
+        resistance=r,
+        channel_index=channel_index,
+        smps_host=smps_host_raw.strip() if smps_host_raw else None,
+        **kw,
+    )
+
+
+def _parse_freewheel(comp, proj, enabled_layers, result,
+                     net_remap=None, supply_map=None, only_indices=None,
+                     series_graph=None, **_kw):
+    """Parse ``PDN_ROLE=FREEWHEEL`` channels — a non-synchronous buck's
+    freewheel diode (anode = P, cathode = N, ``PDN_DUTY`` = Vout / Vin)."""
+    return _parse_two_terminal(
+        comp, proj, enabled_layers, result,
+        net_remap=net_remap, supply_map=supply_map,
+        only_indices=only_indices, series_graph=series_graph,
+        role_raw="FREEWHEEL", spec_factory=_freewheel_spec_factory,
+        value_suffix="DUTY",
+        value_rule=lambda d: None if 0.0 < d < 1.0 else "must be between 0 and 1",
     )
 
 
@@ -5246,6 +5378,7 @@ _PARSER_BY_ROLE = {
     "SERIES": _parse_resistance,
     "REGULATOR": _parse_regulator,
     "PATH": _parse_path,
+    "FREEWHEEL": _parse_freewheel,
 }
 
 
@@ -5256,7 +5389,7 @@ def _spec_terminals(d: DirectiveSpec) -> list[TerminalSpec]:
     no N terminal (its return is ideal), so only its P terminal is listed."""
     if isinstance(d, RegulatorSpec):
         return [d.out_p, d.out_n, d.in_p, d.in_n]
-    if isinstance(d, PathSpec):
+    if isinstance(d, (PathSpec, FreewheelSpec)):
         return [d.p, d.n]
     terms: list[TerminalSpec] = [d.p]
     n_term = getattr(d, "n", None)
@@ -5337,7 +5470,8 @@ def _validate_directive_groups(result: AnnotationResult,
             if isinstance(d, (SourceSpec, SinkSpec)) and d.n is not None
         ]
         two.extend(
-            d for d in members if isinstance(d, (RegulatorSpec, PathSpec))
+            d for d in members
+            if isinstance(d, (RegulatorSpec, PathSpec, FreewheelSpec))
         )
         labels = ", ".join(sorted(
             _channel_label(d.designator, getattr(d, "channel_index", None))
@@ -6259,9 +6393,15 @@ def parse_annotations(proj: ExtractedProject,
 
     # External-FET SMPS binding: consume PathSpec directives, emit
     # ResistorSpec bridges and update host RegulatorSpec with switch legs.
-    from fypa.altium.smps_stage import finalize_smps_stages
+    from fypa.altium.smps_stage import (
+        finalize_freewheel_diodes,
+        finalize_smps_stages,
+    )
 
     finalize_smps_stages(result, proj, net_remap=net_remap)
+    # Non-synchronous buck: consume FreewheelSpec directives into a
+    # "freewheel" switch leg on the host regulator.
+    finalize_freewheel_diodes(result, proj, net_remap=net_remap)
 
     # Cross-directive checks (mode consistency, open-loop) + return grouping.
     _validate_directive_groups(result, proj, all_sources)
@@ -6306,6 +6446,10 @@ def _describe_directive(d: DirectiveSpec) -> str:
         host = f", host={d.smps_host}" if d.smps_host else ""
         return head + f"  R={d.resistance:g} Ω{host}\n" + \
             _describe_terminal("P", d.p) + "\n" + _describe_terminal("N", d.n)
+    if isinstance(d, FreewheelSpec):
+        host = f", host={d.smps_host}" if d.smps_host else ""
+        return head + f"  D={d.duty:g}{host}\n" + \
+            _describe_terminal("P", d.p) + "\n" + _describe_terminal("N", d.n)
     if isinstance(d, RegulatorSpec):
         extra = ""
         if d.regulator_type:
@@ -6320,6 +6464,8 @@ def _describe_directive(d: DirectiveSpec) -> str:
             extra += f", {len(d.switch_path_legs)} LS leg(s)"
         if d.cut_resistance is not None:
             extra += f", Rcut={d.cut_resistance:g} Ω"
+        if d.freewheel_duty is not None:
+            extra += f", freewheel D={d.freewheel_duty:g}"
         return head + f"  V={d.voltage:g} V, gain={d.gain:g}{extra}\n" + \
             _describe_terminal("OUT_P", d.out_p) + "\n" + _describe_terminal("OUT_N", d.out_n) + "\n" + \
             _describe_terminal("IN_P", d.in_p) + "\n" + _describe_terminal("IN_N", d.in_n)

@@ -1,3 +1,4 @@
+# Portions Copyright (c) 2026 Tomachie LLC.
 """FYPA loader — orchestrates extract + geometry + annotations.
 
 Public entry: :func:`load_project`. Returns a :class:`LoadedProject` bundle
@@ -40,6 +41,7 @@ from fypa.altium.annotations import (
     TerminalSpec,
     _channel_label,
     parse_annotations,
+    regulator_input_gain,
 )
 from fypa.altium.extract import (
     ExtractedProject,
@@ -57,6 +59,8 @@ from fypa.altium_geometry import (
     build_per_net_geometry_layers_split,
 )
 from pdnsolver import problem as _pp
+
+from fypa.altium import diode_curve as _diode_curve
 
 
 # Via barrel resistance is computed per-via, per-hop from physical geometry:
@@ -938,10 +942,16 @@ def _directive_to_network(
             (d.p, node_a, COUPLING_RESISTANCE_OHM, "P"),
             (d.n, node_b, COUPLING_RESISTANCE_OHM, "N"),
         )
+        if getattr(d, "forward_v", None):
+            # A conducting diode, I = (Va - Vb - Vf) / R: the resistor plus Vf / R
+            # carried back from N to P, with no new solver element.
+            aux.append(_pp.CurrentSource(f=node_b, t=node_a,
+                                         current=d.forward_v / d.resistance))
     elif isinstance(d, RegulatorSpec):
         node_vp, node_vn = _pp.NodeID(), _pp.NodeID()
         node_sf, node_st = _pp.NodeID(), _pp.NodeID()
-        # External-FET LS legs: one NodeID pair per SwitchPathLeg, current
+        # Switch legs (external-FET LS FETs, a non-synchronous buck's
+        # freewheel diode): one NodeID pair per SwitchPathLeg, current
         # coupled to the regulator's i_v with PWM compensation in the stamp.
         switch_leg_nodes: list[tuple[_pp.NodeID, _pp.NodeID, float]] = []
         leg_terminals: list[tuple] = []
@@ -964,11 +974,13 @@ def _directive_to_network(
         # An external-FET stage relocates the cut onto the part that carries
         # the full output current, so the element spans a conductor and its
         # input draws i_v. The conversion ratio lives in the switch legs.
+        # A non-synchronous buck's element carries only the switch pins'
+        # share of the output current; see regulator_input_gain.
         cut_r = getattr(d, "cut_resistance", None)
         element = _pp.VoltageRegulator(
             v_p=node_vp, v_n=node_vn, s_f=node_sf, s_t=node_st,
             voltage=d.voltage, gain=d.gain,
-            input_gain=1.0 if cut_r is not None else None,
+            input_gain=regulator_input_gain(d),
             switch_legs=tuple(switch_leg_nodes),
         )
         # The cut part's own series resistance (inductor DCR, or RDSon for a
@@ -2049,11 +2061,13 @@ def _replace_regulator_gains(
                 legs = d.switch_path_legs
                 if legs and d.smps_topology:
                     ls_in, ls_out = _compute_ls_coeffs(d.smps_topology, gain)
+                    # A freewheel leg's coefficient is set by the duty cycle
+                    # the file states, not by the gain.
                     legs = tuple(
                         dataclasses.replace(
                             leg,
                             coeff=ls_in if leg.kind == "ls_in" else ls_out,
-                        )
+                        ) if leg.kind in ("ls_in", "ls_out") else leg
                         for leg in legs
                     )
                 d = dataclasses.replace(d, gain=gain, switch_path_legs=legs)
@@ -2133,9 +2147,14 @@ def _retune_problem_regulator_gains(problem, loaded) -> bool:
             (f, t, float(sl.coeff))
             for (f, t, _c), sl in zip(elem.switch_legs, spec.switch_path_legs)
         )
-        if elem.gain != spec.gain or new_legs != elem.switch_legs:
+        # A non-synchronous buck's input draw is gain / D x i_v, so it
+        # moves with the gain too.
+        new_input_gain = regulator_input_gain(spec)
+        if (elem.gain != spec.gain or new_legs != elem.switch_legs
+                or elem.input_gain != new_input_gain):
             net.elements[i] = _dc_replace(
                 elem, gain=spec.gain, switch_legs=new_legs,
+                input_gain=new_input_gain,
             )
             changed += 1
     log.debug("Adaptive gain: retuned %d regulator element(s) in place",
@@ -2177,6 +2196,9 @@ def solve_problem_adaptive(
         bool(adaptive_regulator_gain)
         and has_adaptive_smps_regulators(loaded)
     )
+    # Diodes with a Vf-vs-If curve are moved onto it between solves, in the same loop.
+    curves = any(_diode_curve.has_curve(d) for d in loaded.annotations.directives)
+    adaptive_info["diodes"] = {}
     # Full steps until a residual is seen to alternate sign repeatedly — see
     # ``_ADAPTIVE_GAIN_BLEND``. Latches on once tripped: a design that
     # oscillated is not going to stop part-way through.
@@ -2207,7 +2229,7 @@ def solve_problem_adaptive(
             exc.built_per_net_layers = per_net_layers
             raise
 
-    if not use_adaptive:
+    if not use_adaptive and not curves:
         solution = _solve_once(
             f"Meshing + solving ({len(problem.layers)} (layer, net) "
             f"slabs, {len(problem.networks)} networks)…"
@@ -2219,8 +2241,10 @@ def solve_problem_adaptive(
     solution = None
     converged = False
     for iteration in range(_ADAPTIVE_GAIN_MAX_ITERATIONS):
+        what = " + ".join(w for w, on in (("adaptive SMPS gain", use_adaptive),
+                                          ("diode curves", curves)) if on)
         msg = (
-            f"Meshing + solving (adaptive SMPS gain, iteration "
+            f"Meshing + solving ({what}, iteration "
             f"{iteration + 1}/{_ADAPTIVE_GAIN_MAX_ITERATIONS}, "
             f"{len(problem.layers)} slabs)…"
         )
@@ -2228,6 +2252,23 @@ def solve_problem_adaptive(
         # this solution is consistent with those gains.
         solution = _solve_once(msg)
         adaptive_info["iterations"] = iteration + 1
+        # Diodes: their lines onto their curves at the currents just solved, patched
+        # into ``problem`` for the next solve (their specs in ``loaded`` with them).
+        diode_gap = 0.0
+        if curves:
+            diode_gap, adaptive_info["diodes"] = _diode_curve.retune(
+                solution, loaded, getattr(loaded, "diode_networks", {}),
+                lambda d: _channel_label(d.designator, d.channel_index),
+                _sample_voltage_at_pin)
+        if not use_adaptive:
+            if diode_gap < _diode_curve.CURVE_TOL_V:
+                converged = True
+                break
+            if iteration + 1 >= _ADAPTIVE_GAIN_MAX_ITERATIONS:
+                log.warning("Diode curves did not converge within %d iterations",
+                            _ADAPTIVE_GAIN_MAX_ITERATIONS)
+                break
+            continue
 
         # Pass 1 — sample Vin and derive each regulator's undamped target gain.
         targets: dict[tuple[str, int | None], tuple[RegulatorSpec, float | None]] = {}
@@ -2297,7 +2338,7 @@ def solve_problem_adaptive(
             converged = False
             break
 
-        if max_rel_change < _ADAPTIVE_GAIN_REL_TOL:
+        if max_rel_change < _ADAPTIVE_GAIN_REL_TOL and diode_gap < _diode_curve.CURVE_TOL_V:
             # Converged: adopt the refined gains (within tolerance of what the
             # returned solution used, so metadata stays consistent with it).
             _replace_regulator_gains(loaded, new_gains)
@@ -2440,6 +2481,8 @@ def build_solve_metadata(
             "channel_index": ch_idx,
             "label": label,
             "schdoc": d.schdoc_name,
+            "from_pdn_json": (d.designator or "").upper() in getattr(
+                loaded, "pdn_designators", frozenset()),
         }
         if isinstance(d, SourceSpec):
             common["value"] = d.voltage
@@ -2487,6 +2530,8 @@ def build_solve_metadata(
                 common["efficiency"] = d.efficiency
             if getattr(d, "smps_topology", None):
                 common["smps_topology"] = d.smps_topology
+            if getattr(d, "freewheel_duty", None):
+                common["freewheel_duty"] = d.freewheel_duty
             if getattr(d, "switch_path_legs", None):
                 common["switch_path_legs"] = [
                     {
@@ -3948,10 +3993,55 @@ def collect_bridge_candidates(loaded: LoadedProject) -> list[dict]:
             "x_mm": float(anchor.center.x),
             "y_mm": float(anchor.center.y),
             "layer_id": int(anchor.layer_id),
+            "_pair": (pair[0], pair[1]),
         })
 
+    _clear_dead_end_impacts(out, active)
+    for rec in out:
+        del rec["_pair"]
     out.sort(key=lambda r: (not r["impact"], r["designator"]))
     return out
+
+
+def _clear_dead_end_impacts(records: list[dict], active) -> None:
+    """Drop the impact of a bridge whose excluded copper is a dead end.
+
+    Copper left out of the FEM only changes the rail's answer when current
+    can flow through it and back: the excluded nets, joined to one another by
+    unmodelled parts, must reach two or more different solved nets. A filtered
+    branch behind a single ferrite, or resistors from one node to the same
+    ground, carry no parallel current, so leaving them out changes nothing and
+    the row is not an advisory.
+    """
+    parent: dict[int, int] = {}
+
+    def find(n: int) -> int:
+        parent.setdefault(n, n)
+        while parent[n] != n:
+            parent[n] = parent[parent[n]]
+            n = parent[n]
+        return n
+
+    for rec in records:
+        a, b = rec["_pair"]
+        if rec["state"] == "unmodelled" and a not in active and b not in active:
+            parent[find(a)] = find(b)
+    links: dict[int, set] = {}
+    for rec in records:
+        if rec["excluded_net"]:
+            a, b = rec["_pair"]
+            island = find(b if a in active else a)
+            links.setdefault(island, set()).add(a if a in active else b)
+    for rec in records:
+        if not rec["excluded_net"]:
+            continue
+        a, b = rec["_pair"]
+        if len(links[find(b if a in active else a)]) < 2:
+            rec["impact"] = ""
+            rec["excluded_net"] = ""
+            rec["why"] = ("joins a solved rail to a dead-end branch - no "
+                          "current returns through it, so the solve is "
+                          "unchanged")
 
 
 def _flag_unannotated_bridges(loaded: LoadedProject) -> list[str]:
@@ -4600,6 +4690,8 @@ def build_problem(
     # Every SINK is a copper-sensitivity target, keyed by the same label the
     # solve metadata gives it ("U5", "U7#1") so the viewer can match them.
     sensitivity_targets: list[tuple[str, _pp.BaseLumped]] = []
+    # Each diode with a curve's network, so the solve can move it onto its curve.
+    diode_networks: dict[str, _pp.Network] = {}
     for d in loaded.annotations.directives:
         if getattr(d, "solve_excluded", False):
             # Single-type rail (only sources or only sinks) — kept for display
@@ -4614,6 +4706,9 @@ def build_problem(
         if isinstance(d, SinkSpec) and isinstance(
                 net.elements[0], _pp.CurrentSource):
             sensitivity_targets.append((directive_label(d), net.elements[0]))
+        if _diode_curve.has_curve(d):
+            diode_networks[_channel_label(d.designator, d.channel_index)] = net
+    loaded.diode_networks = diode_networks
 
     # Warn when a REGULATOR draws input current from a net that is also
     # downstream of a SERIES element (ferrite bead, inductor DCR, etc.).
@@ -5045,6 +5140,8 @@ def _apply_net_remap(
 def load_project(prjpcb_path: str | Path,
                  pcbdoc_selector: str | Path | None = None,
                  no_auto_bridge: set[str] | None = None,
+                 pdn_json: str | Path | None = None,
+                 pdn_corner: str = "typ",
                  auto_series_max_ohm: float | None = DEFAULT_AUTO_SERIES_MAX_OHM,
                  ) -> LoadedProject:
     """Load and prepare an Altium project for PDN analysis.
@@ -5083,6 +5180,20 @@ def load_project(prjpcb_path: str | Path,
     log.info("Stage 1/2: extract done in %.2fs", time.monotonic() - _t)
     enabled = extracted.enabled_copper_layer_ids()
     log.info("  enabled copper layers: %s", enabled)
+
+    # A Tomachie power-tree file supplies PDN_* parameters for the components
+    # the designer did not annotate (fypa.tomachie_pdn).
+    pdn_notes: list[str] = []
+    pdn_designators: set[str] = set()
+    if pdn_json is not None:
+        from fypa.tomachie_pdn import (apply_to_project, applied_designators,
+                                       read_pdn_for_board)
+        params, pdn_notes = read_pdn_for_board(pdn_json, pdn_corner, extracted)
+        pdn_designators = applied_designators(params, extracted)
+        extracted, more = apply_to_project(extracted, params)
+        pdn_notes = [f"pdn.json: {n}" for n in pdn_notes + more]
+        log.info("  %s: PDN_* parameters for %d component(s), %s corner",
+                 Path(pdn_json).name, len(params), pdn_corner)
 
     log.info("Stage 2/2: parsing PDN_* annotations (pass 1: discover merges)")
     _t = time.monotonic()
@@ -5134,6 +5245,7 @@ def load_project(prjpcb_path: str | Path,
     # WARNING level so they always appear — auto-inferred SERIES nets are
     # particularly important: a component accidentally bridging two wrong
     # nets (e.g. +3V3L → GND) shows up here and causes large phantom currents.
+    annotations.warnings.extend(pdn_notes)
     for w in annotations.warnings:
         log.warning("Annotation: %s", w)
     for e in annotations.errors:
@@ -5141,7 +5253,7 @@ def load_project(prjpcb_path: str | Path,
     for i in getattr(annotations, "infos", []):
         log.info("Annotation: %s", i)
 
-    return LoadedProject(
+    loaded = LoadedProject(
         extracted=extracted,
         annotations=annotations,
         no_auto_bridge_applied=frozenset(
@@ -5155,6 +5267,14 @@ def load_project(prjpcb_path: str | Path,
             if 0 <= old < len(extracted.nets)
         ),
     )
+    # Which Tomachie power-tree file (and corner) this load applied: a cached
+    # load made with another one, or none, has to be rebuilt.
+    loaded.pdn_json_applied = ((str(Path(pdn_json).resolve()), pdn_corner)
+                               if pdn_json is not None else None)
+    # Designators whose directives came from the Tomachie file, so the Setup tab
+    # says where they came from instead of naming a schematic sheet.
+    loaded.pdn_designators = frozenset(pdn_designators)
+    return loaded
 
 
 if __name__ == "__main__":
