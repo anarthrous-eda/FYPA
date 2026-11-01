@@ -268,6 +268,15 @@ def forward_drop(element: dict) -> tuple[float | None, float | None, float, str]
     return drop, vf_max, slope, how
 
 
+def _board_ground(pdn: dict) -> str:
+    """The board's reference ground: the net ``grounds`` marks ``reference``. A file
+    from before revision 7 has no ``grounds``; there it is the first of ``ground_nets``."""
+    for g in pdn.get("grounds") or []:
+        if g.get("kind") == "reference" and g.get("net"):
+            return g["net"]
+    return pdn["ground_nets"][0]
+
+
 class _Channels:
     """Indexed PDN parameters per designator: PDN1_ROLE, PDN1_V, ... PDN2_ROLE ..."""
 
@@ -298,8 +307,10 @@ class TomachiePdn:
         grounds = pdn.get("ground_nets") or []
         if not grounds:
             raise PdnImportError("The file names no ground net")
-        self.gnd = grounds[0]
+        self.gnd = _board_ground(pdn)
         self.grounds = list(grounds)
+        if self.gnd not in self.grounds:
+            self.grounds.insert(0, self.gnd)
         # (regulator, net its input pins sit on, its input rail) - joined on the board
         self.reg_inputs: list[tuple[str, str, str]] = []
         self.rails = {r["name"]: r for r in pdn.get("rails", [])}
@@ -1236,8 +1247,10 @@ class TomachiePdn:
             if ohms is None or len(nets) != 2 or nets[0] == nets[1]:
                 left.append(ref)
                 continue
-            self.ch.add(ref, ("SERIES", nets[0], nets[1]), {
-                "ROLE": "SERIES", "R": f"{ohms:g}", "P_NET": nets[0], "N_NET": nets[1]})
+            # No P_NET / N_NET: an open is no power path, and a stated direction would
+            # give the net on its N side a second upstream for an input-voltage search.
+            # The two nets are read from the footprint's pads on the PCB.
+            self.ch.add(ref, ("SERIES", nets[0], nets[1]), {"ROLE": "SERIES", "R": f"{ohms:g}"})
             opened.append(ref)
         if opened:
             self.notes.append(f"Not fitted, solved as open ({NOT_FITTED_OHMS:g} Ohm): "

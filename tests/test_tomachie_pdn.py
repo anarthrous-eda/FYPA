@@ -677,7 +677,7 @@ def test_a_part_not_fitted_is_an_open():
         {"refdes": "U9", "class": "device", "value": "", "nets": ["+3V3", "GND", "SIG"],
          "basis": "variant"}]
     p, notes = params(pdn=pdn)
-    assert (p["R9"]["PDN1_ROLE"], p["R9"]["PDN1_R"]) == ("SERIES", "5e+08")
+    assert p["R9"] == {"PDN1_ROLE": "SERIES", "PDN1_R": "5e+08"}
     assert "C9" not in p and "U9" not in p
     assert any("Not fitted, left out: C9, U9" in n for n in notes)
 
@@ -905,3 +905,20 @@ def test_an_led_a_driver_sinks_returns_at_the_drivers_ground_pins():
          "driver": {"refdes": "U4", "supply_pins": [], "return_pins": ["U4_9"]}})
     p, _ = params(pdn=pdn)
     assert (p["J6"]["PDN1_N_DES"], p["J6"]["PDN1_N_PINS"]) == ("U4", "9")
+
+
+def test_the_board_ground_is_the_reference_ground_wherever_it_sits_in_the_list():
+    pdn = copy.deepcopy(PDN)
+    pdn["ground_nets"] = ["SHLD", "GND", "V-"]
+    pdn["grounds"] = [{"net": "GND", "kind": "reference", "connections": []},
+                      {"net": "SHLD", "kind": "shield", "connections": []},
+                      {"net": "V-", "kind": "ground", "connections": []}]
+    p, _ = params(pdn=pdn)
+    assert p["J1"]["PDN1_N_NET"] == "GND"
+
+
+def test_a_file_with_no_grounds_list_takes_the_first_ground_net():
+    pdn = copy.deepcopy(PDN)
+    pdn["ground_nets"] = ["GND", "V-"]
+    p, _ = params(pdn=pdn)
+    assert p["J1"]["PDN1_N_NET"] == "GND"
