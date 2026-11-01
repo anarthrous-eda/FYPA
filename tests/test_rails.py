@@ -247,3 +247,17 @@ def test_rail_groups_prefer_source_rail_over_bridged_led_nets():
     assert "LED_R" in members["VDD_3V3_PWR"]
     assert "VDD_3V3_PWR" in members["VDD_3V3_PWR"]
     assert members["VDD_1V8"] == ["VDD_1V8"]
+
+
+def test_rail_groups_do_not_cross_an_open():
+    def series(a, b, **extra):
+        return {"role": "RESISTOR", "terminals": {
+            "P": {"pins": [{"net": a}]}, "N": {"pins": [{"net": b}]}}, **extra}
+
+    def sink(net):
+        return {"role": "SINK", "terminals": {"P": {"requested_net": net, "pins": [{"net": net}]}}}
+
+    metadata = {"directives": [sink("A"), sink("B"), sink("C"),
+                               series("A", "B"), series("B", "C", is_open=True)]}
+    _, groups = compute_rail_groups(metadata)
+    assert sorted(groups.values()) == [["A", "B"], ["C"]]

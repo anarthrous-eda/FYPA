@@ -30,6 +30,7 @@ import shapely.geometry
 import shapely.strtree
 
 from fypa.altium.annotations import (
+    OPEN_SERIES_OHMS,
     DEFAULT_AUTO_SERIES_MAX_OHM,
     AnnotationResult,
     DirectiveSpec,
@@ -2509,6 +2510,7 @@ def build_solve_metadata(
             common["value"] = d.resistance
             common["unit"] = "Ohm"
             common["value_str"] = f"{d.resistance * 1000:.4g} mOhm"
+            common["is_open"] = d.resistance >= OPEN_SERIES_OHMS
             common["terminals"] = {
                 "P": _terminal_summary(d.p, nets),
                 "N": _terminal_summary(d.n, nets),
@@ -4513,6 +4515,21 @@ def build_problem(
                 for k in range(start + 1, end):
                     _union(base, int(ti[k]))
                 start = end
+
+        for bridge in loaded.absorbed_bridges:
+            if bridge.canonical_net_index != ni:
+                continue
+            ends = [
+                next((i for i, (lid, _, piece) in enumerate(pieces)
+                      if lid == end_layer
+                      and piece.intersects(shapely.geometry.Point(x, y))), None)
+                for end_layer, x, y in (
+                    (bridge.p_layer_id, bridge.p_x_mm, bridge.p_y_mm),
+                    (bridge.n_layer_id, bridge.n_x_mm, bridge.n_y_mm),
+                )
+            ]
+            if None not in ends:
+                _union(*ends)
 
         # Group into components.
         components: dict[int, list[int]] = {}

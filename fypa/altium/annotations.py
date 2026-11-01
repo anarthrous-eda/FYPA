@@ -300,6 +300,7 @@ NET_TIE_BRIDGE_RESISTANCE_OHM: float = 0.5e-3
 # unless the value is also under the loader's 0.9 mΩ merge threshold. Per
 # project (``ProjectFile.auto_series_max_ohm``); 0 turns it off.
 DEFAULT_AUTO_SERIES_MAX_OHM: float = 0.1
+OPEN_SERIES_OHMS: float = 1e8
 
 # A resistor value written in ohms and nothing else: "5m", "5mR", "5 mΩ",
 # "0.005", "0R005", "5E-3", "10 mOhm". Anything with another unit ("500mA",

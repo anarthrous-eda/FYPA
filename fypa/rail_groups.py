@@ -178,7 +178,7 @@ def resistor_bridge_pairs(directive: dict) -> list[tuple[str, str]]:
     with no resolved pins, a three-terminal part — cannot leave the three
     disagreeing about which nets are bridged.
     """
-    if directive.get("role") != "RESISTOR":
+    if directive.get("role") != "RESISTOR" or directive.get("is_open"):
         return []
     terms = directive.get("terminals") or {}
     nets_per_term: list[set[str]] = []
