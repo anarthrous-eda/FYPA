@@ -1088,8 +1088,8 @@ class _FileMenuMixin:
                 for d in (getattr(getattr(self, "_project", None),
                                   "no_auto_bridge", []) or [])
             },
-            pdn_json=_tomachie_pdn_choice(self)[0],
-            pdn_corner=_tomachie_pdn_choice(self)[1],
+            pdn_json=_tomachie_pdn_choice(self, prjpcb_path)[0],
+            pdn_corner=_tomachie_pdn_choice(self, prjpcb_path)[1],
             auto_series_max_ohm=getattr(
                 getattr(self, "_project", None), "auto_series_max_ohm", None),
             parent=self,

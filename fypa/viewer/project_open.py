@@ -335,7 +335,7 @@ def _start_launcher_altium_solve(
     adaptive = _consume_cli_adaptive_flag(window)
 
     from fypa.viewer.tomachie_menu import pdn_choice
-    pdn_json, pdn_corner = pdn_choice(window)
+    pdn_json, pdn_corner = pdn_choice(window, prjpcb_path)
     worker = _SolveWorker(
         prjpcb_path, settings,
         pcbdoc_selector=str(pcbdoc_path) if pcbdoc_path else None,
@@ -406,7 +406,8 @@ def _schedule_cli_altium_import(window, target: dict) -> None:
     if target.get("pdn_json"):
         # The power tree the import loads (what Tomachie > Use pdn.json would set).
         window._tomachie_pdn = (Path(target["pdn_json"]).resolve(),
-                                target.get("pdn_corner") or "typ")
+                                target.get("pdn_corner") or "typ",
+                                Path(target["prjpcb_path"]))
     pcbdoc = target.get("pcbdoc_path")
     window._cli_import_pending = True
     _open_altium_project_at(

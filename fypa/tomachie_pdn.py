@@ -126,7 +126,13 @@ def _curve(element: dict) -> dict | None:
 
 def curve_points(element: dict) -> list[tuple[float, float]] | None:
     curve = _curve(element)
-    return None if curve is None else [(float(i), float(v)) for i, v in curve["points"]]
+    if curve is None:
+        return None
+    pts: dict[float, float] = {}
+    for i, v in curve["points"]:
+        if float(i) > 0:
+            pts.setdefault(float(f"{float(i):g}"), float(v))
+    return sorted(pts.items()) if len(pts) >= 2 else None
 
 
 def _curve_fit(element: dict) -> tuple[float, float, str] | None:
@@ -282,11 +288,11 @@ class TomachiePdn:
 
     def _sources(self):
         for name, r in self.rails.items():
-            src = r["source"]
+            src = r.get("source") or {}
             v = self._source_volts(r)
-            if src["role"] == "unresolved":
+            if src.get("role") == "unresolved":
                 self.notes.append(f"Rail {name}: no source traced in the schematic")
-            elif src["role"] in SOURCE_ROLES:
+            elif src.get("role") in SOURCE_ROLES:
                 if v is None or not src.get("pins"):
                     self.notes.append(f"Rail {name}: source {src.get('refdes')} has no stated "
                                       "voltage or pins; no SOURCE")
@@ -410,8 +416,8 @@ class TomachiePdn:
 
     def _regulators(self):
         for name, r in self.rails.items():
-            src = r["source"]
-            if src["role"] != "regulator":
+            src = r.get("source") or {}
+            if src.get("role") != "regulator":
                 continue
             reg = self.regs.get(src.get("refdes", ""))
             if reg is not None and reg.get("type") == "load_switch":

@@ -26,10 +26,15 @@ from pdnsolver import problem as _pp
 MIN_SLOPE_OHM = 1e-3
 # Converged when every diode's line is within this of its curve at its current.
 CURVE_TOL_V = 1e-4
+OFF_OHM = 1e6
 
 
 def _points(curve: Sequence[Sequence[float]]) -> list[tuple[float, float]]:
-    return sorted((float(i), float(v)) for i, v in curve if float(i) > 0)
+    pts: dict[float, float] = {}
+    for i, v in curve:
+        if float(i) > 0:
+            pts.setdefault(float(i), float(v))
+    return sorted(pts.items())
 
 
 def _segment(pts: list[tuple[float, float]], amps: float) -> int:
@@ -89,33 +94,70 @@ def _patch(network: _pp.Network, spec) -> bool:
     return False
 
 
-def retune(solution, loaded, networks: dict, label: Callable,
-           sample: Callable) -> tuple[float, dict]:
-    """Move each curve diode's line onto its curve's tangent at the current it carried
-    in ``solution``: its spec in ``loaded`` and its elements in ``networks`` (label ->
-    network). Returns (the largest gap between a line and its curve at its current,
-    volts; {label: (amps, volts on the curve)})."""
-    gap, solved = 0.0, {}
-    updated = []
-    for d in loaded.annotations.directives:
-        net = networks.get(label(d)) if has_curve(d) else None
+def is_diode(d) -> bool:
+    return bool(getattr(d, "forward_v", None))
+
+
+def _on_specs(loaded) -> dict:
+    return loaded.__dict__.setdefault("diode_on_specs", {})
+
+
+def assess(solution, loaded, networks: dict, label: Callable,
+           sample: Callable) -> tuple[float, dict, list]:
+    gap, solved, moves = 0.0, {}, []
+    on_specs = _on_specs(loaded)
+    for n, d in enumerate(loaded.annotations.directives):
+        net = networks.get(label(d)) if is_diode(d) else None
         if net is None:
-            updated.append(d)
             continue
         vp = _mean([sample(solution, loaded, p) for p in d.p.pins])
         vn = _mean([sample(solution, loaded, p) for p in d.n.pins])
-        amps = None if vp is None or vn is None else (vp - vn - d.forward_v) / d.resistance
-        if amps is None or not amps > 0:
-            updated.append(d)              # not conducting, or not sampled: as it is
+        if vp is None or vn is None:
+            continue
+        key = label(d)
+        volts = vp - vn
+        if key in on_specs:
+            on = on_specs[key]
+            if volts - on.forward_v > CURVE_TOL_V:
+                gap = max(gap, volts - on.forward_v)
+                moves.append((n, net, on, key, True))
+            continue
+        if volts - d.forward_v < -CURVE_TOL_V:
+            gap = max(gap, d.forward_v - volts)
+            moves.append((n, net, dataclasses.replace(d, resistance=OFF_OHM), key, False))
+            continue
+        amps = (volts - d.forward_v) / d.resistance
+        if not has_curve(d) or not amps > 0:
             continue
         on_curve = curve_volts(d.vf_curve, amps)
         gap = max(gap, abs(on_curve - (d.forward_v + d.resistance * amps)))
         vf, r = tangent(d.vf_curve, amps)
-        new = dataclasses.replace(d, forward_v=max(vf, 0.0) or 1e-6, resistance=r)
+        solved[key] = (amps, on_curve)
+        moves.append((n, net, dataclasses.replace(d, forward_v=max(vf, 0.0) or 1e-6,
+                                                  resistance=r), key, None))
+    return gap, solved, moves
+
+
+def advance(loaded, moves: list) -> None:
+    on_specs = _on_specs(loaded)
+    directives = list(loaded.annotations.directives)
+    for n, net, new, key, turn_on in moves:
         if not _patch(net, new):
-            updated.append(d)
             continue
-        solved[label(d)] = (amps, on_curve)
-        updated.append(new)
-    loaded.annotations.directives = updated
+        if turn_on is False:
+            on_specs[key] = directives[n]
+        elif turn_on is True:
+            on_specs.pop(key, None)
+        directives[n] = new
+    loaded.annotations.directives = directives
+
+
+def off(loaded) -> list[str]:
+    return sorted(loaded.__dict__.get("diode_on_specs", {}))
+
+
+def retune(solution, loaded, networks: dict, label: Callable,
+           sample: Callable) -> tuple[float, dict]:
+    gap, solved, moves = assess(solution, loaded, networks, label, sample)
+    advance(loaded, moves)
     return gap, solved

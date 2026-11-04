@@ -4530,13 +4530,17 @@ def _vf_curve(params, key: str, diag: str,
     if raw is None:
         return None
     try:
-        pts = tuple((float(i), float(v)) for i, v in
-                    (p.split(":") for p in str(raw).split(";") if p.strip()))
+        read = [(float(i), float(v)) for i, v in
+                (p.split(":") for p in str(raw).split(";") if p.strip())]
     except ValueError:
-        pts = ()
+        read = []
+    by_current: dict[float, float] = {}
+    for i, v in read:
+        by_current.setdefault(i, v)
+    pts = tuple(sorted(by_current.items()))
     if len(pts) < 2 or any(i <= 0 for i, _ in pts):
         _append_error_once(result, f"{diag}: {key}={raw!r} - expected two or more "
-                                   "amps:volts points with positive currents")
+                                   "amps:volts points with positive, distinct currents")
         return None
     return pts
 

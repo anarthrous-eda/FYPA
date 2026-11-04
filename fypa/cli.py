@@ -807,9 +807,23 @@ def _settings_fingerprint(settings=None) -> dict:
     return {k: raw[k] for k in sorted(raw)}
 
 
+def _pdn_fingerprint(pdn_json, pdn_corner: str | None) -> dict | None:
+    if not pdn_json:
+        return None
+    path = Path(pdn_json)
+    try:
+        digest = hashlib.sha1(path.read_bytes()).hexdigest()
+    except OSError:
+        digest = None
+    return {"path": str(path.resolve()), "sha1": digest,
+            "corner": pdn_corner or "typ"}
+
+
 def _project_fingerprint(prjpcb_path: Path,
                          pcbdoc_path: Path | None = None,
-                         settings=None) -> dict:
+                         settings=None,
+                         pdn_json=None,
+                         pdn_corner: str | None = None) -> dict:
     """Fingerprint for the cached solve (solve.pkl).
 
     Includes everything: project files + all tool source hashes + the
@@ -823,6 +837,7 @@ def _project_fingerprint(prjpcb_path: Path,
         "tool_source_hashes": _tool_source_hashes(_CACHE_TOOL_SOURCES),
         "pcbdoc_path": str(pcbdoc_path.resolve()) if pcbdoc_path else None,
         "solve_settings": _settings_fingerprint(settings),
+        "pdn_json": _pdn_fingerprint(pdn_json, pdn_corner),
     }
 
 

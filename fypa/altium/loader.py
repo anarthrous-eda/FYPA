@@ -2197,8 +2197,7 @@ def solve_problem_adaptive(
         bool(adaptive_regulator_gain)
         and has_adaptive_smps_regulators(loaded)
     )
-    # Diodes with a Vf-vs-If curve are moved onto it between solves, in the same loop.
-    curves = any(_diode_curve.has_curve(d) for d in loaded.annotations.directives)
+    curves = any(_diode_curve.is_diode(d) for d in loaded.annotations.directives)
     adaptive_info["diodes"] = {}
     # Full steps until a residual is seen to alternate sign repeatedly — see
     # ``_ADAPTIVE_GAIN_BLEND``. Latches on once tripped: a design that
@@ -2243,7 +2242,7 @@ def solve_problem_adaptive(
     converged = False
     for iteration in range(_ADAPTIVE_GAIN_MAX_ITERATIONS):
         what = " + ".join(w for w, on in (("adaptive SMPS gain", use_adaptive),
-                                          ("diode curves", curves)) if on)
+                                          ("diodes", curves)) if on)
         msg = (
             f"Meshing + solving ({what}, iteration "
             f"{iteration + 1}/{_ADAPTIVE_GAIN_MAX_ITERATIONS}, "
@@ -2255,9 +2254,9 @@ def solve_problem_adaptive(
         adaptive_info["iterations"] = iteration + 1
         # Diodes: their lines onto their curves at the currents just solved, patched
         # into ``problem`` for the next solve (their specs in ``loaded`` with them).
-        diode_gap = 0.0
+        diode_gap, diode_moves = 0.0, []
         if curves:
-            diode_gap, adaptive_info["diodes"] = _diode_curve.retune(
+            diode_gap, adaptive_info["diodes"], diode_moves = _diode_curve.assess(
                 solution, loaded, getattr(loaded, "diode_networks", {}),
                 lambda d: _channel_label(d.designator, d.channel_index),
                 _sample_voltage_at_pin)
@@ -2266,9 +2265,10 @@ def solve_problem_adaptive(
                 converged = True
                 break
             if iteration + 1 >= _ADAPTIVE_GAIN_MAX_ITERATIONS:
-                log.warning("Diode curves did not converge within %d iterations",
+                log.warning("Diodes did not converge within %d iterations",
                             _ADAPTIVE_GAIN_MAX_ITERATIONS)
                 break
+            _diode_curve.advance(loaded, diode_moves)
             continue
 
         # Pass 1 — sample Vin and derive each regulator's undamped target gain.
@@ -2362,12 +2362,16 @@ def solve_problem_adaptive(
         # rebuilding it — see _retune_problem_regulator_gains. The rebuild is
         # kept as the fallback for any case that function declines.
         _replace_regulator_gains(loaded, new_gains)
+        _diode_curve.advance(loaded, diode_moves)
         if not _retune_problem_regulator_gains(problem, loaded):
             problem, via_segment_records, stub_pieces_by_pair, per_net_layers = (
                 build_problem(loaded)
             )
 
     adaptive_info["converged"] = converged
+    adaptive_info["diodes_open"] = _diode_curve.off(loaded)
+    for name in adaptive_info["diodes_open"]:
+        log.warning("Diode %s is reverse-biased: solved as open", name)
     # Report the gains the returned solution was actually solved with — i.e.
     # the gains now held in ``loaded`` (advanced only alongside a resolve, or
     # on convergence to the refined-but-within-tolerance values).
@@ -4723,7 +4727,7 @@ def build_problem(
         if isinstance(d, SinkSpec) and isinstance(
                 net.elements[0], _pp.CurrentSource):
             sensitivity_targets.append((directive_label(d), net.elements[0]))
-        if _diode_curve.has_curve(d):
+        if _diode_curve.is_diode(d):
             diode_networks[_channel_label(d.designator, d.channel_index)] = net
     loaded.diode_networks = diode_networks
 
@@ -5205,12 +5209,18 @@ def load_project(prjpcb_path: str | Path,
     if pdn_json is not None:
         from fypa.tomachie_pdn import (apply_to_project, applied_designators,
                                        read_pdn_for_board)
-        params, pdn_notes = read_pdn_for_board(pdn_json, pdn_corner, extracted)
-        pdn_designators = applied_designators(params, extracted)
-        extracted, more = apply_to_project(extracted, params)
-        pdn_notes = [f"pdn.json: {n}" for n in pdn_notes + more]
-        log.info("  %s: PDN_* parameters for %d component(s), %s corner",
-                 Path(pdn_json).name, len(params), pdn_corner)
+        try:
+            params, pdn_notes = read_pdn_for_board(pdn_json, pdn_corner, extracted)
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            pdn_notes = [f"pdn.json: {Path(pdn_json).name} not applied "
+                         f"({type(e).__name__}: {e}); the design is loaded without it"]
+            log.warning("  %s", pdn_notes[0])
+        else:
+            pdn_designators = applied_designators(params, extracted)
+            extracted, more = apply_to_project(extracted, params)
+            pdn_notes = [f"pdn.json: {n}" for n in pdn_notes + more]
+            log.info("  %s: PDN_* parameters for %d component(s), %s corner",
+                     Path(pdn_json).name, len(params), pdn_corner)
 
     log.info("Stage 2/2: parsing PDN_* annotations (pass 1: discover merges)")
     _t = time.monotonic()

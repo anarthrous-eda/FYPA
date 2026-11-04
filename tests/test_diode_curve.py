@@ -84,12 +84,49 @@ def test_the_line_moves_onto_the_curve_at_the_current_the_diode_carries():
     assert net.elements[1].current == pytest.approx(d.forward_v / d.resistance)
 
 
-def test_a_diode_carrying_nothing_is_left_as_it_is():
+def test_a_diode_below_its_forward_drop_is_left_as_it_is():
     loaded = _Loaded(_Annotations([_diode()]))
     before = loaded.annotations.directives[0]
     gap, solved = dc.retune(None, loaded, {"D2": _network(before)}, lambda d: d.designator,
-                            lambda _s, _l, _p: 5.0)
+                            lambda _s, _l, p: 5.0 + (before.forward_v - 5e-5 if p.name == "A" else 0))
     assert (gap, solved, loaded.annotations.directives[0]) == (0.0, {}, before)
+
+
+def test_a_reverse_biased_diode_is_opened_and_closed_again():
+    loaded = _Loaded(_Annotations([_diode()]))
+    before = loaded.annotations.directives[0]
+    net = _network(before)
+    volts = {"A": 5.0, "K": 5.0}
+    sample = lambda _s, _l, p: volts[p.name]
+    gap, _ = dc.retune(None, loaded, {"D2": net}, lambda d: d.designator, sample)
+    assert gap > dc.CURVE_TOL_V and dc.off(loaded) == ["D2"]
+    assert net.elements[0].resistance == dc.OFF_OHM
+    assert abs(net.elements[1].current) < 1e-5
+    volts["A"] = 6.0
+    gap, _ = dc.retune(None, loaded, {"D2": net}, lambda d: d.designator, sample)
+    assert gap > dc.CURVE_TOL_V and dc.off(loaded) == []
+    assert loaded.annotations.directives[0] == before
+    assert net.elements[0].resistance == before.resistance
+
+
+def test_assess_changes_nothing_until_advanced():
+    loaded = _Loaded(_Annotations([_diode()]))
+    before = loaded.annotations.directives[0]
+    net = _network(before)
+    sample = lambda _s, _l, p: 12.0 if p.name == "A" else 11.0
+    gap, _, moves = dc.assess(None, loaded, {"D2": net}, lambda d: d.designator, sample)
+    assert gap > dc.CURVE_TOL_V and moves
+    assert loaded.annotations.directives[0] == before
+    assert net.elements[0].resistance == before.resistance
+    dc.advance(loaded, moves)
+    assert loaded.annotations.directives[0] != before
+
+
+def test_points_at_one_current_or_at_zero_do_not_break_the_curve():
+    curve = ((0.0, 0.0), (0.1, 0.3), (0.1, 0.31), (1.0, 0.45))
+    assert dc.curve_volts(curve, 0.1) == pytest.approx(0.3)
+    vf, r = dc.tangent(curve, 0.05)
+    assert r > 0 and vf + r * 0.05 == pytest.approx(dc.curve_volts(curve, 0.05))
 
 
 def _factory(value_params):
@@ -104,6 +141,10 @@ def test_the_series_directive_carries_the_curve():
     spec, result = _factory({"PDN1_VF": "0.684", "PDN1_VF_CURVE": "0.01:0.3484;1:0.6083"})
     assert spec.vf_curve == ((0.01, 0.3484), (1.0, 0.6083)) and not result.errors
     spec, result = _factory({"PDN1_VF": "0.684", "PDN1_VF_CURVE": "0.01:0.3484"})
+    assert spec.vf_curve is None and result.errors
+    spec, result = _factory({"PDN1_VF": "0.684", "PDN1_VF_CURVE": "0.1:0.3;0.1:0.31;1:0.45"})
+    assert spec.vf_curve == ((0.1, 0.3), (1.0, 0.45)) and not result.errors
+    spec, result = _factory({"PDN1_VF": "0.684", "PDN1_VF_CURVE": "0.1:0.3;0.1:0.31"})
     assert spec.vf_curve is None and result.errors
 
 
@@ -125,3 +166,11 @@ def test_the_reader_writes_the_curve_lifted_in_the_worst_case():
            for x in worst["D1"]["PDN1_VF_CURVE"].split(";")]
     assert lift > 0 and pts[4][1] == pytest.approx(CURVE[4][1] + lift, abs=1e-4)
     assert any("solved on its Vf-vs-If curve (TJ=25°C)" in n for n in notes)
+
+
+def test_the_reader_drops_a_point_at_zero_and_repeated_currents():
+    from fypa.tomachie_pdn import curve_points
+    element = {"vf_curves": [{"label": "TJ=25°C",
+                              "points": [[0, 0], [0.1, 0.3], [0.1000001, 0.31], [1, 0.45]]}]}
+    assert curve_points(element) == [(0.1, 0.3), (1.0, 0.45)]
+    assert curve_points({"vf_curves": [{"points": [[0, 0], [1, 0.45]]}]}) is None

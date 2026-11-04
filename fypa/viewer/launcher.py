@@ -552,6 +552,7 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
                 f"{type(e).__name__}: {e}",
             )
             return None
+        new_win._tomachie_pdn = getattr(self, "_tomachie_pdn", None)
         if project is not None and getattr(project, "editor_directives", None):
             new_win._set_solve_stale(True)
         elif (loaded_project is not None

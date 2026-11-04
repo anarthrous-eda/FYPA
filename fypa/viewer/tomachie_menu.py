@@ -28,13 +28,25 @@ CORNERS = {"Typical currents and resistances": "typ",
            "Worst case (maximum currents and resistances)": "max"}
 
 
-def pdn_choice(window) -> tuple[Path | None, str]:
-    """The pdn.json (and corner) the next solve on ``window`` loads, if any."""
+def _same_file(a, b) -> bool:
+    return a is not None and b is not None and Path(a).resolve() == Path(b).resolve()
+
+
+def pdn_choice(window, prjpcb=None) -> tuple[Path | None, str]:
+    """The pdn.json (and corner) the next solve of ``prjpcb`` on ``window`` loads, if any."""
+    if prjpcb is None:
+        prjpcb = _prjpcb_of(window)
     chosen = getattr(window, "_tomachie_pdn", None)
     if chosen:
-        return chosen
+        path, corner, for_prjpcb = chosen
+        if _same_file(for_prjpcb, prjpcb):
+            return path, corner
+        window._tomachie_pdn = None
     project = getattr(window, "_project", None)
     path = getattr(project, "pdn_json", None)
+    project_prjpcb = getattr(project, "prjpcb_path", None)
+    if path and project_prjpcb and prjpcb is not None and not _same_file(project_prjpcb, prjpcb):
+        path = None
     return (Path(path) if path else None), getattr(project, "pdn_corner", "typ") or "typ"
 
 
@@ -133,7 +145,7 @@ def on_load_tomachie_pdn(window) -> None:
     prj = open_prj or _project_for(window, pdn_path, pdn)
     if prj is None or not _confirm_project(window, pdn_path, pdn, prj):
         return
-    window._tomachie_pdn = (pdn_path, corner)
+    window._tomachie_pdn = (pdn_path, corner, prj)
     project = getattr(window, "_project", None)
     if project is not None and hasattr(project, "pdn_json"):
         project.pdn_json, project.pdn_corner = str(pdn_path), corner
