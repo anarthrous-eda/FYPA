@@ -3530,6 +3530,8 @@ class ResistorSpec(_BaseSpec):
     # Its datasheet Vf-vs-If curve (PDN_VF_CURVE, "amps:volts;amps:volts..."): the solve
     # moves the line onto the curve at the current it carries (fypa.altium.diode_curve).
     vf_curve: tuple[tuple[float, float], ...] | None = None
+    # A diode the solve found reverse-biased: stamped open, with no Vf / R current.
+    reverse_open: bool = False
     # Non-None when FYPA modelled an unannotated low-value resistor on its own
     # (see DEFAULT_AUTO_SERIES_MAX_OHM); the text says why.
     auto_reason: str | None = None

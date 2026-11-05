@@ -79,6 +79,13 @@ def _mean(values: list) -> float | None:
     return sum(values) / len(values) if values else None
 
 
+def stamp_current(spec) -> float:
+    """The Vf / R current carried back across a diode's resistor; none when it is open."""
+    if getattr(spec, "reverse_open", False):
+        return 0.0
+    return spec.forward_v / spec.resistance
+
+
 def _patch(network: _pp.Network, spec) -> bool:
     """Put the spec's resistance and forward drop into its built network: the main
     resistor (first element) and the current source carrying Vf / R back across it."""
@@ -87,8 +94,7 @@ def _patch(network: _pp.Network, spec) -> bool:
         return False
     for n, e in enumerate(network.elements):
         if isinstance(e, _pp.CurrentSource) and e.f is main.b and e.t is main.a:
-            network.elements[n] = dataclasses.replace(
-                e, current=spec.forward_v / spec.resistance)
+            network.elements[n] = dataclasses.replace(e, current=stamp_current(spec))
             network.elements[0] = dataclasses.replace(main, resistance=spec.resistance)
             return True
     return False
@@ -124,7 +130,8 @@ def assess(solution, loaded, networks: dict, label: Callable,
             continue
         if volts - d.forward_v < -CURVE_TOL_V:
             gap = max(gap, d.forward_v - volts)
-            moves.append((n, net, dataclasses.replace(d, resistance=OFF_OHM), key, False))
+            moves.append((n, net, dataclasses.replace(d, resistance=OFF_OHM,
+                                                         reverse_open=True), key, False))
             continue
         amps = (volts - d.forward_v) / d.resistance
         if not has_curve(d) or not amps > 0:

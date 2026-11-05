@@ -101,12 +101,26 @@ def test_a_reverse_biased_diode_is_opened_and_closed_again():
     gap, _ = dc.retune(None, loaded, {"D2": net}, lambda d: d.designator, sample)
     assert gap > dc.CURVE_TOL_V and dc.off(loaded) == ["D2"]
     assert net.elements[0].resistance == dc.OFF_OHM
-    assert abs(net.elements[1].current) < 1e-5
+    assert net.elements[1].current == 0.0
     volts["A"] = 6.0
     gap, _ = dc.retune(None, loaded, {"D2": net}, lambda d: d.designator, sample)
     assert gap > dc.CURVE_TOL_V and dc.off(loaded) == []
     assert loaded.annotations.directives[0] == before
     assert net.elements[0].resistance == before.resistance
+
+
+def test_an_open_diode_is_a_warning_the_next_solve_replaces():
+    from fypa.altium.loader import _report_open_diodes
+    loaded = _Loaded(AnnotationResult())
+    loaded.annotations.warnings.append("another warning")
+    _report_open_diodes(loaded, ["D2"])
+    _report_open_diodes(loaded, ["D2", "D3"])
+    assert loaded.annotations.warnings == [
+        "another warning",
+        "Diode D2 is reverse-biased: solved as open (no current through it)",
+        "Diode D3 is reverse-biased: solved as open (no current through it)"]
+    _report_open_diodes(loaded, [])
+    assert loaded.annotations.warnings == ["another warning"]
 
 
 def test_assess_changes_nothing_until_advanced():

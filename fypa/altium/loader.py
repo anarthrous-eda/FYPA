@@ -947,7 +947,7 @@ def _directive_to_network(
             # A conducting diode, I = (Va - Vb - Vf) / R: the resistor plus Vf / R
             # carried back from N to P, with no new solver element.
             aux.append(_pp.CurrentSource(f=node_b, t=node_a,
-                                         current=d.forward_v / d.resistance))
+                                         current=_diode_curve.stamp_current(d)))
     elif isinstance(d, RegulatorSpec):
         node_vp, node_vn = _pp.NodeID(), _pp.NodeID()
         node_sf, node_st = _pp.NodeID(), _pp.NodeID()
@@ -2163,6 +2163,22 @@ def _retune_problem_regulator_gains(problem, loaded) -> bool:
     return True
 
 
+def _report_open_diodes(loaded: LoadedProject, names: list[str]) -> None:
+    """One warning per diode solved as open, in ``loaded.annotations.warnings`` (the
+    viewer's warning list). This solve's warnings replace the previous solve's, since the
+    viewer hands the same LoadedProject back on every Resolve."""
+    notes = [f"Diode {n} is reverse-biased: solved as open (no current through it)"
+             for n in names]
+    annotations = loaded.annotations
+    prev = set(getattr(annotations, "open_diode_warnings", []))
+    if prev:
+        annotations.warnings = [w for w in annotations.warnings if w not in prev]
+    annotations.open_diode_warnings = notes
+    annotations.warnings.extend(notes)
+    for w in notes:
+        log.warning("%s", w)
+
+
 def solve_problem_adaptive(
     loaded: LoadedProject,
     mesher_config,
@@ -2370,8 +2386,7 @@ def solve_problem_adaptive(
 
     adaptive_info["converged"] = converged
     adaptive_info["diodes_open"] = _diode_curve.off(loaded)
-    for name in adaptive_info["diodes_open"]:
-        log.warning("Diode %s is reverse-biased: solved as open", name)
+    _report_open_diodes(loaded, adaptive_info["diodes_open"])
     # Report the gains the returned solution was actually solved with — i.e.
     # the gains now held in ``loaded`` (advanced only alongside a resolve, or
     # on convergence to the refined-but-within-tolerance values).
