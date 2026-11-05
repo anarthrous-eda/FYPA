@@ -1,3 +1,4 @@
+# Portions Copyright (c) 2026 Tomachie LLC.
 """The Setup tab."""
 from __future__ import annotations
 
@@ -205,7 +206,7 @@ def _format_setup_html(solution, metadata: dict | None,
             f"style='color:{_t['accent']}; text-decoration:none; font-weight:600;'>"
             f"{arrow} {_esc(d.get('role','?'))} on {_esc(toggle_key)}"
             f"</a> &nbsp;"
-            f"<span class='muted'>({_esc(d.get('schdoc',''))})</span> &nbsp;"
+            f"<span class='muted'>({'from Tomachie pdn.json' if d.get('from_pdn_json') else _esc(d.get('schdoc',''))})</span> &nbsp;"
             f"<span style='color:{_t['fg']};'>{_esc(d.get('value_str',''))}</span>"
             f"</h3>"
         )

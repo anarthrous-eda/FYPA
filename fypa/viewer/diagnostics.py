@@ -1,3 +1,4 @@
+# Portions Copyright (c) 2026 Tomachie LLC.
 """Post-load warnings: missing directives, mesh failures, open loops."""
 from __future__ import annotations
 
@@ -18,14 +19,21 @@ def _maybe_warn_needs_directives(parent_win, solution) -> None:
     si = getattr(solution, "solver_info", None)
     if not isinstance(si, dict) or not si.get("needs_directives"):
         return
-    QMessageBox.information(
-        parent_win,
-        "No PDN settings found",
+    box = QMessageBox(parent_win)
+    box.setIcon(QMessageBox.Information)
+    box.setWindowTitle("No PDN settings found")
+    box.setText(
         "No predefined PDN parameters (SOURCE / REGULATOR) were found in "
         "this design, so there's nothing to solve yet.\n\n"
-        "The design has loaded — switch on Edit to place sources / sinks "
-        "manually, then press Resolve.",
-    )
+        "The design has loaded — load a Tomachie pdn.json (Ctrl+Shift+T) to set "
+        "them all up, or switch on Edit to place sources / sinks manually, "
+        "then press Resolve.")
+    load_btn = box.addButton("Load Tomachie pdn.json…", QMessageBox.AcceptRole)
+    box.addButton(QMessageBox.Ok)
+    box.exec()
+    if box.clickedButton() is load_btn:
+        from fypa.viewer.tomachie_menu import on_load_tomachie_pdn
+        on_load_tomachie_pdn(parent_win)
 
 
 

@@ -1,3 +1,4 @@
+# Portions Copyright (c) 2026 Tomachie LLC.
 """FYPA project files (``.fypa``).
 
 A project file is a small JSON document that ties together everything FYPA
@@ -298,6 +299,10 @@ class ProjectFile:
     # editor directives are applied, so an editor directive cannot veto one
     # — this list is the only thing that can. Case-insensitive on use.
     no_auto_bridge: list[str] = field(default_factory=list)
+    # A Tomachie power-tree file supplying PDN_* directives, and the corner
+    # ("typ" / "max") it is solved at (File > Load Tomachie pdn.json…).
+    pdn_json: str | None = None
+    pdn_corner: str = "typ"
     # Unannotated resistors whose value is at or below this many ohms are
     # modelled as SERIES with their own value (current-sense shunts). 0 turns
     # it off. Mirrors fypa.altium.annotations.DEFAULT_AUTO_SERIES_MAX_OHM —
@@ -344,6 +349,8 @@ class ProjectFile:
             "cap_overrides": [c.to_dict() for c in self.cap_overrides],
             "net_renames": dict(self.net_renames),
             "no_auto_bridge": list(self.no_auto_bridge),
+            "pdn_json": _rel(self.pdn_json, base),
+            "pdn_corner": self.pdn_corner,
             "auto_series_max_ohm": float(self.auto_series_max_ohm),
             "viewer_settings": dict(self.viewer_settings),
             "source_kind": self.source_kind,
@@ -393,6 +400,8 @@ class ProjectFile:
                 for c in doc.get("cap_overrides", [])
             ],
             no_auto_bridge=[str(d) for d in doc.get("no_auto_bridge", [])],
+            pdn_json=_abs(doc.get("pdn_json"), base),
+            pdn_corner=str(doc.get("pdn_corner", "typ")),
             # Additive like cap_overrides; older files get the default.
             auto_series_max_ohm=float(doc.get("auto_series_max_ohm", 0.1)),
             net_renames=dict(doc.get("net_renames", {})),

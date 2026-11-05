@@ -1,3 +1,4 @@
+# Portions Copyright (c) 2026 Tomachie LLC.
 """Background solve and capacitor-loop workers, and the solve cache."""
 from __future__ import annotations
 
@@ -334,10 +335,17 @@ class _SolveWorker(QThread):
                   load_only: bool = False,
                   adaptive_regulator_gain: bool = False,
                   no_auto_bridge: set[str] | None = None,
+                  pdn_json: Path | None = None,
+                  pdn_corner: str = "typ",
                   auto_series_max_ohm: float | None = None,
                   parent=None) -> None:
         super().__init__(parent)
         self._prjpcb_path = prjpcb_path
+        # A Tomachie power-tree file supplying PDN_* directives (File > Load
+        # Tomachie pdn.json…). Like the auto-bridge opt-out it acts while
+        # annotations are parsed, so it reaches load_project.
+        self._pdn_json = pdn_json
+        self._pdn_corner = pdn_corner
         self._settings = settings
         # Designators the user has told the tool not to short automatically
         # (Bridges tab). Has to reach load_project, not the editor-directive
@@ -555,7 +563,8 @@ class _SolveWorker(QThread):
                     f"Checking solve cache for {self._prjpcb_path.name}…"
                 )
                 try:
-                    cached = _try_solve_cache(self._prjpcb_path, pcbdoc_resolved)
+                    cached = _try_solve_cache(self._prjpcb_path, pcbdoc_resolved,
+                                              self._pdn_json, self._pdn_corner)
                 except Exception as e:
                     logging.getLogger(__name__).warning(
                         "Solve-cache check failed (%s: %s); will re-solve.",
@@ -652,6 +661,13 @@ class _SolveWorker(QThread):
                     self.stage_changed.emit(
                         "Auto-bridge opt-out changed; reloading design info…")
                     loaded = None
+            if loaded is not None:
+                _want_pdn = ((str(Path(self._pdn_json).resolve()), self._pdn_corner)
+                             if self._pdn_json else None)
+                if getattr(loaded, "pdn_json_applied", None) != _want_pdn:
+                    self.stage_changed.emit(
+                        "Tomachie pdn.json changed; reloading design info…")
+                    loaded = None
             # Same for the low-value resistor auto-SERIES limit. ``None``
             # means "not recorded" — a Gerber project (no Altium parameters to
             # act on, and nothing load_project could reload it from) or a
@@ -671,6 +687,8 @@ class _SolveWorker(QThread):
                         self._prjpcb_path,
                         pcbdoc_selector=self._pcbdoc_selector,
                         no_auto_bridge=self._no_auto_bridge or None,
+                        pdn_json=self._pdn_json,
+                        pdn_corner=self._pdn_corner,
                         auto_series_max_ohm=self._auto_series_max_ohm)
                 # Persist the freshly-loaded design info so the next run
                 # (e.g. a Re-run that only changes physics) can skip the
@@ -753,8 +771,10 @@ class _SolveWorker(QThread):
                     )
                     self._adaptive_regulator_gain = False
 
+            from fypa.altium.diode_curve import is_diode
             if (self._sink_overrides or self._editor_directives
-                    or self._copper_names or self._adaptive_regulator_gain):
+                    or self._copper_names or self._adaptive_regulator_gain
+                    or any(is_diode(d) for d in loaded.annotations.directives)):
                 loaded = clone_loaded_for_edit(loaded)
 
             if self._sink_overrides:
@@ -931,6 +951,8 @@ class _SolveWorker(QThread):
                     solve_fp = _project_fingerprint(
                         self._prjpcb_path, pcbdoc_resolved,
                         settings=self._settings,
+                        pdn_json=self._pdn_json,
+                        pdn_corner=self._pdn_corner,
                     )
                     cache_path = _solve_cache_path(
                         self._prjpcb_path, pcbdoc_resolved,
@@ -1239,7 +1261,9 @@ def _cache_serves_adaptive_request(metadata, adaptive_requested: bool) -> bool:
 
 
 def _try_solve_cache(prjpcb_path: Path,
-                     pcbdoc_path: Path | None) -> tuple[object, dict] | None:
+                     pcbdoc_path: Path | None,
+                     pdn_json=None,
+                     pdn_corner: str | None = None) -> tuple[object, dict] | None:
     """Return ``(solution, metadata)`` from the FYPA solve cache if the
     fingerprint matches, else ``None``. Wraps the FYPA helpers so menu
     handlers don't have to know about fingerprints; cache misses + import
@@ -1249,7 +1273,8 @@ def _try_solve_cache(prjpcb_path: Path,
             _project_fingerprint,
             _try_load_cached_solution,
         )
-        fp = _project_fingerprint(prjpcb_path, pcbdoc_path)
+        fp = _project_fingerprint(prjpcb_path, pcbdoc_path,
+                                  pdn_json=pdn_json, pdn_corner=pdn_corner)
         cached = _try_load_cached_solution(prjpcb_path, fp,
                                             pcbdoc_path=pcbdoc_path)
     except Exception as e:
