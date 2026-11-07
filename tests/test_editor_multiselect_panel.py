@@ -718,3 +718,64 @@ def test_a_mixed_model_keeps_the_n_net_row_visible(viewer):
         assert viewer._mf_nnet.isVisible()
     finally:
         viewer._test_panel.hide()
+
+# --- all-SOURCE selections ----------------------------------------------
+
+def _source(des: str, **kw) -> EditorDirective:
+    base = {"kind": "component", "role": "SOURCE", "designator": des,
+            "single_net": True, "p_net": "+3V3", "voltage": 3.3}
+    base.update(kw)
+    return EditorDirective(**base)
+
+
+def test_an_all_source_selection_gets_an_editable_voltage_form(viewer):
+    viewer._project.upsert_directive(_source("U1"))
+    viewer._project.upsert_directive(_source("U2"))
+    _sweep(viewer, 0, 0, 25, 20)
+    texts = _panel_texts(viewer)
+    assert any("2 SOURCEs selected" in t for t in texts)
+    assert viewer._mf_voltage is not None
+    assert viewer._mf_voltage.text() == "3.3"
+    # Sink-only rows are not offered for sources.
+    assert viewer._mf_current is None and viewer._mf_min_v is None
+    # Single-net reads "Net", as in the single-object form.
+    assert viewer._mf_pnet_label.text() == "Net"
+    assert viewer._mf_pnet.currentText() == "+3V3"
+
+
+def test_differing_source_voltages_and_nets_show_a_star(viewer):
+    viewer._project.upsert_directive(_source("U1", voltage=3.3, p_net="+3V3"))
+    viewer._project.upsert_directive(_source("U2", voltage=1.8, p_net="+1V8"))
+    _sweep(viewer, 0, 0, 25, 20)
+    assert viewer._mf_voltage.text() == "*"
+    assert viewer._mf_pnet.currentText() == "*"
+
+
+def test_apply_writes_voltage_and_net_to_every_selected_source(viewer):
+    viewer._project.upsert_directive(_source("U1", voltage=3.3, p_net="+3V3"))
+    viewer._project.upsert_directive(_source("U2", voltage=1.8, p_net="+1V8"))
+    _sweep(viewer, 0, 0, 25, 20)
+    viewer._mf_voltage.setText("5")
+    viewer._mf_dirty.add("voltage")
+    viewer._set_combo(viewer._mf_pnet, "+3V3")
+    viewer._mf_dirty.add("p_net")
+    viewer._on_editor_multi_apply()
+    by = {d.designator: d for d in viewer._project.editor_directives}
+    assert [by[x].voltage for x in ("U1", "U2")] == [5.0, 5.0]
+    assert [by[x].p_net for x in ("U1", "U2")] == ["+3V3", "+3V3"]
+    assert all(by[x].role == "SOURCE" and by[x].current is None
+               for x in ("U1", "U2"))
+    # The form rebuilds and the rows are now shared, not "*".
+    assert viewer._mf_voltage.text() == "5"
+    assert viewer._mf_pnet.currentText() == "+3V3"
+
+
+def test_a_non_numeric_voltage_is_refused_and_writes_nothing(viewer):
+    viewer._project.upsert_directive(_source("U1", voltage=3.3))
+    viewer._project.upsert_directive(_source("U2", voltage=1.8))
+    _sweep(viewer, 0, 0, 25, 20)
+    viewer._mf_voltage.setText("")
+    viewer._mf_dirty.add("voltage")
+    viewer._on_editor_multi_apply()
+    by = {d.designator: d for d in viewer._project.editor_directives}
+    assert [by[x].voltage for x in ("U1", "U2")] == [3.3, 1.8]

@@ -239,14 +239,6 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         )
         open_proj.triggered.connect(self._on_menu_open_project)
         file_menu.addAction(open_proj)
-
-        from fypa.viewer.tomachie_menu import SHORTCUT, on_load_tomachie_pdn
-        load_pdn = QAction("Load &Tomachie pdn.json…", self)
-        load_pdn.setShortcut(SHORTCUT)
-        load_pdn.setStatusTip(
-            "Set up sources, regulators, series parts and loads from a Tomachie pdn.json")
-        load_pdn.triggered.connect(lambda: on_load_tomachie_pdn(self))
-        file_menu.addAction(load_pdn)
         self._act_import_altium = open_proj
 
         open_proj_clean = QAction("Import Altium Design (&Clean)…", self)
@@ -258,6 +250,14 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
             lambda: self._on_menu_open_project(clean=True)
         )
         file_menu.addAction(open_proj_clean)
+
+        from fypa.viewer.tomachie_menu import SHORTCUT, on_load_tomachie_pdn
+        load_pdn = QAction("Load &Tomachie pdn.json…", self)
+        load_pdn.setShortcut(SHORTCUT)
+        load_pdn.setStatusTip(
+            "Set up sources, regulators, series parts and loads from a Tomachie pdn.json")
+        load_pdn.triggered.connect(lambda: on_load_tomachie_pdn(self))
+        file_menu.addAction(load_pdn)
 
         # "Solve automatically on import" is no longer a File-menu item — it's
         # the Settings > General options entry; the import path reads the

@@ -202,6 +202,26 @@ def _regulator_kind(d: dict) -> str:
     return rtype or "Regulator"
 
 
+def _remote_sense_label(d: dict) -> str:
+    """``"remote sense at U6"`` (``"… at U6 / U6"`` when the return is sensed
+    remotely too) for a remote-sensed SOURCE / REGULATOR; ``""`` when it
+    senses locally."""
+    sense = d.get("remote_sense") or {}
+
+    def _parts(side: str) -> str:
+        names: list[str] = []
+        for pin in (sense.get(side) or {}).get("pins") or []:
+            comp = pin.get("component")
+            if comp and comp not in names:
+                names.append(comp)
+        return ",".join(names)
+    p, n = _parts("P"), _parts("N")
+    if not (p or n):
+        return ""
+    where = " / ".join(x for x in (p or "local", n) if x) if n else p
+    return f"remote sense at {where}"
+
+
 def _series_kind(designator: str) -> str:
     m = re.match(r"[A-Za-z]+", designator or "")
     prefix = (m.group(0).upper() if m else "")
@@ -374,6 +394,9 @@ class _Context:
                                         else ")"))
             else:
                 rail.source_label = f"{label} (source)"
+            sense = _remote_sense_label(src)
+            if sense:
+                rail.source_label += f", {sense}"
             if len(sources) > 1:
                 rail.source_label += f" + {len(sources) - 1} more"
             rail.load_a = self.rail_load(name)
@@ -487,9 +510,11 @@ class _Context:
                 if (v_in is not None and i_in is not None
                         and v_out is not None and i_out is not None):
                     loss = v_in * i_in - v_out * i_out
+                sense = _remote_sense_label(d)
                 rail.regulators.append(RegulatorResult(
                     designator=str(d.get("label") or d.get("designator")),
-                    kind=_regulator_kind(d),
+                    kind=(_regulator_kind(d)
+                          + (f" · {sense}" if sense else "")),
                     input_rail=self.rail_of(d, "IN_P"),
                     output_rail=rail.name,
                     v_out_set=_float(d.get("value")) or 0.0,
@@ -687,6 +712,11 @@ def _analyses_label(rails: list[RailReport], metadata: dict) -> str:
     return ", ".join(parts)
 
 
+def _plating_summary(phys: dict) -> str:
+    from fypa.altium.loader import plating_summary
+    return plating_summary(phys)
+
+
 def _stackup_rows(metadata: dict) -> list[dict]:
     out = []
     for r in metadata.get("stackup", []):
@@ -714,7 +744,7 @@ def _setup_rows(metadata: dict, solution, settings: ReportSettings,
         rho = _float(phys.get("copper_resistivity_ohm_m"))
         rows.append(("Copper", (f"{t:g} °C" if t is not None else "")
                      + (f" · ρ = {rho:.3g} Ω·m" if rho else "")
-                     + (f" · plating {phys['plating_thickness_mm'] * 1000:g} µm"
+                     + (f" · plating {_plating_summary(phys)}"
                         if _float(phys.get("plating_thickness_mm")) else "")))
     mesher = metadata.get("mesher_config") or {}
     n_tri = sum(int(np.asarray(t).shape[0])

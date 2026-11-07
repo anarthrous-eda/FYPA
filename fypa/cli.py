@@ -215,6 +215,13 @@ def _build_parser() -> argparse.ArgumentParser:
             help="Board heat transfer coefficient for --electrothermal, both "
                  "faces combined (default 20; 50-100 with forced air)",
         )
+        sp_.add_argument(
+            "--thermal-local", dest="thermal_local", action="store_true",
+            default=False,
+            help="With --electrothermal, shed each piece of copper's heat on "
+                 "the spot (the older local model) instead of spreading it "
+                 "across the board",
+        )
 
     sp = sub.add_parser("solve", help="Solve the FEM problem and pickle the solution")
     sp.add_argument("prjpcb", type=Path)
@@ -431,6 +438,8 @@ def _solve_loaded(loaded, args) -> tuple[LeanSolution, dict]:
         settings.electrothermal = True
     if getattr(args, "heat_transfer_w_per_m2k", None) is not None:
         settings.heat_transfer_w_per_m2k = float(args.heat_transfer_w_per_m2k)
+    if getattr(args, "thermal_local", False):
+        settings.thermal_spreading = False
     mesher_config = _pdn_mesh.Mesher.Config(
         minimum_angle=settings.mesh_min_angle_deg,
         maximum_size=settings.mesh_max_size_mm,

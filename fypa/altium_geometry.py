@@ -4,7 +4,8 @@ Consumes an :class:`fypa.altium.extract.ExtractedProject` and produces one
 :class:`GeometryLayer` per enabled copper layer. Each layer carries:
 
 * a Shapely ``MultiPolygon`` of all filled copper on that layer
-  (tracks ∪ arcs ∪ regions ∪ pads ∪ via barrels), with drill holes subtracted;
+  (tracks ∪ arcs ∪ regions ∪ pads ∪ via barrels). Plated holes stay solid
+  copper (see ``_pad_polygon``); only non-plated holes are cut out;
 * a ``conductance`` in Siemens computed as
   ``copper_thickness_mm × COPPER_CONDUCTIVITY_S_PER_MM``, matching padne's
   surface-conductivity convention so the geometry can be handed straight to a
@@ -31,9 +32,11 @@ Geometry rules
   layer (internal planes excluded).
 * **Pads** on layer id ``MULTI_LAYER_PAD_LAYER_ID`` (74) are through-hole and
   appear on every copper layer; SMT pads appear only on their assigned layer.
-  Drill holes are subtracted from the pad shape.
+  A plated pad is a solid disc: its hole is not cut out (see
+  ``_pad_polygon``).
 * **Vias** span the inclusive range ``[layer_start, layer_end]`` along the
-  enabled copper stack; the barrel is the outer disc minus the drill hole.
+  enabled copper stack as a solid disc; the barrel itself is the
+  inter-layer resistor the loader adds, landing on the drill circle.
 * **Plane layers** (``stackup.is_plane``) are flooded with their net's copper
   over the board outline (see :func:`_plane_sheet_polygon`). Anti-pad and
   thermal-relief detail around foreign-net through features is a deferred
@@ -721,7 +724,7 @@ def _via_polygon(v: RawVia) -> shapely.geometry.Polygon | None:
     # Same reasoning as `_pad_polygon`: do not subtract the drill hole. The
     # plated barrel makes the via a solid copper disc on each layer for the
     # purposes of in-plane FEM; the inter-layer coupling is added separately
-    # as a small Resistor network at the via centre.
+    # as a small Resistor network whose ends are drill-circle patches.
     return shapely.geometry.Point(v.center.x, v.center.y).buffer(
         v.diameter_mm / 2.0, resolution=CIRCLE_RESOLUTION // 4)
 

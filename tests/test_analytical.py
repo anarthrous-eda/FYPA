@@ -10,24 +10,22 @@ where ``G`` is the sheet conductance (S) and ``W`` the strip width (mm).
 Measuring the slope over the strip *interior* isolates the bulk sheet
 resistance from the 2-D point-source singularity at the injection terminals.
 
-Note on accuracy: even refined, the solver retains a documented ~5 %
-under-estimation of sheet resistance for point-injected current (see
-``pdnsolver/CHANGES.md`` — the Steiner-ring seeding brings a 1 mm x 100 mm
-trace "within ~5 % of theory"). The absolute test below therefore uses an
-8 % gate; the *relational* tests hold the geometry fixed so that bias cancels
-exactly and can be checked tightly.
+P1 (linear) elements represent a linear field exactly, on any mesh, so the
+interior slope matches theory to solver precision (measured < 1e-6 at every
+mesh size). An earlier version of this file allowed 8 % and described a
+"~5 % point-injection bias"; that bias came from an unsigned cotangent in the
+stiffness matrix, long since fixed (see ``_half_cotangent``). Point injection
+only perturbs the field near the terminals, never the interior. The
+end-to-end and geometry checks against closed forms live in
+``test_validation.py``.
 """
 from __future__ import annotations
 
 import pytest
 
-# Absolute agreement is limited by the documented ~5 % point-injection bias
-# plus mesh discretisation; 8 % is a regression gate that still catches the
-# ~45 % error seen when ring-seeding is absent.
-SLOPE_ABS_TOL = 0.08
-# Relational checks hold geometry fixed, so the bias is a common factor that
-# cancels — these are exact up to solver precision.
-SLOPE_REL_TOL = 0.02
+# The interior field is linear, which P1 elements reproduce exactly.
+SLOPE_ABS_TOL = 1e-5
+SLOPE_REL_TOL = 1e-5
 
 
 @pytest.mark.parametrize(
@@ -48,38 +46,19 @@ def test_strip_interior_slope_matches_sheet_resistance(strip_solver, length_mm, 
 
     assert rel_err < SLOPE_ABS_TOL, (
         f"strip {length_mm}x{width_mm} mm: interior dV/dx {measured:.4e} V/mm "
-        f"deviates {rel_err:.1%} from analytical {analytical:.4e} V/mm"
+        f"deviates {rel_err:.1e} from analytical {analytical:.4e} V/mm"
     )
 
 
-def test_solver_underestimates_sheet_resistance(strip_solver):
-    """Characterisation: the point-injection FEM under-estimates IR drop.
-
-    A flip of this sign means ring-seeding behaviour changed materially and
-    ``pdnsolver/CHANGES.md`` should be revisited.
-    """
-    result = strip_solver(length_mm=40.0, width_mm=6.0, mesh_size=0.3)
+@pytest.mark.parametrize("mesh_size", [0.6, 0.2])
+def test_interior_slope_is_exact_at_any_mesh_size(strip_solver, mesh_size):
+    """The linear interior field is exact whatever the element size, so a
+    coarse mesh must be as right as a fine one here (a mesh-dependent error
+    in the interior would mean a broken stiffness matrix, not resolution)."""
+    result = strip_solver(length_mm=40.0, width_mm=3.0, mesh_size=mesh_size)
     measured = result.interior_slope()
     analytical = result.expected["slope_v_per_mm"]
-    assert measured < analytical, (
-        f"expected an under-estimate; got {measured:.4e} >= {analytical:.4e} V/mm"
-    )
-
-
-def test_mesh_refinement_reduces_error(strip_solver):
-    """Refining the mesh must move the solution toward the analytical value."""
-    analytical = strip_solver(length_mm=40.0, width_mm=3.0, mesh_size=0.6).expected[
-        "slope_v_per_mm"
-    ]
-
-    coarse = strip_solver(length_mm=40.0, width_mm=3.0, mesh_size=0.6)
-    fine = strip_solver(length_mm=40.0, width_mm=3.0, mesh_size=0.2)
-
-    err_coarse = abs(coarse.interior_slope() - analytical)
-    err_fine = abs(fine.interior_slope() - analytical)
-    assert err_fine < err_coarse, (
-        f"refinement did not help: coarse err {err_coarse:.3e}, fine err {err_fine:.3e}"
-    )
+    assert measured == pytest.approx(analytical, rel=SLOPE_ABS_TOL)
 
 
 def test_slope_scales_linearly_with_current(strip_solver):

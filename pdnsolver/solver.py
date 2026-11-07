@@ -250,6 +250,164 @@ _PAD_SEED_MAX_POINTS: int = 64
 _PAD_MEMBERSHIP_EPS_MM: float = 0.005
 
 
+# Mesh grading around via-barrel patches. Outside a drill circle of radius r
+# the potential goes as ln(ρ), so its gradient is ~1/ρ: the mesh has to be
+# fine at the wall and may coarsen linearly with distance. Triangle keeps
+# every input vertex, so concentric rings of Steiner seeds at r·g, r·g², …
+# — each ring's spacing matching its radial gap, so the triangles between
+# them stay near-equilateral — grade the mesh without switching the whole
+# board to the adaptive mesher. Rings stop once their spacing reaches the
+# global maximum element size (the mesh is that coarse anyway). On a 0.3 mm
+# via into a plane at the default 0.6 mm mesh this takes the spreading-
+# resistance error from -4.1 % to -0.02 % for ~2 % more vertices (g = 1.4,
+# 5 rings; g = 2 only reached -1.9 %). See tests/test_validation.py.
+_BARREL_GRADING_RATIO: float = 1.4
+_BARREL_GRADING_MAX_RINGS: int = 5
+
+
+def _barrel_grading_points(
+    center: shapely.geometry.Point,
+    radius_mm: float,
+    max_size_mm: float,
+    max_radius_mm: float = math.inf,
+) -> list[shapely.geometry.Point]:
+    """Steiner seeds on rings around a drill patch, spaced geometrically
+    outward (see :data:`_BARREL_GRADING_RATIO`). No ring is placed beyond
+    ``max_radius_mm`` (half the distance to the nearest other barrel)."""
+    g = _BARREL_GRADING_RATIO
+    if radius_mm <= 0.0 or g <= 1.0:
+        return []
+    # Points per ring for a tangential spacing equal to the radial gap
+    # r·g^(k-1)·(g-1) on a ring of circumference 2π·r·g^k.
+    n = max(6, int(math.ceil(2.0 * math.pi * g / (g - 1.0))))
+    pts: list[shapely.geometry.Point] = []
+    cx, cy = center.x, center.y
+    rho = radius_mm
+    for k in range(_BARREL_GRADING_MAX_RINGS):
+        gap = rho * (g - 1.0)
+        if max_size_mm > 0.0 and gap >= max_size_mm:
+            break
+        rho *= g
+        if rho > max_radius_mm:
+            break
+        # Stagger alternate rings by half a step so the triangles between
+        # rings are not right-angled slivers.
+        off = (math.pi / n) * (k % 2)
+        ang = off + (2.0 * math.pi / n) * np.arange(n)
+        xs = cx + rho * np.cos(ang)
+        ys = cy + rho * np.sin(ang)
+        pts.extend(shapely.points(xs, ys).tolist())
+    return pts
+
+
+def _pad_grading_points(
+    region: shapely.geometry.Polygon,
+    max_size_mm: float,
+    max_reach_mm: float = math.inf,
+) -> list[shapely.geometry.Point]:
+    """Steiner seeds grading the mesh outward from a terminal pad: the pad
+    outline offset by growing gaps (the first one the pad-outline seed
+    spacing, each next :data:`_BARREL_GRADING_RATIO` times wider), sampled at
+    that gap. Offsets rather than circles keep the grading tight on square
+    and elongated pads. Stops once a gap reaches the global maximum element
+    size, or once the next ring would pass ``max_reach_mm`` from the pad's
+    centre (half the distance to the nearest other patch)."""
+    g = _BARREL_GRADING_RATIO
+    if g <= 1.0 or region.is_empty:
+        return []
+    minx, miny, maxx, maxy = region.bounds
+    r_circ = 0.5 * math.hypot(maxx - minx, maxy - miny)
+    pts: list[shapely.geometry.Point] = []
+    gap = _PAD_SEED_SPACING_MM
+    offset = 0.0
+    for _k in range(_BARREL_GRADING_MAX_RINGS):
+        gap *= g
+        if max_size_mm > 0.0 and gap >= max_size_mm:
+            break
+        offset += gap
+        if r_circ + offset > max_reach_mm:
+            break
+        # A region may be a MultiPolygon (e.g. a capacitor-loop port), so
+        # walk each part's outer ring.
+        for part in shapely.get_parts(region.buffer(offset, quad_segs=4)):
+            ring = getattr(part, "exterior", None)
+            if ring is None or ring.is_empty:
+                continue
+            n = max(8, int(math.ceil(ring.length / gap)))
+            frac = ring.length * np.arange(n, dtype=np.float64) / n
+            pts.extend(shapely.line_interpolate_point(ring, frac).tolist())
+    return pts
+
+
+def _add_grading_seeds(
+    graded: dict | None,
+    strtree,
+    layer_i: int,
+    connected_layer_mesh_pairs,
+    max_size_mm: float,
+    geom_to_seed_points: dict,
+) -> None:
+    """Append grading-ring seeds for one layer's patches to the pieces they
+    fall inside (``geom_to_seed_points``, keyed by geometry index).
+
+    Rings are generated only for patches whose centre lies in a meshed
+    (connected) piece — a board's thousands of signal-net vias never are —
+    and each ring is stopped short of the nearest other patch on the layer,
+    so a via array's or a BGA field's rings do not interleave into
+    near-coincident seeds. Containment is one vectorised STRtree query per
+    layer (``predicate="within"``: strictly inside, as the per-seed pass's
+    ``contains``). The seeds are appended after the per-connection seeds,
+    so those keep their order."""
+    if not graded:
+        return
+    keys = list(graded.keys())
+    xy = np.asarray(keys, dtype=np.float64).reshape(-1, 2)
+
+    def _connected_hits(pts_xy: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        pts = shapely.points(pts_xy[:, 0], pts_xy[:, 1])
+        pi, gi = strtree.query(pts, predicate="within")
+        if pi.size == 0:
+            return pi, gi
+        keep = np.fromiter(
+            ((layer_i, int(g)) in connected_layer_mesh_pairs for g in gi),
+            dtype=bool, count=gi.size)
+        return pi[keep], gi[keep]
+
+    active, _ = _connected_hits(xy)
+    active = np.unique(active)
+    if active.size == 0:
+        return
+    if xy.shape[0] > 1:
+        # Reach from every patch on the layer, active or not: an inactive
+        # neighbour's copper still shares the space.
+        nn_d, _ = scipy.spatial.cKDTree(xy).query(xy[active], k=2)
+        reach = 0.5 * nn_d[:, 1]
+    else:
+        reach = np.full(active.size, np.inf)
+
+    ring_xy: list[np.ndarray] = []
+    for i, lim in zip(active.tolist(), reach.tolist()):
+        is_barrel, region = graded[keys[i]]
+        if is_barrel:
+            centre = shapely.geometry.Point(xy[i, 0], xy[i, 1])
+            minx, _miny, maxx, _maxy = region.bounds
+            # The drill outline itself (and its centre), then the rings.
+            pts = _pad_seed_points(region, centre) + _barrel_grading_points(
+                centre, 0.5 * (maxx - minx), max_size_mm, max_radius_mm=lim)
+        else:
+            pts = _pad_grading_points(region, max_size_mm, lim)
+        if pts:
+            ring_xy.append(shapely.get_coordinates(pts))
+    if not ring_xy:
+        return
+    all_xy = np.concatenate(ring_xy)
+    pi, gi = _connected_hits(all_xy)
+    order = np.argsort(pi, kind="stable")      # keep generation order
+    for p, g in zip(pi[order].tolist(), gi[order].tolist()):
+        geom_to_seed_points[g].append(
+            shapely.geometry.Point(all_xy[p, 0], all_xy[p, 1]))
+
+
 def _pad_seed_points(
     region: shapely.geometry.Polygon,
     point: shapely.geometry.Point,
@@ -617,21 +775,28 @@ class ThermalConfig:
     rise, rescale that triangle's sheet conductance, re-solve, repeat until
     the temperature field stops moving.
 
-    The thermal model is deliberately **local and lumped**: each triangle
-    sheds its heat straight to ambient through
-    ``heat_transfer_w_per_m2k`` (both board faces combined), so
+    Two thermal models:
+
+    * **Board model** (``board`` set, a :class:`pdnsolver.thermal.ThermalBoard`
+      the FYPA loader builds from the layout): the heat spreads through a
+      layered finite-difference model of the board — every net's copper on
+      every layer, the laminate and plated barrels between layers,
+      convection from both faces — and lumped parts (via barrels, series
+      parts, regulator conversion loss) heat it too. A hot neck warms its
+      surroundings and a pour acts as the heatsink it is. Each triangle
+      takes its grid cell's temperature, so a feature much narrower than a
+      cell reads its cell's mean.
+    * **Local model** (``board`` is ``None``): each triangle sheds its heat
+      straight to ambient through ``heat_transfer_w_per_m2k`` (both board
+      faces combined), so
 
         ΔT [K] = p [W/mm²] · 1e6 / h [W/(m²·K)]
 
-    There is no lateral heat spreading — a hot neck does not warm its
-    neighbours, and a copper pour does not act as the heatsink it really
-    is. That makes the result an *upper* bound on local rise for small hot
-    features and a reasonable estimate for broad ones. Modelling spreading
-    properly needs a second Laplace solve for temperature on the same mesh
-    with stackup thermal conductivities, which is a separate tier of work;
-    this tier exists because it is cheap, honest about its assumptions and
-    still captures the first-order effect that commercial DC-IR tools
-    model and an isothermal solve misses entirely.
+      There is no lateral heat spreading, which makes the result an
+      *upper* bound — often many times over — on the rise of small hot
+      features, and a reasonable estimate for broad ones. A 1 mm trace at
+      5 A over a plane reads ~300 K (the clamp) here, ~25 K in the board
+      model (``tests/test_thermal_board.py``).
 
     ``h`` of 20 W/(m²·K) is typical for a bare board in still air counting
     both faces; forced air or a chassis heatsink is higher (50-100), a
@@ -659,6 +824,17 @@ class ThermalConfig:
     # to zero and the matrix singular. Rises are clamped here and the clamp
     # is reported.
     max_rise_c: float = 300.0
+    # Optional board model with lateral heat spreading
+    # (:class:`pdnsolver.thermal.ThermalBoard`). When set, each iteration's
+    # copper loss — plus the loss of resistors marked ``heat_source`` (vias,
+    # series parts) and of regulators — is solved on the board's layered
+    # grid, and each triangle takes its cell's temperature, instead of the
+    # local ``p / h`` above. ``None`` keeps the local model.
+    board: object | None = None
+    # Whether the caller wants that board model: the FYPA loader builds
+    # ``board`` from the layout when this is set (the solver itself has no
+    # stackup or outline to build it from).
+    spreading: bool = True
 
 
 @dataclass
@@ -1334,19 +1510,34 @@ def generate_meshes_for_problem(prob: problem.Problem,
     seed_points_by_layer_id: dict[int, list[tuple[shapely.geometry.Point, bool]]] = (
         collections.defaultdict(list)
     )
+    # Equipotential patches per layer to grade the mesh around:
+    # (x, y) → (is_barrel, region).
+    graded_sites_by_layer_id: dict[
+        int, dict[tuple[float, float], tuple[bool, shapely.geometry.Polygon]]
+    ] = collections.defaultdict(dict)
     for network in prob.networks:
         for conn in network.connections:
             if conn.layer is None:
                 continue
             lid = id(conn.layer)
             if conn.region is not None:
-                for sp in _pad_seed_points(conn.region, conn.point):
-                    seed_points_by_layer_id[lid].append((sp, False))
+                # A drill patch's outline seeds go with its grading rings
+                # (vectorised, and skipped outright for the board's many
+                # vias on nets that are not meshed); a pad's stay here.
+                if not conn.barrel:
+                    for sp in _pad_seed_points(conn.region, conn.point):
+                        seed_points_by_layer_id[lid].append((sp, False))
+                # Every patch is graded below, once per (layer, x, y) — a
+                # through via's inner layers carry two hop connections at
+                # the same point, and a PTH terminal one per layer.
+                key = (round(conn.point.x, 6), round(conn.point.y, 6))
+                graded = graded_sites_by_layer_id[lid]
+                if key not in graded or conn.barrel:
+                    graded[key] = (conn.barrel, conn.region)
             else:
                 seed_points_by_layer_id[lid].append((
                     shapely.geometry.Point(conn.point.x, conn.point.y), True,
                 ))
-
     polys_to_mesh: list[shapely.geometry.Polygon] = []
     seed_xys_to_mesh: list[np.ndarray | None] = []
     layer_indices: list[int] = []
@@ -1402,6 +1593,12 @@ def generate_meshes_for_problem(prob: problem.Problem,
                     for ring_pt in _injection_steiner_ring(seed_point):
                         if prep.contains(ring_pt):
                             geom_to_seed_points[geom_i].append(ring_pt)
+
+        _add_grading_seeds(
+            graded_sites_by_layer_id.get(id(layer)), strtrees[layer_i],
+            layer_i, connected_layer_mesh_pairs, _cfg.maximum_size,
+            geom_to_seed_points,
+        )
 
         for geom_i, geom in enumerate(layer.geoms):
             if (layer_i, geom_i) not in connected_layer_mesh_pairs:
@@ -1691,6 +1888,12 @@ class NodeIndexer:
         connections = [
             conn for network in filtered_networks for conn in network.connections
         ]
+        # Pad patches claim their vertices before via-barrel patches (stable
+        # sort keeps every other order intact): a via inside a terminal pad
+        # then finds its drill vertices already claimed, falls back to the
+        # nearest vertex, and so joins the pad's group — one node, as the
+        # copper really is — instead of carving a separate patch out of it.
+        connections.sort(key=lambda c: c.barrel)
 
         def _assign(node, vertex_global_idx: int) -> None:
             # Guard against overwriting a node with a different vertex — should
@@ -1869,15 +2072,19 @@ def stamp_network_into_system(network: problem.Network,
                 i_t = node_indexer.node_to_global_index[t]
                 r[i_f] += current
                 r[i_t] -= current
-            case problem.VoltageSource(p=p, n=n, voltage=voltage):
+            case problem.VoltageSource(p=p, n=n, voltage=voltage,
+                                       sense_p=sense_p, sense_n=sense_n):
                 i_p = node_indexer.node_to_global_index[p]
                 i_n = node_indexer.node_to_global_index[n]
                 i_v = node_indexer.extra_source_to_global_index[element]
                 # MNA voltage-source: extra current variable I_v couples
                 # V_p − V_n = voltage and the I_v current threads through
-                # the p / n KCL equations.
+                # the p / n KCL equations. With remote sense the constraint
+                # row reads the sense nodes instead (the current still
+                # enters at p / n).
+                c_p, c_n = _sense_rows(node_indexer, i_p, i_n, sense_p, sense_n)
                 rows.extend((i_v, i_v, i_p, i_n))
-                cols.extend((i_p, i_n, i_v, i_v))
+                cols.extend((c_p, c_n, i_v, i_v))
                 vals.extend((1.0, -1.0, 1.0, -1.0))
                 r[i_v] = voltage
             case problem.VoltageRegulator(v_p=v_p, v_n=v_n,
@@ -1885,15 +2092,19 @@ def stamp_network_into_system(network: problem.Network,
                                           voltage=voltage,
                                           gain=gain,
                                           input_gain=input_gain,
-                                          switch_legs=switch_legs):
+                                          switch_legs=switch_legs,
+                                          sense_p=sense_p, sense_n=sense_n):
                 i_v_p = node_indexer.node_to_global_index[v_p]
                 i_v_n = node_indexer.node_to_global_index[v_n]
                 i_s_f = node_indexer.node_to_global_index[s_f]
                 i_s_t = node_indexer.node_to_global_index[s_t]
                 i_v = node_indexer.extra_source_to_global_index[element]
-                # Voltage-source half (identical to VoltageSource above).
+                # Voltage-source half (identical to VoltageSource above,
+                # remote sense included).
+                c_p, c_n = _sense_rows(node_indexer, i_v_p, i_v_n,
+                                       sense_p, sense_n)
                 rows.extend((i_v, i_v, i_v_p, i_v_n))
-                cols.extend((i_v_p, i_v_n, i_v, i_v))
+                cols.extend((c_p, c_n, i_v, i_v))
                 vals.extend((1.0, -1.0, 1.0, -1.0))
                 r[i_v] += voltage
                 # Mirror the output current at the input pair with gain: the
@@ -1927,6 +2138,74 @@ def stamp_network_into_system(network: problem.Network,
                     vals.extend((-coeff, coeff))
             case _:
                 raise NotImplementedError(f"Unsupported node type {element}")
+
+
+def _lumped_heat_sources(networks, node_indexer, v, layer_index_of, pl_map):
+    """Heat (W) the lumped parts put into the board, at their pads, for the
+    board thermal model: ``(thermal_layer, x, y, watts)`` arrays.
+
+    * a :class:`~pdnsolver.problem.Resistor` marked ``heat_source`` (a via
+      hop, a series part) dissipates I²R, split evenly over its connections;
+    * a :class:`~pdnsolver.problem.VoltageRegulator` dissipates its
+      conversion loss, input power minus output power, split evenly over its
+      connections.
+
+    Star-coupling and other modelling resistors are not marked and add
+    nothing. A connection on a layer the board model does not know adds
+    nothing either."""
+    idx = node_indexer.node_to_global_index
+    extra = node_indexer.extra_source_to_global_index
+    out_l: list[int] = []
+    out_x: list[float] = []
+    out_y: list[float] = []
+    out_w: list[float] = []
+
+    def _v(node) -> float:
+        i = idx.get(node)
+        return float(v[i]) if i is not None else 0.0
+
+    def _spread(conns, watts: float) -> None:
+        if watts <= 0.0 or not conns:
+            return
+        share = watts / len(conns)
+        for c in conns:
+            pli = layer_index_of.get(id(c.layer))
+            tl = int(pl_map[pli]) if pli is not None and pli < len(pl_map) else -1
+            if tl < 0:
+                continue
+            out_l.append(tl)
+            out_x.append(float(c.point.x))
+            out_y.append(float(c.point.y))
+            out_w.append(share)
+
+    for net in networks:
+        for e in net.elements:
+            if isinstance(e, problem.Resistor) and e.heat_source:
+                dv = _v(e.a) - _v(e.b)
+                conns = [c for c in net.connections
+                         if c.node_id in (e.a, e.b)] or net.connections
+                _spread(conns, dv * dv / e.resistance)
+            elif isinstance(e, problem.VoltageRegulator):
+                i_v = extra.get(e)
+                if i_v is None:
+                    continue
+                i_out = float(v[i_v])
+                draw = e.gain if e.input_gain is None else e.input_gain
+                p_out = (_v(e.v_p) - _v(e.v_n)) * i_out
+                p_in = (_v(e.s_f) - _v(e.s_t)) * draw * i_out
+                _spread(net.connections, abs(p_in - p_out))
+    return (np.asarray(out_l, dtype=np.int64), np.asarray(out_x),
+            np.asarray(out_y), np.asarray(out_w))
+
+
+def _sense_rows(node_indexer, i_p: int, i_n: int, sense_p, sense_n
+                ) -> tuple[int, int]:
+    """Columns a source's voltage-constraint row reads: the sense nodes when
+    set (and indexed), else the output terminals themselves."""
+    idx = node_indexer.node_to_global_index
+    c_p = idx.get(sense_p, i_p) if sense_p is not None else i_p
+    c_n = idx.get(sense_n, i_n) if sense_n is not None else i_n
+    return c_p, c_n
 
 
 def setup_ground_node(i_gnd: int, N: int,
@@ -2885,6 +3164,9 @@ def _mesh_assembly_fingerprint(
             h.update(np.float64([conn.point.x, conn.point.y]).tobytes())
             if conn.region is not None:
                 h.update(shapely.to_wkb(conn.region))
+                # A barrel patch adds grading seeds and is claimed after the
+                # pads, so the same region meshes differently with the flag.
+                h.update(b"B" if conn.barrel else b"P")
     # Which (layer, geom) pairs are meshed — sorted for order-independence.
     h.update(b"\x00M")
     for pair in sorted(connected_layer_mesh_pairs):
@@ -3669,12 +3951,15 @@ def solve(prob: problem.Problem,
     # --- Linear solve -----------------------------------------------------
     _t0 = time.monotonic()
     log.info("Solving the linear system")
-    # The MNA matrix is symmetric unless a VoltageRegulator is present — its
-    # gain term is the only asymmetric stamp (the contraction above preserves
-    # symmetry, remapping rows and columns identically). When symmetric,
-    # PARDISO can use its faster symmetric-indefinite factorisation.
+    # The MNA matrix is symmetric unless a VoltageRegulator (its gain term)
+    # or a remote-sensed source (constraint row on the sense nodes, current
+    # column on the output pins) is present — the only asymmetric stamps
+    # (the contraction above preserves symmetry, remapping rows and columns
+    # identically). When symmetric, PARDISO can use its faster
+    # symmetric-indefinite factorisation.
     matrix_is_symmetric = not any(
         isinstance(e, problem.VoltageRegulator)
+        or (isinstance(e, problem.VoltageSource) and e.has_remote_sense)
         for net in filtered_networks for e in net.elements
     )
     # Direct sparse LU first — fast (~1 s on a 400K matrix) and exact when
@@ -3790,6 +4075,31 @@ def solve(prob: problem.Problem,
             r_th = (1.0e6 / h) if h > 0.0 else 0.0
             tri_rise = np.zeros(tris_all.shape[0], dtype=DTYPE)
             clamped_any = False
+            board = getattr(thermal, "board", None)
+            if board is not None:
+                # Per-triangle area, centroid and thermal layer, fixed for
+                # the whole loop.
+                _p0 = xys_all[tris_all[:, 0]]
+                _p1 = xys_all[tris_all[:, 1]]
+                _p2 = xys_all[tris_all[:, 2]]
+                tri_area = 0.5 * np.abs(
+                    (_p1[:, 0] - _p0[:, 0]) * (_p2[:, 1] - _p0[:, 1])
+                    - (_p1[:, 1] - _p0[:, 1]) * (_p2[:, 0] - _p0[:, 0]))
+                tri_cx = (_p0[:, 0] + _p1[:, 0] + _p2[:, 0]) / 3.0
+                tri_cy = (_p0[:, 1] + _p1[:, 1] + _p2[:, 1]) / 3.0
+                _pl_map = np.asarray(board.problem_layer_map, dtype=np.int64)
+                _mesh_layer = np.asarray(
+                    [mesh_index_to_layer_index[i] for i in range(len(meshes))],
+                    dtype=np.int64)
+                tri_tlayer = (_pl_map[_mesh_layer[tri_mesh_ids]]
+                              if _pl_map.size else
+                              np.full(tris_all.shape[0], -1, dtype=np.int64))
+                if np.any(tri_tlayer < 0):
+                    warnings.warn(
+                        "Electro-thermal: some copper has no layer in the "
+                        "board thermal model; its heat is left out.",
+                        SolverWarning, stacklevel=2)
+                layer_index_of = {id(lay): i for i, lay in enumerate(prob.layers)}
 
             for _it in range(int(thermal.max_iterations)):
                 # Power density from the *current* solution and the
@@ -3800,7 +4110,15 @@ def solve(prob: problem.Problem,
                 p_areal = triangle_power_density(
                     xys_all, tris_all, cur_cond, v,
                 )
-                raw_rise = p_areal * r_th
+                if board is not None:
+                    pt_l, pt_x, pt_y, pt_w = _lumped_heat_sources(
+                        filtered_networks, node_indexer, v, layer_index_of,
+                        _pl_map)
+                    raw_rise = board.rise_for(
+                        tri_tlayer, tri_cx, tri_cy, p_areal * tri_area,
+                        pt_l, pt_x, pt_y, pt_w)
+                else:
+                    raw_rise = p_areal * r_th
                 n_clamped = int(np.count_nonzero(raw_rise > thermal.max_rise_c))
                 if n_clamped:
                     clamped_any = True

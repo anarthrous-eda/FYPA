@@ -157,6 +157,14 @@ IR drop). LDO regulators stay at `PDN_GAIN = 1.0`.
 Import with auto-solve always runs a **single** pass; use the checkbox for
 iterative refinement. The CLI equivalent is `--adaptive-regulator-gain`.
 
+### Remote sense
+
+A regulator whose feedback is taken at the load takes the same
+`PDN_SENSE_DES` / `PDN_SENSE_N_DES` (and optional `*_PINS`) parameters as a
+SOURCE, on its OUT nets: the solve holds `PDN_V` across the sense pads and
+the OUT pins rise by the output copper's drop. See
+[Remote sense](01-sources-and-sinks.md#remote-sense-pdn_sense_des).
+
 ### Quiescent current (`PDN_QUIESCENT`)
 
 Regulators draw a small **standby current** from their input even when the

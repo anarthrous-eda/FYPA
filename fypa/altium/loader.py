@@ -73,11 +73,73 @@ from fypa.altium import diode_curve as _diode_curve
 # copper layers being bridged — so each hop's resistance scales with the
 # dielectric (and any intervening copper) it actually traverses.
 #
-# 25 µm (~1 mil) is the standard plated-through-hole copper wall thickness
-# called out by IPC-A-600 Class 2; designs requiring Class 3 typically use
-# the same nominal value with tighter minima. Override if your fab quotes
-# differently.
+# Barrel plating per via type. Plating grows inward from the drilled wall
+# and differs by hole type: through holes and blind vias are plated with the
+# outer layers, buried vias with their core, and laser microvias get a thin
+# layer of their own. Defaults are the IPC-6012 Class 3 minimum average
+# plating (through 25 µm, blind 25 µm, buried 15 µm, microvia 12 µm); Class
+# 2 is 20 / 20 / 13 / 12 µm. Set what your fabricator states.
+#
+# PLATING_THICKNESS_MM covers through vias and component plated holes (PTH).
 PLATING_THICKNESS_MM: float = 0.025
+PLATING_BLIND_MM: float = 0.025
+PLATING_BURIED_MM: float = 0.015
+PLATING_MICROVIA_MM: float = 0.012
+# A blind / buried via counts as a microvia when it spans one dielectric
+# (two adjacent copper layers) and its drill is at most this (IPC-2226:
+# a microvia is <= 0.15 mm). Altium carries no microvia flag on a via.
+MICROVIA_MAX_DRILL_MM: float = 0.15
+
+VIA_KINDS: tuple[str, ...] = ("through", "blind", "buried", "micro", "pth")
+
+
+def _plating_for_kind(kind: str) -> float:
+    """Plating thickness (mm) for a via kind, read from the module globals
+    *now* so a Settings-tab re-run picks up the patched values."""
+    if kind == "blind":
+        return PLATING_BLIND_MM
+    if kind == "buried":
+        return PLATING_BURIED_MM
+    if kind == "micro":
+        return PLATING_MICROVIA_MM
+    return PLATING_THICKNESS_MM
+
+
+def plating_summary(phys: dict) -> str:
+    """One-line per-type plating summary from a solve's ``physics_constants``
+    (``"through/PTH 25 · blind 25 · buried 15 · micro 12 µm"``). A pickle from
+    before per-type plating shows its single value."""
+    def _um(key: str) -> str | None:
+        v = phys.get(key)
+        try:
+            return f"{float(v) * 1000:g}"
+        except (TypeError, ValueError):
+            return None
+    through = _um("plating_thickness_mm")
+    if through is None:
+        return "—"
+    if "plating_blind_mm" not in phys:
+        return f"{through} µm"
+    return (f"through/PTH {through} · blind {_um('plating_blind_mm')} · "
+            f"buried {_um('plating_buried_mm')} · "
+            f"micro {_um('plating_microvia_mm')} µm")
+
+
+def _classify_via(start: int, end: int, span: list[int] | tuple[int, ...],
+                  enabled_layers: list[int], drill_mm: float) -> str:
+    """Via kind from its declared end layers: *through* when both ends are
+    the stack's outer layers, *blind* with one, *buried* with neither; a
+    blind or buried via over one dielectric with a small drill is *micro*.
+    Outer layers are the first and last enabled copper layers."""
+    if not enabled_layers:
+        return "through"
+    outer = {enabled_layers[0], enabled_layers[-1]}
+    n_outer = (start in outer) + (end in outer)
+    if n_outer == 2 and start != end:
+        return "through"
+    if (len(span) == 2 and 0.0 < drill_mm <= MICROVIA_MAX_DRILL_MM):
+        return "micro"
+    return "blind" if n_outer == 1 else "buried"
 
 # Same conductivity used by the plane-sheet model (5.95e4 S/mm == 5.95e7 S/m
 # for annealed copper). Resistivity in ohm·mm so that L_hop [mm] / A [mm^2]
@@ -198,8 +260,12 @@ class SolveSettings:
     temperature_c: float = 20.0
     copper_resistivity_20c_microohm_cm: float = 1.68
     copper_temp_coefficient_per_c: float = 0.00393
-    # Via model
+    # Via model — plating per via type (see PLATING_* above). The first
+    # covers through vias and component plated holes.
     plating_thickness_mm: float = PLATING_THICKNESS_MM
+    plating_blind_mm: float = PLATING_BLIND_MM
+    plating_buried_mm: float = PLATING_BURIED_MM
+    plating_microvia_mm: float = PLATING_MICROVIA_MM
     coupling_resistance_ohm: float = COUPLING_RESISTANCE_OHM
     fallback_via_resistance_ohm: float = FALLBACK_VIA_RESISTANCE_OHM
     conductive_fill_resistivity_ohm_mm: float = CONDUCTIVE_FILL_RESISTIVITY_OHM_MM
@@ -227,6 +293,11 @@ class SolveSettings:
     heat_transfer_w_per_m2k: float = 20.0
     electrothermal_max_iterations: int = 8
     electrothermal_tolerance_c: float = 0.25
+    # Spread the heat across the board (a layered board thermal model: every
+    # net's copper, the laminate, plated barrels, convection from both
+    # faces) rather than shedding each triangle's heat on the spot. On by
+    # default with the coupled solve; off reproduces the local model.
+    thermal_spreading: bool = True
 
     def thermal_config(self):
         """Build the solver's :class:`~pdnsolver.solver.ThermalConfig` from
@@ -241,6 +312,7 @@ class SolveSettings:
             alpha_per_c=float(self.copper_temp_coefficient_per_c),
             max_iterations=int(self.electrothermal_max_iterations),
             tolerance_c=float(self.electrothermal_tolerance_c),
+            spreading=bool(self.thermal_spreading),
         )
 
     @property
@@ -271,6 +343,9 @@ class SolveSettings:
         # will pick the new values up automatically on the next call.
         globals()["COPPER_RESISTIVITY_OHM_MM"] = self.copper_resistivity_ohm_mm
         globals()["PLATING_THICKNESS_MM"] = self.plating_thickness_mm
+        globals()["PLATING_BLIND_MM"] = self.plating_blind_mm
+        globals()["PLATING_BURIED_MM"] = self.plating_buried_mm
+        globals()["PLATING_MICROVIA_MM"] = self.plating_microvia_mm
         globals()["COUPLING_RESISTANCE_OHM"] = self.coupling_resistance_ohm
         globals()["FALLBACK_VIA_RESISTANCE_OHM"] = self.fallback_via_resistance_ohm
         globals()["CONDUCTIVE_FILL_RESISTIVITY_OHM_MM"] = (
@@ -306,6 +381,15 @@ class SolveSettings:
             s.copper_resistivity_20c_microohm_cm = rho_at_t / denom
         if "plating_thickness_mm" in phys:
             s.plating_thickness_mm = float(phys["plating_thickness_mm"])
+        # Pickles from before per-type plating carried one value for every
+        # via; reproduce that solve by applying it to every type.
+        legacy = "plating_blind_mm" not in phys and "plating_thickness_mm" in phys
+        for attr in ("plating_blind_mm", "plating_buried_mm",
+                     "plating_microvia_mm"):
+            if attr in phys:
+                setattr(s, attr, float(phys[attr]))
+            elif legacy:
+                setattr(s, attr, s.plating_thickness_mm)
         if "coupling_resistance_ohm" in phys:
             s.coupling_resistance_ohm = float(phys["coupling_resistance_ohm"])
         if "fallback_via_resistance_ohm" in phys:
@@ -343,6 +427,11 @@ class SolveSettings:
             s.electrothermal_max_iterations = int(thermal["max_iterations"])
         if "tolerance_c" in thermal:
             s.electrothermal_tolerance_c = float(thermal["tolerance_c"])
+        # What the coupled solve actually ran (solves from before the board
+        # model always ran the local one). An isothermal solve says nothing
+        # about the preference, so it keeps the default.
+        if thermal.get("enabled"):
+            s.thermal_spreading = bool(thermal.get("spreading", False))
         return s
 
 
@@ -632,10 +721,14 @@ def _directive_terminals(d: DirectiveSpec) -> list[TerminalSpec]:
             terms.append(vin_p)
         if vin_n is not None:
             terms.append(vin_n)
+        terms.extend(t for t in (getattr(d, "out_sense_p", None),
+                                 getattr(d, "out_sense_n", None))
+                     if t is not None)
         return terms
-    if d.n is None:
-        return [d.p]
-    return [d.p, d.n]
+    terms = [d.p] if d.n is None else [d.p, d.n]
+    terms.extend(t for t in (getattr(d, "sense_p", None),
+                             getattr(d, "sense_n", None)) if t is not None)
+    return terms
 
 
 def _collect_active_nets(directives, extracted: ExtractedProject) -> set[int]:
@@ -899,8 +992,24 @@ def _directive_to_network(
     #   two pads), so coupling resistance doesn't kick in.
     # * REGULATOR sense pair (in_p/in_n) carries no current — leave on the
     #   default; the value doesn't matter numerically.
+    def _sense_nodes(term_p, term_n):
+        """Nodes + gather entries for a remote-sense pair (``None`` = sense
+        locally). A sense line carries no current, so its pins keep the
+        default star coupling."""
+        nodes, entries = [], []
+        for term, name in ((term_p, "SENSE_P"), (term_n, "SENSE_N")):
+            if term is None or not term.pins:
+                nodes.append(None)
+                continue
+            node = _pp.NodeID()
+            nodes.append(node)
+            entries.append((term, node, COUPLING_RESISTANCE_OHM, name))
+        return nodes[0], nodes[1], entries
+
     if isinstance(d, SourceSpec):
         node_p = _pp.NodeID()
+        sense_p, sense_n, sense_entries = _sense_nodes(
+            getattr(d, "sense_p", None), getattr(d, "sense_n", None))
         if d.n is None:
             # Single-net: N terminal is the group's shared ideal-return node.
             # ``return_group`` is always set for a single-net directive that
@@ -909,16 +1018,20 @@ def _directive_to_network(
             # to a fresh node defensively rather than risk a KeyError.
             node_n = _return_ref(return_ref_nodes, d.return_group)
             element: _pp.BaseLumped = _pp.VoltageSource(
-                p=node_p, n=node_n, voltage=d.voltage)
+                p=node_p, n=node_n, voltage=d.voltage,
+                sense_p=sense_p, sense_n=sense_n)
             conns, aux = _gather(
                 (d.p, node_p, SOURCE_COUPLING_RESISTANCE_OHM, "P"),
+                *sense_entries,
             )
         else:
             node_n = _pp.NodeID()
-            element = _pp.VoltageSource(p=node_p, n=node_n, voltage=d.voltage)
+            element = _pp.VoltageSource(p=node_p, n=node_n, voltage=d.voltage,
+                                        sense_p=sense_p, sense_n=sense_n)
             conns, aux = _gather(
                 (d.p, node_p, SOURCE_COUPLING_RESISTANCE_OHM, "P"),
                 (d.n, node_n, SOURCE_COUPLING_RESISTANCE_OHM, "N"),
+                *sense_entries,
             )
     elif isinstance(d, SinkSpec):
         node_f = _pp.NodeID()
@@ -937,7 +1050,8 @@ def _directive_to_network(
             )
     elif isinstance(d, ResistorSpec):
         node_a, node_b = _pp.NodeID(), _pp.NodeID()
-        element = _pp.Resistor(a=node_a, b=node_b, resistance=d.resistance)
+        element = _pp.Resistor(a=node_a, b=node_b, resistance=d.resistance,
+                               heat_source=True)
         conns, aux = _gather(
             (d.p, node_a, COUPLING_RESISTANCE_OHM, "P"),
             (d.n, node_b, COUPLING_RESISTANCE_OHM, "N"),
@@ -977,11 +1091,14 @@ def _directive_to_network(
         # A non-synchronous buck's element carries only the switch pins'
         # share of the output current; see regulator_input_gain.
         cut_r = getattr(d, "cut_resistance", None)
+        sense_p, sense_n, sense_entries = _sense_nodes(
+            getattr(d, "out_sense_p", None), getattr(d, "out_sense_n", None))
         element = _pp.VoltageRegulator(
             v_p=node_vp, v_n=node_vn, s_f=node_sf, s_t=node_st,
             voltage=d.voltage, gain=d.gain,
             input_gain=regulator_input_gain(d),
             switch_legs=tuple(switch_leg_nodes),
+            sense_p=sense_p, sense_n=sense_n,
         )
         # The cut part's own series resistance (inductor DCR, or RDSon for a
         # boost's high-side FET) sits on the input-side coupling, where the
@@ -995,6 +1112,7 @@ def _directive_to_network(
             (d.in_p, node_sf, in_coup, "IN_P"),
             (d.in_n, node_st, COUPLING_RESISTANCE_OHM, "IN_N"),
             *leg_terminals,
+            *sense_entries,
         )
         network_elements: list[_pp.BaseLumped] = [element]
         if d.quiescent_current > 0:
@@ -1003,13 +1121,39 @@ def _directive_to_network(
             ))
         if not conns:
             return None
+        network_elements[0] = _drop_unlanded_sense(element, conns, aux, d)
         return _pp.Network(connections=conns, elements=[*network_elements, *aux])
     else:
         raise TypeError(f"Unknown directive type: {type(d).__name__}")
 
     if not conns:
         return None
+    if isinstance(element, _pp.VoltageSource):
+        element = _drop_unlanded_sense(element, conns, aux, d)
     return _pp.Network(connections=conns, elements=[element, *aux])
+
+
+def _drop_unlanded_sense(element, conns, aux, d):
+    """A remote-sense node whose pads landed on no copper would float — the
+    constraint row would then reference an unconstrained variable and the
+    system would go singular. Fall back to local sense for that side, and
+    say so."""
+    if not getattr(element, "has_remote_sense", False):
+        return element
+    landed = {c.node_id for c in conns}
+    for e in aux:
+        landed.update(getattr(e, "terminals", ()))
+    changes = {}
+    for attr in ("sense_p", "sense_n"):
+        node = getattr(element, attr)
+        if node is not None and node not in landed:
+            changes[attr] = None
+            log.warning(
+                "%s %s: remote-sense %s pads are not on meshed copper — "
+                "sensing that side locally at the output pins instead.",
+                type(d).__name__, getattr(d, "designator", "?"),
+                "+" if attr == "sense_p" else "−")
+    return dataclasses.replace(element, **changes) if changes else element
 
 
 def _via_pad_layer_span(start: int, end: int, enabled_layers: list[int]) -> list[int]:
@@ -1249,6 +1393,8 @@ class _ViaSite:
     # the resistance model, the rest is passthrough for the viewer.
     ipc4761_via_type: int = 0
     fill_material: str = ""
+    # One of VIA_KINDS; picks the plating thickness (see _plating_for_kind).
+    kind: str = "through"
 
 
 def _coupling_networks(
@@ -1278,10 +1424,10 @@ def _coupling_networks(
     Sites whose net is :data:`NO_NET` or whose nominal net has copper on fewer
     than two layers in the span are skipped (no element inserted).
     """
-    # Read the default *now* so callers that omit it pick up any monkey-
-    # patched module value (Settings tab → Re-run Solver path).
-    if plating_thickness_mm is None:
-        plating_thickness_mm = PLATING_THICKNESS_MM
+    # Read the defaults *now* so callers that omit them pick up any monkey-
+    # patched module value (Settings tab → Re-run Solver path). Plating is
+    # per via kind unless the caller pins one value for every via.
+    plating_override = plating_thickness_mm
     if conductive_fill_resistivity_ohm_mm is None:
         conductive_fill_resistivity_ohm_mm = CONDUCTIVE_FILL_RESISTIVITY_OHM_MM
     if conductive_fill_mode is None:
@@ -1387,6 +1533,18 @@ def _coupling_networks(
         fill_rho = (
             conductive_fill_resistivity_ohm_mm if is_conductive_fill else None
         )
+        # The plated wall ties the whole drill circle to one potential on
+        # each layer, so the hop lands on that circle (an equipotential
+        # patch), not on a point at the centre. A point contact adds a
+        # spurious log-singular spreading resistance (~+80% on a 0.3 mm via
+        # into a plane) that grows as the mesh is refined. No drill size →
+        # keep the point contact (the hop is on the fallback R anyway).
+        drill_region = (
+            pt.buffer(0.5 * site.drill_diameter_mm, quad_segs=8)
+            if site.drill_diameter_mm > 0.0 else None
+        )
+        plating_mm = (plating_override if plating_override is not None
+                      else _plating_for_kind(site.kind))
         for lid_a, lid_b in zip(layers_for_net, layers_for_net[1:]):
             la = layer_by_layer_and_net[(lid_a, site.net_index)]
             lb = layer_by_layer_and_net[(lid_b, site.net_index)]
@@ -1397,7 +1555,7 @@ def _coupling_networks(
             else:
                 hop_length_mm = abs(z_b - z_a)
             r_hop = _barrel_segment_resistance_ohm(
-                site.drill_diameter_mm, hop_length_mm, plating_thickness_mm,
+                site.drill_diameter_mm, hop_length_mm, plating_mm,
                 conductive_fill_resistivity_ohm_mm=fill_rho,
             )
             if r_hop == FALLBACK_VIA_RESISTANCE_OHM:
@@ -1407,10 +1565,13 @@ def _coupling_networks(
                 elif hop_length_mm <= 0.0:
                     fallback_no_z += 1
             node_a, node_b = _pp.NodeID(), _pp.NodeID()
-            element = _pp.Resistor(a=node_a, b=node_b, resistance=r_hop)
+            element = _pp.Resistor(a=node_a, b=node_b, resistance=r_hop,
+                                   heat_source=True)
             conns = [
-                _pp.Connection(layer=la, point=pt, node_id=node_a),
-                _pp.Connection(layer=lb, point=pt, node_id=node_b),
+                _pp.Connection(layer=la, point=pt, node_id=node_a,
+                               region=drill_region, barrel=True),
+                _pp.Connection(layer=lb, point=pt, node_id=node_b,
+                               region=drill_region, barrel=True),
             ]
             networks.append(_pp.Network(connections=conns, elements=[element]))
             segment_records.append({
@@ -1423,6 +1584,8 @@ def _coupling_networks(
                 "drill_diameter_mm": site.drill_diameter_mm,
                 "resistance_ohm": r_hop,
                 "is_conductive_fill": is_conductive_fill,
+                "via_kind": site.kind,
+                "plating_mm": plating_mm,
             })
 
     if fallback_hops:
@@ -1479,6 +1642,8 @@ def _via_through_holes(
                 drill_diameter_mm=float(v.hole_diameter_mm),
                 ipc4761_via_type=int(getattr(v, "ipc4761_via_type", 0) or 0),
                 fill_material=str(getattr(v, "fill_material", "") or ""),
+                kind=_classify_via(v.layer_start, v.layer_end, span,
+                                   enabled_layers, float(v.hole_diameter_mm)),
             ))
     for p in extracted.pads:
         if not p.is_through_hole:
@@ -1497,6 +1662,7 @@ def _via_through_holes(
             x_mm=p.center.x, y_mm=p.center.y,
             span=tuple(enabled_layers), net_index=p.net_index,
             drill_diameter_mm=float(p.hole_mm),
+            kind="pth",
         ))
     return sites
 
@@ -2178,6 +2344,83 @@ def _report_open_diodes(loaded: LoadedProject, names: list[str]) -> None:
         log.warning("%s", w)
 
 
+def build_board_thermal_model(loaded, problem, per_net_layers,
+                              heat_transfer_w_per_m2k: float):
+    """The layered board thermal model (:mod:`pdnsolver.thermal`) for the
+    coupled electro-thermal solve: every enabled copper layer top to bottom
+    with every net's copper on it, the laminate between them from the
+    stackup, every plated barrel (any net) at its type's plating, and
+    convection from both faces. Returns ``None`` — and the solve keeps the
+    local model — when the board cannot be modelled (no copper, a stackup
+    without thicknesses), saying why."""
+    import shapely
+    from pdnsolver import thermal as _th
+
+    try:
+        proj = loaded.extracted
+        enabled = proj.enabled_copper_layer_ids()
+        by_id = {s.layer_id: s for s in proj.stackup}
+        if not enabled or any(lid not in by_id for lid in enabled):
+            log.warning("Board thermal model: the stackup does not cover "
+                        "every copper layer; using the local thermal model.")
+            return None
+        copper_by_layer: dict[int, list] = {lid: [] for lid in enabled}
+        name_to_lid: dict[str, int | None] = {}
+        for gl in per_net_layers or []:
+            if gl.layer_id in copper_by_layer and not gl.shape.is_empty:
+                copper_by_layer[gl.layer_id].append(gl.shape)
+            prev = name_to_lid.get(gl.name, gl.layer_id)
+            name_to_lid[gl.name] = gl.layer_id if prev == gl.layer_id else None
+        pos = {lid: i for i, lid in enumerate(enabled)}
+        layers = [
+            _th.ThermalLayer(
+                copper_thickness_mm=float(by_id[lid].copper_thickness_mm),
+                copper=shapely.GeometryCollection(copper_by_layer[lid])
+                if copper_by_layer[lid] else None,
+                dielectric_below_mm=(float(by_id[lid].dielectric_thickness_mm)
+                                     if i + 1 < len(enabled) else 0.0),
+            )
+            for i, lid in enumerate(enabled)
+        ]
+        outline = None
+        if len(proj.board_outline) >= 3:
+            outline = shapely.make_valid(shapely.Polygon(
+                [(p.x, p.y) for p in proj.board_outline]))
+            if outline.is_empty or outline.area <= 0:
+                outline = None
+        if outline is None:
+            # No outline: the copper's bounding box, a little larger.
+            allc = [g for gs in copper_by_layer.values() for g in gs]
+            if not allc:
+                log.warning("Board thermal model: no copper; using the local "
+                            "thermal model.")
+                return None
+            minx, miny, maxx, maxy = shapely.GeometryCollection(allc).bounds
+            outline = shapely.box(minx - 1, miny - 1, maxx + 1, maxy + 1)
+        vias = []
+        for site in _via_through_holes(proj, enabled):
+            top, bottom = pos.get(site.span[0]), pos.get(site.span[-1])
+            if top is None or bottom is None or site.drill_diameter_mm <= 0:
+                continue
+            d, t = site.drill_diameter_mm, _plating_for_kind(site.kind)
+            area = (math.pi * d * d / 4.0 if d <= 2 * t
+                    else math.pi * (d * t - t * t))
+            vias.append(_th.ThermalVia(site.x_mm, site.y_mm, min(top, bottom),
+                                       max(top, bottom), area))
+        board = _th.build_thermal_board(
+            outline, layers, vias, heat_transfer_w_per_m2k)
+        board.problem_layer_map = [
+            pos.get(name_to_lid.get(lay.name), -1)
+            if name_to_lid.get(lay.name) is not None else -1
+            for lay in problem.layers
+        ]
+        return board
+    except Exception as exc:     # never let the thermal model sink a solve
+        log.warning("Board thermal model could not be built (%s); using the "
+                    "local thermal model.", exc, exc_info=True)
+        return None
+
+
 def solve_problem_adaptive(
     loaded: LoadedProject,
     mesher_config,
@@ -2187,6 +2430,31 @@ def solve_problem_adaptive(
     thermal_config=None,
 ) -> tuple[object, _pp.Problem, list[dict],
            dict[tuple[int, int], list], list[GeometryLayer], dict]:
+    """Build, solve, and optionally iterate SMPS regulator gains.
+
+    See :func:`_solve_problem_adaptive_impl`; this wrapper frees the board
+    thermal model's factorisation (MKL memory) once every solve is done."""
+    boards: list = []
+    try:
+        return _solve_problem_adaptive_impl(
+            loaded, mesher_config,
+            adaptive_regulator_gain=adaptive_regulator_gain,
+            stage_callback=stage_callback, thermal_config=thermal_config,
+            _boards=boards)
+    finally:
+        for b in boards:
+            b.close()
+
+
+def _solve_problem_adaptive_impl(
+    loaded: LoadedProject,
+    mesher_config,
+    *,
+    adaptive_regulator_gain: bool = False,
+    stage_callback=None,
+    thermal_config=None,
+    _boards: list | None = None,
+):
     """Build, solve, and optionally iterate SMPS regulator gains.
 
     ``thermal_config`` is an optional
@@ -2224,6 +2492,18 @@ def solve_problem_adaptive(
     problem, via_segment_records, stub_pieces_by_pair, per_net_layers = (
         build_problem(loaded)
     )
+    if (thermal_config is not None and thermal_config.enabled
+            and getattr(thermal_config, "spreading", False)
+            and getattr(thermal_config, "board", None) is None):
+        if stage_callback is not None:
+            stage_callback("Building the board thermal model…")
+        board = build_board_thermal_model(
+            loaded, problem, per_net_layers,
+            float(thermal_config.heat_transfer_w_per_m2k))
+        if board is not None:
+            if _boards is not None:
+                _boards.append(board)
+            thermal_config = dataclasses.replace(thermal_config, board=board)
 
     def _solve_once(msg: str):
         if stage_callback is not None:
@@ -2511,6 +2791,7 @@ def build_solve_metadata(
                 "P": _terminal_summary(d.p, nets),
                 "N": _terminal_summary(d.n, nets),
             }
+            _export_remote_sense(common, d.sense_p, d.sense_n, nets)
         elif isinstance(d, SinkSpec):
             common["value"] = d.current
             common["unit"] = "A"
@@ -2574,6 +2855,7 @@ def build_solve_metadata(
                 "IN_P":  _terminal_summary(d.in_p, nets),
                 "IN_N":  _terminal_summary(d.in_n, nets),
             }
+            _export_remote_sense(common, d.out_sense_p, d.out_sense_n, nets)
         directives.append(common)
 
     active_nets = sorted({_net_name(i) for i in _collect_active_nets(
@@ -2600,6 +2882,8 @@ def build_solve_metadata(
             "hop_length_mm": seg["hop_length_mm"],
             "resistance_ohm": seg["resistance_ohm"],
             "is_conductive_fill": bool(seg.get("is_conductive_fill", False)),
+            "via_kind": seg.get("via_kind"),
+            "plating_mm": seg.get("plating_mm"),
         })
 
     # Compact via list for the viewer's marker overlay and per-via current /
@@ -3064,6 +3348,9 @@ def build_solve_metadata(
                 else COPPER_RESISTIVITY_OHM_MM * 1.0e5
             ),
             "plating_thickness_mm": PLATING_THICKNESS_MM,
+            "plating_blind_mm": PLATING_BLIND_MM,
+            "plating_buried_mm": PLATING_BURIED_MM,
+            "plating_microvia_mm": PLATING_MICROVIA_MM,
             "fallback_via_resistance_ohm": FALLBACK_VIA_RESISTANCE_OHM,
             "coupling_resistance_ohm": COUPLING_RESISTANCE_OHM,
             "area_weighted_pin_coupling": AREA_WEIGHTED_PIN_COUPLING,
@@ -3072,7 +3359,8 @@ def build_solve_metadata(
             "conductive_fill_mode": CONDUCTIVE_FILL_MODE,
             "note_via_resistance": (
                 "Per-via inter-layer resistance is computed from the via's "
-                "drill diameter, the plating thickness above, and the "
+                "drill diameter, the plating thickness for its type above "
+                "(through / PTH, blind, buried, microvia), and the "
                 "z-distance between the centres of the two copper layers it "
                 "bridges: R = rho_Cu * L_hop / (pi * (r_outer^2 - r_inner^2)). "
                 "Vias with an IPC-4761 conductive fill (copper / silver paste "
@@ -3178,6 +3466,8 @@ def build_solve_metadata(
                     thermal_config.heat_transfer_w_per_m2k),
                 "max_iterations": int(thermal_config.max_iterations),
                 "tolerance_c": float(thermal_config.tolerance_c),
+                "spreading": bool(getattr(thermal_config, "board", None)
+                                  is not None),
             } if thermal_config is not None else None
         ),
         "solver_stats": (
@@ -3188,6 +3478,17 @@ def build_solve_metadata(
         ),
         "regulator_adaptive_gain": regulator_adaptive_gain,
     }
+
+
+def _export_remote_sense(common: dict, sense_p, sense_n, nets) -> None:
+    """Record a source's / regulator's remote-sense pads in its metadata
+    entry (``remote_sense: {"P": …, "N": …}``, a side omitted when it
+    senses locally). Kept out of ``terminals``: a sense line carries no
+    current, so it is not a terminal the topology draws."""
+    sense = {k: _terminal_summary(t, nets)
+             for k, t in (("P", sense_p), ("N", sense_n)) if t is not None}
+    if sense:
+        common["remote_sense"] = sense
 
 
 def _terminal_summary(term, nets) -> dict:
@@ -4828,6 +5129,7 @@ def build_problem(
         node_a, node_b = _pp.NodeID(), _pp.NodeID()
         bridge_resistor = _pp.Resistor(
             a=node_a, b=node_b, resistance=bridge.resistance,
+            heat_source=True,
         )
         conns = [
             _pp.Connection(

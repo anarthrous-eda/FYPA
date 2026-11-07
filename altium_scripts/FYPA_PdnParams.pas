@@ -694,7 +694,8 @@ Function RoleHelp(Role : String) : String;
 Begin
     If Role = 'SOURCE' Then
         Result := 'Voltage source.  PDN_V is required.  Single-net mode ties the N side ' +
-                  'to an ideal 0 ohm return; two-terminal mode drives P relative to N.'
+                  'to an ideal 0 ohm return; two-terminal mode drives P relative to N.  ' +
+                  'Remote sense holds PDN_V at another part''s pads (usually the load).'
     Else If Role = 'SINK' Then
         Result := 'Current load.  PDN_I is required.  MIN_V adds a pass/fail check, ' +
                   'PIN_R replaces the default 100 mohm pin coupling resistance.'
@@ -705,7 +706,8 @@ Begin
                   'N = downstream: regulators find Vin by walking N -> P.'
     Else If Role = 'REGULATOR' Then
         Result := 'Regulator.  PDN_V plus output and input P/N terminals are required.  ' +
-                  'Set REGULATOR_TYPE (LDO or SMPS), or an explicit GAIN which overrides it.'
+                  'Set REGULATOR_TYPE (LDO or SMPS), or an explicit GAIN which overrides it.  ' +
+                  'Remote sense holds PDN_V at another part''s pads (usually the load).'
     Else If Role = 'PATH' Then
         Result := 'Switch path of an external-FET SMPS.  PDN_R is required; SMPS_HOST ' +
                   'names the controller (e.g. U3).'
@@ -729,6 +731,18 @@ Begin
         AddField('N_PINS', 'N pins',     'PINS', False, 'overrides N net', '');
         AddField('P_DES',  'P from parts', 'DES', False, 'other parts, e.g. C1,C2', '');
         AddField('N_DES',  'N from parts', 'DES', False, 'other parts, e.g. C1,C2', '');
+    End;
+End;
+
+Procedure AddRemoteSense(WithReturn : Boolean);
+Begin
+    AddHeader('Remote sense (optional)');
+    AddField('SENSE_DES',  'Sense + at parts', 'DES',  False, 'e.g. U5 (the load); blank = local', '');
+    AddField('SENSE_PINS', 'Sense + pins',     'PINS', False, 'pins on those parts, optional', '');
+    If WithReturn Then
+    Begin
+        AddField('SENSE_N_DES',  'Sense - at parts', 'DES',  False, 'blank = local return', '');
+        AddField('SENSE_N_PINS', 'Sense - pins',     'PINS', False, 'pins on those parts, optional', '');
     End;
 End;
 
@@ -767,6 +781,7 @@ Begin
         AddHeader('Value');
         AddField('V', 'Voltage', 'VALUE', True, 'e.g. 3V3, 5V, 1.8', '');
         AddTerminalsSourceSink(Single);
+        AddRemoteSense(Not Single);
     End
     Else If Role = 'SINK' Then
     Begin
@@ -797,6 +812,7 @@ Begin
         AddField('OUT_N_NET',  'Out - net',  'NET',  False, 'or Out - pins', '');
         AddField('OUT_P_PINS', 'Out + pins', 'PINS', False, 'overrides Out + net', '');
         AddField('OUT_N_PINS', 'Out - pins', 'PINS', False, 'overrides Out - net', '');
+        AddRemoteSense(True);
         AddHeader('Input');
         AddField('IN_P_NET',   'In + net',   'NET',  False, 'or In + pins', '');
         AddField('IN_N_NET',   'In - net',   'NET',  False, 'or In - pins', '');
@@ -943,6 +959,9 @@ Begin
             DesSide := '';
             If (Key = 'P_NET') Or (Key = 'P_PINS') Then DesSide := FieldVal('P_DES');
             If (Key = 'N_NET') Or (Key = 'N_PINS') Then DesSide := FieldVal('N_DES');
+            { sense pins name pads on the sense parts, not on this part }
+            If Key = 'SENSE_PINS' Then DesSide := FieldVal('SENSE_DES');
+            If Key = 'SENSE_N_PINS' Then DesSide := FieldVal('SENSE_N_DES');
 
             If Kind = 'VALUE' Then
             Begin
@@ -984,6 +1003,12 @@ Begin
         If ((Key = 'V') Or (Key = 'I') Or (Key = 'R')) And (FieldVal(Key) = '') Then
             Errs.Add('PDN_' + Key + ' is required for ' + Role + '.');
     End;
+
+    { --- remote sense: pins name pads on the sense parts --- }
+    If (FieldVal('SENSE_PINS') <> '') And (FieldVal('SENSE_DES') = '') Then
+        Errs.Add('Sense + pins needs Sense + at parts (the part the sense line lands on).');
+    If (FieldVal('SENSE_N_PINS') <> '') And (FieldVal('SENSE_N_DES') = '') Then
+        Errs.Add('Sense - pins needs Sense - at parts (the part the sense line lands on).');
 
     { --- terminals --- }
     If (Role = 'SOURCE') Or (Role = 'SINK') Then

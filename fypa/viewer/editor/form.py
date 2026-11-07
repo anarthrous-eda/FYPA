@@ -879,12 +879,34 @@ class _EditorFormMixin:
         )
         self._ef_ndes_label = QLabel("N DES")
         form2.addRow(self._ef_ndes_label, self._ef_ndes)
+        # Remote sense (PDN_SENSE_DES / PDN_SENSE_N_DES) — SOURCE only.
+        self._ef_sense = QLineEdit()
+        self._ef_sense.setPlaceholderText("local (at the source)")
+        self._ef_sense.setToolTip(
+            "Optional remote sense (PDN_SENSE_DES): comma-separated "
+            "designators whose pads on the P net are where the source holds "
+            "its voltage — usually the load. The source's own pins then rise "
+            "by whatever the copper drops on the way. Blank = sense locally."
+        )
+        self._ef_sense_label = QLabel("Sense DES")
+        form2.addRow(self._ef_sense_label, self._ef_sense)
+        self._ef_nsense = QLineEdit()
+        self._ef_nsense.setPlaceholderText("local (at the source)")
+        self._ef_nsense.setToolTip(
+            "Optional remote sense of the return (PDN_SENSE_N_DES): "
+            "designators whose pads on the N net are the − sense point. "
+            "Two-net only. Blank = sense the return locally."
+        )
+        self._ef_nsense_label = QLabel("Sense N DES")
+        form2.addRow(self._ef_nsense_label, self._ef_nsense)
         # Pins / DES apply to a real component's pads only.
         self._ef_pins_apply = sel["kind"] == "component"
         for _w in (self._ef_pins, self._ef_pins_label,
                    self._ef_npins, self._ef_npins_label,
                    self._ef_pdes, self._ef_pdes_label,
-                   self._ef_ndes, self._ef_ndes_label):
+                   self._ef_ndes, self._ef_ndes_label,
+                   self._ef_sense, self._ef_sense_label,
+                   self._ef_nsense, self._ef_nsense_label):
             _w.setVisible(self._ef_pins_apply)
         lay.addLayout(form2)
 
@@ -926,6 +948,10 @@ class _EditorFormMixin:
                 getattr(existing, "p_des", None) or []))
             self._ef_ndes.setText(", ".join(
                 getattr(existing, "n_des", None) or []))
+            self._ef_sense.setText(", ".join(
+                getattr(existing, "sense_des", None) or []))
+            self._ef_nsense.setText(", ".join(
+                getattr(existing, "sense_n_des", None) or []))
             self._ef_remove.setEnabled(True)
             if existing.overrides_designator:
                 self._ef_status.setText(
@@ -1037,6 +1063,15 @@ class _EditorFormMixin:
             self._ef_pdes_label.setVisible(show_des)
             self._ef_ndes.setVisible(show_des)
             self._ef_ndes_label.setVisible(show_des)
+        if hasattr(self, "_ef_sense"):
+            role = (self._ef_role.currentText()
+                    if hasattr(self, "_ef_role") else "")
+            show_sense = (getattr(self, "_ef_pins_apply", False)
+                          and role == "SOURCE")
+            self._ef_sense.setVisible(show_sense)
+            self._ef_sense_label.setVisible(show_sense)
+            self._ef_nsense.setVisible(show_sense and two)
+            self._ef_nsense_label.setVisible(show_sense and two)
 
     def _on_editor_apply(self) -> None:
         """Commit the form into an :class:`EditorDirective` on the project,
@@ -1121,6 +1156,14 @@ class _EditorFormMixin:
             else:
                 d.p_des = self._parse_pin_field(self._ef_pdes.text())
                 d.n_des = self._parse_pin_field(self._ef_ndes.text())
+            # Remote sense (PDN_SENSE_*_DES). SOURCE only; N side two-net.
+            if role == "SOURCE":
+                d.sense_des = self._parse_pin_field(self._ef_sense.text())
+                d.sense_n_des = (None if single else
+                                 self._parse_pin_field(self._ef_nsense.text()))
+            else:
+                d.sense_des = None
+                d.sense_n_des = None
             # If this component has a schematic directive, mark the editor
             # directive as its override so the re-solve drops the schematic
             # one instead of stamping both.
@@ -1134,6 +1177,8 @@ class _EditorFormMixin:
             d.n_pins = None
             d.p_des = None
             d.n_des = None
+            d.sense_des = None
+            d.sense_n_des = None
             self._editor_selection = {"kind": "free", "id": d.id}
 
         self._ensure_project().upsert_directive(d)

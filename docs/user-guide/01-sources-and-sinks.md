@@ -279,6 +279,29 @@ and each channel would drive the identical node; this is refused with an
 error rather than silently multiplying the injected current. Annotate
 each channel's connector on its own component instead.
 
+### Remote sense (`PDN_SENSE_DES`)
+
+A supply whose feedback is taken at the load — a remote-sense pair, or a
+regulator's FB divider tapped at the far end of the rail — holds its
+voltage **at the load**, and raises its own output pins by whatever the
+copper drops on the way. Tell FYPA where the sense line lands:
+
+| Name               | Value  | Meaning |
+|--------------------|--------|---------|
+| `PDN_SENSE_DES`    | `U5`   | + sense: U5's pads on the source's P net (`PDN_OUT_P_NET` on a regulator) |
+| `PDN_SENSE_PINS`   | `12`   | Optional: only these pins of the sense part(s) |
+| `PDN_SENSE_N_DES`  | `U5`   | − sense: U5's pads on the N net (two-terminal only) |
+| `PDN_SENSE_N_PINS` | `13`   | Optional: only these pins |
+
+Either side may be left out; it then senses locally, at the source's own
+pins. The solve holds `V(sense+) − V(sense−) = PDN_V` exactly, so the
+sensed load reads ~0 drop and the source pins read high — compare a
+locally-sensed source, whose pins hold `PDN_V` and whose load sees the
+drop. A sense line carries no current. Sense pads that land on no
+meshed copper fall back to local sense for that side, with a warning.
+Indexed channels use `PDNn_SENSE_DES` and so on; editor-mode SOURCE
+markers have *Sense DES* / *Sense N DES* fields.
+
 ### Several rails on one part (multi-channel)
 
 An IC that draws from more than one supply rail is a single part with

@@ -105,11 +105,30 @@ class _SettingsTabMixin:
          "sealed box. Lower values mean hotter copper and a larger IR "
          "drop."),
         ("plating_thickness_mm",
-         "Via plating thickness",
+         "Via plating: through / PTH",
          "mm",
-         "Plated-through-hole copper wall thickness. Default 0.025 mm "
-         "(~1 mil) matches IPC-A-600 Class 2; bump to 0.030–0.050 mm for "
-         "Class 3 / heavy-copper builds."),
+         "Barrel copper wall thickness of through vias and component "
+         "plated holes. Default 0.025 mm is the IPC-6012 Class 3 minimum "
+         "average (Class 2: 0.020 mm). Use the value your fabricator "
+         "states; heavy-copper builds run 0.030–0.050 mm."),
+        ("plating_blind_mm",
+         "Via plating: blind",
+         "mm",
+         "Wall thickness of blind vias (one end on an outer layer, more "
+         "than one dielectric deep or a drill over 0.15 mm). Default "
+         "0.025 mm is IPC-6012 Class 3 (Class 2: 0.020 mm)."),
+        ("plating_buried_mm",
+         "Via plating: buried",
+         "mm",
+         "Wall thickness of buried vias (neither end on an outer layer), "
+         "plated with their core before lamination. Default 0.015 mm is "
+         "IPC-6012 Class 3 (Class 2: 0.013 mm)."),
+        ("plating_microvia_mm",
+         "Via plating: microvia",
+         "mm",
+         "Wall thickness of microvias: a blind or buried via over one "
+         "dielectric with a drill of 0.15 mm or less (IPC-2226). Default "
+         "0.012 mm is the IPC-6012 minimum average for Class 2 and 3."),
         ("coupling_resistance_ohm",
          "Multi-pin coupling resistance",
          "Ω",
@@ -343,22 +362,41 @@ class _SettingsTabMixin:
             "so more resistive, so it drops more and heats further. Copper "
             "rises ~0.39 %/K, so a heavily loaded rail can read 10–20 % "
             "optimistic without this.\n\n"
-            "Heat is shed locally to ambient using the 'Board heat transfer "
-            "coefficient' above — there is no lateral heat spreading, so a "
-            "small hot feature reads as an upper bound while a broad one is "
-            "about right. Costs one extra factorisation per iteration "
-            "(typically 3–8).\n\n"
+            "Heat leaves the board through both faces at the 'Board heat "
+            "transfer coefficient' above; with 'Spread heat across the "
+            "board' it first spreads through every net's copper, the "
+            "laminate and the vias. Costs one extra factorisation per "
+            "iteration (typically 3–8).\n\n"
             "Off = isothermal at the board temperature (the default)."
         )
         self._settings_electrothermal_check.toggled.connect(
             self._on_settings_field_changed)
         self._settings_electrothermal_check.toggled.connect(
             self._on_electrothermal_toggled)
+        # Lateral heat spreading (the layered board thermal model) — only
+        # meaningful with the coupled solve, so greyed without it.
+        self._settings_thermal_spreading_check = QCheckBox(
+            "Spread heat across the board")
+        self._settings_thermal_spreading_check.setChecked(
+            bool(getattr(self._solve_settings, "thermal_spreading", True)))
+        self._settings_thermal_spreading_check.setToolTip(
+            "Model the board's heat flow: every net's copper on every layer "
+            "spreads heat sideways, the laminate and plated vias carry it "
+            "between layers, and the two outer faces shed it. A hot neck "
+            "then warms its surroundings and a pour acts as a heatsink, as "
+            "on the real board. Regulator conversion loss, series parts and "
+            "via barrels heat the board too.\n\n"
+            "Off = each piece of copper sheds its own heat on the spot (no "
+            "spreading): an upper bound on small hot features."
+        )
+        self._settings_thermal_spreading_check.toggled.connect(
+            self._on_settings_field_changed)
         _solve_layout = solve_box.layout()
         if _solve_layout is not None:
             _solve_layout.addRow(self._settings_adaptive_check)
             _solve_layout.addRow(self._settings_area_weighted_check)
             _solve_layout.addRow(self._settings_electrothermal_check)
+            _solve_layout.addRow(self._settings_thermal_spreading_check)
         self._apply_electrothermal_enabled()
         # Adaptive SMPS regulator-gain iteration — moved here from the editor
         # canvas overlay. Same attribute name + handler as before, so the
@@ -1130,6 +1168,9 @@ class _SettingsTabMixin:
         if et is not None:
             et.setChecked(bool(defaults.electrothermal))
             self._apply_electrothermal_enabled()
+        ts = getattr(self, "_settings_thermal_spreading_check", None)
+        if ts is not None:
+            ts.setChecked(bool(defaults.thermal_spreading))
         aw = getattr(self, "_settings_area_weighted_check", None)
         if aw is not None:
             aw.setChecked(bool(defaults.area_weighted_pin_coupling))
@@ -1215,6 +1256,13 @@ class _SettingsTabMixin:
             mark(et, dirty)
             any_dirty = any_dirty or dirty
 
+        ts = getattr(self, "_settings_thermal_spreading_check", None)
+        if ts is not None:
+            dirty = bool(ts.isChecked()) != bool(
+                getattr(self._solve_settings, "thermal_spreading", True))
+            mark(ts, dirty)
+            any_dirty = any_dirty or dirty
+
         mode_combo = getattr(self, "_fill_mode_combo", None)
         if mode_combo is not None:
             dirty = mode_combo.currentData() != getattr(
@@ -1261,10 +1309,13 @@ class _SettingsTabMixin:
 
     def _apply_electrothermal_enabled(self) -> None:
         chk = getattr(self, "_settings_electrothermal_check", None)
+        on = bool(chk.isChecked()) if chk is not None else False
+        ts = getattr(self, "_settings_thermal_spreading_check", None)
+        if ts is not None:
+            ts.setEnabled(on)
         edit = getattr(self, "settings_edit_heat_transfer_w_per_m2k", None)
         if edit is None:
             return
-        on = bool(chk.isChecked()) if chk is not None else False
         edit.setEnabled(on)
         edit.setToolTip(
             "How readily the board sheds heat to ambient, both faces "

@@ -55,11 +55,20 @@ class Connection:
     distributed by the surrounding copper instead of through a single
     vertex. ``point`` is still used to seed the mesh and as the fallback
     attach vertex when ``region`` catches no mesh vertex.
+
+    ``barrel`` marks a via / plated-hole hop whose ``region`` is the drill
+    circle: the plated wall ties everything inside it to one potential, so
+    current spreads into the plane from the drill radius rather than from a
+    point (a point contact over-states via-to-plane spreading resistance by
+    ~80% and diverges under mesh refinement). Barrel patches are claimed
+    *after* every pad patch, so a via inside a terminal pad joins that pad's
+    group instead of splitting it.
     """
     layer: Layer
     point: shapely.geometry.Point
     node_id: NodeID = field(default_factory=NodeID)
     region: shapely.geometry.Polygon | None = None
+    barrel: bool = False
 
 
 # eq=False on every lumped element: they are always handled as instances and
@@ -126,6 +135,12 @@ class Resistor(BaseLumped):
     a: NodeID
     b: NodeID
     resistance: float
+    # True for a resistor that is a real dissipating part — a via barrel
+    # hop, a series part (shunt, ferrite, fuse) — whose I²R the board
+    # thermal model heats the board with at its pads. False (the default)
+    # for modelling artefacts such as a multi-pin terminal's star-coupling
+    # resistors, whose loss is fictitious.
+    heat_source: bool = False
 
     def __post_init__(self):
         super().__post_init__()
@@ -139,13 +154,33 @@ class Resistor(BaseLumped):
 
 @dataclass(frozen=True, eq=False)
 class VoltageSource(BaseLumped):
+    """Ideal source: ``V(p) - V(n) = voltage``, its current delivered at p/n.
+
+    With remote sense (``sense_p`` and/or ``sense_n`` set) the source holds
+    ``V(sense_p) - V(sense_n) = voltage`` instead, still delivering its
+    current at p/n — so the output pins rise by whatever the copper drops
+    between them and the sense point, as a regulator's feedback loop does.
+    A sense node carries no current; an unset one falls back to p / n
+    (local sense). The constraint row then differs from the current
+    column, so the system is no longer symmetric."""
     p: NodeID
     n: NodeID
     voltage: float
+    sense_p: NodeID | None = None
+    sense_n: NodeID | None = None
+
+    @property
+    def has_remote_sense(self) -> bool:
+        return self.sense_p is not None or self.sense_n is not None
 
     @property
     def terminals(self) -> list[NodeID]:
-        return [self.p, self.n]
+        nodes = [self.p, self.n]
+        if self.sense_p is not None:
+            nodes.append(self.sense_p)
+        if self.sense_n is not None:
+            nodes.append(self.sense_n)
+        return nodes
 
     @property
     def is_source(self) -> bool:
@@ -193,12 +228,24 @@ class VoltageRegulator(BaseLumped):
     # *f* loses that current and *t* receives it, so each leg is balanced on
     # its own and injects nothing into the rest of the network.
     switch_legs: tuple[tuple[NodeID, NodeID, float], ...] = ()
+    # Remote sense of the output (see VoltageSource): the regulator holds
+    # V(sense_p) - V(sense_n) = voltage while delivering i_v at v_p / v_n.
+    sense_p: NodeID | None = None
+    sense_n: NodeID | None = None
+
+    @property
+    def has_remote_sense(self) -> bool:
+        return self.sense_p is not None or self.sense_n is not None
 
     @property
     def terminals(self) -> list[NodeID]:
         nodes = [self.v_p, self.v_n, self.s_f, self.s_t]
         for f, t, _coeff in self.switch_legs:
             nodes.extend((f, t))
+        if self.sense_p is not None:
+            nodes.append(self.sense_p)
+        if self.sense_n is not None:
+            nodes.append(self.sense_n)
         return nodes
 
     @property

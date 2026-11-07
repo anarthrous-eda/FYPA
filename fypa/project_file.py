@@ -87,6 +87,12 @@ class EditorDirective:
     # free markers and single-net / SERIES directives.
     p_des: list[str] | None = None
     n_des: list[str] | None = None
+    # Remote sense of a SOURCE (schematic ``PDN_SENSE_DES`` /
+    # ``PDN_SENSE_N_DES``): designators whose pads on the P (N) net are the
+    # sense point; the source holds its voltage there. ``None`` = sense
+    # locally. Component-bound SOURCE only (N side two-net only).
+    sense_des: list[str] | None = None
+    sense_n_des: list[str] | None = None
     voltage: float | None = None
     current: float | None = None
     resistance: float | None = None       # SERIES only, ohms
@@ -110,6 +116,10 @@ class EditorDirective:
         d["n_pins"] = list(self.n_pins) if self.n_pins is not None else None
         d["p_des"] = list(self.p_des) if self.p_des is not None else None
         d["n_des"] = list(self.n_des) if self.n_des is not None else None
+        d["sense_des"] = (list(self.sense_des)
+                          if self.sense_des is not None else None)
+        d["sense_n_des"] = (list(self.sense_n_des)
+                            if self.sense_n_des is not None else None)
         return d
 
     @staticmethod
@@ -142,6 +152,8 @@ class EditorDirective:
             n_pins=cls._coerce_pins(d.get("n_pins")),
             p_des=cls._coerce_pins(d.get("p_des")),
             n_des=cls._coerce_pins(d.get("n_des")),
+            sense_des=cls._coerce_pins(d.get("sense_des")),
+            sense_n_des=cls._coerce_pins(d.get("sense_n_des")),
             voltage=(None if d.get("voltage") is None else float(d["voltage"])),
             current=(None if d.get("current") is None else float(d["current"])),
             resistance=(None if d.get("resistance") is None

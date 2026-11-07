@@ -199,10 +199,12 @@ class PdnViewer(
         # reach them before the first multi-selection builds the form.
         self._mf_current = None
         self._mf_min_v = None
+        self._mf_voltage = None
         self._mf_single = None
         self._mf_two = None
         self._mf_btngroup = None
         self._mf_pnet = None
+        self._mf_pnet_label = None
         self._mf_nnet = None
         self._mf_nnet_label = None
         self._mf_status = None

@@ -11,6 +11,11 @@ from fypa.viewer.widgets import _contrasting_text_color, _esc
 
 # --- Setup-tab HTML formatter (module-level, no Qt deps) ---------------------
 
+def _plating_summary(phys: dict) -> str:
+    from fypa.altium.loader import plating_summary
+    return plating_summary(phys)
+
+
 def _format_setup_html(solution, metadata: dict | None,
                        expanded_directives: set[str] | frozenset[str] = frozenset(),
                        *,
@@ -157,9 +162,10 @@ def _format_setup_html(solution, metadata: dict | None,
                      f"<td class='muted'>= {phys.get('copper_resistivity_microohm_cm', 0):.4f} µΩ·cm "
                      f"= {phys.get('copper_resistivity_ohm_m', 0):.3e} Ω·m</td></tr>"
                      f"<tr><th>Plating thickness</th>"
-                     f"<td class='num'>{phys.get('plating_thickness_mm', 0)*1000:.1f} µm</td>"
-                     f"<td class='muted'>Standard plated-through-hole copper "
-                     f"wall thickness (IPC-A-600 Class 2).</td></tr>"
+                     f"<td class='num'>{_plating_summary(phys)}</td>"
+                     f"<td class='muted'>Barrel copper wall per via type "
+                     f"(through / PTH, blind, buried, microvia). Defaults are "
+                     f"the IPC-6012 Class 3 minimum averages.</td></tr>"
                      f"<tr><th>Via barrel resistance (per hop)</th>"
                      f"<td>{via_r_cell}</td>"
                      f"<td class='muted'>{_esc(phys.get('note_via_resistance', ''))}</td></tr>"

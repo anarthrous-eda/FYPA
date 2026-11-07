@@ -21,6 +21,7 @@ __all__ = [
     "MIXED",
     "MarqueeCandidate",
     "MULTI_SINK_FIELDS",
+    "MULTI_SOURCE_FIELDS",
     "common_fields",
     "marquee_select",
     "merge_values",
@@ -58,6 +59,15 @@ MIXED = _Mixed()
 MULTI_SINK_FIELDS: tuple[str, ...] = (
     "current",
     "min_voltage",
+    "single_net",
+    "p_net",
+    "n_net",
+)
+
+# The same for a multi-source edit: Voltage in place of Current, and no
+# Min V (a SOURCE sets the rail; it has no minimum to check).
+MULTI_SOURCE_FIELDS: tuple[str, ...] = (
+    "voltage",
     "single_net",
     "p_net",
     "n_net",

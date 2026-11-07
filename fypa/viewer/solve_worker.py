@@ -788,14 +788,22 @@ class _SolveWorker(QThread):
                     f"Naming {len(self._copper_names)} unnamed copper "
                     "piece(s)…"
                 )
-                from fypa.editor_directives import apply_copper_names
+                from fypa.editor_directives import (
+                    apply_copper_names,
+                    summarize_copper_name_warnings,
+                )
                 cn_warnings = apply_copper_names(
                     loaded, self._copper_names,
                 )
+                # One summary line, not one WARNING per name: auto-minted
+                # names on isolated no-net pads can't be applied and are
+                # harmless, but there can be hundreds of them per resolve.
+                _cn_log = logging.getLogger(__name__)
+                cn_summary = summarize_copper_name_warnings(cn_warnings)
+                if cn_summary:
+                    _cn_log.warning("%s", cn_summary)
                 for w in cn_warnings:
-                    logging.getLogger(__name__).warning(
-                        "Copper name not applied: %s", w,
-                    )
+                    _cn_log.debug("Copper name not applied: %s", w)
 
             if self._editor_directives:
                 self.stage_changed.emit(

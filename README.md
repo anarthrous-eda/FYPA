@@ -132,6 +132,7 @@ Optional two-terminal helpers (SOURCE / SINK):
 |-----------|---------|
 | `PDN_P_PINS` / `PDN_N_PINS` | Restrict which pads on the host (or DES-listed parts) couple |
 | `PDN_P_DES` / `PDN_N_DES` | Pull that terminal's pads from other designators only (host not auto-included); for multi-connector / banana-style sources |
+| `PDN_SENSE_DES` / `PDN_SENSE_N_DES` (`SOURCE`, `REGULATOR`) | Remote sense: the part(s) whose pads on the output P / N net the supply regulates at (usually the load); optional `PDN_SENSE_PINS` / `PDN_SENSE_N_PINS`. The output pins then rise by the copper's drop. See [Remote sense](docs/user-guide/01-sources-and-sinks.md#remote-sense-pdn_sense_des). |
 | `PDN_PIN_R` (`SINK`) | Package pin-to-pin resistance in ohms, used to share current between a multi-pin terminal's pads. Defaults to 100 mΩ — see *Settings → Multi-pin coupling resistance*. Set it per part when you know the package: a large BGA's supply grid is far lower than a leadframe's. |
 
 \* `PDN_P_NET` and `PDN_N_NET` are optional for `SERIES` on a 2-pin part — the

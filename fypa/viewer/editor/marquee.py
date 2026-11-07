@@ -361,8 +361,20 @@ class _MarqueeMixin:
             return f"{value:g}"
         return str(value)
 
+    def _multi_edit_role(self) -> str | None:
+        """The role a multi-selection can be edited as - ``"SINK"`` or
+        ``"SOURCE"`` when every selected object has it, else ``None`` (a
+        mixed bag, or a role the batch form does not cover)."""
+        roles = self._multi_roles()
+        if len(roles) == 1:
+            role = next(iter(roles))
+            if role in ("SINK", "SOURCE"):
+                return role
+        return None
+
     def _multi_merged_sinks(self) -> list:
-        """One directive-shaped object per selected sink for the ``*`` merge.
+        """One directive-shaped object per selected sink/source for the
+        ``*`` merge.
 
         A still-locked sink has no editor directive, so it contributes the
         directive its Unlock would seed - that way its schematic current /
@@ -378,25 +390,31 @@ class _MarqueeMixin:
     def _populate_multi_editor_form(self) -> None:
         """Build the side-panel form for a marquee multi-selection.
 
-        All SINKs ⇒ the single-sink form with a ``*`` in every row they
-        disagree on. Anything else ⇒ a bare count, per the feature's
-        "multiple objects selected" rule: no controls, because there is no
-        one set of properties that applies."""
-        from fypa.editor_multiselect import MIXED, common_fields
+        All SINKs or all SOURCEs ⇒ the single-object form for that role with
+        a ``*`` in every row they disagree on (Current + Min V for sinks,
+        Voltage for sources). Anything else ⇒ a bare count, per the
+        feature's "multiple objects selected" rule: no controls, because
+        there is no one set of properties that applies."""
+        from fypa.editor_multiselect import (
+            MIXED,
+            MULTI_SINK_FIELDS,
+            MULTI_SOURCE_FIELDS,
+            common_fields,
+        )
 
         lay = self._multi_form_layout
         self._clear_layout(lay)
         self._mf_dirty = set()
-        for attr in ("_mf_current", "_mf_min_v", "_mf_single", "_mf_two",
-                     "_mf_pnet", "_mf_nnet", "_mf_nnet_label", "_mf_status",
-                     "_mf_btngroup"):
+        for attr in ("_mf_current", "_mf_min_v", "_mf_voltage", "_mf_single",
+                     "_mf_two", "_mf_pnet", "_mf_pnet_label", "_mf_nnet",
+                     "_mf_nnet_label", "_mf_status", "_mf_btngroup"):
             setattr(self, attr, None)
         t = _T()
         entries = self._editor_multi
         count = len(entries)
-        roles = self._multi_roles()
+        role = self._multi_edit_role()
 
-        if roles != {"SINK"}:
+        if role is None:
             lay.addWidget(QLabel("<b>Multiple objects selected</b>"))
             tally: dict[str, int] = {}
             for r in (e.get("role") or "?" for e in entries):
@@ -405,8 +423,9 @@ class _MarqueeMixin:
                 tally.items(), key=lambda kv: (-kv[1], kv[0])))
             info = QLabel(
                 f"{count} objects ({_esc(breakdown)}). Properties are only "
-                "editable together when every selected object is a SINK - "
-                "drag a box around sinks alone, or click one to edit it."
+                "editable together when every selected object is a SINK, or "
+                "every one is a SOURCE - drag a box around one kind alone, "
+                "or click one to edit it."
             )
             info.setWordWrap(True)
             info.setStyleSheet(f"color: {t['fg_muted']};")
@@ -414,18 +433,22 @@ class _MarqueeMixin:
             self._update_editor_panel()
             return
 
+        is_sink = role == "SINK"
+        noun = "sink" if is_sink else "source"
         locked = self._multi_locked()
-        vals = common_fields(self._multi_merged_sinks())
+        vals = common_fields(
+            self._multi_merged_sinks(),
+            MULTI_SINK_FIELDS if is_sink else MULTI_SOURCE_FIELDS)
 
-        lay.addWidget(QLabel(f"<b>{count} SINKs selected</b>"))
+        lay.addWidget(QLabel(f"<b>{count} {role}s selected</b>"))
         roll = QLabel(_esc(", ".join(e.get("label") or "?" for e in entries)))
         roll.setWordWrap(True)
         roll.setStyleSheet(f"color: {t['fg_muted']}; font-size: 8pt;")
         lay.addWidget(roll)
         note = QLabel(
-            "A row showing <b>*</b> differs between the selected sinks. "
+            f"A row showing <b>*</b> differs between the selected {noun}s. "
             "Apply writes only the rows you edit - the rest are left as "
-            "they are on every sink."
+            f"they are on every {noun}."
         )
         note.setWordWrap(True)
         note.setStyleSheet(f"color: {t['fg_muted']}; font-size: 8pt;")
@@ -443,27 +466,40 @@ class _MarqueeMixin:
         form.setContentsMargins(0, 0, 0, 0)
         # Role is shown, not offered: re-pointing a batch of sinks at
         # SOURCE would silently reinterpret every Current as a Voltage.
-        form.addRow("PDN role", QLabel("SINK"))
-        self._mf_current = QLineEdit()
-        self._mf_current.setValidator(_numeric_validator(self, top=1e12))
-        self._mf_current.setText(self._multi_field_text(vals["current"]))
-        self._mf_current.setToolTip(
-            "Current drawn by each selected sink (not shared between them). "
-            "Applying 2 A to four sinks adds 8 A of load."
-        )
-        self._mf_current.textEdited.connect(
-            lambda *_: self._mf_dirty.add("current"))
-        form.addRow("Current (A)", self._mf_current)
-        self._mf_min_v = QLineEdit()
-        self._mf_min_v.setValidator(_numeric_validator(self, top=1e12))
-        self._mf_min_v.setText(self._multi_field_text(vals["min_voltage"]))
-        self._mf_min_v.setToolTip(
-            "Optional minimum acceptable rail voltage at each sink's pins. "
-            "Clear the field and Apply to drop the check on all of them."
-        )
-        self._mf_min_v.textEdited.connect(
-            lambda *_: self._mf_dirty.add("min_voltage"))
-        form.addRow("Min V (V)", self._mf_min_v)
+        form.addRow("PDN role", QLabel(role))
+        if is_sink:
+            self._mf_current = QLineEdit()
+            self._mf_current.setValidator(_numeric_validator(self, top=1e12))
+            self._mf_current.setText(self._multi_field_text(vals["current"]))
+            self._mf_current.setToolTip(
+                "Current drawn by each selected sink (not shared between "
+                "them). Applying 2 A to four sinks adds 8 A of load."
+            )
+            self._mf_current.textEdited.connect(
+                lambda *_: self._mf_dirty.add("current"))
+            form.addRow("Current (A)", self._mf_current)
+            self._mf_min_v = QLineEdit()
+            self._mf_min_v.setValidator(_numeric_validator(self, top=1e12))
+            self._mf_min_v.setText(
+                self._multi_field_text(vals["min_voltage"]))
+            self._mf_min_v.setToolTip(
+                "Optional minimum acceptable rail voltage at each sink's "
+                "pins. Clear the field and Apply to drop the check on all "
+                "of them."
+            )
+            self._mf_min_v.textEdited.connect(
+                lambda *_: self._mf_dirty.add("min_voltage"))
+            form.addRow("Min V (V)", self._mf_min_v)
+        else:
+            self._mf_voltage = QLineEdit()
+            self._mf_voltage.setValidator(_numeric_validator(self, top=1e12))
+            self._mf_voltage.setText(self._multi_field_text(vals["voltage"]))
+            self._mf_voltage.setToolTip(
+                "Voltage each selected source drives onto its net."
+            )
+            self._mf_voltage.textEdited.connect(
+                lambda *_: self._mf_dirty.add("voltage"))
+            form.addRow("Voltage (V)", self._mf_voltage)
         lay.addLayout(form)
 
         model_mixed = vals["single_net"] is MIXED
@@ -493,7 +529,8 @@ class _MarqueeMixin:
             self._set_combo(self._mf_pnet, vals["p_net"])
         self._mf_pnet.activated.connect(
             lambda *_: self._mf_dirty.add("p_net"))
-        form2.addRow("P net", self._mf_pnet)
+        self._mf_pnet_label = QLabel("P net")
+        form2.addRow(self._mf_pnet_label, self._mf_pnet)
         self._mf_nnet = QComboBox()
         self._mf_nnet.addItems((["*"] if vals["n_net"] is MIXED else []) + nets)
         if vals["n_net"] is not MIXED and vals["n_net"]:
@@ -546,6 +583,9 @@ class _MarqueeMixin:
             self._mf_nnet.setVisible(show)
         if self._mf_nnet_label is not None:
             self._mf_nnet_label.setVisible(show)
+        # Same wording as the single-object form: one net is just "Net".
+        if self._mf_pnet_label is not None:
+            self._mf_pnet_label.setText("Net" if single else "P net")
 
     def _multi_status(self, text: str, kind: str = "muted") -> None:
         """Write the multi-form status line (no-op if the form is gone)."""
@@ -580,6 +620,18 @@ class _MarqueeMixin:
             and role != "SERIES"
         value = sch.get("value")
         two_net_terminal = (not single) and role in ("SOURCE", "SINK")
+        # Remote sense carries over as the designators its pads sit on.
+        sense = (sch.get("remote_sense") or {}) if role == "SOURCE" else {}
+
+        def _sense_des(term) -> list[str] | None:
+            if not term:
+                return None
+            names = []
+            for pin in term.get("pins") or []:
+                comp = pin.get("component")
+                if comp and comp not in names:
+                    names.append(comp)
+            return names or None
         return EditorDirective(
             kind="component",
             role=role,
@@ -594,6 +646,8 @@ class _MarqueeMixin:
                    if two_net_terminal else None),
             n_des=(self._terminal_des_list(n_term, designator) or None
                    if two_net_terminal else None),
+            sense_des=_sense_des(sense.get("P")),
+            sense_n_des=None if single else _sense_des(sense.get("N")),
             voltage=value if role == "SOURCE" else None,
             current=value if role == "SINK" else None,
             resistance=value if role == "SERIES" else None,
@@ -602,11 +656,12 @@ class _MarqueeMixin:
         )
 
     def _multi_edits_from_form(self) -> dict | None:
-        """Parse the touched rows of the multi-sink form into field ⇒ value.
+        """Parse the touched rows of the multi-sink / multi-source form into
+        field ⇒ value.
 
         Only rows the user actually edited are read, so a row still showing
         ``*`` (or an untouched shared value) is absent and Apply leaves it
-        alone on every sink. ``None`` on a parse error, with the reason
+        alone on every object. ``None`` on a parse error, with the reason
         already written to the status line."""
         dirty = set(self._mf_dirty)
         # A combo left sitting on the ``*`` placeholder is not a choice.
@@ -622,6 +677,15 @@ class _MarqueeMixin:
             except ValueError:
                 self._multi_status(
                     "Current must be a number - a sink has to draw "
+                    "something.", "err")
+                return None
+        if "voltage" in dirty:
+            txt = self._mf_voltage.text().strip()
+            try:
+                edits["voltage"] = float(txt)
+            except ValueError:
+                self._multi_status(
+                    "Voltage must be a number - a source has to drive "
                     "something.", "err")
                 return None
         if "min_voltage" in dirty:
@@ -655,15 +719,18 @@ class _MarqueeMixin:
         return edits
 
     def _on_editor_multi_apply(self) -> None:
-        """Write the edited rows to every selected sink as one undoable step.
+        """Write the edited rows to every selected sink (or source) as one
+        undoable step.
 
-        Sinks still locked to the Altium schematic are materialised into
+        Objects still locked to the Altium schematic are materialised into
         override directives first (the batch Unlock), seeded from their
         schematic values so untouched rows keep what the schematic said."""
         import copy as _copy
 
-        if not self._editor_multi or self._multi_roles() != {"SINK"}:
+        role = self._multi_edit_role() if self._editor_multi else None
+        if role is None:
             return
+        noun = "sink" if role == "SINK" else "source"
         edits = self._multi_edits_from_form()
         if edits is None:
             return
@@ -707,7 +774,7 @@ class _MarqueeMixin:
         for d in targets:
             for name, value in edits.items():
                 setattr(d, name, value)
-        # A two-net sink needs a real N net; roll the whole batch back rather
+        # A two-net sink/source needs a real N net; roll the whole batch back rather
         # than leaving half the selection in an unsolvable state.
         missing = [d.designator or d.id[:6]
                    for d in targets if not d.single_net and not d.n_net]
@@ -741,7 +808,7 @@ class _MarqueeMixin:
         self._populate_editor_form()
         rows = ", ".join(sorted(edits))
         self._multi_status(
-            f"Applied {_esc(rows)} to {len(targets)} sinks - press Resolve "
+            f"Applied {_esc(rows)} to {len(targets)} {noun}s - press Resolve "
             "to re-solve.", "ok")
 
     def _on_editor_multi_remove(self) -> None:
@@ -761,17 +828,19 @@ class _MarqueeMixin:
             if d is not None:
                 pairs.append((e, d))
         skipped = len(self._editor_multi) - len(pairs)
+        role = self._multi_edit_role()
+        noun = {"SINK": "sink", "SOURCE": "source"}.get(role, "marker")
         if not pairs:
             self._multi_status(
-                "Nothing to remove - these sinks are defined in the Altium "
-                "schematic, not the editor.", "err")
+                f"Nothing to remove - these {noun}s are defined in the "
+                "Altium schematic, not the editor.", "err")
             return
         note = ("" if not skipped else
-                f"\n\n{skipped} schematic-defined sink(s) in the selection "
+                f"\n\n{skipped} schematic-defined {noun}(s) in the selection "
                 "will be left alone.")
         if QMessageBox.question(
-            self, "Remove sinks",
-            f"Remove {len(pairs)} sink directive(s) from the editor?"
+            self, f"Remove {noun}s",
+            f"Remove {len(pairs)} {noun} directive(s) from the editor?"
             f"{note}\n\nCtrl+Z undoes this.",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
         ) != QMessageBox.Yes:
@@ -796,7 +865,7 @@ class _MarqueeMixin:
         self._update_pending_rails()
         self._set_editor_multi(remaining)
         self.statusBar().showMessage(
-            f"Removed {len(pairs)} sink directive(s) - Ctrl+Z to restore.",
+            f"Removed {len(pairs)} {noun} directive(s) - Ctrl+Z to restore.",
             4000)
 
     def _apply_batch_side(self, items: list[dict], side: str) -> None:

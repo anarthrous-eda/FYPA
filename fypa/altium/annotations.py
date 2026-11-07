@@ -352,11 +352,17 @@ _PART_WIDE_PIN_FILTER_SUFFIXES: frozenset[str] = frozenset({
 _PIN_FILTER_MODIFIER_SUFFIXES: frozenset[str] = (
     _PART_WIDE_PIN_FILTER_SUFFIXES | frozenset({"IGNORE_PINS"})
 )
+# Remote sense of a SOURCE / REGULATOR output: the part(s) (and optionally
+# pins) the + and − sense lines land on. Modifiers, not channel-defining.
+_REMOTE_SENSE_SUFFIXES: frozenset[str] = frozenset({
+    "SENSE_DES", "SENSE_PINS", "SENSE_N_DES", "SENSE_N_PINS",
+})
 _COMMON_TERMINAL_SUFFIXES: frozenset[str] = frozenset({
     "NET", "PINS", "P_NET", "N_NET", "P_PINS", "N_PINS", "IGNORE_PINS",
 }) | _PART_WIDE_PIN_FILTER_SUFFIXES
 _KNOWN_SUFFIXES_BY_ROLE: dict[str, frozenset[str]] = {
-    "SOURCE": _COMMON_TERMINAL_SUFFIXES | frozenset({"V", "P_DES", "N_DES"}),
+    "SOURCE": _COMMON_TERMINAL_SUFFIXES | frozenset({"V", "P_DES", "N_DES"})
+    | _REMOTE_SENSE_SUFFIXES,
     "SINK": _COMMON_TERMINAL_SUFFIXES | frozenset(
         {"I", "MIN_V", "PIN_R", "P_DES", "N_DES"}),
     "REGULATOR": frozenset({
@@ -365,7 +371,7 @@ _KNOWN_SUFFIXES_BY_ROLE: dict[str, frozenset[str]] = {
         "IN_P_NET", "IN_N_NET", "IN_P_PINS", "IN_N_PINS",
         "IGNORE_PINS",
         "SMPS_TOPOLOGY", "SW1_NET", "SW2_NET",
-    }) | _PART_WIDE_PIN_FILTER_SUFFIXES,
+    }) | _PART_WIDE_PIN_FILTER_SUFFIXES | _REMOTE_SENSE_SUFFIXES,
     "SERIES": frozenset({
         "R", "VF", "VF_CURVE", "P_NET", "N_NET", "P_PINS", "N_PINS", "IGNORE_PINS",
     }) | _PART_WIDE_PIN_FILTER_SUFFIXES,
@@ -3494,6 +3500,11 @@ class SourceSpec(_BaseSpec):
     # so the viewer keeps drawing its marker — see
     # :func:`fypa.altium.loader._flag_open_loop_rails`.
     solve_excluded: bool = False
+    # Remote sense (PDN_SENSE_DES / PDN_SENSE_N_DES): the source holds its
+    # voltage across these pads instead of across its own; ``None`` = that
+    # side senses locally. See _resolve_remote_sense.
+    sense_p: TerminalSpec | None = None
+    sense_n: TerminalSpec | None = None
 
 
 @dataclass(frozen=True)
@@ -3619,6 +3630,10 @@ class RegulatorSpec(_BaseSpec):
     switch_path_legs: tuple[SwitchPathLeg, ...] = ()
     vin_sense_p: TerminalSpec | None = None  # VIN-side sense pads (from HS bridge)
     vin_sense_n: TerminalSpec | None = None
+    # Output remote sense (PDN_SENSE_DES / PDN_SENSE_N_DES), as on
+    # SourceSpec: the regulator holds PDN_V across these pads.
+    out_sense_p: TerminalSpec | None = None
+    out_sense_n: TerminalSpec | None = None
     # Series resistance of the PATH part the regulator element replaces
     # (the "cut"): inductor DCR for a buck, RDSon for a boost's high-side
     # FET. Not None also means the cut was relocated onto an external part,
@@ -3759,6 +3774,76 @@ def _optional_value(params: dict[str, str], key: str, role_diag: str,
             f"{role_diag}: {key}={raw!r} — {e}{_PARSE_VALUE_HINT}",
         )
         return None
+
+
+def _terminal_net_name(proj: ExtractedProject, term: TerminalSpec) -> str | None:
+    """The net a resolved terminal sits on: the name the directive gave, else
+    its first pad's net."""
+    if term.requested_net:
+        return term.requested_net
+    for pin in term.pins:
+        if 0 <= pin.net_index < len(proj.nets):
+            return proj.nets[pin.net_index].name
+    return None
+
+
+def _resolve_remote_sense(
+    proj: ExtractedProject,
+    params: dict[str, str],
+    idx: int | None,
+    out_p: TerminalSpec,
+    out_n: TerminalSpec | None,
+    enabled_layers: list[int],
+    role_diag: str,
+    result: AnnotationResult,
+    net_remap: dict[int, int] | None = None,
+    schdoc_name: str | None = None,
+) -> tuple[TerminalSpec | None, TerminalSpec | None] | None:
+    """Remote-sense terminals of a SOURCE or REGULATOR output.
+
+    ``PDN_SENSE_DES`` names the part(s) whose pads on the output P net are
+    the + sense point (``PDN_SENSE_PINS`` narrows them to given pins);
+    ``PDN_SENSE_N_DES`` / ``PDN_SENSE_N_PINS`` likewise on the output N net
+    for the − sense. Either may be omitted: that side senses locally, at the
+    output pins themselves. A single-net SOURCE has no copper N terminal, so
+    it can only sense +.
+
+    Returns ``(sense_p, sense_n)`` (either ``None`` = local), or ``None``
+    when a sense parameter is set but cannot be resolved (error recorded)."""
+    out: list[TerminalSpec | None] = []
+    for side, term, des_key, pins_key in (
+        ("+", out_p, "SENSE_DES", "SENSE_PINS"),
+        ("−", out_n, "SENSE_N_DES", "SENSE_N_PINS"),
+    ):
+        des_k, pins_k = _channel_key(des_key, idx), _channel_key(pins_key, idx)
+        des = _split_pin_list(_ci_get(params, des_k))
+        pins = _split_pin_list(_ci_get(params, pins_k))
+        if des is None:
+            if pins is not None:
+                _append_error_once(
+                    result, f"{role_diag}: {pins_k} needs {des_k} (the part "
+                    f"the sense line lands on)")
+                return None
+            out.append(None)
+            continue
+        if term is None:
+            _append_error_once(
+                result, f"{role_diag}: {des_k} — a single-net (PDN_NET) "
+                f"source has no copper return to sense; use PDN_P_NET / "
+                f"PDN_N_NET to sense the return")
+            return None
+        net = _terminal_net_name(proj, term)
+        spec, errs, _tier = _resolve_terminal_multi(
+            proj, des, net, pins, enabled_layers,
+            f"{role_diag} {side}sense", warnings=result.warnings,
+            net_remap=net_remap, schdoc_name=schdoc_name,
+        )
+        for err in errs:
+            _append_error_once(result, err)
+        if spec is None or spec.is_empty:
+            return None
+        out.append(spec)
+    return out[0], out[1]
 
 
 def _resolve_two_terminal(
@@ -4220,9 +4305,15 @@ def _parse_source(comp, proj, enabled_layers, result,
                 )
                 if p is None:
                     continue
+                sense = _resolve_remote_sense(
+                    proj, params, idx, p, None, enabled_layers, inst_diag,
+                    result, net_remap=net_remap, schdoc_name=comp.schdoc_name)
+                if sense is None:
+                    continue
                 specs.append(SourceSpec(
                     designator=pcb_des, schdoc_name=comp.schdoc_name,
                     voltage=v, p=p, n=None, channel_index=idx,
+                    sense_p=sense[0], sense_n=sense[1],
                 ))
                 continue
             pair = _resolve_two_terminal(
@@ -4241,9 +4332,16 @@ def _parse_source(comp, proj, enabled_layers, result,
             )
             if pair is None:
                 continue
+            sense = _resolve_remote_sense(
+                proj, params, idx, pair[0], pair[1], enabled_layers,
+                inst_diag, result, net_remap=net_remap,
+                schdoc_name=comp.schdoc_name)
+            if sense is None:
+                continue
             specs.append(SourceSpec(
                 designator=pcb_des, schdoc_name=comp.schdoc_name,
                 voltage=v, p=pair[0], n=pair[1], channel_index=idx,
+                sense_p=sense[0], sense_n=sense[1],
             ))
     return specs
 
@@ -5332,6 +5430,12 @@ def _parse_regulator(comp, proj, enabled_layers, result,
             )
             if out is None or in_ is None:
                 continue
+            sense = _resolve_remote_sense(
+                proj, params, idx, out[0], out[1], enabled_layers,
+                f"{inst_diag} OUT", result, net_remap=net_remap,
+                schdoc_name=comp.schdoc_name)
+            if sense is None:
+                continue
             # SMPS_TOPOLOGY and switch-node net names (annotation-level only;
             # finalize_smps_stages binds PATH elements to these later).
             topo_key = _channel_key("SMPS_TOPOLOGY", idx)
@@ -5362,6 +5466,8 @@ def _parse_regulator(comp, proj, enabled_layers, result,
                 smps_topology=smps_topology,
                 sw1_net=sw1_net,
                 sw2_net=sw2_net,
+                out_sense_p=sense[0],
+                out_sense_n=sense[1],
             ))
     return specs
 

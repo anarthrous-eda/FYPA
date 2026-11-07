@@ -17,12 +17,41 @@ The FEM is per-(physical-layer, net) — every enabled copper layer is
 triangulated as an independent 2-D Laplace problem. Vias and PTH pads are
 the only objects that couple voltages between layers. For each via, FYPA
 inserts a chain of small `Resistor` elements (one per layer-to-layer
-"hop") into the padne `Problem`, with each resistor terminating on a
-Steiner point at the via's `(x, y)` on the two layer meshes it bridges.
+"hop") into the padne `Problem`. Each end of a hop lands on the **drill
+circle** of the via on that layer: every mesh vertex inside the drill is
+tied to one potential (an equipotential patch), because the plated wall
+shorts the whole hole edge together. Current therefore spreads into the
+plane from the drill radius, as it does in copper.
+
+The via copper on each layer is a solid disc (the hole is not cut out), so
+the patch catches the disc's centre vertex plus seeds placed on the drill
+circle. Around each patch the mesh is graded: rings of Steiner seeds at
+1.4×, 1.4²×, … the drill radius, spaced to keep the triangles near
+equilateral, stopping at the global element size or half-way to the next
+via. The field just outside a barrel falls off as 1/r, so this is where the
+via's spreading resistance lives.
+
+Why it matters (a 0.3 mm via into a 10 mm plane, against the analytical
+`Rs/(2π)·ln(R/r)`; see `tests/test_validation.py`):
+
+| Contact model | 0.6 mm mesh (default) | 0.3 mm | 0.1 mm |
+|---|---|---|---|
+| Point at the via centre (before) | +78.5 % | +80.8 % | +84.3 % — diverges |
+| Drill-circle patch, no grading | −4.1 % | −2.5 % | +0.3 % |
+| Drill-circle patch + grading (now) | −0.02 % | | |
+
+A point contact is a log singularity: its "spreading resistance" depends on
+the mesh, grows without bound as the mesh is refined, and added about
+0.26 mΩ per via end per 1 oz layer — about 40 % on a typical through via.
+
+A via that sits inside a terminal pad (via-in-pad) joins that pad's
+equipotential group rather than carving its own patch out of it: pads are
+claimed first, and the via's drill vertices are then already taken.
 
 See `_coupling_networks` in
-[fypa/altium/loader.py:846-976](../fypa/altium/loader.py#L846-L976) for the
-exact element-construction code.
+[fypa/altium/loader.py](../fypa/altium/loader.py) for the element
+construction, and `_barrel_grading_points` / `_add_grading_seeds` in
+[pdnsolver/solver.py](../pdnsolver/solver.py) for the grading.
 
 ## Per-hop resistance formula
 
@@ -127,7 +156,7 @@ resistivity is within an order of magnitude of copper.
 |----------------------------------|------------------------------------------------------------------------------|-------------------------------------------------------------|
 | `d` — drill diameter             | Altium `RawVia.hole_diameter_mm` / `RawPad.hole_mm`                          | No (set in Altium PCB)                                      |
 | `L_hop` — hop length             | Distance between layer **centres** in the Altium stackup                     | No directly, but follows from stackup edits in the viewer   |
-| `t` — plating thickness          | Settings tab → *Via plating thickness* (default 0.025 mm / ~1 mil)           | **Yes**                                                     |
+| `t` — plating thickness          | Settings tab → *Via plating* per via type (see [Plating by via type](#plating-by-via-type)) | **Yes**                                      |
 | `ρ_cu(T)` — copper resistivity   | Derived from `ρ₂₀`, `α`, `T`: `ρ(T) = ρ₂₀ * (1 + α*(T − 20))`               | **Yes** — via the three fields below                        |
 | `ρ₂₀` — resistivity at 20 °C     | Settings tab → *Copper resistivity (at 20 °C)* (default 1.68 µΩ·cm)          | **Yes**                                                     |
 | `α` — temperature coefficient    | Settings tab → *Copper temperature coefficient α* (default 0.00393 /°C)      | **Yes**                                                     |
@@ -163,6 +192,28 @@ The Settings-tab field schema and the matching parameter docs live in
 `_SETTINGS_FIELDS` at
 [fypa/viewer/settings_tab.py:78-142](../fypa/viewer/settings_tab.py#L78-L142).
 
+## Plating by via type
+
+Plating grows inward from the drilled wall, and how much a hole gets
+depends on how it is made: through holes and blind vias are plated with the
+outer layers, buried vias with their core before lamination, and laser
+microvias get a thin layer of their own. Each via is classified from its
+declared end layers, and takes the plating for its type:
+
+| Type | Rule | Default (IPC-6012 Class 3) | Class 2 |
+|---|---|---|---|
+| Through / PTH | both ends on the outer layers; component plated holes | 25 µm | 20 µm |
+| Blind | one end on an outer layer | 25 µm | 20 µm |
+| Buried | neither end on an outer layer | 15 µm | 13 µm |
+| Microvia | blind or buried over one dielectric, drill ≤ 0.15 mm (IPC-2226) | 12 µm | 12 µm |
+
+Altium carries no microvia flag on a via, hence the span-and-drill rule.
+The defaults are the minimum *average* plating of IPC-6012 Class 3; set the
+values your fabricator states. Each hop records its type and plating
+(`via_kind`, `plating_mm`) in the solve metadata, and the viewer's barrel
+current density uses the same wall. A solve saved before per-type plating
+reopens with its single value applied to every type.
+
 ## Where each hop "lands"
 
 For a multi-layer via, FYPA only chains the via through layers where the
@@ -170,8 +221,8 @@ via's nominal net **actually has copper covering the via's (x, y)**. This
 matters in two ways:
 
 * Inner layers that the net does *not* reach (the via just passes by) are
-  skipped — they get no Steiner coupling point, so no phantom current can
-  flow there.
+  skipped — they get no drill patch, so no phantom current can flow
+  there.
 * If fewer than two layers in the via's `layer_start..layer_end` span
   actually carry net copper at the via, the via is dropped from the FEM
   entirely (it has no closed-loop electrical role).
@@ -270,15 +321,14 @@ the solve outright.
 1. **DC-only.** The model is pure DC resistance. Skin effect, frequency-
    dependent inductive coupling, and high-frequency loss are not
    represented.
-2. **Plated through-hole geometry only.** Every via and PTH pad is
-   modelled as a hollow plated cylinder with a user-set wall thickness.
-   FYPA does not distinguish blind, buried, or stacked microvias from
-   through-hole vias at the resistance-model level — only the
-   `layer_start..layer_end` span is respected when chaining layer hops.
-3. **Constant plating thickness across the board.** A single
-   `plating_thickness_mm` value applies to every via on every layer.
-   Designs with mixed plating (e.g. heavy-copper outer vs standard inner)
-   are not represented.
+2. **Hollow plated cylinders.** Every via and PTH pad is a plated
+   cylinder whose wall thickness is set per via type (through / PTH,
+   blind, buried, microvia — see [Plating by via type](#plating-by-via-type)),
+   and its `layer_start..layer_end` span is respected when chaining hops.
+   A stacked microvia column is a chain of separate microvias.
+3. **One plating per via type.** Each type has one wall thickness for the
+   whole board; a design whose plating varies within a type (heavy-copper
+   outer vias next to standard ones of the same type) is not represented.
 4. **Limited fill / cap / tent modelling.** Capping, tenting, and
    plugging are ignored — they do not change the conducting cross-section
    of the barrel and are exact for DC. **Conductive fills** (copper /
@@ -316,14 +366,19 @@ does not trigger an immediate re-solve; press **Re-run Solver** to apply.
 | Board temperature                      | 20 °C            | `ρ_cu(T)` → both via R and copper sheet conductivity                 |
 | Copper resistivity (at 20 °C)          | 1.68 µΩ·cm       | `ρ₂₀` reference                                                       |
 | Copper temperature coefficient α       | 0.00393 /°C      | Slope of `ρ(T)` vs temperature                                       |
-| Via plating thickness                  | 0.025 mm (~1 mil) | `t` in the annulus area; smaller `t` → higher `R_hop`               |
+| Via plating: through / PTH             | 0.025 mm         | `t` of through vias and component plated holes                       |
+| Via plating: blind                     | 0.025 mm         | `t` of blind vias                                                    |
+| Via plating: buried                    | 0.015 mm         | `t` of buried vias                                                   |
+| Via plating: microvia                  | 0.012 mm         | `t` of microvias (one dielectric, drill ≤ 0.15 mm)                   |
 | Fallback via resistance                | 1.0 mΩ           | Per-hop R substituted when geometry is missing                        |
 | Conductive fill resistivity            | 5×10⁻³ Ω·mm      | `ρ_fill` for the parallel rod inside conductively-filled vias        |
 | Multi-pin coupling resistance          | 100 mΩ           | Star-couples pins within one terminal; not part of the barrel model  |
 | Weight multi-pin coupling by pad area  | off              | When on, each star R scales as `R ∝ 1/A` (supply and GND terminals) |
 
-Solver-side constants (`PLATING_THICKNESS_MM`, `COPPER_RESISTIVITY_OHM_MM`,
-`FALLBACK_VIA_RESISTANCE_OHM`) are patched in
-[fypa/altium/loader.py:227-230](../fypa/altium/loader.py#L227-L230) when
+Solver-side constants (`PLATING_THICKNESS_MM`, `PLATING_BLIND_MM`,
+`PLATING_BURIED_MM`, `PLATING_MICROVIA_MM`, `COPPER_RESISTIVITY_OHM_MM`,
+`FALLBACK_VIA_RESISTANCE_OHM`) are patched by
+`SolveSettings.apply_to_modules` in
+[fypa/altium/loader.py](../fypa/altium/loader.py) when
 the user re-runs the solver from the Settings tab, so the next solve
 picks up the new values without code changes.

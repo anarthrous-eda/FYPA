@@ -159,6 +159,56 @@ Limitations:
 * The refinement factor (5) is hardcoded. Make it a `Mesher.Config`
   field if users start asking for it.
 
+### Correction: the "~5 % under-estimate" is gone
+
+The two sections above (written before the signed-cotangent fix in
+`_half_cotangent`) attribute a residual low bias on thin strips to
+transverse mesh resolution. P1 elements reproduce a linear field exactly on
+any mesh, so a uniform strip's interior cannot be biased by resolution: the
+bias came from the unsigned cotangent, which over-conducted obtuse
+triangles. Measured now, the interior slope of the strip fixtures matches
+ρ/(W·t) to better than 1e-6 at every mesh size, and `tests/test_analytical.py`
+holds it to 1e-5. The per-polygon `maximum_size` is still useful (it
+resolves current crowding at bends and pads), just not for the reason given.
+
+### `solver.py` / `problem.py` — drill-circle via contacts and mesh grading
+
+Via hops used to land on a single point at the via centre (plus the
+25 µm Steiner ring). A point contact in 2-D is a log singularity, so a via's
+spreading resistance into a plane came out +80 % high and grew as the mesh
+was refined. A hop now lands on the **drill circle**: `Connection(region=…,
+barrel=True)` ties every vertex inside the drill to one node, as the plated
+wall does. Barrel patches are claimed after pad patches (a stable sort on
+`barrel`), so a via inside a terminal pad joins the pad's group.
+
+Each patch also grades the mesh around it: rings of Steiner seeds at
+r·1.4ᵏ (up to 5), spaced to keep triangles near equilateral, stopping at the
+global element size or half-way to the next patch. Pads get the same, as
+offsets of their outline. Error on a 0.3 mm via into a plane at the default
+mesh: point contact +78.5 % → patch −4.1 % → patch + grading −0.02 %; two
+pads on a disc (method of images) −1.0 % → −0.5 %. Grading seeds are
+generated only for patches on meshed copper and tested in one vectorised
+STRtree query per layer, which made seed placement *faster* than before on
+boards with many signal vias. `barrel` is part of the mesh-assembly
+fingerprint.
+
+### `solver.py` / `problem.py` — remote sense
+
+`VoltageSource` and `VoltageRegulator` take optional `sense_p` / `sense_n`
+nodes: the constraint row reads them (`V(sense_p) − V(sense_n) = V`) while
+the current column stays on the output pins. The system is then
+asymmetric, which `matrix_is_symmetric` now accounts for (PARDISO's
+unsymmetric path, LGMRES fallback; the adjoint already solves Lᵀ).
+
+### `thermal.py` — board thermal model
+
+A layered finite-difference board model (every net's copper on every
+layer, laminate and plated barrels between layers, convection from both
+faces) that the electro-thermal loop uses when `ThermalConfig.board` is
+set, in place of the local `p / h`. `Resistor.heat_source` marks real
+dissipating parts (vias, series parts); regulators add their conversion
+loss. See the module docstring and `tests/test_thermal_board.py`.
+
 ### `ui.py` — Python-3.11 compatibility + minor robustness
 
 * Replaced PEP 695 class-level generic syntax

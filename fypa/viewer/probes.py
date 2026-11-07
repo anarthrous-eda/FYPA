@@ -1804,6 +1804,9 @@ class _ProbeMixin:
         et = getattr(self, "_settings_electrothermal_check", None)
         if et is not None:
             kwargs["electrothermal"] = et.isChecked()
+        ts = getattr(self, "_settings_thermal_spreading_check", None)
+        if ts is not None:
+            kwargs["thermal_spreading"] = ts.isChecked()
         mode_combo = getattr(self, "_fill_mode_combo", None)
         if mode_combo is not None:
             data = mode_combo.currentData()

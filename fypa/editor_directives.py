@@ -436,10 +436,32 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
             if ed.voltage is None:
                 warnings.append(f"{label}: SOURCE has no voltage; skipped.")
                 continue
+            # Remote sense (PDN_SENSE_DES equivalent): pads of the listed
+            # parts on the P (N) net; component-bound only, and the N side
+            # needs a copper return (two-net).
+            sense_terms = []
+            bad_sense = False
+            for des_list, net, side in (
+                    (getattr(ed, "sense_des", None), ed.p_net, "sense +"),
+                    (getattr(ed, "sense_n_des", None) if two_net else None,
+                     ed.n_net, "sense −")):
+                if not des_list or ed.kind == "free":
+                    sense_terms.append(None)
+                    continue
+                term, des_warn = _resolve_terminal_multi_des(
+                    net, designators=des_list, label=label, side=side)
+                if des_warn:
+                    warnings.append(des_warn)
+                    bad_sense = True
+                    break
+                sense_terms.append(term)
+            if bad_sense:
+                continue
             spec = SourceSpec(
                 designator=spec_designator, schdoc_name=_EDITOR_SCHDOC,
                 voltage=float(ed.voltage), p=p_term, n=n_term,
                 channel_index=None, return_group=return_group,
+                sense_p=sense_terms[0], sense_n=sense_terms[1],
             )
         elif ed.role == "SINK":
             if ed.current is None:
@@ -615,6 +637,37 @@ def has_closed_pdn_loop(loaded, editor_directives, *,
     for role, keys in items:
         roles_by_group.setdefault(find(min(keys)), set()).add(role)
     return any({"source", "sink"} <= roles for roles in roles_by_group.values())
+
+
+# (substring of an apply_copper_names warning, short reason for the summary).
+_COPPER_NAME_SKIP_REASONS: tuple[tuple[str, str], ...] = (
+    ("no unnamed copper on layer", "no unnamed copper on their layer"),
+    ("is not on a NO_NET copper polygon", "anchor not on unnamed copper"),
+    ("is not in the enabled copper stack", "layer not in the copper stack"),
+)
+
+
+def summarize_copper_name_warnings(warnings: list[str]) -> str | None:
+    """One-line summary of :func:`apply_copper_names` skip warnings,
+    counted by reason, or ``None`` when there are none.
+
+    A board's auto-minted ``$NET_xxx`` names routinely include hundreds
+    of isolated no-net pads the solver cannot rename (they carry no
+    current, so skipping them changes nothing). Logging each one buried
+    the rest of the resolve log; callers log this summary instead and
+    keep the per-name lines at DEBUG."""
+    if not warnings:
+        return None
+    counts: dict[str, int] = {}
+    for w in warnings:
+        reason = next((label for key, label in _COPPER_NAME_SKIP_REASONS
+                       if key in w), "other")
+        counts[reason] = counts.get(reason, 0) + 1
+    parts = ", ".join(f"{n} {reason}"
+                      for reason, n in sorted(counts.items(),
+                                              key=lambda kv: -kv[1]))
+    return (f"{len(warnings)} copper name(s) not applied ({parts}); "
+            "run with --debug for the per-name list.")
 
 
 def apply_copper_names(loaded, copper_names) -> list[str]:

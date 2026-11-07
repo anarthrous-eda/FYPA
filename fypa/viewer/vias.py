@@ -455,9 +455,15 @@ class _ViaRenderMixin:
         r_outer = 0.5 * float(via.get("hole_diameter_mm") or 0.0)
         if r_outer <= 0.0:
             return 0.0
-        plating = float(
-            ((self.metadata or {}).get("physics_constants") or {})
-            .get("plating_thickness_mm", 0.025))
+        # The plating the solve used for this via's type (recorded on each
+        # hop); older pickles carry only the one global value.
+        segs = via.get("segments") or []
+        plating = segs[0].get("plating_mm") if segs else None
+        if plating is None:
+            plating = float(
+                ((self.metadata or {}).get("physics_constants") or {})
+                .get("plating_thickness_mm", 0.025))
+        plating = float(plating)
         r_inner = max(r_outer - max(plating, 0.0), 0.0)
         return math.pi * (r_outer * r_outer - r_inner * r_inner)
 

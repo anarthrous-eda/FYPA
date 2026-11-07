@@ -597,3 +597,49 @@ def test_two_net_editor_directive_with_unnamed_n_net_is_unresolved():
                  voltage=5.0),
            _free("SINK", p_net="+5V", current=1.0)]
     assert has_closed_pdn_loop(loaded, eds) is False
+
+
+# --- remote sense (PDN_SENSE_DES equivalent) ---------------------------------
+
+def test_editor_source_remote_senses_at_the_load():
+    loaded = _loaded_with_connectors()
+    eds = [
+        EditorDirective(
+            kind="component", role="SOURCE", designator="J2",
+            single_net=False, p_net="VIN", n_net="GND", voltage=5.0,
+            sense_des=["U1"], sense_n_des=["U1"],
+        ),
+        EditorDirective(
+            kind="component", role="SINK", designator="U1",
+            single_net=False, p_net="VIN", n_net="GND", current=1.0,
+        ),
+    ]
+    assert apply_editor_directives(loaded, eds) == []
+    src = next(s for s in loaded.annotations.directives
+               if isinstance(s, SourceSpec))
+    assert [(p.component_designator, p.pad_designator)
+            for p in src.sense_p.pins] == [("U1", "1")]
+    assert [(p.component_designator, p.pad_designator)
+            for p in src.sense_n.pins] == [("U1", "2")]
+
+
+def test_editor_sense_on_a_part_off_the_net_is_skipped():
+    loaded = _loaded_with_connectors()
+    eds = [EditorDirective(
+        kind="component", role="SOURCE", designator="J2",
+        single_net=False, p_net="VIN", n_net="GND", voltage=5.0,
+        sense_des=["J3"],                      # J3 has no VIN pad
+    )]
+    warnings = apply_editor_directives(loaded, eds)
+    assert loaded.annotations.directives == []
+    assert any("J3" in w and "no pad on net" in w for w in warnings), warnings
+
+
+def test_editor_sense_round_trips_and_defaults_to_local():
+    d = EditorDirective(kind="component", role="SOURCE", designator="J2",
+                        single_net=False, p_net="VIN", n_net="GND",
+                        voltage=5.0, sense_des=["U1"], sense_n_des=["U1"])
+    restored = EditorDirective.from_dict(d.to_dict())
+    assert (restored.sense_des, restored.sense_n_des) == (["U1"], ["U1"])
+    bare = EditorDirective.from_dict({"role": "SOURCE", "p_net": "VIN"})
+    assert bare.sense_des is None and bare.sense_n_des is None
