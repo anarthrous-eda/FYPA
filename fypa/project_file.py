@@ -11,6 +11,8 @@ needs to reopen a board exactly as the user left it:
   ``solve.pkl`` (the FEM solution, see :func:`fypa.cli._solve_cache_path`),
 * any **editor-mode directives** the user has placed by hand (sources / sinks
   dropped on components or free on copper),
+* the Settings-tab **stackup copper-thickness overrides**
+  (``stackup_overrides``),
 * a reserved ``net_renames`` map for a future gerber-export mode, and
 * (Gerber projects only) the per-file ``layer_assignments`` and per-layer
   ``gerber_stackup`` the user confirmed in the import dialogs, so reopening
@@ -319,6 +321,13 @@ class ProjectFile:
     # it off. Mirrors fypa.altium.annotations.DEFAULT_AUTO_SERIES_MAX_OHM —
     # not imported, so loading a .fypa never pulls in the Altium parser.
     auto_series_max_ohm: float = 0.1
+    # Settings-tab copper-thickness overrides, keyed by copper layer id:
+    # ``{layer_id: {"thickness_mm": t, "extracted_thickness_mm": t0}}``.
+    # ``extracted_thickness_mm`` is the thickness the design itself states
+    # (None when unknown); it lets a reopened project tell an override from
+    # the design value even when the linked solve pickle predates this field.
+    stackup_overrides: dict[int, dict[str, float | None]] = field(
+        default_factory=dict)
     viewer_settings: dict[str, Any] = field(default_factory=dict)
 
     # ---- Gerber-import fields (schema v2) --------------------------------
@@ -363,6 +372,11 @@ class ProjectFile:
             "pdn_json": _rel(self.pdn_json, base),
             "pdn_corner": self.pdn_corner,
             "auto_series_max_ohm": float(self.auto_series_max_ohm),
+            # JSON object keys are strings; load() turns them back to ints.
+            "stackup_overrides": {
+                str(int(lid)): dict(entry)
+                for lid, entry in sorted(self.stackup_overrides.items())
+            },
             "viewer_settings": dict(self.viewer_settings),
             "source_kind": self.source_kind,
             "gerber_files": [_rel(p, base) for p in self.gerber_files],
@@ -415,6 +429,8 @@ class ProjectFile:
             pdn_corner=str(doc.get("pdn_corner", "typ")),
             # Additive like cap_overrides; older files get the default.
             auto_series_max_ohm=float(doc.get("auto_series_max_ohm", 0.1)),
+            stackup_overrides=_load_stackup_overrides(
+                doc.get("stackup_overrides")),
             net_renames=dict(doc.get("net_renames", {})),
             viewer_settings=dict(doc.get("viewer_settings", {})),
             source_kind=str(doc.get("source_kind", "altium")),
@@ -583,6 +599,31 @@ class ProjectFile:
 
 
 # --- path helpers -------------------------------------------------------------
+
+
+def _load_stackup_overrides(raw: Any) -> dict[int, dict[str, float | None]]:
+    """Parse the ``stackup_overrides`` object of a ``.fypa``. Entries that
+    are malformed, or carry a missing / negative thickness, are dropped
+    rather than failing the whole load — a hand-edited file should still
+    open."""
+    out: dict[int, dict[str, float | None]] = {}
+    if not isinstance(raw, dict):
+        return out
+    for key, entry in raw.items():
+        try:
+            lid = int(key)
+            thk = float(entry["thickness_mm"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if not thk >= 0.0:      # also rejects NaN
+            continue
+        extracted = entry.get("extracted_thickness_mm")
+        try:
+            extracted = None if extracted is None else float(extracted)
+        except (TypeError, ValueError):
+            extracted = None
+        out[lid] = {"thickness_mm": thk, "extracted_thickness_mm": extracted}
+    return out
 
 
 def _rel(p: str | None, base: Path) -> str | None:

@@ -1424,7 +1424,8 @@ def do_paraview(args: argparse.Namespace) -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     n_files = export_lean_solution(
         solution, args.output_dir,
-        copper_conductivity=solve_copper_conductivity(metadata))
+        copper_conductivity=solve_copper_conductivity(metadata),
+        metadata=metadata)
     print(f"ParaView export complete: {n_files} file(s) in {args.output_dir}")
     return 0
 

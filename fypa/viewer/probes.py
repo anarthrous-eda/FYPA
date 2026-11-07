@@ -1523,7 +1523,7 @@ class _ProbeMixin:
                 "</span>"
             )
 
-    def _build_stackup_settings_box(self) -> QWidget:
+    def _build_stackup_settings_box(self, *, expanded: bool = False) -> QWidget:
         """List every enabled copper layer with an editable thickness
         field (µm). Edits apply on the next press of Re-run Solver and
         feed the per-layer sheet conductance (G = thickness × σ) as well
@@ -1535,9 +1535,30 @@ class _ProbeMixin:
         thickness has no effect on the FEM today.
         """
         # ``self._stackup_thickness_edits`` maps layer_id →
-        # (QLineEdit, original_thickness_mm).
+        # (QLineEdit, extracted_thickness_mm): the thickness the DESIGN
+        # states, which is what decides whether a field is an override.
+        # ``self._stackup_thickness_solved_mm`` holds what the current
+        # solution was solved with — the baseline a field is dirty against.
+        # The two differ whenever an override is in effect.
         self._stackup_thickness_edits: dict[int,
                                              tuple[QLineEdit, float]] = {}
+        self._stackup_thickness_solved_mm: dict[int, float] = {}
+        # Overrides saved in the .fypa (kept in step with every solve, see
+        # _sync_project_stackup_overrides) — they take the field's value so
+        # a reopened project shows, and re-solves with, what was saved.
+        _proj_overrides = dict(getattr(
+            getattr(self, "_project", None), "stackup_overrides", None)
+            or {})
+        # layer_id → resistivity QLineEdit (µΩ·cm at 20 °C). Blank = the
+        # board-wide copper resistivity; baseline is the current
+        # SolveSettings' per-layer map.
+        self._stackup_resistivity_edits: dict[int, QLineEdit] = {}
+        _cur_settings = getattr(self, "_solve_settings", None)
+        _layer_rho = dict(getattr(
+            _cur_settings, "layer_copper_resistivity_20c_microohm_cm",
+            None) or {})
+        _board_rho = float(getattr(
+            _cur_settings, "copper_resistivity_20c_microohm_cm", 1.68))
 
         rows: list[dict] = []
         if self.metadata:
@@ -1552,7 +1573,7 @@ class _ProbeMixin:
         count_text = ("no copper layers" if layer_count == 0
                        else f"{layer_count} copper layer"
                             + ("s" if layer_count != 1 else ""))
-        title = f"Stackup — copper thicknesses ({count_text})"
+        title = f"Stackup — copper thickness & resistivity ({count_text})"
 
         if not rows:
             info = QLabel(
@@ -1561,9 +1582,11 @@ class _ProbeMixin:
             )
             info.setWordWrap(True)
             body_layout.addWidget(info)
-            wrap, _header = self._make_collapsible_section(
+            wrap, header = self._make_collapsible_section(
                 title, body, expanded=True,
             )
+            self._stackup_collapse_btn = header
+            self._stackup_settings_box = wrap
             return wrap
 
         intro = QLabel(
@@ -1571,6 +1594,12 @@ class _ProbeMixin:
             "thickness. Empty (or unchanged) fields keep the existing "
             "value. Thickness drives sheet conductance "
             "(G = thickness × σ) and via-barrel hop length. The "
+            "<b>ρ</b> field sets that layer's own resistivity in "
+            "<b>µΩ·cm at 20 °C</b> (for a plated, alloy or non-copper "
+            "layer); leave it blank to use the board-wide copper "
+            "resistivity. It is temperature-corrected with the same "
+            "coefficient, and changes only that layer's sheet conductance "
+            "— via barrels stay copper. The "
             "<i>dielectric</i> rows interleaved below show the core / "
             "prepreg thickness between adjacent copper layers (read-only)."
         )
@@ -1587,13 +1616,23 @@ class _ProbeMixin:
         for row_index, row in enumerate(rows):
             lid = int(row.get("layer_id", -1))
             name = str(row.get("name", "?"))
-            thk_mm = float(row.get("copper_thickness_mm", 0.0) or 0.0)
+            solved_mm = float(row.get("copper_thickness_mm", 0.0) or 0.0)
+            _entry = _proj_overrides.get(lid) or {}
+            extracted_mm = row.get("extracted_copper_thickness_mm")
+            if extracted_mm is None:
+                # Solve pickle from before this was recorded: fall back to
+                # the project's note of it, then to the solved value.
+                extracted_mm = _entry.get("extracted_thickness_mm")
+            if extracted_mm is None:
+                extracted_mm = solved_mm
+            thk_mm = float(extracted_mm or 0.0)
+            shown_mm = float(_entry.get("thickness_mm", solved_mm))
             thk_um = thk_mm * 1000.0
             thk_mil = thk_mm / 0.0254 if thk_mm else 0.0
             thk_oz = thk_mm / 0.0348 if thk_mm else 0.0
             is_plane = bool(row.get("is_plane"))
 
-            edit = QLineEdit(self._fmt_settings_value(thk_um))
+            edit = QLineEdit(self._fmt_settings_value(shown_mm * 1000.0))
             edit.setValidator(_numeric_validator(self))
             edit.setMinimumWidth(110)
             edit.setMaximumWidth(160)
@@ -1611,6 +1650,7 @@ class _ProbeMixin:
             edit.textChanged.connect(self._on_settings_field_changed)
 
             self._stackup_thickness_edits[lid] = (edit, thk_mm)
+            self._stackup_thickness_solved_mm[lid] = solved_mm
 
             _t = _T()
             row_layout = QHBoxLayout()
@@ -1619,8 +1659,34 @@ class _ProbeMixin:
             unit_lbl = QLabel("µm")
             unit_lbl.setStyleSheet(f"QLabel {{ color: {_t['fg_muted']}; }}")
             row_layout.addWidget(unit_lbl)
+            row_layout.addSpacing(12)
+
+            rho_lbl = QLabel("ρ")
+            rho_lbl.setStyleSheet(f"QLabel {{ color: {_t['fg_label']}; }}")
+            row_layout.addWidget(rho_lbl)
+            rho_val = _layer_rho.get(lid)
+            rho_edit = QLineEdit(
+                self._fmt_settings_value(rho_val) if rho_val else "")
+            rho_edit.setValidator(_numeric_validator(self))
+            rho_edit.setPlaceholderText(f"{_board_rho:g} (board)")
+            rho_edit.setMinimumWidth(100)
+            rho_edit.setMaximumWidth(130)
+            rho_edit.setToolTip(
+                f"Resistivity of layer {lid} ({name}) at 20 °C, in µΩ·cm. "
+                "Blank = the board-wide copper resistivity "
+                f"({_board_rho:g} µΩ·cm). Temperature-corrected with the "
+                "board's coefficient. Affects this layer's sheet conductance "
+                "and current density only, not via barrels. Press Re-run "
+                "Solver to commit."
+            )
+            rho_edit.textChanged.connect(self._on_settings_field_changed)
+            self._stackup_resistivity_edits[lid] = rho_edit
+            row_layout.addWidget(rho_edit)
+            rho_unit = QLabel("µΩ·cm")
+            rho_unit.setStyleSheet(f"QLabel {{ color: {_t['fg_muted']}; }}")
+            row_layout.addWidget(rho_unit)
             row_layout.addSpacing(8)
-            hint_bits = [f"was {thk_um:g} µm",
+            hint_bits = [f"design {thk_um:g} µm",
                          f"{thk_mil:.3f} mil",
                          f"{thk_oz:.3f} oz"]
             if is_plane:
@@ -1680,10 +1746,86 @@ class _ProbeMixin:
         body_layout.addWidget(form_wrap)
 
         wrap, header = self._make_collapsible_section(
-            title, body, expanded=False,
+            title, body, expanded=expanded,
         )
         self._stackup_collapse_btn = header
+        self._stackup_settings_box = wrap
         return wrap
+
+    def _rebuild_stackup_settings_box(self) -> None:
+        """Replace the Stackup box with one built from the current
+        ``metadata`` / project, keeping its expanded state.
+
+        The Settings tab is built once per window, so without this a solve
+        or an in-place File > Open Project left the box showing the previous
+        solve's (or the previous board's) layers and baselines."""
+        old = getattr(self, "_stackup_settings_box", None)
+        if old is None:
+            return
+        parent = old.parentWidget()
+        layout = parent.layout() if parent is not None else None
+        if layout is None:
+            return
+        idx = layout.indexOf(old)
+        if idx < 0:
+            return
+        btn = getattr(self, "_stackup_collapse_btn", None)
+        expanded = bool(btn is not None and btn.isChecked())
+        new = self._build_stackup_settings_box(expanded=expanded)
+        layout.insertWidget(idx, new)
+        layout.removeWidget(old)
+        old.hide()
+        old.deleteLater()
+        # Updates _settings_dirty too, so a saved override the opened
+        # solution was not solved with raises the Resolve prompt.
+        self._on_settings_field_changed()
+
+    def _stackup_override_entries(
+            self, overrides: dict[int, float]) -> dict[int, dict]:
+        """``{layer_id: thickness_mm}`` → the ProjectFile entry form, with
+        the design's own thickness alongside each override."""
+        extracted = {
+            lid: original_mm for lid, (_edit, original_mm)
+            in getattr(self, "_stackup_thickness_edits", {}).items()
+        }
+        for row in (self.metadata or {}).get("stackup") or []:
+            try:
+                lid = int(row.get("layer_id"))
+            except (TypeError, ValueError):
+                continue
+            val = row.get("extracted_copper_thickness_mm")
+            if val is not None:
+                extracted.setdefault(lid, float(val))
+        return {
+            int(lid): {"thickness_mm": float(mm),
+                       "extracted_thickness_mm": extracted.get(int(lid))}
+            for lid, mm in overrides.items()
+        }
+
+    def _sync_project_stackup_overrides(self) -> None:
+        """After a solve, make the bound project's overrides the ones the
+        solve used (recorded by the worker as
+        ``metadata["stackup_overrides"]``), so Save writes them and a
+        rebuilt Stackup box doesn't resurrect a stale one."""
+        proj = getattr(self, "_project", None)
+        md = self.metadata or {}
+        if proj is None or "stackup_overrides" not in md:
+            return
+        proj.stackup_overrides = self._stackup_override_entries(
+            {int(k): float(v)
+             for k, v in (md.get("stackup_overrides") or {}).items()})
+
+    def _project_stackup_overrides_for_save(self) -> dict[int, dict] | None:
+        """The Stackup fields as they stand, in ProjectFile form — what the
+        user sees is what is saved, even before a Re-run. ``None`` when a
+        field doesn't parse (the project's existing entries are kept)."""
+        if not getattr(self, "_stackup_thickness_edits", None):
+            return None
+        try:
+            overrides = self._gather_stackup_overrides()
+        except ValueError:
+            return None
+        return self._stackup_override_entries(overrides)
 
     def _update_via_check_btn_visibility(self) -> None:
         """Show the Re-run Via Check button only when the field value
@@ -1778,6 +1920,37 @@ class _ProbeMixin:
                 overrides[lid] = new_mm
         return overrides
 
+    def _gather_layer_resistivities(self) -> dict[int, float]:
+        """Collect the per-layer resistivity overrides from the Stackup box.
+
+        Returns ``{layer_id: resistivity_20c_microohm_cm}`` for every
+        non-blank field. When the box was never built (no design stackup),
+        the current solve's map is kept so a re-run doesn't silently drop
+        it. Raises ``ValueError`` on un-parseable or non-positive input.
+        """
+        edits = getattr(self, "_stackup_resistivity_edits", None)
+        if edits is None:
+            return dict(getattr(
+                getattr(self, "_solve_settings", None),
+                "layer_copper_resistivity_20c_microohm_cm", None) or {})
+        out: dict[int, float] = {}
+        for lid, edit in edits.items():
+            text = edit.text().strip()
+            if not text:
+                continue
+            try:
+                rho = self._parse_settings_value(text)
+            except ValueError:
+                raise ValueError(
+                    f"layer {lid} resistivity: not a number ({text!r})"
+                )
+            if rho <= 0.0:
+                raise ValueError(
+                    f"layer {lid} resistivity must be > 0 µΩ·cm"
+                )
+            out[int(lid)] = float(rho)
+        return out
+
     def _gather_settings_from_form(self) -> tuple[object, float, float,
                                                    dict[int, float]]:
         """Read the current text in every Settings-tab QLineEdit and return
@@ -1812,6 +1985,8 @@ class _ProbeMixin:
             data = mode_combo.currentData()
             if isinstance(data, str):
                 kwargs["conductive_fill_mode"] = data
+        kwargs["layer_copper_resistivity_20c_microohm_cm"] = (
+            self._gather_layer_resistivities())
         new_settings = _SolveSettings(**kwargs)
 
         def _read_display(key: str, label: str) -> float:

@@ -575,6 +575,7 @@ class _FileMenuMixin:
                 via_rows=via_rows,
                 voltage_drop_reference=self._last_drop_reference,
                 copper_conductivity=solve_copper_conductivity(self.metadata),
+                metadata=self.metadata,
             )
         except Exception:
             log.exception(
@@ -722,6 +723,9 @@ class _FileMenuMixin:
             proj.pcbdoc_path = (proj.pcbdoc_path
                                 or self.metadata.get("pcbdoc_path"))
         self._store_viewer_settings(proj)
+        stackup_entries = self._project_stackup_overrides_for_save()
+        if stackup_entries is not None:
+            proj.stackup_overrides = stackup_entries
         # Copy the solve + design-info cache pickles into the project folder
         # so the .fypa references its own sidecars (relative paths) and the
         # folder can be shared as a unit — see _bundle_caches_beside_project.

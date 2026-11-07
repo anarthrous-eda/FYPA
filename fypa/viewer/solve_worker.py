@@ -459,6 +459,8 @@ class _SolveWorker(QThread):
                 stub_pieces_by_pair=stub_pieces_by_pair,
             )
         _timer.log_breakdown()
+        record_stackup_overrides(metadata, pristine_loaded,
+                                 self._stackup_overrides)
         self.finished_ok.emit(stub_solution, metadata, pristine_loaded)
 
     def _expected_stage_count(self) -> int:
@@ -999,6 +1001,8 @@ class _SolveWorker(QThread):
                 return
             self.stage_changed.emit("Opening viewer…")
             _timer.log_breakdown()
+            record_stackup_overrides(metadata, pristine_loaded,
+                                     self._stackup_overrides)
             self.finished_ok.emit(new_solution, metadata, pristine_loaded)
         except Exception as e:
             import traceback
@@ -1186,7 +1190,7 @@ class _SolveWorker(QThread):
         """
         from dataclasses import replace as _dc_replace
         from fypa.altium_geometry import build_layer_geometries
-        from fypa.altium.loader import LoadedProject
+        from fypa.altium.loader import replace_loaded
 
         new_stackup = []
         for s in loaded.extracted.stackup:
@@ -1200,17 +1204,12 @@ class _SolveWorker(QThread):
         )
         # Rebuild the legacy single-union geometry — cheap relative to
         # the solve, and keeps the diagnostic_summary honest about the
-        # new sheet conductance. LoadedProject is no longer a frozen
-        # dataclass (geometry was made lazy to skip ~0.8 s on every
-        # solve), so we construct a fresh one explicitly instead of
-        # going through dataclasses.replace.
+        # new sheet conductance. ``replace_loaded`` carries every other
+        # field across — absorbed low-Ω bridges above all: without them
+        # the merged copper they join floats and the solve goes singular.
         new_geometry = build_layer_geometries(new_extracted)
-        return LoadedProject(
-            extracted=new_extracted,
-            annotations=loaded.annotations,
-            geometry=new_geometry,
-            auto_series_max_ohm_applied=getattr(
-                loaded, "auto_series_max_ohm_applied", None),
+        return replace_loaded(
+            loaded, extracted=new_extracted, geometry=new_geometry,
         )
 
     def _apply_sink_overrides(self, loaded) -> None:
@@ -1238,6 +1237,43 @@ class _SolveWorker(QThread):
         return clone_loaded_for_edit(loaded)
 
 
+
+
+def record_stackup_overrides(metadata, pristine_loaded, overrides) -> None:
+    """Record on ``metadata`` which copper-thickness overrides this solve
+    applied, and what the design itself says each layer's thickness is.
+
+    ``metadata["stackup"]`` rows carry the thickness the solve USED — the
+    override when there is one — so on their own they cannot tell an
+    override from the design value. The Settings tab needs both: the solved
+    value to show and to mark a field dirty against, the extracted one to
+    decide whether the field is an override at all. Without it a reopened
+    project showed the override as the design value and the next Resolve
+    silently solved with the design thickness.
+
+    Writes ``extracted_copper_thickness_mm`` on each stackup row and
+    ``metadata["stackup_overrides"]`` = ``{layer_id: thickness_mm}``.
+    """
+    if not isinstance(metadata, dict):
+        return
+    extracted = {}
+    stackup = getattr(getattr(pristine_loaded, "extracted", None),
+                      "stackup", None) or ()
+    for s in stackup:
+        try:
+            extracted[int(s.layer_id)] = float(s.copper_thickness_mm)
+        except (AttributeError, TypeError, ValueError):
+            continue
+    for row in metadata.get("stackup") or []:
+        try:
+            lid = int(row.get("layer_id"))
+        except (TypeError, ValueError):
+            continue
+        if lid in extracted:
+            row["extracted_copper_thickness_mm"] = extracted[lid]
+    metadata["stackup_overrides"] = {
+        int(lid): float(mm) for lid, mm in (overrides or {}).items()
+    }
 
 
 def _cache_serves_adaptive_request(metadata, adaptive_requested: bool) -> bool:

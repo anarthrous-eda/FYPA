@@ -83,6 +83,21 @@ log = logging.getLogger(__name__)
 #   surface_conductance [S] = thickness [mm] × conductivity [S/mm]
 COPPER_CONDUCTIVITY_S_PER_MM: float = 5.95e4
 
+# Per-layer conductivity overrides (S/mm), keyed by Altium layer id. A layer
+# missing from the map uses COPPER_CONDUCTIVITY_S_PER_MM. Patched in by
+# SolveSettings.apply_to_modules from the Settings tab's per-layer
+# resistivity fields; empty means every layer is the same copper.
+LAYER_CONDUCTIVITY_S_PER_MM: dict[int, float] = {}
+
+
+def layer_copper_conductivity(layer_id) -> float:
+    """Conductivity (S/mm) the next solve uses for copper layer ``layer_id``."""
+    try:
+        sigma = float(LAYER_CONDUCTIVITY_S_PER_MM.get(layer_id, 0.0) or 0.0)
+    except (TypeError, ValueError):
+        sigma = 0.0
+    return sigma if sigma > 0.0 else COPPER_CONDUCTIVITY_S_PER_MM
+
 # Copper weight assumed when the Altium stackup carries no thickness for a
 # layer. altium_monkey initialises ``copper_thickness`` to 0 mils when the
 # .PcbDoc has no COPTHICK field, and a zero thickness means zero sheet
@@ -119,18 +134,38 @@ def _layer_conductance(stackup) -> float:
                 DEFAULT_COPPER_THICKNESS_MM * 1000.0,
             )
         t_mm = DEFAULT_COPPER_THICKNESS_MM
-    return t_mm * COPPER_CONDUCTIVITY_S_PER_MM
+    return t_mm * layer_copper_conductivity(getattr(stackup, "layer_id", None))
 
 
-def solve_copper_conductivity(metadata: dict | None) -> float:
+def stackup_layer_name(fem_layer_name: str) -> str:
+    """Stackup layer name of a FEM layer. Per-net FEM layers are named
+    ``"<stackup name>|<net name>"``; plane / legacy layers carry the stackup
+    name alone."""
+    return str(fem_layer_name or "").split("|", 1)[0]
+
+
+def solve_copper_conductivity(metadata: dict | None,
+                              layer_name: str | None = None) -> float:
     """Copper conductivity (S/mm) the solve behind ``metadata`` used.
 
     Read from ``physics_constants`` (written at solve time, so it carries any
     Settings-tab temperature / resistivity override); falls back to the
     current module value for metadata that doesn't record it (Gerber
     imports, old pickles).
+
+    With ``layer_name`` (a stackup or FEM layer name), a per-layer
+    resistivity override recorded for that layer wins over the board-wide
+    value.
     """
     phys = (metadata or {}).get("physics_constants") or {}
+    if layer_name is not None:
+        per_layer = phys.get("layer_copper_conductivity_S_per_mm") or {}
+        try:
+            sigma = float(per_layer.get(stackup_layer_name(layer_name)) or 0.0)
+        except (TypeError, ValueError, AttributeError):
+            sigma = 0.0
+        if sigma > 0.0:
+            return sigma
     try:
         sigma = float(phys.get("copper_conductivity_S_per_mm") or 0.0)
     except (TypeError, ValueError):

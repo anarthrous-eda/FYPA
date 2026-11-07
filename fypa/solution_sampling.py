@@ -246,11 +246,14 @@ def compute_node_rows(sampler: SolutionSampler,
                         (prep_idx, float(x), float(y)))
 
     samples = sampler.sample_batch(requests)
-    sigma = solve_copper_conductivity(metadata)
 
     rows: list[dict] = []
     for prep_idx, prep in enumerate(preps):
         voltage, pd_val, conductance = samples.get(prep_idx, (None, None, 0.0))
+        # Per layer: a resistivity override changes the conductivity, so the
+        # thickness behind ``conductance`` has to be backed out with it.
+        sigma = solve_copper_conductivity(
+            metadata, sampler.id_to_phys.get(prep["layer_id"]))
         cd_val = (volume_current_density(
                       math.sqrt(max(pd_val * conductance, 0.0)),
                       conductance, sigma)

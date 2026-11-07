@@ -482,7 +482,8 @@ class _RenderMixin:
         if derive_fn is _copper_roi_per_vertex:
             vs_parts = self._roi_vertex_values(layer_index, geom)
         else:
-            sigma = solve_copper_conductivity(self.metadata)
+            sigma = solve_copper_conductivity(
+                self.metadata, self.solution.problem.layers[layer_index].name)
             vs_parts = [
                 np.asarray(derive_fn(tris_local, pot, pd, conductance, n,
                                      sigma),

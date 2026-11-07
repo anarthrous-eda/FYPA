@@ -20,7 +20,7 @@ import math
 import re
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -260,6 +260,12 @@ class SolveSettings:
     temperature_c: float = 20.0
     copper_resistivity_20c_microohm_cm: float = 1.68
     copper_temp_coefficient_per_c: float = 0.00393
+    # Per-layer resistivity overrides at 20 °C (µΩ·cm), keyed by Altium
+    # layer id. A layer missing from the map uses the board-wide value above.
+    # Each is temperature-corrected with the same α and T. Affects that
+    # layer's sheet conductance only — via barrels stay copper.
+    layer_copper_resistivity_20c_microohm_cm: dict[int, float] = field(
+        default_factory=dict)
     # Via model — plating per via type (see PLATING_* above). The first
     # covers through vias and component plated holes.
     plating_thickness_mm: float = PLATING_THICKNESS_MM
@@ -321,12 +327,32 @@ class SolveSettings:
 
         ρ(T) = ρ₂₀ · (1 + α·(T − 20))  then  σ = 0.1 / ρ[Ω·cm]  (→ S/mm).
         """
-        rho_ohm_cm_20 = self.copper_resistivity_20c_microohm_cm * 1.0e-6
+        return self._conductivity_from_rho20(
+            self.copper_resistivity_20c_microohm_cm)
+
+    def _conductivity_from_rho20(self, rho20_microohm_cm: float) -> float:
+        rho_ohm_cm_20 = rho20_microohm_cm * 1.0e-6
         rho_t = rho_ohm_cm_20 * (
             1.0 + self.copper_temp_coefficient_per_c * (self.temperature_c - 20.0)
         )
         rho_t = max(rho_t, 1.0e-12)
         return 0.1 / rho_t
+
+    @property
+    def layer_conductivity_s_per_mm(self) -> dict[int, float]:
+        """Temperature-corrected conductivity (S/mm) of each layer with a
+        resistivity override. Non-positive entries are ignored (the layer
+        keeps the board-wide value)."""
+        out: dict[int, float] = {}
+        for lid, rho in (self.layer_copper_resistivity_20c_microohm_cm
+                         or {}).items():
+            try:
+                rho_f = float(rho)
+            except (TypeError, ValueError):
+                continue
+            if rho_f > 0.0:
+                out[int(lid)] = self._conductivity_from_rho20(rho_f)
+        return out
 
     @property
     def copper_resistivity_ohm_mm(self) -> float:
@@ -338,6 +364,7 @@ class SolveSettings:
         these values. Idempotent — call again to change."""
         import fypa.altium_geometry as _g
         _g.COPPER_CONDUCTIVITY_S_PER_MM = self.copper_conductivity_s_per_mm
+        _g.LAYER_CONDUCTIVITY_S_PER_MM = self.layer_conductivity_s_per_mm
         # Keep loader-side constants in sync. Functions that reference them
         # via the bare module-global name (e.g. _barrel_segment_resistance_ohm)
         # will pick the new values up automatically on the next call.
@@ -379,6 +406,14 @@ class SolveSettings:
             a = float(phys.get("copper_temp_coefficient_per_c", 0.00393))
             denom = max(1.0 + a * (t - 20.0), 1.0e-9)
             s.copper_resistivity_20c_microohm_cm = rho_at_t / denom
+        per_layer = phys.get("layer_copper_resistivity_20c_microohm_cm")
+        if isinstance(per_layer, dict):
+            for lid, rho in per_layer.items():
+                try:
+                    s.layer_copper_resistivity_20c_microohm_cm[int(lid)] = (
+                        float(rho))
+                except (TypeError, ValueError):
+                    continue
         if "plating_thickness_mm" in phys:
             s.plating_thickness_mm = float(phys["plating_thickness_mm"])
         # Pickles from before per-type plating carried one value for every
@@ -694,11 +729,42 @@ def clone_loaded_for_edit(loaded: LoadedProject) -> LoadedProject:
     new_annotations.connectivity_breaks = list(
         getattr(loaded.annotations, "connectivity_breaks", [])
     )
+    return replace_loaded(loaded, annotations=new_annotations)
+
+
+_UNSET = object()
+
+
+def replace_loaded(
+    loaded: LoadedProject,
+    *,
+    extracted: ExtractedProject | None = None,
+    annotations: AnnotationResult | None = None,
+    geometry=_UNSET,
+) -> LoadedProject:
+    """Return a new :class:`LoadedProject` with the given parts swapped in
+    and EVERY other field carried across from ``loaded``.
+
+    Rebuild a LoadedProject through this, never by calling the constructor
+    with a hand-picked field list: a field left out silently takes its
+    empty default. Dropping ``absorbed_bridges`` that way disconnects the
+    copper a low-Ω SERIES merge joined, and the solve goes near-singular
+    (a stackup thickness override once turned a 9 mV drop into 45 MV).
+
+    ``geometry`` defaults to ``loaded``'s already-built geometry when
+    ``extracted`` is unchanged, and to lazy rebuild when it is replaced;
+    pass a value to seed it explicitly. ``getattr`` defaults keep
+    LoadedProjects unpickled from older design-info caches working.
+    """
+    if geometry is _UNSET:
+        geometry = (loaded.__dict__.get("geometry")
+                    if extracted is None else None)
     return LoadedProject(
-        extracted=loaded.extracted,
-        annotations=new_annotations,
-        geometry=loaded.__dict__.get("geometry"),
-        absorbed_bridges=list(loaded.absorbed_bridges),
+        extracted=loaded.extracted if extracted is None else extracted,
+        annotations=loaded.annotations if annotations is None else annotations,
+        geometry=geometry,
+        absorbed_bridges=list(getattr(loaded, "absorbed_bridges", None) or []),
+        merged_net_names=getattr(loaded, "merged_net_names", frozenset()),
         no_auto_bridge_applied=getattr(
             loaded, "no_auto_bridge_applied", frozenset()),
         auto_series_max_ohm_applied=getattr(
@@ -2722,17 +2788,36 @@ def build_solve_metadata(
     # resistivity override (which SolveSettings.apply_to_modules patches into
     # fypa.altium_geometry, and which the FEM uses) is reflected on the Setup tab
     # too — otherwise these rows show stale 20 °C values that contradict the solve.
-    _copper_conductivity = __import__(
-        "fypa.altium_geometry",
-        fromlist=["COPPER_CONDUCTIVITY_S_PER_MM"],
-    ).COPPER_CONDUCTIVITY_S_PER_MM
+    import fypa.altium_geometry as _geom
     stackup_rows = []
+    # Layers the FEM solved with a per-layer resistivity override (the
+    # module map apply_to_modules patched in). The conductivity is keyed by
+    # stackup name too, because the FEM layers carry that name
+    # (``"<stackup name>|<net>"``) and the current-density readers start
+    # from them.
+    _overridden = dict(_geom.LAYER_CONDUCTIVITY_S_PER_MM or {})
+    layer_sigma_by_name: dict[str, float] = {}
+    layer_rho20_by_id: dict[int, float] = {}
+    _layer_rho20 = (
+        settings.layer_copper_resistivity_20c_microohm_cm
+        if settings is not None else {}
+    ) or {}
     for lid in enabled:
         s = stackup_by_id.get(lid)
         if s is None:
             continue
-        sheet_conductance = s.copper_thickness_mm * _copper_conductivity  # S = thickness_mm * conductivity_S_per_mm
+        _layer_sigma = _geom.layer_copper_conductivity(lid)
+        _is_override = lid in _overridden
+        if _is_override:
+            layer_sigma_by_name[s.name] = _layer_sigma
+            if lid in _layer_rho20:
+                layer_rho20_by_id[lid] = float(_layer_rho20[lid])
+        sheet_conductance = s.copper_thickness_mm * _layer_sigma  # S = thickness_mm * conductivity_S_per_mm
         stackup_rows.append({
+            # Temperature-corrected, as solved.
+            "copper_conductivity_S_per_mm": _layer_sigma,
+            "copper_resistivity_microohm_cm": 1.0e5 / _layer_sigma,
+            "resistivity_override": _is_override,
             "layer_id": lid,
             "name": s.name,
             "copper_thickness_mm": s.copper_thickness_mm,
@@ -3347,6 +3432,12 @@ def build_solve_metadata(
                 if settings is not None
                 else COPPER_RESISTIVITY_OHM_MM * 1.0e5
             ),
+            # Per-layer overrides: the 20 °C inputs (by layer id, so
+            # SolveSettings.from_metadata restores the form) and the
+            # temperature-corrected conductivity the FEM used (by stackup
+            # name, for solve_copper_conductivity(metadata, layer_name)).
+            "layer_copper_resistivity_20c_microohm_cm": layer_rho20_by_id,
+            "layer_copper_conductivity_S_per_mm": layer_sigma_by_name,
             "plating_thickness_mm": PLATING_THICKNESS_MM,
             "plating_blind_mm": PLATING_BLIND_MM,
             "plating_buried_mm": PLATING_BURIED_MM,

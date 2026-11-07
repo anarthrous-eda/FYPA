@@ -237,7 +237,6 @@ class _Context:
                  net_to_rail, settings):
         self.sampler = sampler
         self.metadata = metadata
-        self.sigma = solve_copper_conductivity(metadata)
         self.directives = directives
         self.pin_v = pin_v
         self.rail_to_members = rail_to_members
@@ -300,7 +299,8 @@ class _Context:
         ls = self.sampler.solution.layer_solutions[li]
         cond = float(self.sampler.solution.problem.layers[li].conductance)
         # Sheet |J| (A/mm of width) → A/mm² of copper cross-section.
-        j_scale = volume_current_density(1.0, cond, self.sigma)
+        j_scale = volume_current_density(
+            1.0, cond, solve_copper_conductivity(self.metadata, phys))
         parts = []
         loss = 0.0
         v_min = (math.inf, None)
@@ -746,7 +746,13 @@ def _setup_rows(metadata: dict, solution, settings: ReportSettings,
                      + (f" · ρ = {rho:.3g} Ω·m" if rho else "")
                      + (f" · plating {_plating_summary(phys)}"
                         if _float(phys.get("plating_thickness_mm")) else "")))
-    mesher = metadata.get("mesher_config") or {}
+        overridden = [r for r in stack if r.get("resistivity_override")]
+        if overridden:
+            rows.append(("Layer resistivity", " · ".join(
+                f"{r.get('name', '?')} ρ = "
+                f"{(_float(r.get('copper_resistivity_microohm_cm')) or 0.0) * 1e-8:.3g} Ω·m"
+                for r in overridden)))
+    mesher =metadata.get("mesher_config") or {}
     n_tri = sum(int(np.asarray(t).shape[0])
                 for ls in solution.layer_solutions for t in ls.triangles)
     rows.append(("Mesh", f"{n_tri:,} triangles"

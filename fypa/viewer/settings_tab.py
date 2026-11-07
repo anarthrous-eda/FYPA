@@ -1192,6 +1192,10 @@ class _SettingsTabMixin:
         for (edit, original_mm) in getattr(
                 self, "_stackup_thickness_edits", {}).values():
             edit.setText(self._fmt_settings_value(original_mm * 1000.0))
+        # Per-layer resistivity: blank = the board-wide copper value.
+        for edit in getattr(
+                self, "_stackup_resistivity_edits", {}).values():
+            edit.setText("")
         self._settings_status_label.setText(
             f"<span style='color:{_T()['accent']};'>Fields reset — press "
             "<b>Re-run Solver</b> to commit.</span>"
@@ -1285,17 +1289,41 @@ class _SettingsTabMixin:
             mark(edit, dirty)
             any_dirty = any_dirty or dirty
 
-        for _lid, (edit, original_mm) in getattr(
+        # Dirty = differs from what the current solution was SOLVED with,
+        # not from the design value: an override that is already solved in
+        # is not a pending change.
+        solved = getattr(self, "_stackup_thickness_solved_mm", {})
+        for lid, (edit, original_mm) in getattr(
                 self, "_stackup_thickness_edits", {}).items():
             text = edit.text().strip()
             if not text:
                 mark(edit, False)
                 continue
+            baseline_mm = solved.get(lid, original_mm)
             try:
                 new_um = self._parse_settings_value(text)
-                dirty = abs(new_um / 1000.0 - original_mm) > 1.0e-6
+                dirty = abs(new_um / 1000.0 - baseline_mm) > 1.0e-6
             except ValueError:
                 dirty = True
+            mark(edit, dirty)
+            any_dirty = any_dirty or dirty
+
+        layer_rho = dict(getattr(
+            self._solve_settings,
+            "layer_copper_resistivity_20c_microohm_cm", None) or {})
+        for lid, edit in getattr(
+                self, "_stackup_resistivity_edits", {}).items():
+            text = edit.text().strip()
+            baseline = layer_rho.get(lid)
+            if not text:
+                dirty = baseline is not None
+            else:
+                try:
+                    val = self._parse_settings_value(text)
+                    dirty = (val <= 0.0 or baseline is None
+                             or abs(val - float(baseline)) > 1e-12)
+                except ValueError:
+                    dirty = True
             mark(edit, dirty)
             any_dirty = any_dirty or dirty
 

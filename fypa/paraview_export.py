@@ -25,7 +25,7 @@ from typing import Any
 
 import numpy as np
 
-from fypa.altium_geometry import solve_copper_conductivity
+from fypa.altium_geometry import solve_copper_conductivity, stackup_layer_name
 from pdnsolver.vtu_fields import (
     VTK_HEADER_TYPE,
     global_voltage_max,
@@ -189,6 +189,7 @@ def export_lean_solution(
     via_rows: list[dict] | None = None,
     voltage_drop_reference: float | None = None,
     copper_conductivity: float | None = None,
+    metadata: dict | None = None,
 ) -> int:
     """Write one ``.vtu`` per padne layer of ``solution`` into ``output_dir``.
 
@@ -200,7 +201,10 @@ def export_lean_solution(
     ``copper_conductivity`` (S/mm) turns each layer's sheet conductance back
     into its copper thickness for the A/mm² field; pass the solve's value
     (:func:`fypa.altium_geometry.solve_copper_conductivity` of its metadata).
-    Unset, the current module value is used.
+    Unset, the current module value is used. Pass the solve's ``metadata``
+    as well and a layer with a per-layer resistivity override uses its own
+    conductivity instead; without it every layer uses
+    ``copper_conductivity``.
 
     ``voltage_drop`` is measured against ``voltage_drop_reference`` (pass the
     viewer's drop reference so the export matches the interactive heatmap).
@@ -216,7 +220,10 @@ def export_lean_solution(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if copper_conductivity is None:
-        copper_conductivity = solve_copper_conductivity(None)
+        copper_conductivity = solve_copper_conductivity(metadata)
+    layer_sigmas = (
+        (metadata or {}).get("physics_constants") or {}
+    ).get("layer_copper_conductivity_S_per_mm") or {}
     if voltage_drop_reference is None:
         all_pots = [
             pots
@@ -243,12 +250,15 @@ def export_lean_solution(
             log.warning("Skipping layer %r — no non-empty meshes", layer_name)
             continue
 
+        layer_sigma = copper_conductivity
+        if stackup_layer_name(layer_name) in layer_sigmas:
+            layer_sigma = solve_copper_conductivity(metadata, layer_name)
         stem = sanitize_filename(layer_name, used_names)
         pieces = []
         for xys, tris, pots, pd in components:
             fields = per_vertex_fields(
                 tris, pots, pd, conductance,
-                copper_conductivity=copper_conductivity,
+                copper_conductivity=layer_sigma,
                 voltage_drop_reference=voltage_drop_reference,
             )
             pieces.append(_write_piece(xys, tris, fields))

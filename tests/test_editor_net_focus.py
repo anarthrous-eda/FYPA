@@ -523,6 +523,45 @@ def test_a_focus_change_invalidates_the_overlay_signature(viewer):
     assert viewer._overlay_geom_signature([]) != before
 
 
+def test_via_span_labels_follow_first_eye_layer_visibility(viewer):
+    """The via-span labels choose their vias from the first-eye layers. If
+    the signature missed a first-eye toggle, turning a layer on would leave
+    its vias unlabelled and turning one off would leave stale labels."""
+    viewer._overlay_state = {}
+    viewer._overlay_colors = {}
+    viewer._overlay_bottom_colors = {}
+    viewer._layer_fill_buttons = []
+    viewer._layer_eye2_buttons = []
+    viewer._effective_rail_members = lambda rails: []
+    viewer._caps_overlay_signature = lambda: ()
+
+    class _Box:
+        def __init__(self, on):
+            self.on = on
+
+        def isChecked(self):
+            return self.on
+
+    viewer.view_3d_box = _Box(False)
+    viewer.via_span_box = _Box(True)
+    layers = ["Top Layer"]
+    viewer._visible_layers = lambda: list(layers)
+
+    before = viewer._overlay_geom_signature([])
+    layers.append("Bottom Layer")
+    on = viewer._overlay_geom_signature([])
+    assert on != before
+    layers.remove("Bottom Layer")
+    assert viewer._overlay_geom_signature([]) == before
+
+    # With the labels off, a first-eye toggle changes nothing in the
+    # overlay batch, so the skip still applies.
+    viewer.via_span_box.on = False
+    off = viewer._overlay_geom_signature([])
+    layers.append("Bottom Layer")
+    assert viewer._overlay_geom_signature([]) == off
+
+
 # --- a rename must not orphan the focus -----------------------------------
 
 def test_renaming_the_focused_net_carries_the_focus_over(viewer):

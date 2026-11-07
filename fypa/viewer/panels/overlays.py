@@ -577,6 +577,10 @@ class _OverlayPanelMixin:
                         if rails else ())
         via_span = bool(getattr(self, "via_span_box", None) is not None
                         and self.via_span_box.isChecked())
+        # The via-span labels pick their vias from the first-eye (heatmap)
+        # layer visibility, which nothing else here reads. Capture it only
+        # while the labels are on, so other first-eye toggles keep the skip.
+        span_layers = tuple(self._visible_layers()) if via_span else ()
         # Board-feature rows (silkscreen / components / pads / designators /
         # npth / board outline): all per-row vis / solid / alpha_step / split
         # state plus the overlay colours. Frozen generically so any field the
@@ -612,6 +616,7 @@ class _OverlayPanelMixin:
             frozenset(self._editor_focus_polys),
             self._selected_layer,
             via_span,
+            span_layers,
             tuple(rows),
             tuple(ac),
             self._caps_overlay_signature(),

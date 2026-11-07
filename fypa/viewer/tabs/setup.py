@@ -95,7 +95,9 @@ def _format_setup_html(solution, metadata: dict | None,
     if stackup:
         parts.append("<h2>Copper stackup</h2>")
         parts.append("<p class='muted'>Conductance is computed per layer as "
-                     "<code>copper_thickness_mm &times; conductivity_S_per_mm</code>.</p>")
+                     "<code>copper_thickness_mm &times; conductivity_S_per_mm</code>, "
+                     "using the layer's own resistivity where Settings &gt; Stackup "
+                     "overrides it.</p>")
         parts.append("<table>"
                      "<tr><th>id</th><th>Name</th>"
                      "<th>Cu thickness</th><th>(mil)</th><th>(oz)</th>"
@@ -106,6 +108,10 @@ def _format_setup_html(solution, metadata: dict | None,
             notes = []
             if row.get("is_plane"):
                 notes.append(f"PLANE on net {row.get('plane_net_name') or '?'}")
+            if row.get("resistivity_override"):
+                rho = row.get("copper_resistivity_microohm_cm") or 0.0
+                notes.append(f"resistivity override: ρ = {rho:.4g} µΩ·cm "
+                             "at solve temperature")
             diel_mm = row.get("dielectric_thickness_mm", 0.0) or 0.0
             diel_cell = (f"{diel_mm*1000:.1f} µm" if diel_mm > 0
                          else "<span class='muted'>—</span>")

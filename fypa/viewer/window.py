@@ -503,6 +503,9 @@ class PdnViewer(
         # or File > Open Project File), surface any still-pending rails.
         if self._project is not None:
             self._update_pending_rails()
+            # A stackup override saved in the project but not solved into
+            # the linked solution shows as a pending (dirty) field.
+            self._on_settings_field_changed()
         if (self.metadata or {}).get("mesh_failures"):
             _activate_mesh_failure_layer(self)
         self._render()
@@ -832,6 +835,15 @@ class PdnViewer(
                 # viewer permanently hides those rows (and vice-versa leaves dead
                 # rows). Safe to call synchronously; metadata is already set.
                 self._build_overlay_list()
+
+            # Stackup thickness overrides: a solve result is authoritative
+            # for the bound project's overrides; an opened project file is
+            # authoritative over its (possibly older) solve pickle, so it is
+            # not overwritten here. Either way the Stackup box is rebuilt
+            # from the new metadata — it is built once per window.
+            if project is None:
+                self._sync_project_stackup_overrides()
+            self._rebuild_stackup_settings_box()
 
             self._init_solution_indices()
             self._clear_solution_derived_caches()
