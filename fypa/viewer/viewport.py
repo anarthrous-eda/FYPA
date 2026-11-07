@@ -413,6 +413,10 @@ class _ViewportMixin:
             # clamp must travel through the same transform to match.
             self._gl_viewer.set_levels(float(self._gl_scale(vmin)),
                                         float(self._gl_scale(vmax)))
+            # The relief height follows the colour window, so markers
+            # sitting on the surface must follow it too.
+            if self._gl_viewer.relief_z_span() > 0.0:
+                self._schedule_relief_marker_refresh()
         self._reshade_baked_via_overlays()
 
     def _apply_via_no_current_opacity(self, alpha: float) -> None:
@@ -529,6 +533,7 @@ class _ViewportMixin:
         """
         if not getattr(self, "_preserve_view_on_toggle", False):
             self._gl_viewer.set_view_mode("3d" if checked else "2d")
+        self._sync_relief_controls()
         # _render rebuilds arrows internally so they get re-emitted with
         # (N, 3) z-lifted vertices in 3D or flat (N, 2) in 2D.
         self._render_with_busy_popup()
@@ -539,6 +544,175 @@ class _ViewportMixin:
         Cheap (one uniform), no mesh rebuild, so dragging stays smooth."""
         self._gl_viewer.set_vertical_exaggeration(float(value))
         self.layer_spacing_label.setText(f"Layer spacing: {value}×")
+        # The relief lift is fixed in displayed mm, so its pre-exaggeration
+        # span changes with the spacing — re-seat the markers on it.
+        if self._gl_viewer.relief_z_span() > 0.0:
+            self._schedule_relief_marker_refresh()
+
+    # --- Relief view ----------------------------------------------------------
+    #
+    # The copper mesh is lifted in the vertex shader to
+    # ``relief_layer_z(layer_z) + relief_z_span * clamp((v - lo)/(hi - lo))``
+    # (see gl_mesh_viewer._VERTEX_SHADER_SRC). relief_layer_z is the layer's
+    # own plane in the per-layer relief and (almost) one common base in the
+    # ignoring-layers relief. Everything on the CPU side that has to agree
+    # with that surface — the hover ray-pick and the SOURCE / SINK markers —
+    # goes through _relief_surface_z / the GL viewer's relief_layer_z.
+    #
+    # "Relief in effect" is tested everywhere as
+    # ``self._gl_viewer.relief_z_span() > 0`` — the single source of truth,
+    # which is 0 in 2D, in Via Current mode and when there is no mesh.
+
+    # relief_combo indices.
+    _RELIEF_OFF = 0
+    _RELIEF_PER_LAYER = 1
+    _RELIEF_IGNORE_LAYERS = 2
+
+    def _relief_mode(self) -> int:
+        """Selected relief mode while in 3D (``_RELIEF_*``); Off in 2D."""
+        combo = getattr(self, "relief_combo", None)
+        if combo is None or not self.view_3d_box.isChecked():
+            return self._RELIEF_OFF
+        return combo.currentIndex()
+
+    def _relief_requested(self) -> bool:
+        return self._relief_mode() != self._RELIEF_OFF
+
+    def _sync_relief_controls(self) -> None:
+        """Relief selector shows only in 3D; its height slider only while a
+        relief mode is on. Layer spacing has nothing to separate in the
+        ignoring-layers relief, so it is hidden there."""
+        if getattr(self, "relief_combo", None) is None:
+            return
+        in_3d = self.view_3d_box.isChecked()
+        self.relief_row.setVisible(in_3d)
+        mode = self._relief_mode()
+        show_height = mode != self._RELIEF_OFF
+        self.relief_height_label.setVisible(show_height)
+        self.relief_height_slider.setVisible(show_height)
+        show_spacing = mode != self._RELIEF_IGNORE_LAYERS
+        self.layer_spacing_label.setVisible(show_spacing)
+        self.layer_spacing_slider.setVisible(show_spacing)
+        if hasattr(self, "_act_relief"):
+            self._refresh_view_menu_labels()
+
+    def _relief_height_mm(self) -> float:
+        """Displayed full-scale relief height (world mm) for the current
+        board and slider, or 0 when relief shouldn't be applied."""
+        if not self._relief_requested():
+            return 0.0
+        if self.mode_combo.currentText() == _VIA_CURRENT_MODE:
+            # Copper values are zeroed in Via Current mode — nothing to lift,
+            # and the via barrels it exists to show would be hidden.
+            return 0.0
+        bounds = getattr(self, "_data_bounds", None)
+        if not bounds:
+            return 0.0
+        span = max(bounds[1] - bounds[0], bounds[3] - bounds[2])
+        if not np.isfinite(span) or span <= 0.0:
+            return 0.0
+        return span * self.relief_height_slider.value() / 100.0
+
+    def _apply_relief(self) -> None:
+        """Push the relief variant + height for the current state to the GL
+        viewer. Called from _render_impl once the mesh, levels and data
+        bounds are in place (and before the markers, which sit on the
+        surface). In the ignoring-layers relief the common base is the top
+        copper layer, so the surface rises above the board."""
+        ignore = self._relief_mode() == self._RELIEF_IGNORE_LAYERS
+        physicals = getattr(self, "_physicals", None) or []
+        if ignore and physicals:
+            z_top = self._layer_z_for(physicals[0])
+            z_bot = self._layer_z_for(physicals[-1])
+            self._gl_viewer.set_relief_layers_ignored(
+                True, pivot_z=z_top, stack_depth=abs(z_top - z_bot))
+        else:
+            self._gl_viewer.set_relief_layers_ignored(False)
+        self._gl_viewer.set_relief_height(self._relief_height_mm())
+
+    def _relief_lift_for_value(self, value: float) -> float:
+        """Pre-exaggeration z lift the shader applies to a vertex carrying
+        ``value`` (in display units, i.e. after any drop / source-return
+        shift) above its layer's base level. 0 when relief is off."""
+        span = self._gl_viewer.relief_z_span()
+        if span <= 0.0 or value is None or not np.isfinite(value):
+            return 0.0
+        lo = float(self._gl_scale(self._vmin))
+        hi = float(self._gl_scale(self._vmax))
+        t = (float(self._gl_scale(value)) - lo) / max(hi - lo, 1e-30)
+        return span * min(1.0, max(0.0, t))
+
+    def _relief_surface_z(self, phys: str | None, x: float, y: float,
+                          net: str | None = None) -> float:
+        """z of the drawn copper surface on physical layer ``phys`` at
+        (x, y): the layer plane when relief is off, else the relief surface
+        (sampling the same field the heatmap shows; prefers the probe for
+        ``net`` when several nets share the layer). Falls back to the
+        layer's base level when there is no solved copper under the point."""
+        if not phys:
+            return 0.0
+        layer_z = self._layer_z_for(phys)
+        if self._gl_viewer.relief_z_span() <= 0.0:
+            return layer_z
+        base = self._gl_viewer.relief_layer_z(layer_z)
+        probes = [lp for lp in (self._layer_probes or [])
+                  if lp.get("physical") == phys]
+        probes.sort(key=lambda lp: 0 if lp.get("net") == net else 1)
+        for lp in probes:
+            v = self._sample_layer_probe(lp, x, y)
+            if v is not None:
+                return base + self._relief_lift_for_value(v)
+        return base
+
+    def _on_relief_mode_changed(self, _index: int) -> None:
+        self._sync_relief_controls()
+        if not self.view_3d_box.isChecked():
+            return
+        # Full render: via barrels, arrows, copper outlines, stubs and
+        # markers all change with the relief state.
+        self._render_with_busy_popup()
+
+    def _on_relief_height_changed(self, value: int) -> None:
+        """Live relief-height drag: uniforms for the mesh; the markers
+        that sit on the surface are re-seated once the drag settles."""
+        self.relief_height_label.setText(f"Relief height: {value}%")
+        if not self._relief_requested():
+            return
+        self._apply_relief()
+        self._schedule_relief_marker_refresh()
+
+    def _schedule_relief_marker_refresh(self) -> None:
+        """Debounced marker re-push after a relief-height / scale / spacing
+        change — the markers carry baked z, the mesh does not."""
+        from PySide6.QtCore import QTimer
+        timer = getattr(self, "_relief_marker_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(120)
+            timer.timeout.connect(self._refresh_relief_markers)
+            self._relief_marker_timer = timer
+        timer.start()
+
+    def _refresh_relief_markers(self) -> None:
+        phys_list, rails, _ = self._current_selection()
+        if phys_list and rails:
+            self._update_markers_and_legend(phys_list, rails)
+
+    def _hotkey_toggle_relief(self) -> None:
+        """Z / View menu: cycle Off → Per layer → Ignoring layers → Off.
+        From 2D it switches to 3D with per-layer relief — relief is
+        meaningless in 2D, so that's the only useful reading of the key
+        there."""
+        if not self.view_3d_box.isChecked():
+            # Pick the mode first (no render while still 2D), then the 3D
+            # toggle does the one render with relief already applied.
+            self.relief_combo.setCurrentIndex(self._RELIEF_PER_LAYER)
+            self.view_3d_box.setChecked(True)
+            return
+        n = self.relief_combo.count()
+        self.relief_combo.setCurrentIndex(
+            (self.relief_combo.currentIndex() + 1) % n)
 
     # --- Keyboard hotkeys ---------------------------------------------------
 
@@ -552,6 +726,7 @@ class _ViewportMixin:
             ("Ctrl+Alt+2", self._hotkey_2d_mode_preserving),
             ("Ctrl+Alt+3", self._hotkey_3d_mode_preserving),
             ("0", self._hotkey_reset_3d_view),
+            ("Z", self._hotkey_toggle_relief),
             ("O", self._hotkey_toggle_outlines),
             ("R", self._hotkey_toggle_rail_only),
             ("T", self._hotkey_toggle_cursor_tooltip),

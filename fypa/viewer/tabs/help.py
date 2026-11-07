@@ -44,6 +44,7 @@ _HELP_SECTIONS: tuple[tuple[str, str], ...] = (
   <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>2</kbd></td><td>Switch to 2D <i>keeping the current view</i></td></tr>
   <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>3</kbd></td><td>Switch to 3D <i>keeping the current view</i> (top-down entry)</td></tr>
   <tr><td><kbd>0</kbd></td><td>Reset the 3D view (top-down, refit to data) <span class='muted'>— 3D mode only</span></td></tr>
+  <tr><td><kbd>Z</kbd></td><td>Cycle <i>Relief view</i>: off &rarr; per layer &rarr; ignoring layers <span class='muted'>(from 2D, switches to 3D with per-layer relief)</span></td></tr>
   <tr><td><kbd>O</kbd></td><td>Toggle <i>Show layer outlines</i></td></tr>
   <tr><td><kbd>R</kbd></td><td>Toggle <i>Show only rail net</i></td></tr>
   <tr><td><kbd>T</kbd></td><td>Toggle <i>Show cursor tooltip</i></td></tr>
@@ -174,6 +175,26 @@ no one set of properties applies across roles.</p>
     mode only.</li>
   <li><b>Layer spacing slider</b> &mdash; 3D only. Scales both the
     inter-layer separation and the via cylinder length.</li>
+  <li><b>Relief view</b> &mdash; 3D only. Raises each point of the copper
+    by its value on the colour scale, so the higher the voltage the
+    higher it is drawn and voltage drop reads as a slope. The height
+    follows the colour bar, so clamping Min / Max clamps it too. The
+    <i>Relief height</i> slider sets the full-scale height as a percentage
+    of the board's larger side. Two variants:
+    <ul>
+      <li><b>Per layer</b> &mdash; each layer rises from its own plane, so
+        layers keep their stackup order.</li>
+      <li><b>Ignoring layers</b> (relief view ignoring layer positions)
+        &mdash; every layer rises from one base at the top copper layer, so
+        a higher voltage is always drawn higher whatever layer it is on.
+        Layers at the same value keep a tiny stackup-order offset so they
+        don't flicker through each other. <i>Layer spacing</i> is hidden in
+        this variant, and no-current stub copper sits on the base. The
+        hover readout still names the layer.</li>
+    </ul>
+    Via barrels, current arrows, copper outlines and the mesh wireframe
+    are hidden while relief is on (they sit on the flat layer planes); not
+    available in Via Current mode.</li>
   <li><b>Show current arrows</b> &mdash; white arrows on a regular
     pixel-spaced grid showing the direction of current flow; shaft
     length scales with &radic;|J| so weak and strong currents are

@@ -256,6 +256,16 @@ class _FileMenuMixin:
             lambda: self.view_3d_box.toggle())
         view_menu.addAction(self._act_view_3d)
 
+        self._act_relief = QAction(self)
+        self._act_relief.setStatusTip(
+            "3D mode: raise the copper by its heatmap value so voltage drop "
+            "reads as a slope (the higher the voltage, the higher it is "
+            "drawn). Cycles Off → Per layer → Ignoring layers. From 2D, "
+            "switches to 3D with per-layer relief."
+        )
+        self._act_relief.triggered.connect(self._hotkey_toggle_relief)
+        view_menu.addAction(self._act_relief)
+
         self._act_heatmap_vias = QAction(self)
         self._act_heatmap_vias.setStatusTip(
             "Colour via and plated-through-hole cylinders by the active "
@@ -293,6 +303,11 @@ class _FileMenuMixin:
         self._act_view_3d.setText(
             "2D View (2)" if self.view_3d_box.isChecked()
             else "3D View (3)")
+        relief_mode = (self.relief_combo.currentIndex()
+                       if self.view_3d_box.isChecked() else 0)
+        self._act_relief.setText(
+            "Relief View [{}] (Z)".format(
+                ("off", "per layer", "ignoring layers")[relief_mode]))
         self._act_heatmap_vias.setText(
             "Heatmap vias / PTH [enabled] (V)"
             if self.heatmap_vias_box.isChecked()

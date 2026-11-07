@@ -77,8 +77,12 @@ class _ViaRenderMixin:
         heatmap (voltage / drop interpolate top↔bottom along the via;
         current and power are constant per segment). Vias shown only via
         all-copper have no rail-mode data and fall back to solid orange.
-        Otherwise vias are drawn solid orange to match the 2D marker."""
-        if self.metadata is None:
+        Otherwise vias are drawn solid orange to match the 2D marker.
+
+        Hidden in the relief view: a barrel spans flat layer planes, while
+        the copper it joins is lifted by its value, so it would float off
+        both ends."""
+        if self.metadata is None or self._gl_viewer.relief_z_span() > 0.0:
             self._gl_viewer.clear_cylinders()
             return
         # Map layer_id → physical name → rank → z. Use the same rank-
@@ -1000,8 +1004,10 @@ class _ViaRenderMixin:
                         xs.append(px)
                         ys.append(py)
                         phys_for_pin = id_to_phys.get(lid)
-                        zs.append(self._layer_z_for(phys_for_pin)
-                                   if phys_for_pin else 0.0)
+                        # Relief view: seat the marker on the lifted copper.
+                        zs.append(self._relief_surface_z(
+                            phys_for_pin, px, py, pin.get("net"))
+                            if phys_for_pin else 0.0)
                         rcs.append(self._layer_color_for(phys_for_pin)
                                    if phys_for_pin else None)
                         if role in ("SOURCE", "SINK") and not directive_overridden:

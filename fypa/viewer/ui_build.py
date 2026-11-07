@@ -387,6 +387,65 @@ class _UiBuildMixin:
         )
         side.addWidget(self.layer_spacing_slider)
 
+        # Relief view (3D only) — lifts the copper by its heatmap value so
+        # voltage drop reads as a slope (high voltage drawn high). Purely
+        # shader uniforms, so switching / dragging re-uses the uploaded mesh.
+        # Hidden in 2D; the height slider only shows while relief is on.
+        # Visibility is driven by _sync_relief_controls. The combo index is
+        # the relief mode: 0 Off, 1 Per layer, 2 Ignoring layers
+        # (see viewport._RELIEF_* constants).
+        self.relief_row = QWidget()
+        _relief_lay = QHBoxLayout(self.relief_row)
+        _relief_lay.setContentsMargins(0, 0, 0, 0)
+        _relief_lay.addWidget(QLabel("Relief (Z):"))
+        self.relief_combo = QComboBox()
+        self.relief_combo.addItems(["Off", "Per layer", "Ignoring layers"])
+        self.relief_combo.setItemData(
+            1,
+            "Relief view: each layer is raised from its own plane by its "
+            "value, so layers keep their stackup order.",
+            Qt.ToolTipRole,
+        )
+        self.relief_combo.setItemData(
+            2,
+            "Relief view ignoring layer positions: every layer is raised "
+            "from the same base, so a higher voltage is always drawn higher "
+            "whatever layer it is on.",
+            Qt.ToolTipRole,
+        )
+        self.relief_combo.setToolTip(
+            "3D mode only. Raise each point of the copper by its value on "
+            "the colour scale, so the higher the voltage the higher it is "
+            "drawn and voltage drop shows as a slope. Height follows the "
+            "colour bar: values clamped by the scale's Min / Max clamp the "
+            "height too. Works in every heatmap mode except Via Current."
+            "\n\n"
+            "Per layer: each layer rises from its own plane.\n"
+            "Ignoring layers: all layers rise from one base (relief view "
+            "ignoring layer positions), so height is the value alone."
+            "\n\n"
+            "Via barrels, current arrows, copper outlines and the mesh "
+            "wireframe are hidden while relief is on."
+        )
+        _relief_lay.addWidget(self.relief_combo, 1)
+        side.addWidget(self.relief_row)
+        self.relief_height_label = QLabel("Relief height: 25%")
+        self.relief_height_label.setStyleSheet(
+            f"QLabel {{ color: {_T()['fg_muted']}; font-size: 8pt; }}"
+        )
+        side.addWidget(self.relief_height_label)
+        self.relief_height_slider = QSlider(Qt.Horizontal)
+        self.relief_height_slider.setRange(1, 100)
+        self.relief_height_slider.setValue(25)
+        self.relief_height_slider.setToolTip(
+            "Height of the top of the colour scale above the bottom, as a "
+            "percentage of the board's larger side."
+        )
+        side.addWidget(self.relief_height_slider)
+        self.relief_row.setVisible(False)
+        self.relief_height_label.setVisible(False)
+        self.relief_height_slider.setVisible(False)
+
         side.addSpacing(12)
         self.summary_label = QLabel("")
         self.summary_label.setWordWrap(True)
@@ -673,6 +732,10 @@ class _UiBuildMixin:
         self.colour_stubs_box.toggled.connect(self._render_with_busy_popup)
         self.cursor_tooltip_box.toggled.connect(self._on_cursor_tooltip_toggled)
         self.view_3d_box.toggled.connect(self._on_view_3d_toggled)
+        self.relief_combo.currentIndexChanged.connect(
+            self._on_relief_mode_changed)
+        self.relief_height_slider.valueChanged.connect(
+            self._on_relief_height_changed)
         self.heatmap_vias_box.toggled.connect(self._render_with_busy_popup)
         self.show_arrows_box.toggled.connect(self._on_arrows_toggled)
         # Keep the View-menu item labels in step whenever one of their

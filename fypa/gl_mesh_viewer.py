@@ -88,13 +88,26 @@ layout(location = 2) in float a_alpha;
 layout(location = 3) in float a_neutral;
 uniform mat4 u_mvp;
 uniform vec2 u_levels;
+// Relief view: each vertex is lifted by u_relief * (its normalised value),
+// so the copper becomes a height field whose height matches the colour bar
+// (a value clamped at the scale's Min / Max clamps the height too).
+// u_relief is in pre-exaggeration world z; 0 leaves the mesh flat.
+uniform float u_relief;
+// "Ignoring layers" relief: every layer plane is squashed toward u_z_pivot
+// (the top copper layer) by u_z_scale, so height comes from the value alone;
+// the tiny residual keeps stack order as a tie-break between layers at the
+// same value. u_z_scale = 1 leaves layer positions untouched.
+uniform float u_z_pivot;
+uniform float u_z_scale;
 out float v_norm;
 out float v_alpha;
 out float v_neutral;
 void main() {
-    gl_Position = u_mvp * vec4(a_position, 1.0);
     float span = max(u_levels.y - u_levels.x, 1e-30);
     v_norm = clamp((a_value - u_levels.x) / span, 0.0, 1.0);
+    vec3 p = a_position;
+    p.z = u_z_pivot + u_z_scale * (p.z - u_z_pivot) + u_relief * v_norm;
+    gl_Position = u_mvp * vec4(p, 1.0);
     v_alpha = a_alpha;
     v_neutral = a_neutral;
 }
@@ -777,6 +790,21 @@ class GLMeshViewer(QOpenGLWidget):
         # separation is visually distinguishable on a 1-2 mm thick
         # stackup vs a 200+ mm wide board.
         self._vertical_exaggeration: float = 10.0
+        # Relief view: full-scale height (world mm, as displayed — i.e.
+        # independent of the layer-spacing exaggeration) that the copper
+        # mesh is lifted by at the top of the colour scale. 0 = flat.
+        # Only applied in 3D mode; see :meth:`relief_z_span`.
+        self._relief_height_mm: float = 0.0
+        self._u_relief_loc: int = -1
+        # "Ignoring layers" relief variant: layer planes collapse onto
+        # ``_relief_pivot_z`` (pre-exaggeration z of the top copper layer);
+        # ``_relief_stack_depth`` is the top-to-bottom layer z distance, used
+        # to size the stack-order tie-break. See :meth:`relief_layer_z`.
+        self._relief_ignore_layers: bool = False
+        self._relief_pivot_z: float = 0.0
+        self._relief_stack_depth: float = 0.0
+        self._u_z_pivot_loc: int = -1
+        self._u_z_scale_loc: int = -1
         # Perspective field-of-view (vertical), in degrees.
         self._cam_fov_deg: float = 35.0
 
@@ -1032,6 +1060,93 @@ class GLMeshViewer(QOpenGLWidget):
     def vertical_exaggeration(self) -> float:
         return self._vertical_exaggeration
 
+    def set_relief_height(self, height_mm: float) -> None:
+        """Set the relief-view height: the copper mesh vertex at the top of
+        the colour scale is lifted by ``height_mm`` (displayed world mm),
+        the one at the bottom by 0, linearly in between. 0 turns the
+        relief off. Cheap — one uniform, no mesh re-upload."""
+        h = float(height_mm)
+        if not math.isfinite(h) or h < 0.0:
+            h = 0.0
+        if h == self._relief_height_mm:
+            return
+        self._relief_height_mm = h
+        if self._view_mode == "3d":
+            self.viewChanged.emit()
+            self.update()
+
+    def relief_z_span(self) -> float:
+        """Full-scale relief lift in the host's PRE-exaggeration z units
+        (the same units as the per-vertex z and :meth:`screen_to_world_at_z`),
+        or 0.0 when the relief is off or the view is 2D. A vertex with
+        normalised value ``t`` sits at ``layer_z + t * relief_z_span()``."""
+        if self._view_mode != "3d" or self._relief_height_mm <= 0.0:
+            return 0.0
+        return self._relief_height_mm / max(self._vertical_exaggeration,
+                                            1e-9)
+
+    # Whole-stack tie-break in the "ignoring layers" relief, as a fraction
+    # of the full relief height: layers at the same value stay in stackup
+    # order (top layer highest) over this sliver, so coincident surfaces
+    # don't z-fight, while being too small to read as layer position.
+    _RELIEF_TIEBREAK_FRAC: float = 0.02
+
+    def set_relief_layers_ignored(self, ignored: bool, pivot_z: float = 0.0,
+                                  stack_depth: float = 0.0) -> None:
+        """Choose the relief variant. ``ignored=False`` (default): each
+        layer is lifted from its own plane. ``ignored=True``: every layer is
+        lifted from ``pivot_z`` (the top copper layer's pre-exaggeration z),
+        so a higher value is always drawn higher whatever its layer.
+        ``stack_depth`` is the top-to-bottom layer z distance (≥ 0)."""
+        ignored = bool(ignored)
+        pivot_z = float(pivot_z) if math.isfinite(pivot_z) else 0.0
+        stack_depth = (abs(float(stack_depth))
+                       if math.isfinite(stack_depth) else 0.0)
+        state = (ignored, pivot_z, stack_depth)
+        if state == (self._relief_ignore_layers, self._relief_pivot_z,
+                     self._relief_stack_depth):
+            return
+        (self._relief_ignore_layers, self._relief_pivot_z,
+         self._relief_stack_depth) = state
+        if self._view_mode == "3d":
+            self.viewChanged.emit()
+            self.update()
+
+    def relief_ignores_layers(self) -> bool:
+        """True while the "ignoring layers" relief is actually in effect."""
+        return self._relief_ignore_layers and self.relief_z_span() > 0.0
+
+    def _relief_layer_scale(self) -> float:
+        """``u_z_scale``: 1 normally; in the ignoring-layers relief, the
+        factor that squeezes the whole stack into the tie-break sliver."""
+        if not self.relief_ignores_layers():
+            return 1.0
+        depth = self._relief_stack_depth
+        if depth <= 1e-12:
+            return 0.0
+        return min(1.0, self._RELIEF_TIEBREAK_FRAC * self.relief_z_span()
+                   / depth)
+
+    def relief_layer_z(self, layer_z: float) -> float:
+        """Where the flat plane of a layer at ``layer_z`` is drawn (the
+        surface's zero-value level) — ``layer_z`` itself except in the
+        ignoring-layers relief. A vertex of normalised value ``t`` sits at
+        ``relief_layer_z(layer_z) + t * relief_z_span()``; this is the CPU
+        mirror of the vertex shader."""
+        s = self._relief_layer_scale()
+        if s == 1.0:
+            return float(layer_z)
+        p = self._relief_pivot_z
+        return p + s * (float(layer_z) - p)
+
+    def relief_flat_z(self, layer_z: float) -> float:
+        """z for unsolved, value-less copper (stubs) on a layer at
+        ``layer_z``: the layer plane normally, the common base level (the
+        pivot) in the ignoring-layers relief."""
+        if self.relief_ignores_layers():
+            return self._relief_pivot_z
+        return float(layer_z)
+
     # --- 3Dconnexion NavLib camera bridge --------------------------------
 
     def navlib_camera_matrix(self) -> list[list[float]]:
@@ -1155,7 +1270,8 @@ class GLMeshViewer(QOpenGLWidget):
         in_3d = self._view_mode == "3d"
         z_max = self._data_z_max
         if in_3d:
-            z_max = self._data_z_max * self._vertical_exaggeration
+            z_max = (self._data_z_max * self._vertical_exaggeration
+                     + self._relief_height_mm)
         return model_extents_from_bounds(
             self._frame_bounds(),
             z_max,
@@ -1798,7 +1914,8 @@ class GLMeshViewer(QOpenGLWidget):
         to horizontal that "height above copper" stops mapping cleanly
         onto camera distance.
         """
-        z_top_scaled = self._data_z_max * self._vertical_exaggeration
+        z_top_scaled = (self._data_z_max * self._vertical_exaggeration
+                        + self._relief_height_mm)
         pitch_rad = math.radians(self._cam_pitch_deg)
         sin_p = math.sin(pitch_rad)
         if z_top_scaled <= 0.0 or sin_p < 0.2:
@@ -2332,6 +2449,9 @@ class GLMeshViewer(QOpenGLWidget):
         self._u_mvp_loc = prog.uniformLocation("u_mvp")
         self._u_levels_loc = prog.uniformLocation("u_levels")
         self._u_cmap_loc = prog.uniformLocation("u_cmap")
+        self._u_relief_loc = prog.uniformLocation("u_relief")
+        self._u_z_pivot_loc = prog.uniformLocation("u_z_pivot")
+        self._u_z_scale_loc = prog.uniformLocation("u_z_scale")
 
         # VAO + VBOs. We allocate Qt wrappers (cleanup at destruction)
         # and use raw GL calls through them for the actual data uploads.
@@ -2956,6 +3076,15 @@ class GLMeshViewer(QOpenGLWidget):
         prog.setUniformValue(self._u_levels_loc,
                               float(self._levels[0]),
                               float(self._levels[1]))
+        # Raw glUniform1f: PySide6's lone-scalar setUniformValue overload
+        # resolves to the int path (GL_INVALID_OPERATION on a float uniform).
+        if self._u_relief_loc >= 0:
+            GL.glUniform1f(self._u_relief_loc, float(self.relief_z_span()))
+        if self._u_z_pivot_loc >= 0:
+            GL.glUniform1f(self._u_z_pivot_loc, float(self._relief_pivot_z))
+        if self._u_z_scale_loc >= 0:
+            GL.glUniform1f(self._u_z_scale_loc,
+                           float(self._relief_layer_scale()))
         # Colormap on texture unit 0.
         GL.glActiveTexture(GL.GL_TEXTURE0)
         self._cmap_tex.bind()
@@ -3024,7 +3153,13 @@ class GLMeshViewer(QOpenGLWidget):
         GL_LINE)`` plus a GL_TRIANGLES draw is the standard wireframe
         trick — each triangle rasterises as its three edges, sharing the
         edge between adjacent triangles for free.
+
+        Skipped while the relief view is on: the line shader has no value
+        attribute, so the wireframe would sit on the flat layer plane
+        underneath the lifted surface rather than on it.
         """
+        if self.relief_z_span() > 0.0:
+            return
         prog = self._line_program
         prog.bind()
         prog.setUniformValue(self._line_u_mvp_loc, self._current_mvp())

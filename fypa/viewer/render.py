@@ -868,8 +868,11 @@ class _RenderMixin:
         if (not hasattr(self, "show_arrows_box")
                 or self._gl_viewer is None):
             return
+        # Relief view: arrows sit on the flat layer plane and would be
+        # buried under (or float over) the lifted surface — hide them.
         if (not self.show_arrows_box.isChecked()
-                or not self._layer_probes):
+                or not self._layer_probes
+                or self._gl_viewer.relief_z_span() > 0.0):
             self._gl_viewer.clear_arrows()
             return
         density = float(self.arrow_spacing_slider.value())
@@ -1084,6 +1087,7 @@ class _RenderMixin:
         )
         if not phys_list or not rails:
             self._clear_gl_mesh()
+            self._gl_viewer.set_relief_height(0.0)
             self._gl_viewer.clear_outlines()
             self._gl_viewer.clear_cylinders()
             self._gl_viewer.clear_arrows()
@@ -1124,6 +1128,7 @@ class _RenderMixin:
         _mark("build_rail_arrays")
         if xs.size == 0 or tris.size == 0:
             self._clear_gl_mesh()
+            self._gl_viewer.set_relief_height(0.0)
             self._gl_viewer.clear_outlines()
             self._gl_viewer.clear_arrows()
             self._gl_viewer.clear_series_bars()
@@ -1424,6 +1429,9 @@ class _RenderMixin:
         self._gl_viewer.set_values(self._gl_scale(vs_arr).astype(np.float32))
         self._gl_viewer.set_levels(float(self._gl_scale(levels_min)),
                                     float(self._gl_scale(levels_max)))
+        # Relief view height (3D): needs the levels + data bounds above and
+        # must land before the markers, which are seated on the surface.
+        self._apply_relief()
         # Per-vertex mesh alpha: combines the per-layer Transparency
         # control with editor-mode connectivity dimming. Pushed after
         # set_mesh (which invalidates any previous alpha array).

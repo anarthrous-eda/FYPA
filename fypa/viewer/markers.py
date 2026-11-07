@@ -102,7 +102,11 @@ class _MarkerOverlayMixin:
                     np.broadcast_to(rgb, (segs_xy.shape[0], 3)).copy()
                 )
 
-        if self._outlines_btn.isOn():
+        # Relief view lifts the solved copper off its layer plane, so its
+        # flat outline would trace the wrong place; stub outlines stay, as
+        # the (unsolved) stub copper itself is not lifted.
+        if (self._outlines_btn.isOn()
+                and self._gl_viewer.relief_z_span() <= 0.0):
             for lp in layer_probes:
                 segs = lp.get("outline_segments")
                 if segs is None or segs.size == 0:
@@ -143,7 +147,11 @@ class _MarkerOverlayMixin:
                         qc = QColor(self._layer_color_for(phys))
                         rgb = np.array([qc.redF(), qc.greenF(), qc.blueF()],
                                        dtype=np.float32)
-                        _emit(segs, self._layer_z_for(phys), rgb)
+                        # Stub copper has no value to lift it by: its own
+                        # plane, or the common base in the ignoring-layers
+                        # relief (matching _build_stub_geometry).
+                        _emit(segs, self._gl_viewer.relief_flat_z(
+                            self._layer_z_for(phys)), rgb)
 
         if pos_chunks:
             self._gl_viewer.set_outlines(
@@ -319,7 +327,11 @@ class _MarkerOverlayMixin:
         # Reuse cached positions when the visible stub set + z mode are
         # unchanged (e.g. this call arrived via a colour-scheme toggle).
         geom_key = (frozenset(visible_layer_ids), frozenset(rail_members),
-                    in_3d, focus_nets)
+                    in_3d, focus_nets,
+                    # Stub z moves to the common base in the ignoring-
+                    # layers relief (see _build_stub_geometry).
+                    self._gl_viewer.relief_ignores_layers()
+                    and self._gl_viewer.relief_flat_z(0.0))
         cache = self._stub_geom_cache
         if cache is not None and cache[0] == geom_key:
             positions, spans = cache[1], cache[2]
@@ -367,7 +379,10 @@ class _MarkerOverlayMixin:
             tris = self._triangulate_stub(stub)
             if tris.size == 0:
                 continue
-            z = (self._layer_z_for(visible_layer_ids[lid])
+            # Ignoring-layers relief: value-less stub copper sits on the
+            # common base level rather than its (hidden) layer position.
+            z = (self._gl_viewer.relief_flat_z(
+                     self._layer_z_for(visible_layer_ids[lid]))
                  if in_3d else 0.0)
             xyz = np.empty((tris.shape[0], 3), dtype=np.float32)
             xyz[:, :2] = tris

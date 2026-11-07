@@ -1,6 +1,7 @@
 """Voltage-difference tool, cursor tooltip, via and marker hover probes."""
 from __future__ import annotations
 
+import math
 import time
 import numpy as np
 import shapely.geometry as _sg
@@ -227,10 +228,10 @@ class _ProbeMixin:
         if is_3d:
             hit = self._probe_at_point_3d(x_px, y_px)
             if hit is not None:
-                v, lp = hit
-                z = self._layer_z_for(lp.get("physical", ""))
-                wx, wy = self._gl_viewer.screen_to_world_at_z(x_px, y_px, z)
-                return float(v), (wx, wy)
+                # The picker's hit point (on the relief surface when the
+                # relief view is on, else on the layer plane).
+                wx, wy = self._last_probe_3d_xy
+                return float(hit[0]), (wx, wy)
             stub_hit = self._probe_at_stub_3d(x_px, y_px)
             if stub_hit is not None and stub_hit[0] is not None:
                 phys = stub_hit[1].get("physical", "")
@@ -319,10 +320,7 @@ class _ProbeMixin:
             px, py = self._gl_viewer.last_hover_pixel()
             hit = self._probe_at_point_3d(px, py)
             if hit is not None:
-                _, lp = hit
-                z = self._layer_z_for(lp.get("physical", ""))
-                world_x, world_y = self._gl_viewer.screen_to_world_at_z(
-                    px, py, z)
+                world_x, world_y = self._last_probe_3d_xy
         elif self._layer_probes:
             hit = self._probe_at_point(world_x, world_y)
         if hit is None:
@@ -610,36 +608,147 @@ class _ProbeMixin:
         covers the intersection point. Compensates for perspective so the
         cursor lands on the copper the user is actually looking at,
         regardless of camera angle / vertical-exaggeration."""
+        self._last_probe_3d_xy = None
         if not self._layer_probes:
             return None
+        gl = self._gl_viewer
+        relief_span = gl.relief_z_span()
+        if relief_span <= 0.0:
+            # Flat layers: the top-first walk is also nearest-first.
+            for lp in self._layer_probes:
+                if lp.get("prepared_shape") is None:
+                    continue
+                z = self._layer_z_for(lp.get("physical", ""))
+                wx, wy = gl.screen_to_world_at_z(x_px, y_px, z)
+                v = self._sample_layer_probe(lp, wx, wy)
+                if v is None:
+                    continue
+                self._last_probe_3d_xy = (wx, wy)
+                return v, lp
+            return None
+        # Relief: a lower layer can be drawn above a higher one (always
+        # possible in the ignoring-layers relief, and where a lower layer's
+        # value is higher in the per-layer one), so stackup order no longer
+        # says what the cursor is on. Pick every layer's surface and keep
+        # the hit nearest the camera, compared in drawn (exaggerated) space.
+        cam_x, cam_y, cam_z = gl._camera_position()
+        exag = gl.vertical_exaggeration()
+        best = None
         for lp in self._layer_probes:
-            prepped = lp.get("prepared_shape")
-            if prepped is None:
+            if lp.get("prepared_shape") is None:
                 continue
-            phys = lp.get("physical", "")
-            z = self._layer_z_for(phys)
+            base = gl.relief_layer_z(self._layer_z_for(lp.get("physical", "")))
+            found = self._relief_ray_hit(lp, x_px, y_px, base, relief_span)
+            if found is None:
+                continue
+            v, wx, wy, wz = found
+            d2 = ((wx - cam_x) ** 2 + (wy - cam_y) ** 2
+                  + (wz * exag - cam_z) ** 2)
+            if best is None or d2 < best[0]:
+                best = (d2, v, lp, wx, wy)
+        if best is None:
+            return None
+        _, v, lp, wx, wy = best
+        self._last_probe_3d_xy = (wx, wy)
+        return v, lp
+
+    def _sample_layer_probe(self, lp: dict, x: float, y: float
+                            ) -> float | None:
+        """Heatmap value of one layer probe at (x, y) in display units (the
+        probe's stored Voltage-Drop / source-reference shift applied, as in
+        :meth:`_probe_at_point`), or ``None`` off its copper."""
+        prepped = lp.get("prepared_shape")
+        if prepped is None:
+            return None
+        try:
+            if not prepped.contains(_sg.Point(x, y)):
+                return None
+        except Exception:
+            return None
+        interp = self._ensure_interpolator(lp)
+        if interp is None:
+            return None
+        sample = interp(x, y)
+        try:
+            if hasattr(sample, "mask") and \
+                    bool(np.ma.getmaskarray(sample).item()):
+                return None
+            v = float(sample)
+        except (TypeError, ValueError):
+            return None
+        if not np.isfinite(v):
+            return None
+        return v - float(lp.get("value_offset", 0.0))
+
+    # Ray-march resolution for the relief-view hover pick: steps down the
+    # relief's z range, then bisection steps on the bracketing interval.
+    _RELIEF_PICK_STEPS: int = 32
+    _RELIEF_PICK_BISECT: int = 12
+    # Max sideways ray travel per march step, and the step cap that bounds
+    # the hover cost on extreme grazing views.
+    _RELIEF_PICK_MAX_XY_STEP_MM: float = 0.05
+    _RELIEF_PICK_MAX_STEPS: int = 600
+
+    def _relief_ray_hit(self, lp: dict, x_px: float, y_px: float,
+                        z_base: float, span: float
+                        ) -> tuple[float, float, float, float] | None:
+        """Intersect the cursor ray with one layer's relief surface
+        ``z = z_base + lift(value(x, y))``.
+
+        Parameterised by z (the ray's (x, y) at a given z comes from
+        :meth:`screen_to_world_at_z`): march from the top of the relief
+        range (``z_base + span``, which every surface point is at or
+        below) down to ``z_base`` and take the first step where the ray
+        is at or below the surface over copper, then bisect that bracket.
+        Marching from the top makes this the nearest crossing from the
+        camera, so a ridge in front correctly occludes the slope behind.
+        Returns ``(value, x, y, z)`` (z pre-exaggeration) or ``None`` if
+        the ray misses the copper.
+        """
+        def _gap(z: float):
             wx, wy = self._gl_viewer.screen_to_world_at_z(x_px, y_px, z)
-            try:
-                if not prepped.contains(_sg.Point(wx, wy)):
-                    continue
-            except Exception:
+            v = self._sample_layer_probe(lp, wx, wy)
+            if v is None:
+                return None, None, wx, wy
+            return z - (z_base + self._relief_lift_for_value(v)), v, wx, wy
+
+        # Step count: at least _RELIEF_PICK_STEPS, but also enough that the
+        # ray moves no more than _RELIEF_PICK_MAX_XY_STEP_MM sideways per
+        # step — on an oblique view a coarse march would hop clean over a
+        # narrow trace (or a needle-thin spike) and miss it entirely.
+        z_hi = z_base + span
+        x_top, y_top = self._gl_viewer.screen_to_world_at_z(x_px, y_px, z_hi)
+        x_bot, y_bot = self._gl_viewer.screen_to_world_at_z(x_px, y_px,
+                                                              z_base)
+        travel = math.hypot(x_top - x_bot, y_top - y_bot)
+        steps = self._RELIEF_PICK_STEPS
+        if math.isfinite(travel):
+            steps = max(steps, min(
+                self._RELIEF_PICK_MAX_STEPS,
+                int(math.ceil(travel / self._RELIEF_PICK_MAX_XY_STEP_MM))))
+        prev_z = z_hi
+        for i in range(steps + 1):
+            z = z_hi - span * i / steps
+            gap, v, wx, wy = _gap(z)
+            if gap is None:
+                prev_z = z
                 continue
-            interp = self._ensure_interpolator(lp)
-            if interp is None:
+            if gap > 0.0:
+                prev_z = z
                 continue
-            sample = interp(wx, wy)
-            try:
-                if hasattr(sample, "mask") and \
-                        bool(np.ma.getmaskarray(sample).item()):
-                    continue
-                v = float(sample)
-            except (TypeError, ValueError):
-                continue
-            if not np.isfinite(v):
-                continue
-            # Apply the probe's stored Voltage-Drop / source-reference shift so
-            # the hover readout matches the shifted heatmap (see _probe_at_point).
-            return v - float(lp.get("value_offset", 0.0)), lp
+            # Crossing between prev_z (above / off copper) and z (on or
+            # below the surface). Bisect, keeping the low end on copper.
+            lo_z, hi_z = z, prev_z
+            best = (v, wx, wy, z)
+            for _ in range(self._RELIEF_PICK_BISECT):
+                mid = 0.5 * (lo_z + hi_z)
+                g, mv, mx, my = _gap(mid)
+                if g is not None and g <= 0.0:
+                    lo_z = mid
+                    best = (mv, mx, my, mid)
+                else:
+                    hi_z = mid
+            return best
         return None
 
     # --- Via hover probe ----------------------------------------------------
@@ -756,6 +865,9 @@ class _ProbeMixin:
         dict for the picked via (the same shape :meth:`_compute_via_report`
         produces), or ``None`` when the cursor isn't over any via."""
         if self.view_3d_box.isChecked():
+            # Barrels aren't drawn in the relief view — nothing to hover.
+            if self._gl_viewer.relief_z_span() > 0.0:
+                return None
             return self._pick_hovered_via_3d()
         return self._pick_hovered_via_2d(world_x, world_y)
 
@@ -1275,7 +1387,7 @@ class _ProbeMixin:
             prepped = self._stub_prepared_shape(stub)
             if prepped is None:
                 continue
-            z = self._layer_z_for(phys)
+            z = self._gl_viewer.relief_flat_z(self._layer_z_for(phys))
             wx, wy = self._gl_viewer.screen_to_world_at_z(x_px, y_px, z)
             try:
                 if not prepped.contains(_sg.Point(wx, wy)):
