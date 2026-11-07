@@ -1,4 +1,3 @@
-# Copyright (c) 2026 Tomachie LLC.
 """A series diode solved on its datasheet's forward-voltage curve (``PDN_VF_CURVE``).
 
 FYPA stamps a diode as a resistor with ``Vf / R`` carried back across it: the straight

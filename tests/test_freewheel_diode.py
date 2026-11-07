@@ -1,4 +1,3 @@
-# Copyright (c) 2026 Tomachie LLC.
 """Non-synchronous buck: the freewheel diode (PDN_ROLE=FREEWHEEL).
 
 An internal-switch buck whose low side is a diode, not a FET: the switch pin

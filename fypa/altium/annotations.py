@@ -1,4 +1,3 @@
-# Portions Copyright (c) 2026 Tomachie LLC.
 """PDN_* annotation parser for FYPA.
 
 Reads :class:`fypa.altium.extract.ExtractedProject` and produces typed lumped-element

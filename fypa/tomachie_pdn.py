@@ -1,4 +1,3 @@
-# Copyright (c) 2026 Tomachie LLC.
 
 from __future__ import annotations
 

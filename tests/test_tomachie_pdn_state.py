@@ -1,4 +1,3 @@
-# Copyright (c) 2026 Tomachie LLC.
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -64,3 +63,56 @@ def test_a_broken_pdn_file_does_not_stop_the_load(tmp_path, monkeypatch):
                         lambda *a, **k: SimpleNamespace(enabled_copper_layer_ids=list))
     with pytest.raises(Reached):
         loader.load_project(tmp_path / "a.PrjPcb", pdn_json=tmp_path / "a.pdn.json")
+
+
+def test_a_pdn_file_of_the_wrong_shape_does_not_stop_the_load(tmp_path):
+    """A JSON array at the top level raises AttributeError, not one of the
+    errors the reader expects: the design still loads, without the file."""
+    import fypa.altium.loader as loader
+
+    pdn = tmp_path / "a.pdn.json"
+    pdn.write_text("[1, 2, 3]")
+    seen = _load_until_annotations(loader, tmp_path, pdn)
+    assert seen["extracted"] is seen["original"]
+
+
+def test_a_failure_applying_the_file_leaves_the_design_unchanged(tmp_path, monkeypatch):
+    """The file reads, but merging its parameters into the project fails: the
+    annotations are parsed from the project as extracted, not a half-applied one."""
+    import fypa.altium.loader as loader
+    import fypa.tomachie_pdn as tp
+
+    def apply_fails(*_a, **_k):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(tp, "read_pdn_for_board", lambda *a, **k: ({"U1": {}}, []))
+    monkeypatch.setattr(tp, "applied_designators", lambda *a, **k: {"U1"})
+    monkeypatch.setattr(tp, "apply_to_project", apply_fails)
+    seen = _load_until_annotations(loader, tmp_path, tmp_path / "a.pdn.json",
+                                   monkeypatch=monkeypatch)
+    assert seen["extracted"] is seen["original"]
+
+
+def _load_until_annotations(loader, tmp_path, pdn, monkeypatch=None) -> dict:
+    """Run load_project as far as annotation parsing, recording which project
+    it was handed, then stop."""
+    class Reached(Exception):
+        pass
+
+    original = SimpleNamespace(enabled_copper_layer_ids=list)
+    seen = {"original": original}
+
+    def annotations(extracted, *_a, **_k):
+        seen["extracted"] = extracted
+        raise Reached
+
+    mp = monkeypatch or pytest.MonkeyPatch()
+    try:
+        mp.setattr(loader, "parse_annotations", annotations)
+        mp.setattr(loader, "extract_project", lambda *a, **k: original)
+        with pytest.raises(Reached):
+            loader.load_project(tmp_path / "a.PrjPcb", pdn_json=pdn)
+    finally:
+        if monkeypatch is None:
+            mp.undo()
+    return seen

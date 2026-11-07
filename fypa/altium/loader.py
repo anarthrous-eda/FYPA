@@ -1,4 +1,3 @@
-# Portions Copyright (c) 2026 Tomachie LLC.
 """FYPA loader — orchestrates extract + geometry + annotations.
 
 Public entry: :func:`load_project`. Returns a :class:`LoadedProject` bundle
@@ -2529,7 +2528,13 @@ def build_solve_metadata(
             common["value"] = d.resistance
             common["unit"] = "Ohm"
             common["value_str"] = f"{d.resistance * 1000:.4g} mOhm"
-            common["is_open"] = d.resistance >= OPEN_SERIES_OHMS
+            # A reverse-biased diode is solved as OFF_OHM, well below the
+            # not-fitted threshold, so it is flagged open by its state: the rail
+            # grouping must not join the two rails across it.
+            reverse_open = bool(getattr(d, "reverse_open", False))
+            common["is_open"] = reverse_open or d.resistance >= OPEN_SERIES_OHMS
+            if reverse_open:
+                common["value_str"] = "open (reverse-biased)"
             common["terminals"] = {
                 "P": _terminal_summary(d.p, nets),
                 "N": _terminal_summary(d.n, nets),
@@ -4535,20 +4540,7 @@ def build_problem(
                     _union(base, int(ti[k]))
                 start = end
 
-        for bridge in loaded.absorbed_bridges:
-            if bridge.canonical_net_index != ni:
-                continue
-            ends = [
-                next((i for i, (lid, _, piece) in enumerate(pieces)
-                      if lid == end_layer
-                      and piece.intersects(shapely.geometry.Point(x, y))), None)
-                for end_layer, x, y in (
-                    (bridge.p_layer_id, bridge.p_x_mm, bridge.p_y_mm),
-                    (bridge.n_layer_id, bridge.n_x_mm, bridge.n_y_mm),
-                )
-            ]
-            if None not in ends:
-                _union(*ends)
+        _union_absorbed_bridge_ends(loaded.absorbed_bridges, ni, pieces, _union)
 
         # Group into components.
         components: dict[int, list[int]] = {}
@@ -4928,6 +4920,32 @@ def _count_user_net_references(proj: ExtractedProject) -> dict[str, int]:
     return counts
 
 
+def _union_absorbed_bridge_ends(bridges, net_index: int, pieces, union) -> None:
+    """Join the copper pieces at the two ends of each merged low-Ω link.
+
+    A link at or below NET_MERGE_RESISTANCE_THRESHOLD_OHM is absorbed: its two
+    nets become one and build_problem re-emits it as a coupling resistor, so
+    the copper on either side is electrically one component even when no via
+    joins them. ``pieces`` is the net's ``[(layer_id, piece_idx, polygon)]``;
+    ``union(a, b)`` merges two indices into it. An end whose pad lands on no
+    piece of its layer is skipped, which leaves the pieces apart as before.
+    """
+    for bridge in bridges:
+        if bridge.canonical_net_index != net_index:
+            continue
+        ends = [
+            next((i for i, (lid, _, piece) in enumerate(pieces)
+                  if lid == end_layer
+                  and piece.intersects(shapely.geometry.Point(x, y))), None)
+            for end_layer, x, y in (
+                (bridge.p_layer_id, bridge.p_x_mm, bridge.p_y_mm),
+                (bridge.n_layer_id, bridge.n_x_mm, bridge.n_y_mm),
+            )
+        ]
+        if None not in ends:
+            union(*ends)
+
+
 @dataclass(frozen=True, slots=True)
 class _AbsorbedBridge:
     """Records the physical bridge a low-Ω SERIES element provided.
@@ -5224,16 +5242,22 @@ def load_project(prjpcb_path: str | Path,
     if pdn_json is not None:
         from fypa.tomachie_pdn import (apply_to_project, applied_designators,
                                        read_pdn_for_board)
+        # Any failure reading or applying the file (missing, malformed, an
+        # unexpected shape anywhere in it) must leave the design loadable: the
+        # path is saved in the .fypa and applied on every Resolve, so a raise
+        # here would stop the project opening at all. ``extracted`` is only
+        # replaced once everything has succeeded.
         try:
-            params, pdn_notes = read_pdn_for_board(pdn_json, pdn_corner, extracted)
-        except (OSError, ValueError, KeyError, TypeError) as e:
+            params, read_notes = read_pdn_for_board(pdn_json, pdn_corner, extracted)
+            applied = applied_designators(params, extracted)
+            new_extracted, more = apply_to_project(extracted, params)
+        except Exception as e:
             pdn_notes = [f"pdn.json: {Path(pdn_json).name} not applied "
                          f"({type(e).__name__}: {e}); the design is loaded without it"]
             log.warning("  %s", pdn_notes[0])
         else:
-            pdn_designators = applied_designators(params, extracted)
-            extracted, more = apply_to_project(extracted, params)
-            pdn_notes = [f"pdn.json: {n}" for n in pdn_notes + more]
+            extracted, pdn_designators = new_extracted, applied
+            pdn_notes = [f"pdn.json: {n}" for n in read_notes + more]
             log.info("  %s: PDN_* parameters for %d component(s), %s corner",
                      Path(pdn_json).name, len(params), pdn_corner)
 

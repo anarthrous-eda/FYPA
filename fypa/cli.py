@@ -1,4 +1,3 @@
-# Portions Copyright (c) 2026 Tomachie LLC.
 """FYPA — DC power-delivery-network analysis for Altium PCB designs.
 
 CLI entry point. Subcommands:

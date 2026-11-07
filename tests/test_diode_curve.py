@@ -1,7 +1,7 @@
-# Copyright (c) 2026 Tomachie LLC.
 """A series diode solved on its datasheet's Vf-vs-If curve (fypa.altium.diode_curve)."""
 
 import copy
+import dataclasses
 from dataclasses import dataclass, field
 
 import pytest
@@ -188,3 +188,35 @@ def test_the_reader_drops_a_point_at_zero_and_repeated_currents():
                               "points": [[0, 0], [0.1, 0.3], [0.1000001, 0.31], [1, 0.45]]}]}
     assert curve_points(element) == [(0.1, 0.3), (1.0, 0.45)]
     assert curve_points({"vf_curves": [{"points": [[0, 0], [1, 0.45]]}]}) is None
+
+
+def test_a_reverse_biased_diode_is_reported_open():
+    """A diode switched off by the solve is OFF_OHM, far below the not-fitted
+    threshold: the metadata must still call it open, so the rail grouping does
+    not join the two rails across it (fypa.rail_groups.resistor_bridge_pairs)."""
+    from fypa.altium.annotations import TerminalPin, TerminalSpec
+    from fypa.altium.extract import Pt2D, RawNet
+    from fypa.altium.loader import LoadedProject, build_solve_metadata
+    from fypa.rail_groups import resistor_bridge_pairs
+    from test_multilayer_copper import _proj
+
+    proj = _proj(nets=(RawNet("+5V_A"), RawNet("+5V")))
+
+    def term(net):
+        return TerminalSpec(pins=(TerminalPin("1", 1, net, Pt2D(0.0, 0.0)),))
+
+    conducting = ResistorSpec(designator="D3", schdoc_name="", resistance=0.02,
+                              p=term(0), n=term(1), forward_v=0.4)
+    off = dataclasses.replace(conducting, resistance=dc.OFF_OHM, reverse_open=True)
+
+    def record(d):
+        md = build_solve_metadata(LoadedProject(proj, AnnotationResult(directives=[d])),
+                                  None)
+        return next(r for r in md["directives"] if r["designator"] == "D3")
+
+    assert not record(conducting)["is_open"]
+    assert resistor_bridge_pairs(record(conducting))
+    rec = record(off)
+    assert rec["is_open"]
+    assert rec["value_str"] == "open (reverse-biased)"
+    assert resistor_bridge_pairs(rec) == []

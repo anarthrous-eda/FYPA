@@ -1,4 +1,3 @@
-# Copyright (c) 2026 Tomachie LLC.
 """File > Load Tomachie pdn.json… (Ctrl+Shift+T): set up the PDN from a Tomachie file.
 
 Tomachie reads the schematic and the parts' datasheets and writes ``<design>.pdn.json``:

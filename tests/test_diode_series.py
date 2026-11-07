@@ -1,4 +1,3 @@
-# Copyright (c) 2026 Tomachie LLC.
 """A diode in series (SERIES with PDN_VF): a resistor (the diode's slope) with Vf / R
 carried back across it, so I = (Va - Vb - Vf) / R while it conducts."""
 

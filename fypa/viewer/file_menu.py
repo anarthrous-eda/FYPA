@@ -1,4 +1,3 @@
-# Portions Copyright (c) 2026 Tomachie LLC.
 """File menu, and project file save / open."""
 from __future__ import annotations
 

@@ -1,4 +1,3 @@
-# Portions Copyright (c) 2026 Tomachie LLC.
 """The launcher window shown before a project is open."""
 from __future__ import annotations
 
@@ -138,9 +137,6 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
             " (Ctrl+Shift+L) to force a fresh extract + solve,<br>"
             f"<a href='import-gerber' style='{link_style}'>Import Gerber Files&hellip;</a>"
             " (Ctrl+G) to import Gerber (RS-274X) + Excellon drill files,<br>"
-            f"<a href='load-tomachie-pdn' style='{link_style}'>Load Tomachie pdn.json&hellip;</a>"
-            " (Ctrl+Shift+T) to set up sources, regulators, series parts and loads from a "
-            "Tomachie analysis,<br>"
             "or "
             f"<a href='open-solution' style='{link_style}'>Load Solution&hellip;</a>"
             " (Ctrl+Shift+O) to load a saved <code>.pkl</code>."
@@ -221,10 +217,7 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
     def _on_welcome_link(self, href: str) -> None:
         """Dispatch a click on one of the welcome-label hyperlinks to the
         matching File-menu handler."""
-        if href == "load-tomachie-pdn":
-            from fypa.viewer.tomachie_menu import on_load_tomachie_pdn
-            on_load_tomachie_pdn(self)
-        elif href == "open-project":
+        if href == "open-project":
             self._on_menu_open_project(clean=False)
         elif href == "open-project-clean":
             self._on_menu_open_project(clean=True)

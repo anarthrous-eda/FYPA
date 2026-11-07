@@ -1,4 +1,3 @@
-# Portions Copyright (c) 2026 Tomachie LLC.
 """The Setup tab."""
 from __future__ import annotations
 

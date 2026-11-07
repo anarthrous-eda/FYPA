@@ -5,6 +5,46 @@ Licensed under the GNU Affero General Public License, version 3 or later.
 See LICENSE for the full text.
 
 ================================================================================
+Contributors
+================================================================================
+
+--------------------------------------------------------------------------------
+Carsten Schurig (cs42)
+--------------------------------------------------------------------------------
+* Fork:     https://github.com/contronix/FYPA
+* License:  Contributed under the GNU Affero General Public License v3.0
+* Contributions:
+  - Topology tab showing the PDN setup
+  - Indexed PDN<n>_* channels, unindexed parameter templates, sheet-symbol
+    PDN overrides, and multi-connector P/N DES terminals
+  - Regulator gain auto-compute, PDN_QUIESCENT, adaptive SMPS re-solve, SMPS
+    Vin inference through SERIES chains, and external-FET SMPS PATH stages
+  - Local-net / reused-sheet resolution and Net Tie auto-bridging
+  - Rails list sub-net expansion, eye isolation and partial-visibility states
+  - Multilayer copper primitives, area-weighted pin coupling, PDN pin
+    filters, and mesh-failure reporting
+  - Recent Projects menu, metric footprint detection, capacitor labels on the
+    impedance plot, locale-safe numeric input, and 3D SpaceMouse support
+
+--------------------------------------------------------------------------------
+Tomachie LLC
+--------------------------------------------------------------------------------
+* Fork:     https://github.com/Tomachie/FYPA
+* License:  Contributed under the GNU Affero General Public License v3.0
+* Contributions:
+  - Tomachie pdn.json power-tree import (fypa/tomachie_pdn.py,
+    fypa/viewer/tomachie_menu.py, --pdn-json / --pdn-corner CLI options)
+  - Series diodes with a forward drop and datasheet Vf-vs-If curve, solved
+    open when reverse-biased (fypa/altium/diode_curve.py, PDN_VF,
+    PDN_VF_CURVE)
+  - Non-synchronous buck freewheel diode (PDN_ROLE=FREEWHEEL,
+    fypa/altium/smps_stage.py)
+  - Mesher fix for holes touching at a single point (pdnsolver/mesh.py)
+  - Split internal plane support (fypa/altium/extract.py,
+    fypa/altium_geometry.py)
+  - Scrolling list notices (fypa/viewer/list_dialog.py)
+
+================================================================================
 Third-party components
 ================================================================================
 
