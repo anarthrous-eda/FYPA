@@ -875,6 +875,109 @@ def _solve_cache_path(prjpcb_path: Path,
     return _project_cache_dir(prjpcb_path, pcbdoc_path) / "solve.pkl"
 
 
+def _per_net_geometry_cache_path(prjpcb_path: Path,
+                                 pcbdoc_path: Path | None = None) -> Path:
+    return _project_cache_dir(prjpcb_path, pcbdoc_path) / "per-net-geometry.pkl"
+
+
+# Primitive collections whose ``net_index`` decides which (layer, net)
+# bucket their copper lands in.
+_NET_TAGGED_COLLECTIONS = ("tracks", "arcs", "vias", "pads", "regions",
+                           "shape_based_regions", "fills", "split_planes")
+
+
+def _per_net_geometry_fingerprint(extracted) -> dict | None:
+    """Identity of ``build_per_net_geometry_layers(extracted)``'s output.
+
+    Deliberately NOT the design-info fingerprint: that changes on every
+    schematic save, while the per-net copper only depends on the board plus
+    what the load did to it afterwards. So this is the PcbDoc's own
+    fingerprint (which fixes every primitive's shape) + a hash of the state
+    the post-extract steps can rewrite: each primitive's ``net_index``
+    (low-Ω net merges, editor copper names), the net names, and the stackup
+    (merged plane-net names, thickness overrides → conductance). A schematic
+    edit that leaves the net merges alone keeps hitting the cache.
+
+    ``None`` (no caching) for anything not extracted from a real PcbDoc.
+    """
+    import numpy as np
+    from fypa.altium.extract import pcb_extract_fingerprint
+
+    pcbdoc = Path(extracted.pcbdoc_path)
+    if pcbdoc.suffix.lower() != ".pcbdoc":
+        return None
+    pcb_fp = pcb_extract_fingerprint(pcbdoc)
+    if pcb_fp is None:
+        return None
+    h = hashlib.sha1()
+    for name in _NET_TAGGED_COLLECTIONS:
+        items = getattr(extracted, name, ()) or ()
+        h.update(f"{name}:{len(items)}\x00".encode())
+        h.update(np.fromiter((it.net_index for it in items),
+                             dtype=np.int64, count=len(items)).tobytes())
+    h.update("\x00".join(n.name for n in extracted.nets).encode("utf-8"))
+    h.update(repr(extracted.stackup).encode("utf-8"))
+    return {
+        "schema_version": _CACHE_SCHEMA_VERSION,
+        "pcb": pcb_fp,
+        "post_extract_state": h.hexdigest(),
+        "tool_source_hashes": _tool_source_hashes(_DESIGN_TOOL_SOURCES),
+    }
+
+
+def _try_load_per_net_geometry(cache_path: Path, fingerprint: dict):
+    """Cached ``list[GeometryLayer]`` for ``fingerprint``, else ``None``.
+    Same two-pickle layout as the PCB extract cache: a stale entry costs one
+    small read, not unpickling every layer."""
+    log = logging.getLogger(__name__)
+    if not cache_path.exists():
+        return None
+    t0 = time.monotonic()
+    try:
+        with open(cache_path, "rb") as f:
+            if pickle.load(f) != fingerprint:
+                log.info("Per-net geometry cache: board or net assignment "
+                         "changed — rebuilding.")
+                return None
+            layers = pickle.load(f)
+    except Exception as e:
+        log.warning("Per-net geometry cache at %s couldn't be read (%s); "
+                    "rebuilding.", cache_path, e)
+        return None
+    if not isinstance(layers, list):
+        return None
+    log.info("Per-net geometry cache hit — %d layer(s), %.1f MB read in "
+             "%.2fs.", len(layers), cache_path.stat().st_size / 1e6,
+             time.monotonic() - t0)
+    return layers
+
+
+def _save_per_net_geometry(cache_path: Path, fingerprint: dict,
+                           layers) -> None:
+    """Write ``layers`` under ``fingerprint`` (temp file + replace, so a
+    crash can't leave a truncated pickle). Failures are non-fatal."""
+    log = logging.getLogger(__name__)
+    t0 = time.monotonic()
+    tmp = cache_path.with_name(cache_path.name + ".tmp")
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(tmp, "wb") as f:
+            w = _GilYieldingWriter(f)
+            pickle.dump(fingerprint, w, protocol=pickle.HIGHEST_PROTOCOL)
+            pickle.dump(list(layers), w, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, cache_path)
+    except Exception as e:
+        log.warning("Couldn't write per-net geometry cache at %s (%s); "
+                    "ignoring.", cache_path, e)
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return
+    log.info("Per-net geometry cache: wrote %.1f MB in %.2fs.",
+             cache_path.stat().st_size / 1e6, time.monotonic() - t0)
+
+
 def _cache_path_for(prjpcb_path: Path,
                     pcbdoc_path: Path | None = None) -> Path:
     """Backward-compat alias; returns the solve-cache path."""

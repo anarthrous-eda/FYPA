@@ -593,20 +593,34 @@ class LoadedProject:
             for i, d in enumerate(directives)
         )
 
-    def diagnostic_summary(self) -> str:
+    def diagnostic_summary(self, include_geometry: bool = True) -> str:
+        """Human-readable load summary.
+
+        ``include_geometry=False`` lists per-layer polygon counts / areas only
+        if :attr:`geometry` has already been built, and never triggers the
+        build itself. That build is a full per-layer union of every net, which
+        runs for minutes on a big board (117 s on a 238 MB PcbDoc) — far too
+        much to spend on a log line the viewer emits while it is about to
+        open a stub solution anyway.
+        """
         lines = [f"Loaded project: {self.project_name}"]
-        # Touching self.geometry here triggers the lazy build — by design:
-        # the summary's whole purpose is to show per-layer polygon counts.
-        layer_lines = []
-        for L in self.geometry:
-            n = len(L.shape.geoms) if not L.shape.is_empty else 0
-            area = L.shape.area if not L.shape.is_empty else 0.0
-            layer_lines.append(
-                f"    id={L.layer_id:>2}  {L.name:<14}  "
-                f"{n:>4} polys  {area:>9.2f} mm^2  G={L.conductance:.3g} S"
+        if include_geometry or "geometry" in self.__dict__:
+            # Touching self.geometry here triggers the lazy build.
+            layer_lines = []
+            for L in self.geometry:
+                n = len(L.shape.geoms) if not L.shape.is_empty else 0
+                area = L.shape.area if not L.shape.is_empty else 0.0
+                layer_lines.append(
+                    f"    id={L.layer_id:>2}  {L.name:<14}  "
+                    f"{n:>4} polys  {area:>9.2f} mm^2  G={L.conductance:.3g} S"
+                )
+            lines.append(f"  Geometry: {len(self.geometry)} copper layer(s)")
+            lines.extend(layer_lines)
+        else:
+            lines.append(
+                f"  Geometry: {len(self.extracted.enabled_copper_layer_ids())} "
+                f"enabled copper layer(s) (per-layer union not built)"
             )
-        lines.append(f"  Geometry: {len(self.geometry)} copper layer(s)")
-        lines.extend(layer_lines)
         # Annotations
         lines.append(f"  Annotations: {len(self.annotations.directives)} directive(s)")
         for d in self.annotations.directives:
@@ -5590,6 +5604,8 @@ def load_project(prjpcb_path: str | Path,
                  pdn_json: str | Path | None = None,
                  pdn_corner: str = "typ",
                  auto_series_max_ohm: float | None = DEFAULT_AUTO_SERIES_MAX_OHM,
+                 pcb_cache_dir: str | Path | None = None,
+                 read_pcb_cache: bool = True,
                  ) -> LoadedProject:
     """Load and prepare an Altium project for PDN analysis.
 
@@ -5615,6 +5631,9 @@ def load_project(prjpcb_path: str | Path,
     ``auto_series_max_ohm``); ``None`` or 0 turns it off. Applied during
     annotation parsing for the same reason as ``no_auto_bridge``.
 
+    ``pcb_cache_dir`` / ``read_pcb_cache`` — the PCB-side extract cache, see
+    :func:`fypa.altium.extract.extract_project`.
+
     Auto-merge pass: SERIES directives below
     :data:`NET_MERGE_RESISTANCE_THRESHOLD_OHM` are detected as electrical
     shorts and their two nets are merged into one before geometry
@@ -5623,7 +5642,9 @@ def load_project(prjpcb_path: str | Path,
     """
     log.info("Stage 1/2: extracting %s", Path(prjpcb_path).name)
     _t = time.monotonic()
-    extracted = extract_project(prjpcb_path, pcbdoc_selector=pcbdoc_selector)
+    extracted = extract_project(prjpcb_path, pcbdoc_selector=pcbdoc_selector,
+                                pcb_cache_dir=pcb_cache_dir,
+                                read_pcb_cache=read_pcb_cache)
     log.info("Stage 1/2: extract done in %.2fs", time.monotonic() - _t)
     enabled = extracted.enabled_copper_layer_ids()
     log.info("  enabled copper layers: %s", enabled)

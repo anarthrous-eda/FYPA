@@ -423,6 +423,48 @@ class _SolveWorker(QThread):
         # hang the whole app. It waits for the flag to clear instead.
         self._in_python_packaging = False
 
+    def _per_net_geometry_key(self, loaded):
+        """``(cache_path, fingerprint)`` for the per-net geometry cache, or
+        ``None`` when this load can't use it (no resolved Altium PcbDoc)."""
+        if getattr(self, "_pcbdoc_resolved", None) is None:
+            return None
+        try:
+            from fypa.cli import (
+                _per_net_geometry_cache_path,
+                _per_net_geometry_fingerprint,
+            )
+            fp = _per_net_geometry_fingerprint(loaded.extracted)
+            if fp is None:
+                return None
+            return (_per_net_geometry_cache_path(
+                self._prjpcb_path, self._pcbdoc_resolved), fp)
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "Per-net geometry cache key failed (%s); not caching.", e)
+            return None
+
+    def _cached_per_net_layers(self, loaded, _timer):
+        """Per-net geometry from the on-disk cache, or ``None`` on a miss.
+        Skipped on a clean load, which by definition rebuilds everything."""
+        if not self._use_design_cache:
+            return None
+        key = self._per_net_geometry_key(loaded)
+        if key is None:
+            return None
+        from fypa.cli import _try_load_per_net_geometry
+        self.stage_changed.emit("Checking copper geometry cache…")
+        with _timer.stage("Load per-net geometry cache"):
+            return _try_load_per_net_geometry(*key)
+
+    def _save_per_net_layers(self, loaded, per_net_layers, _timer) -> None:
+        key = self._per_net_geometry_key(loaded)
+        if key is None:
+            return
+        from fypa.cli import _save_per_net_geometry
+        self.stage_changed.emit("Saving copper geometry cache…")
+        with _timer.stage("Save per-net geometry cache"):
+            _save_per_net_geometry(key[0], key[1], per_net_layers)
+
     def _emit_stub_and_finish(
         self, loaded, pristine_loaded, _timer,
         *, needs_directives: bool = False,
@@ -447,11 +489,14 @@ class _SolveWorker(QThread):
         stub_solution = _build_stub_lean_solution_from_loaded(loaded)
         if needs_directives:
             stub_solution.solver_info["needs_directives"] = True
+        if per_net_layers is None:
+            per_net_layers = self._cached_per_net_layers(loaded, _timer)
         with _timer.stage("Build stub metadata"):
             if per_net_layers is None:
                 per_net_layers = build_per_net_geometry_layers(
                     loaded.extracted,
                 )
+                self._save_per_net_layers(loaded, per_net_layers, _timer)
             metadata = build_solve_metadata(
                 loaded, None,
                 settings=self._settings,
@@ -547,6 +592,8 @@ class _SolveWorker(QThread):
                     type(e).__name__, e,
                 )
                 pcbdoc_resolved = None
+            # Read by the per-net geometry cache in _emit_stub_and_finish.
+            self._pcbdoc_resolved = pcbdoc_resolved
 
             # Solve-cache fast path: pickle.load can take 5–10 s on large
             # boards and blocks until the file is fully read, so doing it
@@ -683,6 +730,16 @@ class _SolveWorker(QThread):
 
             if loaded is None:
                 self.stage_changed.emit("Loading project from disk…")
+                # PCB-side extract cache: keyed on the PcbDoc alone, so a
+                # schematic save that invalidated the design-info cache
+                # above still skips re-parsing the board. A clean load
+                # re-parses but refreshes it.
+                _pcb_cache_dir = None
+                if (pcbdoc_resolved is not None
+                        and self._prjpcb_path.suffix.lower() == ".prjpcb"):
+                    from fypa.cli import _project_cache_dir
+                    _pcb_cache_dir = _project_cache_dir(
+                        self._prjpcb_path, pcbdoc_resolved)
                 with _timer.stage("Extract + load project"):
                     loaded = load_project(
                         self._prjpcb_path,
@@ -690,7 +747,9 @@ class _SolveWorker(QThread):
                         no_auto_bridge=self._no_auto_bridge or None,
                         pdn_json=self._pdn_json,
                         pdn_corner=self._pdn_corner,
-                        auto_series_max_ohm=self._auto_series_max_ohm)
+                        auto_series_max_ohm=self._auto_series_max_ohm,
+                        pcb_cache_dir=_pcb_cache_dir,
+                        read_pcb_cache=self._use_design_cache)
                 # Persist the freshly-loaded design info so the next run
                 # (e.g. a Re-run that only changes physics) can skip the
                 # extract step. Failures are non-fatal.
@@ -832,7 +891,11 @@ class _SolveWorker(QThread):
                 try:
                     self.stage_changed.emit("Building diagnostic summary…")
                     with _timer.stage("Build diagnostic summary"):
-                        _summary = loaded.diagnostic_summary()
+                        # include_geometry=False: the per-layer all-net
+                        # union costs minutes on a big board and only feeds
+                        # polygon counts in this log line.
+                        _summary = loaded.diagnostic_summary(
+                            include_geometry=False)
                     _log.error("Project is not solveable:\n%s", _summary)
                 except Exception as _exc:
                     _log.error("Project is not solveable (diagnostic failed: %s)", _exc)

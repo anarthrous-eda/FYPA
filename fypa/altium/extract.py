@@ -2018,6 +2018,8 @@ def _collect_schdoc_paths(
 
 def extract_project(prjpcb_path: str | Path,
                     pcbdoc_selector: str | Path | None = None,
+                    pcb_cache_dir: str | Path | None = None,
+                    read_pcb_cache: bool = True,
                     ) -> ExtractedProject:
     """Parse a `.PrjPcb` and return an :class:`ExtractedProject` snapshot.
 
@@ -2029,6 +2031,12 @@ def extract_project(prjpcb_path: str | Path,
     project (forwarded to ``AltiumDesign.load_pcbdoc``). Accepts an
     absolute path, a project-relative path, a filename, or a stem.
     ``None`` keeps altium_monkey's default (first PcbDoc).
+
+    ``pcb_cache_dir`` enables the PCB-side extract cache
+    (:data:`PCB_EXTRACT_CACHE_NAME` in that folder): the board's Raw* records
+    are reused while the PcbDoc file is unchanged, and rewritten whenever it
+    is re-parsed. ``read_pcb_cache=False`` forces the re-parse (a clean load)
+    but still refreshes the cache. ``None`` disables it.
     """
     prjpcb_path = Path(prjpcb_path)
     if not prjpcb_path.exists():
@@ -2041,12 +2049,50 @@ def extract_project(prjpcb_path: str | Path,
     clear_annotation_caches()
 
     design = AltiumDesign.from_prjpcb(str(prjpcb_path))
-    pcb = design.load_pcbdoc(selector=pcbdoc_selector)
-    if pcb is None:
-        raise RuntimeError(
-            f"Project {prjpcb_path.name} does not reference a PcbDoc; "
-            "FYPA needs a PCB document for power analysis."
-        )
+
+    # The PCB half of the extract (parsing a big PcbDoc runs for minutes) is
+    # cached on its own, keyed only on the PcbDoc file, so a schematic-only
+    # edit re-parses the schematics but not the board.
+    pcb_fields = None
+    pcb_cache_path = fingerprint = None
+    if pcb_cache_dir is not None:
+        target = _target_pcbdoc_path(design, pcbdoc_selector)
+        if target is not None:
+            pcb_cache_path = Path(pcb_cache_dir) / PCB_EXTRACT_CACHE_NAME
+            fingerprint = pcb_extract_fingerprint(target)
+            if read_pcb_cache and fingerprint is not None:
+                pcb_fields = _load_pcb_extract_cache(pcb_cache_path, fingerprint)
+
+    if pcb_fields is None:
+        pcb = design.load_pcbdoc(selector=pcbdoc_selector)
+        if pcb is None:
+            raise RuntimeError(
+                f"Project {prjpcb_path.name} does not reference a PcbDoc; "
+                "FYPA needs a PCB document for power analysis."
+            )
+        pcb_fields = _extract_pcb_fields(pcb, prjpcb_path)
+        if pcb_cache_path is not None and fingerprint is not None:
+            _save_pcb_extract_cache(pcb_cache_path, fingerprint, pcb_fields)
+
+    compiled_netlist, physical_sheet_names = _compile_schematic_netlist(design)
+    schdoc_paths = _collect_schdoc_paths(design, prjpcb_path)
+
+    return ExtractedProject(
+        prjpcb_path=prjpcb_path,
+        sch_components=_extract_sch_components(design, prjpcb_path),
+        sch_sheet_symbols=_extract_sch_sheet_symbols(design),
+        compiled_netlist=compiled_netlist,
+        schdoc_paths=schdoc_paths,
+        sheet_netlists={},
+        physical_sheet_names=physical_sheet_names,
+        **pcb_fields,
+    )
+
+
+def _extract_pcb_fields(pcb, prjpcb_path: Path) -> dict[str, Any]:
+    """Every :class:`ExtractedProject` field that comes from the PcbDoc alone,
+    as keyword arguments. Depends on nothing schematic-side, which is what
+    lets :data:`PCB_EXTRACT_CACHE_NAME` be keyed on the PcbDoc file only."""
     pcbdoc_path = Path(pcb.filepath).resolve() if pcb.filepath else prjpcb_path
 
     # Altium PCB editor displays coordinates relative to the user-defined
@@ -2058,11 +2104,7 @@ def extract_project(prjpcb_path: str | Path,
     ox_mm = mils_to_mm(origin_x_mils)
     oy_mm = mils_to_mm(origin_y_mils)
 
-    compiled_netlist, physical_sheet_names = _compile_schematic_netlist(design)
-    schdoc_paths = _collect_schdoc_paths(design, prjpcb_path)
-
-    return ExtractedProject(
-        prjpcb_path=prjpcb_path,
+    return dict(
         pcbdoc_path=pcbdoc_path,
         tracks=_extract_tracks(pcb, ox_mm, oy_mm),
         arcs=_extract_arcs(pcb, ox_mm, oy_mm),
@@ -2075,17 +2117,125 @@ def extract_project(prjpcb_path: str | Path,
         pcb_components=_extract_pcb_components(pcb, ox_mm, oy_mm),
         nets=_extract_nets(pcb),
         stackup=_extract_stackup(pcb),
-        sch_components=_extract_sch_components(design, prjpcb_path),
-        sch_sheet_symbols=_extract_sch_sheet_symbols(design),
-        compiled_netlist=compiled_netlist,
-        schdoc_paths=schdoc_paths,
-        sheet_netlists={},
-        physical_sheet_names=physical_sheet_names,
         board_origin_mm=Pt2D(ox_mm, oy_mm),
         board_outline=_extract_board_outline(pcb, ox_mm, oy_mm),
         split_planes=_extract_split_planes(pcb, ox_mm, oy_mm),
         **_plane_rule_kwargs(pcb),
     )
+
+
+# --- PCB-side extract cache ---------------------------------------------------
+
+#: File name of the PCB-side extract cache inside a project's cache folder.
+PCB_EXTRACT_CACHE_NAME = "pcb-extract.pkl"
+
+# Bump to invalidate every pcb-extract.pkl when its layout changes in a way
+# the extract.py content hash below would not catch.
+_PCB_EXTRACT_CACHE_SCHEMA = 1
+
+
+def _target_pcbdoc_path(design, pcbdoc_selector) -> Path | None:
+    """The PcbDoc ``design.load_pcbdoc(selector)`` would parse, resolved the
+    same way but without parsing it. ``None`` if it can't be determined (the
+    caller then just parses without caching)."""
+    try:
+        paths = design.get_pcbdoc_paths(selector=pcbdoc_selector)
+    except Exception as e:
+        log.debug("PcbDoc path lookup for the extract cache failed: %s", e)
+        return None
+    return Path(paths[0]).resolve() if paths else None
+
+
+def pcb_extract_fingerprint(pcbdoc_path: Path) -> dict | None:
+    """Identity of a PCB-side extract: the PcbDoc's path + (mtime, size), plus
+    the code that turns it into Raw* records (this file, which also defines
+    them, and the altium_monkey release). ``None`` if the PcbDoc can't be
+    stat'ed."""
+    import hashlib
+    from importlib.metadata import version
+
+    try:
+        st = pcbdoc_path.stat()
+    except OSError:
+        return None
+    try:
+        src_hash = hashlib.sha1(Path(__file__).read_bytes()).hexdigest()
+    except OSError:
+        src_hash = None   # frozen build: covered by the package version below
+    versions = {}
+    for dist in ("altium-monkey", "fypa"):
+        try:
+            versions[dist] = version(dist)
+        except Exception:
+            versions[dist] = None
+    return {
+        "schema": _PCB_EXTRACT_CACHE_SCHEMA,
+        "pcbdoc": str(pcbdoc_path.resolve()),
+        "stat": (st.st_mtime, st.st_size),
+        "extract_src": src_hash,
+        "versions": versions,
+    }
+
+
+def _load_pcb_extract_cache(path: Path, fingerprint: dict) -> dict | None:
+    """The cached PCB fields if ``path`` holds an entry for ``fingerprint``.
+    The file is two pickles back to back (fingerprint, then fields), so a
+    stale entry costs one tiny read, not unpickling the whole board."""
+    import pickle
+    import time
+
+    if not path.exists():
+        return None
+    t0 = time.monotonic()
+    try:
+        with open(path, "rb") as f:
+            if pickle.load(f) != fingerprint:
+                log.info("PCB extract cache: PcbDoc or extractor changed "
+                         "— re-parsing the board.")
+                return None
+            fields = pickle.load(f)
+    except Exception as e:
+        log.warning("PCB extract cache at %s couldn't be read (%s); "
+                    "re-parsing the board.", path, e)
+        return None
+    if not isinstance(fields, dict):
+        return None
+    log.info("PCB extract cache hit — skipped parsing %s (%.1f MB cache "
+             "read in %.2fs).", Path(fingerprint["pcbdoc"]).name,
+             path.stat().st_size / 1e6, time.monotonic() - t0)
+    return fields
+
+
+def _save_pcb_extract_cache(path: Path, fingerprint: dict,
+                            fields: dict) -> None:
+    """Write the PCB fields under ``fingerprint``. Atomic (temp + replace) so
+    a crash mid-write can't leave a truncated pickle behind; failures are
+    logged and ignored."""
+    import os
+    import pickle
+    import time
+
+    from fypa.cli import _GilYieldingWriter
+
+    t0 = time.monotonic()
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(tmp, "wb") as f:
+            w = _GilYieldingWriter(f)
+            pickle.dump(fingerprint, w, protocol=pickle.HIGHEST_PROTOCOL)
+            pickle.dump(fields, w, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, path)
+    except Exception as e:
+        log.warning("Couldn't write PCB extract cache at %s (%s); ignoring.",
+                    path, e)
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return
+    log.info("PCB extract cache: wrote %.1f MB in %.2fs.",
+             path.stat().st_size / 1e6, time.monotonic() - t0)
 
 
 def _plane_rule_kwargs(pcb) -> dict[str, float | int]:
