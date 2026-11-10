@@ -260,10 +260,77 @@ class _CopperPickMixin:
                     continue
             except Exception:
                 continue
-            return {"kind": prim["kind"], "record": prim,
-                    "layer_id": int(cover["layer_id"]),
-                    "net": str(prim["net"])}
+            hit = {"kind": prim["kind"], "record": prim,
+                   "layer_id": int(cover["layer_id"]),
+                   "net": str(prim["net"])}
+            if self._is_pour_fragment(prim):
+                # Altium stores a poured polygon as thousands of region
+                # fragments (up to ~9k on a big board); remember the click so
+                # the outline and properties show the fused copper instead
+                # of the one fragment that happened to contain the point.
+                hit["pour_xy"] = (float(world_x), float(world_y))
+            return hit
         return None
+
+    # Polygon-pour fragments: Altium's sentinel for "not part of a polygon"
+    # (fypa.altium.extract.NO_POLYGON).
+    _NO_POLYGON = 65535
+
+    @classmethod
+    def _is_pour_fragment(cls, prim: dict) -> bool:
+        if prim.get("kind") not in ("region", "shape_based_region"):
+            return False
+        try:
+            pi = int(prim.get("polygon_index", cls._NO_POLYGON))
+        except (TypeError, ValueError):
+            return False
+        return 0 <= pi != cls._NO_POLYGON
+
+    def _pour_fused_shape(self, hit: dict):
+        """The fused copper polygon under a polygon-pour click - the same
+        ``all_copper`` polygon the viewer draws, on the hit's layer and net -
+        or ``None`` when the hit isn't a pour fragment or no such polygon
+        contains the click."""
+        xy = hit.get("pour_xy")
+        lid = hit.get("layer_id")
+        if xy is None or lid is None:
+            return None
+        cached = hit.get("_pour_shape")
+        if cached is not None:
+            return cached
+        data = self._layer_strtrees().get(int(lid))
+        if data is None:
+            return None
+        pt = _sg.Point(float(xy[0]), float(xy[1]))
+        net = str(hit.get("net") or "")
+        try:
+            cand = data["tree"].query(pt)
+        except Exception:
+            return None
+        for j in cand:
+            idx = int(j)
+            rec_net = str(data["nets"][idx] or "")
+            if rec_net and net and rec_net != net:
+                continue
+            shp = data["shapes"][idx]
+            try:
+                if shp.intersects(pt):
+                    hit["_pour_shape"] = shp
+                    return shp
+            except Exception:
+                continue
+        return None
+
+    def _pour_fragment_count(self, hit: dict) -> int:
+        """How many Altium region records make up the clicked pour on its
+        layer (one stream only - Altium dual-stores pours as both regions
+        and shape-based regions)."""
+        rec = hit.get("record") or {}
+        key = (int(hit.get("layer_id", -1)), str(hit.get("net") or ""))
+        pi = rec.get("polygon_index")
+        kind = rec.get("kind")
+        return sum(1 for p in self._primitives_index().get(key) or []
+                   if p.get("kind") == kind and p.get("polygon_index") == pi)
 
     def _primitive_outline_rings(self, hit: dict
                                   ) -> list[list[tuple[float, float]]]:
@@ -285,7 +352,9 @@ class _CopperPickMixin:
         if kind == "pad":
             outline = rec.get("outline") or []
             return [[(float(x), float(y)) for x, y in outline]]
-        shp = rec.get("_shape")
+        shp = self._pour_fused_shape(hit)
+        if shp is None:
+            shp = rec.get("_shape")
         if shp is None:
             self._primitive_prepared_shape(rec)
             shp = rec.get("_shape")
@@ -376,6 +445,9 @@ class _CopperPickMixin:
             "pth": "Through-hole pad",
             "pad": "Pad",
         }.get(kind, kind.title())
+        pour_shape = self._pour_fused_shape(hit)
+        if pour_shape is not None:
+            kind_label = "Polygon pour"
 
         lay.addWidget(QLabel(f"<b>{_esc(kind_label)}</b>"))
 
@@ -454,6 +526,14 @@ class _CopperPickMixin:
             add("Area", f"{abs((x2 - x1) * (y2 - y1)):.3f} mm²")
             if rec.get("is_keepout"):
                 add("Keepout", "yes")
+        elif pour_shape is not None:
+            minx, miny, maxx, maxy = pour_shape.bounds
+            add("Bounding box",
+                f"x: {minx:.3f} → {maxx:.3f} mm\n"
+                f"y: {miny:.3f} → {maxy:.3f} mm")
+            add("Area", f"{pour_shape.area:.4f} mm²")
+            add("Holes", f"{len(pour_shape.interiors)}")
+            add("Altium pieces", f"{self._pour_fragment_count(hit)}")
         elif kind in ("region", "shape_based_region"):
             outline = rec.get("outline") or []
             shp = rec.get("_shape")

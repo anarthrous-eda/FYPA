@@ -1177,6 +1177,14 @@ class _SolveWorker(QThread):
         _mesh_log = logging.getLogger("pdnsolver.mesh")
         _solver_log.addHandler(_substage_handler)
         _mesh_log.addHandler(_substage_handler)
+        # The rails' copper, from the per-net geometry cache when the board
+        # is unchanged since it was written (None: union it as before).
+        from fypa.solve_subprocess import load_per_net_geometry
+        self.stage_changed.emit("Loading copper geometry…")
+        with _timer.stage("Load copper geometry"):
+            prebuilt_layers = load_per_net_geometry(
+                loaded, self._per_net_geometry_key(loaded),
+                read_cache=self._use_design_cache)
         with _timer.stage("Mesh + solve"):
             try:
                 (padne_solution, problem, via_segment_records,
@@ -1187,6 +1195,7 @@ class _SolveWorker(QThread):
                     adaptive_regulator_gain=self._adaptive_regulator_gain,
                     stage_callback=self.stage_changed.emit,
                     thermal_config=self._settings.thermal_config(),
+                    per_net_layers=prebuilt_layers,
                 )
             except _pdn_mesh.MeshingException as mesh_exc:
                 from fypa.altium.loader import package_mesh_failure
@@ -1282,6 +1291,8 @@ class _SolveWorker(QThread):
             mesher_config=mesher_config,
             settings=self._settings,
             adaptive_regulator_gain=self._adaptive_regulator_gain,
+            per_net_geometry_key=self._per_net_geometry_key(loaded),
+            read_per_net_geometry_cache=self._use_design_cache,
         )
         try:
             with _timer.stage("Mesh + solve (subprocess)"):

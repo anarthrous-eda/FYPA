@@ -56,6 +56,31 @@ class SolveJob:
     mesher_config: object
     settings: object
     adaptive_regulator_gain: bool = False
+    # ``(cache_path, fingerprint)`` of the per-net geometry cache for
+    # ``loaded`` as it will be solved, or None to union the copper from the
+    # primitives as before. The child reads the file itself - far cheaper
+    # than pickling ~150 MB of shapes across the process boundary.
+    per_net_geometry_key: tuple | None = None
+    # False on a clean load: rebuild (and refresh the cache), don't read it.
+    read_per_net_geometry_cache: bool = True
+
+
+def load_per_net_geometry(loaded, key: tuple | None, *,
+                          read_cache: bool = True):
+    """Per-net copper for the solve from the geometry cache ``key`` names
+    (``(cache_path, fingerprint)``), or ``None`` - in which case the solve
+    unions it from the primitives, as it always could. Never raises: the
+    cache is an optimisation, not something a solve may fail on."""
+    if key is None:
+        return None
+    try:
+        from fypa.cli import per_net_geometry_for_solve
+        return per_net_geometry_for_solve(
+            loaded.extracted, key[0], key[1], read_cache=read_cache)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Per-net geometry cache unavailable (%s: %s); building "
+                    "the copper from the primitives.", type(e).__name__, e)
+        return None
 
 
 class SolveSubprocessError(RuntimeError):
@@ -109,6 +134,12 @@ def _child_entry(job: SolveJob, q: mp.Queue) -> None:
         for lg in loggers:
             lg.addHandler(handler)
             lg.setLevel(logging.INFO)
+        per_net_layers = None
+        if job.per_net_geometry_key is not None:
+            q.put(("stage", "Loading copper geometry…"))
+            per_net_layers = load_per_net_geometry(
+                job.loaded, job.per_net_geometry_key,
+                read_cache=job.read_per_net_geometry_cache)
         try:
             (padne_solution, problem, via_segment_records,
              stub_pieces_by_pair, per_net_layers,
@@ -118,6 +149,7 @@ def _child_entry(job: SolveJob, q: mp.Queue) -> None:
                 adaptive_regulator_gain=job.adaptive_regulator_gain,
                 stage_callback=lambda m: q.put(("stage", m)),
                 thermal_config=job.settings.thermal_config(),
+                per_net_layers=per_net_layers,
             )
         except Exception as exc:
             # Mesh failures must open the same stub + markers as the in-process

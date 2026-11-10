@@ -2573,18 +2573,23 @@ def solve_problem_adaptive(
     adaptive_regulator_gain: bool = False,
     stage_callback=None,
     thermal_config=None,
+    per_net_layers=None,
 ) -> tuple[object, _pp.Problem, list[dict],
            dict[tuple[int, int], list], list[GeometryLayer], dict]:
     """Build, solve, and optionally iterate SMPS regulator gains.
 
     See :func:`_solve_problem_adaptive_impl`; this wrapper frees the board
-    thermal model's factorisation (MKL memory) once every solve is done."""
+    thermal model's factorisation (MKL memory) once every solve is done.
+
+    ``per_net_layers`` (optional) is the prebuilt per-net copper - see
+    :func:`build_problem`."""
     boards: list = []
     try:
         return _solve_problem_adaptive_impl(
             loaded, mesher_config,
             adaptive_regulator_gain=adaptive_regulator_gain,
             stage_callback=stage_callback, thermal_config=thermal_config,
+            per_net_layers=per_net_layers,
             _boards=boards)
     finally:
         for b in boards:
@@ -2598,6 +2603,7 @@ def _solve_problem_adaptive_impl(
     adaptive_regulator_gain: bool = False,
     stage_callback=None,
     thermal_config=None,
+    per_net_layers=None,
     _boards: list | None = None,
 ):
     """Build, solve, and optionally iterate SMPS regulator gains.
@@ -2634,8 +2640,11 @@ def _solve_problem_adaptive_impl(
     residual_sign: dict[tuple[str, int | None], int] = {}
     flip_streak: dict[tuple[str, int | None], int] = {}
 
+    # Kept under its own name: ``per_net_layers`` is rebound below to what
+    # build_problem hands back, and a rebuild further down needs the input.
+    prebuilt = per_net_layers
     problem, via_segment_records, stub_pieces_by_pair, per_net_layers = (
-        build_problem(loaded)
+        build_problem(loaded, prebuilt)
     )
     if (thermal_config is not None and thermal_config.enabled
             and getattr(thermal_config, "spreading", False)
@@ -2805,7 +2814,7 @@ def _solve_problem_adaptive_impl(
         _diode_curve.advance(loaded, diode_moves)
         if not _retune_problem_regulator_gains(problem, loaded):
             problem, via_segment_records, stub_pieces_by_pair, per_net_layers = (
-                build_problem(loaded)
+                build_problem(loaded, prebuilt)
             )
 
     adaptive_info["converged"] = converged
@@ -4721,12 +4730,54 @@ def _log_build_timings(stages: list[tuple[str, float]], total: float) -> None:
     log.info("\n".join(lines))
 
 
+def _split_prebuilt_per_net_layers(
+    extracted, per_net_layers, active_nets: set[int],
+) -> tuple[list[GeometryLayer], object]:
+    """Stand-in for :func:`build_per_net_geometry_layers_split` when the
+    per-net copper is already built (the on-disk per-net geometry cache):
+    the active rails' layers, and the rest as an already-finished future.
+
+    The shapes are taken as they are, but each layer's conductance is
+    recomputed from the stackup and the conductivity now in effect: the
+    cache is keyed on the copper, not on Settings' temperature or
+    resistivity, so a layer built under other settings would otherwise
+    carry a stale sheet conductance into the FEM.
+    """
+    import concurrent.futures
+
+    from fypa.altium_geometry import NO_NET, _layer_conductance
+
+    stackup_by_id = {s.layer_id: s for s in extracted.stackup}
+    sigma_by_layer = {lid: _layer_conductance(s)
+                      for lid, s in stackup_by_id.items()}
+    active: list[GeometryLayer] = []
+    rest: list[GeometryLayer] = []
+    for gl in per_net_layers:
+        sigma = sigma_by_layer.get(gl.layer_id)
+        if sigma is not None and sigma != gl.conductance:
+            gl = dataclasses.replace(gl, conductance=sigma)
+        # With no directive touching a net every real net is active, as in
+        # build_per_net_geometry_layers_split.
+        is_active = (gl.net_index in active_nets if active_nets
+                     else gl.net_index != NO_NET)
+        (active if is_active else rest).append(gl)
+    done: concurrent.futures.Future = concurrent.futures.Future()
+    done.set_result(rest)
+    return active, done
+
+
 def build_problem(
     loaded: LoadedProject,
+    per_net_layers: list[GeometryLayer] | None = None,
 ) -> tuple[_pp.Problem, list[dict], dict[tuple[int, int], list],
            list[GeometryLayer]]:
     """Translate a :class:`LoadedProject` into a :class:`pdnsolver.problem.Problem`
     that can be handed straight to :func:`pdnsolver.solver.solve`.
+
+    ``per_net_layers`` (optional) is the board's full per-(layer, net) copper
+    as :func:`fypa.altium_geometry.build_per_net_geometry_layers` builds it
+    for this ``loaded.extracted`` - normally read from the per-net geometry
+    cache. Given it, the copper is not unioned again.
 
     Each :class:`GeometryLayer` becomes a padne ``Layer`` (preserving id-order
     so connections from through-hole pads land on the top layer they were
@@ -4798,13 +4849,20 @@ def build_problem(
         return now
 
     _t_geom = time.monotonic()
-    active_layers, _rest_geom_future = build_per_net_geometry_layers_split(
-        loaded.extracted, active_nets,
-    )
-    _t_mark = _stage("Active-net geometry (union)", _t_geom)
-    log.info("build_problem: active-net geometry built in %.2fs "
-             "(non-active nets unioning in background)",
-             time.monotonic() - _t_geom)
+    if per_net_layers is not None:
+        active_layers, _rest_geom_future = _split_prebuilt_per_net_layers(
+            loaded.extracted, per_net_layers, active_nets)
+        _t_mark = _stage("Active-net geometry (prebuilt)", _t_geom)
+        log.info("build_problem: reusing %d prebuilt per-net layer(s), "
+                 "%d of them active", len(per_net_layers), len(active_layers))
+    else:
+        active_layers, _rest_geom_future = build_per_net_geometry_layers_split(
+            loaded.extracted, active_nets,
+        )
+        _t_mark = _stage("Active-net geometry (union)", _t_geom)
+        log.info("build_problem: active-net geometry built in %.2fs "
+                 "(non-active nets unioning in background)",
+                 time.monotonic() - _t_geom)
     pp_layers: list[_pp.Layer] = []
     layer_by_layer_and_net: dict[tuple[int, int], _pp.Layer] = {}
     stub_pieces_by_pair: dict[tuple[int, int], list] = {}

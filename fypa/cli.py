@@ -993,6 +993,47 @@ def _save_per_net_geometry(cache_path: Path, fingerprint: dict,
              cache_path.stat().st_size / 1e6, time.monotonic() - t0)
 
 
+def per_net_geometry_for_solve(extracted, cache_path: Path,
+                               fingerprint: dict, *, read_cache: bool = True):
+    """The board's per-net copper for ``build_problem(loaded, <this>)``, or
+    ``None`` to let ``build_problem`` union the active rails itself.
+
+    A solve used to union its rails' copper from the primitives every time,
+    though the load had usually just built - and cached - the same shapes.
+    This reads that cache (``cache_path`` / ``fingerprint`` as from
+    :func:`_per_net_geometry_fingerprint` on the board *as it will be
+    solved*, i.e. after copper names and stackup overrides).
+
+    On a miss a large board is built across worker processes and the result
+    cached (on a background thread) for the next solve; that costs about
+    what the rails-only union did. A small board returns ``None``: building
+    every net to save a second or two of union would be a loss.
+    """
+    log = logging.getLogger(__name__)
+    if read_cache:
+        layers = _try_load_per_net_geometry(cache_path, fingerprint)
+        if layers is not None:
+            return layers
+    from fypa.altium_geometry import (
+        build_per_net_and_layer_geometry,
+        parallel_geometry_workers,
+    )
+    if parallel_geometry_workers(extracted) <= 1:
+        return None
+    t0 = time.monotonic()
+    layers, _ = build_per_net_and_layer_geometry(extracted, with_layers=False)
+    log.info("Per-net geometry built for the solve in %.2fs; caching it.",
+             time.monotonic() - t0)
+    import threading
+    # Not a daemon: a solve subprocess must not exit with the file half
+    # written (the save itself goes through a temp file + replace).
+    threading.Thread(
+        target=_save_per_net_geometry, args=(cache_path, fingerprint, layers),
+        name="fypa-per-net-geometry-save", daemon=False,
+    ).start()
+    return layers
+
+
 def _cache_path_for(prjpcb_path: Path,
                     pcbdoc_path: Path | None = None) -> Path:
     """Backward-compat alias; returns the solve-cache path."""

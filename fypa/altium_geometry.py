@@ -1617,8 +1617,23 @@ def _geometry_worker_count(n_layers: int) -> int:
     return min(8, max(1, (os.cpu_count() or 2) - 1), n_layers)
 
 
+def parallel_geometry_workers(proj: ExtractedProject) -> int:
+    """Worker processes :func:`build_per_net_and_layer_geometry` will use for
+    ``proj``; 0 or 1 means it builds serially (a small board, or
+    ``$FYPA_GEOMETRY_WORKERS`` says so)."""
+    enabled = proj.enabled_copper_layer_ids()
+    workers = _geometry_worker_count(len(enabled)) if enabled else 0
+    n_primitives = (len(proj.tracks) + len(proj.arcs) + len(proj.pads)
+                    + len(proj.vias) + len(proj.regions)
+                    + len(proj.shape_based_regions) + len(proj.fills))
+    if n_primitives < _PARALLEL_MIN_PRIMITIVES and not _workers_forced():
+        workers = 0     # small board: spawning workers costs more than it saves
+    return workers
+
+
 def build_per_net_and_layer_geometry(
     proj: ExtractedProject,
+    with_layers: bool = True,
 ) -> tuple[list[GeometryLayer], list[GeometryLayer]]:
     """``(build_per_net_geometry_layers(proj),
     build_layer_geometries_from_per_net(proj, <that>))`` - with the unions
@@ -1628,17 +1643,21 @@ def build_per_net_and_layer_geometry(
     reassembled in the original bucket order). Falls back to the serial pair
     for small boards, when ``$FYPA_GEOMETRY_WORKERS`` is 0/1, or if the
     process pool fails for any reason.
+
+    ``with_layers=False`` skips the per-layer all-nets fuse and returns an
+    empty second list - for a solve, which needs only the per-net copper.
     """
+    if not with_layers:
+        def _serial():
+            return build_per_net_geometry_layers(proj), []
+    else:
+        def _serial():
+            per_net = build_per_net_geometry_layers(proj)
+            return per_net, build_layer_geometries_from_per_net(proj, per_net)
     enabled = proj.enabled_copper_layer_ids()
-    workers = _geometry_worker_count(len(enabled)) if enabled else 0
-    n_primitives = (len(proj.tracks) + len(proj.arcs) + len(proj.pads)
-                    + len(proj.vias) + len(proj.regions)
-                    + len(proj.shape_based_regions) + len(proj.fills))
-    if n_primitives < _PARALLEL_MIN_PRIMITIVES and not _workers_forced():
-        workers = 0     # small board: spawning workers costs more than it saves
+    workers = parallel_geometry_workers(proj)
     if workers <= 1:
-        per_net = build_per_net_geometry_layers(proj)
-        return per_net, build_layer_geometries_from_per_net(proj, per_net)
+        return _serial()
 
     import concurrent.futures
     import multiprocessing
@@ -1665,7 +1684,8 @@ def build_per_net_and_layer_geometry(
         futures = {
             lid: pool.submit(
                 _union_layer_task, lid, by_layer[lid], grid,
-                bool(lid in stackup_by_id and not stackup_by_id[lid].is_plane))
+                bool(with_layers and lid in stackup_by_id
+                     and not stackup_by_id[lid].is_plane))
             for lid in order
         }
         unioned: dict[tuple[int, int], shapely.geometry.base.BaseGeometry] = {}
@@ -1679,8 +1699,7 @@ def build_per_net_and_layer_geometry(
         log.warning("Parallel copper union failed (%s: %s); building "
                     "serially.", type(e).__name__, e)
         pool.shutdown(wait=False, cancel_futures=True)
-        per_net = build_per_net_geometry_layers(proj)
-        return per_net, build_layer_geometries_from_per_net(proj, per_net)
+        return _serial()
     pool.shutdown(wait=False)
 
     # Original bucket order, exactly as the serial build iterates it.
@@ -1688,7 +1707,7 @@ def build_per_net_and_layer_geometry(
         proj, {key: unioned[key] for key in buckets})
     layers: list[GeometryLayer] = []
     through_cache = None
-    for lid in enabled:
+    for lid in (enabled if with_layers else ()):
         stackup = stackup_by_id.get(lid)
         if stackup is None:
             continue

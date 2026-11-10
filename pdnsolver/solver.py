@@ -265,23 +265,30 @@ _BARREL_GRADING_RATIO: float = 1.4
 _BARREL_GRADING_MAX_RINGS: int = 5
 
 
-def _barrel_grading_points(
-    center: shapely.geometry.Point,
+_NO_XY: np.ndarray = np.empty((0, 2), dtype=np.float64)
+
+
+def _barrel_grading_xy(
+    cx: float,
+    cy: float,
     radius_mm: float,
     max_size_mm: float,
     max_radius_mm: float = math.inf,
-) -> list[shapely.geometry.Point]:
+) -> np.ndarray:
     """Steiner seeds on rings around a drill patch, spaced geometrically
-    outward (see :data:`_BARREL_GRADING_RATIO`). No ring is placed beyond
-    ``max_radius_mm`` (half the distance to the nearest other barrel)."""
+    outward (see :data:`_BARREL_GRADING_RATIO`), as an ``(n, 2)`` array. No
+    ring is placed beyond ``max_radius_mm`` (half the distance to the
+    nearest other barrel).
+
+    Plain coordinates, not shapely Points: a big ground net has millions of
+    these and a Point object apiece was a large part of the pre-mesh time."""
     g = _BARREL_GRADING_RATIO
     if radius_mm <= 0.0 or g <= 1.0:
-        return []
+        return _NO_XY
     # Points per ring for a tangential spacing equal to the radial gap
     # r·g^(k-1)·(g-1) on a ring of circumference 2π·r·g^k.
     n = max(6, int(math.ceil(2.0 * math.pi * g / (g - 1.0))))
-    pts: list[shapely.geometry.Point] = []
-    cx, cy = center.x, center.y
+    pts: list[np.ndarray] = []
     rho = radius_mm
     for k in range(_BARREL_GRADING_MAX_RINGS):
         gap = rho * (g - 1.0)
@@ -296,16 +303,17 @@ def _barrel_grading_points(
         ang = off + (2.0 * math.pi / n) * np.arange(n)
         xs = cx + rho * np.cos(ang)
         ys = cy + rho * np.sin(ang)
-        pts.extend(shapely.points(xs, ys).tolist())
-    return pts
+        pts.append(np.column_stack((xs, ys)))
+    return np.concatenate(pts) if pts else _NO_XY
 
 
-def _pad_grading_points(
+def _pad_grading_xy(
     region: shapely.geometry.Polygon,
     max_size_mm: float,
     max_reach_mm: float = math.inf,
-) -> list[shapely.geometry.Point]:
-    """Steiner seeds grading the mesh outward from a terminal pad: the pad
+) -> np.ndarray:
+    """Steiner seeds grading the mesh outward from a terminal pad, as an
+    ``(n, 2)`` array: the pad
     outline offset by growing gaps (the first one the pad-outline seed
     spacing, each next :data:`_BARREL_GRADING_RATIO` times wider), sampled at
     that gap. Offsets rather than circles keep the grading tight on square
@@ -314,10 +322,10 @@ def _pad_grading_points(
     centre (half the distance to the nearest other patch)."""
     g = _BARREL_GRADING_RATIO
     if g <= 1.0 or region.is_empty:
-        return []
+        return _NO_XY
     minx, miny, maxx, maxy = region.bounds
     r_circ = 0.5 * math.hypot(maxx - minx, maxy - miny)
-    pts: list[shapely.geometry.Point] = []
+    pts: list[np.ndarray] = []
     gap = _PAD_SEED_SPACING_MM
     offset = 0.0
     for _k in range(_BARREL_GRADING_MAX_RINGS):
@@ -335,8 +343,68 @@ def _pad_grading_points(
                 continue
             n = max(8, int(math.ceil(ring.length / gap)))
             frac = ring.length * np.arange(n, dtype=np.float64) / n
-            pts.extend(shapely.line_interpolate_point(ring, frac).tolist())
-    return pts
+            pts.append(shapely.get_coordinates(
+                shapely.line_interpolate_point(ring, frac)))
+    return np.concatenate(pts) if pts else _NO_XY
+
+
+# Below this many candidate points a polygon is tested as it is; at or above
+# it the polygon is prepared first (GEOS builds its edge index once, so each
+# further point costs O(log edges) rather than a walk of every ring).
+_PREPARE_MIN_POINTS: int = 8
+
+
+def _points_within_geoms(
+    strtree,
+    pts_xy: np.ndarray,
+    accept: np.ndarray | None = None,
+    boundary: bool = False,
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(point_index, geom_index)`` for every point strictly inside a tree
+    geometry, ordered by point index — what
+    ``strtree.query(points, predicate="within")`` returns. With
+    ``boundary=True`` a point on a geometry's edge counts too
+    (``predicate="intersects"``).
+
+    That query evaluates the predicate from the point's side, against the
+    polygon as it stands: every test walks all of the polygon's rings. A
+    ground pour with thousands of antipad holes and a few hundred thousand
+    grading seeds made it minutes of work. Here the tree supplies only the
+    bounding-box candidates; each polygon is then prepared once and tests
+    all of its candidates in one vectorised ``contains``.
+
+    ``accept`` (optional, boolean per tree geometry) drops the candidates of
+    unwanted geometries before any polygon is tested.
+    """
+    empty = np.empty(0, dtype=np.intp)
+    if pts_xy.shape[0] == 0:
+        return empty, empty
+    pts = shapely.points(pts_xy[:, 0], pts_xy[:, 1])
+    pi, gi = strtree.query(pts)
+    if accept is not None and pi.size:
+        keep = accept[gi]
+        pi, gi = pi[keep], gi[keep]
+    if pi.size == 0:
+        return empty, empty
+    order = np.argsort(gi, kind="stable")
+    pi, gi = pi[order], gi[order]
+    starts = np.concatenate(([0], np.flatnonzero(np.diff(gi)) + 1, [gi.size]))
+    geoms = strtree.geometries
+    inside = np.zeros(pi.size, dtype=bool)
+    test = shapely.intersects if boundary else shapely.contains
+    for s, e in zip(starts[:-1].tolist(), starts[1:].tolist()):
+        geom = geoms[gi[s]]
+        prepared_here = (e - s >= _PREPARE_MIN_POINTS
+                         and not shapely.is_prepared(geom))
+        if prepared_here:
+            shapely.prepare(geom)
+        inside[s:e] = test(geom, pts[pi[s:e]])
+        if prepared_here:
+            # The index of a large pour is tens of MB; nothing later reuses it.
+            shapely.destroy_prepared(geom)
+    pi, gi = pi[inside], gi[inside]
+    order = np.lexsort((gi, pi))
+    return pi[order], gi[order]
 
 
 def _add_grading_seeds(
@@ -345,38 +413,35 @@ def _add_grading_seeds(
     layer_i: int,
     connected_layer_mesh_pairs,
     max_size_mm: float,
-    geom_to_seed_points: dict,
-) -> None:
-    """Append grading-ring seeds for one layer's patches to the pieces they
-    fall inside (``geom_to_seed_points``, keyed by geometry index).
+) -> dict[int, np.ndarray]:
+    """Grading-ring seeds for one layer's patches, as ``{geometry index:
+    (n, 2) coordinates}`` of the pieces they fall inside.
 
     Rings are generated only for patches whose centre lies in a meshed
     (connected) piece — a board's thousands of signal-net vias never are —
     and each ring is stopped short of the nearest other patch on the layer,
     so a via array's or a BGA field's rings do not interleave into
-    near-coincident seeds. Containment is one vectorised STRtree query per
-    layer (``predicate="within"``: strictly inside, as the per-seed pass's
-    ``contains``). The seeds are appended after the per-connection seeds,
-    so those keep their order."""
+    near-coincident seeds. Containment is strict (as the per-seed pass's
+    ``contains``), one prepared polygon at a time — see
+    :func:`_points_within_geoms`. The caller appends these after the
+    per-connection seeds, so those keep their order; within a piece the
+    seeds stay in generation order."""
     if not graded:
-        return
+        return {}
     keys = list(graded.keys())
     xy = np.asarray(keys, dtype=np.float64).reshape(-1, 2)
+    n_geoms = len(strtree.geometries)
+    connected = np.fromiter(
+        ((layer_i, g) in connected_layer_mesh_pairs for g in range(n_geoms)),
+        dtype=bool, count=n_geoms)
 
     def _connected_hits(pts_xy: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        pts = shapely.points(pts_xy[:, 0], pts_xy[:, 1])
-        pi, gi = strtree.query(pts, predicate="within")
-        if pi.size == 0:
-            return pi, gi
-        keep = np.fromiter(
-            ((layer_i, int(g)) in connected_layer_mesh_pairs for g in gi),
-            dtype=bool, count=gi.size)
-        return pi[keep], gi[keep]
+        return _points_within_geoms(strtree, pts_xy, accept=connected)
 
     active, _ = _connected_hits(xy)
     active = np.unique(active)
     if active.size == 0:
-        return
+        return {}
     if xy.shape[0] > 1:
         # Reach from every patch on the layer, active or not: an inactive
         # neighbour's copper still shares the space.
@@ -389,23 +454,54 @@ def _add_grading_seeds(
     for i, lim in zip(active.tolist(), reach.tolist()):
         is_barrel, region = graded[keys[i]]
         if is_barrel:
-            centre = shapely.geometry.Point(xy[i, 0], xy[i, 1])
+            cx, cy = float(xy[i, 0]), float(xy[i, 1])
             minx, _miny, maxx, _maxy = region.bounds
             # The drill outline itself (and its centre), then the rings.
-            pts = _pad_seed_points(region, centre) + _barrel_grading_points(
-                centre, 0.5 * (maxx - minx), max_size_mm, max_radius_mm=lim)
+            ring_xy.append(_pad_seed_xy(region, cx, cy))
+            pts = _barrel_grading_xy(
+                cx, cy, 0.5 * (maxx - minx), max_size_mm, max_radius_mm=lim)
         else:
-            pts = _pad_grading_points(region, max_size_mm, lim)
-        if pts:
-            ring_xy.append(shapely.get_coordinates(pts))
+            pts = _pad_grading_xy(region, max_size_mm, lim)
+        if pts.shape[0]:
+            ring_xy.append(pts)
     if not ring_xy:
-        return
+        return {}
     all_xy = np.concatenate(ring_xy)
     pi, gi = _connected_hits(all_xy)
-    order = np.argsort(pi, kind="stable")      # keep generation order
-    for p, g in zip(pi[order].tolist(), gi[order].tolist()):
-        geom_to_seed_points[g].append(
-            shapely.geometry.Point(all_xy[p, 0], all_xy[p, 1]))
+    if pi.size == 0:
+        return {}
+    # Group by piece, keeping generation order (ascending point index) within
+    # each — the order the seeds reach Triangle in.
+    order = np.lexsort((pi, gi))
+    pi, gi = pi[order], gi[order]
+    starts = np.concatenate(([0], np.flatnonzero(np.diff(gi)) + 1, [gi.size]))
+    return {
+        int(gi[s]): all_xy[pi[s:e]]
+        for s, e in zip(starts[:-1].tolist(), starts[1:].tolist())
+    }
+
+
+def _pad_seed_xy(
+    region: shapely.geometry.Polygon,
+    cx: float,
+    cy: float,
+) -> np.ndarray:
+    """:func:`_pad_seed_points` as an ``(n, 2)`` coordinate array — the same
+    values, without a shapely Point per seed."""
+    centre = np.array([[cx, cy]], dtype=np.float64)
+    exterior = getattr(region, "exterior", None)
+    if exterior is None or exterior.is_empty:
+        return centre
+    perimeter = exterior.length
+    if perimeter <= 0.0:
+        return centre
+    n = int(perimeter / _PAD_SEED_SPACING_MM)
+    n = max(_PAD_SEED_MIN_POINTS, min(_PAD_SEED_MAX_POINTS, n))
+    # Written as ``perimeter * i / n`` for the reason given in
+    # _pad_seed_points.
+    fractions = perimeter * np.arange(n, dtype=np.float64) / n
+    return np.concatenate((centre, shapely.get_coordinates(
+        shapely.line_interpolate_point(exterior, fractions))))
 
 
 def _pad_seed_points(
@@ -895,10 +991,10 @@ def resolve_connection_geoms(
 ) -> dict[int, list[int]]:
     """Map each ``Connection`` to the ``layer.geoms`` indices its point lies in.
 
-    Returns ``{id(conn): [geom_i, ...]}``. Computed with ONE vectorised
-    ``STRtree.query(points, predicate="intersects")`` per layer — the predicate
-    runs the point-in-polygon test in C for every point at once — instead of a
-    per-connection ``query`` + Python ``intersects`` loop. The result is shared
+    Returns ``{id(conn): [geom_i, ...]}``. Computed with one batched
+    point-in-polygon pass per layer (:func:`_points_within_geoms`, edge
+    points included) instead of a per-connection ``query`` + Python
+    ``intersects`` loop. The result is shared
     by the connectivity graph and the dead-terminal filter, which both need
     exactly this map (previously each recomputed it, point-at-a-time).
     """
@@ -914,10 +1010,12 @@ def resolve_connection_geoms(
 
     out: dict[int, list[int]] = {}
     for layer_i, conns in conns_by_layer.items():
-        pts = shapely.points(
-            np.array([(c.point.x, c.point.y) for c in conns], dtype=np.float64)
+        qi, gi = _points_within_geoms(
+            strtrees[layer_i],
+            np.array([(c.point.x, c.point.y) for c in conns],
+                     dtype=np.float64).reshape(-1, 2),
+            boundary=True,
         )
-        qi, gi = strtrees[layer_i].query(pts, predicate="intersects")
         for k in range(qi.shape[0]):
             out.setdefault(id(conns[int(qi[k])]), []).append(int(gi[k]))
     return out
@@ -1594,10 +1692,9 @@ def generate_meshes_for_problem(prob: problem.Problem,
                         if prep.contains(ring_pt):
                             geom_to_seed_points[geom_i].append(ring_pt)
 
-        _add_grading_seeds(
+        geom_to_grading_xy = _add_grading_seeds(
             graded_sites_by_layer_id.get(id(layer)), strtrees[layer_i],
             layer_i, connected_layer_mesh_pairs, _cfg.maximum_size,
-            geom_to_seed_points,
         )
 
         for geom_i, geom in enumerate(layer.geoms):
@@ -1616,13 +1713,17 @@ def generate_meshes_for_problem(prob: problem.Problem,
             # boundary points in the rings if it detects the case above,
             # but this is not yet implemented.
             # TODO: Add a warning here if we detect the case above
-            seed_points_in_geom = geom_to_seed_points[geom_i]
+            seed_points_in_geom = geom_to_seed_points.get(geom_i)
+            grading_xy = geom_to_grading_xy.get(geom_i)
 
-            if seed_points_in_geom:
+            if seed_points_in_geom or grading_xy is not None:
+                # Per-connection seeds first, then the grading rings.
                 seed_xy: np.ndarray | None = np.asarray(
-                    [(p.x, p.y) for p in seed_points_in_geom],
+                    [(p.x, p.y) for p in seed_points_in_geom or ()],
                     dtype=np.float64,
-                )
+                ).reshape(-1, 2)
+                if grading_xy is not None:
+                    seed_xy = np.concatenate((seed_xy, grading_xy))
                 # Drop exact-duplicate seeds (two Connections at identical
                 # coordinates — stacked pins, a via shared by two directives,
                 # or a pad seeded from two networks — each contribute a seed

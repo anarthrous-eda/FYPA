@@ -285,3 +285,51 @@ def test_parallel_copper_geometry_is_identical_to_serial(monkeypatch):
     par_net, par_layers = build_per_net_and_layer_geometry(ext)
     assert sig(par_net) == sig(serial_net)
     assert sig(par_layers) == sig(serial_layers)
+
+
+def test_build_problem_from_prebuilt_per_net_geometry(tmp_path, monkeypatch):
+    """A solve handed the cached per-net copper builds the same Problem as
+    one that unions the copper itself - and takes its sheet conductance from
+    the settings in effect, not from whatever the cache was written under."""
+    import dataclasses
+
+    import shapely
+
+    from fypa.altium.loader import build_problem, load_project
+    from fypa.altium_geometry import build_per_net_geometry_layers
+    from fypa.cli import (
+        _per_net_geometry_fingerprint,
+        _save_per_net_geometry,
+        per_net_geometry_for_solve,
+    )
+
+    def sig(problem):
+        return [(L.name, L.conductance, shapely.to_wkb(L.shape))
+                for L in problem.layers]
+
+    loaded = load_project(SANDBOX / "Sandbox.PrjPcb")
+    reference = build_problem(loaded)
+    full = build_per_net_geometry_layers(loaded.extracted)
+
+    # Round-trip through the on-disk cache, as the GUI's solve does.
+    cache = tmp_path / "per-net-geometry.pkl"
+    fp = _per_net_geometry_fingerprint(loaded.extracted)
+    assert fp is not None
+    # A small board is not built just to fill the cache...
+    assert per_net_geometry_for_solve(loaded.extracted, cache, fp) is None
+    # ...but a cache the load wrote is used.
+    _save_per_net_geometry(cache, fp, full)
+    cached = per_net_geometry_for_solve(loaded.extracted, cache, fp)
+    assert cached is not None and len(cached) == len(full)
+    assert per_net_geometry_for_solve(
+        loaded.extracted, cache, fp, read_cache=False) is None
+
+    prebuilt = build_problem(loaded, cached)
+    assert sig(prebuilt[0]) == sig(reference[0])
+    assert len(prebuilt[0].networks) == len(reference[0].networks)
+    assert len(list(prebuilt[3])) == len(list(reference[3]))
+
+    # Layers cached under another conductivity are corrected on the way in.
+    stale = [dataclasses.replace(gl, conductance=gl.conductance * 2.0)
+             for gl in cached]
+    assert sig(build_problem(loaded, stale)[0]) == sig(reference[0])
