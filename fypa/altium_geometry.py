@@ -51,6 +51,7 @@ import logging
 import math
 import threading
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -1486,6 +1487,223 @@ def build_layer_geometry(proj: ExtractedProject, layer_id: int,
         is_plane=False,
         plane_net_index=NO_NET,
     )
+
+
+def build_layer_geometries_from_per_net(
+    proj: ExtractedProject,
+    per_net_layers: Sequence[GeometryLayer],
+) -> list[GeometryLayer]:
+    """The legacy all-nets-per-layer geometry (:func:`build_layer_geometries`),
+    with each signal layer built from per-(layer, net) shapes that are already
+    fused per net.
+
+    Signal layers: the per-net build partitions the very primitives (plus any
+    NO_NET copper) that the legacy build unions per layer, and union is
+    associative - so fusing the per-net shapes again covers the same copper,
+    to within the per-net path's 1 um edge snapping (no difference survives
+    shrinking by 1 um). It is far cheaper because those shapes are already
+    merged: thousands of polygons per layer instead of every buffered track /
+    pad / via. Plane layers are NOT taken from the per-net shapes - there the
+    per-net path also places other nets' pads and vias, which would partly
+    fill the plane's clearance holes - so they come from the legacy builder,
+    which is cheap for a plane (its flooded sheet). Callers that already hold
+    the per-net layers - the viewer's pre-solve stub - use this instead of
+    the from-primitives build.
+    """
+    from collections import defaultdict
+
+    enabled = proj.enabled_copper_layer_ids()
+    stackup_by_id = {s.layer_id: s for s in proj.stackup}
+    shapes_by_layer: dict[int, list] = defaultdict(list)
+    for layer in per_net_layers:
+        if layer.shape is not None and not layer.shape.is_empty:
+            shapes_by_layer[layer.layer_id].append(layer.shape)
+    through_cache = None
+    out: list[GeometryLayer] = []
+    for lid in enabled:
+        stackup = stackup_by_id.get(lid)
+        if stackup is None:
+            continue
+        if stackup.is_plane:
+            if through_cache is None:
+                through_cache = _ThroughFeatureCache(proj)
+            out.append(build_layer_geometry(proj, lid, enabled, through_cache))
+            continue
+        out.append(_signal_layer_geometry(
+            proj, stackup, _fuse_layer_shapes(lid, shapes_by_layer.get(lid, []))))
+    return out
+
+
+def _fuse_layer_shapes(lid: int, pieces: list) -> shapely.geometry.MultiPolygon:
+    """One signal layer's all-nets copper from its (already per-net fused)
+    shapes - shared by the serial and multi-process builds so both apply the
+    identical rule."""
+    if not pieces:
+        return shapely.geometry.MultiPolygon()
+    if len(pieces) == 1:
+        return _ensure_multipolygon(pieces[0])
+    return _ensure_multipolygon(_clipper_fuse.fuse(
+        pieces, grid_size=None, key=f"layer {lid} (all nets, per-net)"))
+
+
+def _signal_layer_geometry(proj: ExtractedProject, stackup,
+                           shape) -> GeometryLayer:
+    return GeometryLayer(
+        layer_id=stackup.layer_id,
+        name=stackup.name,
+        shape=shape,
+        conductance=_layer_conductance(stackup),
+        is_plane=bool(stackup.is_plane),
+        plane_net_index=(_net_index_by_name(proj, stackup.plane_net_name)
+                         if stackup.is_plane else NO_NET),
+    )
+
+
+# --- multi-process union -------------------------------------------------------
+#
+# Clipper2 (pyclipr) holds the GIL, so the per-(layer, net) unions and the
+# per-layer fuse each run on one core. On a big board that is ~90 s of a
+# ~170 s load. They parallelise cleanly by layer: buffering stays in this
+# process (it is memoised for the later solve), each layer's buckets go to a
+# worker as ordinary shapely pickles (~100 MB for a 16-layer, 78k-bucket
+# board), and every worker runs the very same union and fuse functions, so the
+# result is identical to the serial build - only the scheduling differs.
+
+
+def _union_layer_task(lid: int, items: list, grid, fuse_layer: bool):
+    """Worker: union one layer's buckets (as :func:`_parallel_union_buckets`
+    does serially), then, for a signal layer, fuse the kept per-net shapes
+    into the layer's all-nets copper (as :func:`_fuse_layer_shapes`)."""
+    shapes = [(key, _sanitise_unioned_shape(
+        _clipper_fuse.fuse(pieces, grid, key=key), key))
+        for key, pieces in items]
+    layer_shape = None
+    if fuse_layer:
+        # Mirror _shapes_to_geometry_layers' filtering, so these are exactly
+        # the shapes build_layer_geometries_from_per_net would fuse.
+        kept = []
+        for _key, shape in shapes:
+            if shape.is_empty:
+                continue
+            mp = _ensure_multipolygon(shape)
+            if not mp.is_empty:
+                kept.append(mp)
+        layer_shape = _fuse_layer_shapes(lid, kept)
+    return shapes, layer_shape
+
+
+# Below this many copper primitives the serial build takes a few seconds at
+# most - less than starting the worker processes.
+_PARALLEL_MIN_PRIMITIVES = 20_000
+
+
+def _workers_forced() -> bool:
+    import os
+    return bool(os.environ.get("FYPA_GEOMETRY_WORKERS", "").strip())
+
+
+def _geometry_worker_count(n_layers: int) -> int:
+    """Worker processes for :func:`build_per_net_and_layer_geometry`;
+    ``$FYPA_GEOMETRY_WORKERS`` overrides (0 or 1 = serial)."""
+    import os
+    env = os.environ.get("FYPA_GEOMETRY_WORKERS", "").strip()
+    if env:
+        try:
+            return max(0, int(env))
+        except ValueError:
+            pass
+    if n_layers < 4:
+        return 0
+    return min(8, max(1, (os.cpu_count() or 2) - 1), n_layers)
+
+
+def build_per_net_and_layer_geometry(
+    proj: ExtractedProject,
+) -> tuple[list[GeometryLayer], list[GeometryLayer]]:
+    """``(build_per_net_geometry_layers(proj),
+    build_layer_geometries_from_per_net(proj, <that>))`` - with the unions
+    and per-layer fuses spread over worker processes, one layer per task.
+
+    Identical output to the serial pair (same functions on the same inputs,
+    reassembled in the original bucket order). Falls back to the serial pair
+    for small boards, when ``$FYPA_GEOMETRY_WORKERS`` is 0/1, or if the
+    process pool fails for any reason.
+    """
+    enabled = proj.enabled_copper_layer_ids()
+    workers = _geometry_worker_count(len(enabled)) if enabled else 0
+    n_primitives = (len(proj.tracks) + len(proj.arcs) + len(proj.pads)
+                    + len(proj.vias) + len(proj.regions)
+                    + len(proj.shape_based_regions) + len(proj.fills))
+    if n_primitives < _PARALLEL_MIN_PRIMITIVES and not _workers_forced():
+        workers = 0     # small board: spawning workers costs more than it saves
+    if workers <= 1:
+        per_net = build_per_net_geometry_layers(proj)
+        return per_net, build_layer_geometries_from_per_net(proj, per_net)
+
+    import concurrent.futures
+    import multiprocessing
+
+    t0 = time.monotonic()
+    pool = concurrent.futures.ProcessPoolExecutor(
+        max_workers=workers, mp_context=multiprocessing.get_context("spawn"))
+    try:
+        # Start the workers (each imports shapely / pyclipr) while this
+        # process buffers the copper.
+        warmups = [pool.submit(_clipper_fuse.clipper_available)
+                   for _ in range(workers)]
+        buckets = _build_net_layer_buckets(proj, enabled, include_vias=True)
+        t_buckets = time.monotonic() - t0
+        stackup_by_id = {s.layer_id: s for s in proj.stackup}
+        by_layer: dict[int, list] = {}
+        for key, pieces in buckets.items():
+            by_layer.setdefault(key[0], []).append((key, pieces))
+        concurrent.futures.wait(warmups)
+        grid = _UNION_SNAP_GRID_MM
+        # Biggest layers first, so the longest task starts earliest.
+        order = sorted(by_layer, key=lambda lid: -sum(
+            len(p) for _k, p in by_layer[lid]))
+        futures = {
+            lid: pool.submit(
+                _union_layer_task, lid, by_layer[lid], grid,
+                bool(lid in stackup_by_id and not stackup_by_id[lid].is_plane))
+            for lid in order
+        }
+        unioned: dict[tuple[int, int], shapely.geometry.base.BaseGeometry] = {}
+        layer_shapes: dict[int, shapely.geometry.MultiPolygon] = {}
+        for lid, fut in futures.items():
+            shapes, layer_shape = fut.result()
+            unioned.update(shapes)
+            if layer_shape is not None:
+                layer_shapes[lid] = layer_shape
+    except Exception as e:  # noqa: BLE001 - any pool failure: do it serially
+        log.warning("Parallel copper union failed (%s: %s); building "
+                    "serially.", type(e).__name__, e)
+        pool.shutdown(wait=False, cancel_futures=True)
+        per_net = build_per_net_geometry_layers(proj)
+        return per_net, build_layer_geometries_from_per_net(proj, per_net)
+    pool.shutdown(wait=False)
+
+    # Original bucket order, exactly as the serial build iterates it.
+    per_net = _shapes_to_geometry_layers(
+        proj, {key: unioned[key] for key in buckets})
+    layers: list[GeometryLayer] = []
+    through_cache = None
+    for lid in enabled:
+        stackup = stackup_by_id.get(lid)
+        if stackup is None:
+            continue
+        if stackup.is_plane:
+            if through_cache is None:
+                through_cache = _ThroughFeatureCache(proj)
+            layers.append(build_layer_geometry(proj, lid, enabled, through_cache))
+        else:
+            layers.append(_signal_layer_geometry(
+                proj, stackup,
+                layer_shapes.get(lid, shapely.geometry.MultiPolygon())))
+    log.info("Copper geometry: %d bucket(s) over %d layer(s) on %d worker "
+             "process(es) in %.2fs (buffering %.2fs)", len(buckets),
+             len(by_layer), workers, time.monotonic() - t0, t_buckets)
+    return per_net, layers
 
 
 def build_layer_geometries(proj: ExtractedProject) -> list[GeometryLayer]:

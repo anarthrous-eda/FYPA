@@ -865,6 +865,11 @@ def _project_cache_dir(prjpcb_path: Path,
     return _CACHE_DIR / f"{stem}_{digest}"
 
 
+# Tag on the header pickle of a two-part design-info.pkl (header, then the
+# LoadedProject). Files without it are the older single-pickle layout.
+_DESIGN_INFO_FORMAT = "fypa-design-info/2"
+
+
 def _design_info_cache_path(prjpcb_path: Path,
                             pcbdoc_path: Path | None = None) -> Path:
     return _project_cache_dir(prjpcb_path, pcbdoc_path) / "design-info.pkl"
@@ -878,6 +883,13 @@ def _solve_cache_path(prjpcb_path: Path,
 def _per_net_geometry_cache_path(prjpcb_path: Path,
                                  pcbdoc_path: Path | None = None) -> Path:
     return _project_cache_dir(prjpcb_path, pcbdoc_path) / "per-net-geometry.pkl"
+
+
+def _layer_geometry_cache_path(prjpcb_path: Path,
+                               pcbdoc_path: Path | None = None) -> Path:
+    """Per-layer all-nets geometry for the viewer's pre-solve stub; keyed
+    with :func:`_per_net_geometry_fingerprint`, as it is derived from it."""
+    return _project_cache_dir(prjpcb_path, pcbdoc_path) / "layer-geometry.pkl"
 
 
 # Primitive collections whose ``net_index`` decides which (layer, net)
@@ -939,7 +951,9 @@ def _try_load_per_net_geometry(cache_path: Path, fingerprint: dict):
                 log.info("Per-net geometry cache: board or net assignment "
                          "changed — rebuilding.")
                 return None
-            layers = pickle.load(f)
+            from fypa.altium.extract import paused_gc
+            with paused_gc():
+                layers = pickle.load(f)
     except Exception as e:
         log.warning("Per-net geometry cache at %s couldn't be read (%s); "
                     "rebuilding.", cache_path, e)
@@ -961,7 +975,8 @@ def _save_per_net_geometry(cache_path: Path, fingerprint: dict,
     tmp = cache_path.with_name(cache_path.name + ".tmp")
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(tmp, "wb") as f:
+        from fypa.altium.extract import paused_gc
+        with open(tmp, "wb") as f, paused_gc():
             w = _GilYieldingWriter(f)
             pickle.dump(fingerprint, w, protocol=pickle.HIGHEST_PROTOCOL)
             pickle.dump(list(layers), w, protocol=pickle.HIGHEST_PROTOCOL)
@@ -1302,11 +1317,26 @@ def _try_load_cached_design_info(
     # On a big board (e.g. corvette) that single pickle.load runs well
     # over a minute, so time it explicitly — file size + duration give a
     # reportable number independent of the GUI's stage breakdown.
+    from fypa.altium.extract import paused_gc
     try:
         size_mb = cache_path.stat().st_size / 1e6
         _t0 = time.monotonic()
         with open(cache_path, "rb") as f:
-            blob = pickle.load(f)
+            first = pickle.load(f)
+            if isinstance(first, dict) and first.get("format") == _DESIGN_INFO_FORMAT:
+                # Fingerprint first, LoadedProject second: a stale cache is
+                # rejected after reading only the small header, instead of
+                # unpickling ~190 MB (18 s on a big board) to find out.
+                if (current_fp is not None
+                        and first.get("fingerprint") != current_fp):
+                    log.info("Design-info cache: fingerprint mismatch — "
+                             "re-extracting.")
+                    return None
+                with paused_gc():
+                    blob = {"fingerprint": first.get("fingerprint"),
+                            "loaded": pickle.load(f)}
+            else:
+                blob = first       # single-pickle file from an older build
         log.info(
             "Design-info cache: unpickled %s (%.1f MB) in %.2fs",
             cache_path.name, size_mb, time.monotonic() - _t0,
@@ -1336,19 +1366,30 @@ def _save_cached_design_info(
 ) -> None:
     """Write the LoadedProject + its design-info fingerprint to the
     cache. Failures are non-fatal."""
+    from fypa.altium.extract import paused_gc
     cache_path = _design_info_cache_path(prjpcb_path, pcbdoc_path)
+    tmp = cache_path.with_name(cache_path.name + ".tmp")
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(cache_path, "wb") as f:
-            pickle.dump({
-                "fingerprint": fingerprint,
-                "loaded": loaded,
-            }, _GilYieldingWriter(f), protocol=pickle.HIGHEST_PROTOCOL)
+        # Header (format tag + fingerprint) then the LoadedProject, as two
+        # pickles - see _try_load_cached_design_info. Written to a temp file
+        # and swapped in so an interrupted write can't leave a torn cache.
+        with open(tmp, "wb") as f, paused_gc():
+            w = _GilYieldingWriter(f)
+            pickle.dump({"format": _DESIGN_INFO_FORMAT,
+                         "fingerprint": fingerprint},
+                        w, protocol=pickle.HIGHEST_PROTOCOL)
+            pickle.dump(loaded, w, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, cache_path)
     except Exception as e:
         logging.getLogger(__name__).warning(
             "Couldn't write design-info cache at %s (%s); ignoring.",
             cache_path, e,
         )
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 def sanitize_metadata_for_pickle(metadata: dict | None) -> dict | None:

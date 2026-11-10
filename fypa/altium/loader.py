@@ -1862,6 +1862,71 @@ def _build_all_copper_records(
     as :func:`_build_stub_record`)."""
     if not per_net_layers:
         return []
+    return _build_all_copper_records_vectorised(per_net_layers, net_name_fn)
+
+
+def _build_all_copper_records_vectorised(per_net_layers, net_name_fn) -> list[dict]:
+    """:func:`_build_all_copper_records` with every polygon and ring of every
+    layer unpacked in three bulk shapely calls instead of ~10 Python-level
+    shapely calls per polygon (~190k polygons on a 16-layer, 81k-bucket board).
+    Same records, same order, same float32 arrays: per layer, each polygon's
+    exterior then its non-empty interiors with ≥2 points; a polygon whose
+    exterior is empty or shorter than 2 points is skipped with its holes."""
+    import numpy as np
+
+    kept = [gl for gl in per_net_layers
+            if gl.shape is not None and not gl.shape.is_empty]
+    if not kept:
+        return []
+    parts, part_layer = shapely.get_parts(
+        np.array([gl.shape for gl in kept], dtype=object), return_index=True)
+    # get_rings yields each polygon's exterior first, then its interiors.
+    rings, ring_part = shapely.get_rings(parts, return_index=True)
+    coords, coord_ring = shapely.get_coordinates(rings, return_index=True)
+    coords = coords.astype(np.float32)
+    ring_start = np.searchsorted(coord_ring, np.arange(len(rings)), "left")
+    ring_end = np.searchsorted(coord_ring, np.arange(len(rings)), "right")
+    # Index of each part's first ring (its exterior); -1 for parts with none
+    # (an empty polygon contributes no rings).
+    first_ring = np.full(len(parts), -1, dtype=np.int64)
+    if len(rings):
+        is_first = np.ones(len(rings), dtype=bool)
+        is_first[1:] = ring_part[1:] != ring_part[:-1]
+        first_ring[ring_part[is_first]] = np.nonzero(is_first)[0]
+
+    out: list[dict] = []
+    ring_polys_by_layer: dict[int, list[dict]] = {}
+    for p in range(len(parts)):
+        r0 = first_ring[p]
+        if r0 < 0:
+            continue
+        n_ext = ring_end[r0] - ring_start[r0]
+        if n_ext < 2:
+            continue
+        holes_arr = []
+        r = r0 + 1
+        while r < len(rings) and ring_part[r] == p:
+            if ring_end[r] - ring_start[r] >= 2:
+                holes_arr.append(coords[ring_start[r]:ring_end[r]])
+            r += 1
+        ring_polys_by_layer.setdefault(int(part_layer[p]), []).append(
+            {"exterior": coords[ring_start[r0]:ring_end[r0]],
+             "holes": holes_arr})
+    for li, gl in enumerate(kept):
+        ring_polys = ring_polys_by_layer.get(li)
+        if not ring_polys:
+            continue
+        out.append({
+            "layer_id": int(gl.layer_id),
+            "net": net_name_fn(gl.net_index),
+            "polygons": ring_polys,
+        })
+    return out
+
+
+def _build_all_copper_records_reference(per_net_layers, net_name_fn) -> list[dict]:
+    """The original per-polygon implementation, kept as the reference the
+    vectorised version is tested against."""
     import numpy as np
     out: list[dict] = []
     for gl in per_net_layers:
@@ -3927,7 +3992,8 @@ def build_mesh_failure_records(
     return [stub]
 
 
-def build_stub_lean_solution_from_loaded(loaded: LoadedProject):
+def build_stub_lean_solution_from_loaded(loaded: LoadedProject,
+                                         layer_geometry=None):
     """Minimal :class:`~fypa.lean_solution.LeanSolution` so the viewer can open
     without a successful FEM solve (load-only, mesh failure, missing
     directives).
@@ -3935,6 +4001,12 @@ def build_stub_lean_solution_from_loaded(loaded: LoadedProject):
     One :class:`~fypa.lean_solution.LeanLayer` per copper layer with real
     geometry; empty per-layer solution arrays. ``solver_info["stub"]`` is the
     viewer sentinel for pre-solve messaging.
+
+    ``layer_geometry`` supplies the per-layer all-nets shapes when the caller
+    already has them - the viewer worker derives them from the per-net
+    geometry (:func:`~fypa.altium_geometry.build_layer_geometries_from_per_net`)
+    or reads them from its cache - instead of :attr:`LoadedProject.geometry`'s
+    union of every primitive (minutes on a big board).
     """
     from fypa.lean_solution import (
         LeanLayer,
@@ -3943,7 +4015,7 @@ def build_stub_lean_solution_from_loaded(loaded: LoadedProject):
         LeanSolution,
     )
 
-    geom = loaded.geometry
+    geom = layer_geometry if layer_geometry is not None else loaded.geometry
     lean_layers = [
         LeanLayer(
             name=f"{L.name}|(none)",
@@ -5604,8 +5676,8 @@ def load_project(prjpcb_path: str | Path,
                  pdn_json: str | Path | None = None,
                  pdn_corner: str = "typ",
                  auto_series_max_ohm: float | None = DEFAULT_AUTO_SERIES_MAX_OHM,
-                 pcb_cache_dir: str | Path | None = None,
-                 read_pcb_cache: bool = True,
+                 cache_dir: str | Path | None = None,
+                 read_cache: bool = True,
                  ) -> LoadedProject:
     """Load and prepare an Altium project for PDN analysis.
 
@@ -5631,7 +5703,7 @@ def load_project(prjpcb_path: str | Path,
     ``auto_series_max_ohm``); ``None`` or 0 turns it off. Applied during
     annotation parsing for the same reason as ``no_auto_bridge``.
 
-    ``pcb_cache_dir`` / ``read_pcb_cache`` — the PCB-side extract cache, see
+    ``cache_dir`` / ``read_cache`` — the PCB- and schematic-side extract caches, see
     :func:`fypa.altium.extract.extract_project`.
 
     Auto-merge pass: SERIES directives below
@@ -5643,8 +5715,8 @@ def load_project(prjpcb_path: str | Path,
     log.info("Stage 1/2: extracting %s", Path(prjpcb_path).name)
     _t = time.monotonic()
     extracted = extract_project(prjpcb_path, pcbdoc_selector=pcbdoc_selector,
-                                pcb_cache_dir=pcb_cache_dir,
-                                read_pcb_cache=read_pcb_cache)
+                                cache_dir=cache_dir,
+                                read_cache=read_cache)
     log.info("Stage 1/2: extract done in %.2fs", time.monotonic() - _t)
     enabled = extracted.enabled_copper_layer_ids()
     log.info("  enabled copper layers: %s", enabled)

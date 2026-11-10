@@ -465,6 +465,52 @@ class _SolveWorker(QThread):
         with _timer.stage("Save per-net geometry cache"):
             _save_per_net_geometry(key[0], key[1], per_net_layers)
 
+    def _stub_layer_geometry(self, loaded, per_net_layers, _timer):
+        """Per-layer all-nets shapes for the pre-solve stub.
+
+        Fused from the per-net shapes (the same copper as
+        ``loaded.geometry`` to within edge rounding under 2 um, at a fraction
+        of the cost) and cached beside the per-net geometry under the same key,
+        so a reload of an unchanged board reads them instead. ``None`` (the
+        caller falls back to ``loaded.geometry``) if that geometry was
+        already built this session, which is then free to reuse."""
+        if "geometry" in loaded.__dict__:
+            return None
+        from fypa.altium_geometry import build_layer_geometries_from_per_net
+        from fypa.cli import (
+            _layer_geometry_cache_path,
+            _save_per_net_geometry,
+            _try_load_per_net_geometry,
+        )
+        key = self._per_net_geometry_key(loaded)
+        path = (_layer_geometry_cache_path(self._prjpcb_path,
+                                           self._pcbdoc_resolved)
+                if key is not None else None)
+        if path is not None and self._use_design_cache:
+            with _timer.stage("Load layer geometry cache"):
+                cached = _try_load_per_net_geometry(path, key[1])
+            if cached is not None:
+                return cached
+        self.stage_changed.emit("Merging copper per layer…")
+        with _timer.stage("Build layer geometry"):
+            layers = build_layer_geometries_from_per_net(
+                loaded.extracted, per_net_layers)
+        if path is not None:
+            with _timer.stage("Save layer geometry cache"):
+                _save_per_net_geometry(path, key[1], layers)
+        return layers
+
+    def _save_layer_geometry(self, loaded, layers, _timer) -> None:
+        key = self._per_net_geometry_key(loaded)
+        if key is None:
+            return
+        from fypa.cli import _layer_geometry_cache_path, _save_per_net_geometry
+        with _timer.stage("Save layer geometry cache"):
+            _save_per_net_geometry(
+                _layer_geometry_cache_path(self._prjpcb_path,
+                                           self._pcbdoc_resolved),
+                key[1], layers)
+
     def _emit_stub_and_finish(
         self, loaded, pristine_loaded, _timer,
         *, needs_directives: bool = False,
@@ -482,21 +528,37 @@ class _SolveWorker(QThread):
         record, and inventing values would misreport the Setup tab.
         """
         from fypa.altium.loader import build_solve_metadata
-        from fypa.altium_geometry import build_per_net_geometry_layers
 
         if stage_message is not None:
             self.stage_changed.emit(stage_message)
-        stub_solution = _build_stub_lean_solution_from_loaded(loaded)
-        if needs_directives:
-            stub_solution.solver_info["needs_directives"] = True
+        # Per-net geometry first: the stub's per-layer shapes are built from
+        # it (seconds), rather than by unioning every primitive again
+        # (minutes on a big board) through loaded.geometry.
+        layer_geometry = None
         if per_net_layers is None:
             per_net_layers = self._cached_per_net_layers(loaded, _timer)
+        if per_net_layers is None:
+            # Both copper builds in one pass, their unions spread over
+            # worker processes (pyclipr holds the GIL, so threads can't).
+            from fypa.altium_geometry import build_per_net_and_layer_geometry
+            self.stage_changed.emit("Building copper geometry…")
+            with _timer.stage("Build copper geometry"):
+                per_net_layers, layer_geometry = (
+                    build_per_net_and_layer_geometry(loaded.extracted))
+            self._save_per_net_layers(loaded, per_net_layers, _timer)
+            if "geometry" in loaded.__dict__:
+                layer_geometry = None     # already built: reuse it as before
+            else:
+                self._save_layer_geometry(loaded, layer_geometry, _timer)
+        else:
+            layer_geometry = self._stub_layer_geometry(
+                loaded, per_net_layers, _timer)
+        with _timer.stage("Build stub solution"):
+            stub_solution = _build_stub_lean_solution_from_loaded(
+                loaded, layer_geometry)
+        if needs_directives:
+            stub_solution.solver_info["needs_directives"] = True
         with _timer.stage("Build stub metadata"):
-            if per_net_layers is None:
-                per_net_layers = build_per_net_geometry_layers(
-                    loaded.extracted,
-                )
-                self._save_per_net_layers(loaded, per_net_layers, _timer)
             metadata = build_solve_metadata(
                 loaded, None,
                 settings=self._settings,
@@ -730,15 +792,15 @@ class _SolveWorker(QThread):
 
             if loaded is None:
                 self.stage_changed.emit("Loading project from disk…")
-                # PCB-side extract cache: keyed on the PcbDoc alone, so a
-                # schematic save that invalidated the design-info cache
-                # above still skips re-parsing the board. A clean load
-                # re-parses but refreshes it.
-                _pcb_cache_dir = None
+                # Board- and schematic-side extract caches, each keyed on its
+                # own source files: a save that invalidated the design-info
+                # cache above re-extracts only the half that changed. A clean
+                # load re-extracts both but refreshes them.
+                _extract_cache_dir = None
                 if (pcbdoc_resolved is not None
                         and self._prjpcb_path.suffix.lower() == ".prjpcb"):
                     from fypa.cli import _project_cache_dir
-                    _pcb_cache_dir = _project_cache_dir(
+                    _extract_cache_dir = _project_cache_dir(
                         self._prjpcb_path, pcbdoc_resolved)
                 with _timer.stage("Extract + load project"):
                     loaded = load_project(
@@ -748,8 +810,8 @@ class _SolveWorker(QThread):
                         pdn_json=self._pdn_json,
                         pdn_corner=self._pdn_corner,
                         auto_series_max_ohm=self._auto_series_max_ohm,
-                        pcb_cache_dir=_pcb_cache_dir,
-                        read_pcb_cache=self._use_design_cache)
+                        cache_dir=_extract_cache_dir,
+                        read_cache=self._use_design_cache)
                 # Persist the freshly-loaded design info so the next run
                 # (e.g. a Re-run that only changes physics) can skip the
                 # extract step. Failures are non-fatal.
@@ -1604,7 +1666,7 @@ def _abort_solve_worker(owner) -> None:
 
 
 
-def _build_stub_lean_solution_from_loaded(loaded):
+def _build_stub_lean_solution_from_loaded(loaded, layer_geometry=None):
     """Create a minimal :class:`LeanSolution` from a LoadedProject.
 
     Thin wrapper around
@@ -1614,7 +1676,7 @@ def _build_stub_lean_solution_from_loaded(loaded):
     from fypa.altium.loader import build_stub_lean_solution_from_loaded
     log = logging.getLogger(__name__)
     t_geom0 = time.monotonic()
-    stub = build_stub_lean_solution_from_loaded(loaded)
+    stub = build_stub_lean_solution_from_loaded(loaded, layer_geometry)
     log.info(
         # Spans the lazy loaded.geometry access AND the per-layer LeanLayer
         # construction — naming only the former made this read as a pure
