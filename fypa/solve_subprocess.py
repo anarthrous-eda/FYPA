@@ -19,17 +19,35 @@ same 80×-shrink the on-disk cache relies on).
 
 Trade-off vs. the in-process path: a fresh child per solve does not inherit the
 in-memory mesh/Laplacian/PARDISO caches, so a value-only re-solve can't reuse a
-warm factorisation here. It also pickles the (post-override) ``LoadedProject``
-into the child. It is therefore opt-in — the parent enables it only when
-``FYPA_SOLVE_SUBPROCESS`` is set — and the in-process QThread path remains the
-default.
+warm factorisation here. It is therefore opt-in — the parent enables it only
+when ``FYPA_SOLVE_SUBPROCESS`` is set — and the in-process QThread path remains
+the default.
+
+Crossing the process boundary is kept cheap in both directions:
+
+* **In** — pickling a big board's ``LoadedProject`` into the child and
+  unpickling it there costs many seconds. When the design the solve started
+  from is the one in the on-disk design-info cache, the child reads that file
+  instead and the parent sends only what the edits changed (see
+  :func:`_slim_job`). Otherwise the whole ``LoadedProject`` is pickled across,
+  as before.
+* **Out** — the result is written to a temporary file and read back by the
+  parent rather than pushed through the queue's pipe (see
+  :func:`_send_result`).
 """
 from __future__ import annotations
 
+import copy
+import dataclasses
+import hashlib
 import logging
 import multiprocessing as mp
 import os
+import pickle
 import queue as _queue
+import shutil
+import tempfile
+import time
 import traceback
 from dataclasses import dataclass
 from collections.abc import Callable
@@ -63,6 +81,13 @@ class SolveJob:
     per_net_geometry_key: tuple | None = None
     # False on a clean load: rebuild (and refresh the cache), don't read it.
     read_per_net_geometry_cache: bool = True
+    # Set by _slim_job only: ``loaded.extracted`` has been left out and the
+    # child rebuilds it from the design-info cache file ``design_ref`` names
+    # (``(path, size, mtime_ns)``) plus ``extracted_delta``; the result must
+    # hash to ``extracted_digest``.
+    design_ref: tuple | None = None
+    extracted_delta: dict | None = None
+    extracted_digest: str | None = None
 
 
 def load_per_net_geometry(loaded, key: tuple | None, *,
@@ -88,14 +113,219 @@ class SolveSubprocessError(RuntimeError):
     returning a result."""
 
 
-def _child_entry(job: SolveJob, q: mp.Queue) -> None:
+# --- sending the design in: cache file + delta ---------------------------------
+#
+# A LoadedProject read from (or just written to) the design-info cache is
+# tagged with that file's identity (fypa.cli.tag_design_cache_ref). The GUI
+# keeps that object untouched and solves an edited clone of it - copper names,
+# editor directives, stackup overrides - whose ExtractedProject shares all but
+# a handful of its primitives with the original. So instead of pickling the
+# clone's ~175 MB extract across, the parent sends the file's identity and the
+# few fields / elements that differ, and the child rebuilds the same extract
+# from the file. A digest of what decides the solve's copper (every
+# collection's length and net assignment, the net names, the stackup) is
+# checked on the rebuilt extract; any mismatch, or a cache file that has
+# changed since, sends the solve back through the plain full-pickle route.
+
+# Marks a collection element-wise patch in an extracted delta.
+_PATCH = "patch"
+_REPLACE = "replace"
+# A same-length collection with more than this fraction of its elements
+# changed is sent whole.
+_PATCH_MAX_FRACTION = 0.25
+
+
+def design_cache_ref_is_current(ref) -> bool:
+    """True when the design-info cache file ``ref`` (``(path, size,
+    mtime_ns)``) names is still the file it was when tagged."""
+    try:
+        path, size, mtime_ns = ref
+        st = os.stat(path)
+    except (OSError, TypeError, ValueError):
+        return False
+    return st.st_size == size and st.st_mtime_ns == mtime_ns
+
+
+def _extracted_delta(base, edited) -> dict:
+    """What turns ``base`` into ``edited`` (both ExtractedProject), keyed by
+    field: ``("replace", value)``, or ``("patch", [(index, element), ...])``
+    for a same-length tuple/list in which only a few elements differ.
+    Unchanged fields - compared by identity, which is what the edit steps
+    preserve - are left out."""
+    delta: dict = {}
+    for f in dataclasses.fields(edited):
+        if not f.init:
+            # dataclasses.replace cannot set it, so the child could not
+            # reproduce a difference here.
+            if getattr(edited, f.name) is not getattr(base, f.name):
+                raise ValueError(f"non-init field {f.name!r} differs")
+            continue
+        old, new = getattr(base, f.name), getattr(edited, f.name)
+        if old is new:
+            continue
+        if (type(old) is type(new) and isinstance(new, (tuple, list))
+                and len(old) == len(new) and len(new) > 0):
+            changed = [(i, y) for i, (x, y) in enumerate(zip(old, new))
+                       if x is not y]
+            if len(changed) <= _PATCH_MAX_FRACTION * len(new):
+                delta[f.name] = (_PATCH, changed)
+                continue
+        delta[f.name] = (_REPLACE, new)
+    return delta
+
+
+def _apply_extracted_delta(base, delta: dict):
+    """Inverse of :func:`_extracted_delta`: ``base`` with ``delta`` applied."""
+    if not delta:
+        return base
+    changes = {}
+    for name, (kind, payload) in delta.items():
+        if kind == _PATCH:
+            old = getattr(base, name)
+            items = list(old)
+            for i, element in payload:
+                items[i] = element
+            changes[name] = type(old)(items)
+        else:
+            changes[name] = payload
+    return dataclasses.replace(base, **changes)
+
+
+def _extracted_digest(extracted) -> str:
+    """Hash of the state of an ExtractedProject that the edit steps can
+    change and the solve depends on: each collection's length and its
+    elements' net assignment, the net names, the stackup and the source
+    paths. The primitives' own shapes are fixed by the cache file."""
+    import numpy as np
+
+    h = hashlib.sha1()
+    for f in dataclasses.fields(extracted):
+        value = getattr(extracted, f.name)
+        if not isinstance(value, (tuple, list)):
+            continue
+        h.update(f"{f.name}:{len(value)}\x00".encode())
+        if value and hasattr(value[0], "net_index"):
+            h.update(np.fromiter(
+                (getattr(it, "net_index", -2) for it in value),
+                dtype=np.int64, count=len(value)).tobytes())
+    h.update("\x00".join(
+        str(getattr(n, "name", n)) for n in extracted.nets).encode("utf-8"))
+    h.update(repr(extracted.stackup).encode("utf-8"))
+    h.update(str(getattr(extracted, "prjpcb_path", "")).encode("utf-8"))
+    h.update(str(getattr(extracted, "pcbdoc_path", "")).encode("utf-8"))
+    return h.hexdigest()
+
+
+def _slim_job(job: SolveJob, base_loaded) -> SolveJob:
+    """``job`` with its ExtractedProject swapped for a reference to the
+    design-info cache plus a delta - or ``job`` itself whenever that is not
+    provably the same design (see the section comment above)."""
+    try:
+        ref = getattr(base_loaded, "_design_cache_ref", None)
+        loaded = job.loaded
+        if (ref is None or loaded is None
+                or not design_cache_ref_is_current(ref)):
+            return job
+        delta = _extracted_delta(base_loaded.extracted, loaded.extracted)
+        shell = copy.copy(loaded)
+        shell.extracted = None
+        return dataclasses.replace(
+            job, loaded=shell, design_ref=tuple(ref), extracted_delta=delta,
+            extracted_digest=_extracted_digest(loaded.extracted))
+    except Exception as e:  # noqa: BLE001 - an optimisation; never fatal
+        log.info("Sending the full design to the solve subprocess (%s: %s).",
+                 type(e).__name__, e)
+        return job
+
+
+class _StaleDesign(Exception):
+    """The design-info cache no longer yields the design the parent meant."""
+
+
+def _materialise_loaded(job: SolveJob) -> None:
+    """Child side of :func:`_slim_job`: rebuild ``job.loaded.extracted`` from
+    the design-info cache. Raises :class:`_StaleDesign` if the file changed
+    or the rebuilt extract is not the one the parent described."""
+    if job.design_ref is None:
+        return
+    from fypa.altium.extract import paused_gc
+
+    if not design_cache_ref_is_current(job.design_ref):
+        raise _StaleDesign("design-info cache changed since the solve began")
+    try:
+        with open(job.design_ref[0], "rb") as f:
+            header = pickle.load(f)
+            if not (isinstance(header, dict) and "format" in header):
+                raise _StaleDesign("design-info cache is in the old layout")
+            with paused_gc():
+                base = pickle.load(f)
+        extracted = _apply_extracted_delta(
+            base.extracted, job.extracted_delta or {})
+    except _StaleDesign:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise _StaleDesign(f"{type(e).__name__}: {e}") from e
+    if _extracted_digest(extracted) != job.extracted_digest:
+        raise _StaleDesign("rebuilt design does not match the one in memory")
+    job.loaded.extracted = extracted
+
+
+# --- sending the result back: a file, not the pipe ------------------------------
+
+def _send_result(q: mp.Queue, lean, metadata, result_path: str | None) -> None:
+    """Hand the finished ``(lean, metadata)`` to the parent.
+
+    A big board's result is over a gigabyte. Through the queue it is pickled
+    to one bytes object, pushed down a pipe and unpickled; written straight
+    to ``result_path`` and read back it takes about half as long. Falls back
+    to the queue if the file cannot be written (no ``result_path``, disk
+    full, ...)."""
+    if result_path is not None:
+        try:
+            from fypa.altium.extract import paused_gc
+            with open(result_path, "wb") as f, paused_gc():
+                pickle.dump((lean, metadata), f,
+                            protocol=pickle.HIGHEST_PROTOCOL)
+            q.put(("ok_file", result_path))
+            return
+        except Exception as e:  # noqa: BLE001
+            log.warning("Could not write the solve result to %s (%s: %s); "
+                        "sending it through the queue.", result_path,
+                        type(e).__name__, e)
+            try:
+                os.unlink(result_path)
+            except OSError:
+                pass
+    q.put(("ok", lean, metadata))
+
+
+def _read_result(result_path: str) -> tuple[object, object]:
+    from fypa.altium.extract import paused_gc
+    with open(result_path, "rb") as f, paused_gc():
+        lean, metadata = pickle.load(f)
+    return lean, metadata
+
+
+def _child_entry(job: SolveJob, q: mp.Queue,
+                 result_path: str | None = None) -> None:
     """Child-process entry point: run the solve and stream results back on ``q``.
 
     Messages are tuples: ``("stage", str)`` / ``("substage", str)`` for progress,
-    then exactly one terminal ``("ok", lean_solution, metadata)`` or
+    then exactly one terminal message: ``("ok", lean_solution, metadata)``,
+    ``("ok_file", path)`` (the same pair, pickled to ``path`` — see
+    :func:`_send_result`), ``("stale_design", reason)`` (the design-info cache
+    could not stand in for the design; the parent re-sends it whole) or
     ``("fail", traceback_str)``. Never raises across the process boundary — any
     exception is caught and reported as a ``fail`` message."""
     try:
+        if job.design_ref is not None:
+            q.put(("stage", "Reading the design…"))
+            try:
+                _materialise_loaded(job)
+            except _StaleDesign as e:
+                q.put(("stale_design", str(e)))
+                return
+
         # These imports are PySide-free and safe to re-run in a spawned child.
         from fypa.altium.loader import build_solve_metadata, solve_problem_adaptive
         from fypa.lean_solution import to_lean_solution
@@ -163,7 +393,7 @@ def _child_entry(job: SolveJob, q: mp.Queue) -> None:
                 job.loaded, exc, job.mesher_config,
                 settings=job.settings,
             )
-            q.put(("ok", stub, fail_md))
+            _send_result(q, stub, fail_md, result_path)
             return
         finally:
             for lg in loggers:
@@ -183,12 +413,17 @@ def _child_entry(job: SolveJob, q: mp.Queue) -> None:
         q.put(("stage", "Packaging solution: converting result…"))
         lean = to_lean_solution(padne_solution)
         # Lean result only — the heavy padne_solution never crosses back.
-        q.put(("ok", lean, metadata))
+        _send_result(q, lean, metadata, result_path)
     except BaseException:  # noqa: BLE001 - report everything to the parent
         try:
             q.put(("fail", traceback.format_exc()))
         except Exception:
             pass
+
+
+# Returned by _run_child when the child could not rebuild the design from the
+# cache file and the solve must be re-run with the design pickled across.
+_RESEND_FULL = object()
 
 
 def run_solve_in_subprocess(
@@ -197,6 +432,7 @@ def run_solve_in_subprocess(
     on_substage: Callable[[str], None],
     is_cancelled: Callable[[], bool],
     register_process: Callable[[object], None] | None = None,
+    base_loaded: object | None = None,
 ) -> tuple[object, object] | None:
     """Run ``job`` in a spawned child, forwarding progress to the callbacks.
 
@@ -206,17 +442,16 @@ def run_solve_in_subprocess(
     terminated. Raises :class:`SolveSubprocessError` if the child fails or dies
     without a result.
 
+    ``base_loaded`` (optional) is the untouched LoadedProject that
+    ``job.loaded`` was derived from. When it is the design held in the
+    design-info cache, the child reads that file rather than receiving the
+    whole design through a pipe (see :func:`_slim_job`).
+
     The polling loop is what makes a subprocess solve cooperatively cancellable:
     the parent QThread blocks here draining a queue, so a GUI cancel is noticed
     within ~100 ms and the child is killed — no ``QThread.terminate()``, so no
     orphaned module locks.
     """
-    ctx = mp.get_context("spawn")
-    q: mp.Queue = ctx.Queue()
-    # NOT daemon: the solve itself spawns a ProcessPoolExecutor for meshing, and
-    # daemonic processes may not have children. We terminate the child
-    # explicitly (on cancel, on failure, and in the finally below), so it never
-    # outlives its use despite not being a daemon.
     # Release our own warm mesh workers first: the child is about to spawn a
     # full pool of its own, and holding both at once is what makes a large
     # board run out of memory.
@@ -226,8 +461,45 @@ def run_solve_in_subprocess(
     except Exception:  # pragma: no cover - defensive
         pass
 
-    proc = ctx.Process(target=_child_entry, args=(job, q), daemon=False)
+    wire_job = _slim_job(job, base_loaded) if base_loaded is not None else job
+    result = _run_child(wire_job, on_stage, on_substage, is_cancelled,
+                        register_process)
+    if result is _RESEND_FULL:
+        result = _run_child(job, on_stage, on_substage, is_cancelled,
+                            register_process)
+        if result is _RESEND_FULL:  # a full job never asks for this
+            raise SolveSubprocessError(
+                "solve subprocess could not read the design")
+    return result
+
+
+def _run_child(job, on_stage, on_substage, is_cancelled, register_process):
+    """One child process for ``job``: the result pair, ``None`` on cancel, or
+    :data:`_RESEND_FULL`."""
+    ctx = mp.get_context("spawn")
+    q: mp.Queue = ctx.Queue()
+    # Where the child leaves the result (see _send_result). A private
+    # directory, removed below whatever happens to the child.
+    result_dir: str | None = None
+    result_path: str | None = None
+    try:
+        result_dir = tempfile.mkdtemp(prefix="fypa-solve-")
+        result_path = os.path.join(result_dir, "result.pkl")
+    except OSError:
+        result_dir = result_path = None
+
+    # NOT daemon: the solve itself spawns a ProcessPoolExecutor for meshing, and
+    # daemonic processes may not have children. We terminate the child
+    # explicitly (on cancel, on failure, and in the finally below), so it never
+    # outlives its use despite not being a daemon.
+    _t_start = time.monotonic()
+    proc = ctx.Process(target=_child_entry, args=(job, q, result_path),
+                       daemon=False)
     proc.start()
+    log.info("Solve subprocess started in %.2fs (%s).",
+             time.monotonic() - _t_start,
+             "design read from its cache file" if job.design_ref is not None
+             else "design sent whole")
     if register_process is not None:
         register_process(proc)
 
@@ -269,6 +541,23 @@ def run_solve_in_subprocess(
             elif kind == "ok":
                 proc.join(5.0)
                 return msg[1], msg[2]
+            elif kind == "ok_file":
+                _t_read = time.monotonic()
+                try:
+                    result = _read_result(msg[1])
+                except Exception as e:
+                    raise SolveSubprocessError(
+                        f"could not read the solve result from {msg[1]}: "
+                        f"{type(e).__name__}: {e}") from e
+                log.info("Solve result read back in %.2fs.",
+                         time.monotonic() - _t_read)
+                proc.join(5.0)
+                return result
+            elif kind == "stale_design":
+                log.info("Solve subprocess could not use the design-info "
+                         "cache (%s); sending the design whole.", msg[1])
+                proc.join(5.0)
+                return _RESEND_FULL
             elif kind == "fail":
                 proc.join(5.0)
                 raise SolveSubprocessError(msg[1])
@@ -277,3 +566,5 @@ def run_solve_in_subprocess(
         # frame (normal return already joined; cancel/exception may not have).
         if proc.is_alive():
             _kill()
+        if result_dir is not None:
+            shutil.rmtree(result_dir, ignore_errors=True)

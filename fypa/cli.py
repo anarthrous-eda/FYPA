@@ -1336,6 +1336,33 @@ def _save_cached_solution(
         return False
 
 
+def _design_cache_stat(cache_path: Path) -> tuple[str, int, int] | None:
+    try:
+        st = cache_path.stat()
+    except OSError:
+        return None
+    return (str(cache_path), st.st_size, st.st_mtime_ns)
+
+
+def tag_design_cache_ref(loaded, ref: tuple[str, int, int] | None) -> None:
+    """Record on ``loaded`` that the design-info cache file ``ref`` describes
+    (``(path, size, mtime_ns)``) holds exactly this LoadedProject.
+
+    A solve subprocess uses it to read the design from that file instead of
+    having it pickled across (:func:`fypa.solve_subprocess._slim_job`), which
+    is only sound while the file is still that file - the reader re-checks
+    size and mtime - and ``loaded`` is the object as loaded / saved, which
+    the GUI keeps untouched and edits only clones of. ``None`` clears it.
+    """
+    try:
+        if ref is None:
+            loaded.__dict__.pop("_design_cache_ref", None)
+        else:
+            loaded._design_cache_ref = ref
+    except Exception:  # noqa: BLE001 - a missed tag only costs speed
+        pass
+
+
 def _try_load_cached_design_info(
     prjpcb_path: Path, current_fp: dict | None,
     pcbdoc_path: Path | None = None,
@@ -1361,6 +1388,7 @@ def _try_load_cached_design_info(
     from fypa.altium.extract import paused_gc
     try:
         size_mb = cache_path.stat().st_size / 1e6
+        _ref_before = _design_cache_stat(cache_path)
         _t0 = time.monotonic()
         with open(cache_path, "rb") as f:
             first = pickle.load(f)
@@ -1398,7 +1426,15 @@ def _try_load_cached_design_info(
     # ExtractedProject identity so a cache hit cannot reuse stale state.
     from fypa.altium.annotations import clear_annotation_caches
     clear_annotation_caches()
-    return blob.get("loaded")
+    loaded = blob.get("loaded")
+    if loaded is not None:
+        # Only if the file did not change under the read.
+        tag_design_cache_ref(
+            loaded,
+            _ref_before if (_ref_before is not None
+                            and _ref_before == _design_cache_stat(cache_path))
+            else None)
+    return loaded
 
 
 def _save_cached_design_info(
@@ -1420,8 +1456,12 @@ def _save_cached_design_info(
             pickle.dump({"format": _DESIGN_INFO_FORMAT,
                          "fingerprint": fingerprint},
                         w, protocol=pickle.HIGHEST_PROTOCOL)
+            # The tag describes a cache file, so it has no business inside
+            # one: drop any earlier tag before pickling.
+            tag_design_cache_ref(loaded, None)
             pickle.dump(loaded, w, protocol=pickle.HIGHEST_PROTOCOL)
         os.replace(tmp, cache_path)
+        tag_design_cache_ref(loaded, _design_cache_stat(cache_path))
     except Exception as e:
         logging.getLogger(__name__).warning(
             "Couldn't write design-info cache at %s (%s); ignoring.",

@@ -1038,7 +1038,8 @@ class _SolveWorker(QThread):
             # subprocess path, a failure that already emitted ``failed``).
             if self._use_subprocess:
                 _packaged = self._solve_and_package_subprocess(
-                    loaded, mesher_config, _timer)
+                    loaded, mesher_config, _timer,
+                    pristine_loaded=pristine_loaded)
             else:
                 _packaged = self._solve_and_package_inprocess(
                     loaded, mesher_config, _timer)
@@ -1277,7 +1278,8 @@ class _SolveWorker(QThread):
             self._in_python_packaging = False
         return new_solution, metadata
 
-    def _solve_and_package_subprocess(self, loaded, mesher_config, _timer):
+    def _solve_and_package_subprocess(self, loaded, mesher_config, _timer,
+                                      pristine_loaded=None):
         """Same as :meth:`_solve_and_package_inprocess`, but the mesh + solve +
         package runs in a child process (opt-in, ``FYPA_SOLVE_SUBPROCESS``).
 
@@ -1302,6 +1304,10 @@ class _SolveWorker(QThread):
                     on_substage=self.substage_changed.emit,
                     is_cancelled=self._cancel_requested,
                     register_process=self._register_solve_child,
+                    # The design as loaded: when it is the one in the
+                    # design-info cache the child reads that file instead of
+                    # having ``loaded`` pickled across.
+                    base_loaded=pristine_loaded,
                 )
         except SolveSubprocessError as e:
             self.failed.emit(f"Solve subprocess failed:\n\n{e}")

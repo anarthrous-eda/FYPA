@@ -23,6 +23,7 @@ from concurrent.futures import (
     BrokenExecutor,
     CancelledError,
     ProcessPoolExecutor,
+    ThreadPoolExecutor,
     as_completed,
 )
 try:
@@ -539,10 +540,16 @@ def _vertices_under_pad(
     region: shapely.geometry.Polygon,
     point: shapely.geometry.Point,
     claimed: np.ndarray | None,
+    sel_local: np.ndarray | None = None,
 ) -> np.ndarray:
     """Global indices of the mesh vertices that lie under ``region`` (a pad
     outline), with the vertex nearest ``point`` placed first as the group's
     representative.
+
+    ``sel_local`` (optional) is this pad's entry from
+    :func:`_pad_members_batch` — the tree-local indices of the vertices under
+    the pad, already found — in which case only the claimed-vertex filter
+    and the choice of representative remain to be done here.
 
     Vertices already claimed are excluded so pad groups stay disjoint and
     the contraction in :func:`solve` is a clean partition. ``claimed`` is a
@@ -565,20 +572,21 @@ def _vertices_under_pad(
     if data.size == 0:
         return np.empty(0, dtype=np.int64)
 
-    minx, miny, maxx, maxy = region.bounds
-    eps = _PAD_MEMBERSHIP_EPS_MM
-    cx, cy = 0.5 * (minx + maxx), 0.5 * (miny + maxy)
-    radius = 0.5 * math.hypot(maxx - minx, maxy - miny) + eps
-    cand_local = np.asarray(
-        kdtree.query_ball_point((cx, cy), radius), dtype=np.int64,
-    )
-    if cand_local.size == 0:
-        return np.empty(0, dtype=np.int64)
+    if sel_local is None:
+        minx, miny, maxx, maxy = region.bounds
+        eps = _PAD_MEMBERSHIP_EPS_MM
+        cx, cy = 0.5 * (minx + maxx), 0.5 * (miny + maxy)
+        radius = 0.5 * math.hypot(maxx - minx, maxy - miny) + eps
+        cand_local = np.asarray(
+            kdtree.query_ball_point((cx, cy), radius), dtype=np.int64,
+        )
+        if cand_local.size == 0:
+            return np.empty(0, dtype=np.int64)
 
-    member_region = region.buffer(eps)
-    cand_pts = shapely.points(data[cand_local, 0], data[cand_local, 1])
-    inside = shapely.contains(member_region, cand_pts)
-    sel_local = cand_local[np.asarray(inside, dtype=bool)]
+        member_region = region.buffer(eps)
+        cand_pts = shapely.points(data[cand_local, 0], data[cand_local, 1])
+        inside = shapely.contains(member_region, cand_pts)
+        sel_local = cand_local[np.asarray(inside, dtype=bool)]
     if sel_local.size == 0:
         return np.empty(0, dtype=np.int64)
 
@@ -599,6 +607,63 @@ def _vertices_under_pad(
         np.delete(np.arange(sel_globals.size), rep_pos),
     ))
     return sel_globals[order]
+
+
+# Pads per :func:`_pad_members_batch` slice. Bounds the flattened
+# (pad, candidate vertex) arrays; a pad has a few dozen candidates.
+_PAD_BATCH: int = 8192
+
+
+def _pad_members_batch(
+    kdtree: scipy.spatial.KDTree,
+    regions: list,
+) -> list[np.ndarray]:
+    """For each pad outline in ``regions``, the tree-local indices of the
+    mesh vertices under it — the membership half of
+    :func:`_vertices_under_pad` (same bounding-circle candidates, in the same
+    order, tested against the same epsilon-buffered outline), done for a
+    whole layer's pads in a handful of vectorised calls instead of four
+    Python→C round trips per pad. Which vertices are still free, and each
+    group's representative, depend on the order pads are visited in and stay
+    with the caller."""
+    out: list[np.ndarray] = []
+    data = kdtree.data
+    eps = _PAD_MEMBERSHIP_EPS_MM
+    for start in range(0, len(regions), _PAD_BATCH):
+        chunk = np.asarray(regions[start:start + _PAD_BATCH], dtype=object)
+        b = shapely.bounds(chunk)
+        centres = np.column_stack((0.5 * (b[:, 0] + b[:, 2]),
+                                   0.5 * (b[:, 1] + b[:, 3])))
+        radii = 0.5 * np.hypot(b[:, 2] - b[:, 0], b[:, 3] - b[:, 1]) + eps
+        # An empty outline has NaN bounds; it catches nothing.
+        blank = ~np.isfinite(radii) | ~np.isfinite(centres).all(axis=1)
+        if blank.any():
+            centres[blank] = 0.0
+            radii[blank] = -1.0
+        # return_sorted=False: a single-point query is unsorted, and the
+        # candidate order decides ties for the representative.
+        cands = kdtree.query_ball_point(centres, radii, return_sorted=False)
+        if blank.any():
+            for i in np.flatnonzero(blank).tolist():
+                cands[i] = []
+        lens = np.fromiter((len(c) for c in cands), dtype=np.int64,
+                           count=len(cands))
+        total = int(lens.sum())
+        if total == 0:
+            out.extend(np.empty(0, dtype=np.int64) for _ in cands)
+            continue
+        flat = np.fromiter((i for c in cands for i in c), dtype=np.int64,
+                           count=total)
+        # quad_segs=16 is what ``region.buffer(eps)`` uses (shapely.buffer's
+        # own default is 8).
+        members = shapely.buffer(chunk, eps, quad_segs=16)
+        inside = shapely.contains(
+            np.repeat(members, lens),
+            shapely.points(data[flat, 0], data[flat, 1]))
+        ends = np.cumsum(lens)
+        for s, e in zip((ends - lens).tolist(), ends.tolist()):
+            out.append(flat[s:e][inside[s:e]])
+    return out
 
 
 def _build_contraction(
@@ -2013,6 +2078,23 @@ class NodeIndexer:
         # Same result as the per-connection loop: identical nearest vertices,
         # ``claimed`` mask, and ``vertex_groups``.
         deferred: list = []  # (conn, globals_arr, kdtree)
+        # Which vertices lie under each pad does not depend on the visiting
+        # order, so find that for every pad up front, a layer at a time
+        # (see _pad_members_batch); only the order-sensitive part — the
+        # claimed-vertex filter — stays in the loop below.
+        pad_members: dict[int, np.ndarray] = {}
+        _pads_by_tree: dict[int, tuple] = {}
+        for conn in connections:
+            if conn.region is None or conn.layer is None:
+                continue
+            _tree = layer_to_kdtree.get(layer_to_index.get(id(conn.layer)))
+            if _tree is None or _tree.data.size == 0:
+                continue
+            _pads_by_tree.setdefault(id(_tree), (_tree, []))[1].append(conn)
+        for _tree, _conns in _pads_by_tree.values():
+            for _conn, _sel in zip(_conns, _pad_members_batch(
+                    _tree, [c.region for c in _conns])):
+                pad_members[id(_conn)] = _sel
         for conn in connections:
             # A connection's layer may have no meshed copper at all — e.g. a
             # directive pin on a plane with no copper reachable from a driven
@@ -2041,6 +2123,7 @@ class NodeIndexer:
             if conn.region is not None:
                 group = _vertices_under_pad(
                     kdtree, globals_arr, conn.region, conn.point, claimed,
+                    sel_local=pad_members.get(id(conn)),
                 )
                 if group.size:
                     claimed[group] = True
@@ -2974,37 +3057,7 @@ def compute_power_density(voltage: mesh.ZeroForm, conductivity: float) -> mesh.T
     if (xys is not None and tris is not None and tris.shape[0] > 0
             and vals.size == xys.shape[0]):
         # Vectorised path.
-        p0 = xys[tris[:, 0]]
-        p1 = xys[tris[:, 1]]
-        p2 = xys[tris[:, 2]]
-        f0 = vals[tris[:, 0]]
-        f1 = vals[tris[:, 1]]
-        f2 = vals[tris[:, 2]]
-        # Barycentric gradient: signed double-area D = (y2−y3)(x1−x3) + (x3−x2)(y1−y3)
-        y23 = p1[:, 1] - p2[:, 1]
-        x32 = p2[:, 0] - p1[:, 0]
-        y31 = p2[:, 1] - p0[:, 1]
-        x13 = p0[:, 0] - p2[:, 0]
-        y12 = p0[:, 1] - p1[:, 1]
-        x21 = p1[:, 0] - p0[:, 0]
-        D = y23 * (p0[:, 0] - p2[:, 0]) + x32 * (p0[:, 1] - p2[:, 1])
-        # Linear-element gradient — closed form from the affine map:
-        #   ∂V/∂x = (y23·f0 + y31·f1 + y12·f2) / D
-        #   ∂V/∂y = (x32·f0 + x13·f1 + x21·f2) / D
-        # On degenerate triangles (D == 0) ∇V is undefined — keep p = 0
-        # (matches the original ``compute_triangle_gradient`` which would
-        # raise; the per-face loop only continued past triangles that came
-        # back from face.vertices with len != 3, so degenerate-but-3-vertex
-        # triangles silently emitted NaN before — now they emit 0).
-        Ex = np.zeros_like(D)
-        Ey = np.zeros_like(D)
-        nz = D != 0
-        invD = np.zeros_like(D)
-        invD[nz] = 1.0 / D[nz]
-        Ex[nz] = (y23[nz] * f0[nz] + y31[nz] * f1[nz] + y12[nz] * f2[nz]) * invD[nz]
-        Ey[nz] = (x32[nz] * f0[nz] + x13[nz] * f1[nz] + x21[nz] * f2[nz]) * invD[nz]
-        # p = J · E = σ |E|².
-        p_arr = conductivity * (Ex * Ex + Ey * Ey)
+        p_arr = _power_density_kernel(xys, tris, vals, conductivity)
         # TwoForm.values is sized from len(mesh.faces); guarantee the same
         # length whether or not the mesh has lightweight Face stubs.
         if power_density.values.size != p_arr.size:
@@ -3026,6 +3079,81 @@ def compute_power_density(voltage: mesh.ZeroForm, conductivity: float) -> mesh.T
         p = J.dot(E)
         power_density[face] = p
     return power_density
+
+
+# Triangles per block in _power_density_kernel: small enough that a block's
+# dozen temporaries stay in cache-friendly territory (~25 MB), large enough
+# that the per-block Python overhead is nothing.
+_POWER_DENSITY_BLOCK: int = 1 << 18
+# A mesh with at least this many triangles has its blocks spread over threads
+# (numpy releases the GIL inside each array operation). A big board's plane
+# pours are a couple of million triangles each and hold most of the total.
+_POWER_DENSITY_PARALLEL_MIN: int = 1 << 19
+
+
+def _power_density_block(x, y, tris, vals, conductivity, out) -> None:
+    """``out[:] = σ·|∇V|²`` for the triangles ``tris`` (see
+    :func:`_power_density_kernel`)."""
+    i0 = tris[:, 0]
+    i1 = tris[:, 1]
+    i2 = tris[:, 2]
+    x0, x1, x2 = x[i0], x[i1], x[i2]
+    y0, y1, y2 = y[i0], y[i1], y[i2]
+    f0, f1, f2 = vals[i0], vals[i1], vals[i2]
+    # Barycentric gradient: signed double-area D = (y2−y3)(x1−x3) + (x3−x2)(y1−y3)
+    y23 = y1 - y2
+    x32 = x2 - x1
+    y31 = y2 - y0
+    x13 = x0 - x2
+    y12 = y0 - y1
+    x21 = x1 - x0
+    D = y23 * x13 + x32 * (y0 - y2)
+    # Linear-element gradient — closed form from the affine map:
+    #   ∂V/∂x = (y23·f0 + y31·f1 + y12·f2) / D
+    #   ∂V/∂y = (x32·f0 + x13·f1 + x21·f2) / D
+    nz = D != 0
+    invD = np.zeros_like(D)
+    np.divide(1.0, D, out=invD, where=nz)
+    Ex = (y23 * f0 + y31 * f1 + y12 * f2) * invD
+    Ey = (x32 * f0 + x13 * f1 + x21 * f2) * invD
+    # p = J · E = σ |E|².
+    np.multiply(conductivity, Ex * Ex + Ey * Ey, out=out)
+    # On degenerate triangles (D == 0) ∇V is undefined — p = 0 there (the
+    # products above already give 0 unless a potential is non-finite).
+    if not nz.all():
+        out[~nz] = 0.0
+
+
+def _power_density_kernel(
+    xys: np.ndarray, tris: np.ndarray, vals: np.ndarray, conductivity: float,
+) -> np.ndarray:
+    """Areal power density σ·|∇V|² (W/mm²) of every triangle of one mesh.
+
+    The arithmetic is the one :func:`triangle_power_density` documents,
+    evaluated without its boolean-mask gathers (a degenerate triangle is
+    zeroed afterwards instead of being masked out of every term) and in
+    blocks, which large meshes spread over threads. Each triangle's value is
+    computed by the same operations in the same order either way, so the
+    result does not depend on the blocking."""
+    n_tri = tris.shape[0]
+    out = np.empty(n_tri, dtype=DTYPE)
+    x = np.ascontiguousarray(xys[:, 0])
+    y = np.ascontiguousarray(xys[:, 1])
+    block = _POWER_DENSITY_BLOCK
+    spans = [(s, min(s + block, n_tri)) for s in range(0, n_tri, block)]
+
+    def _run(span: tuple[int, int]) -> None:
+        s, e = span
+        _power_density_block(x, y, tris[s:e], vals, conductivity, out[s:e])
+
+    if n_tri >= _POWER_DENSITY_PARALLEL_MIN and len(spans) > 1:
+        workers = min(len(spans), _PARDISO_THREADS)
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(_run, spans))
+    else:
+        for span in spans:
+            _run(span)
+    return out
 
 
 class _MinresTimeout(Exception):
