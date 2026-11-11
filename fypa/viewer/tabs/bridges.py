@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from fypa.viewer.net_names import _looks_like_supply_net, _supply_net_key
 from fypa.viewer.numeric import _numeric_validator, _parse_numeric_text
+from fypa.viewer.table_filter import TableColumnFilter
 from fypa.viewer.theme import _T
 from fypa.viewer.widgets import _esc
 
@@ -41,7 +42,8 @@ class _BridgesTabMixin:
     # auto-bridge can be turned off.
 
     _BRIDGES_TABLE_COLUMNS: tuple[tuple[str, str], ...] = (
-        ("Part", "Designator. Click a row to locate it on the board."),
+        ("Part", "Designator. Click it to jump to the part in the Heatmap "
+                 "tab; click elsewhere in the row to just select it."),
         ("Kind", "Inferred from the designator prefix."),
         ("Value", "The part's Altium value / comment."),
         ("Pins", "Pad count. The filter below keys on distinct NETS, not "
@@ -82,7 +84,7 @@ class _BridgesTabMixin:
         self.bridges_state_combo = QComboBox()
         self.bridges_state_combo.addItems([
             "All parts", "Modelled as SERIES", "Auto-bridged",
-            "Not modelled", "Affects a solved rail",
+            "Not modelled", "Affects a solved rail", "Transistors",
         ])
         self.bridges_state_combo.setToolTip(
             "'Affects a solved rail' is the one to watch: those parts join a "
@@ -120,6 +122,16 @@ class _BridgesTabMixin:
 
         self.bridges_table = QTableWidget()
         cols = self._BRIDGES_TABLE_COLUMNS
+        # Excel-style header filters; installed before the header is
+        # configured below, since it replaces the header widget.
+        self.bridges_col_filter = TableColumnFilter(
+            self.bridges_table,
+            numeric_cols=[i for i, (n, _) in enumerate(cols)
+                          if n in ("Pins", "R")])
+        self.bridges_col_filter.changed.connect(self._apply_bridges_filter)
+        filter_row.insertWidget(
+            filter_row.indexOf(self.bridges_summary_label),
+            self.bridges_col_filter.make_clear_button())
         self.bridges_table.setColumnCount(len(cols))
         self.bridges_table.setHorizontalHeaderLabels([c[0] for c in cols])
         for i, (_name, tip) in enumerate(cols):
@@ -149,9 +161,44 @@ class _BridgesTabMixin:
         # repopulate clears the selection entirely; without this the action
         # buttons stay enabled for a row that is no longer selected.
         self.bridges_table.itemSelectionChanged.connect(
-            self._refresh_bridge_buttons)
+            self._on_bridges_selection_changed)
         self.bridges_table.itemChanged.connect(self._on_bridges_item_changed)
         outer.addWidget(self.bridges_table, 1)
+
+        # Transistor pin picker: shown only while a transistor row is
+        # selected. A power FET's drain and source are usually several pads
+        # each, so the user says which pads form each side of the switch.
+        self.bridges_pin_box = QWidget()
+        pin_layout = QVBoxLayout(self.bridges_pin_box)
+        pin_layout.setContentsMargins(0, 4, 0, 0)
+        self.bridges_pin_label = QLabel("")
+        self.bridges_pin_label.setWordWrap(True)
+        pin_layout.addWidget(self.bridges_pin_label)
+        self.bridges_pin_table = QTableWidget(0, 3)
+        self.bridges_pin_table.setHorizontalHeaderLabels(["Pad", "Net", "Side"])
+        for i, tip in enumerate((
+                "Pad designator on the footprint.",
+                "The pad's net. A net the low-Ω merge folded into another is "
+                "shown as 'original → now'.",
+                "A or B: the two sides of the switch (drain and source — the "
+                "order does not matter for a resistance). Leave the gate, and "
+                "anything else, as —.")):
+            hdr = self.bridges_pin_table.horizontalHeaderItem(i)
+            if hdr is not None:
+                hdr.setToolTip(tip)
+        self.bridges_pin_table.verticalHeader().setVisible(False)
+        self.bridges_pin_table.horizontalHeader().setStretchLastSection(True)
+        self.bridges_pin_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.bridges_pin_table.setMaximumHeight(200)
+        self.bridges_pin_table.setStyleSheet(self.bridges_table.styleSheet())
+        pin_layout.addWidget(self.bridges_pin_table)
+        self.bridges_pin_status = QLabel("")
+        self.bridges_pin_status.setWordWrap(True)
+        pin_layout.addWidget(self.bridges_pin_status)
+        self.bridges_pin_box.setVisible(False)
+        self._bridge_pin_rec: dict | None = None
+        self._bridge_pin_sides: dict[str, str] = {}
+        outer.addWidget(self.bridges_pin_box)
 
         edit_row = QHBoxLayout()
         edit_row.addWidget(QLabel("Selected part:"))
@@ -224,6 +271,12 @@ class _BridgesTabMixin:
                 r["resistance_ohm"] = float(ed.resistance)
                 r["why"] = "set here (editor SERIES)"
                 r["impact"] = ""
+                if r.get("fet"):
+                    r["a_pins"] = list(ed.p_pins or [])
+                    r["b_pins"] = list(ed.n_pins or [])
+                    r["net_a"] = ed.p_net or r.get("net_a")
+                    r["net_b"] = ed.n_net or r.get("net_b")
+                    r["why"] = "set here: modelled as switched on"
             elif key in opted_out:
                 r["state"] = "off"
                 r["resistance_ohm"] = None
@@ -247,6 +300,7 @@ class _BridgesTabMixin:
         "off": "off",
         "unmodelled": "not modelled",
         "annotated": "annotated",
+        "open": "open (off)",
     }
 
     def _populate_bridges_table(self) -> None:
@@ -266,6 +320,12 @@ class _BridgesTabMixin:
                 state = r.get("state", "unmodelled")
                 r_ohm = r.get("resistance_ohm")
                 nets = f"{r.get('net_a', '?')} \u2194 {r.get('net_b', '?')}"
+                others = [n for n in (r.get("nets") or [])
+                          if n not in (r.get("net_a"), r.get("net_b"))]
+                if others:
+                    # The gate (and any other net a transistor touches) \u2014
+                    # shown so the row is recognisable, never bridged.
+                    nets += f"  (+ {', '.join(others)})"
                 why = r.get("impact") or r.get("why") or ""
                 cells = [
                     r.get("designator", "?"),
@@ -287,6 +347,14 @@ class _BridgesTabMixin:
                         item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                     if c == 0:
                         item.setData(Qt.UserRole, r)
+                        # Link-styled: a click jumps to the part on the
+                        # Heatmap. Underlined rather than recoloured, since
+                        # the colour already carries the row's state.
+                        font = item.font()
+                        font.setUnderline(True)
+                        item.setFont(font)
+                        item.setToolTip(
+                            "Click to jump to this part in the Heatmap tab.")
                     if r.get("impact"):
                         item.setForeground(QColor("#ffb300"))
                     elif state == "auto":
@@ -304,6 +372,7 @@ class _BridgesTabMixin:
         if table is None:
             return
         mode = self.bridges_state_combo.currentText()
+        col_filter = getattr(self, "bridges_col_filter", None)
         shown = 0
         impacted = 0
         for i in range(table.rowCount()):
@@ -323,6 +392,10 @@ class _BridgesTabMixin:
                 keep = state in ("unmodelled", "off")
             elif mode == "Affects a solved rail":
                 keep = bool(r.get("impact"))
+            elif mode == "Transistors":
+                keep = bool(r.get("fet"))
+            if keep and col_filter is not None:
+                keep = col_filter.accepts(i)
             table.setRowHidden(i, not keep)
             shown += int(keep)
         total = table.rowCount()
@@ -331,16 +404,27 @@ class _BridgesTabMixin:
             msg += f"  \u2022  {impacted} affecting a solved rail"
         self.bridges_summary_label.setText(msg)
 
-    def _on_bridges_cell_clicked(self, row: int, _col: int) -> None:
+    def _on_bridges_cell_clicked(self, row: int, col: int) -> None:
         """Locate the part on the board and load its resistance into the
-        editor field."""
+        editor field. A click on the Part cell also jumps to the part on
+        the Heatmap tab, like the Vias tab's Go cell."""
         cell = self.bridges_table.item(row, 0)
         r = cell.data(Qt.UserRole) if cell is not None else None
         if not r:
             return
         r_ohm = r.get("resistance_ohm")
+        if r_ohm is None and r.get("fet"):
+            # Pre-fill from the part's own Rds(on) parameter; nothing is
+            # saved until the user presses "Model as SERIES".
+            r_ohm = r.get("rds_on_ohm")
         self.bridges_r_edit.setText("" if r_ohm is None else f"{r_ohm:g}")
         self._refresh_bridge_buttons()
+        self._sync_bridge_pin_picker()
+        if col == 0:
+            lid = r.get("layer_id")
+            self._jump_to_xy(r.get("x_mm"), r.get("y_mm"),
+                             [lid] if lid is not None else [])
+            return
         # Reuse the Vias tab's highlight so a row click centres the part.
         try:
             self._highlight_via_xy = (float(r["x_mm"]), float(r["y_mm"]))
@@ -386,21 +470,255 @@ class _BridgesTabMixin:
         except ValueError:
             label.setText("")
             return
-        r = self._selected_bridge_row()
         if value < self._BRIDGE_MERGE_THRESHOLD_OHM:
-            a = (r or {}).get("net_a", "the two nets")
-            b = (r or {}).get("net_b", "")
+            # Values set here are editor directives, applied after the
+            # load-time merge pass, so they are never merged, but a lumped
+            # element this small between two large copper bodies is exactly
+            # what the merge exists to avoid in the solver.
             label.setText(
                 f"<span style='color:#ffb300;'>Below "
-                f"{self._BRIDGE_MERGE_THRESHOLD_OHM * 1e3:g} m\u03a9 this is "
-                f"treated as a wire: {_esc(a)} and {_esc(b)} merge into one "
-                f"rail and one of the names disappears from the rail "
-                f"picker.</span>")
+                f"{self._BRIDGE_MERGE_THRESHOLD_OHM * 1e3:g} m\u03a9. Values "
+                f"set here are never merged, so both nets stay separate, "
+                f"joined by {value * 1e3:g} m\u03a9. A series element this "
+                f"small can make the solve ill-conditioned; if the result "
+                f"shows large balancing currents, check this part "
+                f"first.</span>")
         else:
             label.setText(
                 f"<span style='color:{_T()['fg_muted']};'>Modelled as a "
                 f"{value * 1e3:g} m\u03a9 series element; both nets stay "
                 f"separate.</span>")
+
+    def _on_bridges_selection_changed(self) -> None:
+        self._refresh_bridge_buttons()
+        self._sync_bridge_pin_picker()
+
+    # --- Bridges tab: transistor pin picker ---------------------------------
+
+    _PIN_SIDES = ("—", "A", "B")
+
+    def _sync_bridge_pin_picker(self) -> None:
+        """Show the picker for a selected transistor row, hide it otherwise.
+
+        Re-filled only when the selected part changes, so a selection the
+        user is part-way through is not reset by an unrelated refresh.
+        """
+        box = getattr(self, "bridges_pin_box", None)
+        if box is None:
+            return
+        rec = self._selected_bridge_row()
+        if not rec or not rec.get("fet"):
+            self._bridge_pin_rec = None
+            box.setVisible(False)
+            return
+        current = getattr(self, "_bridge_pin_rec", None)
+        if current is not None and current.get("designator") == rec.get("designator"):
+            box.setVisible(True)
+            return
+        self._load_bridge_pin_picker(rec)
+
+    def _load_bridge_pin_picker(self, rec: dict) -> None:
+        self._bridge_pin_rec = rec
+        a = rec.get("a_pins") or rec.get("default_a_pins") or []
+        b = rec.get("b_pins") or rec.get("default_b_pins") or []
+        a_u = {p.upper() for p in a}
+        b_u = {p.upper() for p in b}
+        self._bridge_pin_sides = {}
+        table = self.bridges_pin_table
+        pads = rec.get("pads") or []
+        table.setRowCount(len(pads))
+        for i, p in enumerate(pads):
+            pad = p["pad"]
+            side = ("A" if pad.upper() in a_u
+                    else "B" if pad.upper() in b_u else "")
+            self._bridge_pin_sides[pad] = side
+            pad_item = QTableWidgetItem(pad)
+            pad_item.setFlags(pad_item.flags() & ~Qt.ItemIsEditable)
+            table.setItem(i, 0, pad_item)
+            net_text = p.get("net") or "(no net)"
+            if p.get("orig_net") and p["orig_net"] != p.get("net"):
+                net_text = (f"{p['orig_net']} → {p.get('net')}  "
+                            f"({self._merge_chain_text(p)})")
+            net_item = QTableWidgetItem(net_text)
+            net_item.setFlags(net_item.flags() & ~Qt.ItemIsEditable)
+            if p.get("orig_net") and p["orig_net"] != p.get("net"):
+                net_item.setForeground(QColor("#ffb300"))
+            table.setItem(i, 1, net_item)
+            combo = QComboBox()
+            combo.addItems(list(self._PIN_SIDES))
+            combo.setCurrentText(side or self._PIN_SIDES[0])
+            combo.setEnabled(bool(p.get("net")))
+            combo.currentTextChanged.connect(
+                lambda text, _pad=pad: self._on_bridge_pin_combo(_pad, text))
+            table.setCellWidget(i, 2, combo)
+        table.resizeColumnsToContents()
+        self.bridges_pin_label.setText(
+            f"<b>{_esc(rec.get('designator', '?'))}</b> pins: choose which "
+            f"pads form each side of the switch (drain and source). Every pad "
+            f"on a side must be on the same net; leave the gate as "
+            f"—. Then enter its on-resistance and press "
+            f"<i>Model as SERIES</i>.")
+        self.bridges_pin_box.setVisible(True)
+        self._refresh_bridge_pin_status()
+
+    @staticmethod
+    def _merge_chain_text(pad: dict) -> str:
+        """``HS_SNS ─R80→ +12V_IN ─R1→ +12V_MEZZ ─R2→ +12V``: every link the
+        merge went through, so a multi-hop merge is not blamed on whichever
+        part happens to touch the original net."""
+        path = pad.get("merge_path") or []
+        if path:
+            text = pad.get("orig_net", "?")
+            for step in path:
+                text += f" ─{step['via']}→ {step['net']}"
+            return text
+        # A record from before merge paths were kept: the links are known,
+        # the order and intermediate nets are not.
+        by = ", ".join(pad.get("merged_by") or [])
+        return f"merged by {by}" if by else "merged by a low-Ω link"
+
+    def _on_bridge_pin_combo(self, pad: str, text: str) -> None:
+        self._bridge_pin_sides[pad] = text if text in ("A", "B") else ""
+        self._refresh_bridge_pin_status()
+
+    def _set_bridge_pin_side(self, pad: str, side: str) -> None:
+        """Set one pad's side ("A", "B" or "") — the combo and the model."""
+        table = self.bridges_pin_table
+        for i in range(table.rowCount()):
+            item = table.item(i, 0)
+            if item is not None and item.text().upper() == pad.upper():
+                combo = table.cellWidget(i, 2)
+                if combo is not None:
+                    combo.setCurrentText(side or self._PIN_SIDES[0])
+                self._bridge_pin_sides[item.text()] = side
+        self._refresh_bridge_pin_status()
+
+    def _bridge_pin_selection(self) -> tuple[list[str], list[str]]:
+        rec = getattr(self, "_bridge_pin_rec", None) or {}
+        order = [p["pad"] for p in rec.get("pads") or []]
+        sides = getattr(self, "_bridge_pin_sides", {})
+        return ([p for p in order if sides.get(p) == "A"],
+                [p for p in order if sides.get(p) == "B"])
+
+    def _fet_pins_for(self, rec: dict) -> tuple[list[str], list[str]]:
+        """The pins to save for ``rec``: the picker's if it is showing this
+        part, else the saved directive's, else the default guess."""
+        shown = getattr(self, "_bridge_pin_rec", None)
+        if shown is not None and shown.get("designator") == rec.get("designator"):
+            return self._bridge_pin_selection()
+        return (list(rec.get("a_pins") or rec.get("default_a_pins") or []),
+                list(rec.get("b_pins") or rec.get("default_b_pins") or []))
+
+    def _check_fet_selection(
+        self, rec: dict, a: list[str], b: list[str],
+    ) -> tuple[str | None, str | None, str | None]:
+        """``(net_a, net_b, None)`` for a usable pin choice, else
+        ``(None, None, reason)``.
+
+        Nets are the pads' *current* nets — the names the solve resolves.
+        A net the merge folded away still has a name but owns no copper, so
+        a directive naming it would quietly attach to nothing.
+        """
+        des = rec.get("designator", "?")
+        pads = {p["pad"].upper(): p for p in rec.get("pads") or []}
+        if not a or not b:
+            return None, None, ("Pick at least one pad for side A and one "
+                                "for side B.")
+        both = sorted({x.upper() for x in a} & {x.upper() for x in b})
+        if both:
+            return None, None, f"Pad(s) {', '.join(both)} are on both sides."
+
+        def _side_net(pins: list[str], label: str):
+            unknown = [p for p in pins if p.upper() not in pads]
+            if unknown:
+                return None, (f"{des} has no pad(s) {', '.join(unknown)}.")
+            nets = sorted({pads[p.upper()].get("net") or "" for p in pins})
+            if "" in nets:
+                return None, f"Side {label} includes a pad with no net."
+            if len(nets) != 1:
+                return None, (
+                    f"Side {label} spans {', '.join(nets)}. Each side of the "
+                    f"switch is a single net — all the drain pads on one, "
+                    f"all the source pads on the other.")
+            return nets[0], None
+
+        net_a, err = _side_net(a, "A")
+        if err:
+            return None, None, err
+        net_b, err = _side_net(b, "B")
+        if err:
+            return None, None, err
+        if net_a == net_b:
+            merged = [pads[p.upper()] for p in a + b
+                      if pads[p.upper()].get("orig_net")
+                      and pads[p.upper()]["orig_net"] != pads[p.upper()].get("net")]
+            msg = (f"Side A and side B are both on {net_a}, so {des} would "
+                   f"be shorted to itself.")
+            if merged:
+                p = merged[0]
+                orig = p["orig_net"]
+                links = p.get("merged_by") or []
+                msg += (
+                    f" {orig} was merged into {net_a} through "
+                    f"{self._merge_chain_text(p)} (links auto-bridged below "
+                    f"{self._BRIDGE_MERGE_THRESHOLD_OHM * 1e3:g} mΩ).")
+                pending = self._pending_bridge_changes(links)
+                if pending:
+                    # The user already broke the chain here; the rows above
+                    # are from the last solve, before that change applied.
+                    msg += (
+                        f" You have already changed {', '.join(pending)} in "
+                        f"this tab, which breaks that chain, but it only takes "
+                        f"effect when the design is rebuilt: press Resolve, "
+                        f"then set up {des}.")
+                elif len(links) > 1:
+                    later = p["merge_path"][0]["net"]
+                    msg += (
+                        f" Break any link in that chain: give it its real "
+                        f"resistance in this tab, or disable its auto-bridge, "
+                        f"then Resolve. Either way {des} can then be set up. "
+                        f"{links[0]} is the one that keeps {orig} on its own; "
+                        f"breaking a later link leaves {orig} joined to "
+                        f"{later}.")
+                else:
+                    first = links[0] if links else "the link"
+                    msg += (
+                        f" Give {first} its real resistance in this tab, or "
+                        f"disable its auto-bridge, and Resolve; {orig} is then "
+                        f"a separate net again and {des} can be set up.")
+            else:
+                msg += " Pick pads on two different nets."
+            return None, None, msg
+        return net_a, net_b, None
+
+    def _pending_bridge_changes(self, links: list[str]) -> list[str]:
+        """Which of ``links`` the user has opted out of, or given its own
+        resistance, in this tab — changes that are saved in the project but
+        only reach the nets on the next rebuild of the design."""
+        project = getattr(self, "_project", None)
+        if project is None or not links:
+            return []
+        changed = {d.strip().upper()
+                   for d in (getattr(project, "no_auto_bridge", None) or [])}
+        changed |= {(ed.designator or "").strip().upper()
+                    for ed in (getattr(project, "editor_directives", None) or [])
+                    if ed.role == "SERIES" and ed.designator}
+        return [d for d in links if d.strip().upper() in changed]
+
+    def _refresh_bridge_pin_status(self) -> None:
+        rec = getattr(self, "_bridge_pin_rec", None)
+        label = getattr(self, "bridges_pin_status", None)
+        if rec is None or label is None:
+            return
+        a, b = self._bridge_pin_selection()
+        net_a, net_b, err = self._check_fet_selection(rec, a, b)
+        if err:
+            label.setText(f"<span style='color:#ffb300;'>{_esc(err)}</span>")
+        else:
+            label.setText(
+                f"<span style='color:{_T()['fg_muted']};'>A: {_esc(net_a)} "
+                f"(pad {_esc(', '.join(a))}) ↔ B: {_esc(net_b)} "
+                f"(pad {_esc(', '.join(b))})</span>")
 
     def _refresh_bridge_buttons(self) -> None:
         r = self._selected_bridge_row()
@@ -550,6 +868,10 @@ class _BridgesTabMixin:
             self._after_bridge_edit(f"{des}: reverted to FYPA's default.")
             return
 
+        if rec.get("fet"):
+            self._apply_fet_series(rec, float(resistance), _drop_existing_series)
+            return
+
         # Validate and confirm BEFORE touching the project. Dropping the old
         # directive first means a cancelled confirmation silently destroys
         # the resistance the user had already saved.
@@ -581,11 +903,47 @@ class _BridgesTabMixin:
         _set_opt_out(True)
         note = (f"{des}: modelled as a {resistance * 1e3:g} m\u03a9 SERIES "
                 f"element.")
-        if resistance < self._BRIDGE_MERGE_THRESHOLD_OHM:
-            note += (f" Below {self._BRIDGE_MERGE_THRESHOLD_OHM * 1e3:g} "
-                     f"m\u03a9, so {rec.get('net_a')} and {rec.get('net_b')} "
-                     f"will be merged into one rail.")
         self._after_bridge_edit(note)
+
+    def _apply_fet_series(self, rec: dict, resistance: float,
+                          drop_existing) -> None:
+        """Model a transistor as switched on: a SERIES element between the
+        pads the user put on side A and those on side B.
+
+        Validated and confirmed before the project is touched, like the
+        two-pin path. No auto-bridge opt-out is written \u2014 transistors are
+        never auto-bridged, so there is nothing to suppress.
+        """
+        from fypa.project_file import EditorDirective
+
+        des = rec["designator"]
+        if resistance <= 0.0:
+            QMessageBox.warning(
+                self, "Resistance must be positive",
+                "Enter the transistor's on-resistance, Rds(on), in ohms.")
+            return
+        a, b = self._fet_pins_for(rec)
+        net_a, net_b, err = self._check_fet_selection(rec, a, b)
+        if err:
+            QMessageBox.warning(self, f"Can't set up {des}", err)
+            return
+        if not self._warn_if_shorting_power_rails(
+                dict(rec, net_a=net_a, net_b=net_b)):
+            return
+
+        drop_existing()
+        self._ensure_project().upsert_directive(EditorDirective(
+            kind="component", role="SERIES", designator=des,
+            single_net=False,
+            p_net=net_a, n_net=net_b,
+            p_pins=list(a), n_pins=list(b),
+            resistance=float(resistance),
+            overrides_designator=des,
+        ))
+        self._after_bridge_edit(
+            f"{des}: modelled as switched on, {resistance * 1e3:g} m\u03a9 "
+            f"between {net_a} (pad {', '.join(a)}) and {net_b} "
+            f"(pad {', '.join(b)}).")
 
     def _after_bridge_edit(self, message: str) -> None:
         """Persist, refresh the table, and mark the solve stale."""
@@ -594,8 +952,23 @@ class _BridgesTabMixin:
         # already in the in-memory project either way.
         self._mark_project_dirty()
         self._update_pending_rails()
+        selected = (self._selected_bridge_row() or {}).get("designator")
         self._populate_bridges_table()
+        if selected:
+            # Repopulating clears the selection; put it back so the part the
+            # user just edited (and its pin picker) stays in front of them.
+            table = self.bridges_table
+            for i in range(table.rowCount()):
+                item = table.item(i, 0)
+                if item is not None and item.text() == selected:
+                    table.selectRow(i)
+                    break
         self._update_bridges_tab_title()
+        # A part just set up (or removed) as SERIES draws (or drops) its
+        # unsolved link on the canvas straight away, without a re-render.
+        refresh = getattr(self, "_refresh_pending_links", None)
+        if refresh is not None:
+            refresh()
         self.bridges_hint_label.setText(
             f"<span style='color:{_T()['fg_muted']};'>{_esc(message)} "
             f"Press Resolve to apply.</span>")
@@ -642,6 +1015,15 @@ class _BridgesTabMixin:
         # Table.
         self.vias_table = QTableWidget()
         cols = self._VIAS_TABLE_COLUMNS
+        # Excel-style header filters (column 0 is the Go action cell).
+        self.vias_col_filter = TableColumnFilter(
+            self.vias_table,
+            numeric_cols=[i for i, (_n, num) in enumerate(cols) if num],
+            skip_cols=[0])
+        self.vias_col_filter.changed.connect(self._apply_vias_filter)
+        filter_row.insertWidget(
+            filter_row.indexOf(self.vias_summary_label),
+            self.vias_col_filter.make_clear_button())
         self.vias_table.setColumnCount(len(cols))
         self.vias_table.setHorizontalHeaderLabels([c[0] for c in cols])
         self.vias_table.setSortingEnabled(True)
@@ -870,6 +1252,7 @@ class _BridgesTabMixin:
         # Column 0 is the "Go" action button. The "IPC-4761 fill" column at
         # index 6 pushes |I| max from 9 → 10.
         NET_COL, CURRENT_COL = 1, 10
+        col_filter = getattr(self, "vias_col_filter", None)
 
         visible = 0
         warn_visible = 0
@@ -883,7 +1266,8 @@ class _BridgesTabMixin:
                 cur = 0.0
             rail_ok = allowed_nets is None or net in allowed_nets
             warn_ok = (not warn_only) or abs(cur) >= self._via_current_warn_a
-            hide = not (rail_ok and warn_ok)
+            hide = not (rail_ok and warn_ok
+                        and (col_filter is None or col_filter.accepts(r)))
             self.vias_table.setRowHidden(r, hide)
             if not hide:
                 visible += 1

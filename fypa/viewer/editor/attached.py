@@ -460,7 +460,13 @@ class _AttachedPdnMixin:
                     )
                 else:
                     rbtn.setText("↻  Resolve")
-                    if enabled:
+                    if enabled and not self._has_solveable_directives():
+                        rbtn.setToolTip(
+                            "Rebuild the design with the Bridges-tab changes "
+                            "(nothing to solve yet: the design needs a SOURCE "
+                            "and a SINK on the same rail)"
+                        )
+                    elif enabled:
                         rbtn.setToolTip(
                             "Re-run the solver with the current editor "
                             "changes and settings applied"

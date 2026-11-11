@@ -392,6 +392,36 @@ def build_rail_trees(
     }
 
 
+def attach_merged_children(
+    trees: dict[str, RailTreeNode],
+    children_by_net: dict[str, list[str]],
+) -> dict[str, RailTreeNode]:
+    """Hang each net's shorted (merged-away) nets under it as leaf nodes.
+
+    The low-Ω merge folds those nets into their survivor before the solve,
+    so they have no copper or eye of their own in ``rail_to_members``; the
+    Rails control shows them as switchable sections of the survivor. They
+    follow the node's SERIES children. A net already in the tree is never
+    added twice.
+    """
+    if not children_by_net:
+        return dict(trees)
+
+    def _rebuild(node: RailTreeNode, seen: set[str]) -> RailTreeNode:
+        kids = [_rebuild(c, seen) for c in node.children]
+        for extra in children_by_net.get(node.name, ()):
+            if extra not in seen:
+                seen.add(extra)
+                kids.append(RailTreeNode(name=extra))
+        return RailTreeNode(name=node.name, children=tuple(kids))
+
+    out: dict[str, RailTreeNode] = {}
+    for rail, tree in trees.items():
+        seen = {name for name, _d in flatten_rail_tree(tree)}
+        out[rail] = _rebuild(tree, seen)
+    return out
+
+
 def visible_rail_tree_rows(
     rail: str,
     members: list[str],

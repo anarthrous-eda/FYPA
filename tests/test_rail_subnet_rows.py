@@ -66,7 +66,7 @@ def _viewer_stub(*, pending: bool):
         "_insert_subnet_rows", "_remove_subnet_rows", "_rebuild_subnet_rows",
         "_on_subnet_node_expand_toggled", "_subnet_rows_for_rail",
         "_make_expand_tool_button", "_build_rail_row_widget",
-        "_detach_subnet_eyes",
+        "_detach_subnet_eyes", "_rail_display_members", "_is_merged_section",
     ):
         setattr(v, name, getattr(av.PdnViewer, name).__get__(v, type(v)))
 

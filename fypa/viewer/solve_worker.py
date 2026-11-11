@@ -456,16 +456,44 @@ class _SolveWorker(QThread):
         with _timer.stage("Load per-net geometry cache"):
             return _try_load_per_net_geometry(*key)
 
-    def _save_per_net_layers(self, loaded, per_net_layers, _timer) -> None:
+    def _save_per_net_layers(self, loaded, per_net_layers, _timer, *,
+                             background: bool = False) -> None:
         key = self._per_net_geometry_key(loaded)
         if key is None:
             return
         from fypa.cli import _save_per_net_geometry
+        if background:
+            _save_in_background(_save_per_net_geometry, key[0], key[1],
+                                per_net_layers, loaded.extracted)
+            return
         self.stage_changed.emit("Saving copper geometry cache…")
         with _timer.stage("Save per-net geometry cache"):
-            _save_per_net_geometry(key[0], key[1], per_net_layers)
+            _save_per_net_geometry(key[0], key[1], per_net_layers,
+                                   loaded.extracted)
 
-    def _stub_layer_geometry(self, loaded, per_net_layers, _timer):
+    def _incremental_per_net_layers(self, loaded, _timer):
+        """``(per_net_layers, changed_nets, old_fingerprint)`` rebuilt from
+        the per-net cache of this board under another net assignment, or
+        ``None`` (see :func:`fypa.cli.incremental_per_net_geometry`)."""
+        if not self._use_design_cache:
+            return None
+        key = self._per_net_geometry_key(loaded)
+        if key is None:
+            return None
+        from fypa.cli import incremental_per_net_geometry
+        self.stage_changed.emit("Rebuilding copper of the changed nets…")
+        with _timer.stage("Rebuild changed nets' geometry"):
+            try:
+                return incremental_per_net_geometry(
+                    loaded.extracted, key[0], key[1])
+            except Exception:  # noqa: BLE001 - fall back to a full build
+                logging.getLogger(__name__).warning(
+                    "Reusing cached copper failed; rebuilding all of it.",
+                    exc_info=True)
+                return None
+
+    def _stub_layer_geometry(self, loaded, per_net_layers, _timer, *,
+                             reuse_from=None):
         """Per-layer all-nets shapes for the pre-solve stub.
 
         Fused from the per-net shapes (the same copper as
@@ -491,13 +519,31 @@ class _SolveWorker(QThread):
                 cached = _try_load_per_net_geometry(path, key[1])
             if cached is not None:
                 return cached
+            if reuse_from is not None:
+                # Same board, other net assignment (see
+                # _incremental_per_net_layers): reuse every layer whose
+                # all-nets copper the re-assignment cannot have changed.
+                from fypa.cli import incremental_layer_geometry
+                old_fp, changed = reuse_from
+                with _timer.stage("Reuse layer geometry"):
+                    try:
+                        layers = incremental_layer_geometry(
+                            loaded.extracted, path, old_fp, changed)
+                    except Exception:  # noqa: BLE001 - rebuild instead
+                        logging.getLogger(__name__).warning(
+                            "Reusing cached layer copper failed.",
+                            exc_info=True)
+                        layers = None
+                if layers is not None:
+                    _save_in_background(_save_per_net_geometry, path,
+                                        key[1], layers)
+                    return layers
         self.stage_changed.emit("Merging copper per layer…")
         with _timer.stage("Build layer geometry"):
             layers = build_layer_geometries_from_per_net(
                 loaded.extracted, per_net_layers)
         if path is not None:
-            with _timer.stage("Save layer geometry cache"):
-                _save_per_net_geometry(path, key[1], layers)
+            _save_in_background(_save_per_net_geometry, path, key[1], layers)
         return layers
 
     def _save_layer_geometry(self, loaded, layers, _timer) -> None:
@@ -505,11 +551,11 @@ class _SolveWorker(QThread):
         if key is None:
             return
         from fypa.cli import _layer_geometry_cache_path, _save_per_net_geometry
-        with _timer.stage("Save layer geometry cache"):
-            _save_per_net_geometry(
-                _layer_geometry_cache_path(self._prjpcb_path,
-                                           self._pcbdoc_resolved),
-                key[1], layers)
+        _save_in_background(
+            _save_per_net_geometry,
+            _layer_geometry_cache_path(self._prjpcb_path,
+                                       self._pcbdoc_resolved),
+            key[1], layers)
 
     def _emit_stub_and_finish(
         self, loaded, pristine_loaded, _timer,
@@ -535,8 +581,18 @@ class _SolveWorker(QThread):
         # it (seconds), rather than by unioning every primitive again
         # (minutes on a big board) through loaded.geometry.
         layer_geometry = None
+        reuse_from = None
         if per_net_layers is None:
             per_net_layers = self._cached_per_net_layers(loaded, _timer)
+        if per_net_layers is None:
+            # Missed: most often only the net assignment changed (a
+            # Bridges-tab edit), so rebuild just the nets that moved.
+            inc = self._incremental_per_net_layers(loaded, _timer)
+            if inc is not None:
+                per_net_layers, changed, old_fp = inc
+                reuse_from = (old_fp, changed)
+                self._save_per_net_layers(loaded, per_net_layers, _timer,
+                                          background=True)
         if per_net_layers is None:
             # Both copper builds in one pass, their unions spread over
             # worker processes (pyclipr holds the GIL, so threads can't).
@@ -545,14 +601,15 @@ class _SolveWorker(QThread):
             with _timer.stage("Build copper geometry"):
                 per_net_layers, layer_geometry = (
                     build_per_net_and_layer_geometry(loaded.extracted))
-            self._save_per_net_layers(loaded, per_net_layers, _timer)
+            self._save_per_net_layers(loaded, per_net_layers, _timer,
+                                      background=True)
             if "geometry" in loaded.__dict__:
                 layer_geometry = None     # already built: reuse it as before
             else:
                 self._save_layer_geometry(loaded, layer_geometry, _timer)
         else:
             layer_geometry = self._stub_layer_geometry(
-                loaded, per_net_layers, _timer)
+                loaded, per_net_layers, _timer, reuse_from=reuse_from)
         with _timer.stage("Build stub solution"):
             stub_solution = _build_stub_lean_solution_from_loaded(
                 loaded, layer_geometry)
@@ -587,10 +644,8 @@ class _SolveWorker(QThread):
         # Design-info: exactly one stage emitted in every variant
         # (loaded reuse / cache hit message / "Checking…" / "Loading from disk…").
         n += 1
-        # Save-design-info-cache stage fires after a fresh disk load when
-        # the design cache is enabled.
-        if self._use_design_cache and self._loaded_project is None:
-            n += 1
+        # (The design-info cache is saved on a background thread and emits
+        # no stage.)
         # One stage per override / directive application.
         for opt in (self._stackup_overrides, self._sink_overrides,
                     self._copper_names, self._editor_directives):
@@ -822,24 +877,17 @@ class _SolveWorker(QThread):
                 # big board — is pure dead weight on the critical path. The
                 # first subsequent *non-clean* load repopulates it.
                 if self._use_design_cache and pcbdoc_resolved is not None:
+                    # Pickling the whole LoadedProject runs 10+ s on a big
+                    # board and only speeds up the NEXT load, so it runs on
+                    # its own thread instead of holding the progress dialog.
                     try:
                         from fypa.cli import (
-                            _design_info_fingerprint,
-                            _save_cached_design_info,
+                            save_cached_design_info_in_background,
                         )
-                        # Pickling the whole LoadedProject runs several
-                        # seconds on a big board. Give it its own progress
-                        # label + timing-log stage so the wait isn't
-                        # mistaken for a hung "Loading project from disk".
-                        self.stage_changed.emit("Saving design-info cache…")
-                        with _timer.stage("Save design-info cache"):
-                            design_fp = _design_info_fingerprint(
-                                self._prjpcb_path, pcbdoc_resolved,
-                            )
-                            _save_cached_design_info(
-                                self._prjpcb_path, design_fp, loaded,
-                                pcbdoc_path=pcbdoc_resolved,
-                            )
+                        save_cached_design_info_in_background(
+                            self._prjpcb_path, loaded,
+                            pcbdoc_path=pcbdoc_resolved,
+                        )
                     except Exception as e:
                         logging.getLogger(__name__).warning(
                             "Couldn't write design-info cache (%s); ignoring.",
@@ -970,13 +1018,19 @@ class _SolveWorker(QThread):
                 # user can place a SOURCE marker by hand and then Resolve.
                 # Restricted to a plain initial load: overrides / editor
                 # directives mean the user explicitly asked for a re-solve, so
-                # a missing source there is still a hard failure.
+                # a missing source there is still a hard failure. A load-only
+                # run never asked to solve (e.g. a Resolve that only rebuilds
+                # the design after a Bridges-tab change), so it always opens.
+                explicit_solve = (
+                    not self._load_only
+                    and bool(self._editor_directives
+                             or self._stackup_overrides
+                             or self._sink_overrides)
+                )
                 recoverable_no_source = (
                     bool(loaded.extracted.enabled_copper_layer_ids())
                     and not loaded.annotations.errors
-                    and not self._editor_directives
-                    and not self._stackup_overrides
-                    and not self._sink_overrides
+                    and not explicit_solve
                 )
                 if recoverable_no_source:
                     _log.info(
@@ -996,9 +1050,7 @@ class _SolveWorker(QThread):
                 recoverable_annotation_errors = (
                     bool(loaded.extracted.enabled_copper_layer_ids())
                     and loaded.annotations.errors
-                    and not self._editor_directives
-                    and not self._stackup_overrides
-                    and not self._sink_overrides
+                    and not explicit_solve
                 )
                 if recoverable_annotation_errors:
                     _log.info(
@@ -1379,6 +1431,23 @@ class _SolveWorker(QThread):
         return clone_loaded_for_edit(loaded)
 
 
+
+
+def _save_in_background(fn, *args) -> threading.Thread:
+    """Run a cache save off the worker so the result reaches the viewer
+    first. Cache files only speed up the NEXT load, and every save goes
+    through a temp file + atomic replace (serialised in fypa.cli), so a
+    reader meanwhile sees the previous complete file. Daemon: quitting
+    mid-write leaves only the temp file behind."""
+    def _run() -> None:
+        try:
+            fn(*args)
+        except Exception:  # noqa: BLE001 - a missed cache only costs time
+            logging.getLogger(__name__).warning(
+                "Background cache save failed.", exc_info=True)
+    th = threading.Thread(target=_run, name="fypa-cache-save", daemon=True)
+    th.start()
+    return th
 
 
 def record_stackup_overrides(metadata, pristine_loaded, overrides) -> None:

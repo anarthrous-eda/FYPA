@@ -99,6 +99,12 @@ def records() -> list[MessageRecord]:
         return list(_buffer)
 
 
+def count() -> int:
+    """Number of buffered records, without copying the buffer."""
+    with _lock:
+        return len(_buffer)
+
+
 def add_listener(fn: Callable[[MessageRecord], None]) -> None:
     """Register a callback for newly emitted records. Listeners may be
     invoked from arbitrary threads (whichever thread called

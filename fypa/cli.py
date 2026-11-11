@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -937,6 +938,197 @@ def _per_net_geometry_fingerprint(extracted) -> dict | None:
     }
 
 
+def _per_net_net_state(extracted) -> dict:
+    """What :func:`_per_net_geometry_fingerprint` hashes, kept in the clear:
+    every primitive's net, the plane-net names, the net names and the rest of
+    the stackup. Stored in the per-net geometry cache so a later load whose
+    net assignment differs (a Bridges-tab change re-merging nets) can see
+    WHICH nets changed and rebuild only those — see
+    :func:`incremental_per_net_geometry`."""
+    import dataclasses
+
+    import numpy as np
+    return {
+        "collections": {
+            name: np.fromiter(
+                (it.net_index for it in getattr(extracted, name, ()) or ()),
+                dtype=np.int64)
+            for name in _NET_TAGGED_COLLECTIONS
+        },
+        "planes": {int(s.layer_id): s.plane_net_name
+                   for s in extracted.stackup if s.is_plane},
+        "nets": tuple(n.name for n in extracted.nets),
+        # Everything else about the stackup (thickness → conductance, layer
+        # order, plane flags). Must match for old shapes to be reused.
+        "stackup": repr(tuple(
+            dataclasses.replace(s, plane_net_name=None) if s.is_plane else s
+            for s in extracted.stackup)),
+    }
+
+
+def _changed_nets(old: dict, new: dict) -> set[int] | None:
+    """Net indices whose copper differs between two :func:`_per_net_net_state`
+    snapshots of the same board, or ``None`` when anything but the net
+    assignment changed (then only a full rebuild is safe).
+
+    A primitive that moved from net A to net B changes both A's and B's
+    copper; a plane whose net name changed changes both planes' sheets."""
+    import numpy as np
+    if (old.get("nets") != new.get("nets")
+            or old.get("stackup") != new.get("stackup")
+            or set(old.get("planes", {})) != set(new.get("planes", {}))):
+        return None
+    changed: set[int] = set()
+    old_c, new_c = old.get("collections", {}), new.get("collections", {})
+    for name in _NET_TAGGED_COLLECTIONS:
+        a = np.asarray(old_c.get(name, ()), dtype=np.int64)
+        b = np.asarray(new_c.get(name, ()), dtype=np.int64)
+        if a.shape != b.shape:
+            return None
+        moved = a != b
+        if moved.any():
+            changed.update(int(x) for x in np.unique(a[moved]))
+            changed.update(int(x) for x in np.unique(b[moved]))
+    index_of: dict[str, int] = {}
+    for i, name in enumerate(new["nets"]):
+        index_of.setdefault(name, i)
+    for lid, name in new["planes"].items():
+        before = old["planes"][lid]
+        if before != name:
+            for n in (before, name):
+                if n in index_of:
+                    changed.add(index_of[n])
+    return changed
+
+
+def _read_per_net_geometry_file(f):
+    """``(net_state | None, layers)`` from a per-net geometry cache file
+    positioned after its fingerprint. Files written before net states were
+    kept have the layers straight after the fingerprint."""
+    from fypa.altium.extract import paused_gc
+    nxt = pickle.load(f)
+    state = None
+    if isinstance(nxt, dict) and "_net_state" in nxt:
+        state = nxt["_net_state"]
+        with paused_gc():
+            nxt = pickle.load(f)
+    return state, nxt
+
+
+def incremental_per_net_geometry(extracted, cache_path: Path,
+                                 fingerprint: dict):
+    """Per-net copper for ``extracted`` built from a cache of the SAME board
+    under a different net assignment, rebuilding only the nets that changed.
+
+    A Bridges-tab change (disable an auto-bridge, change the auto-SERIES
+    limit) re-merges a handful of nets and misses the per-net cache, which
+    used to rebuild all ~78 000 (layer, net) buckets — 20 s on Mangala — when
+    two nets had changed. Each bucket is one net's own copper, and a plane
+    sheet depends on other nets only through whether they are the plane's
+    net (anti-pads), so the buckets of unchanged nets are reused as they are.
+    The changed nets are rebuilt through the same buffering
+    (:func:`~fypa.altium_geometry._build_net_layer_buckets` ``only_nets``, a
+    pure prefilter of the full sweep) and the same snapped union, so they
+    match a full rebuild exactly.
+
+    Returns ``(layers, changed_nets, old_fingerprint)``, or ``None`` when the
+    cache is missing, from another board or tool version, written before net
+    states were stored, or differs in more than net assignment.
+    """
+    log = logging.getLogger(__name__)
+    if not cache_path.exists():
+        return None
+    t0 = time.monotonic()
+    try:
+        with open(cache_path, "rb") as f:
+            old_fp = pickle.load(f)
+            if not isinstance(old_fp, dict) or any(
+                    old_fp.get(k) != fingerprint.get(k)
+                    for k in ("schema_version", "pcb", "tool_source_hashes")):
+                return None
+            state, old_layers = _read_per_net_geometry_file(f)
+    except Exception as e:  # noqa: BLE001 - only a missed shortcut
+        log.info("Per-net geometry cache unreadable for reuse (%s).", e)
+        return None
+    if state is None or not isinstance(old_layers, list):
+        return None
+    changed = _changed_nets(state, _per_net_net_state(extracted))
+    if changed is None:
+        return None
+    t_read = time.monotonic() - t0
+    from fypa.altium_geometry import (
+        _build_net_layer_buckets,
+        _parallel_union_buckets,
+        _shapes_to_geometry_layers,
+    )
+    rebuilt: list = []
+    if changed:
+        enabled = extracted.enabled_copper_layer_ids()
+        buckets = _build_net_layer_buckets(
+            extracted, enabled, include_vias=True, only_nets=changed)
+        rebuilt = _shapes_to_geometry_layers(
+            extracted, _parallel_union_buckets(buckets, snap=True))
+    # Keep the old order: a rebuilt bucket takes the slot its predecessor
+    # held; buckets that did not exist before go at the end.
+    new_by_key = {(g.layer_id, g.net_index): g for g in rebuilt}
+    layers = []
+    for g in old_layers:
+        key = (g.layer_id, g.net_index)
+        if g.net_index not in changed:
+            layers.append(g)
+        elif key in new_by_key:
+            layers.append(new_by_key.pop(key))
+    layers.extend(new_by_key.values())
+    log.info("Per-net geometry: reused %d of %d bucket(s) from the cache, "
+             "rebuilt %d for %d changed net(s) in %.2fs (read %.2fs).",
+             len(layers) - len(rebuilt), len(old_layers), len(rebuilt),
+             len(changed), time.monotonic() - t0, t_read)
+    return layers, changed, old_fp
+
+
+def incremental_layer_geometry(extracted, cache_path: Path, old_fp: dict,
+                               changed_nets: set[int]):
+    """Per-layer all-nets copper (the pre-solve stub's layers) for
+    ``extracted``, from the layer cache written under ``old_fp`` (same
+    board, other net assignment), or ``None``.
+
+    A signal layer's copper is every primitive on it fused regardless of net,
+    so moving primitives between nets cannot change it — those layers are
+    reused. Two things can: copper gaining or losing a net (multilayer copper
+    with no net is not fanned out to every layer), which rebuilds nothing
+    here and returns ``None``; and a plane whose own net changed, whose sheet
+    (anti-pads) is rebuilt. Rebuilding every layer instead costs ~26 s on
+    Mangala.
+    """
+    from fypa.altium.extract import NO_NET
+    if NO_NET in changed_nets:
+        return None
+    old = _try_load_per_net_geometry(cache_path, old_fp)
+    if not old:
+        return None
+    from fypa.altium_geometry import (
+        _ThroughFeatureCache,
+        _plane_nets,
+        build_layer_geometry,
+    )
+    enabled = extracted.enabled_copper_layer_ids()
+    stack = {s.layer_id: s for s in extracted.stackup}
+    by_id = {g.layer_id: g for g in old}
+    if [g.layer_id for g in old] != [lid for lid in enabled if lid in stack]:
+        return None
+    out = []
+    through = None
+    for lid in [g.layer_id for g in old]:
+        s = stack[lid]
+        if s.is_plane and set(_plane_nets(extracted, s)) & changed_nets:
+            if through is None:
+                through = _ThroughFeatureCache(extracted)
+            out.append(build_layer_geometry(extracted, lid, enabled, through))
+        else:
+            out.append(by_id[lid])
+    return out
+
+
 def _try_load_per_net_geometry(cache_path: Path, fingerprint: dict):
     """Cached ``list[GeometryLayer]`` for ``fingerprint``, else ``None``.
     Same two-pickle layout as the PCB extract cache: a stale entry costs one
@@ -953,7 +1145,7 @@ def _try_load_per_net_geometry(cache_path: Path, fingerprint: dict):
                 return None
             from fypa.altium.extract import paused_gc
             with paused_gc():
-                layers = pickle.load(f)
+                _state, layers = _read_per_net_geometry_file(f)
     except Exception as e:
         log.warning("Per-net geometry cache at %s couldn't be read (%s); "
                     "rebuilding.", cache_path, e)
@@ -966,21 +1158,39 @@ def _try_load_per_net_geometry(cache_path: Path, fingerprint: dict):
     return layers
 
 
+_GEOMETRY_SAVE_LOCK = threading.Lock()
+
+
 def _save_per_net_geometry(cache_path: Path, fingerprint: dict,
-                           layers) -> None:
+                           layers, extracted=None) -> None:
     """Write ``layers`` under ``fingerprint`` (temp file + replace, so a
-    crash can't leave a truncated pickle). Failures are non-fatal."""
+    crash can't leave a truncated pickle). Failures are non-fatal.
+
+    With ``extracted``, the board's net state is stored too, so a later
+    load of the same board under another net assignment can reuse the
+    unchanged nets' copper (:func:`incremental_per_net_geometry`)."""
     log = logging.getLogger(__name__)
     t0 = time.monotonic()
     tmp = cache_path.with_name(cache_path.name + ".tmp")
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
+        state = (_per_net_net_state(extracted)
+                 if extracted is not None else None)
         from fypa.altium.extract import paused_gc
-        with open(tmp, "wb") as f, paused_gc():
-            w = _GilYieldingWriter(f)
-            pickle.dump(fingerprint, w, protocol=pickle.HIGHEST_PROTOCOL)
-            pickle.dump(list(layers), w, protocol=pickle.HIGHEST_PROTOCOL)
-        os.replace(tmp, cache_path)
+        # Saves can run on background threads; two writing one temp file
+        # would corrupt it.
+        with _GEOMETRY_SAVE_LOCK:
+            with open(tmp, "wb") as f, paused_gc():
+                w = _GilYieldingWriter(f)
+                pickle.dump(fingerprint, w, protocol=pickle.HIGHEST_PROTOCOL)
+                if state is not None:
+                    pickle.dump({"_net_state": state}, w,
+                                protocol=pickle.HIGHEST_PROTOCOL)
+                pickle.dump(list(layers), w,
+                            protocol=pickle.HIGHEST_PROTOCOL)
+            # Inside the lock: another writer must not truncate the temp
+            # file between this write and its swap into place.
+            os.replace(tmp, cache_path)
     except Exception as e:
         log.warning("Couldn't write per-net geometry cache at %s (%s); "
                     "ignoring.", cache_path, e)
@@ -1021,14 +1231,20 @@ def per_net_geometry_for_solve(extracted, cache_path: Path,
     if parallel_geometry_workers(extracted) <= 1:
         return None
     t0 = time.monotonic()
-    layers, _ = build_per_net_and_layer_geometry(extracted, with_layers=False)
+    inc = (incremental_per_net_geometry(extracted, cache_path, fingerprint)
+           if read_cache else None)
+    if inc is not None:
+        layers = inc[0]
+    else:
+        layers, _ = build_per_net_and_layer_geometry(extracted,
+                                                     with_layers=False)
     log.info("Per-net geometry built for the solve in %.2fs; caching it.",
              time.monotonic() - t0)
-    import threading
     # Not a daemon: a solve subprocess must not exit with the file half
     # written (the save itself goes through a temp file + replace).
     threading.Thread(
-        target=_save_per_net_geometry, args=(cache_path, fingerprint, layers),
+        target=_save_per_net_geometry,
+        args=(cache_path, fingerprint, layers, extracted),
         name="fypa-per-net-geometry-save", daemon=False,
     ).start()
     return layers
@@ -1473,6 +1689,57 @@ def _save_cached_design_info(
             pass
 
 
+_DESIGN_SAVE_LOCK = threading.Lock()
+
+
+def save_cached_design_info_in_background(
+    prjpcb_path: Path, loaded, *, pcbdoc_path: Path | None = None,
+) -> threading.Thread:
+    """Write the design-info cache on a background thread.
+
+    The cache only speeds up the *next* load, yet pickling a big board's
+    LoadedProject takes 10+ s (13 s on Mangala) — time a Resolve used to make
+    the user wait for with the progress dialog up. Saving after the result is
+    handed over takes it off that path.
+
+    A shallow copy is pickled, so the viewer may use (and lazily extend) the
+    original meanwhile without changing the dict being pickled; its nested
+    design data is shared and never mutated in place (the GUI edits clones).
+    Once the file is written, the ORIGINAL is tagged with it, so a later
+    solve subprocess can read the design from the cache. Saves are
+    serialised: two in flight would share the temp file. Failures only log.
+    """
+    import copy
+
+    # Taken HERE, on the caller's thread: copying on the save thread could
+    # race the caller adding a lazily-built attribute to ``loaded.__dict__``.
+    snapshot = copy.copy(loaded)
+
+    def _save() -> None:
+        with _DESIGN_SAVE_LOCK:
+            try:
+                fp = _design_info_fingerprint(prjpcb_path, pcbdoc_path)
+                t0 = time.monotonic()
+                _save_cached_design_info(prjpcb_path, fp, snapshot,
+                                         pcbdoc_path=pcbdoc_path)
+                ref = getattr(snapshot, "_design_cache_ref", None)
+                if ref is not None:
+                    tag_design_cache_ref(loaded, ref)
+                logging.getLogger(__name__).info(
+                    "Design-info cache saved in the background in %.2fs",
+                    time.monotonic() - t0)
+            except Exception as e:  # noqa: BLE001 - only speeds later loads
+                logging.getLogger(__name__).warning(
+                    "Couldn't write design-info cache (%s); ignoring.", e)
+
+    # Daemon: quitting mid-write leaves only the temp file behind; the
+    # atomic replace means the real cache is never torn.
+    th = threading.Thread(target=_save, name="design-info-cache-save",
+                          daemon=True)
+    th.start()
+    return th
+
+
 def sanitize_metadata_for_pickle(metadata: dict | None) -> dict | None:
     """Return a metadata tree safe for :mod:`pickle`.
 
@@ -1505,7 +1772,8 @@ _PREPARED_GEOM_KEYS = frozenset({
 })
 
 
-def save_solution_file(path: Path, solution, metadata: dict | None) -> None:
+def save_solution_file(path: Path, solution, metadata: dict | None,
+                       status=None) -> None:
     """Write a user-saved solution snapshot to ``path``.
 
     Format is the same dict layout the auto-cache uses (and that
@@ -1513,12 +1781,32 @@ def save_solution_file(path: Path, solution, metadata: dict | None) -> None:
     fingerprint. ``metadata`` already carries ``prjpcb_path`` and
     ``pcbdoc_path`` (set by :func:`build_solve_metadata`), so reloading
     the file later re-attaches the solution to the right project +
-    board for Re-run / Reload Design Info."""
+    board for Re-run / Reload Design Info.
+
+    ``status`` (optional, a :class:`fypa.viewer.save_progress.SaveStatus`)
+    is fed the byte count as the pickle is written, for the save dialog.
+    The pickle goes to a temp name first so a failed write never clobbers
+    an existing good file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     safe_metadata = sanitize_metadata_for_pickle(metadata)
-    with open(path, "wb") as f:
-        pickle.dump({"solution": solution, "metadata": safe_metadata}, f,
-                    protocol=pickle.HIGHEST_PROTOCOL)
+    if status is not None:
+        status.begin(f"Writing solution ({path.name})…")
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        with open(tmp, "wb") as f:
+            out = f
+            if status is not None:
+                from fypa.viewer.save_progress import counting_writer
+                out = counting_writer(f, status)
+            pickle.dump({"solution": solution, "metadata": safe_metadata},
+                        out, protocol=pickle.HIGHEST_PROTOCOL)
+        tmp.replace(path)
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def do_solve(args: argparse.Namespace) -> int:

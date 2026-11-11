@@ -5,6 +5,7 @@ import logging
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QHeaderView,
     QLabel,
     QLineEdit,
@@ -175,8 +176,31 @@ class _EditorModeMixin:
         # A pending / stale solve is only actionable if the solver would
         # accept it — otherwise the click just lands on the "Project is not
         # solveable" dialog, so keep the button greyed out with a tooltip
-        # that says what's missing instead.
-        return wanted and self._has_solveable_directives()
+        # that says what's missing instead. The exception is a Bridges-tab
+        # change: it alters which nets exist, so the design must be rebuilt
+        # whether or not there is a rail to solve yet (the click then
+        # reloads the design without solving — see _on_resolve_clicked).
+        return wanted and (self._has_solveable_directives()
+                           or self._design_reload_pending())
+
+    def _design_reload_pending(self) -> bool:
+        """True when the project's Bridges-tab settings — auto-bridge
+        opt-outs, the auto-SERIES limit — differ from what the in-memory
+        design was built with. Both act while annotations are parsed, so
+        only a reload of the design applies them."""
+        loaded = getattr(self, "_loaded_project", None)
+        project = getattr(self, "_project", None)
+        if loaded is None or project is None:
+            return False
+        want = {d.strip().upper()
+                for d in (getattr(project, "no_auto_bridge", None) or [])}
+        have = set(getattr(loaded, "no_auto_bridge_applied", None) or ())
+        if want != have:
+            return True
+        limit = getattr(loaded, "auto_series_max_ohm_applied", None)
+        return (limit is not None
+                and float(getattr(project, "auto_series_max_ohm", limit))
+                != float(limit))
 
     _NOTHING_TO_SOLVE_TIP = (
         "Nothing to solve yet — the design needs a SOURCE and a SINK on the "
@@ -530,7 +554,79 @@ class _EditorModeMixin:
             self._net_table_filter.hide()
             self._net_table.hide()
 
+    # Boards with at least this many ``all_copper`` polygons build the
+    # connected-copper index on a worker thread behind a busy dialog the
+    # first time editor mode is entered, rather than freezing the window.
+    # ~200k polygons takes ~4 s, so below this it's well under a second
+    # and the synchronous path is kept (tests rely on it being immediate).
+    _EDITOR_PREP_BACKGROUND_MIN_POLYS = 25_000
+
+    def _editor_prep_needs_background(self) -> bool:
+        if getattr(self, "_cc_cache", None) is not None:
+            return False
+        md = getattr(self, "metadata", None) or {}
+        n = 0
+        for rec in md.get("all_copper") or []:
+            n += len(rec.get("polygons") or ())
+            if n >= self._EDITOR_PREP_BACKGROUND_MIN_POLYS:
+                return True
+        return False
+
     def _on_editor_mode_toggled(self, checked: bool) -> None:
+        """Slot for the editor toggle button (and the E hotkey through it).
+
+        Entering editor mode on a big board first needs the connected-copper
+        index (:meth:`_connected_components_data`) — seconds of work. When it
+        isn't built yet, build it on a worker thread behind the app's modal
+        busy dialog and enter editor mode once it's done; otherwise enter /
+        leave straight away."""
+        if checked and self._editor_prep_needs_background():
+            self._prepare_editor_in_background()
+            return
+        self._apply_editor_mode(checked)
+
+    def _prepare_editor_in_background(self) -> None:
+        if getattr(self, "_editor_prep_running", False):
+            return
+        from fypa.viewer.session import _run_background_load
+        self._editor_prep_running = True
+        log = logging.getLogger(__name__)
+
+        def _work():
+            # Qt-free: reads metadata, fills the STRtree / connectivity
+            # caches. Shapely's bulk predicates release the GIL, so the
+            # dialog keeps animating.
+            self._connected_components_data()
+
+        def _finish():
+            self._editor_prep_running = False
+            # The dialog is application-modal, so the toggle can't have
+            # been flipped back meanwhile — but don't enter if it was.
+            if not self._editor_toggle_btn.isChecked():
+                return
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                self._apply_editor_mode(True)
+            finally:
+                QApplication.restoreOverrideCursor()
+
+        def _ok(_result):
+            _finish()
+
+        def _err(exc_type, message):
+            # Same as the synchronous path: a failed index build doesn't
+            # stop editor mode, the per-click lookups just retry it.
+            log.warning("connected-copper index build failed: %s: %s",
+                        exc_type, message)
+            _finish()
+
+        _run_background_load(
+            self, _work, _ok, _err,
+            title="Editor mode",
+            label="Preparing editor mode — indexing copper connectivity…",
+        )
+
+    def _apply_editor_mode(self, checked: bool) -> None:
         """Enter / leave editor mode — swaps the viewport look, shows /
         hides the right-hand panel, and clears transient selection state
         on the way out (placed directives persist in the project)."""

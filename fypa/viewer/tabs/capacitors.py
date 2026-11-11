@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 from fypa.viewer.numeric import _parse_capacitance_f
 from fypa.viewer.session import _run_background_load
 from fypa.viewer.solve_worker import _CapLoopWorker
+from fypa.viewer.table_filter import TableColumnFilter
 from fypa.viewer.tabs.messages import _MessagesSortItem
 from fypa.viewer.theme import _T
 
@@ -248,6 +249,16 @@ class _CapacitorsTabMixin:
 
         self.caps_table = QTableWidget()
         cols = self._CAPS_TABLE_COLUMNS
+        # Excel-style header filters. The Go cell has nothing to filter; the
+        # Use checkbox filters on its tick state.
+        self.caps_col_filter = TableColumnFilter(
+            self.caps_table,
+            numeric_cols=[i for i, (_n, num) in enumerate(cols) if num],
+            skip_cols=[self._CAPS_ACTION_COL])
+        self.caps_col_filter.changed.connect(self._apply_caps_filter)
+        filter_row.insertWidget(
+            filter_row.indexOf(self.caps_summary_label),
+            self.caps_col_filter.make_clear_button())
         self.caps_table.setColumnCount(len(cols))
         self.caps_table.setHorizontalHeaderLabels([c[0] for c in cols])
         self.caps_table.setSortingEnabled(True)
@@ -1447,6 +1458,7 @@ class _CapacitorsTabMixin:
                         if hasattr(self, "caps_flagged_only_box") else False)
         included_only = (self.caps_included_only_box.isChecked()
                          if hasattr(self, "caps_included_only_box") else False)
+        col_filter = getattr(self, "caps_col_filter", None)
 
         visible = 0
         warn_visible = 0
@@ -1462,7 +1474,8 @@ class _CapacitorsTabMixin:
             is_warn = self._cap_row_is_warn(row)
             warn_ok = (not flagged_only) or is_warn
             incl_ok = (not included_only) or row.get("included", True)
-            hide = not (rail_ok and warn_ok and incl_ok)
+            hide = not (rail_ok and warn_ok and incl_ok
+                        and (col_filter is None or col_filter.accepts(tr)))
             self.caps_table.setRowHidden(tr, hide)
             if not hide:
                 visible += 1

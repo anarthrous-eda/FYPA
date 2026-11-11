@@ -173,6 +173,8 @@ class _ProbeMixin:
         Python object."""
         if getattr(self, "_spacemouse", None) is not None:
             self._spacemouse.shutdown()
+        # Stop the background copper workers and release the copper data.
+        self._shutdown_copper_layers()
         app = QApplication.instance()
         if app is not None:
             app.removeEventFilter(self)
@@ -341,6 +343,15 @@ class _ProbeMixin:
                            if marker_row is not None else "")
             if stub_hit is not None:
                 v_stub, stub_info = stub_hit
+                sx, sy = world_x, world_y
+                if is_3d and stub_info.get("physical"):
+                    # The stub was hit on its own layer's plane, not the
+                    # screen-plane point the signal reported.
+                    sx, sy = self._gl_viewer.screen_to_world_at_z(
+                        px_, py_, self._gl_viewer.relief_flat_z(
+                            self._layer_z_for(stub_info["physical"])))
+                stub_info = self._with_original_net(stub_info, sx, sy)
+                stub_hit = (v_stub, stub_info)
                 net_part = (f"   Net = {stub_info['net']}"
                             if stub_info.get("net") else "")
                 layer_part = (f"   Layer = {stub_info['physical']}"
@@ -380,6 +391,7 @@ class _ProbeMixin:
                         world_x, world_y, bare_hit.get("layer_id"))
                     if c is not None:
                         bare_hit["net"] = f"{c.name}  [pending resolve]"
+                bare_hit = self._with_original_net(bare_hit, world_x, world_y)
                 net_part = (f"   Net = {bare_hit['net']}"
                             if bare_hit.get("net") else "")
                 layer_part = (f"   Layer = {bare_hit['physical']}"
@@ -407,6 +419,8 @@ class _ProbeMixin:
                                         marker_row=marker_row)
             return
         v_float, lp = hit
+        # A copy: ``lp`` is the cached layer probe and must keep its name.
+        lp = self._with_original_net(lp, world_x, world_y)
         net_part = f"   Net = {lp['net']}" if lp.get("net") else ""
         layer_part = (f"   Layer = {lp['physical']}"
                       if lp.get("physical") else "")
@@ -426,6 +440,132 @@ class _ProbeMixin:
         )
         self._update_cursor_tooltip((v_float, lp), via_row=via_row,
                                     marker_row=marker_row)
+
+    # --- Original net of merged copper -------------------------------------
+    #
+    # The low-Ω merge folds a net into another before the solve (HS_SNS into
+    # +12V through R80, R1, R2), after which all its copper reports the
+    # surviving name. ``metadata["premerged_copper"]`` keeps that copper's
+    # outline under the original name; the hover uses it to say
+    # "Net = +12V (HS_SNS)" so a shorted rail is not mistaken for its own.
+
+    def _premerged_index(self):
+        """``({layer_id: (STRtree, [(polygon, CANONICAL, original)])},
+        {layer_id: [(CANONICAL, original)]})`` built once per metadata."""
+        recs = (self.metadata or {}).get("premerged_copper") or []
+        cache = getattr(self, "_premerged_cache", None)
+        if cache is not None and cache[0] is recs:
+            return cache[1]
+        import shapely
+        polys_by_layer: dict[int, list] = {}
+        whole: dict[int, list] = {}
+        for rec in recs:
+            lid = rec.get("layer_id")
+            canon = str(rec.get("canonical") or "").upper()
+            orig = rec.get("net")
+            if not orig:
+                continue
+            if rec.get("whole_layer"):
+                whole.setdefault(lid, []).append((canon, orig))
+                continue
+            for poly in rec.get("polygons") or []:
+                try:
+                    shp = _sg.Polygon(poly["exterior"],
+                                      list(poly.get("holes") or []))
+                except Exception:
+                    continue
+                if not shp.is_empty:
+                    polys_by_layer.setdefault(lid, []).append(
+                        (shp, canon, orig))
+        index = {lid: (shapely.STRtree([s for s, _c, _o in items]), items)
+                 for lid, items in polys_by_layer.items()}
+        result = (index, whole)
+        self._premerged_cache = (recs, result)
+        return result
+
+    def _original_net_at(self, net: str | None, physical: str | None,
+                         x: float, y: float,
+                         layer_id: int | None = None) -> str | None:
+        """Original name(s) of merged copper under (x, y) on this layer, or
+        ``None`` when the copper there always was ``net``."""
+        if not net or not (self.metadata or {}).get("premerged_copper"):
+            return None
+        if layer_id is None:
+            layer_id = getattr(self, "_phys_name_to_layer_id", {}).get(physical)
+        if layer_id is None:
+            return None
+        index, whole = self._premerged_index()
+        found: list[str] = []
+        entry = index.get(layer_id)
+        if entry is not None:
+            tree, items = entry
+            try:
+                hits = tree.query(_sg.Point(x, y), predicate="intersects")
+            except Exception:
+                hits = ()
+            for i in sorted(int(h) for h in hits):
+                orig = items[i][2]
+                if orig not in found:
+                    found.append(orig)
+        if not found:
+            # An internal plane flooded by a merged-away net: the whole
+            # sheet was that net, but only where the hover is on the plane's
+            # own (now canonical) net — not on another net's pad in it.
+            want = net.upper()
+            for canon, orig in whole.get(layer_id, ()):
+                if canon == want and orig not in found:
+                    found.append(orig)
+        found = [o for o in found if o != net]
+        return ", ".join(found) or None
+
+    def _with_original_net(self, info: dict, x: float, y: float) -> dict:
+        """``info`` with its net label annotated for what the bare net name
+        hides:
+
+        * "+12V (HS_SNS)" when the copper at (x, y) belonged to a net the
+          low-Ω merge folded away;
+        * "… joined to +12V via Q4 (unsolved)" when a part set up as SERIES
+          (e.g. a FET modelled as on) joins this net to another but no solve
+          has included it yet.
+
+        ``info`` itself is never modified (it may be a cached layer probe)."""
+        net = info.get("net")
+        try:
+            orig = self._original_net_at(
+                net, info.get("physical"), x, y, info.get("layer_id"))
+        except Exception:
+            orig = None
+        try:
+            joined = self._pending_join_note(net)
+        except Exception:
+            joined = ""
+        if not orig and not joined:
+            return info
+        label = f"{net} ({orig})" if orig else str(net)
+        out = dict(info)
+        out["net"] = label + joined
+        return out
+
+    def _pending_join_note(self, net: str | None) -> str:
+        """"   joined to +12V via Q4 (unsolved)" for every unsolved SERIES part
+        with a side on ``net`` (see ``_pending_series_directives``)."""
+        if not net:
+            return ""
+        pending = getattr(self, "_pending_series_directives", None)
+        if pending is None:
+            return ""
+        key = str(net).strip().upper()
+        notes = []
+        for d in pending():
+            p, n = d.p_net.strip().upper(), d.n_net.strip().upper()
+            if key == p:
+                other = d.n_net
+            elif key == n:
+                other = d.p_net
+            else:
+                continue
+            notes.append(f"joined to {other} via {d.designator} (unsolved)")
+        return ("   " + "; ".join(notes)) if notes else ""
 
     def _on_cursor_tooltip_toggled(self, checked: bool) -> None:
         """Hide the tooltip when turned off; immediately show it at the
@@ -581,6 +721,8 @@ class _ProbeMixin:
                     continue
             except Exception:
                 continue
+            if self._in_hidden_section(lp, x, y):
+                continue
             interp = self._ensure_interpolator(lp)
             if interp is None:
                 continue
@@ -652,6 +794,21 @@ class _ProbeMixin:
         self._last_probe_3d_xy = (wx, wy)
         return v, lp
 
+    @staticmethod
+    def _in_hidden_section(lp: dict, x: float, y: float) -> bool:
+        """True when (x, y) is on a triangle of a shorted section that the
+        Rails control has switched off (see ``tri_keep`` in
+        ``_build_rail_arrays``) — the copper there is not drawn."""
+        keep = lp.get("tri_keep")
+        tri = lp.get("triangulation")
+        if keep is None or tri is None:
+            return False
+        try:
+            ti = int(tri.get_trifinder()(x, y))
+        except Exception:
+            return False
+        return 0 <= ti < keep.size and not bool(keep[ti])
+
     def _sample_layer_probe(self, lp: dict, x: float, y: float
                             ) -> float | None:
         """Heatmap value of one layer probe at (x, y) in display units (the
@@ -664,6 +821,8 @@ class _ProbeMixin:
             if not prepped.contains(_sg.Point(x, y)):
                 return None
         except Exception:
+            return None
+        if self._in_hidden_section(lp, x, y):
             return None
         interp = self._ensure_interpolator(lp)
         if interp is None:

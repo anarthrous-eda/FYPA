@@ -178,6 +178,19 @@ class _LayerPanelMixin:
         )
         self._pending_rail_trees: dict = {}
 
+    def _rail_display_members(self, rail: str) -> list[str]:
+        """Rows under a rail: its member nets, each followed by the nets the
+        low-Ω merge folded into it (sections of that net's copper)."""
+        merged = getattr(self, "_merged_children", None) or {}
+        out: list[str] = []
+        for net in self._rail_to_members.get(rail, [rail]):
+            out.append(net)
+            out.extend(c for c in merged.get(net, ()) if c not in out)
+        return out
+
+    def _is_merged_section(self, net: str) -> bool:
+        return net in (getattr(self, "_merged_parent", None) or {})
+
     def _ground_rail_names(self) -> set[str]:
         return {"0v", "gnd", "ground", "vss"}
 
@@ -301,7 +314,7 @@ class _LayerPanelMixin:
             }
 
         for rail in self._rails:
-            members = self._rail_to_members.get(rail, [rail])
+            members = self._rail_display_members(rail)
             has_subnets = len(members) > 1
 
             eye = EyeButton(visible=False, shift_isolatable=True)
@@ -342,16 +355,21 @@ class _LayerPanelMixin:
             if has_subnets:
                 self._subnet_eye_buttons[rail] = {}
                 for net in members:
+                    if self._is_merged_section(net):
+                        what = (f"{net}'s section of "
+                                f"{self._merged_parent[net]}")
+                    else:
+                        what = f"{net} copper"
                     subnet_eye = EyeButton(
                         parent=self._subnet_eye_holder,
                         visible=False,
                         tip_show=(
-                            f"Show {net} copper\n"
-                            f"Ctrl+Click: include SERIES subtree"
+                            f"Show {what}\n"
+                            f"Ctrl+Click: include subtree"
                         ),
                         tip_hide=(
-                            f"Hide {net} copper\n"
-                            f"Ctrl+Click: include SERIES subtree"
+                            f"Hide {what}\n"
+                            f"Ctrl+Click: include subtree"
                         ),
                         shift_isolatable=True,
                         partial_is_badge=True,
@@ -422,7 +440,7 @@ class _LayerPanelMixin:
         )
         members = (
             self._pending_rails.get(rail, [rail]) if pending
-            else self._rail_to_members.get(rail, [rail])
+            else self._rail_display_members(rail)
         )
         trees = getattr(
             self, "_pending_rail_trees" if pending else "_rail_to_trees", {},
@@ -475,6 +493,12 @@ class _LayerPanelMixin:
                 )
             elif is_primary:
                 tip = f"Primary net of rail {rail}"
+            elif self._is_merged_section(net):
+                tip = (
+                    f"{net} — shorted into {self._merged_parent[net]} by a "
+                    f"low-Ω link and solved as part of it. This eye shows "
+                    f"or hides the copper that was {net}."
+                )
             else:
                 tip = f"Subnet of rail {rail} — joined via a SERIES bridge"
             subnet_row.setToolTip(tip)

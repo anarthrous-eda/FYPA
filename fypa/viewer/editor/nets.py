@@ -270,8 +270,15 @@ class _EditorNetsMixin:
         components index uses. ``shape_by_key`` re-uses the Shapely polygons
         already built for :meth:`_layer_strtrees` (no rebuild); ``net_by_key``
         carries each polygon's record-level net name (``"(none)"`` for
-        unnamed copper)."""
+        unnamed copper).
+
+        Cached against the :meth:`_layer_strtrees` index it derives from,
+        so it is rebuilt exactly when that is. Callers must not mutate the
+        returned dicts."""
         strt = self._layer_strtrees()
+        cached = getattr(self, "_all_copper_poly_maps_cache", None)
+        if cached is not None and cached[0] is strt:
+            return cached[1]
         shape_by_key: dict[tuple[int, int], object] = {}
         for lid, d in strt.items():
             for shp, poly in zip(d["shapes"], d["polys"]):
@@ -284,7 +291,27 @@ class _EditorNetsMixin:
             net = rec.get("net")
             for poly in rec.get("polygons", []):
                 net_by_key[(int(lid), id(poly))] = net
+        self._all_copper_poly_maps_cache = (strt, (shape_by_key, net_by_key))
         return shape_by_key, net_by_key
+
+    def _all_copper_poly_areas(self) -> dict[tuple[int, int], float]:
+        """``{(layer_id, id(poly_dict)): area}`` for every polygon in
+        :meth:`_layer_strtrees`, from the areas it computed in bulk — the
+        same keys as :meth:`_all_copper_poly_maps`'s ``shape_by_key``.
+        Cached the same way; callers must not mutate it."""
+        strt = self._layer_strtrees()
+        cached = getattr(self, "_all_copper_poly_areas_cache", None)
+        if cached is not None and cached[0] is strt:
+            return cached[1]
+        out: dict[tuple[int, int], float] = {}
+        for lid, d in strt.items():
+            areas = d.get("areas")
+            if areas is None:
+                areas = [s.area for s in d["shapes"]]
+            for a, poly in zip(areas, d["polys"]):
+                out[(int(lid), id(poly))] = a
+        self._all_copper_poly_areas_cache = (strt, out)
+        return out
 
     def _copper_name_root_map(self, cc: dict | None = None) -> dict:
         """``{component_root: name}`` for every :class:`CopperName` rename,
@@ -305,9 +332,51 @@ class _EditorNetsMixin:
             if p is None:
                 continue
             root = component_of.get((int(c.layer_id), id(p)))
-            if root is not None:
+            if root is not None and root not in cc.get("real_net_of", ()):
                 out[root] = c.name
         return out
+
+    def _prune_auto_names_on_real_nets(self, cc: dict) -> None:
+        """Drop auto-minted ``$NET_xxx`` names whose copper turns out to be
+        connected to a real net, and move editor directives that used the
+        name onto that net. An older build minted these for no-net regions
+        drawn over netted copper (it didn't join same-layer overlaps), so
+        a project saved then carries names for copper that already has a
+        net. User-typed names are left alone."""
+        import re
+        proj = self._project
+        if proj is None or not proj.copper_names:
+            return
+        real_net_of = cc.get("real_net_of") or {}
+        if not real_net_of:
+            return
+        auto = re.compile(r"^\$NET_\d+$")
+        remap: dict[str, str] = {}
+        for c in list(proj.copper_names):
+            if not c.name or not auto.match(c.name):
+                continue
+            p = self._copper_poly_under_point(
+                float(c.anchor_xy[0]), float(c.anchor_xy[1]), int(c.layer_id))
+            if p is None:
+                continue
+            root = cc["component_of"].get((int(c.layer_id), id(p)))
+            real = real_net_of.get(root) if root is not None else None
+            if real is None:
+                continue
+            proj.remove_copper_name(c.id)
+            remap[c.name] = real
+        if not remap:
+            return
+        for d in proj.editor_directives:
+            for attr in ("p_net", "n_net"):
+                v = getattr(d, attr, None)
+                if v in remap:
+                    setattr(d, attr, remap[v])
+        logging.getLogger(__name__).info(
+            "Dropped %d auto-named copper piece(s) connected to a real net: %s",
+            len(remap), ", ".join(f"{k} -> {v}" for k, v in remap.items()))
+        self._all_net_names_cache = None
+        self._mark_project_dirty()
 
     def _auto_name_isolated_regions(self) -> None:
         """Mint a stable ``$NET_xxx`` name for each electrically-isolated
@@ -328,8 +397,10 @@ class _EditorNetsMixin:
             return
         from fypa.project_file import CopperName
         shape_by_key, net_by_key = self._all_copper_poly_maps()
+        area_by_key = self._all_copper_poly_areas()
         cc = self._connected_components_data()
         members_of = cc["members_of"]
+        self._prune_auto_names_on_real_nets(cc)
         named_roots = set(self._copper_name_root_map(cc).keys())
         existing_names = {n for n in self._all_net_names()
                           if n and n != "(none)"}
@@ -340,8 +411,8 @@ class _EditorNetsMixin:
                 continue
             if any(net_by_key.get(k) not in (None, "(none)") for k in members):
                 continue
-            area = sum(shape_by_key[k].area
-                       for k in members if k in shape_by_key)
+            area = sum(area_by_key[k]
+                       for k in members if k in area_by_key)
             candidates.append((area, root, members))
         if not candidates:
             return
@@ -351,8 +422,8 @@ class _EditorNetsMixin:
         proj = self._ensure_project()
         n = 0
         for _area, _root, members in candidates:
-            best_key = max((k for k in members if k in shape_by_key),
-                           key=lambda k: shape_by_key[k].area, default=None)
+            best_key = max((k for k in members if k in area_by_key),
+                           key=area_by_key.__getitem__, default=None)
             if best_key is None:
                 continue
             shp = shape_by_key[best_key]
@@ -384,7 +455,8 @@ class _EditorNetsMixin:
         md = self.metadata or {}
         if not md.get("all_copper"):
             return []
-        shape_by_key, net_by_key = self._all_copper_poly_maps()
+        _shape_by_key, net_by_key = self._all_copper_poly_maps()
+        area_by_key = self._all_copper_poly_areas()
         cc = self._connected_components_data()
         members_of = cc["members_of"]
         name_by_root = self._copper_name_root_map(cc)
@@ -402,8 +474,8 @@ class _EditorNetsMixin:
             else:
                 nm = name_by_root.get(root)
                 name, real = (nm if nm else "(none)"), False
-            area = sum(shape_by_key[k].area
-                       for k in members if k in shape_by_key)
+            area = sum(area_by_key[k]
+                       for k in members if k in area_by_key)
             bucket = agg.setdefault(
                 name, {"area": 0.0, "poly_keys": set(), "real": False})
             bucket["area"] += area
@@ -471,8 +543,10 @@ class _EditorNetsMixin:
                 area_item.setTextAlignment(
                     Qt.AlignRight | Qt.AlignVCenter)
                 table.setItem(i, self._NET_COL_AREA, area_item)
+            # Enabling sorting sorts by the header's indicator, so set that
+            # first and the 7k-row table on a big board is sorted once.
+            hdr.setSortIndicator(sort_col, sort_order)
             table.setSortingEnabled(True)
-            table.sortItems(sort_col, sort_order)
         finally:
             self._net_table_populating = False
         # Re-apply the active name filter (and refresh the count label).

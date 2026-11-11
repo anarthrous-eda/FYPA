@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from fypa import log_buffer
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -230,6 +230,9 @@ class _MessagesTabMixin:
         table = getattr(self, "messages_table", None)
         if table is None:
             return
+        # The buffer already holds anything queued for the next flush;
+        # adding those again would duplicate them.
+        self._messages_pending = []
         records = log_buffer.records()
         # Snapshot allowed levels from the checkboxes so the loop doesn't
         # re-check the widgets per row.
@@ -257,42 +260,64 @@ class _MessagesTabMixin:
         table.resizeColumnToContents(2)
         self._update_messages_summary(visible, len(records))
 
+    # Records arriving within this window are added to the table together.
+    _MESSAGES_FLUSH_MS: int = 150
+
     def _on_messages_record(self, rec: log_buffer.MessageRecord) -> None:
         """Slot for the signaller — runs on the GUI thread thanks to the
-        QueuedConnection. Appends one row (if the filter accepts it) and
-        updates the summary label."""
+        QueuedConnection. Only queues the record; :meth:`_flush_messages`
+        adds the queued batch to the table shortly after.
+
+        Adding each record as it arrived re-sorted the whole table and
+        recounted every row per record — ~16 ms each on a table of a few
+        thousand rows. A solve logs hundreds of records, and that GUI work
+        held the GIL against the solve worker: a Resolve's annotation
+        warnings alone took 4 s to log instead of 30 ms.
+        """
+        pending = getattr(self, "_messages_pending", None)
+        if pending is None:
+            pending = self._messages_pending = []
+        pending.append(rec)
+        timer = getattr(self, "_messages_flush_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(self._MESSAGES_FLUSH_MS)
+            timer.timeout.connect(self._flush_messages)
+            self._messages_flush_timer = timer
+        if not timer.isActive():
+            timer.start()
+
+    def _flush_messages(self) -> None:
+        """Add every queued record to the table in one pass: one sort, one
+        visible-row count, one summary update per batch."""
+        pending = getattr(self, "_messages_pending", None) or []
+        self._messages_pending = []
         table = getattr(self, "messages_table", None)
-        if table is None:
+        if table is None or not pending:
             return
-        total = len(log_buffer.records())
         allowed = self._messages_allowed_levels()
-        if rec.level in allowed:
+        shown = [r for r in pending if r.level in allowed]
+        if shown:
             table.setSortingEnabled(False)
-            row = table.rowCount()
-            table.setRowCount(row + 1)
-            self._fill_messages_row(row, rec)
+            start = table.rowCount()
+            table.setRowCount(start + len(shown))
+            for i, rec in enumerate(shown):
+                self._fill_messages_row(start + i, rec)
             table.setSortingEnabled(True)
-            # Preserve the user's chosen sort order by re-sorting after
-            # the append. Without this, the new row stays at the bottom
-            # regardless of the current sort column.
+            # Preserve the user's chosen sort order: without a re-sort the
+            # new rows stay at the bottom whatever the sort column.
             header = table.horizontalHeader()
             table.sortByColumn(header.sortIndicatorSection(),
                                header.sortIndicatorOrder())
             if (getattr(self, "_messages_autoscroll_box", None) is not None
                     and self._messages_autoscroll_box.isChecked()):
                 table.scrollToBottom()
-            visible = sum(
-                1 for r in range(table.rowCount())
-                if not table.isRowHidden(r)
-            )
-            self._update_messages_summary(visible, total)
-        else:
-            # Record didn't pass the filter — only the totals change.
-            visible = sum(
-                1 for r in range(table.rowCount())
-                if not table.isRowHidden(r)
-            )
-            self._update_messages_summary(visible, total)
+        visible = sum(
+            1 for r in range(table.rowCount())
+            if not table.isRowHidden(r)
+        )
+        self._update_messages_summary(visible, log_buffer.count())
 
     def _fill_messages_row(self, row: int,
                            rec: log_buffer.MessageRecord) -> None:

@@ -1,11 +1,172 @@
 """Editor-mode selection and connectivity highlight."""
 from __future__ import annotations
 
+import logging
+
 import numpy as np
+import shapely
 import shapely.geometry as _sg
 import shapely.prepared as _sp
 
 from fypa.viewer.overlays import _EDITOR_OVERLAY_DIM_ALPHA, _EDITOR_OVERLAY_DIM_BG
+
+
+def _polygon_from_record(poly: dict):
+    """One ``all_copper`` polygon record → shapely Polygon, or ``None`` when
+    it has no exterior, fails to build, or is empty."""
+    ext = poly.get("exterior")
+    if ext is None or (hasattr(ext, "size") and ext.size == 0):
+        return None
+    try:
+        shp = _sg.Polygon(ext, poly.get("holes") or [])
+    except Exception:
+        return None
+    return None if shp.is_empty else shp
+
+
+def _closed_xy_ring(r) -> bool:
+    return (isinstance(r, np.ndarray) and r.ndim == 2 and r.shape[1] == 2
+            and len(r) >= 4 and bool((r[0] == r[-1]).all()))
+
+
+def _polygons_from_records(polys: list[dict]) -> list:
+    """:func:`_polygon_from_record` over a list, building every record whose
+    rings are already closed ``(n, 2)`` arrays in one
+    ``shapely.from_ragged_array`` call (~10× faster than a Polygon per
+    record on a 200k-polygon board). Anything else takes the per-record
+    path, so the result matches it either way."""
+    out: list = [None] * len(polys)
+    fast: list[int] = []
+    rings: list[np.ndarray] = []
+    rings_per_poly: list[int] = []
+    for i, poly in enumerate(polys):
+        ext = poly.get("exterior")
+        holes = poly.get("holes") or []
+        if _closed_xy_ring(ext) and all(_closed_xy_ring(h) for h in holes):
+            fast.append(i)
+            rings.append(ext)
+            rings.extend(holes)
+            rings_per_poly.append(1 + len(holes))
+        else:
+            out[i] = _polygon_from_record(poly)
+    if fast:
+        try:
+            coords = np.concatenate(rings).astype(np.float64, copy=False)
+            ring_off = np.zeros(len(rings) + 1, dtype=np.int64)
+            np.cumsum([len(r) for r in rings], out=ring_off[1:])
+            poly_off = np.zeros(len(fast) + 1, dtype=np.int64)
+            np.cumsum(rings_per_poly, out=poly_off[1:])
+            geoms = shapely.from_ragged_array(
+                shapely.GeometryType.POLYGON, coords, (ring_off, poly_off))
+            empty = shapely.is_empty(geoms)
+            for i, g, e in zip(fast, geoms.tolist(), empty.tolist()):
+                out[i] = None if e else g
+        except Exception:
+            for i in fast:
+                out[i] = _polygon_from_record(polys[i])
+    return out
+
+
+def _bridge_polygon_hits_slow(indexed: dict, bridges: list
+                              ) -> list[list[tuple[int, int]]]:
+    """Per-via reference for :func:`_bridge_polygon_hits_bulk`: for each
+    bridge, the first ``all_copper`` polygon (in STRtree candidate order)
+    its centre lies in or on, on each spanned layer, as ``(layer, id(poly))``
+    keys in span order. Polygons whose predicate raises are skipped."""
+    out: list[list[tuple[int, int]]] = []
+    for cx, cy, span in bridges:
+        pt = _sg.Point(cx, cy)
+        hits: list[tuple[int, int]] = []
+        for lid in span:
+            data = indexed.get(lid)
+            if data is None:
+                continue
+            try:
+                cand = data["tree"].query(pt)
+            except Exception:
+                continue
+            shapes = data["shapes"]
+            polys = data["polys"]
+            for j in cand:
+                try:
+                    idx = int(j)
+                except Exception:
+                    continue
+                try:
+                    if shapes[idx].intersects(pt):
+                        hits.append((lid, id(polys[idx])))
+                        break
+                except Exception:
+                    continue
+        out.append(hits)
+    return out
+
+
+def _bridge_polygon_hits_bulk(indexed: dict, bridges: list
+                              ) -> list[list[tuple[int, int]]]:
+    """Same result as :func:`_bridge_polygon_hits_slow`, computed per layer
+    with one bulk STRtree query and one vectorised ``intersects`` against
+    the *prepared* candidate polygons. The per-via form tested every via
+    against big unprepared pours one call at a time — ~30 s on a large
+    board, vs. well under a second here. Raises if any predicate fails
+    (invalid geometry); the caller then falls back to the per-via form."""
+    nb = len(bridges)
+    if not nb:
+        return []
+    pts = shapely.points(
+        np.fromiter((b[0] for b in bridges), dtype=float, count=nb),
+        np.fromiter((b[1] for b in bridges), dtype=float, count=nb),
+    )
+    on_layer: dict[int, list[int]] = {}
+    for i, (_cx, _cy, span) in enumerate(bridges):
+        for lid in span:
+            on_layer.setdefault(lid, []).append(i)
+    # first_hit[lid][i] = polygon index hit by bridge i on lid, else -1.
+    first_hit: dict[int, np.ndarray] = {}
+    for lid, members in on_layer.items():
+        data = indexed.get(lid)
+        if data is None:
+            continue
+        idx = np.asarray(members, dtype=np.int64)
+        src, dst = data["tree"].query(pts[idx])
+        if not len(src):
+            continue
+        shapes = np.asarray(data["shapes"], dtype=object)
+        shapely.prepare(shapes[np.unique(dst)])
+        hit = shapely.intersects(shapes[dst], pts[idx[src]])
+        src, dst = src[hit], dst[hit]
+        if not len(src):
+            continue
+        order = np.lexsort((dst, src))
+        src, dst = src[order], dst[order]
+        uniq, first, counts = np.unique(
+            src, return_index=True, return_counts=True)
+        arr = np.full(nb, -1, dtype=np.int64)
+        arr[idx[uniq]] = dst[first]
+        # The per-via form keeps the first intersecting candidate in a
+        # single-point query's order (tree traversal, not index order). A
+        # via inside two overlapping polygons on one layer is rare, so
+        # redo just those with that query to pick the same one.
+        for k in np.flatnonzero(counts > 1).tolist():
+            s = int(uniq[k])
+            hit_set = set(dst[first[k]:first[k] + counts[k]].tolist())
+            for c in data["tree"].query(pts[idx[s]]).tolist():
+                if c in hit_set:
+                    arr[idx[s]] = c
+                    break
+        first_hit[lid] = arr
+    out: list[list[tuple[int, int]]] = []
+    for i, (_cx, _cy, span) in enumerate(bridges):
+        hits: list[tuple[int, int]] = []
+        for lid in span:
+            arr = first_hit.get(lid)
+            if arr is None:
+                continue
+            j = int(arr[i])
+            if j >= 0:
+                hits.append((lid, id(indexed[lid]["polys"][j])))
+        out.append(hits)
+    return out
 
 
 class _EditorSelectionMixin:
@@ -276,27 +437,24 @@ class _EditorSelectionMixin:
             return cached
         import shapely.strtree as _st
         md = self.metadata or {}
-        buckets: dict[int, dict] = {}
+        flat: list[tuple[int, dict, object]] = []
         for rec in md.get("all_copper") or []:
             lid = rec.get("layer_id")
             if lid is None:
                 continue
             net = rec.get("net")
-            b = buckets.setdefault(
-                int(lid), {"shapes": [], "polys": [], "nets": []})
             for poly in rec.get("polygons", []):
-                ext = poly.get("exterior")
-                if ext is None or (hasattr(ext, "size") and ext.size == 0):
-                    continue
-                try:
-                    shp = _sg.Polygon(ext, poly.get("holes") or [])
-                except Exception:
-                    continue
-                if shp.is_empty:
-                    continue
-                b["shapes"].append(shp)
-                b["polys"].append(poly)
-                b["nets"].append(net)
+                flat.append((int(lid), poly, net))
+        shapes = _polygons_from_records([p for _l, p, _n in flat])
+        buckets: dict[int, dict] = {}
+        for (lid, poly, net), shp in zip(flat, shapes):
+            b = buckets.setdefault(
+                lid, {"shapes": [], "polys": [], "nets": []})
+            if shp is None:
+                continue
+            b["shapes"].append(shp)
+            b["polys"].append(poly)
+            b["nets"].append(net)
         out: dict[int, dict] = {}
         for lid, b in buckets.items():
             if not b["shapes"]:
@@ -304,6 +462,10 @@ class _EditorSelectionMixin:
             out[lid] = {
                 "tree": _st.STRtree(b["shapes"]),
                 "shapes": b["shapes"],
+                # Polygon areas in one vectorised call — the net table and
+                # the region auto-namer sum these over every component.
+                "areas": shapely.area(
+                    np.asarray(b["shapes"], dtype=object)).tolist(),
                 "polys": b["polys"],
                 "nets": b["nets"],
             }
@@ -325,6 +487,10 @@ class _EditorSelectionMixin:
             cand = data["tree"].query(pt)
         except Exception:
             return None
+        # A no-net polygon can overlap netted copper (a free region drawn
+        # over a fill), so a "(none)" hit only wins when no real net covers
+        # the point too.
+        fallback = None
         for j in cand:
             try:
                 idx = int(j)
@@ -333,15 +499,19 @@ class _EditorSelectionMixin:
             net = nets[idx]
             if not net:
                 continue
+            if net == "(none)" and fallback is not None:
+                continue
             prepped = self._copper_poly_prepared(polys[idx])
             if prepped is None:
                 continue
             try:
                 if prepped.contains(pt):
-                    return net
+                    if net != "(none)":
+                        return net
+                    fallback = net
             except Exception:
                 continue
-        return None
+        return fallback
 
     def _connected_components_data(self) -> dict:
         """Cached connected-components decomposition of every
@@ -355,7 +525,9 @@ class _EditorSelectionMixin:
         Polygons are coupled iff some via / THP centre lies inside both
         of them on their respective layers. The boundary is treated as
         inside (``intersects``, not ``contains``), so a via that drops
-        exactly on the edge of a pour still bridges the two layers."""
+        exactly on the edge of a pour still bridges the two layers.
+        No-net (``"(none)"``) polygons are also coupled to any polygon they
+        touch or overlap on their own layer."""
         cached = getattr(self, "_cc_cache", None)
         if cached is not None:
             return cached
@@ -381,32 +553,71 @@ class _EditorSelectionMixin:
             if ra != rb:
                 parent[rb] = ra
 
-        for cx, cy, span in bridges:
-            pt = _sg.Point(cx, cy)
-            hits: list[tuple[int, int]] = []
-            for lid in span:
-                data = indexed.get(lid)
-                if data is None:
-                    continue
-                try:
-                    cand = data["tree"].query(pt)
-                except Exception:
-                    continue
-                shapes = data["shapes"]
-                polys = data["polys"]
-                for j in cand:
-                    try:
-                        idx = int(j)
-                    except Exception:
-                        continue
-                    try:
-                        if shapes[idx].intersects(pt):
-                            hits.append((lid, id(polys[idx])))
-                            break
-                    except Exception:
-                        continue
+        try:
+            bridge_hits = _bridge_polygon_hits_bulk(indexed, bridges)
+        except Exception:
+            # Invalid geometry can make the bulk predicate raise; fall back
+            # to per-via tests, which skip just the polygons that fail.
+            logging.getLogger(__name__).debug(
+                "bulk via/PTH coupling failed; per-via fallback",
+                exc_info=True)
+            bridge_hits = _bridge_polygon_hits_slow(indexed, bridges)
+        for hits in bridge_hits:
             for h in hits[1:]:
                 union(hits[0], h)
+
+        # Same-layer overlap with no-net copper. Each real net's copper is
+        # already one union per layer, but no-net primitives (a free
+        # "Place > Region" drawn on top of a netted fill, say) stay
+        # separate polygons even though they touch or overlap other copper.
+        # Physically they're one piece, so they join that piece's
+        # component. Different real nets are never joined to each other
+        # here: overlap between them is a short, not one net.
+        import numpy as _np
+        import shapely as _shp
+        for lid, data in indexed.items():
+            none_idx = _np.array(
+                [i for i, n in enumerate(data["nets"])
+                 if not n or n == "(none)"], dtype=_np.int64)
+            if not len(none_idx):
+                continue
+            shapes = _np.asarray(data["shapes"], dtype=object)
+            polys = data["polys"]
+            try:
+                # Bounding-box candidates first, then the exact test with
+                # the *other* polygon prepared: the no-net pieces are
+                # usually small and the copper they sit on is a big pour
+                # with thousands of vertices, which unprepared costs ~20 s
+                # across a large board (vs <1 s prepared).
+                src, dst = data["tree"].query(shapes[none_idx])
+                src = none_idx[src]
+                keep = src != dst
+                src, dst = src[keep], dst[keep]
+                if not len(src):
+                    continue
+                _shp.prepare(shapes[_np.unique(dst)])
+                hit = _shp.intersects(shapes[dst], shapes[src])
+                pairs = zip(src[hit].tolist(), dst[hit].tolist())
+            except Exception:
+                # Invalid geometry can make the bulk predicate raise; fall
+                # back to per-pair tests and skip the polygons that fail.
+                pairs = []
+                for i in none_idx.tolist():
+                    try:
+                        cand = data["tree"].query(shapes[i])
+                    except Exception:
+                        continue
+                    for j in cand:
+                        j = int(j)
+                        if j == i:
+                            continue
+                        try:
+                            if shapes[i].intersects(shapes[j]):
+                                pairs.append((i, j))
+                        except Exception:
+                            continue
+            for i, j in pairs:
+                union((lid, id(polys[i])), (lid, id(polys[j])))
 
         component_of: dict[tuple[int, int], tuple[int, int]] = {}
         members_of: dict[tuple[int, int], set[tuple[int, int]]] = {}
@@ -415,7 +626,19 @@ class _EditorSelectionMixin:
             component_of[key] = root
             members_of.setdefault(root, set()).add(key)
 
-        cache = {"component_of": component_of, "members_of": members_of}
+        # The real (Altium) net of each component that carries one. A
+        # CopperName only names copper that has no net of its own, and a
+        # no-net polygon joined to netted copper reports that copper's net.
+        real_net_of: dict[tuple[int, int], str] = {}
+        for lid, data in indexed.items():
+            for poly, net in zip(data["polys"], data["nets"]):
+                if net and net != "(none)":
+                    root = component_of.get((lid, id(poly)))
+                    if root is not None:
+                        real_net_of.setdefault(root, net)
+
+        cache = {"component_of": component_of, "members_of": members_of,
+                 "real_net_of": real_net_of}
         self._cc_cache = cache
         return cache
 
@@ -469,7 +692,10 @@ class _EditorSelectionMixin:
         apply here. "Connected" means the click polygon and the anchor
         polygon are in the same via-coupled component — so a rename
         placed on top-layer copper is also found when the user clicks
-        the same rail's bottom-layer piece."""
+        the same rail's bottom-layer piece.
+
+        Copper connected to a real net is never "named": its net wins, even
+        if a stale rename's anchor happens to sit on it."""
         if self._project is None or not self._project.copper_names:
             return None
         if layer_id is None:
@@ -481,6 +707,8 @@ class _EditorSelectionMixin:
         seed_key = (int(layer_id), id(click_poly))
         root = cc["component_of"].get(seed_key)
         if root is None:
+            return None
+        if root in cc.get("real_net_of", ()):
             return None
         members = cc["members_of"].get(root)
         if not members:
@@ -511,6 +739,22 @@ class _EditorSelectionMixin:
                     continue
         return None
 
+    def _connected_real_net(self, world_x: float, world_y: float,
+                            layer_id: int | None) -> str | None:
+        """The real net of the copper connected to the no-net polygon at
+        the point, or ``None``. A free region drawn over a netted fill has
+        no net of its own but is physically part of that net."""
+        if layer_id is None:
+            return None
+        poly = self._copper_poly_under_point(world_x, world_y, layer_id)
+        if poly is None:
+            return None
+        cc = self._connected_components_data()
+        root = cc["component_of"].get((int(layer_id), id(poly)))
+        if root is None:
+            return None
+        return cc.get("real_net_of", {}).get(root)
+
     def _copper_name_override(self, world_x: float, world_y: float,
                                layer_id: int | None) -> str | None:
         """The user-given net name for the unnamed copper polygon at
@@ -528,8 +772,10 @@ class _EditorSelectionMixin:
         through unchanged."""
         if pick is None or pick.get("net") != "(none)":
             return pick
-        new_name = self._copper_name_override(
-            world_x, world_y, pick.get("layer_id"))
+        new_name = (self._connected_real_net(
+                        world_x, world_y, pick.get("layer_id"))
+                    or self._copper_name_override(
+                        world_x, world_y, pick.get("layer_id")))
         if new_name is None:
             return pick
         out = dict(pick)

@@ -48,14 +48,29 @@ class _PendingRailsMixin:
                 groups.append(target)
             target["nets"] |= conn
             target["roles"].add(d.role)
-        solved = set(self._rail_names)
+        solved = self._solved_rail_nets()
         pending: dict[str, list[str]] = {}
         for g in groups:
             if "SOURCE" in g["roles"] and "SINK" in g["roles"]:
-                name = self._rail_name_for(g["nets"])
-                if name not in solved:
-                    pending[name] = sorted(g["nets"])
+                # Solved if ANY of the group's nets belongs to a solved rail.
+                # Comparing only the display name breaks when the solver
+                # named the rail after a different member (e.g. solved as
+                # HS_SNS while _rail_name_for picks +12V from the same group).
+                if any(n.upper() in solved for n in g["nets"] if n):
+                    continue
+                pending[self._rail_name_for(g["nets"])] = sorted(g["nets"])
         return pending
+
+    def _solved_rail_nets(self) -> set[str]:
+        """Upper-cased names of every net the current solution covers:
+        rail names, their member nets, and nets the low-Ω merge folded
+        into a member (shown as sections under it)."""
+        out: set[str] = {r.upper() for r in (self._rail_names or [])}
+        for members in (getattr(self, "_rail_to_members", None) or {}).values():
+            out.update(m.upper() for m in members if m)
+        for kids in (getattr(self, "_merged_children", None) or {}).values():
+            out.update(k.upper() for k in kids if k)
+        return out
 
     def _update_pending_rails(self) -> None:
         """Rebuild the pending-rail rows in the Rails list. Pending rails
@@ -321,6 +336,15 @@ class _PendingRailsMixin:
             and self._adaptive_gain_check.isEnabled()
             and self._adaptive_gain_check.isChecked()
         )
+        # Enabled only because the Bridges tab changed which nets exist, with
+        # no rail to solve yet: rebuild the design (nets, merges, Bridges
+        # rows) without solving, instead of failing on "not solveable".
+        load_only = not self._has_solveable_directives()
+        if load_only:
+            dialog_title = "Rebuilding design"
+            dialog_text = ("Rebuilding the design with your Bridges changes…\n"
+                           "Nothing is solved yet: the design needs a SOURCE "
+                           "and a SINK on the same rail.")
         self._start_solve_worker(
             Path(prjpcb), new_settings,
             warn_a, pct,
@@ -332,7 +356,8 @@ class _PendingRailsMixin:
             copper_names=copper_names,
             loaded_project=self._loaded_project,
             is_resolve=True,
-            adaptive_regulator_gain=adaptive_gain,
+            load_only=load_only,
+            adaptive_regulator_gain=adaptive_gain and not load_only,
             dialog_title=dialog_title,
             dialog_text=dialog_text,
             dialog_width_scale=dialog_width_scale,

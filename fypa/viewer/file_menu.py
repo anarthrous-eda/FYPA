@@ -36,6 +36,17 @@ from fypa.viewer.theme import _file_dialog_options, _T
 from fypa.viewer.widgets import _esc
 
 
+class _SaveStageError(Exception):
+    """A save step failed; carries the dialog title and the file it was
+    writing so the error box names the right one."""
+
+    def __init__(self, title: str, target, error: BaseException) -> None:
+        super().__init__(f"{title}: {target}: {error}")
+        self.title = title
+        self.target = target
+        self.error = error
+
+
 class _ProjectSaveDialog(QDialog):
     """The Ctrl+S popup. Two choices: save the project file only, or save
     the project file plus the latest solver run. ``choice`` is ``"project"``,
@@ -534,10 +545,15 @@ class _FileMenuMixin:
         )
         if not path_str:
             return
-        try:
-            from fypa.cli import save_solution_file
-            save_solution_file(Path(path_str), self.solution, self.metadata)
-        except Exception as e:
+        from fypa.cli import save_solution_file
+        from fypa.viewer.save_progress import run_save_with_progress
+        solution, metadata = self.solution, self.metadata
+        _, e = run_save_with_progress(
+            self, "Saving solution",
+            lambda status: save_solution_file(
+                Path(path_str), solution, metadata, status=status),
+        )
+        if e is not None:
             QMessageBox.critical(
                 self, "Couldn't save solution",
                 f"Failed to write {path_str}:\n\n{type(e).__name__}: {e}",
@@ -721,9 +737,21 @@ class _FileMenuMixin:
             out[key] = entry
         proj.viewer_settings["overlay_colors"] = out
 
-    def _save_project(self, path: Path | None = None) -> bool:
+    def _save_project(self, path: Path | None = None, *,
+                      solution_target: Path | None = None) -> bool:
         """Write the ``.fypa`` project file. Falls back to a Save-As prompt
-        when no path is known yet. Returns True on success."""
+        when no path is known yet. Returns True on success.
+
+        With ``solution_target`` the current solution is pickled there first
+        and the project points at it (Save project + latest solver run).
+
+        The file work — copying the cache pickles beside the ``.fypa`` and
+        pickling the solution, hundreds of MB on a large design — runs on a
+        worker thread behind a progress dialog, so the window doesn't freeze.
+        Everything that reads viewer state happens here on the GUI thread
+        first; the worker only sees plain values."""
+        if getattr(self, "_project_save_running", False):
+            return False
         proj = self._ensure_project()
         if path is None:
             path = self._project_path
@@ -741,16 +769,52 @@ class _FileMenuMixin:
         stackup_entries = self._project_stackup_overrides_for_save()
         if stackup_entries is not None:
             proj.stackup_overrides = stackup_entries
-        # Copy the solve + design-info cache pickles into the project folder
-        # so the .fypa references its own sidecars (relative paths) and the
-        # folder can be shared as a unit — see _bundle_caches_beside_project.
-        self._bundle_caches_beside_project(proj, path)
+
+        caches = self._project_pickle_paths()
+        solution = self.solution
+        metadata = self.metadata
+
+        def _work(status):
+            if solution_target is not None:
+                from fypa.cli import save_solution_file
+                try:
+                    save_solution_file(solution_target, solution, metadata,
+                                       status=status)
+                except Exception as e:
+                    raise _SaveStageError(
+                        "Couldn't save solution", solution_target, e) from e
+                proj.solve_pickle = str(solution_target)
+            # Copy the solve + design-info cache pickles into the project
+            # folder so the .fypa references its own sidecars (relative
+            # paths) and the folder can be shared as a unit — see
+            # _bundle_caches_beside_project.
+            self._bundle_caches_beside_project(
+                proj, path, status=status, caches=caches,
+                solution=solution, metadata=metadata)
+            status.begin(f"Writing project file ({path.name})…")
+            try:
+                proj.save(path)
+            except Exception as e:
+                raise _SaveStageError("Couldn't save project", path, e) from e
+
+        from fypa.viewer.save_progress import run_save_with_progress
+        self._project_save_running = True
+        self.statusBar().showMessage(f"Saving project to {path}…")
         try:
-            proj.save(path)
-        except Exception as e:
+            _, exc = run_save_with_progress(self, "Saving project", _work)
+        finally:
+            self._project_save_running = False
+        if exc is not None:
+            self.statusBar().clearMessage()
+            if isinstance(exc, _SaveStageError):
+                title, target, err = exc.title, exc.target, exc.error
+            else:
+                title, target, err = "Couldn't save project", path, exc
+            logging.getLogger(__name__).error(
+                "%s: %s: %s", title, target, err)
             QMessageBox.critical(
-                self, "Couldn't save project",
-                f"Failed to write {path}:\n\n{type(e).__name__}: {e}",
+                self, title,
+                f"Failed to write {target}:\n\n{type(err).__name__}: {err}",
             )
             return False
         self._project_path = path
@@ -759,7 +823,9 @@ class _FileMenuMixin:
         self.statusBar().showMessage(f"Saved project to {path}", 5000)
         return True
 
-    def _bundle_caches_beside_project(self, proj, path: Path) -> None:
+    def _bundle_caches_beside_project(self, proj, path: Path, *,
+                                      status=None, caches=None,
+                                      solution=None, metadata=None) -> None:
         """Copy the solve + design-info cache pickles into the ``.fypa``'s
         own folder and re-point ``proj`` at those sidecars.
 
@@ -774,13 +840,22 @@ class _FileMenuMixin:
         Best-effort: a failed copy leaves ``proj`` pointing at the original
         source so saving still succeeds (just non-portable), rather than
         aborting the save.
-        """
-        import shutil
 
-        di_cache, sv_cache = self._project_pickle_paths()
+        May run on the save worker thread: pass ``caches`` (from
+        :meth:`_project_pickle_paths`), ``solution`` and ``metadata`` read on
+        the GUI thread so nothing here touches viewer state. ``status`` (a
+        :class:`~fypa.viewer.save_progress.SaveStatus`) gets per-file progress.
+        """
+        from fypa.viewer.save_progress import copy_with_progress
+
+        if caches is None:
+            caches = self._project_pickle_paths()
+            solution = self.solution
+            metadata = self.metadata
+        di_cache, sv_cache = caches
 
         def _adopt(current: str | None, cache: str | None,
-                   suffix: str) -> str | None:
+                   suffix: str, label: str) -> str | None:
             target = path.with_name(path.stem + suffix)
             src = None
             if current and Path(current).exists():
@@ -791,28 +866,32 @@ class _FileMenuMixin:
                 return current
             try:
                 if src.resolve() != target.resolve():
-                    shutil.copy2(src, target)
+                    copy_with_progress(
+                        src, target, status,
+                        f"Copying {label} ({target.name})…")
                 return str(target)
             except OSError:
                 return str(src)
 
         proj.solve_pickle = _adopt(
-            proj.solve_pickle, sv_cache, "_solve.pkl")
+            proj.solve_pickle, sv_cache, "_solve.pkl", "solution")
         # Fall back to the in-memory solution when no pickle exists on disk
         # yet (e.g. a board solved this session whose cache was cleared).
         if (not proj.solve_pickle
                 or not Path(proj.solve_pickle).exists()) \
-                and self.solution is not None:
+                and solution is not None:
             solve_target = path.with_name(path.stem + "_solve.pkl")
             try:
                 from fypa.cli import save_solution_file
-                save_solution_file(solve_target, self.solution, self.metadata)
+                save_solution_file(solve_target, solution, metadata,
+                                   status=status)
                 proj.solve_pickle = str(solve_target)
             except Exception:
                 pass
 
         proj.design_info_pickle = _adopt(
-            proj.design_info_pickle, di_cache, "_design-info.pkl")
+            proj.design_info_pickle, di_cache, "_design-info.pkl",
+            "design info")
 
     def _save_project_and_solution(self) -> bool:
         """Write the ``.fypa`` plus the current solution. The solution goes
@@ -823,17 +902,7 @@ class _FileMenuMixin:
             return False
         path = Path(path)
         solve_path = path.with_name(path.stem + "_solve.pkl")
-        try:
-            from fypa.cli import save_solution_file
-            save_solution_file(solve_path, self.solution, self.metadata)
-        except Exception as e:
-            QMessageBox.critical(
-                self, "Couldn't save solution",
-                f"Failed to write {solve_path}:\n\n{type(e).__name__}: {e}",
-            )
-            return False
-        self._ensure_project().solve_pickle = str(solve_path)
-        if not self._save_project(path):
+        if not self._save_project(path, solution_target=solve_path):
             return False
         self._solved_since_save = False
         self.statusBar().showMessage(

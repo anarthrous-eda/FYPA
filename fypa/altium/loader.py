@@ -494,6 +494,8 @@ class LoadedProject:
         merged_net_names: frozenset[str] | None = None,
         no_auto_bridge_applied: frozenset[str] | None = None,
         auto_series_max_ohm_applied: float | None = None,
+        premerge_pad_nets: dict[tuple[int, str], int] | None = None,
+        premerge_primitive_nets: dict[str, dict[int, int]] | None = None,
     ) -> None:
         self.extracted = extracted
         self.annotations = annotations
@@ -521,6 +523,21 @@ class LoadedProject:
         # annotation parsing, so a different limit means a reload.
         self.auto_series_max_ohm_applied: float | None = (
             auto_series_max_ohm_applied
+        )
+        # ``(component_index, PAD_DESIGNATOR) -> net index before the merge``,
+        # for component pads whose net the low-Ω merge rewrote. After the
+        # merge a pad only reports its canonical net, so without this a
+        # transistor whose drain net was folded into its source net shows
+        # one net on every power pin and cannot be set up in the Bridges tab.
+        self.premerge_pad_nets: dict[tuple[int, str], int] = (
+            premerge_pad_nets or {}
+        )
+        # ``{"tracks": {index: original net}, ..., "planes": {layer_id: net}}``
+        # for every primitive (and internal plane) the merge moved onto a
+        # canonical net. Lets the viewer's hover say "Net = +12V (HS_SNS)"
+        # over copper that only became +12V because of the merge.
+        self.premerge_primitive_nets: dict[str, dict[int, int]] = (
+            premerge_primitive_nets or {}
         )
         if geometry is not None:
             # Seed the cached_property's slot so the lazy compute is skipped.
@@ -783,6 +800,9 @@ def replace_loaded(
             loaded, "no_auto_bridge_applied", frozenset()),
         auto_series_max_ohm_applied=getattr(
             loaded, "auto_series_max_ohm_applied", None),
+        premerge_pad_nets=getattr(loaded, "premerge_pad_nets", None),
+        premerge_primitive_nets=getattr(
+            loaded, "premerge_primitive_nets", None),
     )
 
 
@@ -3586,6 +3606,9 @@ def build_solve_metadata(
         "pads": pads_outline,
         "stubs": stubs,
         "all_copper": all_copper,
+        # Copper of nets the low-Ω merge folded into another, under the
+        # ORIGINAL name — the hover's "Net = +12V (HS_SNS)".
+        "premerged_copper": build_premerged_copper_records(loaded),
         "primitives": primitives,
         # Overlays-control geometry (Heatmap tab): silkscreen lines,
         # component bounding boxes, reference-designator text.
@@ -4330,6 +4353,241 @@ def _bridge_part_kind(designator: str) -> str | None:
     return None
 
 
+# Transistors are listed apart from the conducting prefixes above: whether one
+# joins its drain and source depends on the gate drive, which FYPA cannot see,
+# so a transistor is never bridged on its own and has no "impact" advisory.
+# The Bridges tab lets the user say "this one is on" and pick which pads form
+# each side, because a power FET's drain and source are usually several pads.
+_TRANSISTOR_DESIGNATOR_PATTERN = re.compile(r"^Q\d", re.IGNORECASE)
+
+# The magnitude-and-prefix head of an Rds(on) value: "700µΩ", "1.2 mΩ @ 10V",
+# and "700µO" (a PCB record whose Ω did not survive the encoding) all keep
+# their number and SI prefix.
+_RDS_ON_VALUE_RE = re.compile(
+    r"\s*((?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*([pnuµμmk]?)")
+
+
+# A net named like a gate drive: HS_GATE1, GATE_DRV, Q4_G, PWR_SW_G2.
+_GATE_NET_NAME_RE = re.compile(r"GATE|(?:^|[_\-.])G\d*$", re.IGNORECASE)
+
+
+def _is_transistor_designator(designator: str) -> bool:
+    return bool(_TRANSISTOR_DESIGNATOR_PATTERN.match((designator or "").strip()))
+
+
+def _rds_on_from_parameters(*param_dicts) -> float | None:
+    """The part's on-resistance in ohms, from an ``Rds(on)``-style parameter.
+
+    Library parts spell it many ways ("Drain to Source Resistance",
+    "RDS(on)", "Rds On Max", "Drain-Source On Resistance"), so keys are
+    compared with everything but letters stripped. Only used to pre-fill the
+    Bridges tab's resistance box — never applied without the user saving it.
+    """
+    from fypa.altium.annotations import parse_si_value
+    for params in param_dicts:
+        for key, val in (params or {}).items():
+            norm = re.sub(r"[^a-z]", "", str(key).lower())
+            if not ("rdson" in norm
+                    or ("resistance" in norm
+                        and ("drain" in norm or norm.startswith("on")))):
+                continue
+            m = _RDS_ON_VALUE_RE.match(str(val or ""))
+            if not m:
+                continue
+            try:
+                ohms = parse_si_value(m.group(1) + m.group(2))
+            except ValueError:
+                continue
+            if ohms > 0:
+                return float(ohms)
+    return None
+
+
+def _pad_sort_key(pad: str):
+    return (not pad.isdigit(), int(pad) if pad.isdigit() else 0, pad)
+
+
+def merge_path(absorbed_bridges, start: int, goal: int,
+               net_name) -> list[dict]:
+    """The chain of absorbed links joining net ``start`` to net ``goal``.
+
+    ``[{"via": "R80", "net": "+12V_IN"}, {"via": "R1", "net": "+12V_MEZZ"},
+    {"via": "R2", "net": "+12V"}]`` — each step names the link and the net it
+    reaches. Shortest chain first (breadth-first over the bridge records);
+    ``[]`` when the two nets are not joined by the recorded links.
+    """
+    if start == goal:
+        return []
+    adj: dict[int, list[tuple[int, str]]] = {}
+    for b in absorbed_bridges or ():
+        a, c = int(b.p_net_index), int(b.n_net_index)
+        if a == c:
+            continue
+        adj.setdefault(a, []).append((c, b.designator))
+        adj.setdefault(c, []).append((a, b.designator))
+    prev: dict[int, tuple[int, str]] = {}
+    frontier = [start]
+    seen = {start}
+    while frontier and goal not in seen:
+        nxt = []
+        for n in frontier:
+            for m, des in sorted(adj.get(n, ()), key=lambda e: (e[1], e[0])):
+                if m in seen:
+                    continue
+                seen.add(m)
+                prev[m] = (n, des)
+                nxt.append(m)
+        frontier = nxt
+    if goal not in prev:
+        return []
+    steps = []
+    n = goal
+    while n != start:
+        p, des = prev[n]
+        steps.append({"via": des, "net": net_name(n)})
+        n = p
+    return steps[::-1]
+
+
+def _transistor_candidate(
+    loaded: LoadedProject, comp_idx: int, des: str, pads: list,
+    series, annotated: bool, net_name, *, sch_designator: str | None = None,
+) -> dict | None:
+    """One Bridges-tab record for a transistor, or ``None`` when its pads do
+    not reach two nets.
+
+    Pads are reported with the net they were on *before* the low-Ω merge as
+    well as the one they are on now, so a drain net that a sense resistor's
+    merge folded into the source net is still visible (and explained) rather
+    than silently showing every power pin on one rail.
+    """
+    from fypa.altium.annotations import _component_value_text
+    proj = loaded.extracted
+    comp = proj.pcb_components[comp_idx]
+    pre = getattr(loaded, "premerge_pad_nets", None) or {}
+    n_nets = len(proj.nets)
+
+    by_pad: dict[str, dict] = {}
+    for pd in pads:
+        pdes = (pd.designator or "").strip()
+        if not pdes:
+            continue
+        cur = int(pd.net_index)
+        orig = int(pre.get((comp_idx, pdes.upper()), cur))
+        by_pad.setdefault(pdes.upper(),
+                          {"pad": pdes, "_cur": cur, "_orig": orig})
+
+    def _valid(i: int) -> bool:
+        return i != NO_NET and 0 <= i < n_nets
+
+    pads_by_net: dict[int, int] = {}
+    for row in by_pad.values():
+        if _valid(row["_orig"]):
+            pads_by_net[row["_orig"]] = pads_by_net.get(row["_orig"], 0) + 1
+    if len(pads_by_net) < 2:
+        return None
+    # Most pads first (a power FET's gang of source pins), then net index.
+    ranked = sorted(pads_by_net, key=lambda i: (-pads_by_net[i], i))
+
+    # Default sides: everything but the gate. Pad size cannot find the gate
+    # — library parts often carry the drain tab as copper outside a tiny
+    # placeholder pad, and on a SOT-23 every pad is the same — so the gate
+    # is found by name: a pad called "G", or the one net named like a gate.
+    # With the gate known and exactly two nets left, those are drain and
+    # source; anything less certain offers no guess rather than a wrong one.
+    gate_nets = {row["_orig"] for row in by_pad.values()
+                 if row["pad"].upper() == "G" and _valid(row["_orig"])}
+    if not gate_nets:
+        gate_nets = {i for i in pads_by_net
+                     if _GATE_NET_NAME_RE.search(net_name(i) or "")}
+    rest = [i for i in ranked if i not in gate_nets]
+    guess = len(gate_nets) == 1 and len(rest) == 2
+    if guess:
+        a_net, b_net = rest
+    else:
+        a_net, b_net = ranked[0], ranked[1]
+
+    absorbed = list(getattr(loaded, "absorbed_bridges", ()) or ())
+
+    pad_rows = []
+    for row in sorted(by_pad.values(), key=lambda r: _pad_sort_key(r["pad"])):
+        cur, orig = row["_cur"], row["_orig"]
+        path = (merge_path(absorbed, orig, cur, net_name)
+                if orig != cur and _valid(orig) else [])
+        pad_rows.append({
+            "pad": row["pad"],
+            "net": net_name(cur) if _valid(cur) else "",
+            "orig_net": net_name(orig) if _valid(orig) else "",
+            # Every link between the original net and the one it ended up
+            # on, in order — a net is often merged in several hops (HS_SNS
+            # via R80 onto +12V_IN, which R1 and R2 then join to +12V).
+            "merge_path": path,
+            "merged_by": [step["via"] for step in path],
+        })
+
+    def _pins_on(net_idx: int) -> list[str]:
+        return [r["pad"] for r in sorted(by_pad.values(),
+                                         key=lambda r: _pad_sort_key(r["pad"]))
+                if r["_orig"] == net_idx]
+
+    sch_key = (sch_designator or des).strip().upper()
+    sch = next((s for s in proj.sch_components
+                if s.designator.strip().upper() == sch_key), None)
+    sch_params = getattr(sch, "parameters", None) or {}
+    value = _component_value_text(sch_params or comp.parameters)
+    rds = _rds_on_from_parameters(sch_params, comp.parameters)
+
+    rec: dict = {
+        "designator": des,
+        "kind": "transistor",
+        "value": value,
+        "footprint": str(comp.footprint or ""),
+        "pin_count": len(by_pad),
+        "net_a": net_name(a_net),
+        "net_b": net_name(b_net),
+        "nets": [net_name(i) for i in ranked],
+        "fet": True,
+        "pads": pad_rows,
+        "default_a_pins": _pins_on(a_net) if guess else [],
+        "default_b_pins": _pins_on(b_net) if guess else [],
+        "rds_on_ohm": rds,
+        "impact": "",
+        "excluded_net": "",
+        "touches_active_rail": False,
+        "x_mm": float(comp.center.x),
+        "y_mm": float(comp.center.y),
+        "layer_id": int(pads[0].layer_id),
+        "_pair": (a_net, b_net),
+    }
+    if series is not None:
+        rec["state"] = "series"
+        rec["resistance_ohm"] = float(series.resistance)
+        rec["a_pins"] = [p.pad_designator for p in series.p.pins]
+        rec["b_pins"] = [p.pad_designator for p in series.n.pins]
+        p_net = next((p.net_index for p in series.p.pins), NO_NET)
+        n_net = next((p.net_index for p in series.n.pins), NO_NET)
+        if _valid(p_net) and _valid(n_net):
+            rec["net_a"], rec["net_b"] = net_name(p_net), net_name(n_net)
+        rec["why"] = "modelled as switched on (SERIES)"
+    elif annotated:
+        rec["state"] = "annotated"
+        rec["resistance_ohm"] = None
+        rec["why"] = "already annotated in Altium — its copper is in the model"
+    else:
+        rec["state"] = "open"
+        rec["resistance_ohm"] = None
+        rec["why"] = ("left open: a transistor conducts only when driven. "
+                      "Pick its pins and give it Rds(on) to model it as on")
+        if not guess and len(pads_by_net) < 3:
+            rec["why"] += (". Its pads reach only two nets, so drain or "
+                           "source may have been merged into the other; "
+                           "pick the pins yourself")
+        elif not guess:
+            rec["why"] += (". Its gate could not be told from its pin or "
+                           "net names, so pick the pins yourself")
+    return rec
+
+
 def collect_bridge_candidates(loaded: LoadedProject) -> list[dict]:
     """Every part that electrically joins two nets, and what FYPA did with it.
 
@@ -4407,6 +4665,23 @@ def collect_bridge_candidates(loaded: LoadedProject) -> list[dict]:
         kind = _bridge_part_kind(des)
         absorbed = absorbed_by_des.get(key)
         series = series_by_des.get(key)
+        if (kind is None and absorbed is None
+                and _is_transistor_designator(des)):
+            # The PHYSICAL designator: in a multi-channel design every
+            # placement shares the schematic one ("Q8"), and a directive
+            # saved under it would bind to whichever placement resolves
+            # first. The editor resolver falls back to the physical
+            # designator ("Q8_PWR_SW5"), which is unique per placement.
+            phys = (comp.designator or des).strip()
+            phys_key = phys.upper()
+            rec = _transistor_candidate(
+                loaded, comp_idx, phys, pads,
+                series_by_des.get(phys_key),
+                phys_key in annotated_des,
+                _net_name, sch_designator=des)
+            if rec is not None:
+                out.append(rec)
+            continue
         # A part the tool already models counts even if its prefix is not on
         # the conducting list — the user's own annotation outranks the
         # heuristic.
@@ -5658,6 +5933,130 @@ def _carry_absorbed_notes(first: AnnotationResult,
         second.absorbed_notes.append(note)
 
 
+def _premerge_pad_nets(
+    proj: ExtractedProject, remap: dict[int, int],
+) -> dict[tuple[int, str], int]:
+    """``(component_index, PAD_DESIGNATOR) -> original net`` for every
+    component pad the merge is about to move. See
+    :attr:`LoadedProject.premerge_pad_nets`."""
+    out: dict[tuple[int, str], int] = {}
+    for pad in proj.pads:
+        ci = getattr(pad, "component_index", None)
+        if ci is None or ci < 0 or pad.net_index not in remap:
+            continue
+        out.setdefault((int(ci), (pad.designator or "").strip().upper()),
+                       int(pad.net_index))
+    return out
+
+
+# The primitive tuples :func:`_apply_net_remap` rewrites, by attribute name.
+_REMAPPED_PRIMITIVE_KINDS: tuple[str, ...] = (
+    "tracks", "arcs", "vias", "pads", "regions", "shape_based_regions",
+    "fills", "split_planes",
+)
+
+
+def _premerge_primitive_nets(
+    proj: ExtractedProject, remap: dict[int, int],
+) -> dict[str, dict[int, int]]:
+    """``{kind: {index: original net}}`` for every primitive the merge is
+    about to move, plus ``"planes": {layer_id: original net}`` for internal
+    planes flooded by a merged-away net. Indices are positions in the
+    primitive tuples, which :func:`_apply_net_remap` preserves."""
+    out: dict[str, dict[int, int]] = {}
+    for kind in _REMAPPED_PRIMITIVE_KINDS:
+        moved = {i: int(it.net_index)
+                 for i, it in enumerate(getattr(proj, kind, ()) or ())
+                 if it.net_index in remap}
+        if moved:
+            out[kind] = moved
+    name_to_index: dict[str, int] = {}
+    for i, net in enumerate(proj.nets):
+        name_to_index.setdefault(net.name, i)
+    planes = {}
+    for s in proj.stackup:
+        if s.is_plane and s.plane_net_name:
+            idx = name_to_index.get(s.plane_net_name)
+            if idx is not None and idx in remap:
+                planes[int(s.layer_id)] = idx
+    if planes:
+        out["planes"] = planes
+    return out
+
+
+def build_premerged_copper_records(loaded: LoadedProject) -> list[dict]:
+    """Copper outlines of every net the low-Ω merge folded away, under its
+    ORIGINAL name, for the viewer's hover ("Net = +12V (HS_SNS)").
+
+    After the merge each primitive carries only the canonical net, so the
+    copper that used to be HS_SNS is indistinguishable from +12V's own. This
+    rebuilds just the moved primitives under their original nets — a small
+    fraction of the board — in the same record form as ``all_copper``, with
+    the canonical name added. An internal plane flooded by a merged-away net
+    is one ``whole_layer`` record with no polygons.
+
+    Best effort: a failure returns ``[]`` and the hover simply shows the
+    canonical name, as before.
+    """
+    moved = getattr(loaded, "premerge_primitive_nets", None) or {}
+    if not moved:
+        return []
+    proj = loaded.extracted
+    n_nets = len(proj.nets)
+
+    def _name(i: int) -> str:
+        return proj.nets[i].name if 0 <= i < n_nets else "?"
+
+    out: list[dict] = []
+    for lid, orig in (moved.get("planes") or {}).items():
+        stack = next((s for s in proj.stackup if s.layer_id == lid), None)
+        canonical = stack.plane_net_name if stack is not None else None
+        out.append({"layer_id": int(lid), "net": _name(orig),
+                    "canonical": canonical or "", "whole_layer": True,
+                    "polygons": []})
+    try:
+        from fypa.altium_geometry import (
+            _shapes_to_geometry_layers,
+            build_net_layer_shapes,
+        )
+        replaced: dict = {}
+        canonical_of: dict[int, int] = {}
+        for kind in _REMAPPED_PRIMITIVE_KINDS:
+            idx_map = moved.get(kind)
+            if not idx_map:
+                if kind != "split_planes":
+                    replaced[kind] = ()
+                continue
+            items = getattr(proj, kind, ()) or ()
+            keep = []
+            for i, orig in idx_map.items():
+                if 0 <= i < len(items):
+                    canonical_of[orig] = int(items[i].net_index)
+                    keep.append(dataclasses.replace(items[i], net_index=orig))
+            replaced[kind] = tuple(keep)
+        replaced.setdefault("split_planes", ())
+        # Plane floods are reported as whole-layer records above; building
+        # them here would flood each plane with its (canonical) net again.
+        replaced["stackup"] = tuple(
+            dataclasses.replace(s, plane_net_name=None) if s.is_plane else s
+            for s in proj.stackup)
+        sub = dataclasses.replace(proj, **replaced)
+        enabled = sub.enabled_copper_layer_ids()
+        shapes = build_net_layer_shapes(sub, enabled, include_vias=True)
+        shapes = {k: v for k, v in shapes.items() if k[1] in canonical_of}
+        layers = _shapes_to_geometry_layers(sub, shapes)
+        records = _build_all_copper_records(layers, _name)
+        by_name = {_name(o): _name(c) for o, c in canonical_of.items()}
+        for rec in records:
+            rec["canonical"] = by_name.get(rec["net"], "")
+            out.append(rec)
+    except Exception:
+        log.warning("Original-net copper for the hover could not be built; "
+                    "merged copper will show only its canonical net.",
+                    exc_info=True)
+    return out
+
+
 def _apply_net_remap(
     proj: ExtractedProject, remap: dict[int, int],
 ) -> ExtractedProject:
@@ -5834,6 +6233,8 @@ def load_project(prjpcb_path: str | Path,
             ", ".join(merge_descriptions),
             ", ".join(sorted(skipped_designators)),
         )
+        premerge_pad_nets = _premerge_pad_nets(extracted, net_remap)
+        premerge_primitive_nets = _premerge_primitive_nets(extracted, net_remap)
         extracted = _apply_net_remap(extracted, net_remap)
         log.info("Stage 2/2: parsing PDN_* annotations (pass 2: on merged nets)")
         _t = time.monotonic()
@@ -5849,6 +6250,8 @@ def load_project(prjpcb_path: str | Path,
         _carry_absorbed_notes(initial_annotations, annotations)
     else:
         annotations = initial_annotations
+        premerge_pad_nets = {}
+        premerge_primitive_nets = {}
 
     # Annotation warnings are silently stored in metadata but never logged
     # to the log file in the normal (solveable) code path. Log them here at
@@ -5876,6 +6279,8 @@ def load_project(prjpcb_path: str | Path,
             for old in net_remap
             if 0 <= old < len(extracted.nets)
         ),
+        premerge_pad_nets=premerge_pad_nets,
+        premerge_primitive_nets=premerge_primitive_nets,
     )
     # Which Tomachie power-tree file (and corner) this load applied: a cached
     # load made with another one, or none, has to be rebuilt.

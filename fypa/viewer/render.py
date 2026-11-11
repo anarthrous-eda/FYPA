@@ -8,7 +8,7 @@ import numpy as np
 import shapely.prepared as _sp
 from fypa.altium_geometry import solve_copper_conductivity
 from fypa.rail_groups import resolve_rail_member_nets
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEventLoop, Qt, QTimer
 from PySide6.QtWidgets import QApplication, QProgressDialog
 from matplotlib.tri import Triangulation
 
@@ -74,12 +74,82 @@ class _RenderMixin:
             }
             for rail, nets in self._subnet_eye_buttons.items()
         }
+        # A net with shorted sections draws while its own copper OR any
+        # section is on; _merged_hidden_sections masks the rest off.
+        for parent, kids in (getattr(self, "_merged_children", None)
+                             or {}).items():
+            for nets in subnet_visible.values():
+                if parent in nets and not nets[parent]:
+                    nets[parent] = any(nets.get(k, False) for k in kids)
         return resolve_rail_member_nets(
             list(rail_names),
             self._rail_to_members,
             subnet_visible,
             rail_only=self.rail_only_box.isChecked(),
         )
+
+    def _merged_hidden_sections(self) -> dict[str, frozenset[str]]:
+        """``{net: hidden section names}`` for each net with shorted sections
+        switched off. The net's own name in the set means its own copper
+        (outside every section) is off."""
+        merged = getattr(self, "_merged_children", None) or {}
+        if not merged:
+            return {}
+        out: dict[str, frozenset[str]] = {}
+        for nets in self._subnet_eye_buttons.values():
+            for parent, kids in merged.items():
+                if parent not in nets:
+                    continue
+                hidden = {
+                    n for n in (parent, *kids)
+                    if (e := nets.get(n)) is not None
+                    and _qt_widget_alive(e) and not e.isVisibleState()
+                }
+                if hidden:
+                    out[parent] = frozenset(hidden)
+        return out
+
+    def _merged_triangle_labels(self, layer_index: int, phys: str, net: str,
+                                entry: dict):
+        """``(names, per-triangle labels)`` for a merged net's layer mesh, or
+        ``None`` when no shorted section lies on this layer. Cached per
+        layer — it depends only on the solve."""
+        cache = self.__dict__.setdefault("_merged_label_cache", {})
+        if layer_index in cache:
+            return cache[layer_index]
+        from fypa.viewer import merged_sections as _ms
+        names, polys, whole = _ms.section_records(
+            self.metadata, self._phys_name_to_layer_id.get(phys), net)
+        result = None
+        if names:
+            try:
+                labels = _ms.triangle_labels(
+                    entry["xs"], entry["ys"], entry["tris"],
+                    names, polys, whole)
+                result = (names, labels)
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "Could not split %s on %s into its shorted sections",
+                    net, phys, exc_info=True)
+        cache[layer_index] = result
+        return result
+
+    def _section_keep(self, layer_index: int, phys: str, net: str,
+                      entry: dict, hidden: dict[str, frozenset[str]]):
+        """Per-triangle keep mask for ``net`` on this layer, or ``None`` when
+        every triangle draws."""
+        h = hidden.get(net)
+        if not h:
+            return None
+        lab = self._merged_triangle_labels(layer_index, phys, net, entry)
+        if lab is None:
+            # No section on this layer: it is all the net's own copper.
+            if net in h:
+                return np.zeros(entry["tris"].shape[0], dtype=bool)
+            return None
+        names, labels = lab
+        from fypa.viewer.merged_sections import keep_mask
+        return keep_mask(labels, names, h, net)
 
     # Power-density thresholds for classifying a solved mesh as "no current".
     # A dead-end island's current is ~0 (numerical noise), so its peak power
@@ -307,6 +377,9 @@ class _RenderMixin:
         # keeps the flat mesh as-is (no perf hit on the common path).
         extrude_3d = (self.view_3d_box.isChecked()
                       and self._COPPER_THICKNESS_MM > 0.0)
+        # Shorted sections switched off in the Rails control (HS_SNS within
+        # +12V): their triangles are dropped from the merged net's mesh.
+        hidden_sections = self._merged_hidden_sections()
         # Geometry-batch cache signature. The concatenated coords / z /
         # triangles / no-current mask depend ONLY on the draw order, the rail
         # members, the extrude flag + copper thickness, and each layer's
@@ -325,6 +398,8 @@ class _RenderMixin:
             extrude_3d,
             self._COPPER_THICKNESS_MM,
             tuple(self._layer_render_z(p) for p in phys_draw_order),
+            tuple(sorted((k, tuple(sorted(v)))
+                         for k, v in hidden_sections.items())),
         )
         cached_geom = self._rail_geom_cache
         reuse_geom = cached_geom is not None and cached_geom[0] == geom_sig
@@ -341,7 +416,13 @@ class _RenderMixin:
                 self._pump_busy_ui()
                 entry = self._layer_arrays(layer_index, derive_fn)
                 n_in = entry["xs"].size
-                if n_in == 0 or entry["tris"].size == 0:
+                etris = entry["tris"]
+                tri_keep = (self._section_keep(layer_index, phys, net, entry,
+                                               hidden_sections)
+                            if hidden_sections else None)
+                if tri_keep is not None:
+                    etris = etris[tri_keep]
+                if n_in == 0 or etris.size == 0:
                     continue
                 # Per-mode values are always rebuilt (cheap). The prism
                 # extrusion duplicates each vertex top↔bottom, so both the
@@ -362,7 +443,7 @@ class _RenderMixin:
                     if extrude_3d:
                         lxs, lys, lzs, _lvs, ltris = _extrude_to_prism(
                             entry["xs"], entry["ys"], entry["vs"],
-                            entry["tris"],
+                            etris,
                             z_center=phys_z,
                             thickness=self._COPPER_THICKNESS_MM,
                         )
@@ -370,7 +451,7 @@ class _RenderMixin:
                         lxs = entry["xs"]
                         lys = entry["ys"]
                         lzs = np.full(n_in, phys_z, dtype=np.float64)
-                        ltris = entry["tris"]
+                        ltris = etris
                     xs_parts.append(lxs)
                     ys_parts.append(lys)
                     zs_parts.append(lzs)
@@ -409,6 +490,10 @@ class _RenderMixin:
                     "prepared_shape": entry["prepared_shape"],
                     "outline_segments": entry["outline_segments"],
                     "z": phys_z,
+                    # Per-triangle keep mask (aligned to the layer's full
+                    # triangle list) when shorted sections are hidden, so
+                    # the hover and the current arrows skip them too.
+                    "tri_keep": tri_keep,
                 })
         # Reverse to put topmost layer first in the probe walk order.
         layer_probes.reverse()
@@ -802,6 +887,12 @@ class _RenderMixin:
             gy_flat = gy_grid.ravel()
             tri_idx = vec["trifinder"](gx_flat, gy_flat)
             mask = tri_idx >= 0
+            keep = lp.get("tri_keep")
+            if keep is not None and keep.size == vec["tris"].shape[0]:
+                # Hidden shorted sections: no arrows over copper not drawn.
+                # (_layer_vectors packs triangles exactly as the heatmap
+                # geometry does, so the mask indexes both.)
+                mask &= keep[np.where(mask, tri_idx, 0)]
             if not mask.any():
                 continue
             px = gx_flat[mask]
@@ -948,9 +1039,21 @@ class _RenderMixin:
         timer.setSingleShot(True)
         timer.timeout.connect(_show_popup)
         timer.start(self._BUSY_POPUP_DELAY_MS)
+        # Hold the GL view's repaints until the work is done. The work pushes
+        # its batches one at a time and pumps the event loop between them;
+        # without this every pump repaints the whole scene with whatever has
+        # been pushed so far — a dozen full redraws per refresh, which on a
+        # large board costs more than the refresh itself. Re-enabling
+        # schedules the single repaint that shows the finished result.
+        gv = getattr(self, "_gl_viewer", None)
+        hold = gv is not None and hasattr(gv, "setUpdatesEnabled")
+        if hold:
+            gv.setUpdatesEnabled(False)
         try:
             work()
         finally:
+            if hold and _qt_widget_alive(gv):
+                gv.setUpdatesEnabled(True)
             timer.stop()
             timer.deleteLater()
             if dlg_box[0] is not None:
@@ -985,7 +1088,11 @@ class _RenderMixin:
         if now - self._last_pump_time < 0.03:
             return
         self._last_pump_time = now
-        QApplication.processEvents()
+        # Timers and paints only. Mouse / key events wait until the work is
+        # done: handling a hover or a click half-way through a refresh runs
+        # the probe (or a second refresh) against half-pushed state, and the
+        # busy popup has nothing to click anyway.
+        QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
 
     def _render(self) -> None:
         # Re-entrancy guard. _render_impl pumps QApplication.processEvents()
@@ -1165,7 +1272,11 @@ class _RenderMixin:
         # well-conditioned) are invisible in the heatmap but would
         # otherwise dominate min/max stats — especially in Voltage Drop
         # mode where they'd appear as a fake -V_source drop.
-        used_idx = np.unique(tris.ravel())
+        # (A mask + flatnonzero gives the same sorted unique indices as
+        # np.unique without sorting every triangle corner.)
+        used_mask = np.zeros(xs.size, dtype=bool)
+        used_mask[tris.ravel()] = True
+        used_idx = np.flatnonzero(used_mask)
         vs_used = vs[used_idx] if used_idx.size > 0 else vs
 
         # _build_rail_arrays returns numpy arrays directly; alias them

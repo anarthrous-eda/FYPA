@@ -255,12 +255,17 @@ that via in the Heatmap tab (enables its layer, zooms in, drops a
 yellow highlight ring &mdash; left-click anywhere to clear).
 The tab title also shows a warning count if any via current
 reaches the threshold.</p>
+<p class='muted'>Click a column heading to sort. Click the funnel at the
+right of a heading (or right-click the heading) to filter that column: tick
+the values to keep, or give a Min / Max on a numeric column. Filtered columns
+show a filled funnel; <i>Clear column filters</i> removes them all. The
+Bridges and Capacitors tables work the same way.</p>
 """),
     ("Bridges", """
 <p>Every part that joins two nets, and what FYPA did with it:
 modelled as a SERIES element, shorted automatically (Net Ties, 0&nbsp;&Omega;
-parts), or not modelled at all. The <b>Go &#9654;</b> button jumps to the
-part on the Heatmap.</p>
+parts), or not modelled at all. Click a part's designator to jump to it on
+the Heatmap.</p>
 <p>To model a part as a resistance: select its row, type its real DC
 resistance into <i>Selected part</i>, and click <b>Model as SERIES</b>.
 <b>Disable auto-bridge</b> leaves an automatically shorted part open at DC;

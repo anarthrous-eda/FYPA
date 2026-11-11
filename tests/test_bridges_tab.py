@@ -220,11 +220,16 @@ def test_modelling_a_part_does_not_stack_opt_outs(viewer):
 
 # --- footguns --------------------------------------------------------------
 
-def test_merge_threshold_is_warned_before_it_bites(viewer):
-    """Below the threshold the two nets stop existing separately and a rail
-    name disappears — startling if you just typed a small number."""
+def test_sub_threshold_value_is_warned_without_claiming_a_merge(viewer):
+    """Values set here are editor directives, applied after the load-time
+    merge pass, so they never merge the nets (see
+    test_bridges_transistors.test_sub_milliohm_editor_series_is_not_merged).
+    The hint used to say the rails would merge, which was false; it now
+    says they stay separate and warns about solver conditioning instead."""
     viewer.bridges_r_edit.setText("0.0002")
-    assert "merge" in viewer.bridges_hint_label.text()
+    text = viewer.bridges_hint_label.text()
+    assert "never merged" in text and "stay separate" in text
+    assert "ill-conditioned" in text
 
 
 def test_above_the_threshold_says_the_nets_stay_separate(viewer):
@@ -333,6 +338,24 @@ def test_disable_button_follows_keyboard_selection(viewer):
     assert viewer.bridges_disable_btn.isEnabled()
     table.selectRow(row_of("FB1"))         # not modelled
     assert not viewer.bridges_disable_btn.isEnabled()
+
+
+# --- jump to the part --------------------------------------------------------
+
+def test_clicking_the_part_jumps_to_it_and_other_cells_do_not(viewer):
+    table = viewer.bridges_table
+    jumps = []
+    viewer._jump_to_xy = lambda x, y, lids: jumps.append((x, y, lids))
+    row = next(i for i in range(table.rowCount())
+               if table.item(i, 0).text() == "F3")
+
+    viewer._on_bridges_cell_clicked(row, 1)        # Kind: select only
+    assert jumps == []
+    assert viewer._highlight_via_xy == (9.0, 4.0)
+
+    viewer._on_bridges_cell_clicked(row, 0)        # Part: jump
+    assert jumps == [(9.0, 4.0, [1])]
+    assert table.item(row, 0).font().underline()
 
 
 # --- supply identity -------------------------------------------------------

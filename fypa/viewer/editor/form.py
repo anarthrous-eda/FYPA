@@ -1,6 +1,8 @@
 """Editor-mode PDN form, free markers and marker moves with undo."""
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import shapely.geometry as _sg
 from fypa.gl_mesh_viewer import MarkerGroup
@@ -166,6 +168,62 @@ class _EditorFormMixin:
             else:
                 pts.append((cx, cy))
         return pts
+
+    def _pending_series_directives(self) -> list:
+        """Editor SERIES directives no solve has included yet — e.g. a FET
+        just set up as switched on in the Bridges tab. Once solved, the part
+        is a RESISTOR directive in the metadata and drawn as a solved bar
+        instead. Cheap (no pad walk), so the hover can ask on every move."""
+        project = getattr(self, "_project", None)
+        if project is None:
+            return []
+        solved = {
+            str(d.get("designator") or "").strip().upper()
+            for d in ((self.metadata or {}).get("directives") or [])
+            if d.get("role") == "RESISTOR"
+        }
+        return [
+            d for d in (project.editor_directives or [])
+            if d.role == "SERIES" and d.kind == "component" and d.designator
+            and d.p_net and d.n_net and d.resistance and d.resistance > 0
+            and d.designator.strip().upper() not in solved
+        ]
+
+    def _pending_series_links(self) -> list[dict]:
+        """``set_pending_links`` records for :meth:`_pending_series_directives`
+        whose pads sit on a visible layer: each side's pads (pin-filtered, as
+        the solve will couple them) and a label."""
+        links: list[dict] = []
+        directives = self._pending_series_directives()
+        if not directives:
+            return links
+        visible = self._visible_layer_ids()
+        for d in directives:
+            a = self._component_pad_points(
+                d.designator, [d.p_net], visible, with_layer_color=True,
+                pin_filter=d.p_pins)
+            b = self._component_pad_points(
+                d.designator, [d.n_net], visible, with_layer_color=True,
+                pin_filter=d.n_pins)
+            if not a or not b:
+                continue
+            links.append({
+                "designator": d.designator,
+                "a": [(p[0], p[1], p[3]) for p in a],
+                "b": [(p[0], p[1], p[3]) for p in b],
+                "label": f"{d.designator} (unsolved)",
+            })
+        return links
+
+    def _refresh_pending_links(self) -> None:
+        gl = getattr(self, "_gl_viewer", None)
+        if gl is None:
+            return
+        try:
+            gl.set_pending_links(self._pending_series_links())
+        except Exception:  # noqa: BLE001 - a missing overlay is cosmetic
+            logging.getLogger(__name__).debug(
+                "pending SERIES links not drawn", exc_info=True)
 
     def _directive_for_selection(self):
         """Return the :class:`EditorDirective` matching the current

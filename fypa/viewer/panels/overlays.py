@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QListWidgetItem, QWidget
 
+from fypa.viewer import copper_tris as _copper_tris
 from fypa.viewer.diagnostics import (
     _MESH_FAILURE_MARKER_RADIUS_MM,
     _mesh_failure_marker_xy,
@@ -563,7 +564,11 @@ class _OverlayPanelMixin:
         ``md.get(...)`` records, ``_layer_z_for``) are NOT captured field by
         field — they only change on a solution swap, which resets
         ``_overlay_geom_sig`` via :meth:`_clear_solution_derived_caches`. This
-        captures only the inputs that change *within* one solution."""
+        captures only the inputs that change *within* one solution.
+
+        The per-layer all-copper view is deliberately absent: it lives in its
+        own per-layer GPU buffers (:meth:`_refresh_copper_layers`), so a
+        copper eye / fill / transparency change never rebuilds this batch."""
         def _freeze(o):
             if isinstance(o, dict):
                 return tuple(sorted(((str(k), _freeze(v)) for k, v in o.items()),
@@ -588,22 +593,6 @@ class _OverlayPanelMixin:
         rows = (_freeze(self._overlay_state),
                 _freeze(self._overlay_colors),
                 _freeze(self._overlay_bottom_colors))
-        # Per-layer all-copper (second eye): visibility, fill style, alpha,
-        # swatch colour. _layer_render_z's only dynamic inputs are the
-        # selected layer + 2D/3D, both captured below.
-        fill_by_name = dict(getattr(self, "_layer_fill_buttons", []))
-        transp_by_name = dict(getattr(self, "_layer_transparency_buttons", []))
-        ac = []
-        for name, eye2 in getattr(self, "_layer_eye2_buttons", []):
-            fb = fill_by_name.get(name)
-            tb = transp_by_name.get(name)
-            ac.append((
-                name,
-                bool(eye2.isVisibleState()),
-                bool(fb.isSolid()) if fb is not None else False,
-                float(tb.alpha()) if tb is not None else 1.0,
-                str(self._layer_color_for(name)),
-            ))
         return (
             in_2d,
             rail_members,
@@ -618,7 +607,6 @@ class _OverlayPanelMixin:
             via_span,
             span_layers,
             tuple(rows),
-            tuple(ac),
             self._caps_overlay_signature(),
         )
 
@@ -637,6 +625,10 @@ class _OverlayPanelMixin:
         gv = getattr(self, "_gl_viewer", None)
         if gv is None:
             return
+        # Per-layer all-copper (the second eye) is drawn from its own GPU
+        # buffers; refreshing it is cheap and independent of the batch built
+        # below, so it runs first and on every call.
+        self._refresh_copper_layers(rails)
         md = self.metadata
         if md is None:
             gv.clear_overlay_fills()
@@ -918,172 +910,6 @@ class _OverlayPanelMixin:
                         continue
                     _emit(_shape_tris(ring, solid), z, rgb, alpha=a, **bucket)
 
-        self._pump_busy_ui()
-        # Physical-layer "all copper" — the per-layer second eye. For every
-        # layer whose all-copper eye is on, draw all of that layer's copper
-        # that ISN'T part of a selected rail (the rails are already the
-        # heatmap; this is the rest), in the layer's swatch colour, as a
-        # wire-mesh outline or a solid fill per that row's fill toggle.
-        # The row's TransparencyButton fades that geometry without affecting
-        # the heatmap itself.
-        eye2_buttons = getattr(self, "_layer_eye2_buttons", [])
-        if eye2_buttons and md.get("all_copper"):
-            ac_by_layer: dict[int, list] = {}
-            for rec in md["all_copper"]:
-                ac_by_layer.setdefault(rec.get("layer_id"), []).append(rec)
-            fill_by_name = dict(getattr(self, "_layer_fill_buttons", []))
-            transp_by_name = dict(
-                getattr(self, "_layer_transparency_buttons", []))
-            # Which nets the all-copper view skips because the heatmap mesh
-            # already draws them. Outside editor mode the selected rail IS
-            # the heatmap, so its copper is excluded to avoid double-drawing.
-            # In editor mode the user wants the second eye to show ALL of a
-            # layer's physical copper — including nets belonging to a
-            # previously-solved rail — so we drop the filter entirely. The
-            # solved-rail heatmap / geometry still paints on top: opaque
-            # all-copper rides in the ``under_*`` bucket (drawn before the
-            # mesh) in 2D, and depth ordering handles it in 3D.
-            ac_rail_members: set[str] = (
-                set() if self._editor_mode else rail_members)
-            # Emit bottom-up: ``_layer_eye2_buttons`` is in panel order
-            # (topmost first); sort by stackup rank descending so the
-            # topmost layer is emitted last, mirroring the heatmap mesh's
-            # phys_draw_order — that matches the GL_LEQUAL depth test the
-            # under-mesh batch uses in 2D (same z → later draw wins, so
-            # topmost-emitted-last still wins).
-            # In 2D opaque all-copper rides in ``under_*`` so it paints
-            # BEFORE the heatmap mesh with depth on — the rail mesh
-            # (drawn next, same per-layer z) paints over its own layer's
-            # all-copper, and bottom rail triangles are depth-rejected
-            # where a higher layer's all-copper has already written a
-            # closer z. That cross-layer z stacking only works because
-            # the under-mesh pass also WRITES depth, which would equally
-            # depth-reject the rail mesh underneath a partially-
-            # transparent layer — turning the transparent layer into a
-            # tinted hole instead of letting the heatmap show through.
-            # So a layer at alpha < 1.0 is routed to ``over_*`` instead:
-            # drawn AFTER the mesh, no depth interference, free to blend
-            # with the mesh (or other opaque all-copper) below. 3D
-            # always uses ``over_*`` — global per-vertex z + depth
-            # handles ordering there.
-            sel_layer = self._selected_layer
-            # In 2D the selected layer is forced to emit LAST so it paints
-            # on top of the dimmed others (painter's order). In 3D the
-            # per-vertex z + depth test already place each layer correctly,
-            # and depth-write-on transparency needs a strict back-to-front
-            # (stackup) draw order: forcing the selected layer last there
-            # would depth-reject the layers sitting behind it, making an
-            # unselected transparent layer read as opaque. So apply the
-            # selection priority only in 2D.
-            for name, eye2 in sorted(
-                eye2_buttons,
-                key=lambda ne: (
-                    (0 if ne[0] == sel_layer else 1) if in_2d else 0,
-                    self._phys_stackup_rank.get(ne[0], 1 << 30),
-                ),
-                reverse=True,
-            ):
-                if not eye2.isVisibleState():
-                    continue
-                recs = ac_by_layer.get(self._phys_name_to_layer_id.get(name))
-                if not recs:
-                    continue
-                # Per-layer pump — for a 16-layer board with all-copper on,
-                # this gives ~16 marquee-bar ticks during the heaviest
-                # section of the overlay refresh.
-                self._pump_busy_ui()
-                fb = fill_by_name.get(name)
-                solid = bool(fb.isSolid()) if fb is not None else False
-                tb = transp_by_name.get(name)
-                layer_alpha = tb.alpha() if tb is not None else 1.0
-                if layer_alpha <= 0.0:
-                    continue
-                # Opaque layers stay in the under-mesh batch to keep the
-                # cross-layer z stacking; transparent layers fall to
-                # ``over_*`` so the mesh underneath isn't depth-rejected.
-                ac_bucket = ({"under": True}
-                             if (in_2d and layer_alpha >= 1.0)
-                             else {})
-                qc = QColor(self._layer_color_for(name))
-                lrgb = (qc.redF(), qc.greenF(), qc.blueF())
-                # When a layer is selected, every OTHER layer's all-copper
-                # is blended toward the dim target and (optionally) faded
-                # so the selected layer reads clearly above the rest.
-                if sel_layer is not None and name != sel_layer:
-                    lrgb = self._selected_layer_dim_rgb(lrgb)
-                    layer_alpha *= max(
-                        0.0, min(1.0, self._SELECTED_LAYER_UNSEL_ALPHA))
-                    if layer_alpha <= 0.0:
-                        continue
-                    # Partial alpha after the multiplier needs the over-
-                    # mesh bucket so the rail mesh underneath blends
-                    # through instead of being depth-rejected (mirrors the
-                    # existing transparency routing logic above).
-                    if in_2d and layer_alpha < 1.0:
-                        ac_bucket = {}
-                z = self._layer_render_z(name)
-                # Solid + partial transparency: route through a per-layer
-                # merged triangulation so overlapping source polygons
-                # blend the layer's alpha exactly once per pixel (rather
-                # than once per overlapping polygon, which cumulatively
-                # pushes the area to opacity). The merge collapses
-                # per-net distinction, so editor-mode connectivity dim
-                # falls back to a per-rec emit on this path — the wire-
-                # mesh fill keeps the precise per-net dim anyway.
-                editor_dim_active = (self._editor_mode and (
-                    self._editor_highlight_nets
-                    or self._editor_highlight_polys))
-                # Net focus drops polygons, so it needs the same per-rec
-                # path for the same reason: the merge collapses the per-net
-                # distinction the skip test depends on.
-                if (solid and layer_alpha < 1.0
-                        and not editor_dim_active
-                        and not self._editor_focus_active()):
-                    merged = self._merged_solid_all_copper_tris(
-                        name, recs, ac_rail_members)
-                    if merged is not None:
-                        _emit(merged, z, lrgb, alpha=layer_alpha,
-                              **ac_bucket)
-                    continue
-                focus_on = self._editor_focus_active()
-                for rec in recs:
-                    net = rec.get("net")
-                    if net in ac_rail_members:
-                        continue
-                    rec_layer_id = rec.get("layer_id")
-                    # Net focus: a record whose net is focused is wholly in,
-                    # and one whose net is a *different* real net is wholly
-                    # out — only the "(none)" sentinel needs the per-polygon
-                    # test below, so skip the whole record when we can.
-                    if (focus_on and net and net != "(none)"
-                            and net not in self._editor_focus_nets):
-                        continue
-                    # Per-rec pump — a single layer on Corvette can have
-                    # hundreds of all-copper records; without a pump in
-                    # this loop the marquee freezes for the duration of
-                    # one layer's emit. Throttled, so overhead stays
-                    # near-zero.
-                    self._pump_busy_ui()
-                    # Editor-mode connectivity focus: copper not connected
-                    # to the current selection recedes toward the
-                    # background (mirrors the heatmap mesh dimming). The
-                    # dim choice is per-polygon — a record can hold both
-                    # highlighted and dimmed pieces when the user picked
-                    # one piece of unnamed copper but other disjoint
-                    # ``"(none)"`` pieces share the same record.
-                    for poly in rec.get("polygons", []):
-                        if focus_on and self._editor_focus_hides(
-                                net, rec_layer_id, poly):
-                            continue
-                        rgb = self._editor_dim_rgb(
-                            lrgb, net, rec_layer_id, poly)
-                        if solid:
-                            _emit(self._triangulate_stub(poly), z, rgb,
-                                  alpha=layer_alpha, **ac_bucket)
-                        else:
-                            _emit(self._copper_poly_wire(poly), z, rgb,
-                                  alpha=layer_alpha, **ac_bucket)
-
         # FEM mesh failures — bright marker at the reported problem site.
         # Drawn on top of everything so it stays visible even when the
         # solve aborted and there is no heatmap mesh (stub viewer).
@@ -1136,10 +962,7 @@ class _OverlayPanelMixin:
         # Concatenate under-mesh chunks first so the GL viewer can draw
         # that leading slice before the heatmap mesh.
         # ``under_*`` (drawn before the mesh, 2D only): bottom-side board
-        # features + every layer's all-copper geometry — having all-copper
-        # paint before the mesh lets the rail mesh sit visually on top of
-        # both its own layer's other-net copper and any lower-layer
-        # all-copper. ``over_*`` (drawn after the mesh): vias and, in 3D,
+        # features. ``over_*`` (drawn after the mesh): vias and, in 3D,
         # every feature (depth test handles ordering there). ``top_*`` (2D
         # only): top-side board features so they sit on top of all copper.
         all_tri = under_tri + over_tri + top_tri
@@ -1169,17 +992,7 @@ class _OverlayPanelMixin:
         cached = poly.get("_wire_cache")
         if cached is not None:
             return cached
-        chunks: list[np.ndarray] = []
-        ext = poly.get("exterior")
-        if ext is not None and len(ext) >= 2:
-            chunks.append(_overlay_outline_tris(
-                ext, _OVERLAY_WIRE_HALF_MM, closed=True))
-        for hole in poly.get("holes", []) or []:
-            if hole is not None and len(hole) >= 2:
-                chunks.append(_overlay_outline_tris(
-                    hole, _OVERLAY_WIRE_HALF_MM, closed=True))
-        arr = (np.concatenate(chunks, axis=0) if chunks
-               else np.empty((0, 2), dtype=np.float32))
+        arr = _copper_tris.wire_rings(poly.get("exterior"), poly.get("holes"))
         poly["_wire_cache"] = arr
         return arr
 

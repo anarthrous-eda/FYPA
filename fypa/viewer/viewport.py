@@ -259,25 +259,66 @@ class _ViewportMixin:
         """
         if target_layer_id is None or self.metadata is None:
             return [], [], []
+        idx = self._via_position_index()
+        if idx is None:
+            return [], [], []
+        mask = (idx["lo"] <= target_layer_id) & (target_layer_id <= idx["hi"])
+        nets = idx["nets"]
+        if rail_scoped:
+            mask &= np.fromiter((n in rail_members for n in nets),
+                                dtype=bool, count=len(nets))[idx["net"]]
+        if self._editor_focus_active():
+            focus = self._editor_focus_nets
+            mask &= np.fromiter((n in focus for n in nets),
+                                dtype=bool, count=len(nets))[idx["net"]]
+        return (idx["x"][mask].tolist(), idx["y"][mask].tolist(),
+                idx["d"][mask].tolist())
+
+    def _via_position_index(self) -> dict | None:
+        """Column arrays over ``metadata['vias']`` (span, position, marker
+        diameter, net) so the per-layer via filter is a few array masks
+        rather than a Python loop over every via for every visible layer.
+        Rebuilt when the metadata's via list is replaced."""
+        vias = self.metadata.get("vias") or []
+        cached = getattr(self, "_via_position_index_cache", None)
+        if (cached is not None and cached[0] is vias
+                and cached[1] == len(vias)):
+            return cached[2]
+        lo: list = []
+        hi: list = []
         xs: list[float] = []
         ys: list[float] = []
-        diams: list[float] = []
-        for v in self.metadata.get("vias", []):
+        ds: list[float] = []
+        net_ids: list[int] = []
+        nets: list = []
+        net_index: dict = {}
+        for v in vias:
             ls = v.get("layer_start")
             le = v.get("layer_end")
             if ls is None or le is None:
                 continue
-            lo, hi = (ls, le) if ls <= le else (le, ls)
-            if not (lo <= target_layer_id <= hi):
-                continue
-            if rail_scoped and v.get("net") not in rail_members:
-                continue
-            if self._focus_hides_net(v.get("net")):
-                continue
+            lo.append(min(ls, le))
+            hi.append(max(ls, le))
             xs.append(v.get("x_mm", 0.0))
             ys.append(v.get("y_mm", 0.0))
-            diams.append(self._via_marker_diameter_mm(v))
-        return xs, ys, diams
+            ds.append(self._via_marker_diameter_mm(v))
+            net = v.get("net")
+            ni = net_index.get(net)
+            if ni is None:
+                ni = net_index[net] = len(nets)
+                nets.append(net)
+            net_ids.append(ni)
+        idx = {
+            "lo": np.asarray(lo, dtype=np.float64),
+            "hi": np.asarray(hi, dtype=np.float64),
+            "x": np.asarray(xs, dtype=np.float64),
+            "y": np.asarray(ys, dtype=np.float64),
+            "d": np.asarray(ds, dtype=np.float64),
+            "net": np.asarray(net_ids, dtype=np.int64),
+            "nets": nets,
+        } if lo else None
+        self._via_position_index_cache = (vias, len(vias), idx)
+        return idx
 
     def _focus_hides_net(self, net: str | None) -> bool:
         """Net-name-only form of :meth:`_editor_focus_hides`, for the

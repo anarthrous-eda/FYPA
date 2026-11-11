@@ -35,6 +35,7 @@ from fypa.viewer.editor.pending import _PendingRailsMixin
 from fypa.viewer.editor.selection import _EditorSelectionMixin
 from fypa.viewer.file_menu import _FileMenuMixin
 from fypa.viewer.markers import _MarkerOverlayMixin
+from fypa.viewer.copper_layers import _CopperLayersMixin
 from fypa.viewer.panels.layers import _LayerPanelMixin
 from fypa.viewer.panels.overlays import _OverlayPanelMixin
 from fypa.viewer.prefs import load_via_no_current_opacity
@@ -72,6 +73,7 @@ class PdnViewer(
     _UiBuildMixin,
     _LayerPanelMixin,
     _OverlayPanelMixin,
+    _CopperLayersMixin,
     _RenderMixin,
     _MarkerOverlayMixin,
     _ViaRenderMixin,
@@ -531,10 +533,27 @@ class PdnViewer(
         self._rail_names, self._rail_to_members = self._compute_rail_groups(
             metadata,
         )
-        from fypa.rail_groups import build_rail_trees
+        from fypa.rail_groups import attach_merged_children, build_rail_trees
+        from fypa.viewer.merged_sections import merged_children
         self._rail_to_trees = build_rail_trees(
             metadata, self._rail_to_members,
         )
+        # Nets the low-Ω merge folded into a rail net (HS_SNS into +12V)
+        # show as switchable sections under it in the Rails control.
+        _member_nets = {
+            n for ms in self._rail_to_members.values() for n in ms
+        }
+        self._merged_children = merged_children(metadata, _member_nets)
+        self._merged_parent = {
+            child: parent
+            for parent, kids in self._merged_children.items()
+            for child in kids
+        }
+        if self._merged_children:
+            self._rail_to_trees = attach_merged_children(
+                self._rail_to_trees, self._merged_children,
+            )
+        self._merged_label_cache = {}
 
         _stackup_pos = {
             row["name"]: i
@@ -586,6 +605,7 @@ class PdnViewer(
         self._reset_copper_roi()
         self._layer_vec_cache.clear()
         self._rail_geom_cache = None  # combined batch is solve-specific
+        self._merged_label_cache = {}  # shorted-section triangle labels
         self._overlay_geom_sig = None  # overlay batch is solve-specific too
         self._last_mesh_upload = None  # release retained GPU-upload arrays
         self._no_current_meshes = None
@@ -602,6 +622,8 @@ class PdnViewer(
         self._via_voltage_kdtree_cache.clear()
         self._stub_geom_cache = None
         self._merged_all_copper_cache.clear()
+        # The per-layer copper index notices the new metadata by itself (and
+        # carries the finished triangles over to it), so it is not reset here.
         self._primitives_by_layer_net = None
         self._non_editor_marker_groups = None
         self._last_scale_selection = None

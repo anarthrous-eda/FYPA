@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import math
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from OpenGL import GL
@@ -180,6 +180,30 @@ in vec4 v_color;
 out vec4 frag_color;
 void main() {
     frag_color = v_color;
+}
+"""
+
+# Per-layer copper shader. Each physical layer's all-copper geometry lives in
+# its own vertex buffer of bare xy positions; the layer's z, colour and
+# transparency are uniforms. Showing or hiding a layer is then just drawing or
+# skipping its buffer, and recolouring / dimming / fading it changes two
+# uniforms — nothing is rebuilt or re-uploaded.
+_COPPER_VERTEX_SHADER_SRC = """
+#version 330 core
+layout(location = 0) in vec2 a_xy;
+uniform mat4 u_mvp;
+uniform float u_z;
+void main() {
+    gl_Position = u_mvp * vec4(a_xy, u_z, 1.0);
+}
+"""
+
+_COPPER_FRAGMENT_SHADER_SRC = """
+#version 330 core
+uniform vec4 u_color;
+out vec4 frag_color;
+void main() {
+    frag_color = u_color;
 }
 """
 
@@ -537,6 +561,24 @@ def _install_default_surface_format() -> None:
     QSurfaceFormat.setDefaultFormat(fmt)
 
 
+@dataclass
+class CopperDraw:
+    """One physical layer's all-copper geometry, as drawn this frame.
+
+    ``key`` names a vertex buffer previously handed to
+    :meth:`GLMeshViewer.set_copper_geometry`. ``passes`` is a list of
+    ``(rgba, firsts, counts)``: each pass draws the vertex ranges
+    ``firsts[i] .. firsts[i] + counts[i]`` in one flat colour (``firsts`` of
+    ``None`` draws the whole buffer). ``under`` routes the layer to the
+    depth-sorted pass drawn before the heatmap mesh (2D, opaque copper);
+    otherwise it draws after the mesh.
+    """
+    key: object
+    z: float
+    under: bool
+    passes: list = field(default_factory=list)
+
+
 class GLMeshViewer(QOpenGLWidget):
     """OpenGL-backed FEM mesh viewer with pan/zoom and overlays."""
 
@@ -734,6 +776,17 @@ class GLMeshViewer(QOpenGLWidget):
         self._n_ovl_under_vertices: int = 0
         self._pending_ovl_positions: np.ndarray | None = None
         self._pending_ovl_colors: np.ndarray | None = None
+        # Per-layer all-copper buffers (see CopperDraw). ``_copper_bufs`` maps
+        # a geometry key to ``{"vbo", "n", "version", "pending"}``; the draw
+        # list says which of them are on screen this frame and how.
+        self._copper_program: QOpenGLShaderProgram | None = None
+        self._copper_vao: QOpenGLVertexArrayObject | None = None
+        self._copper_u_mvp_loc: int = -1
+        self._copper_u_z_loc: int = -1
+        self._copper_u_color_loc: int = -1
+        self._copper_bufs: dict = {}
+        self._copper_trash: list = []
+        self._copper_draws: list[CopperDraw] = []
 
         # Wireframe overlay over the main heatmap mesh. Off by default;
         # toggled by :meth:`set_show_mesh_edges`. When on, paintGL redraws
@@ -907,6 +960,8 @@ class GLMeshViewer(QOpenGLWidget):
         # host when a solve aborts on invalid geometry.
         self._mesh_failure_rings: list[
             list[tuple[float, float]]] | None = None
+        # Unsolved SERIES links (see set_pending_links); None when none.
+        self._pending_links: list[dict] | None = None
         # Copper ROI suggestions drawn over the heatmap (see
         # set_roi_highlights); None when the mode is off.
         self._roi_highlights: list[dict] | None = None
@@ -1703,6 +1758,62 @@ class GLMeshViewer(QOpenGLWidget):
         self._pending_ovl_colors = None
         self.update()
 
+    # --- Per-layer all-copper buffers --------------------------------------
+
+    def has_copper_geometry(self, key, version=None) -> bool:
+        """True when ``key``'s buffer is held (or queued for upload) at
+        ``version``."""
+        buf = self._copper_bufs.get(key)
+        return buf is not None and buf["version"] == version
+
+    def set_copper_geometry(self, key, xy: np.ndarray, version=None) -> None:
+        """Hand over one layer's copper triangles: an ``(N, 2)`` array of
+        vertex positions, N a multiple of 3. Uploaded on the next paint and
+        kept on the GPU until dropped, whether or not it is being drawn."""
+        arr = np.ascontiguousarray(xy, dtype=np.float32)
+        if arr.ndim != 2 or arr.shape[1] != 2 or arr.shape[0] % 3 != 0:
+            raise ValueError("xy must be (3*k, 2)")
+        buf = self._copper_bufs.get(key)
+        if buf is None:
+            buf = self._copper_bufs[key] = {"vbo": None}
+        buf["n"] = int(arr.shape[0])
+        buf["version"] = version
+        buf["pending"] = arr
+        self.update()
+
+    def retain_copper_geometry(self, keep) -> None:
+        """Free every copper buffer whose key is not in ``keep``."""
+        for key in [k for k in self._copper_bufs if k not in keep]:
+            vbo = self._copper_bufs.pop(key)["vbo"]
+            if vbo is not None:
+                # Destroyed on the next paint, with the context current.
+                self._copper_trash.append(vbo)
+        self.update()
+
+    def clear_copper_geometry(self) -> None:
+        self._copper_draws = []
+        self.retain_copper_geometry(())
+
+    def set_copper_draws(self, draws: list[CopperDraw]) -> None:
+        """Set which copper layers are drawn, in draw order (bottom of the
+        stackup first). Cheap: no geometry is touched."""
+        self._copper_draws = list(draws)
+        self.update()
+
+    def copper_vertex_count(self, *, drawn_only: bool = False) -> int:
+        """Vertices held in copper buffers (or, with ``drawn_only``, in the
+        ranges actually drawn this frame)."""
+        if not drawn_only:
+            return sum(b["n"] for b in self._copper_bufs.values())
+        total = 0
+        for d in self._copper_draws:
+            buf = self._copper_bufs.get(d.key)
+            if buf is None:
+                continue
+            for _rgba, firsts, counts in d.passes:
+                total += buf["n"] if firsts is None else int(np.sum(counts))
+        return total
+
     def set_overlay_labels(self, labels: list[dict]) -> None:
         """Set the overlay text labels (reference designators).
 
@@ -2234,6 +2345,71 @@ class GLMeshViewer(QOpenGLWidget):
         self._mesh_failure_rings = new
         self.update()
 
+    def set_pending_links(self, links) -> None:
+        """Set (or clear, with ``None`` / empty) the unsolved SERIES links:
+        a dashed amber line between the two sides of a part set up as a
+        series element (e.g. a FET modelled as switched on) that no solve has
+        included yet, with a small ring on each of its pads and a label.
+
+        Each link is ``{"a": [(x, y, z), ...], "b": [...], "label": str}`` in
+        world mm — ``a`` / ``b`` are the pads of each side. No-op when
+        unchanged so a redundant push doesn't repaint."""
+        new = None
+        if links:
+            new = [{"a": [tuple(map(float, p)) for p in ln.get("a") or ()],
+                    "b": [tuple(map(float, p)) for p in ln.get("b") or ()],
+                    "label": str(ln.get("label") or "")}
+                   for ln in links if ln.get("a") and ln.get("b")] or None
+        if new == self._pending_links:
+            return
+        self._pending_links = new
+        self.update()
+
+    def _draw_pending_links(self, painter: QPainter) -> None:
+        """Dashed amber link per unsolved SERIES part (see
+        :meth:`set_pending_links`), drawn centroid to centroid of its two
+        sides, with each pad ringed and the label at the midpoint."""
+        links = self._pending_links
+        if not links:
+            return
+        painter.save()
+        color = QColor("#ffb300")
+        line_pen = QPen(color)
+        line_pen.setWidthF(2.0)
+        line_pen.setStyle(Qt.DashLine)
+        line_pen.setCosmetic(True)
+        ring_pen = QPen(color)
+        ring_pen.setWidthF(1.5)
+        ring_pen.setCosmetic(True)
+
+        def _screen(pts):
+            out = []
+            for x, y, z in pts:
+                px, py = self.world_to_screen(x, y, z)
+                if px > -1e8 and py > -1e8:
+                    out.append((px, py))
+            return out
+
+        for ln in links:
+            a, b = _screen(ln["a"]), _screen(ln["b"])
+            if not a or not b:
+                continue
+            ax = sum(p[0] for p in a) / len(a)
+            ay = sum(p[1] for p in a) / len(a)
+            bx = sum(p[0] for p in b) / len(b)
+            by = sum(p[1] for p in b) / len(b)
+            painter.setBrush(Qt.NoBrush)
+            painter.setPen(ring_pen)
+            for px, py in a + b:
+                painter.drawEllipse(QPointF(px, py), 5.0, 5.0)
+            painter.setPen(line_pen)
+            painter.drawLine(QPointF(ax, ay), QPointF(bx, by))
+            if ln["label"]:
+                painter.setPen(color)
+                painter.drawText(QPointF((ax + bx) / 2 + 8,
+                                         (ay + by) / 2 - 8), ln["label"])
+        painter.restore()
+
     def set_roi_highlights(self, items) -> None:
         """Set (or clear, with ``None``) the Copper ROI suggestions drawn
         over the heatmap. Each item is a dict with ``kind`` ("widen" — an
@@ -2587,6 +2763,24 @@ class GLMeshViewer(QOpenGLWidget):
         self._ovl_col_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
         self._ovl_col_vbo.create()
 
+        # Per-layer copper program + VAO. The vertex buffers themselves are
+        # created per layer as geometry arrives.
+        copper_prog = QOpenGLShaderProgram()
+        copper_prog.addShaderFromSourceCode(QOpenGLShader.Vertex,
+                                            _COPPER_VERTEX_SHADER_SRC)
+        copper_prog.addShaderFromSourceCode(QOpenGLShader.Fragment,
+                                            _COPPER_FRAGMENT_SHADER_SRC)
+        if not copper_prog.link():
+            log = copper_prog.log()
+            raise RuntimeError(
+                f"GLMeshViewer: copper shader link failed: {log}")
+        self._copper_program = copper_prog
+        self._copper_u_mvp_loc = copper_prog.uniformLocation("u_mvp")
+        self._copper_u_z_loc = copper_prog.uniformLocation("u_z")
+        self._copper_u_color_loc = copper_prog.uniformLocation("u_color")
+        self._copper_vao = QOpenGLVertexArrayObject()
+        self._copper_vao.create()
+
         # Supersampling (SSAA) downsample shader — a textured fullscreen
         # triangle that resolves the oversized offscreen buffer into the
         # widget. An empty VAO satisfies the core-profile rule that a VAO
@@ -2645,6 +2839,15 @@ class GLMeshViewer(QOpenGLWidget):
         if self._pending_ovl_positions is None:
             self._n_ovl_vertices = 0
             self._n_ovl_under_vertices = 0
+        # Copper buffers died with the old context. Forget the uploaded ones
+        # so the host (which asks has_copper_geometry before each refresh)
+        # hands them over again; ones still pending upload just need a VBO.
+        self._copper_trash.clear()
+        for key in list(self._copper_bufs):
+            buf = self._copper_bufs[key]
+            buf["vbo"] = None
+            if buf.get("pending") is None:
+                del self._copper_bufs[key]
 
     def resizeGL(self, w: int, h: int) -> None:
         # Use device pixels for the GL viewport on Hi-DPI displays.
@@ -2854,6 +3057,14 @@ class GLMeshViewer(QOpenGLWidget):
             if in_2d:
                 GL.glDisable(GL.GL_DEPTH_TEST)
                 GL.glDepthFunc(GL.GL_LESS)
+        # Opaque per-layer all-copper (2D): same depth-sorted treatment as
+        # the under-mesh batch above, drawn right after it.
+        if self._copper_draws and in_2d:
+            GL.glEnable(GL.GL_DEPTH_TEST)
+            GL.glDepthFunc(GL.GL_LEQUAL)
+            self._draw_copper(under=True)
+            GL.glDisable(GL.GL_DEPTH_TEST)
+            GL.glDepthFunc(GL.GL_LESS)
         if self._n_indices > 0 and self._program is not None:
             # Rail mesh in 2D draws with GL_LEQUAL + write so a top-layer
             # rail triangle covers the (lower-z) under-mesh all-copper at
@@ -2880,9 +3091,19 @@ class GLMeshViewer(QOpenGLWidget):
         # outlines (and the pad / layer outlines) sit crisply on top.
         ovl_over_first = self._n_ovl_under_vertices
         ovl_over_count = self._n_ovl_vertices - ovl_over_first
+        # After-mesh per-layer copper (transparent layers in 2D; every layer
+        # in 3D). In 2D nothing here is depth-tested, so it must come before
+        # the overlay batch for the board features and markers to paint over
+        # it. In 3D depth sorts the opaque geometry and the copper blends, so
+        # it comes after — otherwise a see-through layer would depth-reject
+        # the features behind it.
+        if self._copper_draws and in_2d:
+            self._draw_copper(under=False)
         if (ovl_over_count > 0
                 and self._line_program is not None):
             self._draw_overlay_fills(ovl_over_first, ovl_over_count)
+        if self._copper_draws and not in_2d:
+            self._draw_copper(under=False)
         if (self._n_line_vertices > 0
                 and self._line_program is not None):
             # In 2D, test AND write depth so the outlines sort correctly
@@ -3068,6 +3289,20 @@ class GLMeshViewer(QOpenGLWidget):
             )
             self._ovl_col_vbo.release()
             self._pending_ovl_colors = None
+        for vbo in self._copper_trash:
+            vbo.destroy()
+        self._copper_trash.clear()
+        for buf in self._copper_bufs.values():
+            pending = buf.get("pending")
+            if pending is None:
+                continue
+            if buf["vbo"] is None:
+                buf["vbo"] = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
+                buf["vbo"].create()
+            buf["vbo"].bind()
+            buf["vbo"].allocate(pending.tobytes(), pending.nbytes)
+            buf["vbo"].release()
+            buf["pending"] = None
 
     def _draw_mesh(self) -> None:
         prog = self._program
@@ -3324,6 +3559,50 @@ class GLMeshViewer(QOpenGLWidget):
         self._ovl_vao.release()
         prog.release()
 
+    def _draw_copper(self, *, under: bool) -> None:
+        """Draw the per-layer all-copper buffers routed to one pass (see
+        :class:`CopperDraw`), in list order. Each layer is one buffer bind
+        plus a multi-draw per colour, so the cost of a frame follows what is
+        visible and hidden layers cost nothing."""
+        prog = self._copper_program
+        if prog is None:
+            return
+        draws = [d for d in self._copper_draws if bool(d.under) == under]
+        if not draws:
+            return
+        prog.bind()
+        prog.setUniformValue(self._copper_u_mvp_loc, self._current_mvp())
+        self._copper_vao.bind()
+        GL.glEnableVertexAttribArray(0)
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
+        for d in draws:
+            buf = self._copper_bufs.get(d.key)
+            if buf is None or buf["vbo"] is None or buf["n"] <= 0:
+                continue
+            n = buf["n"]
+            buf["vbo"].bind()
+            GL.glVertexAttribPointer(0, 2, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
+            buf["vbo"].release()
+            # Raw glUniform*: PySide6's scalar setUniformValue overload
+            # resolves to the int path (see _draw_lines).
+            GL.glUniform1f(self._copper_u_z_loc, float(d.z))
+            for rgba, firsts, counts in d.passes:
+                GL.glUniform4f(self._copper_u_color_loc, float(rgba[0]),
+                               float(rgba[1]), float(rgba[2]), float(rgba[3]))
+                if firsts is None:
+                    GL.glDrawArrays(GL.GL_TRIANGLES, 0, n)
+                elif len(firsts) == 1:
+                    GL.glDrawArrays(GL.GL_TRIANGLES, int(firsts[0]),
+                                    int(counts[0]))
+                elif len(firsts):
+                    GL.glMultiDrawArrays(GL.GL_TRIANGLES, firsts, counts,
+                                         len(firsts))
+        GL.glDisable(GL.GL_BLEND)
+        GL.glDisableVertexAttribArray(0)
+        self._copper_vao.release()
+        prog.release()
+
     def _draw_series_bars(self, first: int, count: int) -> None:
         """Draw a slice of the series-bar triangle batch via the line
         shader. ``first`` and ``count`` are vertex indices; both must be
@@ -3417,6 +3696,7 @@ class GLMeshViewer(QOpenGLWidget):
         self._draw_mesh_failure_outline(painter)
         self._draw_roi_highlights(painter)
         self._draw_primitive_selection(painter)
+        self._draw_pending_links(painter)
         self._draw_overlay_labels(painter, on_top=False)
         self._draw_markers(painter)
         # Second label pass: ``on_top`` labels (e.g. via-span text) sit

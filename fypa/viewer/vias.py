@@ -1195,6 +1195,10 @@ class _ViaRenderMixin:
         groups.extend(self._editor_marker_groups())
 
         self._gl_viewer.set_markers(groups)
+        # Parts set up as SERIES that no solve has included yet (a FET
+        # modelled as switched on): a dashed link, so the connection is
+        # visible before there is anything to solve.
+        self._refresh_pending_links()
 
         # Hover index = solved-directive rows + editor-directive rows, so
         # the bottom bar reports pending editor edits before a Resolve.
