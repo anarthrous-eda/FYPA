@@ -128,6 +128,26 @@ def test_widening_into_other_copper_is_blocked():
     assert widen and not widen[0].blocked
 
 
+def test_copper_lookups_are_clipped_to_the_area():
+    """Lookups only union the copper inside the area asked about — a whole
+    layer of every net took minutes on a large board — and split own from
+    others by net."""
+    copper = R._Copper({"Top": [
+        ("A", box(0, 0, 10, 10)),
+        ("B", box(5, 0, 15, 10)),          # overlaps A: counted once
+        ("B", box(100, 100, 110, 110)),    # nowhere near the area
+        ("C", None),
+    ]})
+    area = box(0, 0, 20, 2)
+    others = copper.others_in("Top", "A", area)
+    assert others.area == pytest.approx(10 * 2)
+    assert copper.own_in("Top", "A", area).area == pytest.approx(10 * 2)
+    assert copper.others_in("Top", "A", box(50, 50, 60, 60)) is None
+    assert copper.own_in("Bottom", "A", area) is None
+    both_b = copper.own_in("Top", "B", box(0, 0, 200, 200))
+    assert both_b.area == pytest.approx(10 * 10 * 2)
+
+
 # --- ranking ----------------------------------------------------------------
 
 def _fake_report(loads, nominal=3.3):

@@ -78,6 +78,19 @@ def _generate_via_cylinder(x: float, y: float, z_top: float, z_bottom: float,
     ``GL_TRIANGLES``. Caps are omitted — the user's view only ever sees the
     side surface in PDN inspection.
     """
+    if slot is None:
+        # Round barrel — by far the common case, and a board has thousands.
+        # Same vertices in the same order as the general path below, built
+        # from a per-segment-count template instead of a dozen small array
+        # constructions per via.
+        cos_a, sin_a, ring_idx, is_top = _round_barrel_template(n_segments)
+        out = np.empty((ring_idx.size, 3), dtype=np.float32)
+        out[:, 0] = (x + radius * cos_a)[ring_idx]
+        out[:, 1] = (y + radius * sin_a)[ring_idx]
+        out[:, 2] = np.where(is_top, z_top, z_bottom)
+        col = np.empty((ring_idx.size, 3), dtype=np.float32)
+        col[:] = color_rgb
+        return out, col
     fp = _drill_footprint_xy(x, y, radius, slot, n_segments)
     fp_next = np.roll(fp, -1, axis=0)
     m = fp.shape[0]
@@ -100,6 +113,28 @@ def _generate_via_cylinder(x: float, y: float, z_top: float, z_bottom: float,
     return out, col
 
 
+
+
+_ROUND_BARREL_TEMPLATES: dict[int, tuple] = {}
+
+
+def _round_barrel_template(n_segments: int) -> tuple:
+    """``(cos, sin, ring_idx, is_top)`` for a round barrel of ``n_segments``
+    facets: the unit-circle samples :func:`_drill_footprint_xy` uses, and for
+    each of the ``6 * n_segments`` output vertices which ring sample it sits
+    on and whether it is on the top rim."""
+    tpl = _ROUND_BARREL_TEMPLATES.get(n_segments)
+    if tpl is None:
+        angles = np.linspace(0.0, 2.0 * np.pi, n_segments, endpoint=False)
+        i = np.arange(n_segments)
+        nxt = (i + 1) % n_segments
+        # Per facet: top1, bot1, top2, top2, bot1, bot2.
+        ring_idx = np.column_stack((i, i, nxt, nxt, i, nxt)).ravel()
+        is_top = np.tile(np.array([True, False, True, True, False, False]),
+                         n_segments)
+        tpl = (np.cos(angles), np.sin(angles), ring_idx, is_top)
+        _ROUND_BARREL_TEMPLATES[n_segments] = tpl
+    return tpl
 
 
 def _generate_via_cylinder_gradient(
@@ -222,30 +257,56 @@ def _extrude_to_prism(
     new_zs[n:] = z_bot
     new_vs = np.concatenate([vs, vs])
 
+    return new_xs, new_ys, new_zs, new_vs, _prism_triangles(tris, n)
+
+
+def _prism_triangles(tris: np.ndarray, n: int) -> np.ndarray:
+    """Triangle indices of the prism :func:`_extrude_to_prism` builds from a
+    flat mesh of ``n`` vertices: the top face, the bottom face (vertices
+    ``n .. 2n``, reversed winding) and two triangles per boundary edge.
+
+    Depends only on the mesh topology, not on where the layer sits in z, so
+    the viewer caches it per layer — finding the boundary edges is the
+    expensive part of an extrusion.
+    """
     top_tris = tris.astype(np.int64, copy=False)
     bot_tris = tris[:, [0, 2, 1]].astype(np.int64) + n
 
-    # Boundary edges = those incident to exactly one triangle.
+    # Boundary edges = those incident to exactly one triangle. Each
+    # triangle contributes its three edges, stored low vertex first so the
+    # two triangles sharing an edge agree on it.
     m = tris.shape[0]
-    edges = np.empty((3 * m, 2), dtype=np.int64)
-    edges[0::3] = np.sort(tris[:, [0, 1]], axis=1)
-    edges[1::3] = np.sort(tris[:, [1, 2]], axis=1)
-    edges[2::3] = np.sort(tris[:, [2, 0]], axis=1)
-    _, inverse, counts = np.unique(edges, axis=0,
-                                    return_inverse=True, return_counts=True)
-    boundary_mask = counts[inverse] == 1
-    bedges = edges[boundary_mask]
+    t0, t1, t2 = top_tris[:, 0], top_tris[:, 1], top_tris[:, 2]
+    lo = np.empty(3 * m, dtype=np.int64)
+    hi = np.empty(3 * m, dtype=np.int64)
+    for k, (p, q) in enumerate(((t0, t1), (t1, t2), (t2, t0))):
+        lo[k::3] = np.minimum(p, q)
+        hi[k::3] = np.maximum(p, q)
+    # One integer key per undirected edge, sorted once: an edge is on the
+    # boundary when its key has no equal neighbour in the sorted run. (This
+    # replaced np.unique over (a, b) rows, which sorts tuples and was most
+    # of the cost of switching to 3D on a large board.)
+    keys = lo * np.int64(n) + hi
+    order = np.argsort(keys, kind="stable")
+    sorted_keys = keys[order]
+    differs = sorted_keys[1:] != sorted_keys[:-1]
+    once = np.empty(3 * m, dtype=bool)
+    once[0] = True
+    once[1:] = differs
+    once[:-1] &= differs
+    boundary_mask = np.empty(3 * m, dtype=bool)
+    boundary_mask[order] = once
 
     # Each boundary edge (a, b) → two triangles forming the side-wall
     # quad: (a_top, b_top, b_bot) and (a_top, b_bot, a_bot).
-    a = bedges[:, 0]
-    b = bedges[:, 1]
+    a = lo[boundary_mask]
+    b = hi[boundary_mask]
     wall_1 = np.column_stack([a, b, b + n])
     wall_2 = np.column_stack([a, b + n, a + n])
 
     all_tris = np.concatenate([top_tris, bot_tris, wall_1, wall_2],
                               axis=0).astype(np.int32, copy=False)
-    return new_xs, new_ys, new_zs, new_vs, all_tris
+    return all_tris
 
 
 

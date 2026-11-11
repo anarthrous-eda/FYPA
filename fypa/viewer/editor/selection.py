@@ -272,11 +272,14 @@ class _EditorSelectionMixin:
         gv = getattr(self, "_gl_viewer", None)
         if gv is None or not self._layer_probes:
             return
-        total = sum(int(lp.get("n_vertices", 0)) for lp in self._layer_probes)
+        # The uploaded batch covers hidden layers too, so the alpha array
+        # is built over every block of it, not just the visible probes.
+        blocks = self._mesh_alpha_blocks()
+        total = sum(int(lp.get("n_vertices", 0)) for lp in blocks)
         if total <= 0:
             return
         gv.set_vertex_alpha(
-            self._combined_mesh_alpha_array(self._layer_probes, total)
+            self._combined_mesh_alpha_array(blocks, total)
         )
 
     def _editor_dim_rgb(self, rgb: tuple[float, float, float],

@@ -156,6 +156,8 @@ def _host(qapp, metadata=None):
             _MarkerOverlayMixin._merged_solid_all_copper_tris)
         _triangulate_simple_polygon = (
             _MarkerOverlayMixin._triangulate_simple_polygon)
+        _merged_copper_rings = staticmethod(
+            _MarkerOverlayMixin._merged_copper_rings)
         _copper_poly_wire = _OverlayPanelMixin._copper_poly_wire
         _editor_dim_rgb = _EditorSelectionMixin._editor_dim_rgb
         _editor_focus_active = _EditorNetsMixin._editor_focus_active
@@ -449,6 +451,26 @@ def test_a_layer_still_being_prepared_appears_when_it_is_ready(qapp):
             for poly in rec["polygons"]:
                 want = CT.triangulate_rings(poly["exterior"], poly["holes"])
                 assert np.array_equal(poly["_tris_cache"], want)
+
+        # A transparent solid fill needs the layer's copper merged into one
+        # shape — slow on a real board, so it is handed to the workers too.
+        # Until it arrives the layer is drawn from its ordinary buffer
+        # rather than disappearing.
+        dict(host._layer_transparency_buttons)["Top"].a = 0.5
+        host._refresh_copper_layers()
+        assert host._copper_waiting == ("Top",)
+        assert [d.key for d in gl.draws] == [("Top", CT.SOLID)]
+        assert gl.draws[0].under is False
+        while host._copper_waiting and time.monotonic() < deadline:
+            qapp.processEvents()
+            time.sleep(0.01)
+        assert host._copper_waiting == ()
+        assert [d.key for d in gl.draws] == [("Top", "merged")]
+        rings = [(p["exterior"], p["holes"])
+                 for rec in host.metadata["all_copper"][:3]
+                 for p in rec["polygons"]]
+        assert np.array_equal(gl.bufs[("Top", "merged")][1],
+                              CT.merged_triangles(rings))
     finally:
         host._shutdown_copper_layers()
     assert host._copper_triangulator is None

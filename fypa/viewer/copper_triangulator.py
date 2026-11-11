@@ -77,11 +77,15 @@ def _chunks(polys: list[dict]) -> deque:
 
 
 class _Job:
-    __slots__ = ("chunks", "outstanding")
+    __slots__ = ("chunks", "outstanding", "sink")
 
-    def __init__(self, chunks: deque) -> None:
+    def __init__(self, chunks: deque, sink=None) -> None:
         self.chunks = chunks            # not yet handed to a worker
         self.outstanding = len(chunks)  # not yet finished
+        # ``None``: a polygon job, whose chunks are lists of polygon dicts
+        # and whose results land on those dicts. Otherwise a one-off task:
+        # the single chunk is ``(fn, args)`` and the result goes to ``sink``.
+        self.sink = sink
 
 
 class CopperTriangulator(QObject):
@@ -144,6 +148,19 @@ class CopperTriangulator(QObject):
             self._order.append(key)
         self._pump()
 
+    def add_task(self, layer_id: int, kind, fn, args: tuple, sink) -> None:
+        """Run ``fn(*args)`` in a worker ahead of the queued polygon work and
+        hand its result to ``sink`` on the GUI thread. ``fn`` must be a
+        module-level function. A task already queued under the same
+        ``(layer_id, kind)`` is left to finish."""
+        if not self.active:
+            return
+        key = (int(layer_id), kind)
+        if key not in self._jobs:
+            self._jobs[key] = _Job(deque([(fn, args)]), sink)
+            self._order.insert(0, key)
+        self._pump()
+
     def prioritise(self, layer_id: int, kind: str) -> None:
         key = (int(layer_id), kind)
         if key in self._jobs and self._order and self._order[0] != key:
@@ -166,15 +183,21 @@ class CopperTriangulator(QObject):
             key = next((k for k in self._order if self._jobs[k].chunks), None)
             if key is None:
                 return
-            chunk = self._jobs[key].chunks.popleft()
-            rings = [(p.get("exterior"), p.get("holes") or []) for p in chunk]
+            job = self._jobs[key]
+            chunk = job.chunks.popleft()
+            if job.sink is not None:
+                fn, args = chunk
+            else:
+                fn = _ct.build_chunk
+                args = (key[1], [(p.get("exterior"), p.get("holes") or [])
+                                 for p in chunk])
             try:
                 if self._pool is None:
                     self._pool = concurrent.futures.ProcessPoolExecutor(
                         max_workers=self._max_workers,
                         mp_context=multiprocessing.get_context("spawn"),
                         initializer=_worker_init)
-                fut = self._pool.submit(_ct.build_chunk, key[1], rings)
+                fut = self._pool.submit(fn, *args)
             except Exception as e:  # noqa: BLE001 - any pool failure
                 self._fail(e)
                 return
@@ -194,24 +217,29 @@ class CopperTriangulator(QObject):
         if not self.active or fut.cancelled():
             return
         try:
-            xy, counts = fut.result()
+            result = fut.result()
         except Exception as e:  # noqa: BLE001 - worker crash / broken pool
             self._fail(e)
             return
         job = self._jobs.get(key)
-        cache_key = _ct.CACHE_KEY[key[1]]
-        ends = np.cumsum(counts)
-        start = 0
-        for poly, end in zip(chunk, ends.tolist()):
-            if poly.get(cache_key) is None:
-                poly[cache_key] = xy[start:end]
-            start = end
-        if job is not None:
-            job.outstanding -= 1
-            if job.outstanding <= 0:
-                del self._jobs[key]
-                self._order.remove(key)
-                self.layer_ready.emit(key[0], key[1])
+        if job is None:
+            return
+        if job.sink is not None:
+            job.sink(result)
+        else:
+            xy, counts = result
+            cache_key = _ct.CACHE_KEY[key[1]]
+            start = 0
+            for poly, end in zip(chunk, np.cumsum(counts).tolist()):
+                if poly.get(cache_key) is None:
+                    poly[cache_key] = xy[start:end]
+                start = end
+        job.outstanding -= 1
+        if job.outstanding <= 0:
+            del self._jobs[key]
+            self._order.remove(key)
+            self.layer_ready.emit(
+                key[0], key[1] if isinstance(key[1], str) else "task")
         if self._jobs:
             self._pump()
         else:

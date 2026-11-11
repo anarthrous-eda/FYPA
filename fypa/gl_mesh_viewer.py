@@ -42,6 +42,7 @@ Vector-field arrows (drawn via the line shader, in world space):
 """
 from __future__ import annotations
 
+import ctypes
 import math
 import sys
 from dataclasses import dataclass, field
@@ -719,6 +720,8 @@ class GLMeshViewer(QOpenGLWidget):
         # --- CPU-side cached mesh data (re-uploaded when changed) ---
         self._n_indices: int = 0
         self._n_vertices: int = 0
+        # Index-buffer runs to draw (see set_mesh_draw_ranges); None = all.
+        self._mesh_ranges: tuple[list[int], list[int]] | None = None
         self._pending_positions: np.ndarray | None = None
         self._pending_indices: np.ndarray | None = None
         self._pending_values: np.ndarray | None = None
@@ -1022,6 +1025,8 @@ class GLMeshViewer(QOpenGLWidget):
         self._pending_indices = indices
         self._n_vertices = positions.shape[0]
         self._n_indices = indices.size
+        # A new mesh draws whole until the host narrows it again.
+        self._mesh_ranges = None
         # A new mesh invalidates any per-vertex alpha (vertex count and
         # ordering changed); the host re-pushes it via set_vertex_alpha.
         self._pending_alpha = None
@@ -1040,6 +1045,54 @@ class GLMeshViewer(QOpenGLWidget):
         # the mesh render in the lowest colormap entry rather than crash.
         self._pending_values = np.zeros(self._n_vertices, dtype=np.float32)
         self.update()
+
+    def set_mesh_draw_ranges(self, firsts, counts) -> None:
+        """Draw only these runs of the uploaded mesh's index buffer.
+
+        ``firsts`` / ``counts`` are in indices (three per triangle). The
+        host uploads every layer of the visible rails once and then shows or
+        hides a layer by leaving its run in or out of this list, so a layer
+        toggle moves no vertex data. ``None`` for ``firsts`` draws the whole
+        buffer; empty arrays draw nothing while keeping the mesh uploaded.
+        """
+        if firsts is None:
+            self._mesh_ranges = None
+        else:
+            self._mesh_ranges = (
+                [int(f) for f in np.asarray(firsts).ravel()],
+                [int(c) for c in np.asarray(counts).ravel()],
+            )
+        self.update()
+
+    def set_mesh_extent(self, data_bounds, z_max: float) -> None:
+        """The xy bounds and top z of the part of the mesh being drawn —
+        what fit-to-data and the 3D framing work from."""
+        if data_bounds is None:
+            self._data_bounds = None
+        else:
+            self._data_bounds = (float(data_bounds[0]), float(data_bounds[1]),
+                                 float(data_bounds[2]), float(data_bounds[3]))
+        self._data_z_max = float(z_max)
+
+    def _mesh_has_visible(self) -> bool:
+        if self._n_indices <= 0:
+            return False
+        return self._mesh_ranges is None or bool(self._mesh_ranges[0])
+
+    def _draw_mesh_elements(self) -> None:
+        """Issue the indexed draw for the mesh (the index buffer is bound):
+        the whole buffer, or just the runs the host left visible."""
+        if self._mesh_ranges is None:
+            GL.glDrawElements(GL.GL_TRIANGLES, self._n_indices,
+                              GL.GL_UNSIGNED_INT, None)
+            return
+        n = self._n_indices
+        for first, count in zip(*self._mesh_ranges):
+            if first < 0 or count <= 0 or first + count > n:
+                continue
+            # The offset is in bytes into the uint32 index buffer.
+            GL.glDrawElements(GL.GL_TRIANGLES, count, GL.GL_UNSIGNED_INT,
+                              ctypes.c_void_p(first * 4))
 
     def set_view_mode(self, mode: str) -> None:
         """Switch between ``"2d"`` (orthographic top-down) and ``"3d"``
@@ -1534,6 +1587,7 @@ class GLMeshViewer(QOpenGLWidget):
         """Drop all mesh data — the canvas paints background only."""
         self._n_indices = 0
         self._n_vertices = 0
+        self._mesh_ranges = None
         self._pending_positions = None
         self._pending_indices = None
         self._pending_values = None
@@ -3065,7 +3119,7 @@ class GLMeshViewer(QOpenGLWidget):
             self._draw_copper(under=True)
             GL.glDisable(GL.GL_DEPTH_TEST)
             GL.glDepthFunc(GL.GL_LESS)
-        if self._n_indices > 0 and self._program is not None:
+        if self._mesh_has_visible() and self._program is not None:
             # Rail mesh in 2D draws with GL_LEQUAL + write so a top-layer
             # rail triangle covers the (lower-z) under-mesh all-copper at
             # its pixel while a bottom-layer rail triangle is rejected
@@ -3364,8 +3418,7 @@ class GLMeshViewer(QOpenGLWidget):
             GL.glDisableVertexAttribArray(3)
             GL.glVertexAttrib1f(3, 0.0)
         self._ibo.bind()
-        GL.glDrawElements(GL.GL_TRIANGLES, self._n_indices,
-                          GL.GL_UNSIGNED_INT, None)
+        self._draw_mesh_elements()
         self._ibo.release()
         GL.glDisableVertexAttribArray(0)
         GL.glDisableVertexAttribArray(1)
@@ -3411,8 +3464,7 @@ class GLMeshViewer(QOpenGLWidget):
         GL.glPolygonMode(GL.GL_FRONT_AND_BACK, GL.GL_LINE)
         GL.glLineWidth(1.0)
         self._ibo.bind()
-        GL.glDrawElements(GL.GL_TRIANGLES, self._n_indices,
-                          GL.GL_UNSIGNED_INT, None)
+        self._draw_mesh_elements()
         self._ibo.release()
         GL.glPolygonMode(GL.GL_FRONT_AND_BACK, GL.GL_FILL)
         GL.glDisableVertexAttribArray(0)

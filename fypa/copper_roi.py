@@ -223,37 +223,67 @@ def _solved_copper(solution) -> dict[str, list[tuple[str, object]]]:
 
 
 class _Copper:
-    """Per-layer copper lookups with the (costly) unions cached."""
+    """Per-layer copper lookups, limited to an area of interest.
+
+    Every caller only looks at copper near one fix (a band along an edge,
+    a parallel region, a ray's reach), so each lookup takes the layer's
+    polygons that touch that area from an STRtree, clips them to it and
+    unions the pieces. Unioning a whole layer instead costs seconds per
+    (layer, net) on a large board — minutes in all with every net's copper.
+    """
 
     def __init__(self, by_layer: dict[str, list[tuple[str, object]]]):
         self.by_layer = by_layer
-        self._others: dict[tuple[str, str], object] = {}
-        self._own: dict[tuple[str, str], object] = {}
+        self._index: dict[str, tuple | None] = {}
 
     def layers(self) -> list[str]:
         return sorted(self.by_layer)
 
-    @staticmethod
-    def _union(geoms):
-        from shapely.ops import unary_union
+    def _layer_index(self, phys: str):
+        """``(STRtree, shapes, nets)`` for a layer, or None when empty."""
+        if phys not in self._index:
+            from shapely.strtree import STRtree
 
-        geoms = [g for g in geoms if g is not None]
-        return unary_union(geoms) if geoms else None
+            items = [(n, g) for n, g in self.by_layer.get(phys, [])
+                     if g is not None and not g.is_empty]
+            if items:
+                shapes = np.empty(len(items), dtype=object)
+                shapes[:] = [g for _n, g in items]
+                nets = np.array([n for n, _g in items], dtype=object)
+                self._index[phys] = (STRtree(shapes), shapes, nets)
+            else:
+                self._index[phys] = None
+        return self._index[phys]
 
-    def others(self, phys: str, net: str):
-        """Every other net's copper on a layer (None when there is none)."""
-        k = (phys, net)
-        if k not in self._others:
-            self._others[k] = self._union(
-                g for n, g in self.by_layer.get(phys, []) if n != net)
-        return self._others[k]
+    def _within(self, phys: str, net: str, area, *, own: bool):
+        import shapely
 
-    def own(self, phys: str, net: str):
-        k = (phys, net)
-        if k not in self._own:
-            self._own[k] = self._union(
-                g for n, g in self.by_layer.get(phys, []) if n == net)
-        return self._own[k]
+        idx = self._layer_index(phys)
+        if idx is None or area is None or area.is_empty:
+            return None
+        tree, shapes, nets = idx
+        hits = tree.query(area, predicate="intersects")
+        if not len(hits):
+            return None
+        same = nets[hits] == net
+        hits = hits[same if own else ~same]
+        if not len(hits):
+            return None
+        pieces = shapely.intersection(shapes[hits], area)
+        pieces = pieces[~shapely.is_empty(pieces)]
+        if not len(pieces):
+            return None
+        out = shapely.union_all(pieces)
+        return None if out.is_empty else out
+
+    def others_in(self, phys: str, net: str, area):
+        """Every other net's copper on a layer, clipped to ``area`` (None
+        when there is none there)."""
+        return self._within(phys, net, area, own=False)
+
+    def own_in(self, phys: str, net: str, area):
+        """This net's copper on a layer, clipped to ``area``."""
+        return self._within(phys, net, area, own=True)
 
 
 def _fmt_len(mm: float) -> str:
@@ -410,7 +440,7 @@ def _widen_runs(solution, density, copper) -> list[Opportunity]:
         # how far that holds. Widening by δ scales a series path's
         # conductance by (1 + δ/w), which saves 1/(1 + δ/w) of the linear
         # estimate — ~1 for a plane, ½ when the step doubles a trace.
-        width = _local_width(copper.own(phys, net), line)
+        width = _local_width(copper, phys, net, line)
         gain = value_per_mm * WIDEN_STEP_MM / (1.0 + WIDEN_STEP_MM / width)
         blocked = _widen_blocked(copper, phys, net, line)
         new = {"mesh": mesh_id, "line": line, "width": width, "gain": gain,
@@ -500,12 +530,18 @@ def _chain_points(edges: np.ndarray, xys: np.ndarray) -> list[tuple]:
     return [tuple(xys[i]) for i in order]
 
 
-def _local_width(own, line, samples: int = 5, reach_mm: float = 50.0) -> float:
+def _local_width(copper, phys: str, net: str, line, samples: int = 5,
+                 reach_mm: float = 50.0) -> float:
     """Copper width across an edge run: from points along the run, the
     distance inward to the far side of the copper (median of a few rays)."""
     from shapely.geometry import LineString, Point
 
-    if own is None or line.length <= 0:
+    if line.length <= 0:
+        return math.inf
+    # Only copper a ray can reach matters; the clip's own edge lies past
+    # every ray's end, so it never reads as the far side.
+    own = copper.own_in(phys, net, line.buffer(reach_mm + 1.0))
+    if own is None:
         return math.inf
     boundary = own.boundary
     widths = []
@@ -534,11 +570,11 @@ def _local_width(own, line, samples: int = 5, reach_mm: float = 50.0) -> float:
 
 
 def _widen_blocked(copper, phys: str, net: str, line) -> bool:
-    other = copper.others(phys, net)
+    band = line.buffer(WIDEN_STEP_MM * 2, cap_style="flat")
+    other = copper.others_in(phys, net, band)
     if other is None:
         return False
-    band = line.buffer(WIDEN_STEP_MM * 2, cap_style="flat")
-    own = copper.own(phys, net)
+    own = copper.own_in(phys, net, band)
     if own is not None:
         band = band.difference(own)
     if band.is_empty or band.area <= 0:
@@ -632,8 +668,8 @@ def _free_layers(copper, phys_order, phys, net, region) -> list[str]:
     for other_phys in phys_order or copper.layers():
         if other_phys == phys:
             continue
-        own_there = copper.own(other_phys, net)
-        taken = copper.others(other_phys, net)
+        own_there = copper.own_in(other_phys, net, region)
+        taken = copper.others_in(other_phys, net, region)
         blocked_area = 0.0
         if taken is not None:
             blocked_area = region.intersection(taken).area

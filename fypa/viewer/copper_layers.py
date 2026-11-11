@@ -173,10 +173,8 @@ class _CopperLayersMixin:
             self._copper_triangulator = None
         if os.environ.get("FYPA_COPPER_BACKGROUND", "1") == "0":
             return
-        key = _ct.CACHE_KEY[_ct.SOLID]
-        missing = sum(1 for lc in index.values() for p in lc.polys
-                      if p.get(key) is None)
-        if missing < self._COPPER_BG_MIN_POLYGONS:
+        if (sum(len(lc.polys) for lc in index.values())
+                < self._COPPER_BG_MIN_POLYGONS):
             return
         tri = CopperTriangulator(self)
         tri.layer_ready.connect(self._on_copper_layer_ready)
@@ -250,6 +248,34 @@ class _CopperLayersMixin:
             np.cumsum([a.shape[0] for a in parts], out=offsets[1:])
         lc.offsets[kind] = offsets
         return np.concatenate(parts, axis=0) if parts else _EMPTY_XY
+
+    def _copper_merged_xy(self, name: str, lc: _LayerCopper, skip_nets: set):
+        """The layer's copper unioned into one non-overlapping fill (see
+        :func:`fypa.viewer.copper_tris.merged_triangles`), or ``None`` while
+        a background worker is still merging it. The union takes tens of
+        seconds on a large layer, so on a board big enough to have workers
+        it is never done on the GUI thread."""
+        cache_key = (name, frozenset(skip_nets))
+        cached = self._merged_all_copper_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        tri = self._copper_triangulator
+        if tri is None or not tri.active:
+            merged = self._merged_solid_all_copper_tris(
+                name, lc.recs, skip_nets)
+            return merged if merged is not None else _EMPTY_XY
+
+        def _store(xy, token=lc.token) -> None:
+            # Dropped if the board was re-solved while this was running.
+            index = self._copper_index[2] if self._copper_index else {}
+            live = index.get(lc.layer_id)
+            if live is not None and live.token == token:
+                self._merged_all_copper_cache[cache_key] = xy
+
+        tri.add_task(
+            lc.layer_id, (_MERGED, cache_key[1]), _ct.merged_triangles,
+            (self._merged_copper_rings(lc.recs, skip_nets),), _store)
+        return None
 
     def _copper_layer_passes(self, lc: _LayerCopper, kind: str,
                              rgb: tuple, alpha: float,
@@ -454,21 +480,28 @@ class _CopperLayersMixin:
                     and not editor_dim_active and not focus_on):
                 mkey = (name, _MERGED)
                 version = (lc.token, frozenset(skip_nets))
-                if not gv.has_copper_geometry(mkey, version):
-                    merged = self._merged_solid_all_copper_tris(
-                        name, lc.recs, skip_nets)
-                    gv.set_copper_geometry(
-                        mkey, merged if merged is not None else _EMPTY_XY,
-                        version)
-                keep.add(mkey)
-                draws.append(CopperDraw(mkey, z, under, [
-                    ((lrgb[0], lrgb[1], lrgb[2], layer_alpha), None, None)]))
-                continue
+                merged_ready = gv.has_copper_geometry(mkey, version)
+                if not merged_ready:
+                    merged = self._copper_merged_xy(name, lc, skip_nets)
+                    if merged is not None:
+                        gv.set_copper_geometry(mkey, merged, version)
+                        merged_ready = True
+                if merged_ready:
+                    keep.add(mkey)
+                    draws.append(CopperDraw(mkey, z, under, [(
+                        (lrgb[0], lrgb[1], lrgb[2], layer_alpha),
+                        None, None)]))
+                    continue
+                # Still being merged in the background: draw the plain
+                # per-polygon fill meanwhile (overlaps read a little too
+                # opaque) and swap the merged one in when it arrives.
+                waiting.append(name)
             if (kind not in lc.offsets
                     or not gv.has_copper_geometry(key, lc.token)):
                 xy = self._copper_layer_xy(lc, kind)
                 if xy is None:
-                    waiting.append(name)
+                    if name not in waiting:
+                        waiting.append(name)
                     continue
                 gv.set_copper_geometry(key, xy, lc.token)
             passes = self._copper_layer_passes(

@@ -25,7 +25,7 @@ from fypa.viewer.display import (
     _VIA_CURRENT_MODE,
     _VOLTAGE_DROP_MODE,
 )
-from fypa.viewer.mesh_geometry import _extrude_to_prism, _shape_outline_segments
+from fypa.viewer.mesh_geometry import _prism_triangles, _shape_outline_segments
 from fypa.viewer.widgets import _qt_widget_alive
 
 
@@ -351,9 +351,20 @@ class _RenderMixin:
         # A "selected" physical layer is forced to the very end of the
         # batch so it paints above every other layer regardless of stackup
         # rank — that's the whole point of the layer-row selection.
+        #
+        # The batch holds EVERY physical layer of the selected rails, not
+        # just the visible ones: a hidden layer's vertices stay uploaded and
+        # its triangles are simply left out of the draw (see
+        # ``_mesh_blocks`` / GLMeshViewer.set_mesh_draw_ranges). Toggling a
+        # layer's eye then changes neither the geometry nor this cache's
+        # signature, so nothing is rebuilt or re-uploaded.
         sel = self._selected_layer
+        visible = set(phys_list)
+        all_phys = [name for name, _eye in
+                    getattr(self, "_layer_eye_buttons", [])]
+        all_phys += [p for p in phys_list if p not in all_phys]
         phys_draw_order = sorted(
-            phys_list,
+            all_phys,
             key=lambda p: (
                 0 if p == sel else 1,
                 self._phys_stackup_rank.get(p, 1 << 30),
@@ -403,9 +414,16 @@ class _RenderMixin:
         )
         cached_geom = self._rail_geom_cache
         reuse_geom = cached_geom is not None and cached_geom[0] == geom_sig
-        offset = 0
+        # One entry per (phys, net) block of the batch, in batch order,
+        # hidden layers included: where its vertices and triangles sit, and
+        # whether it is drawn. ``_render_impl`` derives the draw ranges, the
+        # colour-scale statistics and the per-vertex alpha from these.
+        blocks: list[dict] = []
+        v_off = 0
+        t_off = 0
         for phys in phys_draw_order:
             phys_z = self._layer_render_z(phys)
+            is_visible = phys in visible
             for net in members:
                 layer_index = self._index_by_pair.get((phys, net))
                 if layer_index is None:
@@ -431,27 +449,32 @@ class _RenderMixin:
                 if extrude_3d:
                     lvs = np.concatenate([entry["vs"], entry["vs"]])
                     n = 2 * n_in
+                    # The prism's triangles depend only on the layer's mesh,
+                    # so they are cached per layer rather than re-derived
+                    # whenever the batch is rebuilt.
+                    ltris = self._prism_tris(
+                        layer_index, hidden_sections.get(net), etris, n_in)
                 else:
                     lvs = entry["vs"]
                     n = n_in
+                    ltris = etris
                 vs_parts.append(lvs)
                 # Geometry (coords / z / triangles / no-current mask) is mode-
                 # independent — rebuild it only on a cache miss. On a hit the
-                # concatenated batch is reused wholesale below, so the loop
-                # skips the per-layer prism extrusion and index re-basing too.
+                # concatenated batch is reused wholesale below.
                 if not reuse_geom:
                     if extrude_3d:
-                        lxs, lys, lzs, _lvs, ltris = _extrude_to_prism(
-                            entry["xs"], entry["ys"], entry["vs"],
-                            etris,
-                            z_center=phys_z,
-                            thickness=self._COPPER_THICKNESS_MM,
-                        )
+                        # Extrude DOWNWARD only: the top face sits on the
+                        # layer plane (see _extrude_to_prism).
+                        lxs = np.concatenate([entry["xs"], entry["xs"]])
+                        lys = np.concatenate([entry["ys"], entry["ys"]])
+                        lzs = np.empty(n, dtype=np.float64)
+                        lzs[:n_in] = phys_z
+                        lzs[n_in:] = phys_z - self._COPPER_THICKNESS_MM
                     else:
                         lxs = entry["xs"]
                         lys = entry["ys"]
                         lzs = np.full(n_in, phys_z, dtype=np.float64)
-                        ltris = etris
                     xs_parts.append(lxs)
                     ys_parts.append(lys)
                     zs_parts.append(lzs)
@@ -465,18 +488,41 @@ class _RenderMixin:
                     nc_parts.append(nc_block)
                     # Vectorised offset add — re-base local indices into the
                     # combined GPU batch.
-                    tris_parts.append(ltris + offset)
-                    offset += n
-                layer_probes.append({
+                    tris_parts.append(ltris + v_off)
+                block = {
                     "physical": phys,
                     "net": net,
-                    "layer_id": self._phys_name_to_layer_id.get(phys),
-                    "layer_index": layer_index,
                     # Vertex count this (phys, net) contributed to the
                     # combined mesh — used to build the per-vertex alpha
                     # array (see :meth:`_combined_mesh_alpha_array`),
                     # which folds in both the per-layer Transparency
                     # setting and the editor-mode connectivity dim.
+                    "n_vertices": n,
+                    "visible": is_visible,
+                    "v0": v_off,
+                    "t0": t_off,
+                    "n_tris": int(ltris.shape[0]),
+                    "z": phys_z,
+                    "bounds": entry.get("bounds"),
+                }
+                blocks.append(block)
+                v_off += n
+                t_off += int(ltris.shape[0])
+                if not is_visible:
+                    continue
+                # Vertices of this block that a drawn triangle references
+                # (see the orphan-vertex note in _render_impl). The prism's
+                # bottom face and walls reference the same set, shifted.
+                used = (entry["used_indices"] if tri_keep is None
+                        else np.unique(etris))
+                if extrude_3d:
+                    used = np.concatenate([used, used + n_in])
+                block["used"] = used
+                layer_probes.append({
+                    "physical": phys,
+                    "net": net,
+                    "layer_id": self._phys_name_to_layer_id.get(phys),
+                    "layer_index": layer_index,
                     "n_vertices": n,
                     "triangulation": entry["triangulation"],
                     "interpolator": entry["interpolator"],
@@ -495,6 +541,7 @@ class _RenderMixin:
                     # the hover and the current arrows skip them too.
                     "tri_keep": tri_keep,
                 })
+        self._mesh_blocks = blocks
         # Reverse to put topmost layer first in the probe walk order.
         layer_probes.reverse()
 
@@ -530,6 +577,36 @@ class _RenderMixin:
                 no_current = np.empty(0, dtype=np.float32)
             self._rail_geom_cache = (geom_sig, (xs, ys, zs, tris, no_current))
         return xs, ys, zs, vs, tris, layer_probes, no_current
+
+    def _prism_tris(self, layer_index: int, hidden, etris: np.ndarray,
+                    n_in: int) -> np.ndarray:
+        """Triangle indices (local to the layer) of the layer's extruded 3D
+        prism, cached per layer and hidden-section set for the life of the
+        solve. Finding the mesh's boundary edges for the side walls is the
+        slow part of the 3D view; it does not depend on the layer's z."""
+        cache = self.__dict__.setdefault("_prism_tris_cache", {})
+        key = (layer_index, hidden)
+        tris = cache.get(key)
+        if tris is None:
+            tris = cache[key] = _prism_triangles(etris, n_in)
+        return tris
+
+    def _hide_gl_mesh(self) -> None:
+        """Stop drawing the heatmap mesh but keep it uploaded, so the next
+        layer shown costs no re-upload. Falls back to dropping it when
+        nothing is uploaded."""
+        if getattr(self, "_last_mesh_upload", None) is None:
+            self._clear_gl_mesh()
+            return
+        empty = np.empty(0, dtype=np.int64)
+        self._gl_viewer.set_mesh_draw_ranges(empty, empty)
+        self._gl_viewer.set_mesh_extent(None, 0.0)
+
+    def _mesh_alpha_blocks(self) -> list[dict]:
+        """The batch's blocks, top-first, in the shape the per-vertex alpha
+        builders walk (``physical`` / ``net`` / ``n_vertices``). Hidden
+        layers are included: their vertices are still in the buffer."""
+        return list(reversed(getattr(self, "_mesh_blocks", None) or []))
 
     def _layer_cache_key(self, layer_index: int, derive_fn) -> tuple:
         """Key of one layer's per-mode values in ``_layer_cache``. The Copper
@@ -676,6 +753,10 @@ class _RenderMixin:
             # toggling the outline overlay is just a buffer upload.
             "outline_segments": outline_segments,
             "used_indices": used_indices,
+            # (x_min, x_max, y_min, y_max) over every vertex of the layer.
+            "bounds": ((float(xs.min()), float(xs.max()),
+                        float(ys.min()), float(ys.max()))
+                       if xs.size else None),
             # Per-vertex 0/1 mask (parallel to xs) for "Grey no current copper".
             "no_current_mask": no_current_mask,
             "_kept": kept,
@@ -1193,7 +1274,12 @@ class _RenderMixin:
             getattr(self.solution, "solver_info", {}).get("stub", False)
         )
         if not phys_list or not rails:
-            self._clear_gl_mesh()
+            # No layer showing but rails still selected: keep the mesh on
+            # the GPU so switching a layer back on is free.
+            if rails:
+                self._hide_gl_mesh()
+            else:
+                self._clear_gl_mesh()
             self._gl_viewer.set_relief_height(0.0)
             self._gl_viewer.clear_outlines()
             self._gl_viewer.clear_cylinders()
@@ -1233,8 +1319,14 @@ class _RenderMixin:
         )
         self._layer_probes = layer_probes
         _mark("build_rail_arrays")
-        if xs.size == 0 or tris.size == 0:
-            self._clear_gl_mesh()
+        # The blocks actually drawn: visible layers that have triangles.
+        vis_blocks = [b for b in self._mesh_blocks
+                      if b["visible"] and b["n_tris"] > 0]
+        if not vis_blocks:
+            if xs.size == 0 or tris.size == 0:
+                self._clear_gl_mesh()
+            else:
+                self._hide_gl_mesh()
             self._gl_viewer.set_relief_height(0.0)
             self._gl_viewer.clear_outlines()
             self._gl_viewer.clear_arrows()
@@ -1272,11 +1364,12 @@ class _RenderMixin:
         # well-conditioned) are invisible in the heatmap but would
         # otherwise dominate min/max stats — especially in Voltage Drop
         # mode where they'd appear as a fake -V_source drop.
-        # (A mask + flatnonzero gives the same sorted unique indices as
-        # np.unique without sorting every triangle corner.)
-        used_mask = np.zeros(xs.size, dtype=bool)
-        used_mask[tris.ravel()] = True
-        used_idx = np.flatnonzero(used_mask)
+        # Taken over the VISIBLE blocks only — the batch also holds the
+        # hidden layers, which must not move the colour scale or the stats.
+        # Each layer's used-vertex list is cached with its geometry, so this
+        # is a concatenation rather than a scan of every triangle.
+        used_idx = np.concatenate(
+            [b["used"] + b["v0"] for b in vis_blocks])
         vs_used = vs[used_idx] if used_idx.size > 0 else vs
 
         # _build_rail_arrays returns numpy arrays directly; alias them
@@ -1425,11 +1518,13 @@ class _RenderMixin:
             # concatenated in the original (bottom-first) loop order, while
             # layer_probes was reversed to top-first — so walk the probes in
             # reverse to recover the concatenation order and slice by the
-            # vertex count each slab contributed.
+            # vertex count each slab contributed. (``_mesh_blocks`` is
+            # already in concatenation order and covers the hidden layers'
+            # vertices too.)
             off_vec = np.zeros(vs_arr.size, dtype=np.float64)
             pos = 0
             any_off = False
-            for lp in reversed(layer_probes):
+            for lp in self._mesh_blocks:
                 n = int(lp["n_vertices"])
                 off = offsets.get(lp["net"], 0.0)
                 if off:
@@ -1453,8 +1548,12 @@ class _RenderMixin:
                     if off:
                         lp["value_offset"] = off
 
-        x_min, x_max = float(xs_arr.min()), float(xs_arr.max())
-        y_min, y_max = float(ys_arr.min()), float(ys_arr.max())
+        # Bounds of what is drawn (per-layer bounds are cached).
+        vis_bounds = [b["bounds"] for b in vis_blocks if b["bounds"]]
+        x_min = min(b[0] for b in vis_bounds)
+        x_max = max(b[1] for b in vis_bounds)
+        y_min = min(b[2] for b in vis_bounds)
+        y_max = max(b[3] for b in vis_bounds)
         self._data_bounds = (x_min, x_max, y_min, y_max)
 
         # Default colour-scale window (percentile-clipped for spike-prone
@@ -1533,6 +1632,21 @@ class _RenderMixin:
                                       data_bounds=self._data_bounds,
                                       zs=zs.astype(np.float32))
             self._last_mesh_upload = (xs_arr, ys_arr, tris_arr, zs)
+        # Which layers of the uploaded batch to draw: one index run per
+        # visible block, neighbours merged. This — not a re-upload — is all
+        # a layer eye changes.
+        firsts: list[int] = []
+        counts: list[int] = []
+        for b in vis_blocks:
+            first, count = 3 * b["t0"], 3 * b["n_tris"]
+            if firsts and firsts[-1] + counts[-1] == first:
+                counts[-1] += count
+            else:
+                firsts.append(first)
+                counts.append(count)
+        self._gl_viewer.set_mesh_draw_ranges(firsts, counts)
+        self._gl_viewer.set_mesh_extent(
+            self._data_bounds, max(b["z"] for b in vis_blocks))
         # Values + levels are pushed through _gl_scale: identity on a
         # linear scale, log10 (floored) on a log scale. Pushing both in
         # the same space means the GL viewer's linear normalisation
@@ -1547,7 +1661,8 @@ class _RenderMixin:
         # control with editor-mode connectivity dimming. Pushed after
         # set_mesh (which invalidates any previous alpha array).
         self._gl_viewer.set_vertex_alpha(
-            self._combined_mesh_alpha_array(layer_probes, xs_arr.size)
+            self._combined_mesh_alpha_array(self._mesh_alpha_blocks(),
+                                            xs_arr.size)
         )
         # Grey solved dead-end (no-current) copper when the "Grey no current
         # copper" toggle is on — the same toggle that greys FEM-excluded

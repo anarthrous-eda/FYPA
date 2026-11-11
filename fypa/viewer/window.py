@@ -511,6 +511,11 @@ class PdnViewer(
         if (self.metadata or {}).get("mesh_failures"):
             _activate_mesh_failure_layer(self)
         self._render()
+        # Pay the one full GC pass over the freshly loaded solution now,
+        # while the window is still opening, instead of on the user's first
+        # click — see fypa.viewer.heap.
+        from fypa.viewer.heap import settle_heap
+        settle_heap("viewer opened")
 
     def _init_solution_indices(self) -> None:
         """(Re)build layer / rail indices from :attr:`solution` and
@@ -605,6 +610,9 @@ class PdnViewer(
         self._reset_copper_roi()
         self._layer_vec_cache.clear()
         self._rail_geom_cache = None  # combined batch is solve-specific
+        self._mesh_blocks = []
+        self._prism_tris_cache = {}  # per-layer 3D prism topology
+        self._via_cyl_cache = None  # per-via 3D cylinder geometry
         self._merged_label_cache = {}  # shorted-section triangle labels
         self._overlay_geom_sig = None  # overlay batch is solve-specific too
         self._last_mesh_upload = None  # release retained GPU-upload arrays
@@ -950,6 +958,11 @@ class PdnViewer(
                 f"{_esc(status_done)}"
                 "</span>"
             )
+            # The new solution's objects would otherwise trigger a multi-
+            # second full GC on the user's first interaction (typically the
+            # first rail toggle) — take it now. See fypa.viewer.heap.
+            from fypa.viewer.heap import settle_heap
+            settle_heap("solve result applied")
             return True
         except Exception as e:
             log.exception("Failed to apply solve result in place")

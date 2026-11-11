@@ -1088,8 +1088,12 @@ def _directive_to_network(
     #   package internal pin-to-pin resistance AND suppresses the
     #   "equalising-current" pathology that small couplings cause when a
     #   sink's pads sit on copper with natural IR drops.
-    # * SERIES is almost always single-pin per terminal (an SMT resistor's
-    #   two pads), so coupling resistance doesn't kick in.
+    # * SERIES P/N use the negligible SOURCE coupling. The element's own
+    #   resistance already models the part, and a multi-pin terminal is
+    #   common (a FET's 3-4 source pins vs one drain tab): at 100 mΩ per pin
+    #   a 3-pin side added ~33 mΩ in series — 1.1 V at 33 A across a
+    #   0.75 mΩ FET. The pins of one terminal share a die / leadframe, so
+    #   tying them together through ~0 Ω is the physical model.
     # * REGULATOR sense pair (in_p/in_n) carries no current — leave on the
     #   default; the value doesn't matter numerically.
     def _sense_nodes(term_p, term_n):
@@ -1153,8 +1157,8 @@ def _directive_to_network(
         element = _pp.Resistor(a=node_a, b=node_b, resistance=d.resistance,
                                heat_source=True)
         conns, aux = _gather(
-            (d.p, node_a, COUPLING_RESISTANCE_OHM, "P"),
-            (d.n, node_b, COUPLING_RESISTANCE_OHM, "N"),
+            (d.p, node_a, SOURCE_COUPLING_RESISTANCE_OHM, "P"),
+            (d.n, node_b, SOURCE_COUPLING_RESISTANCE_OHM, "N"),
         )
         if getattr(d, "forward_v", None):
             # A conducting diode, I = (Va - Vb - Vf) / R: the resistor plus Vf / R

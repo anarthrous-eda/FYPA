@@ -81,6 +81,29 @@ def test_a_plane_layer_is_wholly_the_section():
     assert labels.tolist() == [1, 1]
 
 
+def test_overlapping_outlines_go_to_the_first_shape_in_record_order():
+    names = ["A", "B"]
+    polys = [("A", [_sq(0, 0, 2, 2)]), ("B", [_sq(1, 0, 3, 2)])]
+    labels = ms.label_points(np.array([0.5, 1.5, 2.5]), np.array([1.0] * 3),
+                             names, polys, None)
+    # 1.5 lies in both — A comes first, so A owns it.
+    assert labels.tolist() == [1, 1, 2]
+    # Same overlap, B listed first: B owns the shared strip.
+    labels = ms.label_points(np.array([0.5, 1.5, 2.5]), np.array([1.0] * 3),
+                             names, list(reversed(polys)), None)
+    assert labels.tolist() == [1, 2, 2]
+
+
+def test_points_on_an_edge_count_and_holes_do_not():
+    ring = {"exterior": [(0, 0), (10, 0), (10, 10), (0, 10)],
+            "holes": [[(4, 4), (6, 4), (6, 6), (4, 6)]]}
+    labels = ms.label_points(
+        np.array([0.0, 5.0, 2.0, 11.0]), np.array([5.0, 5.0, 2.0, 5.0]),
+        ["S"], [("S", [ring])], None)
+    # edge → in; hole centre → out; interior → in; outside the bbox → out.
+    assert labels.tolist() == [1, 0, 1, 0]
+
+
 def test_merged_children_hang_under_their_net_in_the_rail_tree():
     tree = RailTreeNode("+12V", (RailTreeNode("+12V_SW"),))
     out = attach_merged_children({"+12V": tree},

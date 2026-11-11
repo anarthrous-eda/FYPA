@@ -282,6 +282,76 @@ def wire_rings(exterior, holes) -> np.ndarray:
             else np.empty((0, 2), dtype=np.float32))
 
 
+def merged_triangles(rings: list) -> np.ndarray:
+    """Union a layer's polygons and triangulate the result, so a transparent
+    solid fill blends each pixel exactly once.
+
+    ``rings`` is a list of ``(exterior, holes)``. The source data sometimes
+    carries overlapping polygons for the same layer (a GND plane plus smaller
+    copper objects nominally sitting in its clearances, plus pad /
+    via-clearance fills) — each overlap adds another blend pass at the
+    layer's transparency alpha, cumulatively pushing the area to opacity.
+    Merging into one non-overlapping triangulation bypasses that. Returns an
+    empty array when nothing usable is left.
+    """
+    from shapely.geometry import Polygon as _Polygon
+    from shapely.ops import unary_union
+
+    polys = []
+    for ext, holes in rings:
+        if ext is None:
+            continue
+        if hasattr(ext, "size"):
+            if ext.size == 0:
+                continue
+        elif not ext:
+            continue
+        try:
+            p = _Polygon(ext, holes=holes or [])
+        except Exception:
+            continue
+        if p.is_empty:
+            continue
+        if not p.is_valid:
+            try:
+                from shapely.validation import make_valid
+                p = make_valid(p)
+            except Exception:
+                continue
+            if p.is_empty:
+                continue
+        polys.append(p)
+    if not polys:
+        return np.empty((0, 2), dtype=np.float32)
+    try:
+        merged = unary_union(polys)
+    except Exception:
+        merged = None
+    if merged is None or merged.is_empty:
+        return np.empty((0, 2), dtype=np.float32)
+
+    # Strip the union down to its Polygon components — a
+    # GeometryCollection may carry lower-dim leftovers we don't want
+    # to triangulate.
+    if merged.geom_type == "Polygon":
+        components = [merged]
+    elif merged.geom_type == "MultiPolygon":
+        components = list(merged.geoms)
+    else:
+        components = [g for g in getattr(merged, "geoms", [])
+                      if g.geom_type == "Polygon"]
+    chunks: list[np.ndarray] = []
+    for poly in components:
+        if poly.is_empty:
+            continue
+        tris = triangulate_simple_polygon(poly)
+        if tris.size > 0:
+            chunks.append(tris)
+    return (np.ascontiguousarray(np.concatenate(chunks, axis=0),
+                                 dtype=np.float32)
+            if chunks else np.empty((0, 2), dtype=np.float32))
+
+
 # Copper-overlay fill styles and the polygon-dict key each one's triangles
 # are cached under.
 SOLID = "solid"

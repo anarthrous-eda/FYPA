@@ -263,16 +263,26 @@ class _ViewportMixin:
         if idx is None:
             return [], [], []
         mask = (idx["lo"] <= target_layer_id) & (target_layer_id <= idx["hi"])
-        nets = idx["nets"]
         if rail_scoped:
-            mask &= np.fromiter((n in rail_members for n in nets),
-                                dtype=bool, count=len(nets))[idx["net"]]
+            mask &= self._via_net_mask(idx, rail_members)
         if self._editor_focus_active():
-            focus = self._editor_focus_nets
-            mask &= np.fromiter((n in focus for n in nets),
-                                dtype=bool, count=len(nets))[idx["net"]]
+            mask &= self._via_net_mask(idx, self._editor_focus_nets)
         return (idx["x"][mask].tolist(), idx["y"][mask].tolist(),
                 idx["d"][mask].tolist())
+
+    @staticmethod
+    def _via_net_mask(idx: dict, members) -> np.ndarray:
+        """Per-via "its net is in ``members``" mask. The marker pass asks
+        once per visible layer with the same set, so the last answer is
+        kept."""
+        key = frozenset(members)
+        memo = idx.get("_memo")
+        if memo is None or memo[0] != key:
+            nets = idx["nets"]
+            per_net = np.fromiter((n in key for n in nets),
+                                  dtype=bool, count=len(nets))
+            memo = idx["_memo"] = (key, per_net[idx["net"]])
+        return memo[1]
 
     def _via_position_index(self) -> dict | None:
         """Column arrays over ``metadata['vias']`` (span, position, marker

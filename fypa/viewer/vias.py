@@ -135,6 +135,21 @@ class _ViaRenderMixin:
                     and self._last_drop_reference is not None):
                 drop_ref = float(self._last_drop_reference)
 
+        # Plain (non-heatmap) barrels depend only on the solve, the stackup
+        # z and the fade setting — not on which layers are showing — so each
+        # via's cylinders are built once and reused. A layer toggle in 3D
+        # then only re-selects which vias are in the batch.
+        solid_sig = (
+            id(self.solution), id(self.metadata),
+            self._via_dead_section_alpha, self._VIA_CYL_SEGMENTS,
+            self._VIA_CYL_MIN_RADIUS_MM,
+            tuple((p, self._layer_z_for(p)) for p in id_to_phys.values()),
+        )
+        solid_cached = getattr(self, "_via_cyl_cache", None)
+        if solid_cached is None or solid_cached[0] != solid_sig:
+            solid_cached = self._via_cyl_cache = (solid_sig, {})
+        solid_cache: dict = solid_cached[1]
+
         pos_chunks: list[np.ndarray] = []
         col_chunks: list[np.ndarray] = []
         # The 2D legend's VIA row also gates the 3D cylinders, so the
@@ -212,11 +227,14 @@ class _ViaRenderMixin:
             else:
                 # Default (no heatmap) view: solid orange, but with the
                 # no-current barrel sections faded.
-                for pos, col in self._solid_via_chunks(
-                    v, x, y, radius, lo_id, hi_id, z_top, z_bot,
-                    stackup_ids, id_to_phys, self._VIA_CYL_COLOR_RGB,
-                    fallback_r_seg,
-                ):
+                solid = solid_cache.get(id(v))
+                if solid is None:
+                    solid = solid_cache[id(v)] = self._solid_via_chunks(
+                        v, x, y, radius, lo_id, hi_id, z_top, z_bot,
+                        stackup_ids, id_to_phys, self._VIA_CYL_COLOR_RGB,
+                        fallback_r_seg,
+                    )
+                for pos, col in solid:
                     pos_chunks.append(pos)
                     col_chunks.append(col)
 
@@ -291,11 +309,14 @@ class _ViaRenderMixin:
                 # barrel sections faded. PTHs on the active net (their
                 # ``segments`` carry per-hop R the same as vias) fade; those
                 # off the solution can't be sampled and stay fully opaque.
-                for pos, col in self._solid_via_chunks(
-                    p, x, y, radius, lo_id, hi_id, z_top, z_bot,
-                    stackup_ids, id_to_phys, self._PTH_CYL_COLOR_RGB,
-                    fallback_r_seg, slot=slot,
-                ):
+                solid = solid_cache.get(id(p))
+                if solid is None:
+                    solid = solid_cache[id(p)] = self._solid_via_chunks(
+                        p, x, y, radius, lo_id, hi_id, z_top, z_bot,
+                        stackup_ids, id_to_phys, self._PTH_CYL_COLOR_RGB,
+                        fallback_r_seg, slot=slot,
+                    )
+                for pos, col in solid:
                     pos_chunks.append(pos)
                     col_chunks.append(col)
 

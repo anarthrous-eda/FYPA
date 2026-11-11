@@ -901,78 +901,21 @@ class _MarkerOverlayMixin:
         if cached is not None:
             return cached if cached.size > 0 else None
 
-        from shapely.geometry import Polygon as _Polygon
-        from shapely.ops import unary_union
-
-        polys = []
-        for rec in recs:
-            net = rec.get("net")
-            if net in rail_members:
-                continue
-            for poly_dict in rec.get("polygons", []):
-                ext = poly_dict.get("exterior")
-                if ext is None:
-                    continue
-                if hasattr(ext, "size"):
-                    if ext.size == 0:
-                        continue
-                elif not ext:
-                    continue
-                holes = poly_dict.get("holes") or []
-                try:
-                    p = _Polygon(ext, holes=holes)
-                except Exception:
-                    continue
-                if p.is_empty:
-                    continue
-                if not p.is_valid:
-                    try:
-                        from shapely.validation import make_valid
-                        p = make_valid(p)
-                    except Exception:
-                        continue
-                    if p.is_empty:
-                        continue
-                polys.append(p)
-
-        if not polys:
-            self._merged_all_copper_cache[key] = np.empty(
-                (0, 2), dtype=np.float32)
-            return None
-
-        try:
-            merged = unary_union(polys)
-        except Exception:
-            merged = None
-
-        if merged is None or merged.is_empty:
-            self._merged_all_copper_cache[key] = np.empty(
-                (0, 2), dtype=np.float32)
-            return None
-
-        # Strip the union down to its Polygon components — a
-        # GeometryCollection may carry lower-dim leftovers we don't want
-        # to triangulate.
-        if merged.geom_type == "Polygon":
-            components = [merged]
-        elif merged.geom_type == "MultiPolygon":
-            components = list(merged.geoms)
-        else:
-            components = [g for g in getattr(merged, "geoms", [])
-                          if g.geom_type == "Polygon"]
-
-        chunks: list[np.ndarray] = []
-        for poly in components:
-            if poly.is_empty:
-                continue
-            tris = self._triangulate_simple_polygon(poly)
-            if tris.size > 0:
-                chunks.append(tris)
-
-        arr = (np.concatenate(chunks, axis=0) if chunks
-               else np.empty((0, 2), dtype=np.float32))
+        arr = _copper_tris.merged_triangles(
+            self._merged_copper_rings(recs, rail_members))
         self._merged_all_copper_cache[key] = arr
         return arr if arr.size > 0 else None
+
+    @staticmethod
+    def _merged_copper_rings(recs: list[dict], rail_members) -> list:
+        """``(exterior, holes)`` of every polygon :meth:`
+        _merged_solid_all_copper_tris` unions: all of ``recs`` except the
+        nets on a visible rail."""
+        return [
+            (poly.get("exterior"), poly.get("holes") or [])
+            for rec in recs if rec.get("net") not in rail_members
+            for poly in rec.get("polygons", [])
+        ]
 
     # The triangulation itself lives in :mod:`fypa.viewer.copper_tris` (no Qt,
     # so the background worker processes can run it too); these stay as the
