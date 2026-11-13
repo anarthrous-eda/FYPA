@@ -7,7 +7,13 @@ import math
 from fypa.topology.constants import GND_NET, PORT_R, WIRE_EPS, WIRE_HIT_RADIUS
 from fypa.topology.geometry import parse_wire_path
 from fypa.topology.labels import label_hit_bounds
-from fypa.topology.types import TopologyModel, TopologyNode, TopologyPort, TopologyWire
+from fypa.topology.types import (
+    TopologyModel,
+    TopologyNode,
+    TopologyPort,
+    TopologyTag,
+    TopologyWire,
+)
 
 
 def find_component_at(
@@ -22,6 +28,46 @@ def find_component_at(
         bx, by, bw, bh = node.bounds
         if bx <= x <= bx + bw and by <= y <= by + bh:
             return node
+    return None
+
+
+JUMP_ICON_R = 4.5
+_JUMP_ICON_HIT = 8.0
+
+
+def jump_icon_center(node: TopologyNode) -> tuple[float, float] | None:
+    """Where a node's "show on Heatmap" icon sits (bottom-right corner of
+    the body, below the last port row; mid-height on a one-line chip), or
+    ``None`` when the node has no pad to jump to."""
+    if not node.jump_row:
+        return None
+    if node.compact:
+        return node.x + node.width - 9.0, node.y + node.height / 2
+    return node.x + node.width - 9.0, node.y + node.height - 7.0
+
+
+def find_jump_icon_at(model: TopologyModel, x: float, y: float) -> TopologyNode | None:
+    """The node whose jump icon is under ``(x, y)``."""
+    for node in reversed(model.nodes):
+        c = jump_icon_center(node)
+        if c is not None and math.hypot(x - c[0], y - c[1]) <= _JUMP_ICON_HIT:
+            return node
+    return None
+
+
+def find_tag_at(
+    model: TopologyModel,
+    x: float,
+    y: float,
+) -> TopologyTag | None:
+    """Return the power-port tag (rows layout) under ``(x, y)``."""
+    pad = 2.0
+    for tag in reversed(model.tags):
+        if (
+            tag.x - pad <= x <= tag.x + tag.width + pad
+            and tag.y - tag.height / 2 - pad <= y <= tag.y + tag.height / 2 + pad
+        ):
+            return tag
     return None
 
 
@@ -120,6 +166,9 @@ def topology_net_at(
     port = find_port_at(model, x, y)
     if port is not None and port.net:
         return port.net
+    tag = find_tag_at(model, x, y)
+    if tag is not None and tag.net:
+        return tag.net
     label_wire = find_label_at(model, x, y)
     if label_wire is not None:
         return label_wire.net
@@ -140,6 +189,12 @@ def topology_tooltip_at(
     port = find_port_at(model, x, y)
     if port is not None and port.tooltip:
         return port.tooltip
+    icon_node = find_jump_icon_at(model, x, y)
+    if icon_node is not None:
+        return f"Show {icon_node.label} on the Heatmap"
+    tag = find_tag_at(model, x, y)
+    if tag is not None:
+        return tag.tooltip or tag.text
     node = find_component_at(model, x, y)
     if node is not None and node.tooltip:
         return node.tooltip

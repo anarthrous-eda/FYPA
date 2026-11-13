@@ -9,6 +9,7 @@ ROLE_COLORS: dict[str, str] = {
     "RESISTOR": "#1a7a3c",
     "SERIES": "#1a7a3c",
     "REGULATOR": "#ff66ff",
+    "AUTO_BRIDGE": "#7a8494",
 }
 
 # Slightly darker variants for single-net (ideal-return) sources/sinks, so a
@@ -77,6 +78,10 @@ MAX_CANVAS_WIDTH = 2400.0
 MAX_LABEL_DISTANCE = LABEL_WIRE_OFFSET + 36.0
 CANVAS_HEIGHT_PAD_GND = 16.0
 CANVAS_HEIGHT_PAD_NO_GND = 28.0
+
+# Rows layout power-port tags: arrow depth and text inset.
+TAG_POINT = 7.0
+TAG_TEXT_PAD = 6.0
 
 RETURN_PORT_SORT_BASE = 900
 RETURN_PORT_GND_SORT_BASE = 950

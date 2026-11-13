@@ -232,6 +232,13 @@ class _EditorFormMixin:
         if not sel or self._project is None:
             return None
         if sel.get("kind") == "component":
+            # A part can carry several editor directives (a load on two
+            # rails); the Topology sidebar names the one it is editing.
+            did = sel.get("directive_id")
+            if did:
+                d = self._project.directive_by_id(did)
+                if d is not None:
+                    return d
             des = sel.get("designator")
             for d in self._project.editor_directives:
                 if d.kind == "component" and d.designator == des:
@@ -279,7 +286,7 @@ class _EditorFormMixin:
         element bridges two of its own pads, so it offers only the
         component's pin nets; SOURCE / SINK keep every board net because
         their N terminal can sit on another part (PDN_N_DES)."""
-        if role == "SERIES" and sel.get("kind") == "component":
+        if role in ("SERIES", "REGULATOR") and sel.get("kind") == "component":
             nets = [n for n in (sel.get("nets", []) or [])
                     if n and n != "(none)"]
             if nets:
@@ -302,7 +309,13 @@ class _EditorFormMixin:
         try:
             combo.clear()
             combo.addItems(items)
-            if cur and (cur in items or cur == keep):
+            if role == "REGULATOR" and not keep:
+                gnd = next((n for n in items if "GND" in n.upper()), None)
+                if gnd is not None:
+                    combo.setCurrentText(gnd)
+                elif cur and cur in items:
+                    self._set_combo(combo, cur)
+            elif cur and (cur in items or cur == keep):
                 self._set_combo(combo, cur)
             elif role == "SERIES" and len(items) > 1:
                 p = self._ef_pnet.currentText()
@@ -374,7 +387,10 @@ class _EditorFormMixin:
             role = d.get("role", "?")
             if role == "RESISTOR":
                 role = "SERIES"
-            val = d.get("value_str") or ""
+            # Same wording as the Topology block (10 A, 5 mΩ, BUCK · 1 V),
+            # not the raw value_str ("1e+04 mA").
+            from fypa.topology.rows import directive_value_text
+            val = directive_value_text(d)
             terms = d.get("terminals") or {}
             tparts = [
                 f"{tname}&nbsp;=&nbsp;"
@@ -404,10 +420,10 @@ class _EditorFormMixin:
         note.setWordWrap(True)
         note.setStyleSheet(f"color: {t['fg_muted']}; font-size: 8pt;")
         lay.addWidget(note)
-        # Unlock button — for editable roles (SOURCE / SINK / SERIES);
-        # REGULATOR directives aren't editable through this form. A
-        # schematic SERIES carries the RESISTOR role name in solve metadata.
-        if any(d.get("role") in ("SOURCE", "SINK", "RESISTOR")
+        # Unlock button — for editable roles (SOURCE / SINK / SERIES /
+        # REGULATOR). A schematic SERIES carries the RESISTOR role name in
+        # solve metadata.
+        if any(d.get("role") in ("SOURCE", "SINK", "RESISTOR", "REGULATOR")
                for d in directives):
             unlock = QPushButton("🔓  Unlock to edit")
             unlock.setToolTip(
@@ -418,12 +434,12 @@ class _EditorFormMixin:
             lay.addWidget(unlock)
 
     def _unlockable_schematic_directive(self, sel: dict) -> dict | None:
-        """The first SOURCE / SINK / SERIES schematic directive on the
-        selected component — the one the Unlock button / form edits. A
-        schematic SERIES carries the ``RESISTOR`` role in solve metadata
+        """The first SOURCE / SINK / SERIES / REGULATOR schematic directive
+        on the selected component — the one the Unlock button / form edits.
+        A schematic SERIES carries the ``RESISTOR`` role in solve metadata
         (named after its ResistorSpec)."""
         for d in self._schematic_directives_for(sel):
-            if d.get("role") in ("SOURCE", "SINK", "RESISTOR"):
+            if d.get("role") in ("SOURCE", "SINK", "RESISTOR", "REGULATOR"):
                 return d
         return None
 
@@ -850,6 +866,10 @@ class _EditorFormMixin:
         if sel["kind"] == "component" or (
                 existing is not None and existing.role == "SERIES"):
             role_items.append("SERIES")
+        # REGULATOR is a real part with input and output pins — component
+        # selections only.
+        if sel["kind"] == "component":
+            role_items.append("REGULATOR")
         self._ef_role.addItems(role_items)
         self._ef_role.currentTextChanged.connect(self._on_editor_role_changed)
         form.addRow("PDN role", self._ef_role)
@@ -869,6 +889,28 @@ class _EditorFormMixin:
         )
         self._ef_min_v_label = QLabel("Min V (V)")
         form.addRow(self._ef_min_v_label, self._ef_min_v)
+        # REGULATOR-only: converter type, efficiency and SMPS topology
+        # (PDN_REGULATOR_TYPE / PDN_REGULATOR_EFFICIENCY / PDN_SMPS_TOPOLOGY).
+        self._ef_reg_type = QComboBox()
+        self._ef_reg_type.addItems(["LDO", "SMPS"])
+        self._ef_reg_type.setToolTip(
+            "LDO: input current equals output current. SMPS: input current "
+            "is Vout·Iout / (Vin·η).")
+        self._ef_reg_type.currentTextChanged.connect(
+            lambda _t: self._on_editor_role_changed(self._ef_role.currentText()))
+        self._ef_reg_type_label = QLabel("Type")
+        form.addRow(self._ef_reg_type_label, self._ef_reg_type)
+        self._ef_eff = QLineEdit()
+        self._ef_eff.setValidator(_numeric_validator(self, top=100))
+        self._ef_eff.setPlaceholderText("100")
+        self._ef_eff.setToolTip("SMPS efficiency in percent (blank = 100 %).")
+        self._ef_eff_label = QLabel("Efficiency (%)")
+        form.addRow(self._ef_eff_label, self._ef_eff)
+        self._ef_topo = QComboBox()
+        self._ef_topo.addItems(["—", "BUCK", "BOOST", "BUCKBOOST", "INVERTER"])
+        self._ef_topo.setToolTip("Optional SMPS topology (PDN_SMPS_TOPOLOGY).")
+        self._ef_topo_label = QLabel("Topology")
+        form.addRow(self._ef_topo_label, self._ef_topo)
         lay.addLayout(form)
 
         lay.addWidget(QLabel("Current model"))
@@ -916,6 +958,19 @@ class _EditorFormMixin:
         )
         self._ef_npins_label = QLabel("N pins")
         form2.addRow(self._ef_npins_label, self._ef_npins)
+        # REGULATOR input pair (PDN_IN_P_NET / PDN_IN_P_PINS). The return is
+        # shared with the output's (the N/GND net picker above).
+        self._ef_innet = QComboBox()
+        self._ef_innet.addItems(self._form_p_nets(sel))
+        self._ef_innet_label = QLabel("IN net")
+        form2.addRow(self._ef_innet_label, self._ef_innet)
+        self._ef_inpins = QLineEdit()
+        self._ef_inpins.setPlaceholderText("all pins on IN net")
+        self._ef_inpins.setToolTip(
+            "Optional: comma-separated pad numbers of the regulator's input "
+            "(PDN_IN_P_PINS). Blank = every pad on the IN net.")
+        self._ef_inpins_label = QLabel("IN pins")
+        form2.addRow(self._ef_inpins_label, self._ef_inpins)
         # Multi-connector designator lists (PDN_P_DES / PDN_N_DES) — CSV of
         # other component designators whose pads feed this terminal. Two-net
         # SOURCE/SINK only; host is not auto-included when set.
@@ -985,9 +1040,17 @@ class _EditorFormMixin:
 
         if existing is not None:
             role = (existing.role
-                    if existing.role in ("SOURCE", "SINK", "SERIES")
+                    if existing.role in ("SOURCE", "SINK", "SERIES", "REGULATOR")
                     else "SINK")
             self._ef_role.setCurrentText(role)
+            if role == "REGULATOR":
+                self._seed_regulator_fields(
+                    reg_type=existing.regulator_type,
+                    efficiency=existing.efficiency,
+                    topology=existing.smps_topology,
+                    in_net=existing.in_p_net,
+                    in_pins=existing.in_p_pins,
+                )
             val = {"SINK": existing.current,
                    "SERIES": existing.resistance}.get(role, existing.voltage)
             self._ef_value.setText("" if val is None else f"{val:g}")
@@ -1022,7 +1085,7 @@ class _EditorFormMixin:
             # schematic SERIES carries the RESISTOR role name in metadata.
             raw_role = sch_unlock.get("role")
             role = {"RESISTOR": "SERIES"}.get(raw_role, raw_role)
-            if role not in ("SOURCE", "SINK", "SERIES"):
+            if role not in ("SOURCE", "SINK", "SERIES", "REGULATOR"):
                 role = "SINK"
             self._ef_role.setCurrentText(role)
             val = sch_unlock.get("value")
@@ -1030,6 +1093,18 @@ class _EditorFormMixin:
             mv = sch_unlock.get("min_voltage")
             self._ef_min_v.setText("" if mv is None else f"{mv:g}")
             terms = sch_unlock.get("terminals") or {}
+            if role == "REGULATOR":
+                # Present the regulator's OUT pair as P / N so the shared
+                # code below seeds the OUT net, return and pins.
+                terms = {"P": terms.get("OUT_P"), "N": terms.get("OUT_N"),
+                         "IN_P": terms.get("IN_P")}
+                self._seed_regulator_fields(
+                    reg_type=sch_unlock.get("regulator_type"),
+                    efficiency=sch_unlock.get("efficiency"),
+                    topology=sch_unlock.get("smps_topology"),
+                    in_net=self._terminal_primary_net(terms.get("IN_P")),
+                    in_pins=self._terminal_pin_pads(terms.get("IN_P")),
+                )
             n_term = terms.get("N")
             single = (n_term is None) or bool(n_term.get("ideal_return"))
             self._ef_single.setChecked(single)
@@ -1067,17 +1142,47 @@ class _EditorFormMixin:
         self._on_editor_model_changed()
         self._update_editor_panel()
 
+    def _seed_regulator_fields(self, *, reg_type=None, efficiency=None,
+                               topology=None, in_net=None, in_pins=None) -> None:
+        """Fill the REGULATOR-only widgets (type, η, topology, IN net/pins)."""
+        if not hasattr(self, "_ef_reg_type"):
+            return
+        rt = (reg_type or "").upper()
+        if rt in ("LDO", "SMPS"):
+            self._ef_reg_type.setCurrentText(rt)
+        elif efficiency or topology:
+            self._ef_reg_type.setCurrentText("SMPS")
+        if efficiency:
+            self._ef_eff.setText(f"{float(efficiency) * 100:g}")
+        topo = (topology or "").upper()
+        self._ef_topo.setCurrentText(topo if topo else "—")
+        if in_net:
+            self._set_combo(self._ef_innet, in_net)
+        self._ef_inpins.setText(", ".join(in_pins or []))
+
     def _on_editor_role_changed(self, role: str) -> None:
-        """Swap the value field between voltage (SOURCE), current (SINK)
-        and resistance (SERIES). SERIES always bridges two nets, so its
-        current model is forced to two-net and the radios are locked.
-        The optional Min V (PDN_MIN_V) field is only shown for SINK."""
+        """Swap the value field between voltage (SOURCE / REGULATOR output),
+        current (SINK) and resistance (SERIES). SERIES and REGULATOR always
+        sit on two real nets, so their current model is forced to two-net
+        and the radios are locked. The optional Min V (PDN_MIN_V) field is
+        only shown for SINK; type / η / topology and the IN net only for
+        REGULATOR."""
         if not hasattr(self, "_ef_value_label"):
             return
         self._ef_value_label.setText(
-            {"SINK": "Current (A)", "SERIES": "Resistance (Ω)"}.get(
-                role, "Voltage (V)")
+            {"SINK": "Current (A)", "SERIES": "Resistance (Ω)",
+             "REGULATOR": "Output (V)"}.get(role, "Voltage (V)")
         )
+        if hasattr(self, "_ef_reg_type"):
+            is_reg = role == "REGULATOR"
+            smps = is_reg and self._ef_reg_type.currentText() == "SMPS"
+            for w in (self._ef_reg_type, self._ef_reg_type_label,
+                      self._ef_innet, self._ef_innet_label,
+                      self._ef_inpins, self._ef_inpins_label):
+                w.setVisible(is_reg)
+            for w in (self._ef_eff, self._ef_eff_label,
+                      self._ef_topo, self._ef_topo_label):
+                w.setVisible(smps)
         if hasattr(self, "_ef_min_v"):
             is_sink = role == "SINK"
             self._ef_min_v.setVisible(is_sink)
@@ -1085,11 +1190,11 @@ class _EditorFormMixin:
             if not is_sink:
                 self._ef_min_v.clear()
         if hasattr(self, "_ef_two"):
-            is_series = role == "SERIES"
-            if is_series and not self._ef_two.isChecked():
+            forced_two = role in ("SERIES", "REGULATOR")
+            if forced_two and not self._ef_two.isChecked():
                 self._ef_two.setChecked(True)
-            self._ef_single.setEnabled(not is_series)
-            self._ef_two.setEnabled(not is_series)
+            self._ef_single.setEnabled(not forced_two)
+            self._ef_two.setEnabled(not forced_two)
             self._refresh_nnet_items(role)
             self._on_editor_model_changed()
 
@@ -1130,6 +1235,15 @@ class _EditorFormMixin:
             self._ef_sense_label.setVisible(show_sense)
             self._ef_nsense.setVisible(show_sense and two)
             self._ef_nsense_label.setVisible(show_sense and two)
+        if hasattr(self, "_ef_role") and self._ef_role.currentText() == "REGULATOR":
+            self._ef_pnet_label.setText("OUT net")
+            self._ef_nnet_label.setText("GND net")
+            self._ef_pins_label.setText("OUT pins")
+            self._ef_npins_label.setText("GND pins")
+        elif hasattr(self, "_ef_nnet_label"):
+            self._ef_nnet_label.setText("N net")
+            if hasattr(self, "_ef_npins_label"):
+                self._ef_npins_label.setText("N pins")
 
     def _on_editor_apply(self) -> None:
         """Commit the form into an :class:`EditorDirective` on the project,
@@ -1156,8 +1270,9 @@ class _EditorFormMixin:
                 "must be greater than zero.</span>"
             )
             return
-        # SERIES always bridges two real nets — never single-net.
-        single = self._ef_single.isChecked() and role != "SERIES"
+        # SERIES and REGULATOR always sit on two real nets — never single-net.
+        single = (self._ef_single.isChecked()
+                  and role not in ("SERIES", "REGULATOR"))
         p_net = self._ef_pnet.currentText() or None
         n_net = self._ef_nnet.currentText() if not single else None
         if not p_net:
@@ -1166,6 +1281,13 @@ class _EditorFormMixin:
                 "Pick a P net.</span>"
             )
             return
+        reg_fields: dict = {}
+        if role == "REGULATOR":
+            reg_fields, reg_err = self._regulator_form_fields(value, p_net, n_net)
+            if reg_err:
+                self._ef_status.setText(
+                    f"<span style='color:{_T()['err']};'>{reg_err}</span>")
+                return
         if role == "SERIES" and not n_net:
             self._ef_status.setText(
                 f"<span style='color:{_T()['err']};'>Pick an N net — a "
@@ -1199,6 +1321,15 @@ class _EditorFormMixin:
         d.current = value if role == "SINK" else None
         d.resistance = value if role == "SERIES" else None
         d.min_voltage = min_v
+        # REGULATOR-only fields; cleared for every other role so a role
+        # change doesn't leave a stale input pair behind.
+        d.in_p_net = reg_fields.get("in_p_net")
+        d.in_n_net = reg_fields.get("in_n_net")
+        d.in_p_pins = reg_fields.get("in_p_pins")
+        d.in_n_pins = None
+        d.regulator_type = reg_fields.get("regulator_type")
+        d.efficiency = reg_fields.get("efficiency")
+        d.smps_topology = reg_fields.get("smps_topology")
         if sel["kind"] == "component":
             d.kind = "component"
             d.designator = sel.get("designator")
@@ -1248,6 +1379,44 @@ class _EditorFormMixin:
             f"<span style='color:{_T()['ok']};'>Applied — press Resolve "
             "to re-solve.</span>"
         )
+
+    def _regulator_form_fields(self, vout: float, out_net: str,
+                               gnd_net: str | None) -> tuple[dict, str | None]:
+        """Read and check the REGULATOR-only form fields.
+
+        Returns ``(fields, None)`` or ``({}, error message)``."""
+        if vout <= 0:
+            return {}, "Output voltage must be greater than zero."
+        in_net = self._ef_innet.currentText() or None
+        if not in_net:
+            return {}, "Pick the regulator's IN net."
+        if in_net == out_net:
+            return {}, "IN and OUT can't be the same net."
+        if not gnd_net:
+            return {}, "Pick the regulator's GND net."
+        reg_type = self._ef_reg_type.currentText()
+        eff = None
+        topo = None
+        if reg_type == "SMPS":
+            eff_txt = self._ef_eff.text().strip()
+            if eff_txt:
+                try:
+                    eff = float(eff_txt) / 100.0
+                except ValueError:
+                    return {}, "Efficiency must be a percentage."
+                if not (0.0 < eff <= 1.0):
+                    return {}, "Efficiency must be between 0 and 100 %."
+            topo_txt = self._ef_topo.currentText()
+            topo = topo_txt if topo_txt in (
+                "BUCK", "BOOST", "BUCKBOOST", "INVERTER") else None
+        return {
+            "in_p_net": in_net,
+            "in_n_net": gnd_net,
+            "in_p_pins": self._parse_pin_field(self._ef_inpins.text()),
+            "regulator_type": reg_type,
+            "efficiency": eff,
+            "smps_topology": topo,
+        }, None
 
     def _on_editor_remove(self) -> None:
         """Delete the directive bound to the current selection. Undoable

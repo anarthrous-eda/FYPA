@@ -804,7 +804,7 @@ _TOPOLOGY_THEME = {
 def _topology_svg(metadata: dict) -> str | None:
     try:
         from fypa.topology import build_topology_model, render_topology_svg
-        model = build_topology_model(metadata)
+        model = build_topology_model(metadata, layout="rows")
         if not getattr(model, "nodes", None):
             return None
         return render_topology_svg(model, theme=_TOPOLOGY_THEME)

@@ -18,8 +18,25 @@ from fypa.topology.routing import build_wires
 from fypa.topology.types import TopologyModel
 
 
-def build_topology_model(metadata: TopologyMetadata | None) -> TopologyModel:
-    """Build a Flow diagram layout model for the PDN simulation schematic."""
+LAYOUTS = ("rows", "columns")
+
+
+def build_topology_model(
+    metadata: TopologyMetadata | None,
+    *,
+    layout: str = "columns",
+    show_bridges: bool = False,
+) -> TopologyModel:
+    """Build a Flow diagram layout model for the PDN simulation schematic.
+
+    ``layout="rows"`` gives one row per power origin with power-port tags
+    between rows (:mod:`fypa.topology.rows`); ``"columns"`` is the classic
+    single-chain column layout. ``show_bridges`` only affects the rows layout.
+    """
+    if layout == "rows":
+        from fypa.topology.rows import build_rows_model
+
+        return build_rows_model(metadata, show_bridges=show_bridges)
     if metadata is None:
         return TopologyModel()
 

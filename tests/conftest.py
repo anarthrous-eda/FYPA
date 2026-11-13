@@ -27,6 +27,38 @@ COPPER_CONDUCTIVITY_S_PER_MM = 5.95e4
 DEFAULT_THICKNESS_MM = 0.035
 
 
+@pytest.fixture(autouse=True)
+def _isolate_qsettings(tmp_path_factory, monkeypatch):
+    """Keep every test off the developer's real FYPA preferences.
+
+    The app builds its settings as ``QSettings(org, app)``, and that
+    constructor always uses the native format (the registry on Windows) —
+    ``QSettings.setDefaultFormat`` does NOT apply to it. So swap the class the
+    app's lazy ``from PySide6.QtCore import QSettings`` imports pick up for one
+    that sends any ``(org, app)`` construction to a per-test INI file.
+    Without this, tests that record / clear recent projects or save a
+    preference rewrite the real ones.
+    """
+    try:
+        from PySide6 import QtCore
+    except ImportError:  # solver-only environments
+        yield
+        return
+    ini = tmp_path_factory.mktemp("qsettings") / "fypa.ini"
+    original = QtCore.QSettings
+
+    class _IsolatedQSettings(original):
+        def __init__(self, *args, **kwargs):
+            if (len(args) >= 2 and isinstance(args[0], str)
+                    and isinstance(args[1], str)):
+                super().__init__(str(ini), original.Format.IniFormat)
+            else:
+                super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(QtCore, "QSettings", _IsolatedQSettings)
+    yield
+
+
 def _strip_conductance(thickness_mm: float = DEFAULT_THICKNESS_MM) -> float:
     """Sheet conductance G = conductivity [S/mm] * thickness [mm]  ->  Siemens."""
     return COPPER_CONDUCTIVITY_S_PER_MM * thickness_mm

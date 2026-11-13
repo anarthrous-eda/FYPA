@@ -503,7 +503,9 @@ class _SettingsTabMixin:
             "Projects ignores the design and solve caches and re-extracts "
             "from the Altium files (slower, but picks up edits made in "
             "Altium). When unchecked, the caches are reused — same as "
-            "File > Import Altium Design. Persists across launches."
+            "File > Import Altium Design. Persists across launches. "
+            "(The start window's Recent panel has its own Load / Clean "
+            "icons and ignores this.)"
         )
         self._settings_recent_clean_check.toggled.connect(
             lambda checked: save_recent_open_clean(bool(checked)))

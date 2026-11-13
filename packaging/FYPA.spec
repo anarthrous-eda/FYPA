@@ -48,6 +48,9 @@ a = Analysis(
         # try/except in fypa/_clipper_fuse.py, which PyInstaller's analysis can
         # skip — name it explicitly so the default fuse backend ships.
         'pyclipr',
+        # Datasheet text for the Topology tab's Auto setup — imported behind a
+        # try/except in fypa/autosetup/datasheets.py, like pyclipr above.
+        'pypdf',
         # 3Dconnexion SpaceMouse (optional extra: uv sync --extra spacemouse)
         'pynavlib',
         'pynavlib.pynavlib_interface',

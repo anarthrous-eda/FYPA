@@ -217,8 +217,24 @@ physics constants, parsed PDN_* directives (collapsible), solver
 diagnostics, warnings / errors.</p>
 """),
     ("Topology", """
-<p>An abstract Flow diagram of the PDN simulation model (not the PCB
-layout). Click a component box to jump to its pad on the Heatmap.</p>
+<p>The power tree of the PDN simulation model (not the PCB layout). Each
+source starts a row; each regulator gets its own row under the row that
+feeds it, indented one step per conversion stage. Within a row power flows
+left to right. A rail that continues on another row ends in a <b>tag</b>
+instead of a long wire &mdash; click a tag to jump to the other end. Dashed
+amber tags mark rails nothing drives; grey tags mark rails with no loads.
+Each part has its own ground symbol.</p>
+<p><b>Bridges</b> lists 0&nbsp;&Omega; auto-bridges on nets no source, sink
+or regulator uses. <b>Classic</b> switches back to the single-chain column
+layout.</p>
+<p>Click a component box to open its PDN properties in the sidebar (the
+same form as the Heatmap's editor panel); its &#8982; icon jumps to it on
+the Heatmap. Click an amber or grey tag to add a source, regulator or sink
+on that rail. <b>Auto setup&hellip;</b> proposes a whole setup from the
+design and, optionally, a folder of datasheets, for you to review and apply.
+<b>Manual setup&hellip;</b> lists every source, regulator and load to add or
+edit by hand: pick the net, the part on it and its pins.
+<b>&#8635; Resolve</b> re-solves with your changes.</p>
 
 <h3>Keyboard shortcuts</h3>
 <table>
@@ -239,7 +255,10 @@ layout). Click a component box to jump to its pad on the Heatmap.</p>
   <tr><td>Middle-button drag</td><td>Pan</td></tr>
   <tr><td><kbd>Space</kbd> + left-button drag</td><td>Pan</td></tr>
   <tr><td>Hover</td><td>Tooltip with port / component values</td></tr>
-  <tr><td>Left click on a box</td><td>Jump to that component on the Heatmap</td></tr>
+  <tr><td>Left click on a box</td><td>Open its PDN properties in the sidebar</td></tr>
+  <tr><td>Left click on a box's &#8982; icon</td><td>Jump to that component on the Heatmap</td></tr>
+  <tr><td>Left click on a red / magenta tag</td><td>Jump to where that rail continues</td></tr>
+  <tr><td>Left click on an amber / grey tag</td><td>Add a source, regulator or sink on that rail</td></tr>
 </table>
 <p class='muted'>Topology shortcuts require the Topology tab to be
 focused. The diagram is vector-rendered — zoom stays sharp.</p>

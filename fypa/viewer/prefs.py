@@ -59,7 +59,12 @@ _MESH_WORKERS_QS_KEY = "perf/mesh_max_workers"
 _MINRES_BUDGET_QS_KEY = "perf/minres_budget_s"
 
 
-# Recent File > Recent Projects list (``.fypa`` and ``.PrjPcb`` imports).
+# Recent File > Recent Projects list, shared with the launcher's Recent panel.
+# Entry kinds: ``altium`` (.PrjPcb import), ``gerber`` (Gerber file set + the
+# layer mapping / stackup confirmed in the import dialogs, so it can be
+# re-imported without them), ``fypa`` (project file) and ``solution``
+# (a manually loaded solution ``.pkl``). Older builds skip kinds they don't
+# know, so adding one is backward compatible.
 _RECENT_PROJECTS_QS_KEY = "projects/recent"
 
 
@@ -70,6 +75,11 @@ _MAX_RECENT_PROJECTS = 10
 # and solve caches (a "clean" import). Off by default — recents are the fast
 # path, so reuse the caches like File > Import Altium Design does.
 _RECENT_OPEN_CLEAN_QS_KEY = "projects/recent_open_clean"
+
+
+# Whether the launcher's Recent side panel was left expanded. Collapsed until
+# the user first opens it; remembered across launches after that.
+_RECENT_PANEL_EXPANDED_QS_KEY = "ui/launcher_recent_panel_expanded"
 
 
 # Whether the "Unannotated net bridges" notice pops up after a solve. On by
@@ -102,13 +112,77 @@ def _normalize_recent_path(path: str | None) -> str | None:
 
 
 
+def _normalize_recent_gerber_entry(entry: dict) -> dict | None:
+    """Validate a ``gerber`` recent entry. Any malformed field rejects the
+    whole entry — a half-valid file set can't be re-imported anyway."""
+    folder = _normalize_recent_path(entry.get("folder"))
+    copper_raw = entry.get("copper")
+    if not folder or not isinstance(copper_raw, list) or not copper_raw:
+        return None
+    copper: list[list] = []
+    for item in copper_raw:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            return None
+        try:
+            lid = int(item[0])
+        except (TypeError, ValueError):
+            return None
+        p = _normalize_recent_path(item[1])
+        if not p:
+            return None
+        copper.append([lid, p])
+    drill_raw = entry.get("drill") or []
+    if not isinstance(drill_raw, list):
+        return None
+    drill: list[str] = []
+    for d in drill_raw:
+        p = _normalize_recent_path(d)
+        if not p:
+            return None
+        drill.append(p)
+    stackup_raw = entry.get("stackup")
+    if not isinstance(stackup_raw, list) or not stackup_raw:
+        return None
+    stackup: list[dict] = []
+    for row in stackup_raw:
+        if not isinstance(row, dict):
+            return None
+        try:
+            lid = int(row["layer_id"])
+            cu = float(row["copper_thickness_mm"])
+            diel = float(row["dielectric_thickness_mm"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not (math.isfinite(cu) and math.isfinite(diel)):
+            return None
+        stackup.append({
+            "layer_id": lid,
+            "name": str(row.get("name") or f"Layer {lid}"),
+            "copper_thickness_mm": cu,
+            "dielectric_thickness_mm": diel,
+        })
+    out: dict = {
+        "kind": "gerber", "folder": folder,
+        "copper": copper, "drill": drill, "stackup": stackup,
+    }
+    for key in ("outline", "silk_top", "silk_bot"):
+        p = _normalize_recent_path(entry.get(key))
+        if p:
+            out[key] = p
+    return out
+
+
+
+
 def _normalize_recent_entry(entry: dict) -> dict | None:
     kind = entry.get("kind")
-    if kind == "fypa":
+    if kind in ("fypa", "solution"):
         path = _normalize_recent_path(entry.get("path"))
         if not path:
             return None
-        return {"kind": "fypa", "path": path}
+        return {"kind": kind, "path": path}
+    if kind == "gerber":
+        return _normalize_recent_gerber_entry(entry)
     if kind == "altium":
         prjpcb = _normalize_recent_path(entry.get("prjpcb_path"))
         if not prjpcb:
@@ -125,11 +199,53 @@ def _normalize_recent_entry(entry: dict) -> dict | None:
 
 def _recent_entry_key(entry: dict) -> tuple:
     kind = entry.get("kind")
-    if kind == "fypa":
-        return ("fypa", entry.get("path"))
+    if kind in ("fypa", "solution"):
+        return (kind, entry.get("path"))
     if kind == "altium":
         return ("altium", entry.get("prjpcb_path"))
+    if kind == "gerber":
+        # One entry per folder: the import's pseudo-PrjPcb (and so its cache
+        # key) is derived from the folder, so a re-pick there replaces it.
+        return ("gerber", entry.get("folder"))
     return (kind,)
+
+
+
+
+# Callbacks run after every write to the recent list, so live views (the
+# launcher's Recent panel) follow records, removals and Clear from any path.
+_RECENT_LISTENERS: list = []
+
+
+
+
+def add_recent_projects_listener(callback) -> None:
+    if callback not in _RECENT_LISTENERS:
+        _RECENT_LISTENERS.append(callback)
+
+
+
+
+def remove_recent_projects_listener(callback) -> None:
+    try:
+        _RECENT_LISTENERS.remove(callback)
+    except ValueError:
+        pass
+
+
+
+
+def _notify_recent_listeners() -> None:
+    for cb in list(_RECENT_LISTENERS):
+        try:
+            cb()
+        except RuntimeError:
+            # The listening widget's C++ side is gone — forget it.
+            remove_recent_projects_listener(cb)
+        except Exception as e:
+            logging.getLogger(__name__).debug(
+                "Recent-projects listener failed (%s); ignoring.", e,
+            )
 
 
 
@@ -143,6 +259,7 @@ def _save_recent_projects(entries: list[dict]) -> None:
         logging.getLogger(__name__).debug(
             "Could not persist recent projects (%s); ignoring.", e,
         )
+    _notify_recent_listeners()
 
 
 
@@ -197,11 +314,25 @@ def clear_recent_projects() -> None:
 
 def _recent_entry_exists(entry: dict) -> bool:
     kind = entry.get("kind")
-    if kind == "fypa":
+    if kind in ("fypa", "solution"):
         return Path(entry["path"]).exists()
     if kind == "altium":
         return Path(entry["prjpcb_path"]).exists()
+    if kind == "gerber":
+        return not recent_gerber_missing_files(entry)
     return False
+
+
+
+
+def recent_gerber_missing_files(entry: dict) -> list[str]:
+    """Files a ``gerber`` entry needs for a re-import that no longer exist.
+    Silk layers are optional to the import, so they don't count."""
+    needed = [p for _lid, p in entry.get("copper", [])]
+    needed += list(entry.get("drill", []))
+    if entry.get("outline"):
+        needed.append(entry["outline"])
+    return [p for p in needed if not Path(p).exists()]
 
 
 
@@ -230,10 +361,16 @@ def _remove_recent_project_entry(entry: dict) -> None:
 
 def recent_project_label(entry: dict) -> str:
     kind = entry.get("kind")
-    if kind == "fypa":
+    if kind in ("fypa", "solution"):
         p = Path(entry["path"])
         parent = p.parent.name
         return f"{p.name} — {parent}" if parent else p.name
+    if kind == "gerber":
+        folder = Path(entry["folder"])
+        parent = folder.parent.name
+        label = f"{folder.name} — {parent}" if parent else folder.name
+        n = len(entry.get("copper", []))
+        return f"{label} [Gerber, {n} layer{'s' if n != 1 else ''}]"
     if kind == "altium":
         p = Path(entry["prjpcb_path"])
         parent = p.parent.name
@@ -249,13 +386,20 @@ def recent_project_label(entry: dict) -> str:
 
 def recent_project_tooltip(entry: dict) -> str:
     kind = entry.get("kind")
-    if kind == "fypa":
+    if kind in ("fypa", "solution"):
         return entry["path"]
     if kind == "altium":
         parts = [entry["prjpcb_path"]]
         pcbdoc = entry.get("pcbdoc_path")
         if pcbdoc:
             parts.append(pcbdoc)
+        return "\n".join(parts)
+    if kind == "gerber":
+        parts = [entry["folder"]]
+        parts += [Path(p).name for _lid, p in entry.get("copper", [])]
+        parts += [Path(p).name for p in entry.get("drill", [])]
+        if entry.get("outline"):
+            parts.append(Path(entry["outline"]).name)
         return "\n".join(parts)
     return ""
 
@@ -273,6 +417,73 @@ def _record_recent_altium_from_metadata(metadata: dict | None) -> None:
     if pcbdoc:
         entry["pcbdoc_path"] = str(pcbdoc)
     record_recent_project(entry)
+
+
+
+
+def recent_gerber_entry_from_result(result, pseudo_prjpcb: Path) -> dict:
+    """Build a ``gerber`` recent entry from a ``GerberImportResult`` (duck-
+    typed so this module stays free of the Gerber/Qt-dialog imports)."""
+    def _opt(p) -> str | None:
+        return str(p) if p else None
+    entry: dict = {
+        "kind": "gerber",
+        "folder": str(Path(pseudo_prjpcb).parent),
+        "copper": [[int(lid), str(p)] for lid, p in result.copper_files.items()],
+        "drill": [str(p) for p in result.drill_files],
+        "stackup": [
+            {
+                "layer_id": int(s.layer_id),
+                "name": s.name,
+                "copper_thickness_mm": float(s.copper_thickness_mm),
+                "dielectric_thickness_mm": float(s.dielectric_thickness_mm),
+            }
+            for s in result.stackup
+        ],
+    }
+    for key, val in (("outline", result.outline_file),
+                     ("silk_top", result.silk_top_file),
+                     ("silk_bot", result.silk_bot_file)):
+        if _opt(val):
+            entry[key] = _opt(val)
+    return entry
+
+
+
+
+def record_recent_gerber(result, pseudo_prjpcb: Path) -> None:
+    """Record a finished Gerber import so it can be re-run from Recent."""
+    try:
+        record_recent_project(recent_gerber_entry_from_result(result, pseudo_prjpcb))
+    except Exception as e:
+        # Never let bookkeeping break a successful import.
+        logging.getLogger(__name__).debug(
+            "Could not record recent Gerber import (%s); ignoring.", e,
+        )
+
+
+
+
+def load_recent_panel_expanded() -> bool:
+    """Whether the launcher's Recent side panel was left expanded."""
+    try:
+        val = _recent_settings().value(_RECENT_PANEL_EXPANDED_QS_KEY, False)
+        if isinstance(val, str):
+            return val.strip().lower() in ("1", "true", "yes", "on")
+        return bool(val)
+    except Exception:
+        return False
+
+
+
+
+def save_recent_panel_expanded(expanded: bool) -> None:
+    try:
+        _recent_settings().setValue(_RECENT_PANEL_EXPANDED_QS_KEY, bool(expanded))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not persist recent-panel state (%s); ignoring.", e,
+        )
 
 
 
@@ -388,6 +599,94 @@ def save_show_bridge_notice(enabled: bool) -> None:
             "Could not persist bridge-notice preference (%s); ignoring.", e,
         )
 
+
+# Topology tab: "rows" (one row per power origin) or "columns" (classic), and
+# whether the rows layout lists auto-bridges that sit off the power tree.
+_TOPOLOGY_LAYOUT_QS_KEY = "ui/topology_layout"
+
+
+_TOPOLOGY_BRIDGES_QS_KEY = "ui/topology_show_bridges"
+
+
+def load_topology_layout() -> str:
+    """Read the Topology tab layout. Defaults to ``"rows"``."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        val = str(qs.value(_TOPOLOGY_LAYOUT_QS_KEY, "rows") or "rows")
+        return val if val in ("rows", "columns") else "rows"
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not read topology layout preference (%s); using default.", e,
+        )
+    return "rows"
+
+
+def save_topology_layout(layout: str) -> None:
+    """Persist the Topology tab layout (``"rows"`` or ``"columns"``)."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        qs.setValue(_TOPOLOGY_LAYOUT_QS_KEY, layout)
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not persist topology layout preference (%s); ignoring.", e,
+        )
+
+
+def load_topology_show_bridges() -> bool:
+    """Read whether the rows layout lists off-tree auto-bridges. Defaults to ``False``."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        val = qs.value(_TOPOLOGY_BRIDGES_QS_KEY, False)
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            return val.strip().lower() in ("1", "true", "yes", "on")
+        return bool(int(val))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not read topology bridges preference (%s); using default.", e,
+        )
+    return False
+
+
+def save_topology_show_bridges(enabled: bool) -> None:
+    """Persist whether the rows layout lists off-tree auto-bridges."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        qs.setValue(_TOPOLOGY_BRIDGES_QS_KEY, bool(enabled))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not persist topology bridges preference (%s); ignoring.", e,
+        )
+
+
+_AUTOSETUP_DIR_QS_KEY = "autosetup/datasheet_dir"
+
+
+def load_autosetup_datasheet_dir() -> str:
+    """Last datasheet folder used by the Topology tab's Auto setup ("" if none)."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        return str(qs.value(_AUTOSETUP_DIR_QS_KEY, "") or "")
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not read auto-setup datasheet folder (%s); using none.", e)
+    return ""
+
+
+def save_autosetup_datasheet_dir(path: str) -> None:
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        qs.setValue(_AUTOSETUP_DIR_QS_KEY, path or "")
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not persist auto-setup datasheet folder (%s); ignoring.", e)
 
 
 

@@ -57,6 +57,11 @@
 <rect x="36" y="154" width="128" height="6" fill="#ff3030"/>
 <text x="44" y="153" fill="#ffffff" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">SOURCE</text>
 <text x="156" y="153" fill="#ffffff" text-anchor="end" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">J1</text>
+<circle class="topo-jump" cx="155" cy="187" r="3" fill="none" stroke="#909090" stroke-width="1.2"/>
+<line x1="156.5" y1="187" x2="160.5" y2="187" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="153.5" y1="187" x2="149.5" y2="187" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="155" y1="188.5" x2="155" y2="192.5" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="155" y1="185.5" x2="155" y2="181.5" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
 <circle cx="164" cy="177" r="5" fill="#ff3030" stroke="#555555" stroke-width="1"/>
 <text x="156" y="180" text-anchor="end" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3_PWR</text>
 <circle cx="36" cy="177" r="5" fill="#ff3030" stroke="#555555" stroke-width="1"/>
@@ -66,6 +71,11 @@
 <rect x="264" y="154" width="128" height="6" fill="#1a7a3c"/>
 <text x="272" y="153" fill="#ffffff" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">SERIES</text>
 <text x="384" y="153" fill="#ffffff" text-anchor="end" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">D1</text>
+<circle class="topo-jump" cx="383" cy="223" r="3" fill="none" stroke="#909090" stroke-width="1.2"/>
+<line x1="384.5" y1="223" x2="388.5" y2="223" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="381.5" y1="223" x2="377.5" y2="223" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="383" y1="224.5" x2="383" y2="228.5" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="383" y1="221.5" x2="383" y2="217.5" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
 <circle cx="264" cy="177" r="5" fill="#1a7a3c" stroke="#555555" stroke-width="1"/>
 <text x="272" y="180" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3_PWR</text>
 <circle cx="392" cy="177" r="5" fill="#1a7a3c" stroke="#555555" stroke-width="1"/>
@@ -79,6 +89,11 @@
 <rect x="504" y="154" width="128" height="6" fill="#ff66ff"/>
 <text x="512" y="153" fill="#ffffff" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">REGULATOR</text>
 <text x="624" y="153" fill="#ffffff" text-anchor="end" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">U2</text>
+<circle class="topo-jump" cx="623" cy="205" r="3" fill="none" stroke="#909090" stroke-width="1.2"/>
+<line x1="624.5" y1="205" x2="628.5" y2="205" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="621.5" y1="205" x2="617.5" y2="205" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="623" y1="206.5" x2="623" y2="210.5" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="623" y1="203.5" x2="623" y2="199.5" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
 <circle cx="504" cy="177" r="5" fill="#ff66ff" stroke="#555555" stroke-width="1"/>
 <text x="512" y="180" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3_PWR</text>
 <circle cx="632" cy="177" r="5" fill="#ff66ff" stroke="#555555" stroke-width="1"/>
@@ -90,6 +105,11 @@
 <rect x="744" y="52" width="128" height="6" fill="#3aa8ff"/>
 <text x="752" y="51" fill="#ffffff" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">SINK</text>
 <text x="864" y="51" fill="#ffffff" text-anchor="end" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">U1</text>
+<circle class="topo-jump" cx="863" cy="103" r="3" fill="none" stroke="#909090" stroke-width="1.2"/>
+<line x1="864.5" y1="103" x2="868.5" y2="103" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="861.5" y1="103" x2="857.5" y2="103" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="863" y1="104.5" x2="863" y2="108.5" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="863" y1="101.5" x2="863" y2="97.5" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
 <circle cx="744" cy="75" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
 <text x="752" y="78" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3_PWR</text>
 <circle cx="744" cy="93" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
@@ -99,6 +119,11 @@
 <rect x="744" y="154" width="128" height="6" fill="#3aa8ff"/>
 <text x="752" y="153" fill="#ffffff" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">SINK</text>
 <text x="864" y="153" fill="#ffffff" text-anchor="end" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">U3</text>
+<circle class="topo-jump" cx="863" cy="223" r="3" fill="none" stroke="#909090" stroke-width="1.2"/>
+<line x1="864.5" y1="223" x2="868.5" y2="223" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="861.5" y1="223" x2="857.5" y2="223" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="863" y1="224.5" x2="863" y2="228.5" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="863" y1="221.5" x2="863" y2="217.5" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
 <circle cx="744" cy="177" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
 <text x="752" y="180" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_1V8</text>
 <circle cx="744" cy="195" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
@@ -110,6 +135,11 @@
 <rect x="744" y="274" width="128" height="6" fill="#3aa8ff"/>
 <text x="752" y="273" fill="#ffffff" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">SINK</text>
 <text x="864" y="273" fill="#ffffff" text-anchor="end" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">U4</text>
+<circle class="topo-jump" cx="863" cy="379" r="3" fill="none" stroke="#909090" stroke-width="1.2"/>
+<line x1="864.5" y1="379" x2="868.5" y2="379" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="861.5" y1="379" x2="857.5" y2="379" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="863" y1="380.5" x2="863" y2="384.5" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="863" y1="377.5" x2="863" y2="373.5" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
 <circle cx="744" cy="297" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
 <text x="752" y="300" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">LED_R</text>
 <circle cx="744" cy="315" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>

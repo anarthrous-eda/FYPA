@@ -624,6 +624,30 @@ currently focused project. Setup is documented in the
 registered, right-clicking *Run* in the Script Editor opens a console
 window and launches the viewer on the focused `.PrjPcb`.
 
+### Re-opening recent work
+
+When FYPA starts with no project, the start window has a **Recent**
+strip down its left edge. Click it to expand the list (click **«** to
+collapse it again — FYPA remembers which way you left it). Entries are
+newest first, with a coloured tag for the type:
+
+| Tag | What it is | Icons |
+|---|---|---|
+| **Altium** | A `.PrjPcb` you imported | **Load** — import reusing the cached design info / solve; **Clean** — ignore the caches and re-extract |
+| **Gerber** | A Gerber file set you imported | **Load** — re-import with the same layer mapping and stackup (no dialogs) |
+| **Project** | A `.fypa` project file you opened | **Load** — open it |
+| **Solution** | A solution `.pkl` you loaded with **Load Solution…** | **Load** — load it |
+
+Double-clicking a row does the same as its **Load** icon. Right-click a
+row to open its folder or remove it from the list; **Clear list**
+forgets every entry (no files are touched). An entry whose files have
+gone is shown greyed out, and is dropped from the list if you try to
+open it.
+
+This is the same list as **File → Recent Projects**. From that menu an
+Altium entry is imported clean or not according to **Settings → Load
+recent projects clean**; the two icons in the panel choose explicitly.
+
 ## 1.7 What you should see
 
 The viewer opens showing one copper layer shaded by voltage. The side

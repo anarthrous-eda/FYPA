@@ -11,7 +11,11 @@ from PySide6.QtWidgets import (
     QGraphicsView,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSplitter,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -76,9 +80,12 @@ class _TopologyView(QGraphicsView):
         self.setRenderHint(QPainter.Antialiasing)
         self.setRenderHint(QPainter.TextAntialiasing)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
-        self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        # Scroll bars always shown: if they appeared mid-zoom, the viewport
+        # would shrink under the cursor-anchored zoom and the resize would
+        # re-anchor the view, so the point under the cursor would drift.
+        self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self.setDragMode(QGraphicsView.NoDrag)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -161,14 +168,36 @@ class _TopologyView(QGraphicsView):
             return
         if anchor is None:
             anchor = QPointF(self.viewport().rect().center())
+        # Zoom about ``anchor`` (the cursor for Ctrl+wheel): the diagram
+        # point under it stays under it. A scrollable QGraphicsView positions
+        # the scene with its scroll bars (translate() is ignored), and centres
+        # a diagram smaller than the view, so neither can hold an arbitrary
+        # point still. Instead work out the scene area the view must show —
+        # the one with that point at the cursor — let the scene extend over
+        # it (past the diagram's edge if need be, like any canvas app), and
+        # centre on it. fit_in_view() shrinks the scene back to the diagram.
         prev_anchor = self.transformationAnchor()
         self.setTransformationAnchor(QGraphicsView.NoAnchor)
-        scene_before = self._map_view_to_scene(anchor)
+        scene_pt = self._map_view_to_scene(anchor)
         self.scale(factor, factor)
-        scene_after = self._map_view_to_scene(anchor)
-        delta = scene_before - scene_after
-        self.translate(delta.x(), delta.y())
+        s = self._current_scale()
+        vp = self.viewport().rect()
+        visible = QRectF(
+            scene_pt.x() - anchor.x() / s,
+            scene_pt.y() - anchor.y() / s,
+            vp.width() / s,
+            vp.height() / s,
+        )
+        self._scene.setSceneRect(self._diagram_bounds().united(visible))
+        self.centerOn(visible.center())
         self.setTransformationAnchor(prev_anchor)
+
+    def _diagram_bounds(self) -> QRectF:
+        if self._svg_renderer is not None:
+            vb = self._svg_renderer.viewBoxF()
+            if vb.width() >= 1 and vb.height() >= 1:
+                return vb
+        return self._svg_item.boundingRect()
 
     def zoom_in(self) -> None:
         self._zoom_by(_TOPOLOGY_ZOOM_STEP)
@@ -176,10 +205,38 @@ class _TopologyView(QGraphicsView):
     def zoom_out(self) -> None:
         self._zoom_by(1.0 / _TOPOLOGY_ZOOM_STEP)
 
+    def go_to(self, point: tuple[float, float], *, net: str | None = None) -> None:
+        """Pan so ``point`` is centred, keeping the zoom; highlight ``net``."""
+        if not self._diagram_loaded:
+            return
+        if self._current_scale() < 0.7:
+            self._zoom_by(0.9 / self._current_scale())
+        self.centerOn(QPointF(point[0], point[1]))
+        if net:
+            self._highlighted_net = None
+            self._set_highlighted_net(net)
+
     def fit_in_view(self) -> None:
         if not self._diagram_loaded:
             return
         self.resetTransform()
+        # Drop any room a cursor-anchored zoom added past the diagram's edge.
+        self._scene.setSceneRect(self._diagram_bounds())
+        model = getattr(self._viewer, "_topology_model", None)
+        if getattr(model, "layout", "") == "rows":
+            # A rows diagram is tall and narrow: fitting it whole can shrink
+            # it past legibility. Fit the width instead (never above 1.5×)
+            # and start at the top; scroll down for the rest.
+            rect = self._svg_item.boundingRect()
+            vp = self.viewport().rect()
+            if rect.width() > 0 and rect.height() > 0 and vp.width() > 0:
+                whole = min(vp.width() / rect.width(), vp.height() / rect.height())
+                if whole < 0.75:
+                    scale = min(vp.width() / rect.width() * 0.98, 1.5)
+                    self.scale(scale, scale)
+                    self.centerOn(rect.center().x(), rect.top())
+                    self.verticalScrollBar().setValue(self.verticalScrollBar().minimum())
+                    return
         self.fitInView(self._svg_item, Qt.KeepAspectRatio)
         if self._current_scale() > _TOPOLOGY_MAX_SCALE:
             self._zoom_by(_TOPOLOGY_MAX_SCALE / self._current_scale())
@@ -360,6 +417,24 @@ class _TopologyView(QGraphicsView):
                 QToolTip.showText(event.globalPosition().toPoint(), tip, self)
             else:
                 QToolTip.hideText()
+            if not self._space_pan:
+                from fypa.topology.hit_test import (
+                    find_component_at,
+                    find_jump_icon_at,
+                    find_tag_at,
+                )
+
+                tag = find_tag_at(model, x, y)
+                clickable = (
+                    (tag is not None and (tag.target is not None
+                                          or tag.kind in ("undriven", "end")))
+                    or find_jump_icon_at(model, x, y) is not None
+                    or find_component_at(model, x, y) is not None
+                )
+                if clickable:
+                    self.setCursor(Qt.PointingHandCursor)
+                else:
+                    self.unsetCursor()
             self._set_highlighted_net(topology_net_at(model, x, y))
         else:
             self._clear_net_highlight()
@@ -415,14 +490,20 @@ class _TopologyTabMixin:
 
     def _build_topology_tab(self) -> QWidget:
         """Build the Topology tab — abstract PDN simulation schematic."""
+        # A rebuild (theme switch) deletes the old sidebar: hand the editor
+        # form back to the Heatmap panel before its host disappears.
+        self._topology_form_release()
         widget = QWidget(self.tabs)
         outer = QVBoxLayout(widget)
         outer.setContentsMargins(8, 8, 8, 8)
 
         intro = QLabel(
-            "Flow diagram of the PDN simulation model — each "
-            "directive is a box with input/output ports wired by net. "
-            "Click a box to jump to its pad on the Heatmap. "
+            "Power tree of the PDN simulation model — one row per source or "
+            "regulator, regulators under the row that feeds them. A tag marks "
+            "a rail that continues elsewhere: click it to jump to the other end; "
+            "click an amber or grey tag to add a source, regulator or sink. "
+            "Click a box to edit its PDN properties; its ⌖ icon shows it on the "
+            "Heatmap. "
             "Ctrl+wheel to zoom; wheel to scroll; Shift+wheel horizontal; "
             "right-drag, middle-drag or Space+drag to pan; arrow keys to scroll."
         )
@@ -451,12 +532,89 @@ class _TopologyTabMixin:
             btn.setStyleSheet(btn_qss)
             btn.clicked.connect(slot)
             toolbar.addWidget(btn)
+
+        from fypa.viewer.prefs import load_topology_layout, load_topology_show_bridges
+
+        toggle_qss = btn_qss + (
+            f"QToolButton:checked {{ background-color: {_t['bg_hover']};"
+            f"  border-color: {_t['accent']}; }}"
+        )
+        self._topology_layout = load_topology_layout()
+        self._topology_show_bridges = load_topology_show_bridges()
+        toolbar.addSpacing(12)
+        self._topology_classic_btn = QToolButton()
+        self._topology_classic_btn.setCheckable(True)
+        self._topology_classic_btn.setChecked(self._topology_layout == "columns")
+        self._sync_topology_classic_btn()
+        self._topology_classic_btn.setCursor(Qt.PointingHandCursor)
+        # Plain style: the label already says what a click does, so a
+        # "checked" highlight would read as the wrong layout being on.
+        self._topology_classic_btn.setStyleSheet(btn_qss)
+        self._topology_classic_btn.toggled.connect(self._on_topology_classic_toggled)
+        toolbar.addWidget(self._topology_classic_btn)
+        self._topology_bridges_btn = QToolButton()
+        self._topology_bridges_btn.setText("Bridges")
+        self._topology_bridges_btn.setToolTip(
+            "List 0 Ω auto-bridges on nets no source, sink or regulator uses "
+            "(pull-up links, signal jumpers…)."
+        )
+        self._topology_bridges_btn.setCheckable(True)
+        self._topology_bridges_btn.setChecked(self._topology_show_bridges)
+        self._topology_bridges_btn.setEnabled(self._topology_layout == "rows")
+        self._topology_bridges_btn.setCursor(Qt.PointingHandCursor)
+        self._topology_bridges_btn.setStyleSheet(toggle_qss)
+        self._topology_bridges_btn.toggled.connect(self._on_topology_bridges_toggled)
+        toolbar.addWidget(self._topology_bridges_btn)
         toolbar.addStretch()
+        self._topology_autosetup_btn = QToolButton()
+        self._topology_autosetup_btn.setText("Auto setup…")
+        self._topology_autosetup_btn.setToolTip(
+            "Propose sources, regulators, sinks and series elements from the "
+            "design (and a datasheet folder, if you have one), then review "
+            "and apply them.")
+        self._topology_autosetup_btn.setCursor(Qt.PointingHandCursor)
+        self._topology_autosetup_btn.setStyleSheet(
+            btn_qss + f"QToolButton {{ border-color: {_t['accent']};"
+                      f"  color: {_t['accent']}; font-weight: bold; }}")
+        self._topology_autosetup_btn.clicked.connect(self._topology_run_autosetup)
+        toolbar.addWidget(self._topology_autosetup_btn)
+        self._topology_manual_btn = QToolButton()
+        self._topology_manual_btn.setText("Manual setup…")
+        self._topology_manual_btn.setToolTip(
+            "Add and edit sources, regulators and loads by hand: pick a net, "
+            "the part on it and its pins, in one list per kind.")
+        self._topology_manual_btn.setCursor(Qt.PointingHandCursor)
+        self._topology_manual_btn.setStyleSheet(
+            btn_qss + f"QToolButton {{ border-color: {_t['accent']};"
+                      f"  color: {_t['accent']}; }}")
+        self._topology_manual_btn.clicked.connect(self._topology_run_manual_setup)
+        toolbar.addWidget(self._topology_manual_btn)
+        self._topology_resolve_btn = QToolButton()
+        self._topology_resolve_btn.setText("↻  Resolve")
+        self._topology_resolve_btn.setToolTip(
+            "Re-run the solver with the current editor changes applied")
+        self._topology_resolve_btn.setCursor(Qt.PointingHandCursor)
+        self._topology_resolve_btn.setStyleSheet(
+            btn_qss + "QToolButton { border-color: #2fa84f; color: #2fa84f;"
+                      " font-weight: bold; }"
+                      "QToolButton:disabled { border-color: gray; color: gray; }")
+        self._topology_resolve_btn.clicked.connect(self._on_topology_resolve)
+        toolbar.addWidget(self._topology_resolve_btn)
         outer.addLayout(toolbar)
 
-        self._topology_view = _TopologyView(self, widget)
+        self._topology_split = QSplitter(Qt.Horizontal, widget)
+        self._topology_view = _TopologyView(self, self._topology_split)
         self._topology_view.set_background(_t["bg"])
-        outer.addWidget(self._topology_view, 1)
+        self._topology_split.addWidget(self._topology_view)
+        self._topology_sidebar = self._build_topology_sidebar()
+        self._topology_split.addWidget(self._topology_sidebar)
+        self._topology_split.setStretchFactor(0, 1)
+        self._topology_split.setStretchFactor(1, 0)
+        self._topology_sidebar.hide()
+        outer.addWidget(self._topology_split, 1)
+        if not getattr(self, "_topology_tabs_hooked", False):
+            self.tabs.currentChanged.connect(self._on_tabs_changed_for_topology)
+            self._topology_tabs_hooked = True
 
         self._topology_hint = QLabel("")
         self._topology_hint.setStyleSheet(
@@ -467,6 +625,484 @@ class _TopologyTabMixin:
         self._topology_model = None
         self._install_topology_shortcuts(widget)
         return widget
+
+    # --- Sidebar: the PDN editor form for a clicked part -------------------
+
+    def _build_topology_sidebar(self) -> QWidget:
+        """Right-hand panel showing the clicked part's PDN properties — the
+        same form as the Heatmap's editor panel (see
+        :meth:`_topology_form_activate`)."""
+        _t = _T()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setMinimumWidth(300)
+        scroll.setMaximumWidth(520)
+        scroll.setStyleSheet(
+            f"QScrollArea {{ background-color: {_t['bg']};"
+            f"  border-left: 1px solid {_t['border']}; }}")
+        panel = QWidget()
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(10, 8, 10, 10)
+        lay.setSpacing(8)
+        head = QHBoxLayout()
+        self._topology_side_title = QLabel("")
+        self._topology_side_title.setTextFormat(Qt.RichText)
+        self._topology_side_title.setWordWrap(True)
+        head.addWidget(self._topology_side_title, 1)
+        close = QToolButton()
+        close.setText("✕")
+        close.setToolTip("Close")
+        close.setAutoRaise(True)
+        close.clicked.connect(self._topology_close_sidebar)
+        head.addWidget(close, 0, Qt.AlignTop)
+        lay.addLayout(head)
+        self._topology_side_jump = QPushButton("⌖  Show on Heatmap")
+        self._topology_side_jump.setToolTip("Switch to the Heatmap and zoom to this part")
+        self._topology_side_jump.clicked.connect(self._topology_side_jump_clicked)
+        lay.addWidget(self._topology_side_jump)
+        self._topology_side_hint = QLabel("")
+        self._topology_side_hint.setWordWrap(True)
+        self._topology_side_hint.setStyleSheet(f"color: {_t['fg_muted']};")
+        lay.addWidget(self._topology_side_hint)
+        # A part with several editor directives (one per rail): pick which.
+        from PySide6.QtWidgets import QComboBox
+
+        self._topology_side_pick = QComboBox()
+        self._topology_side_pick.setToolTip(
+            "This part has several PDN directives — choose the one to edit")
+        self._topology_side_pick.currentIndexChanged.connect(
+            self._on_topology_side_pick)
+        self._topology_side_pick.hide()
+        lay.addWidget(self._topology_side_pick)
+        self._topology_form_host = QWidget()
+        self._topology_form_layout = QVBoxLayout(self._topology_form_host)
+        self._topology_form_layout.setContentsMargins(0, 0, 0, 0)
+        self._topology_form_layout.setSpacing(6)
+        lay.addWidget(self._topology_form_host)
+        lay.addStretch(1)
+        scroll.setWidget(panel)
+        self._topology_side_node = None
+        return scroll
+
+    def _topology_form_activate(self) -> None:
+        """Point the editor form at the Topology sidebar.
+
+        The form code (``_populate_editor_form`` / ``_on_editor_apply`` …)
+        builds into ``self._editor_form_layout``. Only one form may be live —
+        its widgets are shared ``self._ef_*`` attributes — so the Heatmap
+        panel's copy is cleared while the sidebar owns it, and handed back
+        by :meth:`_topology_form_release`."""
+        if getattr(self, "_topology_form_owned", False):
+            return
+        if not hasattr(self, "_editor_form_layout"):
+            return
+        self._hm_form_host = self._editor_form_host
+        self._hm_form_layout = self._editor_form_layout
+        self._clear_layout(self._hm_form_layout)
+        self._hm_form_host.hide()
+        self._editor_form_host = self._topology_form_host
+        self._editor_form_layout = self._topology_form_layout
+        self._topology_form_owned = True
+
+    def _topology_form_release(self) -> None:
+        if not getattr(self, "_topology_form_owned", False):
+            return
+        self._clear_layout(self._topology_form_layout)
+        self._editor_form_host = self._hm_form_host
+        self._editor_form_layout = self._hm_form_layout
+        self._topology_form_owned = False
+        self._editor_selection = None
+        try:
+            self._update_editor_panel()
+        except Exception:  # noqa: BLE001 - cosmetic panel sync
+            pass
+
+    def _topology_node_selection(self, node) -> dict | None:
+        """Editor selection dict for a diagram node (component or free marker)."""
+        des = node.designator or node.label or ""
+        if des.startswith("EDIT_") and self._project is not None:
+            ed = self._project.directive_by_id(des[len("EDIT_"):])
+            if ed is not None and ed.kind == "free":
+                return {"kind": "free", "id": ed.id}
+        rec = self._component_record(des)
+        if rec is None:
+            return {"kind": "component", "designator": des,
+                    "nets": sorted({p.net for p in node.ports
+                                    if p.net and not p.net.startswith("__")}),
+                    "bbox": None, "unlocked": False}
+        return {"kind": "component", "designator": rec.get("designator"),
+                "nets": list(rec.get("nets", [])), "bbox": rec.get("bbox"),
+                "unlocked": False}
+
+    def _topology_open_sidebar(self, node) -> None:
+        """Show ``node``'s PDN properties in the sidebar (the editor form)."""
+        sel = self._topology_node_selection(node)
+        if sel is None:
+            return
+        self._topology_side_node = node
+        role = "SERIES" if node.role in ("RESISTOR", "SERIES") else node.role
+        self._topology_side_title.setText(
+            f"<b>{_esc(node.label)}</b> &nbsp;<span style='color:{_T()['fg_muted']};'>"
+            f"{_esc(role.replace('_', ' ').title())}</span>")
+        self._topology_side_jump.setEnabled(bool(node.jump_row))
+        self._topology_form_activate()
+        self._editor_multi = []
+        eds = [d for d in (self._project.editor_directives if self._project else [])
+               if sel.get("kind") == "component" and d.kind == "component"
+               and d.designator == sel.get("designator")]
+        pick = self._topology_side_pick
+        pick.blockSignals(True)
+        pick.clear()
+        for d in eds:
+            pick.addItem(f"{d.role} on {d.p_net or '?'}", d.id)
+        pick.blockSignals(False)
+        pick.setVisible(len(eds) > 1)
+        if len(eds) > 1:
+            sel["directive_id"] = eds[0].id
+        self._editor_selection = sel
+        try:
+            self._populate_editor_form()
+        except Exception as e:  # noqa: BLE001 - keep the tab usable
+            import logging
+            logging.getLogger(__name__).exception("Topology sidebar form failed")
+            self._topology_side_hint.setText(f"Could not open the form: {e}")
+        if self._topology_form_layout.count():
+            self._topology_side_hint.setText("")
+        self._topology_form_host.show()
+        self._topology_sidebar.show()
+
+    def _on_topology_side_pick(self, index: int) -> None:
+        sel = getattr(self, "_editor_selection", None)
+        if index < 0 or not sel or not getattr(self, "_topology_form_owned", False):
+            return
+        sel["directive_id"] = self._topology_side_pick.itemData(index)
+        self._populate_editor_form()
+
+    def _topology_close_sidebar(self) -> None:
+        self._topology_form_release()
+        self._topology_side_node = None
+        sidebar = getattr(self, "_topology_sidebar", None)
+        if sidebar is not None:
+            sidebar.hide()
+
+    def _topology_side_jump_clicked(self) -> None:
+        node = self._topology_side_node
+        if node is not None and node.jump_row:
+            self._topology_close_sidebar()
+            self._jump_to_node(node.jump_row)
+
+    def _on_tabs_changed_for_topology(self, index: int) -> None:
+        if index != getattr(self, "_topology_tab_index", -1):
+            self._topology_close_sidebar()
+        else:
+            self._topology_refresh_resolve_btn()
+
+    # --- Resolve ------------------------------------------------------------
+
+    def _topology_refresh_resolve_btn(self) -> None:
+        btn = getattr(self, "_topology_resolve_btn", None)
+        if btn is None:
+            return
+        try:
+            enabled = bool(self._resolve_button_enabled())
+        except Exception:  # noqa: BLE001 - viewer without editor state
+            enabled = False
+        btn.setEnabled(enabled)
+        awaiting = getattr(self, "_awaiting_first_solve", False)
+        btn.setText("↻  Solve" if awaiting else "↻  Resolve")
+
+    def _on_topology_resolve(self) -> None:
+        self._topology_close_sidebar()
+        self._on_resolve_clicked()
+
+    # --- Auto setup / click-to-add --------------------------------------------
+
+    def _topology_loaded_for_setup(self):
+        """The loaded design, or ``None`` after telling the user why not.
+
+        A viewer opened through the solve cache (or from a bare solve
+        pickle) carries no design in memory. Fetch it the way a Resolve
+        does — the project's design-info cache, else a fresh extract — and
+        if the Altium project isn't where the solve says it was, ask the
+        user to locate the .PrjPcb rather than sending them to re-import."""
+        loaded = getattr(self, "_loaded_project", None)
+        if loaded is None or getattr(loaded, "extracted", None) is None:
+            loaded = self._topology_fetch_design()
+            if loaded is None:
+                return None
+        ex = loaded.extracted
+        if getattr(ex, "compiled_netlist", None) is None:
+            QMessageBox.information(
+                self, "Auto setup",
+                "This design has no schematic netlist (e.g. a Gerber import), so "
+                "pin names are unknown and parts can't be classified. Add "
+                "directives by hand in the PDN editor instead.")
+            return None
+        return loaded
+
+    def _topology_fetch_design(self):
+        """Load the design behind this solve; ``None`` if the user cancels or
+        it can't be read (the user has been told why)."""
+        md = self.metadata or {}
+        if md.get("source_kind") == "gerber":
+            QMessageBox.information(
+                self, "Auto setup",
+                "This design was imported from Gerber files, which carry no "
+                "schematic, so parts can't be classified. Add directives by "
+                "hand in the PDN editor instead.")
+            return None
+        prj = Path(md["prjpcb_path"]) if md.get("prjpcb_path") else None
+        pcb = Path(md["pcbdoc_path"]) if md.get("pcbdoc_path") else None
+        if prj is None or not prj.is_file():
+            prj, pcb = self._topology_ask_for_project(prj, pcb)
+            if prj is None:
+                return None
+        loaded, error = self._topology_load_design_busy(prj, pcb)
+        if loaded is None:
+            QMessageBox.warning(
+                self, "Auto setup",
+                f"Could not load the Altium project\n{prj}\n\n{error}")
+            return None
+        # Keep it: the next Resolve reuses it instead of reloading (it still
+        # checks the bridge / auto-SERIES settings and reloads on a change).
+        self._loaded_project = loaded
+        return loaded
+
+    def _topology_ask_for_project(self, prj: Path | None, pcb: Path | None):
+        """Ask for the .PrjPcb when the solve's own path is missing or gone.
+        Returns ``(prjpcb, pcbdoc)``; ``(None, None)`` if cancelled."""
+        where = (f"The Altium project this solve was made from isn't at\n{prj}\n"
+                 "(moved, renamed, or on another machine)." if prj is not None
+                 else "This solve doesn't record which Altium project it came from.")
+        answer = QMessageBox.question(
+            self, "Locate the Altium project",
+            f"{where}\n\nAuto setup reads the design itself — pin names, nets "
+            "and part parameters. Locate the project's .PrjPcb file?",
+            QMessageBox.Open | QMessageBox.Cancel, QMessageBox.Open)
+        if answer != QMessageBox.Open:
+            return None, None
+        start = str(prj.parent) if prj is not None and prj.parent.is_dir() else self._menu_start_dir()
+        path_str, _ = QFileDialog.getOpenFileName(
+            self, "Locate the Altium project", start,
+            "Altium project (*.PrjPcb);;All files (*)",
+            options=_file_dialog_options())
+        if not path_str:
+            return None, None
+        new_prj = Path(path_str)
+        # Keep the same board in a multi-PCB project when it's beside it.
+        new_pcb = None
+        if pcb is not None and (new_prj.parent / pcb.name).is_file():
+            new_pcb = new_prj.parent / pcb.name
+        return new_prj, new_pcb
+
+    def _topology_load_design_busy(self, prj: Path, pcb: Path | None):
+        """Design-info cache, else a full extract, on a worker thread behind a
+        busy dialog. Returns ``(loaded | None, error text)``."""
+        import threading
+
+        from PySide6.QtCore import QEventLoop
+        from PySide6.QtWidgets import QApplication, QProgressDialog
+
+        no_bridge = set(getattr(self._project, "no_auto_bridge", None) or ()) or None
+        out: dict = {}
+
+        def work() -> None:
+            try:
+                from fypa.cli import _project_cache_dir, _try_load_cached_design_info
+
+                loaded = None
+                try:
+                    loaded = _try_load_cached_design_info(prj, None, pcbdoc_path=pcb)
+                except Exception:  # noqa: BLE001 - a bad cache just means re-extract
+                    loaded = None
+                if loaded is not None and no_bridge is not None and (
+                        {d.upper() for d in no_bridge}
+                        != set(getattr(loaded, "no_auto_bridge_applied", ()) or ())):
+                    loaded = None
+                if loaded is None:
+                    from fypa.altium.loader import load_project
+
+                    cache_dir = (_project_cache_dir(prj, pcb)
+                                 if pcb is not None and prj.suffix.lower() == ".prjpcb"
+                                 else None)
+                    loaded = load_project(prj, pcbdoc_selector=pcb,
+                                          no_auto_bridge=no_bridge,
+                                          cache_dir=cache_dir)
+                out["loaded"] = loaded
+            except Exception as e:  # noqa: BLE001 - reported to the user
+                import logging
+                logging.getLogger(__name__).exception("Loading %s failed", prj)
+                out["error"] = f"{type(e).__name__}: {e}"
+
+        dlg = QProgressDialog(f"Reading the design…\n{prj.name}", None, 0, 0, self)
+        dlg.setWindowTitle("Auto setup")
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(300)
+        dlg.setValue(0)
+        thread = threading.Thread(target=work, name="topology-design-load", daemon=True)
+        thread.start()
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            while thread.is_alive():
+                QApplication.processEvents(QEventLoop.AllEvents, 50)
+                thread.join(0.05)
+        finally:
+            QApplication.restoreOverrideCursor()
+            dlg.close()
+        return out.get("loaded"), out.get("error", "")
+
+    def _topology_run_autosetup(self) -> None:
+        from fypa.viewer.autosetup_dialog import AutoSetupWizard
+        from fypa.viewer.prefs import load_autosetup_datasheet_dir, save_autosetup_datasheet_dir
+
+        loaded = self._topology_loaded_for_setup()
+        if loaded is None:
+            return
+        project = self._ensure_project()
+        wiz = AutoSetupWizard(
+            self, loaded=loaded,
+            editor_directives=list(project.editor_directives),
+            datasheet_dir=load_autosetup_datasheet_dir(),
+        )
+        ok = wiz.exec()
+        save_autosetup_datasheet_dir(wiz.datasheet_dir())
+        if wiz.result is not None:
+            self._autosetup_last = (wiz.result, wiz.view)
+        if not ok:
+            return
+        added, skipped = self._topology_apply_suggestions(wiz.chosen())
+        msg = f"Auto setup added {added} directive(s)"
+        if skipped:
+            msg += f"; {skipped} skipped (already present)"
+        self.statusBar().showMessage(msg + " — press Resolve to solve.", 10000)
+
+    def _topology_apply_suggestions(self, suggestions) -> tuple[int, int]:
+        """Turn accepted suggestions into editor directives (no duplicates)."""
+        project = self._ensure_project()
+        have = {(d.designator or "", d.role, d.p_net or "")
+                for d in project.editor_directives if d.kind == "component"}
+        added = skipped = 0
+        for s in suggestions:
+            key = (s.designator, s.role, s.p_net or "")
+            if key in have:
+                skipped += 1
+                continue
+            project.upsert_directive(s.to_editor_directive())
+            have.add(key)
+            added += 1
+        if added:
+            self._topology_directives_changed()
+        self._topology_refresh_resolve_btn()
+        return added, skipped
+
+    def _topology_directives_changed(self) -> None:
+        """Editor directives changed from the Topology tab: flag the solve
+        stale and refresh the Heatmap markers and the diagram."""
+        self._mark_project_dirty()
+        for hook in ("_update_pending_rails", "_refresh_editor_markers"):
+            fn = getattr(self, hook, None)
+            if fn is not None:
+                try:
+                    fn()
+                except Exception:  # noqa: BLE001 - cosmetic refresh
+                    pass
+        self._schedule_topology_refresh()
+        self._topology_refresh_resolve_btn()
+
+    def _topology_run_manual_setup(self) -> None:
+        from fypa.viewer.manual_setup_dialog import ManualSetupDialog
+
+        pair = self._topology_design_view()
+        if pair is None:
+            return
+        _result, view = pair
+        project = self._ensure_project()
+        dlg = ManualSetupDialog(self, view=view,
+                                editor_directives=list(project.editor_directives),
+                                metadata=self.metadata)
+        if not dlg.exec():
+            return
+        # Supplies and loads bound to parts are what the dialog owns; series
+        # elements (Bridges tab) and free Heatmap markers are kept as-is.
+        owned = ("SOURCE", "SINK", "REGULATOR")
+        before = [d.to_dict() for d in project.editor_directives]
+        keep = [d for d in project.editor_directives
+                if not (d.kind == "component" and d.role in owned)]
+        project.editor_directives = keep + dlg.result_directives()
+        if [d.to_dict() for d in project.editor_directives] != before:
+            self._topology_close_sidebar()
+            self._topology_directives_changed()
+            self.statusBar().showMessage(
+                "Manual setup applied — press Resolve to solve.", 8000)
+
+    def _topology_design_view(self):
+        """Design view for click-to-add — the last auto-setup run's, or a
+        quick one without the power-port scan."""
+        last = getattr(self, "_autosetup_last", None)
+        if last is not None:
+            return last
+        loaded = self._topology_loaded_for_setup()
+        if loaded is None:
+            return None
+        from fypa.autosetup import build_design_view, suggest
+
+        project = self._ensure_project()
+        view = build_design_view(loaded, editor_directives=project.editor_directives,
+                                 scan_schdocs=False)
+        return suggest(view), view
+
+    def _topology_tag_menu(self, tag, global_pos) -> None:
+        """Click on an undriven / no-load tag: offer to add what's missing."""
+        menu = QMenu(self)
+        net = tag.net
+        if tag.kind == "undriven":
+            menu.addAction(f"Add a SOURCE on {net}…",
+                           lambda: self._topology_add_on_net(net, "SOURCE"))
+            menu.addAction(f"Add a REGULATOR feeding {net}…",
+                           lambda: self._topology_add_on_net(net, "REGULATOR"))
+        menu.addAction(f"Add a SINK on {net}…",
+                       lambda: self._topology_add_on_net(net, "SINK"))
+        if tag.target is not None:
+            menu.addSeparator()
+            menu.addAction("Jump to where it continues",
+                           lambda: self._topology_view.go_to(tag.target, net=net))
+        menu.exec(global_pos)
+
+    def _topology_add_on_net(self, net: str, role: str) -> None:
+        from fypa.autosetup import candidates_for_net
+        from fypa.viewer.add_on_net_dialog import AddOnNetDialog
+
+        pair = self._topology_design_view()
+        if pair is None:
+            return
+        result, view = pair
+        cands = candidates_for_net(view, result, net, role)
+        if not cands:
+            QMessageBox.information(
+                self, "Add", f"No part on the board has a pin on {net}.")
+            return
+        part_nets = {p.designator: sorted(p.nets()) for p in view.parts}
+        dlg = AddOnNetDialog(self, net=net, role=role, candidates=cands,
+                             part_nets=part_nets)
+        if not dlg.exec() or dlg.choice is None:
+            return
+        added, _skipped = self._topology_apply_suggestions([dlg.choice])
+        if added:
+            self.statusBar().showMessage(
+                f"Added {role} on {dlg.choice.designator} ({net}) — press Resolve "
+                "to solve.", 8000)
+            # Open it for fine-tuning (pins, sense, return) once redrawn.
+            QTimer.singleShot(120, lambda d=dlg.choice.designator:
+                              self._topology_open_by_designator(d))
+
+    def _topology_open_by_designator(self, designator: str) -> None:
+        model = getattr(self, "_topology_model", None)
+        if model is None:
+            return
+        node = next((n for n in model.nodes
+                     if (n.designator or n.label) == designator), None)
+        if node is not None:
+            self._topology_open_sidebar(node)
 
     def _install_topology_shortcuts(self, parent: QWidget) -> None:
         """Keyboard zoom shortcuts active while the Topology tab is focused."""
@@ -494,6 +1130,37 @@ class _TopologyTabMixin:
         view = getattr(self, "_topology_view", None)
         if view is not None:
             view.fit_in_view()
+
+    def _sync_topology_classic_btn(self) -> None:
+        """The layout button names the layout it switches *to*: "Classic"
+        while the new rows layout is showing, "New" while classic is."""
+        btn = self._topology_classic_btn
+        if btn.isChecked():
+            btn.setText("New")
+            btn.setToolTip(
+                "Switch to the new layout: one row per source / regulator, "
+                "with tags where a rail continues on another row.")
+        else:
+            btn.setText("Classic")
+            btn.setToolTip(
+                "Switch to the classic layout: every part in one left-to-right "
+                "chain with the nets wired between them.")
+
+    def _on_topology_classic_toggled(self, checked: bool) -> None:
+        from fypa.viewer.prefs import save_topology_layout
+
+        self._sync_topology_classic_btn()
+        self._topology_layout = "columns" if checked else "rows"
+        save_topology_layout(self._topology_layout)
+        self._topology_bridges_btn.setEnabled(not checked)
+        self._refresh_topology_live()
+
+    def _on_topology_bridges_toggled(self, checked: bool) -> None:
+        from fypa.viewer.prefs import save_topology_show_bridges
+
+        self._topology_show_bridges = bool(checked)
+        save_topology_show_bridges(self._topology_show_bridges)
+        self._refresh_topology_live()
 
     def _topology_preview_metadata(self) -> dict | None:
         """Metadata dict shown on the Topology tab (incl. pending editor edits)."""
@@ -541,13 +1208,36 @@ class _TopologyTabMixin:
             self._topology_model = None
             return
 
-        model = build_topology_model(preview_md)
+        self._topology_refresh_resolve_btn()
+        model = build_topology_model(
+            preview_md,
+            layout=getattr(self, "_topology_layout", "rows"),
+            show_bridges=getattr(self, "_topology_show_bridges", False),
+        )
         self._topology_model = model
         svg = render_topology_svg(model, theme=current_theme())
         self._topology_view.set_diagram_svg(QByteArray(svg.encode("utf-8")))
         n_dir = len((preview_md or {}).get("directives") or [])
         n_nodes = sum(1 for n in model.nodes if n.role != "GND")
         n_wires = len(model.wires)
+        if model.layout == "rows":
+            n_rows = sum(
+                1 for b in model.bands
+                if b.kind in ("source", "regulator", "undriven", "other")
+            )
+            n_undriven = sum(1 for b in model.bands if b.kind == "undriven")
+            pending = self._topology_live_preview_needed() and bool(
+                self._project_dirty
+                or self._project.editor_directives
+                or self._project.copper_names
+            )
+            bits = [f"{n_dir} directive(s)", f"{n_nodes} part(s)", f"{n_rows} row(s)"]
+            if n_undriven:
+                bits.append(f"{n_undriven} undriven rail(s)")
+            self._topology_hint.setText(
+                ", ".join(bits) + (" (pending edits)" if pending else "")
+            )
+            return
         # Not merely "live preview": a stub previews its own annotations
         # with no edits pending.
         pending = self._topology_live_preview_needed() and bool(
@@ -662,17 +1352,38 @@ class _TopologyTabMixin:
         )
 
     def _on_topology_view_clicked(self, event) -> None:
-        """Jump to the pad under the clicked schematic symbol."""
+        """Click on the diagram:
+
+        * a part's ⌖ icon → jump to it on the Heatmap;
+        * a tag that continues elsewhere → pan to the other end;
+        * an undriven / no-load tag → menu to add a source, regulator or sink;
+        * a part → its PDN properties in the sidebar (the editor form);
+        * empty space → close the sidebar."""
         from fypa.topology import find_component_at
+        from fypa.topology.hit_test import find_jump_icon_at, find_tag_at
 
         model = getattr(self, "_topology_model", None)
         view = getattr(self, "_topology_view", None)
         if model is None or view is None:
             return
         x, y = view.diagram_pos(event.position())
+        icon_node = find_jump_icon_at(model, x, y)
+        if icon_node is not None:
+            self._topology_close_sidebar()
+            self._jump_to_node(icon_node.jump_row)
+            return
+        tag = find_tag_at(model, x, y)
+        if tag is not None:
+            if tag.kind in ("undriven", "end") and tag.net:
+                self._topology_tag_menu(tag, event.globalPosition().toPoint())
+            elif tag.target is not None:
+                view.go_to(tag.target, net=tag.net or None)
+            return
         comp = find_component_at(model, x, y)
-        if comp is not None and comp.jump_row:
-            self._jump_to_node(comp.jump_row)
+        if comp is not None:
+            self._topology_open_sidebar(comp)
+            return
+        self._topology_close_sidebar()
 
     def _on_setup_anchor_clicked(self, url) -> None:
         """Handle clicks on toggle-anchors in the Setup tab."""

@@ -373,8 +373,7 @@ class _FileMenuMixin:
         use). The heavy work runs on a :class:`_GerberImportWorker` with
         a modal progress dialog so the existing viewer stays responsive
         while the import is running."""
-        from fypa.viewer.gerber_import import _GerberImportWorker, _pick_gerber_inputs
-        from fypa.viewer.window import PdnViewer
+        from fypa.viewer.gerber_import import _pick_gerber_inputs
         if _any_gerber_import_running():
             QMessageBox.information(
                 self, "Import already running",
@@ -386,6 +385,22 @@ class _FileMenuMixin:
         if picked is None:
             return
         result, pseudo = picked
+        self._start_gerber_import(result, pseudo)
+
+    def _start_gerber_import(self, result, pseudo) -> None:
+        """Run the off-thread half of a Gerber import for already-chosen
+        inputs (picker dialogs, or a replayed Recent entry); the resulting
+        viewer replaces this one and the import is recorded as recent."""
+        from fypa.viewer.gerber_import import _GerberImportWorker
+        from fypa.viewer.prefs import record_recent_gerber
+        from fypa.viewer.window import PdnViewer
+        if _any_gerber_import_running():
+            QMessageBox.information(
+                self, "Import already running",
+                "A previous Gerber import is still finishing in the "
+                "background. Please wait a moment before starting another.",
+            )
+            return
         log = logging.getLogger(__name__)
 
         dlg = QProgressDialog(
@@ -466,6 +481,7 @@ class _FileMenuMixin:
                     f"open:\n\n{type(e).__name__}: {e}",
                 )
                 return
+            record_recent_gerber(result, pseudo)
             QTimer.singleShot(0, lambda: _retire_viewer(self))
 
         def _on_fail(msg: str) -> None:

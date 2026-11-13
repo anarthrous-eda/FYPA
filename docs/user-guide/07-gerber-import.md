@@ -62,6 +62,14 @@ miscategorised file in the layer-mapping dialog.
 5. **Viewer opens** with a blank heatmap (no solve has run yet) and
    the copper visible on every layer.
 
+FYPA remembers the files, layer mapping and stackup of each successful
+import. To re-import the same set later (for example after re-exporting
+the Gerbers), pick it from **File → Recent Projects** or the start
+window's **Recent** panel: the import re-runs straight away without the
+picker, mapping or stackup dialogs. If any copper, drill or outline file
+has gone, FYPA lists the missing files and drops the entry. To change
+the mapping or stackup, use **File → Import Gerber Files…** again.
+
 ## 7.4 Adding sources and sinks
 
 Gerber files have no schematic information, so the **only** way to add

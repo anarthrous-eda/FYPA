@@ -10,7 +10,7 @@ _EDITOR_PREVIEW_SCHDOC = "(editor)"
 def _editor_directive_to_metadata_dict(ed) -> dict | None:
     """Best-effort metadata directive when no LoadedProject is available."""
     role = getattr(ed, "role", "")
-    if role not in ("SOURCE", "SINK", "SERIES"):
+    if role not in ("SOURCE", "SINK", "SERIES", "REGULATOR"):
         return None
     meta_role = "RESISTOR" if role == "SERIES" else role
     desig = ed.designator or f"EDIT_{ed.id}"
@@ -28,6 +28,19 @@ def _editor_directive_to_metadata_dict(ed) -> dict | None:
                 "value": voltage,
                 "unit": "V",
                 "value_str": f"{voltage:.4g} V",
+            }
+        )
+    elif role == "REGULATOR":
+        voltage = float(ed.voltage or 0.0)
+        kind = (getattr(ed, "smps_topology", None)
+                or getattr(ed, "regulator_type", None) or "")
+        common.update(
+            {
+                "value": voltage,
+                "unit": "V",
+                "value_str": f"V={voltage:.4g} V" + (f", topo={kind}" if kind else ""),
+                "regulator_type": getattr(ed, "regulator_type", None),
+                "smps_topology": getattr(ed, "smps_topology", None),
             }
         )
     elif role == "SINK":
@@ -79,6 +92,15 @@ def _editor_directive_to_metadata_dict(ed) -> dict | None:
             "pins": pins,
             "requested_net": net,
         }
+
+    if role == "REGULATOR":
+        common["terminals"] = {
+            "OUT_P": _terminal(ed.p_net),
+            "OUT_N": _terminal(ed.n_net or getattr(ed, "in_n_net", None)),
+            "IN_P": _terminal(getattr(ed, "in_p_net", None)),
+            "IN_N": _terminal(getattr(ed, "in_n_net", None) or ed.n_net),
+        }
+        return common
 
     two_net = (not ed.single_net) or role == "SERIES"
     terms: dict[str, dict] = {"P": _terminal(ed.p_net)}

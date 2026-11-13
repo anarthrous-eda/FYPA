@@ -59,11 +59,33 @@ From top to bottom:
 
 ## 5.3 The Topology tab
 
-The **Topology** tab shows a **Flow diagram** of the PDN
+The **Topology** tab shows the **power tree** of the PDN
 simulation model — each `PDN_*` directive appears as a coloured box with
 labelled input/output ports; wires connect ports that share the same net.
 This is **not** the PCB layout; for spatial placement use the Heatmap tab.
 
+- **Rows** — each SOURCE starts a row, and each REGULATOR gets its own
+  row directly under the row that feeds it, indented one step per
+  conversion stage, so reading top to bottom follows the power tree. A
+  header line names the row and summarises it (`+12V → BUCK · 1 V → +VDD`).
+  Within a row power flows left to right: a net's driver on the left, the
+  parts it feeds stacked in the next column.
+- **Tags** — a rail that leaves the row is not drawn as a long wire. It
+  ends in a pentagon **tag** instead: `U6` (magenta) where a rail feeds a
+  regulator, the input net (red) on the regulator's own row, the net name
+  where a rail loops back to a part drawn elsewhere. **Click a tag** to
+  jump to the other end; hovering one highlights the whole net. A dashed
+  amber tag marks a rail nothing drives (such rails get their own
+  *Undriven rail* row); a grey tag marks a rail with no sink or regulator.
+- **Ground** — every part with a return gets its own ground symbol under
+  it; there is no shared return rail.
+- **Bridges** — 0 Ω auto-bridges on a powered rail show as one-line chips
+  on that rail. Auto-bridges on nets no source, sink or regulator uses
+  (pull-up links, signal jumpers) are hidden; toggle **Bridges** on the
+  toolbar to list them, grouped by net.
+- **Classic** — toggles back to the older single-chain column layout,
+  which wires every net and draws one return rail under the diagram. Both
+  toolbar toggles are remembered between sessions.
 - **Nodes** — one box per directive (SOURCE, SINK, REGULATOR, SERIES);
   the header shows the role colour and designator; the body shows the
   configured value (`PDN_V`, `PDN_I`, `PDN_R`, regulator gain).
@@ -78,14 +100,103 @@ This is **not** the PCB layout; for spatial placement use the Heatmap tab.
   the label is truncated. Multi-channel parts show one net per channel row
   (`N1`, `N2`, …) — the net that row's wire actually carries.
 - **Wires** — orthogonal links between ports on the same electrical net,
-  each labelled once above the link. Real return nets meet a horizontal
-  rail below the diagram, terminated by a schematic **GND** symbol
-  (three decreasing bars). Single-net directives (ideal return) show only
-  their power port and are marked *single-net* in the body.
+  each labelled once above the link. Single-net directives (ideal return)
+  show only their power port and are drawn in a darker shade.
 - **Annotation errors** — errored directives get a red border and ⚠ marker.
-- **Click a box** — jumps to that component's pad on the Heatmap
-  (same as **Go ▶** on the Nodes tab).
+- **Click a box** — opens that part's PDN properties in a sidebar on the
+  right: the same form as the Heatmap's PDN editor panel. A part set up in
+  the schematic shows its values read-only with **🔓 Unlock to edit**; a
+  part with several FYPA directives (one per rail) gets a picker above the
+  form. **Apply** updates the diagram straight away; **↻ Resolve** on the
+  toolbar re-solves.
+- **⌖ icon** (bottom-right of each box) or **Show on Heatmap** in the
+  sidebar — jumps to that component's pad on the Heatmap (same as **Go ▶**
+  on the Nodes tab).
 - **Hover a box or port** — tooltip with the configured value.
+
+### Adding sources, regulators and sinks from the diagram
+
+Click a **dashed amber tag** (a rail nothing drives) to add a SOURCE on
+it or a REGULATOR whose output it is; click a **grey tag** (a rail with
+no loads) to add a SINK. A dialog lists every part with a pin on that
+net — the part auto setup would pick comes first, marked ★, with its
+value, input net and type filled in where the design gives them. Pick
+one, check the value (`3.3 V`, `250 mA`, `0.5` — SI prefixes are fine
+here) and **Add**; the new directive's sidebar opens so you can refine
+its pins or return.
+
+### Manual setup
+
+**Manual setup…** on the toolbar opens the whole supply side of the PDN
+as two lists, **Sources & regulators** and **Loads**, each with **Add**,
+**Duplicate** and **Remove** and an editor for the selected row:
+
+- **Supplies** have a **Type**: *Source* (an ideal supply such as a
+  connector), *LDO* (input current = output current) or *Switcher* (input
+  power = output power ÷ efficiency). A regulator also needs its **Input
+  net**, and a switcher takes an efficiency and an optional topology.
+- **Loads** take a current and an optional minimum voltage; the Nodes tab
+  flags the load if its pins sag below that.
+- Every row is picked the same way: the **net** (type to search; rails
+  come first), then the **part** on it (busiest first, e.g.
+  `U7  MAX38913AATD+  (3)`), then optionally its **pins** (blank = all
+  of that part's pins on the net). **Ground** is the return net, or
+  *(ideal return)* for a source or load that returns through an ideal 0 V
+  node.
+- Empty fields fill in from the design, and nothing you typed is
+  overwritten: the voltage from the net name (`+1V8` → 1.8 V), the
+  ground from the part's ground pins, and a regulator's input when the
+  part has exactly one other rail.
+- **Split across nets…** (Loads) shares one part's total current over
+  all its supply rails by how many supply pins each has, e.g. a level
+  shifter on both its VCC(A) and VCC(B) rails.
+- Directives defined in the Altium schematic are listed locked (🔒).
+  **Override** turns one into an editable FYPA copy that replaces it on
+  the next resolve; removing the copy brings the schematic one back.
+- Problems are listed under the tabs. Errors, such as a missing value,
+  pins that aren't on the chosen net, or input = output, must be fixed
+  before **Apply**. Warnings, such as a load on a rail nothing supplies
+  yet, don't block it.
+
+Nothing changes until **Apply**. Series elements (sense resistors,
+ferrites, 0 Ω links) are set up on the **Bridges** tab, and free markers
+dropped on the Heatmap are left as they are.
+
+### Auto setup
+
+**Auto setup…** on the toolbar proposes a whole PDN setup and lets you
+review it before anything changes:
+
+1. **Datasheet folder** (optional). PDFs are matched to parts by part
+   number, from the file name or else the first page, so
+   `INA238AQDGSRQ1` finds `ina238.pdf`. From a datasheet it reads whether
+   a part is a regulator, LDO or switcher, its topology, efficiency,
+   supply / quiescent current and DC resistance or on-resistance. Without
+   a folder it works from the design alone, and those values become
+   estimates.
+2. **Analyse.** The design is read for pin names (`VIN`, `VOUT`, `SW`,
+   `VCC(A)`…), net names (`+1V8` means 1.8 V), part parameters and the
+   power-port symbols on the schematic:
+   - **Regulators**: parts with input and output pins on different rails,
+     or a switch pin whose inductor leads to the output. A part with the
+     same voltage in and out and no switch pin is a load switch: SERIES.
+   - **Sources**: a connector on a rail nothing on the board drives.
+   - **Sinks**: ICs with supply pins (VCC, VDD, VS…) on a rail, one per
+     part and rail.
+   - **Series**: resistors under 1 Ω and ferrite beads between two rails.
+   Parts already set up in the schematic or the editor are left alone.
+3. **Review.** Each suggestion has a tick box, its nets, an editable value
+   (double-click), and for regulators the type and efficiency.
+   **Amber** values are estimates. Rows missing a value (a regulator
+   whose output rail name carries no voltage, say) can't be ticked until
+   you fill it in. Select a row to see why it was suggested, including the
+   datasheet sentence a value came from. **Apply** adds the ticked
+   suggestions as ordinary FYPA editor directives; edit or remove them
+   like any other.
+
+Auto setup only reads the design and proposes values; nothing is solved
+until you press **↻ Resolve**. Datasheet values are typical figures pulled
+from the text, so treat every suggestion as a starting point to check.
 
 ### Navigation and zoom
 
@@ -97,7 +208,7 @@ panned and zoomed independently of the Heatmap viewport:
 | **Scroll vertically** | Mouse wheel (no modifier). |
 | **Scroll horizontally** | **Shift** + mouse wheel. |
 | **Zoom** | **Ctrl** + mouse wheel (around the cursor), or the **+** / **−** toolbar buttons. |
-| **Fit diagram** | **Fit** toolbar button, or **Ctrl+0** while the Topology tab is focused. |
+| **Fit diagram** | **Fit** toolbar button, or **Ctrl+0** while the Topology tab is focused. A tall power tree fits its width and starts at the top; scroll for the rest. |
 | **Pan** | Middle-button drag, or hold **Space** and drag with the left button. |
 | **Pan (keyboard)** | Arrow keys; hold **Shift** or **Ctrl** for larger steps. |
 

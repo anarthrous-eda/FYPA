@@ -215,8 +215,17 @@ def _open_project_file_at(window, path: Path, *, from_recent: bool = False) -> N
 
 
 
-def _open_solution_at(window, path: Path) -> None:
-    """Open a solution ``.pkl`` at *path* without a file dialog."""
+def _open_solution_at(window, path: Path, *, from_recent: bool = False) -> None:
+    """Open a solution ``.pkl`` at *path* without a file dialog.
+
+    A successful load is recorded in the recent list; a failed one opened
+    *from* that list drops its entry (same rule as ``.fypa`` files)."""
+    recent_entry = {"kind": "solution", "path": str(path)}
+
+    def _drop_failed_recent() -> None:
+        if from_recent:
+            _remove_recent_project_entry(recent_entry)
+
     if _reject_if_solve_running(window, title="Load already running"):
         return
     if _reject_if_background_load_running(window, title="Load already running"):
@@ -229,6 +238,7 @@ def _open_solution_at(window, path: Path) -> None:
             window, "Couldn't open solution",
             f"Solution file not found:\n{path}",
         )
+        _drop_failed_recent()
         return
 
     def _work():
@@ -238,21 +248,25 @@ def _open_solution_at(window, path: Path) -> None:
     def _ok(result):
         solution, metadata = result
         if hasattr(window, "_open_viewer_and_close"):
-            window._open_viewer_and_close(solution, metadata)
+            if window._open_viewer_and_close(solution, metadata) is not None:
+                record_recent_project(recent_entry)
             return
-        window._apply_solve_result(
+        ok = window._apply_solve_result(
             solution, metadata, None,
             window._solve_settings,
             window._via_current_warn_a, window._display_percentile_high,
             is_import=True,
             status_done="Solution loaded.",
         )
+        if ok:
+            record_recent_project(recent_entry)
 
     def _err(exc_type, message):
         QMessageBox.critical(
             window, "Couldn't open solution",
             f"Failed to load {path}:\n\n{exc_type}: {message}",
         )
+        _drop_failed_recent()
 
     _run_background_load(
         window, _work, _ok, _err,
@@ -496,17 +510,84 @@ def _open_altium_project_at(
 
 
 
-def _open_recent_project(window, entry: dict) -> None:
-    """Re-open a persisted recent-project entry."""
+def _gerber_import_inputs_from_recent(entry: dict):
+    """Rebuild ``(GerberImportResult, pseudo_prjpcb)`` from a ``gerber``
+    recent entry — the same inputs the import dialogs produced last time,
+    so the re-import skips the picker / mapping / stackup dialogs."""
+    from fypa.gerber.extract import GerberStackupLayer
+    from fypa.gerber.import_ui import GerberImportResult
+
+    def _opt(key: str) -> Path | None:
+        val = entry.get(key)
+        return Path(val) if val else None
+
+    result = GerberImportResult(
+        copper_files={int(lid): Path(p) for lid, p in entry["copper"]},
+        drill_files=[Path(p) for p in entry.get("drill", [])],
+        outline_file=_opt("outline"),
+        silk_top_file=_opt("silk_top"),
+        silk_bot_file=_opt("silk_bot"),
+        ignored_files=[],
+        stackup=[
+            GerberStackupLayer(
+                layer_id=int(s["layer_id"]),
+                name=s["name"],
+                copper_thickness_mm=float(s["copper_thickness_mm"]),
+                dielectric_thickness_mm=float(s["dielectric_thickness_mm"]),
+            )
+            for s in entry["stackup"]
+        ],
+    )
+    folder = Path(entry["folder"])
+    return result, folder / f"{folder.name}.fypa-gerber"
+
+
+
+
+def _open_recent_gerber(window, entry: dict) -> None:
+    """Re-run a recorded Gerber import with its stored layer mapping and
+    stackup. Missing files drop the entry (like a missing ``.PrjPcb``)."""
+    from fypa.viewer.prefs import recent_gerber_missing_files
+    missing = recent_gerber_missing_files(entry)
+    if missing:
+        shown = "\n".join(missing[:8])
+        more = f"\n…and {len(missing) - 8} more" if len(missing) > 8 else ""
+        QMessageBox.critical(
+            window, "Couldn't re-import Gerber files",
+            f"These files are no longer there:\n{shown}{more}\n\n"
+            "Use File > Import Gerber Files… to pick the set again.",
+        )
+        _remove_recent_project_entry(entry)
+        return
+    starter = getattr(window, "_start_gerber_import", None)
+    if starter is None:
+        return
+    result, pseudo = _gerber_import_inputs_from_recent(entry)
+    starter(result, pseudo)
+
+
+
+
+def _open_recent_project(window, entry: dict, *, clean: bool | None = None) -> None:
+    """Re-open a persisted recent-project entry.
+
+    *clean* only affects Altium entries. ``None`` (File > Recent Projects)
+    follows the "re-import recent clean" preference; the launcher's Recent
+    panel passes it explicitly from whichever of its two icons was clicked.
+    """
     kind = entry.get("kind")
     if kind == "fypa":
         _open_project_file_at(window, Path(entry["path"]), from_recent=True)
+    elif kind == "solution":
+        _open_solution_at(window, Path(entry["path"]), from_recent=True)
+    elif kind == "gerber":
+        _open_recent_gerber(window, entry)
     elif kind == "altium":
         pcbdoc = entry.get("pcbdoc_path")
         _open_altium_project_at(
             window,
             Path(entry["prjpcb_path"]),
             Path(pcbdoc) if pcbdoc else None,
-            clean=load_recent_open_clean(),
+            clean=load_recent_open_clean() if clean is None else bool(clean),
             from_recent=True,
         )

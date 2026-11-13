@@ -10,6 +10,26 @@ Resolve), using :func:`fypa.topology.preview.metadata_for_topology`.
 ``fypa.topology.constants`` or ``fypa.topology.net_aliases`` does not load the
 full build pipeline (avoids circular imports with ``fypa.rail_groups``).
 
+## Layouts
+
+`build_topology_model(metadata, layout=...)` has two layouts:
+
+- **`"rows"`** (`rows.py`, the viewer and report default) — one row per power
+  origin. Each SOURCE starts a row; each REGULATOR gets its own row under the
+  row that feeds it, indented by conversion depth. Within a row nets fan out
+  left to right as a tree (no crossings by construction). Connections that
+  leave the row become `TopologyTag`s — `ref` (`→ U6` where a regulator is
+  fed), `feed` (the input net on the regulator's row), `net` (a loop or a
+  second rail on a part drawn elsewhere), `undriven`, `end` (no loads) — each
+  carrying a `target` point the viewer pans to on click. GND ports sit on the
+  symbol's bottom edge with a local ground glyph (`model.gnd_glyphs`); there
+  is no return rail. Rails nothing drives get their own rows; auto-bridges on
+  nets with no PDN role are hidden unless `show_bridges=True`. Invariant:
+  every port ends at a wire endpoint (wired, tagged or grounded). Tests:
+  `tests/test_topology_rows.py`.
+- **`"columns"`** (the API default, "Classic" in the viewer) — the
+  single-chain column layout below. Everything from here down describes it.
+
 ## Pipeline
 
 ```

@@ -9,6 +9,7 @@ from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -36,7 +37,11 @@ from fypa.viewer.diagnostics import (
 )
 from fypa.viewer.display import _DISPLAY_PERCENTILE_HIGH, _VIA_CURRENT_WARN_A
 from fypa.viewer.gerber_import import _GerberImportWorker, _pick_gerber_inputs
-from fypa.viewer.prefs import _record_recent_altium_from_metadata, load_auto_solve_on_import
+from fypa.viewer.prefs import (
+    _record_recent_altium_from_metadata,
+    load_auto_solve_on_import,
+    record_recent_gerber,
+)
 from fypa.viewer.project_open import (
     _altium_import_auto_solve_status_tip,
     _altium_import_clean_status_tip,
@@ -68,8 +73,8 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
     """Minimal launcher window shown when FYPA is invoked with no project.
 
     Has just a File menu (Import Altium Design / Open Project File /
-    Load Solution / Exit) and a centred
-    welcome label. Picking a project runs the same solve worker the main
+    Load Solution / Exit), a centred welcome label, and a collapsible
+    Recent panel down the left edge (:mod:`fypa.viewer.recent_panel`). Picking a project runs the same solve worker the main
     viewer uses; on success, a real :class:`PdnViewer` opens and this
     launcher closes itself.
     """
@@ -80,7 +85,8 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         icon = _load_app_icon()
         if icon is not None:
             self.setWindowIcon(icon)
-        self.resize(720, 520)
+        # Wide enough for the welcome text beside the expanded Recent panel.
+        self.resize(1000, 560)
 
         # --- State the shared Settings-tab builder (_SettingsTabMixin) reads.
         # The launcher has no loaded design, so these are placeholders /
@@ -175,7 +181,18 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         # (General options); the import path reads the persisted pref directly.
         layout.addStretch(1)
         centre.setStyleSheet(f"background-color: {t['bg']};")
-        return centre
+
+        # Collapsible Recent list down the left edge (its own theme-styled
+        # widget, so it sits beside — not inside — the styled welcome area).
+        from fypa.viewer.recent_panel import RecentPanel
+        home = QWidget(self)
+        row = QHBoxLayout(home)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        self._recent_panel = RecentPanel(self, home)
+        row.addWidget(self._recent_panel)
+        row.addWidget(centre, 1)
+        return home
 
     def _refresh_inline_theme(self) -> None:
         """Launcher-side theme refresh, invoked by the shared Settings-tab
@@ -321,6 +338,19 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         if picked is None:
             return
         result, pseudo = picked
+        self._start_gerber_import(result, pseudo)
+
+    def _start_gerber_import(self, result, pseudo) -> None:
+        """Run the off-thread half of a Gerber import for already-chosen
+        inputs — from the picker dialogs above, or replayed from a Recent
+        entry. Records the import in the recent list once the viewer opens."""
+        if _any_gerber_import_running():
+            QMessageBox.information(
+                self, "Import already running",
+                "A previous Gerber import is still finishing in the "
+                "background. Please wait a moment before starting another.",
+            )
+            return
         dlg = QProgressDialog(
             "Starting Gerber import…", "Cancel", 0, 0, self,
         )
@@ -369,10 +399,12 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         def _on_ok(res) -> None:
             stub_solution, metadata, loaded, pf = res
             _cleanup()
-            self._open_viewer_and_close(
+            new_win = self._open_viewer_and_close(
                 stub_solution, metadata,
                 loaded_project=loaded, project=pf,
             )
+            if new_win is not None:
+                record_recent_gerber(result, pseudo)
 
         def _on_fail(msg: str) -> None:
             _cleanup()

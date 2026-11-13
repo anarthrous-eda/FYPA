@@ -118,13 +118,17 @@ class _AttachedPdnMixin:
                 # node, not through copper — only its P terminal can land
                 # on the selected group.
                 two_net = (not ed.single_net) or ed.role == "SERIES"
-                terms = [("P", ed.p_net)]
-                if two_net:
-                    terms.append(("N", ed.n_net))
+                if ed.role == "REGULATOR":
+                    terms = [("OUT_P", ed.p_net), ("OUT_N", ed.n_net),
+                             ("IN_P", ed.in_p_net), ("IN_N", ed.in_n_net)]
+                else:
+                    terms = [("P", ed.p_net)]
+                    if two_net:
+                        terms.append(("N", ed.n_net))
                 hits = [name for name, n in terms if n and n in group]
                 if not hits:
                     continue
-                if ed.role == "SOURCE":
+                if ed.role in ("SOURCE", "REGULATOR"):
                     value, unit = ed.voltage, "V"
                 elif ed.role == "SINK":
                     value, unit = ed.current, "A"

@@ -31,6 +31,11 @@
 <rect x="36" y="52" width="128" height="6" fill="#ff3030"/>
 <text x="44" y="51" fill="#ffffff" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">SOURCE</text>
 <text x="156" y="51" fill="#ffffff" text-anchor="end" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">J1</text>
+<circle class="topo-jump" cx="155" cy="85" r="3" fill="none" stroke="#909090" stroke-width="1.2"/>
+<line x1="156.5" y1="85" x2="160.5" y2="85" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="153.5" y1="85" x2="149.5" y2="85" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="155" y1="86.5" x2="155" y2="90.5" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="155" y1="83.5" x2="155" y2="79.5" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
 <circle cx="164" cy="75" r="5" fill="#ff3030" stroke="#555555" stroke-width="1"/>
 <text x="156" y="78" text-anchor="end" fill="#909090" font-family="Consolas,monospace" font-size="8">VIN</text>
 <circle cx="36" cy="75" r="5" fill="#ff3030" stroke="#555555" stroke-width="1"/>
@@ -40,7 +45,12 @@
 <rect x="264" y="52" width="128" height="6" fill="#ff66ff"/>
 <text x="272" y="51" fill="#ffffff" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">REGULATOR</text>
 <text x="384" y="51" fill="#ffffff" text-anchor="end" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">U2</text>
-<text x="386" y="122" text-anchor="end" fill="#ff7070" font-size="12">⚠</text>
+<text x="270" y="122" text-anchor="start" fill="#ff7070" font-size="12">⚠</text>
+<circle class="topo-jump" cx="383" cy="121" r="3" fill="none" stroke="#909090" stroke-width="1.2"/>
+<line x1="384.5" y1="121" x2="388.5" y2="121" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="381.5" y1="121" x2="377.5" y2="121" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="383" y1="122.5" x2="383" y2="126.5" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="383" y1="119.5" x2="383" y2="115.5" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
 <circle cx="264" cy="75" r="5" fill="#ff66ff" stroke="#555555" stroke-width="1"/>
 <text x="272" y="78" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VIN</text>
 <circle cx="392" cy="75" r="5" fill="#ff66ff" stroke="#555555" stroke-width="1"/>
@@ -63,6 +73,11 @@
 <rect x="720" y="52" width="128" height="6" fill="#3aa8ff"/>
 <text x="728" y="51" fill="#ffffff" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">SINK</text>
 <text x="840" y="51" fill="#ffffff" text-anchor="end" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">U1</text>
+<circle class="topo-jump" cx="839" cy="103" r="3" fill="none" stroke="#909090" stroke-width="1.2"/>
+<line x1="840.5" y1="103" x2="844.5" y2="103" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="837.5" y1="103" x2="833.5" y2="103" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="839" y1="104.5" x2="839" y2="108.5" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
+<line x1="839" y1="101.5" x2="839" y2="97.5" stroke="#909090" stroke-width="1.2" stroke-linecap="round"/>
 <circle cx="720" cy="75" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
 <text x="728" y="78" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD_3V3_PWR</text>
 <circle cx="720" cy="93" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>

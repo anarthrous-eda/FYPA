@@ -246,6 +246,41 @@ def _overlay_ribbon_offsets(polyline, half_w: float, *,
 
 
 
+def _clean_closed_ring(points, *, tol: float = 1e-4,
+                       hairpin_cos: float = -0.999) -> np.ndarray:
+    """Drop degenerate vertices from a closed ring before ribbon offsetting.
+
+    Removes (repeatedly, until stable) the explicit closing duplicate,
+    vertices within ``tol`` of their successor (zero-length edges have no
+    defined normal), and hairpin vertices where the path doubles back on
+    itself (turn within ~2.6° of 180°, ``cos < hairpin_cos``). A hairpin's
+    miter bisector points along the edge rather than across it, so the
+    adjoining quad collapses to zero width at that end -- Altium board
+    outlines carry exactly this: sub-micron duplicate vertices and a short
+    back-tracking spur where an arc meets a straight edge. A zero-area
+    spur contributes nothing to a closed outline, so dropping it is
+    lossless."""
+    pts = np.asarray(points, dtype=np.float64)
+    if pts.ndim != 2 or pts.shape[0] < 3:
+        return pts
+    if np.linalg.norm(pts[0] - pts[-1]) < tol:
+        pts = pts[:-1]
+    while pts.shape[0] >= 3:
+        edges = np.roll(pts, -1, axis=0) - pts
+        elen = np.linalg.norm(edges, axis=1)
+        short = elen < tol
+        if short.any():
+            pts = pts[~short]
+            continue
+        edir = edges / elen[:, None]
+        cos_turn = np.einsum("ij,ij->i", np.roll(edir, 1, axis=0), edir)
+        hairpin = cos_turn < hairpin_cos
+        if not hairpin.any():
+            break
+        pts = pts[~hairpin]
+    return pts
+
+
 def _overlay_outline_tris(polyline, half_w: float, *,
                           closed: bool) -> np.ndarray:
     """Triangulate a thin, uniform-width outline ribbon along a polyline.

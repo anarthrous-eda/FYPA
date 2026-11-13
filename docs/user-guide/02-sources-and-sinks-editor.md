@@ -80,9 +80,18 @@ top.
 
 **Step 2 — Pick the role.**
 
-The **PDN role** dropdown offers `SOURCE`, `SINK`, and `SERIES` (the
-last is only available when a component is selected, since a series
-element bridges two nets and needs a physical part to anchor to).
+The **PDN role** dropdown offers `SOURCE`, `SINK`, `SERIES` and
+`REGULATOR`. The last two are only available when a component is
+selected: a series element bridges two of its pins, and a regulator has
+an input and an output pin.
+
+A **REGULATOR** asks for its output voltage, its **OUT net**, its **IN
+net** and one **GND net** shared by input and output, plus the type:
+`LDO` (input current equals output current) or `SMPS` (input current is
+Vout·Iout / (Vin·η)). For an SMPS give the efficiency in percent and,
+optionally, the topology. Its gain is worked out from the voltage of
+whatever drives the IN net when you re-solve, as for a schematic
+`PDN_REGULATOR_TYPE=SMPS` regulator, including adaptive gain.
 
 **Step 3 — Enter the value.**
 
@@ -93,6 +102,7 @@ The value field's label changes with the role:
 | `SOURCE` | Voltage (V)       | `5`       |
 | `SINK`   | Current (A)       | `0.5`     |
 | `SERIES` | Resistance (Ω)    | `0.01`    |
+| `REGULATOR` | Output (V)     | `1.8`     |
 
 Values are plain numbers in SI units — no suffixes (`mA`, `kΩ`) here, in
 contrast to the schematic parameters. Use `0.5` for 500 mA, `0.01` for

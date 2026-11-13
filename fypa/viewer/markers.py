@@ -13,6 +13,7 @@ from fypa.viewer.display import (
     _VOLTAGE_DROP_MODE,
 )
 from fypa.viewer.mesh_geometry import _sample_cmap_lut
+from fypa.viewer.overlays import _clean_closed_ring
 from fypa.viewer.widgets import _transparency_alpha
 
 
@@ -226,7 +227,13 @@ class _MarkerOverlayMixin:
             self._sync_navlib_frame_bounds()
             return
 
-        ring = np.asarray(points, dtype=np.float64)
+        # Duplicate vertices and back-tracking spurs would give a vertex a
+        # bisector along the edge, tapering that edge's ribbon to nothing.
+        ring = _clean_closed_ring(points)
+        if ring.shape[0] < 3:
+            self._gl_viewer.clear_board_outline()
+            self._sync_navlib_frame_bounds()
+            return
         n = ring.shape[0]
         # Per-vertex mitered offset normal: average of the incoming and
         # outgoing edge normals, scaled so the projected offset matches

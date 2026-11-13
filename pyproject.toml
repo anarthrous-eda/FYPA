@@ -66,6 +66,16 @@ dependencies = [
     # that repeat across page breaks, keep-together blocks. The HTML report
     # needs nothing extra.
     "reportlab==4.4.4",
+
+    # --- Datasheet text for the Topology tab's Auto setup wizard ---
+    # Pure-Python PDF text extraction: identifies regulators / sources /
+    # sinks and their ratings from the user's datasheet folder. Optional at
+    # runtime — without it the wizard uses the design data alone.
+    "pypdf==5.4.0",
+    # AES decryption for pypdf: many vendor datasheets are encrypted against
+    # editing / printing only (readable by anyone), and pypdf can't open
+    # them without a crypto backend.
+    "cryptography==44.0.2",
 ]
 
 [project.optional-dependencies]

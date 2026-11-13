@@ -109,6 +109,22 @@ class EditorDirective:
     # schematic one so they don't both stamp a lumped element. ``None`` for
     # an ordinary editor directive that simply adds a new source / sink.
     overrides_designator: str | None = None
+    # --- REGULATOR only ---------------------------------------------------
+    # A regulator has four terminals: ``p_net`` / ``n_net`` (with ``p_pins``
+    # / ``n_pins``) are its OUTPUT pair, these are its INPUT pair — the
+    # editor-mode equivalent of PDN_IN_P_NET / PDN_IN_N_NET / PDN_IN_*_PINS.
+    # ``in_n_net`` defaults to ``n_net`` when unset. ``voltage`` is the output
+    # voltage. A regulator is always component-bound and two-net.
+    in_p_net: str | None = None
+    in_n_net: str | None = None
+    in_p_pins: list[str] | None = None
+    in_n_pins: list[str] | None = None
+    regulator_type: str | None = None     # "LDO" | "SMPS"
+    efficiency: float | None = None       # SMPS only, 0 < η ≤ 1
+    smps_topology: str | None = None      # BUCK | BOOST | BUCKBOOST | INVERTER
+    # Where the directive came from when a tool proposed it (e.g.
+    # ``"autosetup"``), so the UI can say so. ``None`` = placed by hand.
+    origin: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -122,6 +138,10 @@ class EditorDirective:
                           if self.sense_des is not None else None)
         d["sense_n_des"] = (list(self.sense_n_des)
                             if self.sense_n_des is not None else None)
+        d["in_p_pins"] = (list(self.in_p_pins)
+                          if self.in_p_pins is not None else None)
+        d["in_n_pins"] = (list(self.in_n_pins)
+                          if self.in_n_pins is not None else None)
         return d
 
     @staticmethod
@@ -163,6 +183,17 @@ class EditorDirective:
             min_voltage=(None if d.get("min_voltage") is None
                          else float(d["min_voltage"])),
             overrides_designator=d.get("overrides_designator"),
+            in_p_net=d.get("in_p_net"),
+            in_n_net=d.get("in_n_net"),
+            in_p_pins=cls._coerce_pins(d.get("in_p_pins")),
+            in_n_pins=cls._coerce_pins(d.get("in_n_pins")),
+            regulator_type=(str(d["regulator_type"]).upper()
+                            if d.get("regulator_type") else None),
+            efficiency=(None if d.get("efficiency") is None
+                        else float(d["efficiency"])),
+            smps_topology=(str(d["smps_topology"]).upper()
+                           if d.get("smps_topology") else None),
+            origin=d.get("origin"),
         )
 
 

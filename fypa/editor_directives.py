@@ -303,8 +303,43 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
                      "directive(s) overridden by the editor.", dropped)
 
     applied = 0
+    # Several directives on one part (a load on two rails, a dual-output
+    # regulator) become channels of it, like a schematic PDN1_* / PDN2_*
+    # part — so each gets its own label (U1#1, U1#2) instead of two results
+    # both called U1. That includes an editor directive added to a part the
+    # schematic already sets up for another rail: it numbers on from the
+    # schematic's channels.
+    sch_channels: dict[str, list] = {}
+    for _d in loaded.annotations.directives:
+        if getattr(_d, "designator", None):
+            sch_channels.setdefault(_d.designator.upper(), []).append(
+                getattr(_d, "channel_index", None))
+    by_part: dict[str, list[str]] = {}
+    for _ed in editor_directives:
+        if _ed.kind == "component" and _ed.designator:
+            by_part.setdefault(_ed.designator.upper(), []).append(_ed.id)
+    channel_of: dict[str, int] = {}
+    for _des, ids in by_part.items():
+        existing = sch_channels.get(_des)
+        if len(ids) < 2 and not existing:
+            continue
+        start = max((c for c in existing or () if c is not None), default=0) + 1
+        for i, eid in enumerate(ids):
+            channel_of[eid] = start + i
+    # Regulators are resolved in the loop but built after it: an SMPS needs
+    # its input voltage for the gain, and that comes from whichever source
+    # or regulator feeds its input — possibly another editor directive.
+    pending_regulators: list[tuple] = []
     for ed in editor_directives:
         label = ed.designator or f"editor:{ed.id}"
+        if ed.role == "REGULATOR":
+            terms, reg_warn = _resolve_regulator_terminals(
+                ed, label, _component_center, _resolve_terminal, top_layer)
+            if reg_warn:
+                warnings.append(reg_warn)
+                continue
+            pending_regulators.append((ed, label, terms, channel_of.get(ed.id)))
+            continue
         if ed.role not in ("SOURCE", "SINK", "SERIES"):
             warnings.append(
                 f"{label}: role {ed.role!r} is not supported by the editor "
@@ -460,7 +495,7 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
             spec = SourceSpec(
                 designator=spec_designator, schdoc_name=_EDITOR_SCHDOC,
                 voltage=float(ed.voltage), p=p_term, n=n_term,
-                channel_index=None, return_group=return_group,
+                channel_index=channel_of.get(ed.id), return_group=return_group,
                 sense_p=sense_terms[0], sense_n=sense_terms[1],
             )
         elif ed.role == "SINK":
@@ -473,7 +508,7 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
             spec = SinkSpec(
                 designator=spec_designator, schdoc_name=_EDITOR_SCHDOC,
                 current=float(ed.current), p=p_term, n=n_term,
-                channel_index=None, return_group=return_group,
+                channel_index=channel_of.get(ed.id), return_group=return_group,
                 min_voltage=min_v,
             )
         else:  # SERIES — a lumped resistance bridging the two nets
@@ -491,9 +526,18 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
             spec = ResistorSpec(
                 designator=spec_designator, schdoc_name=_EDITOR_SCHDOC,
                 resistance=float(ed.resistance), p=p_term, n=n_term,
+                channel_index=channel_of.get(ed.id),
             )
         loaded.annotations.directives.append(spec)
         applied += 1
+
+    if pending_regulators:
+        # A regulator's input and output rails are separate return groups'
+        # worth of copper, but SERIES bridges join rails: look supplies up by
+        # the bridged group so a regulator fed through a sense resistor still
+        # finds its source's voltage.
+        applied += _append_editor_regulators(
+            loaded, pending_regulators, _uf_find, warnings)
 
     # Open-loop rails (only sources or only sinks) are detected centrally in
     # :func:`fypa.altium.loader._flag_open_loop_rails`, which runs over the
@@ -505,6 +549,138 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
     log.info("apply_editor_directives: applied %d, skipped %d.",
              applied, len(warnings))
     return warnings
+
+
+_REGULATOR_TYPES = ("LDO", "SMPS")
+_SMPS_TOPOLOGIES = ("BUCK", "BOOST", "BUCKBOOST", "INVERTER")
+
+
+def _resolve_regulator_terminals(ed, label, component_center, resolve_terminal,
+                                 top_layer):
+    """Resolve an editor REGULATOR's four terminals.
+
+    Returns ``((out_p, out_n, in_p, in_n), None)`` or ``(None, warning)``.
+    A regulator is a real part with input and output pins, so it must be
+    component-bound; the return nets default to each other (most regulators
+    share one ground)."""
+    if ed.kind != "component" or not ed.designator:
+        return None, f"{label}: a REGULATOR must be bound to a component; skipped."
+    if ed.voltage is None or ed.voltage <= 0:
+        return None, f"{label}: REGULATOR has no output voltage; skipped."
+    center = component_center(ed.designator)
+    if center is None:
+        return None, (f"{label}: component {ed.designator!r} not found on the "
+                      "board (renamed or deleted); skipped.")
+    out_n_net = ed.n_net or ed.in_n_net
+    in_n_net = ed.in_n_net or ed.n_net
+    wanted = (("OUT net", ed.p_net, ed.p_pins), ("OUT return", out_n_net, ed.n_pins),
+              ("IN net", ed.in_p_net, ed.in_p_pins), ("IN return", in_n_net, ed.in_n_pins))
+    terms = []
+    for what, net, pins in wanted:
+        if not net:
+            return None, f"{label}: REGULATOR {what} is not set; skipped."
+        term = resolve_terminal(net, designator=ed.designator, fallback_xy=center,
+                                fallback_layer_id=top_layer, pin_filter=pins)
+        if term is None:
+            return None, (f"{label}: REGULATOR {what} {net!r} not found on the "
+                          "board; skipped.")
+        terms.append(term)
+    if (ed.p_net or "").upper() == (ed.in_p_net or "").upper():
+        return None, (f"{label}: REGULATOR input and output are both on "
+                      f"{ed.p_net!r}; skipped.")
+    return tuple(terms), None
+
+
+def _append_editor_regulators(loaded, pending, rail_root, warnings) -> int:
+    """Build a RegulatorSpec for each resolved editor regulator.
+
+    Gain follows the schematic rules (:func:`fypa.altium.annotations.
+    _resolve_regulator_gain`): an LDO draws its output current (gain 1); an
+    SMPS draws ``Vout / (Vin · η)`` of it, with ``Vin`` taken from whatever
+    drives the input rail — a source, or another regulator's output, looked
+    up across SERIES bridges via ``rail_root``. The SMPS is marked
+    adaptive-gain eligible like a schematic SMPS without PDN_GAIN, so the
+    solve can refine the gain from the input voltage it actually finds.
+    """
+    from fypa.altium.annotations import RegulatorSpec, SourceSpec
+
+    def _rail(term) -> str | None:
+        name = getattr(term, "requested_net", None)
+        return rail_root(name.upper()) if name else None
+
+    supply: dict[str, float] = {}
+    for d in loaded.annotations.directives:
+        if isinstance(d, SourceSpec):
+            key = _rail(d.p)
+        elif isinstance(d, RegulatorSpec):
+            key = _rail(d.out_p)
+        else:
+            continue
+        if key:
+            supply.setdefault(key, float(d.voltage))
+    # Editor regulators can feed each other: settle output rails first so a
+    # cascade (12 V → 3.3 V → 1.8 V) resolves in any list order.
+    for _ in range(len(pending)):
+        changed = False
+        for ed, _label, terms, _ch in pending:
+            key = _rail(terms[0])
+            if key and key not in supply:
+                supply[key] = float(ed.voltage)
+                changed = True
+        if not changed:
+            break
+
+    count = 0
+    for ed, label, terms, channel in pending:
+        reg_type = (ed.regulator_type or "").upper() or None
+        if reg_type is None:
+            reg_type = "SMPS" if (ed.efficiency or ed.smps_topology) else "LDO"
+            warnings.append(f"{label}: REGULATOR type not set; using {reg_type}.")
+        if reg_type not in _REGULATOR_TYPES:
+            warnings.append(f"{label}: REGULATOR type {reg_type!r} must be LDO "
+                            "or SMPS; skipped.")
+            continue
+        topo = (ed.smps_topology or "").upper() or None
+        if topo is not None and topo not in _SMPS_TOPOLOGIES:
+            warnings.append(f"{label}: SMPS topology {topo!r} is not one of "
+                            f"{', '.join(_SMPS_TOPOLOGIES)}; ignored.")
+            topo = None
+        vout = float(ed.voltage)
+        eff = 1.0
+        adaptive = False
+        if reg_type == "LDO":
+            gain = 1.0
+        else:
+            eff = float(ed.efficiency) if ed.efficiency else 1.0
+            if not (0.0 < eff <= 1.0):
+                warnings.append(f"{label}: efficiency must be in (0, 1], got "
+                                f"{eff}; skipped.")
+                continue
+            if topo == "INVERTER":
+                gain = 1.0 / eff
+            else:
+                adaptive = True
+                vin = supply.get(_rail(terms[2]) or "")
+                if vin and vin > 0:
+                    gain = vout / (vin * eff)
+                else:
+                    gain = 1.0 / eff
+                    warnings.append(
+                        f"{label}: nothing drives the input rail "
+                        f"{ed.in_p_net!r}, so the SMPS gain can't be derived "
+                        "from Vin; starting from 1/η.")
+        loaded.annotations.directives.append(RegulatorSpec(
+            designator=ed.designator, schdoc_name=_EDITOR_SCHDOC,
+            voltage=vout, gain=gain,
+            out_p=terms[0], out_n=terms[1], in_p=terms[2], in_n=terms[3],
+            channel_index=channel,
+            regulator_type=reg_type,
+            efficiency=eff,
+            adaptive_gain_eligible=adaptive,
+            smps_topology=topo,
+        ))
+        count += 1
+    return count
 
 
 # ``p_net`` / ``n_net`` value the editor writes for copper that has no net.
@@ -601,8 +777,20 @@ def has_closed_pdn_loop(loaded, editor_directives, *,
             if ed.resistance is None or ed.resistance <= 0:
                 continue
             role = "bridge"
+        elif ed.role == "REGULATOR":
+            # Like a schematic RegulatorSpec: a source whose terminals tie
+            # its input and output rails into one group.
+            if (ed.voltage is None or ed.kind != "component"
+                    or not ed.p_net or not ed.in_p_net):
+                continue
+            names = [ed.p_net, ed.n_net or ed.in_n_net,
+                     ed.in_p_net, ed.in_n_net or ed.n_net]
+            keys = {k for k in (_net_key(n) for n in names) if k}
+            if len(keys) >= 2:
+                items.append(("source", keys))
+            continue
         else:
-            continue  # REGULATOR etc. — apply_editor_directives skips these
+            continue  # unsupported role — apply_editor_directives skips it
         p_name = ed.p_net
         if p_name == _UNNAMED_NET and p_net_resolver is not None:
             try:
