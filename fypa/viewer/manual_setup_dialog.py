@@ -20,6 +20,7 @@ from __future__ import annotations
 from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QCompleter,
     QDialog,
@@ -43,11 +44,6 @@ from fypa.viewer.theme import _T
 from fypa.viewer.widgets import _esc
 
 _TOPOLOGIES = ("—", "BUCK", "BOOST", "BUCKBOOST", "INVERTER")
-
-
-def _parse_pins(text: str) -> list[str] | None:
-    pins = [p.strip() for p in (text or "").replace(";", ",").split(",") if p.strip()]
-    return pins or None
 
 
 class _NetCombo(QComboBox):
@@ -81,6 +77,83 @@ class _NetCombo(QComboBox):
     def set_net(self, net: str | None) -> None:
         with QSignalBlocker(self):
             self.setEditText(net or "")
+
+    def set_choices(self, nets: list[str], *, placeholder: str = "type to search") -> None:
+        """Replace the offered nets (e.g. only the selected part's nets)."""
+        with QSignalBlocker(self):
+            cur = self.currentText()
+            self.clear()
+            self.addItems(nets)
+            self.completer().model().setStringList(nets)
+            self._valid = set(nets)
+            self.setEditText(cur)
+        self.lineEdit().setPlaceholderText(placeholder)
+
+
+class _PinPicker(QWidget):
+    """"All of its pins on the net", or a hand-picked subset of them.
+
+    Ticking *All* stores ``None`` (every pin of the part on the net — also
+    what you get if the part's pinout changes). Unticking it lists that
+    part's pins on that net, pad and pin name, all ticked to start with;
+    untick the ones the current shouldn't use. ``value()`` is ``None`` for
+    all, else the ticked pads (an empty list means nothing is ticked yet,
+    which validation reports)."""
+
+    changed = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
+        self.all = QCheckBox("All of its pins on the net")
+        self.all.toggled.connect(self._on_all)
+        lay.addWidget(self.all)
+        self.list = QListWidget()
+        self.list.setMaximumHeight(120)
+        self.list.itemChanged.connect(lambda _it: self._emit())
+        lay.addWidget(self.list)
+        self._filling = False
+
+    def set_pins(self, pins: list[tuple[str, str]], selected: list[str] | None,
+                 net: str | None) -> None:
+        """``pins`` is ``[(pad, pin name)]`` of the part on ``net``."""
+        self._filling = True
+        try:
+            n = len(pins)
+            self.all.setText(f"All of its pins on {net}" + (f" ({n})" if n else "")
+                             if net else "All of its pins on the net")
+            self.all.setEnabled(bool(pins))
+            with QSignalBlocker(self.all):
+                self.all.setChecked(selected is None)
+            self.list.clear()
+            chosen = {p.upper() for p in selected} if selected is not None else None
+            for pad, name in pins:
+                label = pad if not name or name == pad else f"{pad}   {name}"
+                it = QListWidgetItem(label)
+                it.setData(Qt.UserRole, pad)
+                it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
+                on = chosen is None or pad.upper() in chosen
+                it.setCheckState(Qt.Checked if on else Qt.Unchecked)
+                self.list.addItem(it)
+            self.list.setVisible(selected is not None and bool(pins))
+        finally:
+            self._filling = False
+
+    def value(self) -> list[str] | None:
+        if self.all.isChecked():
+            return None
+        return [self.list.item(i).data(Qt.UserRole) for i in range(self.list.count())
+                if self.list.item(i).checkState() == Qt.Checked]
+
+    def _on_all(self, checked: bool) -> None:
+        self.list.setVisible(not checked and self.list.count() > 0)
+        self._emit()
+
+    def _emit(self) -> None:
+        if not self._filling:
+            self.changed.emit()
 
 
 class _Editor(QWidget):
@@ -125,12 +198,11 @@ class _Editor(QWidget):
         self.part = QComboBox()
         self.part.activated.connect(self._on_part)
         form.addRow("Part", self.part)
-        self.pins = QLineEdit()
-        self.pins.setPlaceholderText("all of its pins on the net")
-        self.pins.setToolTip("Comma-separated pad numbers, e.g. 1, 2, 5. "
-                             "Blank = every pin of the part on that net.")
-        self.pins.editingFinished.connect(self._on_pins)
-        form.addRow("Pins", self.pins)
+        self.pins = _PinPicker()
+        self.pins.setToolTip("Which of the part's pins on the net carry the "
+                             "current: all of them, or a hand-picked set.")
+        self.pins.changed.connect(self._on_pins)
+        form.addRow("Output pins" if mode == "supply" else "Pins", self.pins)
         self.value = QLineEdit()
         self.value.setPlaceholderText("e.g. 3.3 V" if mode == "supply" else "e.g. 250 mA")
         self.value.editingFinished.connect(self._on_value)
@@ -141,13 +213,16 @@ class _Editor(QWidget):
         self.gnd.setToolTip(f"The return path. {M.IDEAL_RETURN}: an ideal 0 V "
                             "return instead of copper (sources and loads only).")
         form.addRow("Ground", self.gnd)
-        self.in_net = _NetCombo(nets)
+        # The input net is one of the regulator's own nets — filled per part
+        # in load(), so it can't be pointed at a net the part isn't on.
+        self.in_net = _NetCombo([])
+        self.in_net.setToolTip("The regulator's input: one of the selected "
+                               "part's nets (its rails listed first).")
         self.in_net.picked.connect(self._on_in_net)
         self.in_net_label = QLabel("Input net")
         form.addRow(self.in_net_label, self.in_net)
-        self.in_pins = QLineEdit()
-        self.in_pins.setPlaceholderText("all of its pins on the input net")
-        self.in_pins.editingFinished.connect(self._on_in_pins)
+        self.in_pins = _PinPicker()
+        self.in_pins.changed.connect(self._on_in_pins)
         self.in_pins_label = QLabel("Input pins")
         form.addRow(self.in_pins_label, self.in_pins)
         self.eff = QLineEdit()
@@ -198,13 +273,17 @@ class _Editor(QWidget):
             self.type.setCurrentText(M.supply_type(d) if self.mode == "supply" else "Source")
         self.net.set_net(d.p_net)
         self._fill_parts(d)
-        self.pins.setText(", ".join(d.p_pins or []))
+        part = self.view.part(d.designator) if d.designator else None
+        self.pins.set_pins(M.pins_of(part, d.p_net), d.p_pins, d.p_net)
+        self.in_net.set_choices(
+            M.input_net_choices(self.view, part, d.p_net),
+            placeholder="pick the part first" if part is None else "type to search")
         val = d.voltage if self.mode == "supply" else d.current
         self.value.setText(format_value(val, "voltage" if self.mode == "supply"
                                         else "current") if val is not None else "")
         self._fill_ground(d)
         self.in_net.set_net(d.in_p_net)
-        self.in_pins.setText(", ".join(d.in_p_pins or []))
+        self.in_pins.set_pins(M.pins_of(part, d.in_p_net), d.in_p_pins, d.in_p_net)
         self.eff.setText(f"{d.efficiency * 100:g}" if d.efficiency else "")
         with QSignalBlocker(self.topo):
             self.topo.setCurrentText(d.smps_topology or "—")
@@ -282,6 +361,8 @@ class _Editor(QWidget):
         if (d := self._d()) is None or net == d.p_net:
             return
         d.p_net = net
+        if d.in_p_net == net:
+            d.in_p_net = d.in_p_pins = None
         part = self.view.part(d.designator) if d.designator else None
         if part is None or not part.pins_on(net):
             d.designator = None
@@ -295,11 +376,15 @@ class _Editor(QWidget):
         if des and des != d.designator:
             d.designator = des
             d.p_pins = d.in_p_pins = None
+            # The input net must be one of the new part's nets.
+            part = self.view.part(des)
+            if d.in_p_net and (part is None or not part.pins_on(d.in_p_net)):
+                d.in_p_net = None
             self._edited(reload=True)
 
     def _on_pins(self) -> None:
         if (d := self._d()) is not None:
-            d.p_pins = _parse_pins(self.pins.text())
+            d.p_pins = self.pins.value()
             self._edited()
 
     def _on_value(self) -> None:
@@ -325,7 +410,7 @@ class _Editor(QWidget):
 
     def _on_in_pins(self) -> None:
         if (d := self._d()) is not None:
-            d.in_p_pins = _parse_pins(self.in_pins.text())
+            d.in_p_pins = self.in_pins.value()
             self._edited()
 
     def _on_eff(self) -> None:

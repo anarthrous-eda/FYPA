@@ -187,6 +187,37 @@ def ground_choices(view: DesignView, part: Part | None) -> list[str]:
     return seen
 
 
+def pins_of(part: Part | None, net: str | None) -> list[tuple[str, str]]:
+    """``[(pad, pin name)]`` of ``part`` on ``net``, in natural pad order."""
+    if part is None or not net:
+        return []
+    import re
+
+    def key(pad: str) -> list:
+        return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", pad.upper())]
+
+    seen: dict[str, str] = {}
+    for p in part.pins_on(net):
+        seen.setdefault(p.pad, p.name)
+    return [(pad, seen[pad]) for pad in sorted(seen, key=key)]
+
+
+def input_net_choices(view: DesignView, part: Part | None, out_net: str | None) -> list[str]:
+    """A regulator's possible inputs: the part's own nets, not ground and not
+    its output — rails first (named like one / drawn with a power port), then
+    the rest, so a feedback / enable net is still pickable if it really is
+    the input."""
+    if part is None:
+        return []
+    nets = [n for n in part.nets() if n != out_net and not view.is_gnd(n)]
+
+    def rank(n: str) -> tuple:
+        railish = looks_like_rail(n) or n.upper() in view.power_ports
+        return (0 if railish else 1, -len(part.pins_on(n)), n)
+
+    return sorted(nets, key=rank)
+
+
 def other_rails(view: DesignView, part: Part, net: str) -> list[str]:
     """The part's other power rails — named like a rail or drawn with a power
     port — so a bypass / feedback / enable net doesn't count (falling back to
@@ -227,7 +258,14 @@ def autofill(d: EditorDirective, view: DesignView) -> list[str]:
             set_ground(d, g)
             filled.append("ground")
     if d.role == "REGULATOR" and not d.in_p_net:
-        others = other_rails(view, part, net)
+        # The one net on input-named pins (VIN_1…VIN_14 on a module), else the
+        # part's one other rail.
+        from fypa.autosetup.nets import REG_IN_PINS, pin_base
+
+        by_name = {p.net for p in part.pins
+                   if p.net and p.net != net and not view.is_gnd(p.net)
+                   and pin_base(p.name) in REG_IN_PINS}
+        others = sorted(by_name) if by_name else other_rails(view, part, net)
         if len(others) == 1:
             d.in_p_net = others[0]
             filled.append("input")
@@ -434,7 +472,10 @@ def validate(entries: list[Entry], view: DesignView,
 
 
 def _check_pins(err, part: Part, net: str, pins: list[str] | None, what: str) -> None:
+    if pins is None:
+        return   # all of its pins on the net
     if not pins:
+        err(f"tick at least one of its {what} on {net} (or tick All)")
         return
     have = {p.pad.upper() for p in part.pins_on(net)}
     missing = [p for p in pins if p.upper() not in have]

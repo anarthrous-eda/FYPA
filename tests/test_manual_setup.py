@@ -45,12 +45,54 @@ def test_autofill_regulator_input_when_it_has_one_other_rail() -> None:
     assert (d.voltage, d.in_p_net, d.n_net, d.in_n_net) == (1.8, "+3V3", "GND", "GND")
 
 
+def test_autofill_input_from_input_named_pins_among_several_rails() -> None:
+    from fypa.autosetup.design import DesignView, Part, Pin
+
+    mod = Part(designator="U6", logical="U6", params={}, pins=[
+        Pin("1", "VIN_1", "+12V"), Pin("2", "VIN_2", "+12V"),
+        Pin("3", "VOUT_1", "+VDD"), Pin("4", "VDD1", "VDD1"),
+        Pin("5", "V3P3", "V3P3"), Pin("6", "GND", "GND")])
+    view = DesignView(parts=[mod], net_names=["+12V", "+VDD", "VDD1", "V3P3", "GND"])
+    d = M.new_supply()
+    M.set_supply_type(d, "Switcher")
+    d.p_net, d.designator = "+VDD", "U6"
+    M.autofill(d, view)
+    assert d.in_p_net == "+12V"
+
+
 def test_autofill_never_overwrites_what_the_user_set() -> None:
     d = M.new_supply()
     d.p_net, d.designator, d.voltage = "+12V", "J1", 11.5
     M.set_ground(d, M.IDEAL_RETURN)
     assert M.autofill(d, _board()) == []
     assert d.voltage == 11.5 and d.single_net and d.n_net is None
+
+
+def test_input_net_choices_are_the_parts_own_nets_rails_first() -> None:
+    view = _board()
+    u2 = view.part("U2")                    # IN +3V3, OUT +1V8, BYP2, GND
+    assert M.input_net_choices(view, u2, "+1V8") == ["+3V3", "BYP2"]
+    assert M.input_net_choices(view, None, "+1V8") == []
+
+
+def test_pins_of_lists_pad_and_name_in_natural_order() -> None:
+    from fypa.autosetup.design import Part, Pin
+
+    part = Part(designator="U9", logical="U9", params={}, pins=[
+        Pin("10", "VIN_3", "+12V"), Pin("2", "VIN_1", "+12V"), Pin("A1", "VIN_2", "+12V"),
+        Pin("3", "GND", "GND")])
+    assert M.pins_of(part, "+12V") == [("2", "VIN_1"), ("10", "VIN_3"), ("A1", "VIN_2")]
+    assert M.pins_of(part, None) == [] and M.pins_of(None, "+12V") == []
+
+
+def test_custom_pins_with_none_ticked_is_an_error() -> None:
+    d = M.new_load()
+    d.p_net, d.designator, d.current, d.n_net = "+1V8", "U3", 0.1, "GND"
+    d.p_pins = []
+    issues = M.validate([_entry(d)], _board())
+    assert any("tick at least one" in i.text for i in issues if i.level == "error")
+    d.p_pins = None                         # All
+    assert not [i for i in M.validate([_entry(d)], _board()) if i.level == "error"]
 
 
 def test_supply_type_switch_keeps_output_and_clears_regulator_fields() -> None:
