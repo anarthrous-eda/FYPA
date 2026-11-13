@@ -432,7 +432,7 @@ def _sinks(view: DesignView, regulator_ids: set[str], rails: _Rails,
             fact = None
             if facts is not None:
                 fact = facts.supply_current or facts.quiescent
-            if fact is not None:
+            if facts is not None and fact is not None:
                 # A part fed from several rails splits its quoted current.
                 sug.current = float(fact.value) / n_rails
                 sug.reasons.append(_fact_reason(

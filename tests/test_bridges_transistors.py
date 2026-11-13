@@ -608,7 +608,6 @@ def test_a_link_already_changed_here_says_press_resolve(
     """The user disabled R1's auto-bridge: the chain IS broken, but the rows
     come from the last solve. Telling them to break it again was a dead end;
     the message must say the change waits for a rebuild."""
-    import fypa.altium_viewer as V
     from fypa.project_file import EditorDirective
     v = _make_viewer(monkeypatch, [_merged_row()])
     if change == "opt_out":

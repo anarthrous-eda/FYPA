@@ -24,10 +24,10 @@ def qapp():
 
 
 def _q4(**over):
-    kw = dict(kind="component", role="SERIES", designator="Q4",
-              single_net=False, p_net="HS_SNS", n_net="+12V",
-              p_pins=["5"], n_pins=["1", "2", "3"], resistance=700e-6,
-              overrides_designator="Q4")
+    kw = {"kind": "component", "role": "SERIES", "designator": "Q4",
+              "single_net": False, "p_net": "HS_SNS", "n_net": "+12V",
+              "p_pins": ["5"], "n_pins": ["1", "2", "3"], "resistance": 700e-6,
+              "overrides_designator": "Q4"}
     kw.update(over)
     return EditorDirective(**kw)
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable
+from typing import Any
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -43,7 +44,7 @@ def normalise_pn(text: str) -> str:
 
 @dataclass
 class Fact:
-    value: object
+    value: Any
     evidence: str
 
 

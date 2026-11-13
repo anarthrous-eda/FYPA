@@ -16,7 +16,6 @@ import time
 
 import numpy as np
 import pytest
-import shapely
 import shapely.strtree as st
 
 from fypa.viewer.editor.selection import (

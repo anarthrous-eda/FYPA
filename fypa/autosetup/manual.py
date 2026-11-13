@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import copy
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from fypa.autosetup.design import DesignView, Part
@@ -386,7 +387,7 @@ class Issue:
 
 
 def validate(entries: list[Entry], view: DesignView,
-             bridges: list[tuple[str, str]] = ()) -> list[Issue]:
+             bridges: Sequence[tuple[str, str]] = ()) -> list[Issue]:
     issues: list[Issue] = []
     seen: dict[tuple, str] = {}
     for e in entries:

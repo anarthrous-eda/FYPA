@@ -29,6 +29,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 
@@ -232,7 +233,7 @@ class _Copper:
     (layer, net) on a large board — minutes in all with every net's copper.
     """
 
-    def __init__(self, by_layer: dict[str, list[tuple[str, object]]]):
+    def __init__(self, by_layer: dict[str, list[tuple[str, Any]]]):
         self.by_layer = by_layer
         self._index: dict[str, tuple | None] = {}
 

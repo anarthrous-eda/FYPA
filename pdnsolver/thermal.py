@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -101,10 +102,10 @@ class ThermalBoard:
     unknown_of: np.ndarray            # (n_layers, ny, nx) int64
     n_unknowns: int
     problem_layer_map: list[int] = field(default_factory=list)
-    _factor: object = None
+    _factor: Callable[[np.ndarray], np.ndarray] | None = None
     # Called by :meth:`close` to release the factorisation (PARDISO keeps
     # it in MKL memory the garbage collector cannot see).
-    _release: object = None
+    _release: Callable[[], object] | None = None
     # Summary for the log / tests.
     info: dict = field(default_factory=dict)
 
@@ -148,7 +149,7 @@ class ThermalBoard:
         inside_r, inside_c = np.nonzero(self.unknown_of[0] >= 0)
         if inside_r.size == 0:
             return np.full(layer.shape, -1, dtype=np.int64)
-        tree = scipy.spatial.cKDTree(np.column_stack([inside_r, inside_c]))
+        tree = scipy.spatial.KDTree(np.column_stack([inside_r, inside_c]))
         _d, j = tree.query(np.column_stack([row, col]))
         return self.unknown_of[layer, inside_r[j], inside_c[j]]
 
@@ -157,6 +158,8 @@ class ThermalBoard:
     def solve(self, heat_w: np.ndarray) -> np.ndarray:
         """Temperature rise (K) of every unknown for a heat input (W) per
         unknown."""
+        if self._factor is None:
+            raise RuntimeError("thermal board is closed")
         return np.asarray(self._factor(np.asarray(heat_w, dtype=np.float64)))
 
     def rise_for(
@@ -175,6 +178,8 @@ class ThermalBoard:
         ok = u_tri >= 0
         np.add.at(heat, u_tri[ok], np.asarray(tri_power_w)[ok])
         if point_power_w is not None and len(point_power_w):
+            if point_layer is None or point_x is None or point_y is None:
+                raise ValueError("point_power_w needs point_layer, point_x and point_y")
             u_pt = self.unknown_at(point_layer, point_x, point_y)
             okp = u_pt >= 0
             np.add.at(heat, u_pt[okp], np.asarray(point_power_w)[okp])
@@ -378,7 +383,8 @@ def _have_pardiso() -> bool:
         return False
 
 
-def _factorize_spd(A) -> tuple[object, object, str]:
+def _factorize_spd(A) -> tuple[Callable[[np.ndarray], np.ndarray],
+                             Callable[[], object] | None, str]:
     """Factorise the (symmetric positive-definite) board matrix once.
 
     MKL PARDISO when available, in a solver instance of its own so the
