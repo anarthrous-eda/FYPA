@@ -324,6 +324,86 @@ def test_flag_open_loop_skips_one_rail_keeps_other():
     assert by_des["U2"].solve_excluded is True
 
 
+def _two_terminal_source(p_net: int, n_net: int, des: str = "J2") -> SourceSpec:
+    return SourceSpec(designator=des, schdoc_name="s.SchDoc", voltage=12.0,
+                      p=_term(p_net), n=_term(n_net))
+
+
+def test_flag_open_loop_shared_ground_does_not_close_an_unfed_rail():
+    # The bug: J2 sources 12P0V -> GND, a load draws 3P3V -> GND, nothing
+    # supplies 3P3V. Grouping by every touched net joined both rails through
+    # GND, so the load "had a source" and its rail was solved.
+    nets = ["GND", "12P0V", "3P3V"]
+    loaded = _fake_loaded([
+        _two_terminal_source(1, 0, "J2"),
+        _two_terminal_sink(1, 0, "U9"),          # closes 12P0V
+        _two_terminal_sink(2, 0, "U2"),          # 3P3V: nothing supplies it
+    ], nets)
+    warnings = _flag_open_loop_rails(loaded)
+    by_des = {d.designator: d for d in loaded.annotations.directives}
+    assert by_des["U2"].solve_excluded is True
+    assert by_des["J2"].solve_excluded is False and by_des["U9"].solve_excluded is False
+    assert len(warnings) == 1 and "3P3V" in warnings[0] and "no SOURCE" in warnings[0]
+
+
+def test_flag_open_loop_lone_two_net_load_and_source_on_other_rails():
+    # Source on one rail, load on another, both returning to GND: neither
+    # rail carries current.
+    loaded = _fake_loaded([_two_terminal_source(1, 0), _two_terminal_sink(2, 0)],
+                          ["GND", "12P0V", "3P3V"])
+    warnings = _flag_open_loop_rails(loaded)
+    assert all(d.solve_excluded for d in loaded.annotations.directives)
+    assert len(warnings) == 2
+
+
+def _reg_spec(out_net: int, in_net: int, gnd: int, des: str = "U5"):
+    from fypa.altium.annotations import RegulatorSpec
+    return RegulatorSpec(designator=des, schdoc_name="s.SchDoc", voltage=3.3,
+                         gain=1.0, out_p=_term(out_net), out_n=_term(gnd),
+                         in_p=_term(in_net), in_n=_term(gnd))
+
+
+def test_flag_open_loop_regulator_chain_and_cascade():
+    nets = ["GND", "12V", "3V3", "1V8"]
+    # 12V source -> U5 -> 3V3 load: all solved.
+    ok = _fake_loaded([_two_terminal_source(1, 0), _reg_spec(2, 1, 0),
+                       _two_terminal_sink(2, 0)], nets)
+    assert _flag_open_loop_rails(ok) == []
+    # Without the source, the regulator's input is unfed: it and its load drop.
+    unfed = _fake_loaded([_reg_spec(2, 1, 0), _two_terminal_sink(2, 0)], nets)
+    warnings = _flag_open_loop_rails(unfed)
+    assert all(d.solve_excluded for d in unfed.annotations.directives)
+    assert any("Regulator U5: nothing supplies its input rail '12V'" in w
+               for w in warnings)
+    # A regulator with nothing on its output drops, and so does the source
+    # that only fed it.
+    idle = _fake_loaded([_two_terminal_source(1, 0), _reg_spec(2, 1, 0)], nets)
+    warnings = _flag_open_loop_rails(idle)
+    assert all(d.solve_excluded for d in idle.annotations.directives)
+    assert any("nothing draws from its output rail '3V3'" in w for w in warnings)
+
+
+def test_flag_open_loop_series_joins_rails_but_a_shunt_to_ground_is_a_load():
+    from fypa.altium.annotations import ResistorSpec
+    nets = ["GND", "12P0V", "+12V", "SNS"]
+    sense = ResistorSpec(designator="R18", schdoc_name="s.SchDoc", resistance=0.005,
+                         p=_term(2), n=_term(1))
+    # Source on 12P0V feeds a load on +12V through R18.
+    fed = _fake_loaded([_two_terminal_source(1, 0), sense,
+                        _two_terminal_sink(2, 0)], nets)
+    assert _flag_open_loop_rails(fed) == []
+    shunt = ResistorSpec(designator="R3", schdoc_name="s.SchDoc", resistance=0.05,
+                         p=_term(3), n=_term(0))
+    # A source whose only load is a resistor to ground still carries current,
+    # and the shunt must not join SNS to every other GND-returned rail.
+    loaded = _fake_loaded([_two_terminal_source(3, 0, "J3"), shunt,
+                           _two_terminal_sink(2, 0, "U2")], nets)
+    _flag_open_loop_rails(loaded)
+    by_des = {d.designator: d for d in loaded.annotations.directives}
+    assert by_des["J3"].solve_excluded is False
+    assert by_des["U2"].solve_excluded is True
+
+
 # --- PCB parameters + local net resolution ------------------------------------
 
 @dataclass

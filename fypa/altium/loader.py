@@ -4246,11 +4246,11 @@ def _analyze_open_loop_rails(
 ) -> tuple[set[int], list[str]]:
     """Pure open-loop analysis — no mutation.
 
-    Groups directives by union-find over the net indices their terminals
-    touch (a ``ResistorSpec`` (SERIES) carries both terminal nets so its rails
-    are bridged automatically), then flags every group holding only sources
-    (``SourceSpec`` / ``RegulatorSpec``) or only sinks (``SinkSpec``): such a
-    rail can carry no current. Returns ``(excluded_directive_indices,
+    Rails are nets joined by series elements (``ResistorSpec``); return
+    terminals (N / OUT_N / IN_N, normally GND) do not join rails — see
+    :mod:`fypa.open_loop`, which holds the rules: a sink needs its rail
+    supplied by a source (through any regulators), a source needs a load on
+    its rail, a regulator needs both. Returns ``(excluded_directive_indices,
     warnings)``.
 
     Shared by :func:`_flag_open_loop_rails` (which applies the exclusion and
@@ -4259,73 +4259,72 @@ def _analyze_open_loop_rails(
     exact bug where ``is_solveable`` counted a source that the FEM build then
     excluded, producing an empty ``Problem`` and a cryptic mesh failure.
     """
+    from fypa import open_loop as OL
+
     def _net_name(idx: int) -> str:
         return nets[idx].name if 0 <= idx < len(nets) else "?"
 
-    def dir_nets(d) -> set[int]:
-        out: set[int] = set()
-        for term in _directive_terminals(d):
-            for pin in term.pins:
-                if pin.net_index != NO_NET:
-                    out.add(pin.net_index)
-        return out
+    def tnets(term) -> set[int]:
+        if term is None:
+            return set()
+        return {p.net_index for p in term.pins if p.net_index != NO_NET}
 
-    parent: dict[int, int] = {}
+    items: list[OL.Item] = []
+    for d in directives:
+        if isinstance(d, SourceSpec):
+            items.append(OL.Item("source", out=tnets(d.p), ret=tnets(d.n)))
+        elif isinstance(d, SinkSpec):
+            items.append(OL.Item("sink", inp=tnets(d.p), ret=tnets(d.n)))
+        elif isinstance(d, RegulatorSpec):
+            items.append(OL.Item("regulator", out=tnets(d.out_p),
+                                 inp=tnets(d.in_p),
+                                 ret=tnets(d.out_n) | tnets(d.in_n)))
+        elif hasattr(d, "p") and hasattr(d, "n"):   # SERIES and kin
+            items.append(OL.Item("series", out=tnets(d.p), inp=tnets(d.n)))
+        else:
+            items.append(OL.Item("ignore"))
+    dropped, rails = OL.analyse(items)
 
-    def find(x: int) -> int:
-        while parent.setdefault(x, x) != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def union(a: int, b: int) -> None:
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[rb] = ra
-
-    nets_by_dir: list[set[int]] = [dir_nets(d) for d in directives]
-    for ns in nets_by_dir:
-        ordered = sorted(ns)
-        for other in ordered[1:]:
-            union(ordered[0], other)
-
-    # Bucket directives (with their touched nets) by group root.
-    groups: dict[int, list[int]] = {}
-    for i, ns in enumerate(nets_by_dir):
-        if not ns:
-            continue  # unresolved directive — handled elsewhere
-        groups.setdefault(find(min(ns)), []).append(i)
+    def rail_name(nets_of: set[int]) -> str:
+        names: set[str] = set()
+        for root in rails.of(nets_of):
+            names |= {_net_name(n) for n in OL.rail_members(rails, items, root)}
+        return _rail_display_name(names or {_net_name(n) for n in nets_of})
 
     warnings: list[str] = []
-    excluded_idx: set[int] = set()
-    for members in groups.values():
-        has_source = any(
-            isinstance(directives[i], (SourceSpec, RegulatorSpec))
-            for i in members
-        )
-        has_sink = any(isinstance(directives[i], SinkSpec) for i in members)
-        if has_source == has_sink:
-            continue  # both present (solvable) or neither (e.g. SERIES-only)
-        group_nets: set[str] = set()
-        for i in members:
-            group_nets |= {_net_name(n) for n in nets_by_dir[i]}
-        rail = _rail_display_name(group_nets)
-        if has_source and not has_sink:
-            warnings.append(
-                f"Rail {rail!r}: has a SOURCE but no SINK — no current can "
-                f"flow, so this rail will NOT be solved. Add a SINK (load) on "
-                f"this rail to solve it. The source marker is kept on the "
-                f"design."
-            )
+    seen: set[tuple[str, str]] = set()
+    for i in sorted(dropped):
+        d, it, why = directives[i], items[i], dropped[i]
+        if isinstance(d, RegulatorSpec):
+            label = directive_label(d)
+            if why == OL.INPUT_UNFED:
+                msg = (f"Regulator {label}: nothing supplies its input rail "
+                       f"{rail_name(it.inp)!r}, so it and the loads it feeds "
+                       f"will NOT be solved. Add a SOURCE (or a regulator) on "
+                       f"that rail.")
+            else:
+                msg = (f"Regulator {label}: nothing draws from its output rail "
+                       f"{rail_name(it.out)!r}, so no current can flow and it "
+                       f"will NOT be solved. Add a SINK (load) on that rail.")
+            key = ("reg", label)
+        elif isinstance(d, SourceSpec):
+            rail = rail_name(it.out)
+            msg = (f"Rail {rail!r}: has a SOURCE but no SINK — no current can "
+                   f"flow, so this rail will NOT be solved. Add a SINK (load) on "
+                   f"this rail to solve it. The source marker is kept on the "
+                   f"design.")
+            key = ("src", rail)
         else:
-            warnings.append(
-                f"Rail {rail!r}: has a SINK but no SOURCE — no current can "
-                f"flow, so this rail will NOT be solved. Add a SOURCE (supply) "
-                f"on this rail to solve it. The sink marker is kept on the "
-                f"design."
-            )
-        excluded_idx.update(members)
-    return excluded_idx, warnings
+            rail = rail_name(it.inp)
+            msg = (f"Rail {rail!r}: has a SINK but no SOURCE — no current can "
+                   f"flow, so this rail will NOT be solved. Add a SOURCE (supply) "
+                   f"on this rail to solve it. The sink marker is kept on the "
+                   f"design.")
+            key = ("sink", rail)
+        if key not in seen:
+            seen.add(key)
+            warnings.append(msg)
+    return set(dropped), warnings
 
 
 # Designator prefixes for parts that can carry DC between two nets. An IC

@@ -705,10 +705,10 @@ def has_closed_pdn_loop(loaded, editor_directives, *,
       directives the re-solve would skip — unsupported roles, a SOURCE with
       no voltage, a SINK with no current, a SERIES with no positive
       resistance, or a terminal still on unnamed ``"(none)"`` copper;
-    * like :func:`fypa.altium.loader._analyze_open_loop_rails`, it unions
-      the nets each directive touches (a SERIES / ``ResistorSpec`` and a
-      ``RegulatorSpec`` bridge their terminals' rails) and looks for a group
-      with both roles.
+    * like :func:`fypa.altium.loader._analyze_open_loop_rails`, it applies
+      the :mod:`fypa.open_loop` rules — rails joined by series elements but
+      not through return nets, a sink fed by a source (through regulators) —
+      and is true when any sink survives them.
 
     ``p_net_resolver(ed) -> str | None`` may supply a net name for a free
     marker whose ``p_net`` is still ``"(none)"`` — the viewer passes its
@@ -723,7 +723,6 @@ def has_closed_pdn_loop(loaded, editor_directives, *,
         SourceSpec,
     )
     from fypa.altium.extract import NO_NET
-    from fypa.altium.loader import _directive_terminals
 
     extracted = loaded.extracted
     if not extracted.enabled_copper_layer_ids():
@@ -735,8 +734,23 @@ def has_closed_pdn_loop(loaded, editor_directives, *,
             return None
         return str(name).upper()
 
-    # (role, touched-net keys) per directive; role in {source, sink, bridge}.
-    items: list[tuple[str, set[str]]] = []
+    from fypa import open_loop as OL
+
+    def _keys(*names) -> set[str]:
+        return {k for k in (_net_key(n) for n in names) if k}
+
+    def _term_keys(term) -> set[str]:
+        out: set[str] = set()
+        pins = (getattr(term, "pins", None) or ()) if term is not None else ()
+        for pin in pins:
+            idx = pin.net_index
+            if idx != NO_NET and 0 <= idx < len(nets):
+                k = _net_key(getattr(nets[idx], "name", None))
+                if k:
+                    out.add(k)
+        return out
+
+    items: list[OL.Item] = []
 
     override_desigs = {
         ed.overrides_designator for ed in editor_directives
@@ -745,51 +759,34 @@ def has_closed_pdn_loop(loaded, editor_directives, *,
     for d in getattr(loaded.annotations, "directives", ()):
         if getattr(d, "designator", None) in override_desigs:
             continue
-        if isinstance(d, (SourceSpec, RegulatorSpec)):
-            role = "source"
+        if isinstance(d, SourceSpec):
+            items.append(OL.Item("source", out=_term_keys(d.p), ret=_term_keys(d.n)))
         elif isinstance(d, SinkSpec):
-            role = "sink"
+            items.append(OL.Item("sink", inp=_term_keys(d.p), ret=_term_keys(d.n)))
+        elif isinstance(d, RegulatorSpec):
+            items.append(OL.Item("regulator", out=_term_keys(d.out_p),
+                                 inp=_term_keys(d.in_p),
+                                 ret=_term_keys(d.out_n) | _term_keys(d.in_n)))
         elif isinstance(d, ResistorSpec):
-            role = "bridge"
-        else:
-            continue
-        keys: set[str] = set()
-        for term in _directive_terminals(d):
-            for pin in getattr(term, "pins", ()) or ():
-                idx = pin.net_index
-                if idx != NO_NET and 0 <= idx < len(nets):
-                    k = _net_key(getattr(nets[idx], "name", None))
-                    if k:
-                        keys.add(k)
-        if keys:
-            items.append((role, keys))
+            items.append(OL.Item("series", out=_term_keys(d.p), inp=_term_keys(d.n)))
 
     for ed in editor_directives:
-        if ed.role == "SOURCE":
-            if ed.voltage is None:
-                continue
-            role = "source"
-        elif ed.role == "SINK":
-            if ed.current is None:
-                continue
-            role = "sink"
-        elif ed.role == "SERIES":
-            if ed.resistance is None or ed.resistance <= 0:
-                continue
-            role = "bridge"
-        elif ed.role == "REGULATOR":
-            # Like a schematic RegulatorSpec: a source whose terminals tie
-            # its input and output rails into one group.
+        if ed.role == "REGULATOR":
             if (ed.voltage is None or ed.kind != "component"
                     or not ed.p_net or not ed.in_p_net):
                 continue
-            names = [ed.p_net, ed.n_net or ed.in_n_net,
-                     ed.in_p_net, ed.in_n_net or ed.n_net]
-            keys = {k for k in (_net_key(n) for n in names) if k}
-            if len(keys) >= 2:
-                items.append(("source", keys))
+            items.append(OL.Item("regulator", out=_keys(ed.p_net),
+                                 inp=_keys(ed.in_p_net),
+                                 ret=_keys(ed.n_net or ed.in_n_net,
+                                           ed.in_n_net or ed.n_net)))
             continue
-        else:
+        if ed.role == "SOURCE" and ed.voltage is None:
+            continue
+        if ed.role == "SINK" and ed.current is None:
+            continue
+        if ed.role == "SERIES" and (ed.resistance is None or ed.resistance <= 0):
+            continue
+        if ed.role not in ("SOURCE", "SINK", "SERIES"):
             continue  # unsupported role — apply_editor_directives skips it
         p_name = ed.p_net
         if p_name == _UNNAMED_NET and p_net_resolver is not None:
@@ -799,32 +796,20 @@ def has_closed_pdn_loop(loaded, editor_directives, *,
                 log.debug("p_net_resolver failed for %s", ed.id, exc_info=True)
         two_net = ed.role == "SERIES" or not ed.single_net
         names = [p_name] + ([ed.n_net] if two_net else [])
-        keys = {k for k in (_net_key(n) for n in names) if k}
         # A terminal on unnamed copper can't be solved — treat the whole
         # directive as unresolved, as apply_editor_directives drops it.
-        if len(keys) != len(names):
+        if len(_keys(*names)) != len(names):
             continue
-        items.append((role, keys))
+        p, n = _keys(p_name), (_keys(ed.n_net) if two_net else set())
+        if ed.role == "SOURCE":
+            items.append(OL.Item("source", out=p, ret=n))
+        elif ed.role == "SINK":
+            items.append(OL.Item("sink", inp=p, ret=n))
+        else:
+            items.append(OL.Item("series", out=p, inp=n))
 
-    parent: dict[str, str] = {}
-
-    def find(x: str) -> str:
-        while parent.setdefault(x, x) != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    for _role, keys in items:
-        ordered = sorted(keys)
-        for other in ordered[1:]:
-            ra, rb = find(ordered[0]), find(other)
-            if ra != rb:
-                parent[rb] = ra
-
-    roles_by_group: dict[str, set[str]] = {}
-    for role, keys in items:
-        roles_by_group.setdefault(find(min(keys)), set()).add(role)
-    return any({"source", "sink"} <= roles for roles in roles_by_group.values())
+    dropped, _rails = OL.analyse(items)
+    return any(it.kind == "sink" and i not in dropped for i, it in enumerate(items))
 
 
 # (substring of an apply_copper_names warning, short reason for the summary).

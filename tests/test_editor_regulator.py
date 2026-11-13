@@ -116,12 +116,27 @@ def test_bad_regulators_are_skipped_with_a_reason(kw, msg) -> None:
     assert any(msg in w for w in warn), warn
 
 
-def test_regulator_closes_the_loop_between_its_rails() -> None:
+def test_regulator_closes_the_loop_only_when_its_input_is_fed() -> None:
     sink = EditorDirective(kind="component", role="SINK", designator="U3",
                            p_net="+1V8", current=0.5)
     reg = _reg("U2", "+1V8", "+3V3", 1.8, regulator_type="LDO")
-    assert has_closed_pdn_loop(_loaded(), [sink, reg]) is True
+    feed = EditorDirective(kind="component", role="SOURCE", designator="J1",
+                           single_net=False, p_net="+3V3", n_net="GND", voltage=3.3)
+    assert has_closed_pdn_loop(_loaded(), [sink, reg, feed]) is True
+    # Nothing on the regulator's input: no current can flow anywhere.
+    assert has_closed_pdn_loop(_loaded(), [sink, reg]) is False
     assert has_closed_pdn_loop(_loaded(), [sink]) is False
+
+
+def test_resolve_button_ignores_a_load_whose_rail_only_shares_ground() -> None:
+    # The reported case: a schematic-style source on +12V and a manual-setup
+    # load on +3V3, both returning to GND. Nothing supplies +3V3.
+    src = _source()
+    load = EditorDirective(kind="component", role="SINK", designator="U3",
+                           single_net=False, p_net="+1V8", n_net="GND", current=1.0)
+    assert has_closed_pdn_loop(_loaded(), [src, load]) is False
+    feed = _reg("U2", "+1V8", "+12V", 1.8, regulator_type="LDO")
+    assert has_closed_pdn_loop(_loaded(), [src, load, feed]) is True
 
 
 def test_regulator_fields_round_trip_through_the_project_file() -> None:
