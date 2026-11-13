@@ -424,8 +424,9 @@ class _UiBuildMixin:
             "Ignoring layers: all layers rise from one base (relief view "
             "ignoring layer positions), so height is the value alone."
             "\n\n"
-            "Via barrels, current arrows, copper outlines and the mesh "
-            "wireframe are hidden while relief is on."
+            "Layer outlines follow the raised copper edge, so the outline "
+            "colour still shows each copper's layer. Via barrels, current "
+            "arrows and the mesh wireframe are hidden while relief is on."
         )
         _relief_lay.addWidget(self.relief_combo, 1)
         side.addWidget(self.relief_row)

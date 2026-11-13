@@ -83,39 +83,50 @@ class _MarkerOverlayMixin:
         thickness = self._COPPER_THICKNESS_MM if in_3d else 0.0
         pos_chunks: list[np.ndarray] = []
         col_chunks: list[np.ndarray] = []
+        # Per-vertex (value, weight) for the relief-view lift, parallel to
+        # pos_chunks. Pushed only while relief is on; see set_outlines.
+        rel_chunks: list[np.ndarray] = []
+        relief_on = self._gl_viewer.relief_z_span() > 0.0
 
         def _emit(segs_xy: np.ndarray, z_top: float,
-                  rgb: np.ndarray) -> None:
+                  rgb: np.ndarray,
+                  values: np.ndarray | None = None) -> None:
+            """``values`` (gl-scaled, one per vertex) lifts the outline
+            with the relief surface; ``None`` keeps it flat."""
             if segs_xy.size == 0:
                 return
-            segs_top = np.empty((segs_xy.shape[0], 3), dtype=np.float32)
-            segs_top[:, :2] = segs_xy
-            segs_top[:, 2] = z_top
-            pos_chunks.append(segs_top)
-            col_chunks.append(np.broadcast_to(rgb,
-                                              (segs_xy.shape[0], 3)).copy())
+            n = segs_xy.shape[0]
+            rel = np.zeros((n, 2), dtype=np.float32)
+            if values is not None:
+                rel[:, 0] = values
+                rel[:, 1] = 1.0
+            faces = [z_top]
             if thickness > 0.0:
-                segs_bot = np.empty((segs_xy.shape[0], 3), dtype=np.float32)
-                segs_bot[:, :2] = segs_xy
-                segs_bot[:, 2] = z_top - thickness
-                pos_chunks.append(segs_bot)
-                col_chunks.append(
-                    np.broadcast_to(rgb, (segs_xy.shape[0], 3)).copy()
-                )
+                faces.append(z_top - thickness)
+            for z in faces:
+                segs = np.empty((n, 3), dtype=np.float32)
+                segs[:, :2] = segs_xy
+                segs[:, 2] = z
+                pos_chunks.append(segs)
+                col_chunks.append(np.broadcast_to(rgb, (n, 3)).copy())
+                rel_chunks.append(rel)
 
-        # Relief view lifts the solved copper off its layer plane, so its
-        # flat outline would trace the wrong place; stub outlines stay, as
-        # the (unsolved) stub copper itself is not lifted.
-        if (self._outlines_btn.isOn()
-                and self._gl_viewer.relief_z_span() <= 0.0):
+        if self._outlines_btn.isOn():
             for lp in layer_probes:
-                segs = lp.get("outline_segments")
-                if segs is None or segs.size == 0:
-                    continue
                 phys = lp.get("physical", "")
                 qc = QColor(self._layer_color_for(phys))
                 rgb = np.array([qc.redF(), qc.greenF(), qc.blueF()],
                                dtype=np.float32)
+                if relief_on:
+                    # Relief view: trace the mesh's own boundary edges,
+                    # whose ends carry the exact values the surface is
+                    # lifted by, so the outline rides the copper edge.
+                    segs, vals = self._relief_outline_segments(lp)
+                    _emit(segs, self._layer_z_for(phys), rgb, vals)
+                    continue
+                segs = lp.get("outline_segments")
+                if segs is None or segs.size == 0:
+                    continue
                 _emit(segs, self._layer_z_for(phys), rgb)
 
             # Stub copper has no FEM solution and is absent from
@@ -158,9 +169,36 @@ class _MarkerOverlayMixin:
             self._gl_viewer.set_outlines(
                 np.concatenate(pos_chunks, axis=0),
                 np.concatenate(col_chunks, axis=0),
+                np.concatenate(rel_chunks, axis=0) if relief_on else None,
             )
         else:
             self._gl_viewer.clear_outlines()
+
+    def _relief_outline_segments(
+        self, lp: dict,
+    ) -> tuple[np.ndarray, np.ndarray | None]:
+        """Relief-view outline of one layer probe: ``(segs, values)`` with
+        ``segs`` the ``(2E, 2)`` GL_LINES endpoints of the mesh's boundary
+        edges and ``values`` their per-vertex values in the same shifted,
+        gl-scaled space as the mesh (:meth:`_render_impl`), so the line
+        shader lifts them exactly as it lifts the copper."""
+        empty = np.empty((0, 2), dtype=np.float32)
+        layer_index = lp.get("layer_index")
+        if layer_index is None:
+            return empty, None
+        edges = self._layer_boundary_edges(layer_index)
+        if edges.size == 0:
+            return empty, None
+        geom = self._layer_geometry(layer_index)
+        idx = edges.ravel()
+        segs = np.empty((idx.size, 2), dtype=np.float32)
+        segs[:, 0] = geom["xs"][idx]
+        segs[:, 1] = geom["ys"][idx]
+        vs = np.asarray(lp.get("values"), dtype=np.float64)
+        if vs.size != geom["xs"].size:
+            return segs, None          # misaligned: draw it flat
+        vals = vs[idx] - float(lp.get("value_offset", 0.0))
+        return segs, np.asarray(self._gl_scale(vals), dtype=np.float32)
 
     # Half-width of the board-outline ribbon in mm. 0.2 mm reads as a
     # bold accent at typical board zooms without obscuring fine copper

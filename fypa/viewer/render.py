@@ -768,6 +768,37 @@ class _RenderMixin:
         self._layer_geom_cache[layer_index] = geom
         return geom
 
+    def _layer_boundary_edges(self, layer_index: int) -> np.ndarray:
+        """``(E, 2)`` vertex-index pairs (into the layer's ``xs`` / ``ys`` /
+        ``vs``) of the FEM mesh's boundary edges — edges used by exactly
+        one triangle, i.e. the copper's outer edge and its holes as the
+        mesh actually draws them.
+
+        The relief view outlines the copper with these instead of the
+        shapely outline: each end is a mesh vertex with a known value, so
+        the outline can be lifted exactly like the surface (linear along
+        the edge, just as the triangle edge is) with no resampling.
+        Built lazily — only the relief view needs it — and cached on the
+        layer's geometry entry."""
+        geom = self._layer_geometry(layer_index)
+        cached = geom.get("_boundary_edges")
+        if cached is not None:
+            return cached
+        tris = np.asarray(geom["tris"], dtype=np.int64)
+        if tris.size == 0:
+            edges = np.empty((0, 2), dtype=np.int64)
+        else:
+            e = np.concatenate(
+                (tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]))
+            e.sort(axis=1)
+            n = int(tris.max()) + 1
+            _, first, counts = np.unique(e[:, 0] * n + e[:, 1],
+                                         return_index=True,
+                                         return_counts=True)
+            edges = e[first[counts == 1]]
+        geom["_boundary_edges"] = edges
+        return edges
+
     def _layer_vectors(self, layer_index: int) -> dict | None:
         """Build (and cache) the per-triangle current-density vector
         ``J = -sigma * grad V`` for one padne layer.

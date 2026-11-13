@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
+
 import pytest
 
 pytest.importorskip("PySide6")
@@ -269,3 +271,61 @@ def test_hover_picks_nearest_surface_not_top_layer(viewer):
     assert v == pytest.approx(8.0)
     # Hit point on the bottom surface: z = 1.56 → x = 5 + 0.2 * 1.56.
     assert viewer._last_probe_3d_xy[0] == pytest.approx(5.312, abs=1e-3)
+
+
+def _square_with_hole_mesh():
+    """A 3x3 grid of unit squares (2 triangles each) with the centre
+    square removed: outer boundary 12 edges, hole boundary 4 edges."""
+    xs, ys = np.meshgrid(np.arange(4.0), np.arange(4.0))
+    xs = xs.ravel()
+    ys = ys.ravel()
+    tris = []
+    for j in range(3):
+        for i in range(3):
+            if (i, j) == (1, 1):
+                continue
+            a = j * 4 + i
+            b, c, d = a + 1, a + 4, a + 5
+            tris += [(a, b, d), (a, d, c)]
+    return xs, ys, np.array(tris, dtype=np.int32)
+
+
+def test_boundary_edges_are_outer_edge_and_holes(viewer):
+    xs, ys, tris = _square_with_hole_mesh()
+    viewer._layer_geometry = lambda _i: geom
+    geom = {"xs": xs, "ys": ys, "tris": tris}
+    edges = viewer._layer_boundary_edges(0)
+    assert edges.shape == (16, 2)
+    # Every boundary edge is a unit-length grid edge, none is a diagonal.
+    lengths = np.hypot(xs[edges[:, 0]] - xs[edges[:, 1]],
+                       ys[edges[:, 0]] - ys[edges[:, 1]])
+    assert np.allclose(lengths, 1.0)
+    # The hole's four edges are in there.
+    hole = {(5, 6), (6, 10), (9, 10), (5, 9)}
+    assert hole <= {tuple(e) for e in edges.tolist()}
+    # Cached on the geometry entry.
+    assert viewer._layer_boundary_edges(0) is edges
+
+
+def test_relief_outline_values_match_mesh_values(viewer):
+    xs, ys, tris = _square_with_hole_mesh()
+    geom = {"xs": xs, "ys": ys, "tris": tris}
+    viewer._layer_geometry = lambda _i: geom
+    vs = xs * 10.0 + ys                      # distinct value per vertex
+    lp = {"layer_index": 0, "values": vs, "value_offset": 2.5}
+    segs, vals = viewer._relief_outline_segments(lp)
+    assert segs.shape == (32, 2) and vals.shape == (32,)
+    # Each endpoint carries its own vertex's (shifted) value, so the
+    # shader lifts the outline exactly as it lifts the copper there.
+    expect = segs[:, 0] * 10.0 + segs[:, 1] - 2.5
+    assert np.allclose(vals, expect)
+    # Log scale: values go through the same transform as the mesh's.
+    viewer._log_active = True
+    viewer._log_floor = 1e-6
+    _, log_vals = viewer._relief_outline_segments(lp)
+    assert np.allclose(log_vals, np.log10(np.maximum(expect, 1e-6)),
+                       atol=1e-6)
+    # Values that don't line up with the mesh → drawn flat, not wrong.
+    lp_bad = dict(lp, values=vs[:-1])
+    _, none_vals = viewer._relief_outline_segments(lp_bad)
+    assert none_vals is None

@@ -192,9 +192,12 @@ no one set of properties applies across roles.</p>
         this variant, and no-current stub copper sits on the base. The
         hover readout still names the layer.</li>
     </ul>
-    Via barrels, current arrows, copper outlines and the mesh wireframe
-    are hidden while relief is on (they sit on the flat layer planes); not
-    available in Via Current mode.</li>
+    Layer outlines (<kbd>O</kbd>) follow the raised copper edge, so the
+    outline colour still shows which layer each piece of copper is on
+    &mdash; the main cue in the ignoring-layers variant. Via barrels,
+    current arrows and the mesh wireframe are hidden while relief is on
+    (they sit on the flat layer planes); not available in Via Current
+    mode.</li>
   <li><b>Show current arrows</b> &mdash; white arrows on a regular
     pixel-spaced grid showing the direction of current flow; shaft
     length scales with &radic;|J| so weak and strong currents are

@@ -214,14 +214,31 @@ void main() {
 # constant pixel width. glLineWidth past 1.0 is rejected on Core profile
 # drivers, so the width has to be real geometry — and doing it per-segment
 # in clip space keeps it a constant pixel width at any zoom.
+#
+# Relief view: the outlines follow the lifted copper with the same mapping as
+# the mesh vertex shader. a_relief = (value, weight): ``value`` is in the
+# same (gl-scaled) space as the mesh values and ``weight`` is 1 for an
+# outline of solved copper, 0 for one that must stay flat (stub copper).
+# The pivot / scale squash of the ignoring-layers relief applies to every
+# vertex (identity otherwise), so flat outlines still land on the base.
 _THICK_LINE_VERTEX_SHADER_SRC = """
 #version 330 core
 layout(location = 0) in vec3 a_position;
 layout(location = 1) in vec3 a_color;
+layout(location = 2) in vec2 a_relief;
 uniform mat4 u_mvp;
+uniform vec2 u_levels;
+uniform float u_relief;
+uniform float u_z_pivot;
+uniform float u_z_scale;
 out vec3 v_color;
 void main() {
-    gl_Position = u_mvp * vec4(a_position, 1.0);
+    float span = max(u_levels.y - u_levels.x, 1e-30);
+    float t = clamp((a_relief.x - u_levels.x) / span, 0.0, 1.0);
+    vec3 p = a_position;
+    p.z = u_z_pivot + u_z_scale * (p.z - u_z_pivot)
+          + u_relief * t * a_relief.y;
+    gl_Position = u_mvp * vec4(p, 1.0);
     v_color = a_color;
 }
 """
@@ -660,6 +677,8 @@ class GLMeshViewer(QOpenGLWidget):
         self._line_vao: QOpenGLVertexArrayObject | None = None
         self._line_pos_vbo: QOpenGLBuffer | None = None
         self._line_col_vbo: QOpenGLBuffer | None = None
+        # Per-vertex (value, weight) for the relief-view lift (attribute 2).
+        self._line_relief_vbo: QOpenGLBuffer | None = None
         self._line_u_mvp_loc: int = -1
         # Thick-line program — the outline batch's geometry shader widens
         # each GL_LINES segment to a constant pixel width (the _line_vao /
@@ -740,6 +759,10 @@ class GLMeshViewer(QOpenGLWidget):
         self._n_line_vertices: int = 0
         self._pending_line_positions: np.ndarray | None = None
         self._pending_line_colors: np.ndarray | None = None
+        # Relief (value, weight) per outline vertex; only used while it
+        # matches _n_line_vertices, else attribute 2 is fed (0, 0) = flat.
+        self._n_line_relief: int = 0
+        self._pending_line_relief: np.ndarray | None = None
         # Via cylinder triangles batch (GL_TRIANGLES). Vertex triples
         # (every 3 = 1 triangle). Drawn in 3D mode only.
         self._n_cyl_vertices: int = 0
@@ -1622,7 +1645,8 @@ class GLMeshViewer(QOpenGLWidget):
         self.update()
 
     def set_outlines(self, positions: np.ndarray,
-                     colors: np.ndarray) -> None:
+                     colors: np.ndarray,
+                     relief: np.ndarray | None = None) -> None:
         """Push a batch of outline line segments to the GPU.
 
         ``positions`` is an (N, 2) OR (N, 3) float array; vertices come
@@ -1632,6 +1656,12 @@ class GLMeshViewer(QOpenGLWidget):
 
         The segments are widened to a visible line at draw time by the
         thick-line geometry shader (see :meth:`_draw_lines`).
+
+        ``relief`` is an optional (N, 2) float array of per-vertex
+        ``(value, weight)`` for the relief view: ``value`` in the same
+        space as :meth:`set_values` (so :meth:`set_levels` re-lifts the
+        outline for free), ``weight`` 1 to follow the lifted copper or 0
+        to stay flat. ``None`` draws every vertex flat.
         """
         pos2_or_3 = np.ascontiguousarray(positions, dtype=np.float32)
         if pos2_or_3.ndim != 2 or pos2_or_3.shape[1] not in (2, 3):
@@ -1647,9 +1677,17 @@ class GLMeshViewer(QOpenGLWidget):
             raise ValueError("colors must be (N, 3)")
         if pos.shape[0] != col.shape[0]:
             raise ValueError("positions and colors length mismatch")
+        if relief is not None:
+            rel = np.ascontiguousarray(relief, dtype=np.float32)
+            if rel.shape != (pos.shape[0], 2):
+                raise ValueError("relief must be (N, 2) matching positions")
+        else:
+            rel = np.zeros((0, 2), dtype=np.float32)
         self._pending_line_positions = pos
         self._pending_line_colors = col
+        self._pending_line_relief = rel
         self._n_line_vertices = pos.shape[0]
+        self._n_line_relief = rel.shape[0]
         self.update()
 
     def clear_outlines(self) -> None:
@@ -1658,6 +1696,8 @@ class GLMeshViewer(QOpenGLWidget):
         self._n_line_vertices = 0
         self._pending_line_positions = None
         self._pending_line_colors = None
+        self._n_line_relief = 0
+        self._pending_line_relief = None
         self.update()
 
     def set_cylinders(self, positions: np.ndarray,
@@ -2768,6 +2808,12 @@ class GLMeshViewer(QOpenGLWidget):
         self._thick_u_mvp_loc = thick_prog.uniformLocation("u_mvp")
         self._thick_u_viewport_loc = thick_prog.uniformLocation("u_viewport")
         self._thick_u_half_px_loc = thick_prog.uniformLocation("u_half_px")
+        self._thick_u_levels_loc = thick_prog.uniformLocation("u_levels")
+        self._thick_u_relief_loc = thick_prog.uniformLocation("u_relief")
+        self._thick_u_z_pivot_loc = thick_prog.uniformLocation("u_z_pivot")
+        self._thick_u_z_scale_loc = thick_prog.uniformLocation("u_z_scale")
+        self._line_relief_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
+        self._line_relief_vbo.create()
 
         # Via cylinder VAO/VBOs — share the line shader.
         self._cyl_vao = QOpenGLVertexArrayObject()
@@ -2879,6 +2925,8 @@ class GLMeshViewer(QOpenGLWidget):
             self._n_neutral = 0
         if self._pending_line_positions is None:
             self._n_line_vertices = 0
+        if self._pending_line_relief is None:
+            self._n_line_relief = 0
         if self._pending_cyl_positions is None:
             self._n_cyl_vertices = 0
         if self._pending_arrow_positions is None:
@@ -3247,6 +3295,15 @@ class GLMeshViewer(QOpenGLWidget):
             )
             self._line_col_vbo.release()
             self._pending_line_colors = None
+        if self._pending_line_relief is not None:
+            if self._pending_line_relief.size:
+                self._line_relief_vbo.bind()
+                self._line_relief_vbo.allocate(
+                    self._pending_line_relief.tobytes(),
+                    self._pending_line_relief.nbytes,
+                )
+                self._line_relief_vbo.release()
+            self._pending_line_relief = None
         if self._pending_cyl_positions is not None:
             self._cyl_pos_vbo.bind()
             self._cyl_pos_vbo.allocate(
@@ -3500,6 +3557,16 @@ class GLMeshViewer(QOpenGLWidget):
                        float(max(1.0, self.height() * dpr)))
         GL.glUniform1f(self._thick_u_half_px_loc,
                        float(_OUTLINE_WIDTH_PX) * 0.5)
+        # Relief lift — the same uniforms and mapping as _draw_mesh, so the
+        # outline stays on the lifted copper edge (identity when off).
+        GL.glUniform2f(self._thick_u_levels_loc,
+                       float(self._levels[0]), float(self._levels[1]))
+        GL.glUniform1f(self._thick_u_relief_loc,
+                       float(self.relief_z_span()))
+        GL.glUniform1f(self._thick_u_z_pivot_loc,
+                       float(self._relief_pivot_z))
+        GL.glUniform1f(self._thick_u_z_scale_loc,
+                       float(self._relief_layer_scale()))
 
         self._line_vao.bind()
         self._line_pos_vbo.bind()
@@ -3510,11 +3577,23 @@ class GLMeshViewer(QOpenGLWidget):
         GL.glEnableVertexAttribArray(1)
         GL.glVertexAttribPointer(1, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
         self._line_col_vbo.release()
+        use_relief = (self._n_line_relief == self._n_line_vertices
+                      and self._n_line_relief > 0)
+        if use_relief:
+            self._line_relief_vbo.bind()
+            GL.glEnableVertexAttribArray(2)
+            GL.glVertexAttribPointer(2, 2, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
+            self._line_relief_vbo.release()
+        else:
+            GL.glDisableVertexAttribArray(2)
+            GL.glVertexAttrib2f(2, 0.0, 0.0)
 
         GL.glDrawArrays(GL.GL_LINES, 0, self._n_line_vertices)
 
         GL.glDisableVertexAttribArray(0)
         GL.glDisableVertexAttribArray(1)
+        if use_relief:
+            GL.glDisableVertexAttribArray(2)
         self._line_vao.release()
         prog.release()
 

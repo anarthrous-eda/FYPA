@@ -50,6 +50,45 @@ class TopologyNode:
     bounds: tuple[float, float, float, float] = (0, 0, 0, 0)
     jump_row: JumpRowDict | None = None
     sections: list[NodeSection] = field(default_factory=list)
+    # Rows layout: a one-line chip (designator · value) instead of a full
+    # symbol — used for 0 Ω auto-bridges.
+    compact: bool = False
+    value_str: str = ""
+
+
+@dataclass
+class TopologyTag:
+    """Power-port tag (rows layout): a net that continues somewhere else.
+
+    Drawn as a pentagon pointing right (the power-flow direction). ``x``/``y``
+    are the body's left edge and vertical centre. ``target`` is the diagram
+    point the viewer pans to when the tag is clicked (the other end of the
+    connection), ``None`` when there is nowhere to go.
+    """
+
+    net: str
+    text: str
+    kind: str  # "net" | "feed" | "ref" | "undriven"
+    x: float
+    y: float
+    width: float
+    height: float
+    tooltip: str = ""
+    target: tuple[float, float] | None = None
+    target_node: str = ""
+
+
+@dataclass
+class TopologyBand:
+    """Header line above one row of the rows layout."""
+
+    title: str
+    subtitle: str
+    x: float
+    y: float
+    width: float
+    kind: str  # "source" | "regulator" | "undriven" | "bridges"
+    depth: int = 0
 
 
 @dataclass
@@ -81,6 +120,14 @@ class TopologyModel:
     height: float = 200.0
     gnd_bus_y: float | None = None
     gnd_symbol_x: float | None = None
+    # "columns" (classic single-row flow) or "rows" (one row per power origin).
+    layout: str = "columns"
+    tags: list[TopologyTag] = field(default_factory=list)
+    bands: list[TopologyBand] = field(default_factory=list)
+    # Rows layout: local ground symbols, as (x, y) of the symbol's top.
+    gnd_glyphs: list[tuple[float, float]] = field(default_factory=list)
+    # Rows layout: one-line notes drawn under the diagram (e.g. hidden items).
+    notes: list[str] = field(default_factory=list)
 
     @property
     def components(self) -> list[TopologyNode]:
