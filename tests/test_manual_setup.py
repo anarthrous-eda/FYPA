@@ -185,3 +185,26 @@ def test_schematic_rows_are_locked_and_override_round_trips() -> None:
     assert j1.single_net and j1.current == 10.0
     # An existing override hides the schematic row.
     assert len(M.schematic_entries(md, [u6])) == 1
+
+
+def test_preset_from_classifier_pick_fills_the_regulator() -> None:
+    from fypa.autosetup import candidates_for_net, suggest
+
+    view = _board()
+    pick = candidates_for_net(view, suggest(view), "+3V3", "REGULATOR")[0]
+    d = M.preset(view, "+3V3", "REGULATOR", pick)
+    assert (d.role, d.designator, d.p_net, d.in_p_net, d.n_net) == (
+        "REGULATOR", "U1", "+3V3", "+12V", "GND")
+    assert d.voltage == 3.3 and M.supply_type(d) == "Switcher"
+
+
+def test_preset_without_a_pick_sets_role_and_net_only() -> None:
+    view = _board()
+    src = M.preset(view, "+12V", "SOURCE")
+    assert (src.role, src.p_net, src.voltage, src.designator) == (
+        "SOURCE", "+12V", 12.0, None)               # two parts: user picks
+    sink = M.preset(view, "+3V3", "SINK")
+    assert sink.role == "SINK" and sink.p_net == "+3V3"
+    assert sink.designator and sink.current is None  # value left to the user
+    reg = M.preset(view, "+3V3", "REGULATOR")
+    assert reg.role == "REGULATOR" and M.supply_type(reg) == "LDO"

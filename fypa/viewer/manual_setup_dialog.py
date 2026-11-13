@@ -612,7 +612,10 @@ class _RolePage(QWidget):
 
 
 class ManualSetupDialog(QDialog):
-    def __init__(self, parent, *, view, editor_directives, metadata) -> None:
+    def __init__(self, parent, *, view, editor_directives, metadata,
+                 preset=None) -> None:
+        """``preset`` is a new directive (see :func:`M.preset`) to add and
+        open straight away — the Topology tab's click-to-add on a tag."""
         super().__init__(parent)
         self.setWindowTitle("Manual setup — sources, regulators and loads")
         self.resize(1040, 680)
@@ -629,6 +632,8 @@ class ManualSetupDialog(QDialog):
                        and m.get("schdoc") not in ("(editor)", "(auto-bridge)")), None)
             e.schematic = md
         self.entries += M.schematic_entries(metadata, editor_directives)
+        if preset is not None:
+            self.entries.append(M.Entry(directive=preset))
         self._free = sum(1 for d in editor_directives
                          if d.kind == "free" and d.role != "SERIES")
 
@@ -670,6 +675,13 @@ class ManualSetupDialog(QDialog):
         btns.addWidget(cancel)
         btns.addWidget(self.apply_btn)
         lay.addLayout(btns)
+        if preset is not None:
+            page = self.loads if preset.role == "SINK" else self.supplies
+            self.tabs.setCurrentWidget(page)
+            page.refresh(select_id=preset.id)
+            ed = page.editor
+            # Focus whatever is still to fill in: the part, else the value.
+            (ed.part if not preset.designator else ed.value).setFocus()
         self._revalidate()
 
     def _revalidate(self) -> None:

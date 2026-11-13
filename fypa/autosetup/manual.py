@@ -273,6 +273,45 @@ def autofill(d: EditorDirective, view: DesignView) -> list[str]:
     return filled
 
 
+def preset(view: DesignView, net: str, role: str, suggestion=None) -> EditorDirective:
+    """New supply / load on ``net`` for the Topology tab's click-to-add.
+
+    ``role`` is SOURCE, REGULATOR (output on ``net``) or SINK. A classifier
+    ``suggestion`` for that net (an auto-setup
+    :class:`~fypa.autosetup.classify.Suggestion`) supplies the part and its
+    values; without one only the net is set and :func:`autofill` does the
+    rest (it picks the part itself when there's one obvious choice)."""
+    d = new_load() if role == "SINK" else new_supply()
+    if role == "REGULATOR":
+        set_supply_type(d, "LDO")
+    d.p_net = net
+    s = suggestion
+    if s is not None and s.role == role and s.p_net == net:
+        part = view.part(s.designator)
+        # Kept even when the part has no pin on the net: a buck's output
+        # is the far side of its inductor.
+        if part is not None:
+            d.designator = part.designator
+            if role == "SINK":
+                d.current = s.current
+            else:
+                d.voltage = s.voltage
+            if role == "REGULATOR":
+                set_supply_type(d, "Switcher" if (s.regulator_type or "").upper() == "SMPS"
+                                else "LDO")
+                if s.in_p_net and s.in_p_net != net and part.pins_on(s.in_p_net):
+                    d.in_p_net = s.in_p_net
+                if d.regulator_type == "SMPS":
+                    d.efficiency = s.efficiency
+                    d.smps_topology = s.smps_topology
+            if s.single_net and role != "REGULATOR":
+                set_ground(d, IDEAL_RETURN)
+            elif s.n_net:
+                set_ground(d, s.n_net)
+    autofill(d, view)
+    return d
+
+
 def split_load(view: DesignView, designator: str, total: float,
                ground: str | None = None) -> list[EditorDirective]:
     """One load per supply net of a part, sharing ``total`` amps by how many

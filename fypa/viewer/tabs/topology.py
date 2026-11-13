@@ -1009,17 +1009,30 @@ class _TopologyTabMixin:
         self._schedule_topology_refresh()
         self._topology_refresh_resolve_btn()
 
-    def _topology_run_manual_setup(self) -> None:
+    def _topology_run_manual_setup(self, *, net: str | None = None,
+                                   role: str | None = None) -> None:
+        """Open the Manual setup wizard. With ``net`` and ``role`` (SOURCE,
+        REGULATOR or SINK — the click-to-add menu on an undriven / no-load
+        tag) it opens on a new entry for that net, prefilled from the
+        auto-setup classifier's pick when it has one."""
+        from fypa.autosetup import manual as M
         from fypa.viewer.manual_setup_dialog import ManualSetupDialog
 
         pair = self._topology_design_view()
         if pair is None:
             return
-        _result, view = pair
+        result, view = pair
         project = self._ensure_project()
+        preset = None
+        if net and role:
+            from fypa.autosetup import candidates_for_net
+
+            cands = candidates_for_net(view, result, net, role)
+            pick = cands[0] if cands and cands[0].confidence >= 0.5 else None
+            preset = M.preset(view, net, role, pick)
         dlg = ManualSetupDialog(self, view=view,
                                 editor_directives=list(project.editor_directives),
-                                metadata=self.metadata)
+                                metadata=self.metadata, preset=preset)
         if not dlg.exec():
             return
         # Supplies and loads bound to parts are what the dialog owns; series
@@ -1057,52 +1070,16 @@ class _TopologyTabMixin:
         net = tag.net
         if tag.kind == "undriven":
             menu.addAction(f"Add a SOURCE on {net}…",
-                           lambda: self._topology_add_on_net(net, "SOURCE"))
+                           lambda: self._topology_run_manual_setup(net=net, role="SOURCE"))
             menu.addAction(f"Add a REGULATOR feeding {net}…",
-                           lambda: self._topology_add_on_net(net, "REGULATOR"))
+                           lambda: self._topology_run_manual_setup(net=net, role="REGULATOR"))
         menu.addAction(f"Add a SINK on {net}…",
-                       lambda: self._topology_add_on_net(net, "SINK"))
+                       lambda: self._topology_run_manual_setup(net=net, role="SINK"))
         if tag.target is not None:
             menu.addSeparator()
             menu.addAction("Jump to where it continues",
                            lambda: self._topology_view.go_to(tag.target, net=net))
         menu.exec(global_pos)
-
-    def _topology_add_on_net(self, net: str, role: str) -> None:
-        from fypa.autosetup import candidates_for_net
-        from fypa.viewer.add_on_net_dialog import AddOnNetDialog
-
-        pair = self._topology_design_view()
-        if pair is None:
-            return
-        result, view = pair
-        cands = candidates_for_net(view, result, net, role)
-        if not cands:
-            QMessageBox.information(
-                self, "Add", f"No part on the board has a pin on {net}.")
-            return
-        part_nets = {p.designator: sorted(p.nets()) for p in view.parts}
-        dlg = AddOnNetDialog(self, net=net, role=role, candidates=cands,
-                             part_nets=part_nets)
-        if not dlg.exec() or dlg.choice is None:
-            return
-        added, _skipped = self._topology_apply_suggestions([dlg.choice])
-        if added:
-            self.statusBar().showMessage(
-                f"Added {role} on {dlg.choice.designator} ({net}) — press Resolve "
-                "to solve.", 8000)
-            # Open it for fine-tuning (pins, sense, return) once redrawn.
-            QTimer.singleShot(120, lambda d=dlg.choice.designator:
-                              self._topology_open_by_designator(d))
-
-    def _topology_open_by_designator(self, designator: str) -> None:
-        model = getattr(self, "_topology_model", None)
-        if model is None:
-            return
-        node = next((n for n in model.nodes
-                     if (n.designator or n.label) == designator), None)
-        if node is not None:
-            self._topology_open_sidebar(node)
 
     def _install_topology_shortcuts(self, parent: QWidget) -> None:
         """Keyboard zoom shortcuts active while the Topology tab is focused."""
