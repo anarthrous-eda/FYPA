@@ -526,8 +526,8 @@ def _load_solution_pickle(path, *, lean_ify: bool = True
         # Split-format caches (large boards) start with a marker string and
         # stream the rest; dispatch to the chunked reader on that marker so
         # this function can open both auto-cache and Save-Solution pickles.
-        if isinstance(obj, str) and obj == _SPLIT_CACHE_MARKER:
-            obj = _load_split_solve_cache(f)
+        if isinstance(obj, str) and obj in _SPLIT_CACHE_MARKERS:
+            obj = _load_split_solve_cache(f, obj)
     if isinstance(obj, dict) and "solution" in obj:
         sol = obj["solution"]
         meta = obj.get("metadata")
@@ -1272,8 +1272,8 @@ def _try_load_cached_solution(
     try:
         with open(cache_path, "rb") as f:
             first = pickle.load(f)
-            if isinstance(first, str) and first == _SPLIT_CACHE_MARKER:
-                blob = _load_split_solve_cache(f)
+            if isinstance(first, str) and first in _SPLIT_CACHE_MARKERS:
+                blob = _load_split_solve_cache(f, first)
             else:
                 blob = first
     except Exception as e:
@@ -1355,7 +1355,11 @@ def _log_fingerprint_diff(
              label, cache_path, "\n".join(diffs) if diffs else "  (no diff?)")
 
 
-_SPLIT_CACHE_MARKER = "split-v3"
+_SPLIT_CACHE_MARKER = "split-v4"
+# v3 had no solution.sensitivity, so a cached reload lost the Fixes ranking.
+# Still read, as predating copper sensitivity (re-solved by the cache check).
+_SPLIT_CACHE_MARKER_V3 = "split-v3"
+_SPLIT_CACHE_MARKERS = (_SPLIT_CACHE_MARKER, _SPLIT_CACHE_MARKER_V3)
 _CHUNKED_LIST_MARKER = "__chunked_list__"
 # Default per-chunk size for long-list fields. Picked so each per-chunk
 # ``pickle.dump`` returns in well under 100 ms - fast enough for the
@@ -1433,10 +1437,11 @@ def _dump_split_solve_cache(
 
     Wire format (each line is one independent pickle in the same file)::
 
-        "split-v3"
+        "split-v4"
         fingerprint
         solution.problem
         solution.solver_info
+        solution.sensitivity            (not in split-v3)
         chunked(solution.layer_solutions, chunk_size=1)
         sorted metadata keys
         for each key:
@@ -1451,7 +1456,7 @@ def _dump_split_solve_cache(
     counterpart; :func:`_try_load_cached_solution` auto-detects whether
     a file is split-format or the legacy single-dict format."""
     log = logging.getLogger(__name__)
-    log.info("Cache write [split-v3]: START")
+    log.info("Cache write [%s]: START", _SPLIT_CACHE_MARKER)
     t0 = time.monotonic()
     writer = _GilYieldingWriter(f)
     pickle.dump(_SPLIT_CACHE_MARKER, writer, protocol=pickle.HIGHEST_PROTOCOL)
@@ -1475,6 +1480,10 @@ def _dump_split_solve_cache(
     time.sleep(0.001)
     log.info("Cache write: solution.solver_info done (%.2fs)",
              time.monotonic() - t)
+    # The Fixes tab's load ranking; small (two floats per SINK).
+    pickle.dump(dict(getattr(solution, "sensitivity", None) or {}),
+                writer, protocol=pickle.HIGHEST_PROTOCOL)
+    time.sleep(0.001)
     t = time.monotonic()
     n_ls = len(solution.layer_solutions)
     _dump_chunked_value(writer, solution.layer_solutions, chunk_size=1)
@@ -1493,23 +1502,32 @@ def _dump_split_solve_cache(
         if elapsed >= 0.1:
             log.info("Cache write: metadata[%s] done (%.2fs, len=%s)",
                      k, elapsed, size_hint)
-    log.info("Cache write [split-v3]: DONE in %.2fs", time.monotonic() - t0)
+    log.info("Cache write [%s]: DONE in %.2fs", _SPLIT_CACHE_MARKER,
+             time.monotonic() - t0)
 
 
-def _load_split_solve_cache(f) -> dict:
+def _load_split_solve_cache(f, marker: str = _SPLIT_CACHE_MARKER) -> dict:
     """Read a split-format solve cache. ``f`` must be positioned just
-    after the ``split-v3`` marker pickle (i.e. the caller already peeked
-    that marker to dispatch here)."""
+    after the ``marker`` pickle (i.e. the caller already peeked that
+    marker to dispatch here)."""
     from fypa.lean_solution import LeanSolution
     fingerprint = pickle.load(f)
     problem = pickle.load(f)
     solver_info = pickle.load(f)
+    has_sensitivity = marker != _SPLIT_CACHE_MARKER_V3
+    sensitivity = pickle.load(f) if has_sensitivity else {}
     layer_solutions = _load_chunked_value(f)
     solution = LeanSolution(
         problem=problem,
         layer_solutions=layer_solutions,
         solver_info=solver_info,
+        sensitivity=sensitivity,
     )
+    if not has_sensitivity:
+        # Read like a pickle from before the field existed, so
+        # _cache_predates_copper_roi re-solves it (default_factory
+        # leaves no class attribute to fall back on).
+        del solution.sensitivity
     keys = pickle.load(f)
     metadata = {k: _load_chunked_value(f) for k in keys}
     return {

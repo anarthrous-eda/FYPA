@@ -28,6 +28,7 @@ from fypa.viewer.overlays import (
     _N_NET_MARKER_EDGE,
 )
 from fypa.viewer.theme import _T
+from fypa.viewer.vias import _centroid3
 from fypa.viewer.widgets import _esc
 
 
@@ -1516,6 +1517,7 @@ class _EditorFormMixin:
             return
         self._gl_viewer.set_markers(
             list(cached) + self._editor_marker_groups())
+        self._push_series_links()
         # Keep the hover index in step with the moved marker - recombine
         # the cached solved-directive rows with freshly rebuilt editor rows.
         self._set_marker_hover_rows(
@@ -2100,6 +2102,7 @@ class _EditorFormMixin:
         :meth:`_directive_rail_visible`) so hiding a rail also hides its
         source / sink / return markers."""
         if not self._editor_mode or self._project is None:
+            self._editor_series_links = []
             return []
         selected = self._directive_for_selection()
         # Emphasise every directive in the selection - one for a click, all
@@ -2127,6 +2130,10 @@ class _EditorFormMixin:
         # sources at once, and each needs its own box shape.
         sel_by_role: dict[
             str, list[tuple[float, float, str | None, float]]] = {}
+        # Dashed P-to-N links of SERIES directives, pushed alongside the
+        # solved ones by _push_series_links.
+        series_links: list[tuple] = []
+        self._editor_series_links = series_links
         for d in self._project.editor_directives:
             if not self._directive_rail_visible(d):
                 continue   # marker's rail is hidden
@@ -2135,6 +2142,11 @@ class _EditorFormMixin:
             if pts is None:
                 continue   # nothing of this directive is on screen
             p_pts, n_pts = pts
+            if d.role == "SERIES" and p_pts and n_pts:
+                series_links.append((
+                    _centroid3([(p[0], p[1], p[3]) for p in p_pts]),
+                    _centroid3([(p[0], p[1], p[3]) for p in n_pts]),
+                    self._ROLE_MARKER_STYLE["SERIES"]["color"]))
             is_sel = d.id in sel_ids
             for is_n_side, pts in ((False, p_pts), (True, n_pts)):
                 if pts:

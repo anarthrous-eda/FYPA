@@ -26,7 +26,7 @@ import math
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -452,11 +452,45 @@ class WhatIfDialog(QDialog):
 # Viewer mixin
 # ---------------------------------------------------------------------------
 
+class _WhatIfSidePanel(_ClickAbsorbingPanel):
+    """The What-If panel: left edge drag-resizable, and its width is a
+    preference rather than a fixed size.
+
+    Why not setFixedWidth: a fixed width is also the panel's minimum, so
+    the heatmap row's minimum width grows with it. Dragging past what the
+    plot could give up then made Qt grow the whole window, which gave the
+    next drag more room - the window kept expanding - and a wide panel
+    stopped the window being made narrower. Here only ``min_w`` is a hard
+    minimum; the dragged width is the size hint (and maximum), so the panel
+    gets it when there is room and shrinks towards ``min_w`` when not.
+    """
+
+    def __init__(self, preferred_w: int, min_w: int) -> None:
+        super().__init__()
+        self._preferred_w = int(preferred_w)
+        self.setMinimumWidth(int(min_w))
+        self.setMaximumWidth(self._preferred_w)
+
+    def preferred_width(self) -> int:
+        return self._preferred_w
+
+    def set_preferred_width(self, w: int) -> None:
+        w = max(self.minimumWidth(), int(w))
+        if w == self._preferred_w:
+            return
+        self._preferred_w = w
+        self.setMaximumWidth(w)
+        self.updateGeometry()
+
+    def sizeHint(self) -> QSize:  # noqa: N802 (Qt naming)
+        return QSize(self._preferred_w, super().sizeHint().height())
+
+
 class _WhatIfMixin:
     """What-If panel, runner and view switching for :class:`PdnViewer`."""
 
     # Default width (px); the user can drag the panel's left edge between
-    # the min and "heatmap row minus this reserve" (see
+    # the min and "whatever leaves the plot this wide" (see
     # _on_whatif_panel_resized). Not remembered between sessions.
     _WHATIF_PANEL_W = 360
     _WHATIF_PANEL_MIN_W = 280
@@ -492,12 +526,16 @@ class _WhatIfMixin:
         self._init_whatif_state()
         t = _T()
         # Left edge is a drag-to-resize grip (same as the editor panel).
-        panel = _ClickAbsorbingPanel()
+        panel = _WhatIfSidePanel(self._WHATIF_PANEL_W, self._WHATIF_PANEL_MIN_W)
         self._whatif_panel = panel
-        panel.setFixedWidth(self._WHATIF_PANEL_W)
         panel.leftEdgeResized.connect(self._on_whatif_panel_resized)
+        # The panel-wide text colour would otherwise also paint disabled
+        # buttons (Run / Edit / More / New with nothing to act on) in normal
+        # text; grey them like the Show buttons so they read as unusable.
         panel.setStyleSheet(
-            f"QWidget {{ background-color: {t['bg']}; color: {t['fg']}; }}")
+            f"QWidget {{ background-color: {t['bg']}; color: {t['fg']}; }}"
+            f"QPushButton:disabled, QToolButton:disabled "
+            f"{{ color: {t['fg_hint']}; }}")
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(6)
@@ -542,7 +580,10 @@ class _WhatIfMixin:
         self._whatif_edit_btn = QPushButton("Edit…")
         self._whatif_edit_btn.clicked.connect(self._on_whatif_edit)
         more = QToolButton()
-        more.setText("More")
+        # Trailing spaces keep the label clear of Fusion's menu arrow
+        # (drawn in the bottom-right corner); a stylesheet padding would
+        # drop the native Fusion button look.
+        more.setText("More   ")
         more.setPopupMode(QToolButton.InstantPopup)
         more_menu = QMenu(more)
         more_menu.addAction("Duplicate", self._on_whatif_duplicate)
@@ -656,17 +697,20 @@ class _WhatIfMixin:
 
     def _on_whatif_panel_resized(self, proposed_w: int) -> None:
         """Apply a user-dragged What-If panel width, clamped to the min
-        width and to leaving a reserve of the heatmap row for the plot."""
+        width and to what the plot can give up while staying at least
+        _WHATIF_PANEL_PLOT_RESERVE wide. The cap is measured from the
+        plot's current width - never the row's - so the drag can only take
+        space from the plot, not grow the window (see _WhatIfSidePanel)."""
         panel = getattr(self, "_whatif_panel", None)
-        if panel is None:
+        if not isinstance(panel, _WhatIfSidePanel):
             return
-        row = panel.parentWidget()
-        row_w = row.width() if row is not None else proposed_w
-        max_w = max(self._WHATIF_PANEL_MIN_W,
-                    row_w - self._WHATIF_PANEL_PLOT_RESERVE)
-        w = max(self._WHATIF_PANEL_MIN_W, min(int(proposed_w), max_w))
-        if w != panel.width():
-            panel.setFixedWidth(w)
+        lo = self._WHATIF_PANEL_MIN_W
+        w = max(lo, int(proposed_w))
+        gl = getattr(self, "_gl_viewer", None)
+        if gl is not None and gl.width() > 0:
+            room = panel.width() + gl.width() - self._WHATIF_PANEL_PLOT_RESERVE
+            w = min(w, max(lo, room))
+        panel.set_preferred_width(w)
 
     def _toggle_whatif_panel_visible(self) -> None:
         """W hotkey: same as clicking the What-If button."""

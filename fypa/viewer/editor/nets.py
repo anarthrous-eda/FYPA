@@ -37,7 +37,7 @@ class _EditorNetsMixin:
         net is being suppressed. Requires editor mode: focus is an editor
         control and must not leak into the viewer-mode heatmap."""
         return bool(
-            self._editor_mode
+            getattr(self, "_editor_mode", False)
             and (self._editor_focus_nets or self._editor_focus_polys)
         )
 

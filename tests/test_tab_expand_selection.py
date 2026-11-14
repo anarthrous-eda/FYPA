@@ -223,6 +223,56 @@ def test_editor_mode_skips_pads_hidden_by_the_overlay(spy):
     assert id(PAD_L1) not in _outlined(v)
 
 
+def _panel_texts(v):
+    from PySide6.QtWidgets import QLabel
+    return [w.text() for w in v._test_host.findChildren(QLabel)]
+
+
+def _editor_panel_stubs(v):
+    """The widgets / helpers :meth:`_update_editor_panel` touches."""
+    from PySide6.QtWidgets import QLabel, QWidget
+    v._editor_panel_title = QLabel()
+    v._editor_hint = QLabel()
+    v._editor_form_host = QWidget()
+    v._multi_form_host = QWidget()
+    v._copper_props_host = v._test_host
+    v._is_copper_name_selection = lambda sel: False
+    v._update_editor_focus_chip = lambda: None
+    v._sync_marker_buttons = lambda: None
+    v._tab_expand = None
+
+
+def test_editor_mode_copper_selection_shows_copper_properties(viewer):
+    """Editor mode lists the clicked primitive's properties (the viewer-mode
+    form) below the attached-PDN summary."""
+    v = viewer
+    _editor_panel_stubs(v)
+    v._editor_mode = True
+    v._editor_selection = {"kind": "copper", "net": "GND", "layer_id": 1,
+                           "hit": _hit(GND_L1_A, 1)}
+    v._update_editor_panel()
+    assert not v._copper_props_host.isHidden()
+    texts = _panel_texts(v)
+    assert "<b>Track</b>" in texts and "GND" in texts and "Top" in texts
+    # Nothing selected: the host hides again.
+    v._editor_selection = None
+    v._update_editor_panel()
+    assert v._copper_props_host.isHidden()
+
+
+def test_editor_mode_tab_group_form_survives_a_panel_refresh(spy):
+    v = spy
+    _editor_panel_stubs(v)
+    v._editor_mode = True
+    v._pad_overlay_visible = lambda rec: True
+    v._editor_selection = {"kind": "copper", "net": "GND", "layer_id": 1,
+                           "hit": _hit(GND_L1_A, 1)}
+    v._update_editor_panel()
+    v._cycle_tab_expand()
+    v._update_editor_panel()
+    assert any("copper primitives" in t for t in _panel_texts(v))
+
+
 # --- the GL draw copes with a whole-net outline ----------------------------
 
 def test_outline_draw_culls_and_paints(qapp):

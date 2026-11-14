@@ -172,6 +172,9 @@ class _Editor(QWidget):
         self.entry: M.Entry | None = None
         # Designators already a load on a directive's net (set by the page).
         self.taken: Callable[[EditorDirective], set[str]] = lambda _d: set()
+        # Designators already on a directive's net in any role (load, source,
+        # regulator): the load picker hides them unless "Show all parts".
+        self.used: Callable[[EditorDirective], set[str]] = lambda _d: set()
         t = _T()
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 0, 0, 0)
@@ -202,7 +205,22 @@ class _Editor(QWidget):
         form.addRow("Output net" if mode == "supply" else "Supply net", self.net)
         self.part = QComboBox()
         self.part.activated.connect(self._on_part)
-        form.addRow("Part", self.part)
+        # Loads: only the likely loads still free on the net (the Topology
+        # tab's "+ SINK (n)" parts) unless "Show all parts" is ticked.
+        self.show_all = QCheckBox("Show all parts")
+        self.show_all.setToolTip(
+            "Unticked: only ICs and connectors on this net that aren't already "
+            "set up on it (the parts counted by the Topology tab's + SINK (n)).\n"
+            "Ticked: every part with a pin on the net, e.g. a resistor as a load.")
+        self.show_all.toggled.connect(self._on_show_all)
+        if mode == "load":
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.addWidget(self.part, 1)
+            row.addWidget(self.show_all)
+            form.addRow("Part", row)
+        else:
+            form.addRow("Part", self.part)
         self.pins = _PinPicker()
         self.pins.setToolTip("Which of the part's pins on the net carry the "
                              "current: all of them, or a hand-picked set.")
@@ -261,8 +279,8 @@ class _Editor(QWidget):
         t = _T()
         has = entry is not None
         editable = has and not (entry and entry.locked)
-        for w in (self.type, self.net, self.part, self.pins, self.value, self.gnd,
-                  self.in_net, self.in_pins, self.eff, self.topo, self.min_v):
+        for w in (self.type, self.net, self.part, self.show_all, self.pins, self.value,
+                  self.gnd, self.in_net, self.in_pins, self.eff, self.topo, self.min_v):
             w.setEnabled(editable)
         self._override_btn.setVisible(bool(entry and entry.locked))
         if entry is None:
@@ -299,20 +317,34 @@ class _Editor(QWidget):
             f"Filled in from the design: {', '.join(filled)}." if filled else "")
 
     def _fill_parts(self, d) -> None:
+        pick = "- pick the part -"
         with QSignalBlocker(self.part):
             self.part.clear()
             if d.p_net:
                 prefer = "supply" if self.mode == "supply" else "load"
-                for des, label in M.parts_on_net(self.view, d.p_net, prefer=prefer,
-                                                 taken=self.taken(d)):
+                rows = M.parts_on_net(self.view, d.p_net, prefer=prefer,
+                                      taken=self.taken(d))
+                if self.mode == "load" and not self.show_all.isChecked():
+                    ok = M.load_candidates(self.view, d.p_net, self.used(d))
+                    cur = (d.designator or "").upper()
+                    short = [r for r in rows if r[0].upper() in ok or r[0].upper() == cur]
+                    if short:
+                        rows = short
+                    elif rows:
+                        pick = "- pick the part (no free ICs / connectors: all parts shown) -"
+                for des, label in rows:
                     self.part.addItem(label, des)
             if d.designator and self.part.findData(d.designator) < 0:
                 self.part.addItem(f"{d.designator}  (not on this net)", d.designator)
             idx = self.part.findData(d.designator) if d.designator else -1
             if idx < 0 and self.part.count():
-                self.part.insertItem(0, "- pick the part -", None)
+                self.part.insertItem(0, pick, None)
                 idx = 0
             self.part.setCurrentIndex(idx)
+
+    def _on_show_all(self, _checked: bool) -> None:
+        if self.entry is not None:
+            self._fill_parts(self.entry.directive)
 
     def _fill_ground(self, d) -> None:
         part = self.view.part(d.designator) if d.designator else None
@@ -347,7 +379,7 @@ class _Editor(QWidget):
         if self.entry is None:
             return
         d = self.entry.directive
-        filled = M.autofill(d, self.view, taken=self.taken(d))
+        filled = M.autofill(d, self.view, taken=self.used(d))
         if reload or filled:
             self.load(self.entry, filled)
         else:
@@ -484,6 +516,7 @@ class _RolePage(QWidget):
         self.editor = _Editor(mode, view)
         if mode == "load":
             self.editor.taken = self._loads_on_net
+            self.editor.used = self._used_on_net
         self.editor.changed.connect(self._on_edit)
         self.editor.override.connect(self._override)
         split.addWidget(self.editor)
@@ -499,6 +532,22 @@ class _RolePage(QWidget):
         return {x.directive.designator.upper() for x in self.entries
                 if x.directive is not d and x.directive.role == "SINK"
                 and x.directive.p_net == d.p_net and x.directive.designator}
+
+    def _used_on_net(self, d: EditorDirective) -> set[str]:
+        """Parts of the *other* entries on ``d``'s net in any role: a load, a
+        source, or a regulator's output or input (what the Topology tab draws
+        on that rail, so the free parts match its ``+ SINK (n)``)."""
+        net = d.p_net
+        if not net:
+            return set()
+        out: set[str] = set()
+        for x in self.entries:
+            o = x.directive
+            if o is d or not o.designator:
+                continue
+            if o.p_net == net or (o.role == "REGULATOR" and o.in_p_net == net):
+                out.add(o.designator.upper())
+        return out
 
     def mine(self) -> list[M.Entry]:
         want_supply = self.mode == "supply"

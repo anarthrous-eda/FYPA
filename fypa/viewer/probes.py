@@ -724,6 +724,11 @@ class _ProbeMixin:
                 continue
             if self._in_hidden_section(lp, x, y):
                 continue
+            # Editor net focus draws this rail at alpha 0 - it must not
+            # catch the click / hover meant for the focused net below.
+            if self._focus_blocks_pick(lp.get("net"), x, y,
+                                       lp.get("layer_id")):
+                continue
             interp = self._ensure_interpolator(lp)
             if interp is None:
                 continue
@@ -1511,6 +1516,8 @@ class _ProbeMixin:
                 if not prepped.contains(pt):
                     continue
             except Exception:
+                continue
+            if self._focus_blocks_pick(net, x, y, lid):
                 continue
             voltage = self._sample_stub_voltage(stub, net)
             return voltage, {"physical": phys, "net": net, "is_stub": True}

@@ -247,3 +247,49 @@ def test_new_cache_and_stubs_are_served():
     stub = _OldLean()
     stub.solver_info = {"stub": True}
     assert not _cache_predates_copper_roi(stub, md)
+
+
+def _split_cache_round_trip(write_marker: str | None = None):
+    import io
+    import pickle
+
+    from fypa import cli
+    from fypa.lean_solution import LeanProblem, LeanSolution
+
+    sol = LeanSolution(problem=LeanProblem(layers=[]), layer_solutions=[],
+                       sensitivity={"U1": {"objective_v": 1.2,
+                                           "current_a": 0.5}})
+    buf = io.BytesIO()
+    cli._dump_split_solve_cache(buf, {"fp": 1}, sol, {"directives": []})
+    data = buf.getvalue()
+    if write_marker is not None:
+        # Rebuild as the old v3 layout: its marker, no sensitivity pickle.
+        f = io.BytesIO(data)
+        pickle.load(f)
+        fp, problem, info, _sens = (pickle.load(f) for _ in range(4))
+        rest = f.read()
+        out = io.BytesIO()
+        for obj in (write_marker, fp, problem, info):
+            pickle.dump(obj, out)
+        data = out.getvalue() + rest
+    f = io.BytesIO(data)
+    marker = pickle.load(f)
+    return cli._load_split_solve_cache(f, marker)
+
+
+def test_split_cache_keeps_sensitivity():
+    # A cached (not clean) reload used to drop it, so the Fixes tab said
+    # the solution predated copper fixes.
+    blob = _split_cache_round_trip()
+    assert blob["solution"].sensitivity == {
+        "U1": {"objective_v": 1.2, "current_a": 0.5}}
+    assert blob["fingerprint"] == {"fp": 1}
+
+
+def test_split_v3_cache_reads_as_predating_sensitivity():
+    from fypa.cli import _SPLIT_CACHE_MARKER_V3, _cache_predates_copper_roi
+
+    blob = _split_cache_round_trip(_SPLIT_CACHE_MARKER_V3)
+    assert not hasattr(blob["solution"], "sensitivity")
+    assert _cache_predates_copper_roi(
+        blob["solution"], {"directives": [{"role": "SINK"}]})

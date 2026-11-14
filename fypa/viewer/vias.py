@@ -23,8 +23,25 @@ from fypa.viewer.overlays import (
 from fypa.viewer.prefs import _VIA_NO_CURRENT_OPACITY_DEFAULT
 
 
+def _centroid3(pts) -> tuple[float, float, float]:
+    """Mean of ``(x, y, z, ...)`` points - the anchor of one side of a
+    series link when that side has several pads."""
+    n = len(pts)
+    return (sum(float(p[0]) for p in pts) / n,
+            sum(float(p[1]) for p in pts) / n,
+            sum(float(p[2]) for p in pts) / n)
+
+
 class _ViaRenderMixin:
     """Via cylinders (3D) and the 2D via-current markers."""
+
+    def _push_series_links(self) -> None:
+        """Push the dashed P-to-N links of series parts - solved ones (built
+        with the solved markers) plus editor SERIES directives (built with
+        the editor markers) - as one batch."""
+        links = (list(getattr(self, "_solved_series_links", None) or [])
+                 + list(getattr(self, "_editor_series_links", None) or []))
+        self._gl_viewer.set_series_links(links)
 
     # --- Via cylinders (3D-mode only) --------------------------------------
 
@@ -888,6 +905,8 @@ class _ViaRenderMixin:
         # appended once the editor markers are built (see below).
         self._marker_hover_index_cache = None
         hover_rows: list[dict] = []
+        # Dashed P-to-N links of solved series parts (set_series_links).
+        series_links: list[tuple] = []
 
         target_layer_ids: set[int] = set()
         for phys in phys_list:
@@ -944,6 +963,11 @@ class _ViaRenderMixin:
                 directive_current = self._directive_current_for_hover(d)
                 directive_label = str(d.get("label") or d.get("designator")
                                       or "")
+                # (P-side, N-side) marker points of a series part, joined
+                # by a dashed link below so it's clear which two squares
+                # belong together when several series parts sit close.
+                link_sides: tuple[list, list] | None = (
+                    ([], []) if role in ("RESISTOR", "AUTO_BRIDGE") else None)
                 for term_name, term in (d.get("terminals") or {}).items():
                     term_pins = term.get("pins") or []
                     is_n_side = term_name in _N_SIDE_TERMINALS
@@ -1031,6 +1055,9 @@ class _ViaRenderMixin:
                             if phys_for_pin else 0.0)
                         rcs.append(self._layer_color_for(phys_for_pin)
                                    if phys_for_pin else None)
+                        if link_sides is not None:
+                            link_sides[1 if is_n_side else 0].append(
+                                (px, py, zs[-1]))
                         if role in ("SOURCE", "SINK") and not directive_overridden:
                             hover_rows.append({
                                 "x_mm": float(px),
@@ -1047,6 +1074,13 @@ class _ViaRenderMixin:
                                     self._ROLE_MARKER_STYLE[role]["size"]
                                 ),
                             })
+                if link_sides is not None and all(link_sides):
+                    style = self._ROLE_MARKER_STYLE[role]
+                    if style["label"] not in self._hidden_legend_keys:
+                        series_links.append((
+                            _centroid3(link_sides[0]),
+                            _centroid3(link_sides[1]),
+                            style["color"]))
 
             for (role, is_n_side), (xs, ys, zs, rcs) in per_role.items():
                 if not xs:
@@ -1216,6 +1250,8 @@ class _ViaRenderMixin:
         groups.extend(self._editor_marker_groups())
 
         self._gl_viewer.set_markers(groups)
+        self._solved_series_links = series_links
+        self._push_series_links()
         # Parts set up as SERIES that no solve has included yet (a FET
         # modelled as switched on): a dashed link, so the connection is
         # visible before there is anything to solve.

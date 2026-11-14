@@ -153,6 +153,77 @@ def net_choices(view: DesignView) -> list[str]:
     return sorted(used, key=rank)
 
 
+# Parts that are plausibly a load: ICs and connectors. Passives (decoupling
+# caps, pull-ups…) sit on every rail but are rarely what draws its current.
+LOAD_PREFIXES = IC_PREFIXES | CONNECTOR_PREFIXES
+
+
+def is_likely_load(part: Part) -> bool:
+    return part.prefix in LOAD_PREFIXES
+
+
+def load_candidates(view: DesignView, net: str, used: Collection[str] = ()) -> set[str]:
+    """Designators (upper) of likely loads on ``net`` (:func:`is_likely_load`)
+    that aren't in ``used`` (parts already on this net as a load, source or
+    regulator). The Topology tab's ``+ SINK (n)`` counts the same set."""
+    used_up = {u.upper() for u in used}
+    return {p.designator.upper() for p in view.parts_on(net)
+            if is_likely_load(p) and p.designator.upper() not in used_up}
+
+
+def likely_loads_by_net(view: DesignView) -> dict[str, set[str]]:
+    """net (upper) -> designators (upper) of :func:`is_likely_load` parts with
+    a pin on it, grounds left out: the Topology tab's ``+ SINK`` candidates."""
+    out: dict[str, set[str]] = {}
+    for part in view.parts:
+        if not is_likely_load(part):
+            continue
+        for net in part.nets():
+            if not view.is_gnd(net):
+                out.setdefault(net.upper(), set()).add(part.designator.upper())
+    return out
+
+
+# Small sidecar in the project's cache folder so a project reopened from its
+# solve cache (no design in memory) still gets its "+ SINK" handles without
+# unpickling the whole design-info cache.
+LOAD_CANDIDATES_FILE = "load-candidates.json"
+_LOAD_CANDIDATES_FORMAT = "fypa-load-candidates/1"
+
+
+def save_load_candidates(path, by_net: dict[str, set[str]]) -> None:
+    """Write :func:`likely_loads_by_net` output to ``path`` (JSON)."""
+    import json
+    from pathlib import Path
+
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    data = {"format": _LOAD_CANDIDATES_FORMAT,
+            "nets": {n: sorted(d) for n, d in sorted(by_net.items())}}
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    tmp.replace(p)
+
+
+def read_load_candidates(path) -> dict[str, set[str]] | None:
+    """The map :func:`save_load_candidates` wrote; ``None`` if missing,
+    unreadable or another format."""
+    import json
+    from pathlib import Path
+
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("format") != _LOAD_CANDIDATES_FORMAT:
+        return None
+    nets = data.get("nets")
+    if not isinstance(nets, dict):
+        return None
+    return {str(n).upper(): {str(d).upper() for d in ds}
+            for n, ds in nets.items() if isinstance(ds, list)}
+
+
 def parts_on_net(view: DesignView, net: str, *, prefer: str = "",
                  taken: Collection[str] = ()) -> list[tuple[str, str]]:
     """``(designator, label)`` for parts with a pin on ``net``, busiest first
@@ -242,7 +313,8 @@ def autofill(d: EditorDirective, view: DesignView, *,
     """Fill the directive's empty fields from the design; returns what changed.
 
     Only empty fields are touched, so anything the user typed stays. A load's
-    part is never guessed from ``taken`` (parts already a load on its net)."""
+    part is only guessed among :func:`load_candidates`, never from ``taken``
+    (parts already on its net as a load, source or regulator)."""
     filled: list[str] = []
     net = d.p_net
     if not net:
@@ -256,8 +328,8 @@ def autofill(d: EditorDirective, view: DesignView, *,
         prefer = "supply" if d.role in SUPPLY_ROLES else "load"
         cands = parts_on_net(view, net, prefer=prefer)
         if d.role == "SINK":
-            taken_up = {t.upper() for t in taken}
-            cands = [c for c in cands if c[0].upper() not in taken_up]
+            ok = load_candidates(view, net, taken)
+            cands = [c for c in cands if c[0].upper() in ok]
         if len(cands) == 1 or (cands and d.role == "SINK"):
             d.designator = cands[0][0]
             filled.append("part")
@@ -284,14 +356,16 @@ def autofill(d: EditorDirective, view: DesignView, *,
     return filled
 
 
-def preset(view: DesignView, net: str, role: str, suggestion=None) -> EditorDirective:
+def preset(view: DesignView, net: str, role: str, suggestion=None, *,
+           taken: Collection[str] = ()) -> EditorDirective:
     """New supply / load on ``net`` for the Topology tab's click-to-add.
 
     ``role`` is SOURCE, REGULATOR (output on ``net``) or SINK. A classifier
     ``suggestion`` for that net (an auto-setup
     :class:`~fypa.autosetup.classify.Suggestion`) supplies the part and its
     values; without one only the net is set and :func:`autofill` does the
-    rest (it picks the part itself when there's one obvious choice)."""
+    rest (it picks the part itself when there's one obvious choice, and for
+    a load never one in ``taken``: parts already on the net)."""
     d = new_load() if role == "SINK" else new_supply()
     if role == "REGULATOR":
         set_supply_type(d, "LDO")
@@ -319,7 +393,7 @@ def preset(view: DesignView, net: str, role: str, suggestion=None) -> EditorDire
                 set_ground(d, IDEAL_RETURN)
             elif s.n_net:
                 set_ground(d, s.n_net)
-    autofill(d, view)
+    autofill(d, view, taken=taken)
     return d
 
 

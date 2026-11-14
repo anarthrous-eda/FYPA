@@ -177,6 +177,10 @@ class _CopperPickMixin:
 
         def _take(kind: str, rec: dict, layer_ids: list[int]) -> None:
             nonlocal best, best_rank
+            # A via / pad hidden by net focus can't shadow the focused
+            # net's copper underneath it.
+            if self._focus_blocks_pick(rec.get("net")):
+                return
             for lid in layer_ids:
                 phys = visible.get(int(lid))
                 if phys is None:
@@ -771,7 +775,7 @@ class _CopperPickMixin:
         if level == 0:
             gl.set_primitive_selection_outline(
                 self._primitive_outline_rings(hit) if hit else None)
-            if not self._editor_mode and hit is not None:
+            if hit is not None:
                 self._populate_copper_props_form(hit)
             self.statusBar().clearMessage()
             return True
@@ -792,8 +796,7 @@ class _CopperPickMixin:
             f"on {where} - Tab to "
             f"{'expand to all visible layers' if level == 1 else 'go back'}"
             ".")
-        if not self._editor_mode:
-            self._populate_copper_group_form(net, layers, hits)
+        self._populate_copper_group_form(net, layers, hits)
         return True
 
     def _tab_visible_layer_ids(self) -> set[int]:
@@ -812,7 +815,7 @@ class _CopperPickMixin:
 
     def _populate_copper_group_form(self, net: str, layer_ids: set[int],
                                     hits: list[dict]) -> None:
-        """Right-panel summary for a Tab-expanded viewer-mode selection:
+        """Right-panel summary for a Tab-expanded copper selection:
         net, layers, and a per-kind primitive count."""
         if not hasattr(self, "_copper_props_layout"):
             return
@@ -962,9 +965,15 @@ class _CopperPickMixin:
         hidden = self._editor_copper_pick(world_x, world_y)
         if hidden is not None and hidden.get("net"):
             phys = hidden.get("physical") or "a hidden layer"
-            self.statusBar().showMessage(
-                f"Copper on {phys} is hidden - turn on its eye to "
-                "select it.", 4000)
+            if self._focus_blocks_pick(hidden["net"], world_x, world_y,
+                                       hidden.get("layer_id")):
+                self.statusBar().showMessage(
+                    f"{hidden['net']} on {phys} is hidden by the net focus - "
+                    "press F to show everything.", 4000)
+            else:
+                self.statusBar().showMessage(
+                    f"Copper on {phys} is hidden - turn on its eye to "
+                    "select it.", 4000)
         # Bare substrate (or hidden-only copper) - clear the selection.
         self._editor_selection = None
         self._clear_editor_highlight()

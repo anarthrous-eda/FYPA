@@ -988,6 +988,8 @@ class GLMeshViewer(QOpenGLWidget):
             list[tuple[float, float]]] | None = None
         # Unsolved SERIES links (see set_pending_links); None when none.
         self._pending_links: list[dict] | None = None
+        # SERIES pad-to-pad links (see set_series_links); None when none.
+        self._series_links: list[tuple] | None = None
         # Copper ROI suggestions drawn over the heatmap (see
         # set_roi_highlights); None when the mode is off.
         self._roi_highlights: list[dict] | None = None
@@ -2504,6 +2506,53 @@ class GLMeshViewer(QOpenGLWidget):
                                          (ay + by) / 2 - 8), ln["label"])
         painter.restore()
 
+    def set_series_links(self, links) -> None:
+        """Set (or clear, with ``None`` / empty) the dashed links that pair
+        the two sides of each SERIES part, so neighbouring series parts
+        don't read as one blob of green squares.
+
+        Each link is ``((x1, y1, z1), (x2, y2, z2), color)`` in world mm -
+        the centroids of the P-side and N-side markers. Drawn before the
+        markers, so the squares cover the line ends. No-op when unchanged."""
+        new = None
+        if links:
+            new = [(tuple(map(float, a)), tuple(map(float, b)), str(c))
+                   for a, b, c in links] or None
+        if new == self._series_links:
+            return
+        self._series_links = new
+        self.update()
+
+    def _draw_series_links(self, painter: QPainter) -> None:
+        """Dashed link per SERIES part (see :meth:`set_series_links`): a
+        dark solid under-stroke so it reads on any copper colour, then the
+        marker-green dashes on top."""
+        links = self._series_links
+        if not links:
+            return
+        painter.save()
+        under_pen = QPen(QColor(0, 0, 0, 170))
+        under_pen.setWidthF(3.5)
+        under_pen.setCosmetic(True)
+        under_pen.setCapStyle(Qt.FlatCap)
+        dash_pen = QPen()
+        dash_pen.setWidthF(2.0)
+        dash_pen.setCosmetic(True)
+        dash_pen.setCapStyle(Qt.FlatCap)
+        dash_pen.setDashPattern([3.0, 2.0])
+        for a, b, color in links:
+            ax, ay = self.world_to_screen(*a)
+            bx, by = self.world_to_screen(*b)
+            if ax <= -1e8 or ay <= -1e8 or bx <= -1e8 or by <= -1e8:
+                continue
+            p1, p2 = QPointF(ax, ay), QPointF(bx, by)
+            painter.setPen(under_pen)
+            painter.drawLine(p1, p2)
+            dash_pen.setColor(QColor(color))
+            painter.setPen(dash_pen)
+            painter.drawLine(p1, p2)
+        painter.restore()
+
     def set_roi_highlights(self, items) -> None:
         """Set (or clear, with ``None``) the Copper ROI suggestions drawn
         over the heatmap. Each item is a dict with ``kind`` ("widen" - an
@@ -3828,6 +3877,7 @@ class GLMeshViewer(QOpenGLWidget):
         self._draw_roi_highlights(painter)
         self._draw_primitive_selection(painter)
         self._draw_pending_links(painter)
+        self._draw_series_links(painter)
         self._draw_overlay_labels(painter, on_top=False)
         self._draw_markers(painter)
         # Second label pass: ``on_top`` labels (e.g. via-span text) sit

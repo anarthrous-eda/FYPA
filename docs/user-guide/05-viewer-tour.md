@@ -105,9 +105,10 @@ This is **not** the PCB layout; for spatial placement use the Heatmap tab.
 - **Add handles** - a dashed blue `+ SINK (n)` tap under each rail's last
   load, where *n* more parts on the rail (ICs, connectors) aren't set up on
   it yet. See *Adding sources, regulators and sinks* below. Toggle it off
-  on the toolbar for a tighter diagram. Handles need the Altium design in
-  memory: a project opened from Altium, or a solve after Auto setup or
-  Manual setup has loaded its design. A Gerber import shows none.
+  on the toolbar for a tighter diagram. The parts per rail are saved in
+  the project's cache folder whenever the design is loaded, so a project
+  reopened from its cache shows the same handles. A Gerber import shows
+  none.
 - **Classic** - toggles back to the older single-chain column layout,
   which wires every net and draws one return rail under the diagram. The
   toolbar toggles are remembered between sessions.
@@ -147,10 +148,13 @@ no loads) to add a SINK. To add **another** load to a rail that already
 has one, click its dashed blue **`+ SINK (n)`** handle under the last
 load. Each opens **Manual setup** (below) on a new entry for that net,
 with the part auto setup would pick, when it is confident, and its values
-filled in. A new load is never preset to a part already on that rail, and
-in the part list a part that is already a load on the net is listed last,
-marked *already a load here*. Check the value (`3.3 V`, `250 mA` - SI
-prefixes are fine) and **Apply**.
+filled in. A new load is never preset to a part already on that rail. On
+the **Loads** tab the **Part** list shows only the parts the handle
+counted: ICs and connectors on the net not already set up on it. Tick
+**Show all parts** to pick any part with a pin on the net, such as a
+resistor; there, a part already a load on the net is listed last, marked
+*already a load here*. Check the value (`3.3 V`, `250 mA` - SI prefixes
+are fine) and **Apply**.
 
 ### Manual setup
 

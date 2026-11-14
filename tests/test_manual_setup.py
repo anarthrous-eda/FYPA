@@ -43,6 +43,35 @@ def test_autofill_never_picks_a_part_already_loading_the_net() -> None:
     assert d.designator == "U4"
 
 
+def test_load_candidates_are_free_ics_and_connectors_on_the_net() -> None:
+    view = _board()
+    # +3V3: L1, U2, R5, U4, R9, R7 - only the ICs count.
+    assert M.load_candidates(view, "+3V3") == {"U2", "U4"}
+    assert M.load_candidates(view, "+3V3", used={"u2"}) == {"U4"}
+    assert M.load_candidates(view, "+3V3", used={"U2", "U4"}) == set()
+
+
+def test_likely_loads_by_net_round_trips_through_the_sidecar(tmp_path) -> None:
+    by_net = M.likely_loads_by_net(_board())
+    assert by_net["+3V3"] == {"U2", "U4"}
+    assert by_net["+12V"] == {"J1", "U1"}
+    assert "GND" not in by_net
+    path = tmp_path / "cache" / M.LOAD_CANDIDATES_FILE
+    M.save_load_candidates(path, by_net)
+    assert M.read_load_candidates(path) == by_net
+    assert M.read_load_candidates(tmp_path / "missing.json") is None
+    (tmp_path / "bad.json").write_text('{"format": "other"}', encoding="utf-8")
+    assert M.read_load_candidates(tmp_path / "bad.json") is None
+
+
+def test_autofill_load_only_guesses_a_likely_load() -> None:
+    view = _board()
+    d = M.new_load()
+    d.p_net = "+3V3"
+    M.autofill(d, view, taken={"U2", "U4"})        # only passives left
+    assert d.designator is None
+
+
 def test_autofill_supply_from_net_and_part() -> None:
     view = _board()
     d = M.new_supply()

@@ -1066,13 +1066,14 @@ class _TopologyTabMixin:
             from fypa.autosetup import candidates_for_net
 
             cands = candidates_for_net(view, result, net, role)
+            drawn: set[str] = set()
             if role == "SINK":
                 # A new load on a rail is a *different* part: never preset
                 # one already drawn on it (the existing sink, its source…).
                 drawn = self._topology_parts_on_net(net)
                 cands = [c for c in cands if c.designator.upper() not in drawn]
             pick = cands[0] if cands and cands[0].confidence >= 0.5 else None
-            preset = M.preset(view, net, role, pick)
+            preset = M.preset(view, net, role, pick, taken=drawn)
         dlg = ManualSetupDialog(self, view=view,
                                 editor_directives=list(project.editor_directives),
                                 metadata=self.metadata, preset=preset)
@@ -1231,28 +1232,72 @@ class _TopologyTabMixin:
 
     def _topology_add_candidates(self) -> dict[str, set[str]] | None:
         """net (upper) -> ICs / connectors with a pin on it, for the rows
-        layout's "+ SINK (n)" handles; ``None`` turns the handles off."""
+        layout's "+ SINK (n)" handles; ``None`` turns the handles off.
+
+        From the design in memory when there is one (and saved beside the
+        project's cache); otherwise - a project reopened from its solve
+        cache - from that saved copy, so the handles don't depend on how
+        the project was opened."""
         if not getattr(self, "_topology_show_add_handles", False):
             return None
         if getattr(self, "_topology_layout", "rows") != "rows":
             return None
+        from fypa.autosetup import manual as M
+
         view = self._topology_view_in_memory()
         if view is None:
-            return None
+            return self._topology_read_cands_sidecar()
         cache = getattr(self, "_topology_cands_cache", None)
         if cache is not None and cache[0] is view:
             return cache[1]
-        from fypa.autosetup.nets import CONNECTOR_PREFIXES, IC_PREFIXES
-
-        likely = IC_PREFIXES | CONNECTOR_PREFIXES
-        out: dict[str, set[str]] = {}
-        for part in view.parts:
-            if part.prefix not in likely:
-                continue
-            for net in part.nets():
-                if not view.is_gnd(net):
-                    out.setdefault(net.upper(), set()).add(part.designator.upper())
+        # Same "likely load" rule as Manual setup's load picker, so the
+        # handle's n is the number of parts that picker lists.
+        out = M.likely_loads_by_net(view)
         self._topology_cands_cache = (view, out)
+        path = self._topology_cands_sidecar_path()
+        if path is not None:
+            try:
+                M.save_load_candidates(path, out)
+            except OSError:
+                import logging
+
+                logging.getLogger(__name__).debug(
+                    "Could not save %s", path, exc_info=True)
+        return out
+
+    def _topology_cands_sidecar_path(self) -> Path | None:
+        """``load-candidates.json`` in this Altium project's cache folder."""
+        md = self.metadata or {}
+        prj = md.get("prjpcb_path")
+        if not prj or md.get("source_kind") == "gerber":
+            return None
+        try:
+            from fypa.autosetup.manual import LOAD_CANDIDATES_FILE
+            from fypa.cli import _project_cache_dir
+
+            pcb = md.get("pcbdoc_path")
+            return _project_cache_dir(Path(prj), Path(pcb) if pcb else None) \
+                / LOAD_CANDIDATES_FILE
+        except Exception:  # noqa: BLE001 - handles are optional
+            return None
+
+    def _topology_read_cands_sidecar(self) -> dict[str, set[str]] | None:
+        """The saved candidate map (cached on path + mtime); ``None`` if this
+        project has never been opened with its design in memory."""
+        path = self._topology_cands_sidecar_path()
+        if path is None:
+            return None
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return None
+        cache = getattr(self, "_topology_sidecar_cache", None)
+        if cache is not None and cache[0] == (path, mtime):
+            return cache[1]
+        from fypa.autosetup.manual import read_load_candidates
+
+        out = read_load_candidates(path)
+        self._topology_sidecar_cache = ((path, mtime), out)
         return out
 
     def _topology_preview_metadata(self) -> dict | None:

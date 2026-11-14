@@ -314,6 +314,24 @@ class _AttachedPdnMixin:
                         "net attachment summary failed")
             summary.setText(html)
             summary.setVisible(bool(html))
+        # Copper selection: the same primitive-properties form viewer mode
+        # shows (kind / polygon pour, net, layer, geometry), below the
+        # attached-PDN summary. Only touched in editor mode - in viewer mode
+        # the host is owned by _select_copper_primitive. Not repopulated
+        # while a Tab expansion of this selection is showing its group
+        # summary, so an unrelated panel refresh doesn't undo it.
+        if self._editor_mode:
+            hit = sel.get("hit") if kind == "copper" and sel else None
+            if hit is not None:
+                tab = self._tab_expand
+                if not (tab and tab["seed"] is sel and tab["level"]):
+                    try:
+                        self._populate_copper_props_form(hit)
+                    except Exception:
+                        logging.getLogger(__name__).exception(
+                            "copper properties form failed")
+                        hit = None
+            self._copper_props_host.setVisible(hit is not None)
         # The net inventory table is the "idle" view - show it only in
         # editor mode with nothing selected, so a component / marker /
         # copper selection gives its form (or hint) the full panel.

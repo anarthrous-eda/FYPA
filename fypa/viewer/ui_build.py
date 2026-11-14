@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QScrollArea,
+    QSizePolicy,
     QSlider,
     QTabWidget,
     QVBoxLayout,
@@ -557,6 +558,11 @@ class _UiBuildMixin:
             f" color: {_t['fg']}; background-color: {_t['bg']};"
             f" border-top: 1px solid {_t['border']}; }}"
         )
+        # Horizontal Ignored: a long hover readout must not set the plot's
+        # minimum width - it would squeeze the What-If panel (or grow the
+        # window) on every mouse move. Text past the plot edge is clipped.
+        self.probe_label_widget.setSizePolicy(
+            QSizePolicy.Ignored, QSizePolicy.Preferred)
         plot_layout.addWidget(self.probe_label_widget)
 
         # Editor-mode overlay buttons - live children of the GL viewer,

@@ -955,10 +955,16 @@ class _EditorSelectionMixin:
             ),
         ):
             net = self._named_copper_hit_on_layer(layer_id, pt)
-            if net is not None:
-                return {"net": net,
-                        "physical": visible.get(layer_id),
-                        "layer_id": layer_id}
+            if net is None:
+                continue
+            # Copper the net focus has taken off screen isn't "visible": skip
+            # it so the pick reaches the focused net's copper on a lower
+            # layer instead of stopping at a hidden top-layer pour.
+            if self._focus_blocks_pick(net, x, y, layer_id):
+                continue
+            return {"net": net,
+                    "physical": visible.get(layer_id),
+                    "layer_id": layer_id}
         return None
 
     def _all_copper_at_point_3d(self, x_px: float, y_px: float
