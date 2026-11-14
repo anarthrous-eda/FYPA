@@ -103,10 +103,10 @@ class _FileMenuMixin:
     # --- File menu ----------------------------------------------------------
 
     def _build_menubar(self) -> None:
-        """File menu so the viewer can be used standalone — pick a .PrjPcb
+        """File menu so the viewer can be used standalone - pick a .PrjPcb
         to solve and view, save the current solution, or open a
         previously-pickled solution."""
-        from fypa.viewer.app_menus import _build_help_menu, _build_recent_projects_menu
+        from fypa.viewer.app_menus import _build_help_menu
         from fypa.viewer.project_open import (
             _altium_import_auto_solve_status_tip,
             _altium_import_clean_status_tip,
@@ -137,14 +137,6 @@ class _FileMenuMixin:
         )
         file_menu.addAction(open_proj_clean)
 
-        from fypa.viewer.tomachie_menu import SHORTCUT, on_load_tomachie_pdn
-        load_pdn = QAction("Load &Tomachie pdn.json…", self)
-        load_pdn.setShortcut(SHORTCUT)
-        load_pdn.setStatusTip(
-            "Set up sources, regulators, series parts and loads from a Tomachie pdn.json")
-        load_pdn.triggered.connect(lambda: on_load_tomachie_pdn(self))
-        file_menu.addAction(load_pdn)
-
         # "Solve automatically on import" is set in Settings > General options,
         # not the File menu; the import flow reads the persisted pref directly.
 
@@ -158,16 +150,27 @@ class _FileMenuMixin:
         open_gerber.triggered.connect(self._on_menu_import_gerber)
         file_menu.addAction(open_gerber)
 
+        from fypa.viewer.tomachie_menu import add_load_custom_menu
+        add_load_custom_menu(self, file_menu)
+
         open_projfile = QAction("Open &Project File…", self)
         open_projfile.setShortcut("Ctrl+Shift+P")
         open_projfile.setStatusTip(
-            "Open a .fypa project file — its linked solution plus any "
+            "Open a .fypa project file - its linked solution plus any "
             "editor-mode changes."
         )
         open_projfile.triggered.connect(self._on_menu_open_project_file)
         file_menu.addAction(open_projfile)
 
-        _build_recent_projects_menu(file_menu, self)
+        # Main window only (the launcher has the Recent side panel): one
+        # item, no submenu - it pops up the same list the launcher shows.
+        open_recent = QAction("Open &Recent…", self)
+        open_recent.setStatusTip(
+            "Pick a recent design, project or solution - the same list as "
+            "the start window's Recent panel."
+        )
+        open_recent.triggered.connect(self._on_menu_open_recent)
+        file_menu.addAction(open_recent)
 
         file_menu.addSeparator()
 
@@ -215,17 +218,6 @@ class _FileMenuMixin:
         export_paraview.triggered.connect(self._on_menu_export_paraview)
         export_menu.addAction(export_paraview)
 
-        export_report = QAction("&Report…", self)
-        export_report.setShortcut("Ctrl+Shift+R")
-        export_report.setStatusTip(
-            "Write a design report (HTML or PDF) documenting the solved "
-            "rails: an executive summary of every rail's pass / fail status, "
-            "then each rail's voltage at loads, heatmaps, vias and "
-            "decoupling."
-        )
-        export_report.triggered.connect(self._on_menu_export_report)
-        export_menu.addAction(export_report)
-
         file_menu.addSeparator()
         close_proj = QAction("&Close Project", self)
         close_proj.setShortcut("Ctrl+W")
@@ -241,18 +233,35 @@ class _FileMenuMixin:
         quit_act.triggered.connect(self.close)
         file_menu.addAction(quit_act)
 
-        # View menu sits between File and Help.
+        # Menu bar order: File, View, Reports, Help.
         self._build_view_menu()
+        self._build_reports_menu()
         _build_help_menu(self)
 
+    def _build_reports_menu(self) -> None:
+        """Reports menu - its own top-level entry (rather than buried under
+        File > Export) so the design report is easy to find."""
+        reports_menu = self.menuBar().addMenu("&Reports")
+
+        generate = QAction("&Generate Report…", self)
+        generate.setShortcut("Ctrl+Shift+R")
+        generate.setStatusTip(
+            "Write a design report (HTML or PDF) documenting the solved "
+            "rails: an executive summary of every rail's pass / fail status, "
+            "then each rail's voltage at loads, heatmaps, vias and "
+            "decoupling."
+        )
+        generate.triggered.connect(self._on_menu_export_report)
+        reports_menu.addAction(generate)
+
     def _build_view_menu(self) -> None:
-        """View menu — the display toggles that used to be side-panel
+        """View menu - the display toggles that used to be side-panel
         checkboxes (2D/3D view, via heatmap, no-current copper colour, FEM
         mesh overlay).
 
         Each action drives its hidden backing checkbox via ``toggle()`` so
         the rest of the viewer's logic is untouched, and carries no
-        ``QShortcut`` of its own — the existing window hotkeys (see
+        ``QShortcut`` of its own - the existing window hotkeys (see
         :meth:`_install_hotkeys`) still own the keys, and the menu labels
         merely echo them. Labels flip with state; see
         :meth:`_refresh_view_menu_labels`."""
@@ -298,11 +307,21 @@ class _FileMenuMixin:
         self._act_show_mesh = QAction(self)
         self._act_show_mesh.setStatusTip(
             "Overlay the FEM triangulation on the heatmap as a fine dark "
-            "wireframe — useful for judging local mesh density."
+            "wireframe - useful for judging local mesh density."
         )
         self._act_show_mesh.triggered.connect(
             lambda: self.show_mesh_box.toggle())
         view_menu.addAction(self._act_show_mesh)
+
+        view_menu.addSeparator()
+        fit_act = QAction("Fit to board", self)
+        fit_act.setStatusTip(
+            "Reset the heatmap view so the whole board fills the viewport "
+            "- use it after panning or zooming far away from the board. "
+            "In 3D, also resets the camera angle."
+        )
+        fit_act.triggered.connect(self._fit_board_to_view)
+        view_menu.addAction(fit_act)
 
     def _refresh_view_menu_labels(self) -> None:
         """Update the View menu item labels to track the current display
@@ -345,7 +364,7 @@ class _FileMenuMixin:
     def _project_cache_dir_str(self) -> str:
         """Best-effort cache subfolder for the currently-loaded project,
         as a string suitable for QFileDialog. Empty string if we don't
-        know enough to compute one — the dialog will then default to the
+        know enough to compute one - the dialog will then default to the
         user's CWD."""
         if not self.metadata:
             return ""
@@ -364,7 +383,7 @@ class _FileMenuMixin:
             return ""
 
     def _on_menu_import_gerber(self) -> None:
-        """File > Import Gerber Files…  —  same flow as the launcher's
+        """File > Import Gerber Files…  -  same flow as the launcher's
         handler, but the resulting viewer replaces the current one.
 
         PdnViewer doesn't share LauncherWindow's ``_open_viewer_and_close``
@@ -415,7 +434,7 @@ class _FileMenuMixin:
         dlg.show()
         QApplication.processEvents()
         _sz = dlg.size()
-        # 2.5x Qt's default width — Gerber import stage labels are longer
+        # 2.5x Qt's default width - Gerber import stage labels are longer
         # than the solve dialog's ("Rendering 16 Gerber layers…", etc.)
         # and Qt's auto-sized width clips them.
         dlg.setFixedSize(int(_sz.width() * 2.5), _sz.height())
@@ -437,7 +456,7 @@ class _FileMenuMixin:
             except (RuntimeError, TypeError):
                 pass
             dlg.close()
-            # close() only hides the parented dialog — delete it so imports
+            # close() only hides the parented dialog - delete it so imports
             # don't leak one QProgressDialog each.
             dlg.deleteLater()
             # The worker may still be inside the non-interruptible ProcessPool
@@ -539,6 +558,7 @@ class _FileMenuMixin:
         project's cache folder) and write the current solution there. The
         embedded metadata still carries ``prjpcb_path`` + ``pcbdoc_path``
         so the saved file can drive a later Re-run / Reload Design Info."""
+        self._whatif_ensure_base()
         if self.solution is None:
             QMessageBox.information(
                 self, "Nothing to save",
@@ -586,7 +606,7 @@ class _FileMenuMixin:
         """File > Export > ParaView…  →  prompt for an output directory and
         write one ``.vtu`` per copper layer there (per-vertex voltage scalar
         field). The files open natively in ParaView for 3-D stackup views,
-        slicing, contours, etc. — see docs/user-guide/06-paraview-export.md.
+        slicing, contours, etc. - see docs/user-guide/06-paraview-export.md.
 
         On any failure we surface a short modal and leave the full traceback
         in the Messages tab / log file (via ``logger.exception``) so the
@@ -601,7 +621,7 @@ class _FileMenuMixin:
             return
         start_dir = self._project_cache_dir_str() or self._menu_start_dir()
         out_dir_str = QFileDialog.getExistingDirectory(
-            self, "Export to ParaView — pick output directory", start_dir,
+            self, "Export to ParaView - pick output directory", start_dir,
             options=_file_dialog_options() | QFileDialog.Option.ShowDirsOnly,
         )
         if not out_dir_str:
@@ -644,7 +664,7 @@ class _FileMenuMixin:
             f"Exported {n_files} ParaView VTU file(s) to {out_dir_str}", 5000)
         QMessageBox.information(
             self, "Export Successful",
-            f"Export Successful — wrote {n_files} VTU file(s) to:\n\n"
+            f"Export Successful - wrote {n_files} VTU file(s) to:\n\n"
             f"{out_dir_str}",
         )
 
@@ -696,8 +716,8 @@ class _FileMenuMixin:
         reopened project shows exactly the colours the user left even if a
         built-in default later changes. A ``"bottom"`` key is added only
         when the user pinned a distinct Bottom-side colour for a split
-        layer — i.e. the bottom colour is written only once changed."""
-        # Capacitor loop-inductance knobs — persisted whenever they've been
+        layer - i.e. the bottom colour is written only once changed."""
+        # Capacitor loop-inductance knobs - persisted whenever they've been
         # materialised (reading them is what the Capacitors tab / Settings
         # group does on first use). Overlay visibility is stored even when
         # overlay colours are not yet initialised.
@@ -761,13 +781,14 @@ class _FileMenuMixin:
         With ``solution_target`` the current solution is pickled there first
         and the project points at it (Save project + latest solver run).
 
-        The file work — copying the cache pickles beside the ``.fypa`` and
-        pickling the solution, hundreds of MB on a large design — runs on a
+        The file work - copying the cache pickles beside the ``.fypa`` and
+        pickling the solution, hundreds of MB on a large design - runs on a
         worker thread behind a progress dialog, so the window doesn't freeze.
         Everything that reads viewer state happens here on the GUI thread
         first; the worker only sees plain values."""
         if getattr(self, "_project_save_running", False):
             return False
+        self._whatif_ensure_base()
         proj = self._ensure_project()
         if path is None:
             path = self._project_path
@@ -789,6 +810,7 @@ class _FileMenuMixin:
         caches = self._project_pickle_paths()
         solution = self.solution
         metadata = self.metadata
+        saved_whatifs: list[dict] = []
 
         def _work(status):
             if solution_target is not None:
@@ -802,11 +824,15 @@ class _FileMenuMixin:
                 proj.solve_pickle = str(solution_target)
             # Copy the solve + design-info cache pickles into the project
             # folder so the .fypa references its own sidecars (relative
-            # paths) and the folder can be shared as a unit — see
+            # paths) and the folder can be shared as a unit - see
             # _bundle_caches_beside_project.
             self._bundle_caches_beside_project(
                 proj, path, status=status, caches=caches,
                 solution=solution, metadata=metadata)
+            # What-ifs: copy each result beside the .fypa, then record them.
+            status.begin("Saving what-ifs…")
+            saved_whatifs[:] = self._whatifs_for_save(path)
+            proj.what_ifs = list(saved_whatifs)
             status.begin(f"Writing project file ({path.name})…")
             try:
                 proj.save(path)
@@ -836,6 +862,7 @@ class _FileMenuMixin:
         self._project_path = path
         self._project_dirty = False
         self._display_dirty = False
+        self._whatif_adopt_saved_paths(saved_whatifs)
         self.statusBar().showMessage(f"Saved project to {path}", 5000)
         return True
 
@@ -942,6 +969,12 @@ class _FileMenuMixin:
         if path is not None:
             self._save_project(path)
 
+    def _on_menu_open_recent(self) -> None:
+        """File > Open Recent…  →  pop up the recent list; picking an entry
+        closes it and opens that entry in this window."""
+        from fypa.viewer.recent_panel import RecentDialog
+        RecentDialog(self).exec()
+
     def _on_menu_open_project_file(self) -> None:
         """File > Open Project File… → load a ``.fypa`` and open a viewer
         bound to it (its linked solution + editor directives)."""
@@ -1019,12 +1052,12 @@ class _FileMenuMixin:
              stackup_overrides) = self._gather_settings_from_form()
         except ValueError as e:
             self._settings_status_label.setText(
-                f"<span style='color:{_T()['err']};'>Invalid input — {_esc(str(e))}</span>"
+                f"<span style='color:{_T()['err']};'>Invalid input - {_esc(str(e))}</span>"
             )
             return
 
         # 3. Apply the new physics constants on the MAIN thread before
-        # the worker starts — keeps the monkey-patch ordering unambiguous
+        # the worker starts - keeps the monkey-patch ordering unambiguous
         # (any later main-thread code looking at module constants sees
         # the new values immediately).
         new_settings.apply_to_modules()
@@ -1056,7 +1089,7 @@ class _FileMenuMixin:
             pcbdoc_selector=pcbdoc_selector,
             dialog_title="Re-running solver",
             dialog_text=("Re-solving with new parameters…\n"
-                         "This can take 10–60 s depending on board size "
+                         "This can take 10-60 s depending on board size "
                          "and mesh density."),
             adaptive_regulator_gain=adaptive_gain,
         )
@@ -1086,7 +1119,7 @@ class _FileMenuMixin:
              stackup_overrides) = self._gather_settings_from_form()
         except ValueError as e:
             self._settings_status_label.setText(
-                f"<span style='color:{_T()['err']};'>Invalid input — {_esc(str(e))}</span>"
+                f"<span style='color:{_T()['err']};'>Invalid input - {_esc(str(e))}</span>"
             )
             return
 
@@ -1110,7 +1143,7 @@ class _FileMenuMixin:
             use_design_cache=False,
             dialog_title="Reloading design info",
             dialog_text=("Re-extracting design info from the .PrjPcb and "
-                         "re-solving…\nThis can take 10–60 s depending on "
+                         "re-solving…\nThis can take 10-60 s depending on "
                          "board size and mesh density."),
         )
 
@@ -1134,31 +1167,50 @@ class _FileMenuMixin:
         dialog_width_scale: float = 1.44,
         pending_altium_recent_pcbdoc: Path | None = None,
         pending_altium_from_recent: bool = False,
+        on_finished=None,
+        on_failed=None,
+        on_cancelled=None,
+        write_solve_cache: bool = True,
+        dialog_width_text: str | None = None,
     ) -> None:
         """Show an indeterminate progress dialog and run :class:`_SolveWorker`
         off-thread; on success, refresh this viewer in place via
         :meth:`_apply_solve_result`. Called by the Re-run button (with the
         Settings-tab form values) and by File > Import Altium Design (with
         defaults from the current viewer). Set ``use_design_cache=False`` for
-        the "Clean" / Reload Design Info flows that must re-extract."""
+        the "Clean" / Reload Design Info flows that must re-extract.
+
+        ``on_finished(solution, metadata, loaded)`` / ``on_failed(message)``
+        / ``on_cancelled()`` replace the default handlers (which swap the
+        result into this viewer, or on Cancel return to the launcher). The
+        What-If runner uses them to keep the base result in place.
+
+        With ``dialog_width_text`` the pop-up is sized as if it showed that
+        text and then shows ``dialog_text``, so it can match another pop-up's
+        width (the What-If runner matches the Resolve pop-up)."""
         if _reject_if_solve_running(self):
             return
+        self._whatif_ensure_base()
         if _reject_if_background_load_running(self):
             return
         if dialog_text is None:
             dialog_text = (f"Loading {prjpcb_path.name} and solving…\n"
-                           "This can take 10–60 s depending on board size "
+                           "This can take 10-60 s depending on board size "
                            "and mesh density.")
-        # Indeterminate (min == max == 0) — the C++ Triangle mesher doesn't
+        # Indeterminate (min == max == 0) - the C++ Triangle mesher doesn't
         # expose a progress hook, so we show a spinning barber-pole.
-        dlg = QProgressDialog(dialog_text, "Cancel", 0, 0, self)
+        dlg = QProgressDialog(dialog_width_text or dialog_text, "Cancel",
+                              0, 0, self)
         dlg.setWindowTitle(dialog_title)
         dlg.setWindowModality(Qt.ApplicationModal)
         dlg.setMinimumDuration(0)
         dlg.setAutoClose(False)
         dlg.setAutoReset(False)
         dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-        dlg.canceled.connect(self._on_solve_cancelled)
+        cancel_slot = (self._on_solve_cancelled if on_cancelled is None
+                       else on_cancelled)
+        dlg.canceled.connect(cancel_slot)
+        self._solve_cancel_slot = cancel_slot
         dlg.show()
         QApplication.processEvents()
         # 44% wider than Qt's auto-sized width so the longer per-stage
@@ -1167,9 +1219,11 @@ class _FileMenuMixin:
         # further via ``dialog_width_scale``.
         _sz = dlg.size()
         dlg.setFixedSize(int(_sz.width() * dialog_width_scale), _sz.height())
+        if dialog_width_text:
+            dlg.setLabelText(dialog_text)
 
         # Stash refs on ``self`` so the QThread + dialog survive past this
-        # handler returning — Qt + Python both need them alive until the
+        # handler returning - Qt + Python both need them alive until the
         # signals fire.
         worker = _SolveWorker(
             prjpcb_path, settings,
@@ -1195,6 +1249,7 @@ class _FileMenuMixin:
             pdn_corner=_tomachie_pdn_choice(self, prjpcb_path)[1],
             auto_series_max_ohm=getattr(
                 getattr(self, "_project", None), "auto_series_max_ohm", None),
+            write_solve_cache=write_solve_cache,
             parent=self,
         )
         if is_import:
@@ -1218,7 +1273,9 @@ class _FileMenuMixin:
         # context still must be preserved).
         if is_resolve is None:
             is_resolve = bool(editor_directives)
-        if is_resolve:
+        if on_finished is not None:
+            worker.finished_ok.connect(on_finished)
+        elif is_resolve:
             worker.finished_ok.connect(
                 lambda sol, meta, loaded: self._on_resolve_finished(
                     sol, meta, loaded, warn_a, pct, settings,
@@ -1231,7 +1288,8 @@ class _FileMenuMixin:
                     is_import=is_import,
                 )
             )
-        worker.failed.connect(self._on_solve_failed)
+        worker.failed.connect(
+            self._on_solve_failed if on_failed is None else on_failed)
         worker.finished.connect(self._cleanup_solve_worker)
         worker.start()
 
@@ -1248,14 +1306,17 @@ class _FileMenuMixin:
         dlg = getattr(self, "_solve_progress_dlg", None)
         if dlg is not None:
             # QProgressDialog.close() routes through reject() → cancel(),
-            # which emits canceled — and our canceled handler spawns a
+            # which emits canceled - and our canceled handler spawns a
             # launcher window. Drop the connection first so closing a
             # dialog whose worker finished naturally doesn't pop the
             # launcher on top of the new viewer.
             try:
-                dlg.canceled.disconnect(self._on_solve_cancelled)
+                dlg.canceled.disconnect(
+                    getattr(self, "_solve_cancel_slot", None)
+                    or self._on_solve_cancelled)
             except (RuntimeError, TypeError):
                 pass
+            self._solve_cancel_slot = None
             dlg.close()
             # close() only hides the dialog; it stays alive parented to the
             # window, leaking one QProgressDialog per solve/import. Schedule
@@ -1264,7 +1325,7 @@ class _FileMenuMixin:
             self._solve_progress_dlg = None
         worker = getattr(self, "_solve_worker", None)
         if worker is not None:
-            # Detach later — deleteLater is safer than direct del while
+            # Detach later - deleteLater is safer than direct del while
             # Qt is still emitting the finished() chain.
             worker.deleteLater()
             self._solve_worker = None
@@ -1276,7 +1337,7 @@ class _FileMenuMixin:
         from fypa.viewer.launcher import LauncherWindow
         # _abort_solve_worker retires the worker via _retire_thread, which
         # reparents it off ``self`` if it couldn't be reaped (the GIL-holding
-        # packaging case). That MUST happen before self.close() below —
+        # packaging case). That MUST happen before self.close() below -
         # otherwise destroying the viewer with the QThread still parented and
         # running would qFatal the process.
         _clear_pending_altium_recent(self)
@@ -1325,7 +1386,7 @@ class _FileMenuMixin:
         warn_a: float, pct: float, new_settings,
         *, is_import: bool = False,
     ) -> None:
-        """Worker emitted ``finished_ok`` — refresh this viewer in place."""
+        """Worker emitted ``finished_ok`` - refresh this viewer in place."""
         ok = self._apply_solve_result(
             new_solution, metadata, loaded_project, new_settings,
             warn_a, pct, is_import=is_import,
@@ -1339,7 +1400,7 @@ class _FileMenuMixin:
         self, new_solution, metadata: dict, loaded_project,
         warn_a: float, pct: float, new_settings,
     ) -> None:
-        """Resolve worker finished — refresh this viewer in place."""
+        """Resolve worker finished - refresh this viewer in place."""
         self._apply_solve_result(
             new_solution, metadata, loaded_project, new_settings,
             warn_a, pct, mark_solved_since_save=True,

@@ -75,7 +75,7 @@ begin
     Cmd := 'cmd.exe /K ""' + PyExe + '" "' + PyScript + '" ' +
            SUBCOMMAND + ' "' + PrjPath + '""';
 
-    // RunApplication is Altium DelphiScript's built-in process launcher —
+    // RunApplication is Altium DelphiScript's built-in process launcher -
     // no `uses` clause needed, and unlike Windows API calls (ShellExecute,
     // WinExec) it's available in DelphiScript without external declarations.
     try

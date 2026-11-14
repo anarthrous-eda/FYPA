@@ -8,7 +8,7 @@ import numpy as np
 # Overlay layers shown in the Heatmap tab's "Board Features" control, in
 # top-to-bottom row order. Each is (key, label, has_sides). A ``has_sides``
 # row carries a split button that breaks the row into separate Top / Bottom
-# rows. This list drives only the UI row order — the draw order is fixed
+# rows. This list drives only the UI row order - the draw order is fixed
 # independently in _refresh_overlay_geometry. Vias are handled by the
 # layer-based via cylinder / marker path (see :meth:`_push_via_cylinders`)
 # rather than as a Board Features overlay row.
@@ -26,7 +26,7 @@ _OVERLAY_LAYERS: list[tuple[str, str, bool]] = [
     ("npth", "Non Plated TH", False),
     # The mechanical board outline. It has no per-net association, so its
     # row carries only the "show everywhere" eye (no rails-only eye) and
-    # no fill toggle — see _build_overlay_row_widget.
+    # no fill toggle - see _build_overlay_row_widget.
     ("board_outline", "Board outline", False),
 ]
 
@@ -35,7 +35,7 @@ _OVERLAY_LAYERS: list[tuple[str, str, bool]] = [
 # Fill style a freshly-built overlay row starts in (True == solid square,
 # False == wire-mesh outline square). _OVERLAY_DEFAULT_SOLID is the
 # fallback; keys in _OVERLAY_WIREMESH_BY_DEFAULT start as wire-mesh
-# instead — Components defaults to wire-mesh so it reads as outlines and
+# instead - Components defaults to wire-mesh so it reads as outlines and
 # doesn't paint over the heatmap underneath.
 _OVERLAY_DEFAULT_SOLID = True
 
@@ -46,19 +46,19 @@ _OVERLAY_WIREMESH_BY_DEFAULT: frozenset[str] = frozenset({"components"})
 
 
 def _overlay_default_solid(key: str) -> bool:
-    """Initial fill style for the Board Features row ``key`` — solid
+    """Initial fill style for the Board Features row ``key`` - solid
     unless the key opts into wire-mesh via _OVERLAY_WIREMESH_BY_DEFAULT."""
     return key not in _OVERLAY_WIREMESH_BY_DEFAULT
 
 
 
 # ── Board Features default colours ──────────────────────────────────────────
-# Default RGB (each channel 0.0–1.0) every Board Features row is drawn in,
+# Default RGB (each channel 0.0-1.0) every Board Features row is drawn in,
 # picked to stand out against the viridis heatmap and from each other.
 #
-# This table is the single place to change a *default* — edit a tuple here
+# This table is the single place to change a *default* - edit a tuple here
 # and rebuild. At runtime each viewer copies it into ``self._overlay_colors``
-# (the primary colour — used by a merged row and the Top side of a split
+# (the primary colour - used by a merged row and the Top side of a split
 # one); the per-row colour-swatch button edits that copy. A split layer's
 # Bottom row may be given its own colour, kept in ``self._overlay_bottom_
 # colors`` (``None`` = follow the primary). Both are persisted to the .fypa
@@ -76,8 +76,8 @@ _OVERLAY_DEFAULT_COLORS: dict[str, tuple[float, float, float]] = {
 
 
 # Default Bottom-side colour for a Board Features layer. Applied to the
-# layer's bottom side — both the Bottom row of a split layer and the
-# bottom-side geometry of a merged row — so the two board faces stay
+# layer's bottom side - both the Bottom row of a split layer and the
+# bottom-side geometry of a merged row - so the two board faces stay
 # visually distinct. A layer absent here defaults to None: its Bottom
 # side simply follows the primary colour above. The colour-swatch button
 # overrides this per project.
@@ -92,7 +92,7 @@ _OVERLAY_DEFAULT_BOTTOM_COLORS: dict[str, tuple[float, float, float]] = {
 # World-space half-width (mm) of an overlay wire-mesh outline ribbon. The
 # Overlays control renders every outline as a thin filled ribbon (rather
 # than GL_LINES) so wire-mesh and solid fill share one GL triangle batch.
-# Coder-tunable — raise for a heavier wire-mesh, lower for a finer one.
+# Coder-tunable - raise for a heavier wire-mesh, lower for a finer one.
 _OVERLAY_WIRE_HALF_MM = 0.025
 
 
@@ -105,7 +105,7 @@ _OVERLAY_CIRCLE_SEGMENTS = 20
 # Editor-mode connectivity dimming for the all-copper overlay. When a
 # selection highlight is active, copper whose net is NOT connected to the
 # selection recedes. The overlay-fill batch has no per-vertex alpha (only
-# the heatmap mesh does — see _editor_alpha_array), so we fake the same
+# the heatmap mesh does - see _editor_alpha_array), so we fake the same
 # "0.1 alpha over background" look by pre-blending the colour toward the
 # editor-mode clear colour. Keep _EDITOR_OVERLAY_DIM_BG in sync with
 # gl_mesh_viewer._EDITOR_BG_HEX.
@@ -124,7 +124,7 @@ _EDITOR_MARKER_HIT_PX = 14.0
 
 
 # Glyph size + outline-width multiplier for the editor marker matching
-# the current selection — it draws this much larger / thicker than the
+# the current selection - it draws this much larger / thicker than the
 # unselected source / sink markers.
 _EDITOR_MARKER_SELECT_SCALE = 1.3
 
@@ -152,13 +152,13 @@ _EDITOR_SCHDOC = "(editor)"
 
 # Directive terminals carrying the return ("N-side") net. Their pin
 # markers are drawn with a green outline (vs black for the P side) and
-# skip the rail-visibility filter, so an N net — typically ground, and
-# rarely the rail being viewed — always shows its source / sink marker.
+# skip the rail-visibility filter, so an N net - typically ground, and
+# rarely the rail being viewed - always shows its source / sink marker.
 _N_SIDE_TERMINALS = frozenset({"N", "OUT_N", "IN_N"})
 
 
 
-# Outline colour for an N-side directive marker — green, to set the
+# Outline colour for an N-side directive marker - green, to set the
 # return-net markers apart from the black-outlined P-side ones.
 _N_NET_MARKER_EDGE = "#008000"
 
@@ -179,8 +179,8 @@ def _overlay_ribbon_offsets(polyline, half_w: float, *,
     """Mitered outer / inner edge points of a constant-width ribbon
     centred on ``polyline``.
 
-    Returns ``(pts, outer, inner)`` — the cleaned centre-line vertices
-    and the two offset edges, each a float64 ``(n, 2)`` array — or
+    Returns ``(pts, outer, inner)`` - the cleaned centre-line vertices
+    and the two offset edges, each a float64 ``(n, 2)`` array - or
     ``None`` when the polyline is too short to form a ribbon. The
     offset at each vertex bisects its two adjacent edge normals, so the
     band keeps a clean constant width even when the polyline has many
@@ -221,7 +221,7 @@ def _overlay_ribbon_offsets(polyline, half_w: float, *,
     bis = enorm + prev_norm
     blen = np.linalg.norm(bis, axis=1)
     # Near-hairpin (incoming ≈ -outgoing): bisector sum is near zero,
-    # normalised direction is numerically arbitrary. Treat as flat — the
+    # normalised direction is numerically arbitrary. Treat as flat - the
     # offset on either side of pts[i] is just ±enorm × half_w.
     flat = blen < 1e-3
     bis[flat] = enorm[flat]
@@ -229,12 +229,12 @@ def _overlay_ribbon_offsets(polyline, half_w: float, *,
     bis /= blen[:, None]
     # Miter length = half_w / cos(theta/2). Earlier iterations tried a
     # generous cap (4 × half_w) followed by a proper bevel-join split;
-    # both produced visible artifacts on dense PCB pour outlines — the
+    # both produced visible artifacts on dense PCB pour outlines - the
     # generous cap as long spikes, the bevel as small wedges at concave
     # corners where the inserted bevel quad oriented incorrectly
     # against the polygon interior. A tight clamp at |dot| ≥ 0.8 gives
     # a max miter offset of 1.25 × half_w (so any spike is ≤ 0.25 ×
-    # half_w ≈ 6 µm at default half_w — sub-pixel at every zoom we
+    # half_w ≈ 6 µm at default half_w - sub-pixel at every zoom we
     # render at) without touching the segment-quad structure of the
     # downstream tessellator. Note: |dot| is used so sign noise from
     # the near-hairpin branch above cannot invert the offset direction.
@@ -317,7 +317,7 @@ def _overlay_cap_arc(center, p_from, outward,
     Sweeps a half-circle of radius ``|p_from - center|`` starting at
     ``p_from`` and bulging toward ``outward`` (the ribbon's travel
     direction at that end), ending at the antipode of ``p_from``. Returns
-    ``segments - 1`` interior points as a float64 ``(k, 2)`` array — the
+    ``segments - 1`` interior points as a float64 ``(k, 2)`` array - the
     two diametric endpoints are supplied by the caller from the outer /
     inner offset edges, so they are omitted to avoid duplicate vertices."""
     center = np.asarray(center, dtype=np.float64)
@@ -341,7 +341,7 @@ def _overlay_cap_arc(center, p_from, outward,
 
 def _overlay_ribbon_outline_tris(polyline, half_w: float, wire_w: float, *,
                                  closed: bool) -> np.ndarray:
-    """Wire-mesh of a constant-width ribbon — its hollow perimeter.
+    """Wire-mesh of a constant-width ribbon - its hollow perimeter.
 
     Traces the boundary of the band :func:`_overlay_outline_tris` would
     fill and renders that boundary as its own thin ribbon of half-width
@@ -366,7 +366,7 @@ def _overlay_ribbon_outline_tris(polyline, half_w: float, wire_w: float, *,
     # into a single closed perimeter (matching the round caps the solid
     # fill style draws as separate circles). At an open end the offset is
     # exactly ±half_w along the edge normal, so outer[-1] / inner[-1] are
-    # antipodal on the cap circle — the arc joins them cleanly.
+    # antipodal on the cap circle - the arc joins them cleanly.
     end_cap = _overlay_cap_arc(pts[-1], outer[-1], pts[-1] - pts[-2])
     start_cap = _overlay_cap_arc(pts[0], inner[0], pts[0] - pts[1])
     ring = np.concatenate([outer, end_cap, inner[::-1], start_cap], axis=0)
@@ -472,7 +472,7 @@ def _rec_slot_tuple(rec: dict
     :func:`fypa.altium.loader._slot_record_fields`): ``slot_length_mm`` is
     the long axis, ``slot_width_mm`` the drilled bore (short axis),
     ``slot_rotation_deg`` the absolute rotation and ``slot_kind`` selects the
-    end style — ``rounded`` is ``True`` for an obround slot, ``False`` for a
+    end style - ``rounded`` is ``True`` for an obround slot, ``False`` for a
     square-cornered rectangle."""
     if not rec.get("is_slot"):
         return None

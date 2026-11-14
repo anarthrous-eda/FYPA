@@ -11,7 +11,6 @@ from fypa.viewer.prefs import (
     _remove_recent_project_entry,
     load_adaptive_regulator_gain,
     load_auto_solve_on_import,
-    load_recent_open_clean,
     record_recent_project,
 )
 from fypa.viewer.session import (
@@ -57,7 +56,7 @@ def _altium_import_worker_options(
                 "dialog_title": "Loading project (clean)",
                 "dialog_text": (
                     f"Loading {prjpcb_name} and solving…\n"
-                    "This can take 10–60 s depending on board size and mesh "
+                    "This can take 10-60 s depending on board size and mesh "
                     "density."
                 ),
             }
@@ -81,7 +80,7 @@ def _altium_import_worker_options(
             "dialog_text": (
                 f"Checking solve cache for {prjpcb_name}…\n"
                 "On a cache miss this falls through to a full extract + solve "
-                "(10–60 s depending on board size)."
+                "(10-60 s depending on board size)."
             ),
         }
     return {
@@ -314,7 +313,7 @@ def _start_launcher_altium_solve(
     """Launcher-only: run :class:`_SolveWorker` for an Altium import.
 
     Uses the launcher's :attr:`_solve_settings` (Settings tab / CLI ``gui``
-    overrides) and the persisted adaptive-gain preference — same inputs as
+    overrides) and the persisted adaptive-gain preference - same inputs as
     File > Import from an already-open viewer.
     """
     if _reject_if_solve_running(window):
@@ -409,7 +408,7 @@ def _schedule_cli_altium_import(window, target: dict) -> None:
         for key, value in overrides.items():
             setattr(settings, key, float(value))
         # The Settings tab was populated from ``settings`` during __init__, so
-        # its line edits still show the pre-override values — they would read
+        # its line edits still show the pre-override values - they would read
         # as user edits (dirty red outline) and would overwrite the CLI values
         # if the user pressed Apply. Push the new values into the widgets.
         _resync_settings_fields(window, overrides)
@@ -512,7 +511,7 @@ def _open_altium_project_at(
 
 def _gerber_import_inputs_from_recent(entry: dict):
     """Rebuild ``(GerberImportResult, pseudo_prjpcb)`` from a ``gerber``
-    recent entry — the same inputs the import dialogs produced last time,
+    recent entry - the same inputs the import dialogs produced last time,
     so the re-import skips the picker / mapping / stackup dialogs."""
     from fypa.gerber.extract import GerberStackupLayer
     from fypa.gerber.import_ui import GerberImportResult
@@ -568,12 +567,11 @@ def _open_recent_gerber(window, entry: dict) -> None:
 
 
 
-def _open_recent_project(window, entry: dict, *, clean: bool | None = None) -> None:
+def _open_recent_project(window, entry: dict, *, clean: bool = False) -> None:
     """Re-open a persisted recent-project entry.
 
-    *clean* only affects Altium entries. ``None`` (File > Recent Projects)
-    follows the "re-import recent clean" preference; the launcher's Recent
-    panel passes it explicitly from whichever of its two icons was clicked.
+    *clean* only affects Altium entries; the launcher's Recent panel passes
+    it from whichever of its two icons (Load / Clean) was clicked.
     """
     kind = entry.get("kind")
     if kind == "fypa":
@@ -588,6 +586,6 @@ def _open_recent_project(window, entry: dict, *, clean: bool | None = None) -> N
             window,
             Path(entry["prjpcb_path"]),
             Path(pcbdoc) if pcbdoc else None,
-            clean=load_recent_open_clean() if clean is None else bool(clean),
+            clean=bool(clean),
             from_recent=True,
         )

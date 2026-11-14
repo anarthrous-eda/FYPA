@@ -5,7 +5,7 @@ per-mesh reference.
 one global vectorised pass instead of one ``laplace_operator`` call per mesh.
 This test drives the real mesh pipeline on a multi-layer problem and asserts
 the assembled sparse matrix is *exactly* equal to the one the per-mesh path
-produces — same sparsity and byte-identical values — so the optimisation can
+produces - same sparsity and byte-identical values - so the optimisation can
 never silently change a solve.
 """
 from __future__ import annotations
@@ -23,7 +23,7 @@ _CU = 5.95e4 * 0.035
 
 def _multi_mesh_pipeline():
     """Build several disjoint copper strips and run the solve's mesh stages,
-    returning (meshes, conductances, vindex) — the inputs to the Laplace
+    returning (meshes, conductances, vindex) - the inputs to the Laplace
     assembly. Distinct conductances per layer exercise the per-mesh scaling."""
     layers = []
     for i in range(4):

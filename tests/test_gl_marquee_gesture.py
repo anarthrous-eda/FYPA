@@ -1,6 +1,6 @@
 """The editor-mode rubber-band gesture in the GL viewport.
 
-Left-drag in the viewport used to be dead input — tracked only so an
+Left-drag in the viewport used to be dead input - tracked only so an
 accidental wobble would not read as a click. Editor mode now claims it as a
 marquee, which puts it next to three gestures it must not disturb: the
 click that selects one object, the free-marker drag, and the right/middle
@@ -168,7 +168,7 @@ def test_no_marquee_outside_editor_mode(gl):
 
 def test_no_marquee_in_3d(gl):
     """A box swept across a perspective view would not mean what it looks
-    like, so the gesture is 2D only — same gate as the marker drag."""
+    like, so the gesture is 2D only - same gate as the marker drag."""
     gl._view_mode = "3d"
     _drag(gl, 10, 10, 100, 80)
     assert gl._marquee_px is None

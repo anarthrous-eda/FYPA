@@ -3,24 +3,24 @@
 Produces an :class:`ExtractedProject` from a set of RS-274X Gerber files and
 NC-Drill (Excellon) files, populating only the fields needed downstream:
 
-* :attr:`shape_based_regions` — one per connected copper component per layer.
+* :attr:`shape_based_regions` - one per connected copper component per layer.
   Every Gerber primitive (flashed apertures, drawn tracks, arcs, regions)
   rasterises to Shapely; the polarity-aware union per layer is split into
   connected components, and each component is encoded as a single
   :class:`RawShapeBasedRegion` with straight outline + holes. Tracks / pads /
-  fills / regions / arcs all stay empty tuples — the downstream geometry
+  fills / regions / arcs all stay empty tuples - the downstream geometry
   builder accepts a project where copper lives entirely in
   ``shape_based_regions``.
 
-* :attr:`vias` — one per Excellon drill hit. ``hole_diameter_mm`` is exact;
+* :attr:`vias` - one per Excellon drill hit. ``hole_diameter_mm`` is exact;
   ``diameter_mm`` is ``hole_diameter_mm + 0.3`` (a coarse annular-ring
   heuristic, since Gerber/Excellon doesn't carry pad-vs-drill annulus info).
 
-* :attr:`stackup` — the user-supplied :class:`RawStackupLayer` list, chained
+* :attr:`stackup` - the user-supplied :class:`RawStackupLayer` list, chained
   Top → Bottom via ``next_layer_id`` so
   :meth:`ExtractedProject.enabled_copper_layer_ids` works.
 
-* :attr:`board_outline` — the largest exterior ring of the optional outline
+* :attr:`board_outline` - the largest exterior ring of the optional outline
   Gerber, or (failing that) the bounding box of unioned copper.
 
 Everything else (nets, pcb_components, sch_components, pads, texts, …) is
@@ -114,7 +114,7 @@ ARC_CHORD_TOLERANCE_MM: float = 0.025
 
 # --- filename classification --------------------------------------------------
 
-# Regex list — first match wins. Each entry is (compiled_re, layer_id) or
+# Regex list - first match wins. Each entry is (compiled_re, layer_id) or
 # (compiled_re, layer_id, inner_group) where ``inner_group`` is the regex
 # group holding the inner-layer number (1-based; mapped to id = 1 + n).
 def _re(p: str) -> re.Pattern[str]:
@@ -122,7 +122,7 @@ def _re(p: str) -> re.Pattern[str]:
 
 
 _CLASSIFIER_RULES: list[tuple[re.Pattern[str], int, int | None]] = [
-    # Top copper — Altium .GTL / .CMP, KiCad F.Cu / F_Cu, generic top.cu
+    # Top copper - Altium .GTL / .CMP, KiCad F.Cu / F_Cu, generic top.cu
     (_re(r"\.gtl$"), LAYER_ID_TOP, None),
     (_re(r"\.cmp$"), LAYER_ID_TOP, None),
     (_re(r"[._-]F[._-]?Cu[._-]?(?:gbr|ger|gtl)?$"), LAYER_ID_TOP, None),
@@ -134,23 +134,23 @@ _CLASSIFIER_RULES: list[tuple[re.Pattern[str], int, int | None]] = [
     (_re(r"[._-]B[._-]?Cu[._-]?(?:gbr|ger|gbl)?$"), LAYER_ID_BOTTOM, None),
     (_re(r"(?:^|[._-])bot(?:tom)?[._-]?(?:copper|layer|cu|signal)\b"), LAYER_ID_BOTTOM, None),
     (_re(r"_copper_signal_bot"), LAYER_ID_BOTTOM, None),
-    # Outline — Altium .GKO / .GM1, KiCad Edge.Cuts
+    # Outline - Altium .GKO / .GM1, KiCad Edge.Cuts
     (_re(r"\.gko$"), LAYER_ID_OUTLINE, None),
     (_re(r"\.gm1$"), LAYER_ID_OUTLINE, None),
     (_re(r"edge[._-]?cuts?"), LAYER_ID_OUTLINE, None),
     (_re(r"(?:^|[._-])outline\b"), LAYER_ID_OUTLINE, None),
     (_re(r"(?:^|[._-])board[._-]?outline\b"), LAYER_ID_OUTLINE, None),
     (_re(r"keep[._-]?out"), LAYER_ID_OUTLINE, None),
-    # Drill — Excellon
+    # Drill - Excellon
     (_re(r"\.drl$"), LAYER_ID_DRILL, None),
     (_re(r"\.xln$"), LAYER_ID_DRILL, None),
     (_re(r"\.tap$"), LAYER_ID_DRILL, None),
     (_re(r"\.nc$"), LAYER_ID_DRILL, None),
-    # Drill — Gerber X2 (Altium emits .GBR<n> with %TF.FileFunction,…,Drill*%
-    # for PTH / NPTH / blind / buried / microvia drill data — these carry the
+    # Drill - Gerber X2 (Altium emits .GBR<n> with %TF.FileFunction,…,Drill*%
+    # for PTH / NPTH / blind / buried / microvia drill data - these carry the
     # actual drill coordinates AND the layer span per file).
     (_re(r"\.gbr\d+$"), LAYER_ID_DRILL, None),
-    # Drill *drawing* (.GD<n>) / *guide* (.GG<n>): graphical fab sheets only —
+    # Drill *drawing* (.GD<n>) / *guide* (.GG<n>): graphical fab sheets only -
     # NonConductor symbols at hole positions, NOT machine-readable drill data.
     # The fallthrough would already ignore them; rules are explicit so a
     # future inner-layer regex can't accidentally pick them up as copper.
@@ -161,13 +161,13 @@ _CLASSIFIER_RULES: list[tuple[re.Pattern[str], int, int | None]] = [
     (_re(r"\.gbo$"), LAYER_ID_SILK_BOT, None),
     (_re(r"[._-]F[._-]?SilkS"), LAYER_ID_SILK_TOP, None),
     (_re(r"[._-]B[._-]?SilkS"), LAYER_ID_SILK_BOT, None),
-    # Internal plane — Altium .GP1 / .GP2 ... (negative-image artwork). These
+    # Internal plane - Altium .GP1 / .GP2 ... (negative-image artwork). These
     # ARE copper layers (power/ground planes); the renderer detects the
     # %IPNEG negative image and floods+subtracts. Must precede the .G<n> rule
     # so ".gp1" isn't mis-read, and mapped as inner copper so the plane is
     # offered in the mapping dialog instead of silently ignored.
     (_re(r"\.gp(\d+)$"), 0, 1),                 # Altium internal plane; group 1 = N
-    # Inner copper — Altium .G1 / .G2 ..., KiCad In1.Cu / In2.Cu,
+    # Inner copper - Altium .G1 / .G2 ..., KiCad In1.Cu / In2.Cu,
     # generic "innerN" / "L<N>".
     (_re(r"\.g(\d+)$"), 0, 1),                  # Altium inner; group 1 = N
     (_re(r"In(\d+)[._-]?Cu"), 0, 1),
@@ -212,8 +212,8 @@ def classify_file(path: Path) -> int:
     name = path.name
     # `.txt` is ambiguous: Altium/KiCad NC-drill is commonly emitted as
     # `*.TXT`, but so are readmes / pick-and-place / BOM files. No filename
-    # rule can tell them apart, so gate `.txt` on a positive content signal —
-    # an Excellon `M48` header — before calling it a drill file. Everything
+    # rule can tell them apart, so gate `.txt` on a positive content signal -
+    # an Excellon `M48` header - before calling it a drill file. Everything
     # else falls through to the ordinary filename rules (→ Ignore).
     if path.suffix.lower() == ".txt" and _sniff_excellon_header(path):
         return LAYER_ID_DRILL
@@ -268,7 +268,7 @@ def classify_files(paths: Iterable[Path]) -> ClassifiedFiles:
 # --- gerbonara primitive → Shapely -------------------------------------------
 
 def _circle_to_polygon(x: float, y: float, r: float) -> shapely.geometry.Polygon:
-    # Use shapely's ``buffer`` on a point — gives a uniform-edge circle with
+    # Use shapely's ``buffer`` on a point - gives a uniform-edge circle with
     # quad_segs controlling vertex density. We size quad_segs from the radius
     # so very large copper flashes still have smooth edges.
     if r <= 0:
@@ -281,7 +281,7 @@ def _circle_to_polygon(x: float, y: float, r: float) -> shapely.geometry.Polygon
 def _rectangle_to_polygon(x: float, y: float, w: float, h: float,
                           rotation: float = 0.0) -> shapely.geometry.Polygon:
     # gerbonara Rectangle's (x,y) is the CENTRE; ``rotation`` is in
-    # **radians** (per gerbonara.graphic_primitives.Rectangle's source —
+    # **radians** (per gerbonara.graphic_primitives.Rectangle's source -
     # "rotation around center in radians"). shapely.affinity.rotate
     # needs us to opt in via ``use_radians=True``; treating the value as
     # degrees would silently turn a 90° rotation (π/2 ≈ 1.57 rad) into
@@ -298,7 +298,7 @@ def _rectangle_to_polygon(x: float, y: float, w: float, h: float,
 
 def _line_to_polygon(x1: float, y1: float, x2: float, y2: float,
                      width: float) -> shapely.geometry.Polygon:
-    # Round-capped stroke — matches Gerber's round-aperture stroking when
+    # Round-capped stroke - matches Gerber's round-aperture stroking when
     # the aperture is a circle, which is by far the common case. Square /
     # rectangular apertures along a draw would need a flat-cap buffer, but
     # gerbonara collapses those into a sequence of Rectangle primitives
@@ -317,7 +317,7 @@ def _arc_to_polygon(x1: float, y1: float, x2: float, y2: float,
     """Discretise the arc to a polyline and buffer to a round-capped stroke.
 
     Gerber encodes a **full circle** as an arc whose start point equals
-    its end point — both atan2 angles are then identical and a naive
+    its end point - both atan2 angles are then identical and a naive
     sweep computation gives 0, collapsing the LineString to a single
     point and rendering as a tiny disc the size of the pen tip instead
     of the intended stroked circle. We detect that case (p1 == p2 to
@@ -350,7 +350,7 @@ def _arc_to_polygon(x1: float, y1: float, x2: float, y2: float,
         a1 = a0 - 2.0 * math.pi if clockwise else a0 + 2.0 * math.pi
     else:
         a1 = math.atan2(y2 - cy, x2 - cx)
-        # Sweep direction — counter-clockwise is standard math (positive
+        # Sweep direction - counter-clockwise is standard math (positive
         # delta); Gerber uses clockwise=True for negative-direction arcs.
         if clockwise:
             if a1 > a0:
@@ -379,7 +379,7 @@ def _tessellate_arcpoly_ring(outline, arc_centers) -> list[tuple[float, float]]:
 
     ``outline`` is the list of ring vertices (first and last implicitly
     connected). ``arc_centers`` parallels it: ``None`` for a straight segment,
-    or a ``(clockwise, (cx, cy))`` tuple for an arc segment — that is
+    or a ``(clockwise, (cx, cy))`` tuple for an arc segment - that is
     gerbonara's own format (see ``gerbonara.graphic_primitives.ArcPoly``:
     "Arc segments have ``(clockwise, (cx, cy))`` tuple with cx, cy being
     absolute coords").
@@ -391,12 +391,12 @@ def _tessellate_arcpoly_ring(outline, arc_centers) -> list[tuple[float, float]]:
       ``cy`` to the centre tuple, so ``math.hypot`` raised ``TypeError`` on the
       first real arc. That exception propagated up to the per-layer guard in
       :func:`extract_gerber_project`, which dropped the *entire copper layer*
-      with only a warning — any region with a rounded (arc) corner lost all
+      with only a warning - any region with a rounded (arc) corner lost all
       its copper.
     * **Sweep direction.** Region arcs may sweep up to a full turn and the
       direction is significant (a 270° CW arc and a 90° CCW arc share
       endpoints but bound different areas), so we honour the ``clockwise``
-      flag instead of always taking the short way around — the same convention
+      flag instead of always taking the short way around - the same convention
       :func:`_arc_to_polygon` uses for stroked arcs.
     """
     import math
@@ -443,7 +443,7 @@ def _tessellate_arcpoly_ring(outline, arc_centers) -> list[tuple[float, float]]:
 
 
 def _arcpoly_to_polygon(outline, arc_centers) -> shapely.geometry.Polygon:
-    """Region (filled polygon) — straight + arc segments.
+    """Region (filled polygon) - straight + arc segments.
 
     Discretises via :func:`_tessellate_arcpoly_ring` (which handles gerbonara's
     ``(clockwise, (cx, cy))`` arc format and arc direction) and lets shapely
@@ -535,7 +535,7 @@ def _flash_polygon_cached(prim, cache: dict) -> shapely.geometry.Polygon | None:
 @dataclass(frozen=True)
 class _ResolvedFlash:
     """A hole-bearing aperture flash whose hole was resolved locally (``pad −
-    hole``) before entering the polarity-flip machinery — see
+    hole``) before entering the polarity-flip machinery - see
     :func:`_resolve_hole_flashes`. Always dark (added copper); the hole is
     already carved out of ``poly``."""
     poly: shapely.geometry.base.BaseGeometry
@@ -548,7 +548,7 @@ def _flash_with_hole_cached(prim, hole_rs: tuple[float, ...],
     parameters and translating it to the flash position.
 
     Concentric hole circles are subtracted from the pad locally, so the hole is
-    transparent only to the pad's own copper — never to whatever copper already
+    transparent only to the pad's own copper - never to whatever copper already
     sits under the flash (Gerber spec §4.4.6). Shares ``cache`` with
     :func:`_flash_polygon_cached`; the ``"CH"`` / ``"RH"`` key prefixes keep the
     two namespaces from colliding.
@@ -600,13 +600,13 @@ def _is_concentric_hole(clr, flash) -> bool:
     r = float(clr.r)
     if r <= 0:
         return False
-    tol = 1e-6  # mm — gerbonara emits pad and hole at the identical flash centre
+    tol = 1e-6  # mm - gerbonara emits pad and hole at the identical flash centre
     if (abs(float(clr.x) - float(flash.x)) > tol
             or abs(float(clr.y) - float(flash.y)) > tol):
         return False
     # A genuine aperture hole is strictly smaller than the pad it sits in. If a
     # concentric clear is *larger* than the pad it is not a standard hole (it is
-    # some deliberate clearance) — leave it to the normal polarity path.
+    # some deliberate clearance) - leave it to the normal polarity path.
     if isinstance(flash, gp.Circle):
         return r < float(flash.r) - 1e-9
     if isinstance(flash, gp.Rectangle):
@@ -621,8 +621,8 @@ def _resolve_hole_flashes(prims: list, cache: dict) -> list:
 
     Every other primitive passes through untouched and in order, so the
     caller's polarity-flip batching is unchanged for real clears. Only the
-    aperture-hole clears — which the photoplotter treats as transparent to
-    underlying copper, not as a subtraction from it — are pulled out of the
+    aperture-hole clears - which the photoplotter treats as transparent to
+    underlying copper, not as a subtraction from it - are pulled out of the
     stream here."""
     import gerbonara.graphic_primitives as gp
     out: list = []
@@ -666,7 +666,7 @@ def _bbox_limited_difference(
         return base
     comps = _polygons_in(base)
     if len(comps) <= 1:
-        # A single (possibly holed) polygon — nothing to split; the difference
+        # A single (possibly holed) polygon - nothing to split; the difference
         # against it is unavoidable.
         return base.difference(cutter)
     cminx, cminy, cmaxx, cmaxy = cutter.bounds
@@ -699,12 +699,12 @@ _IP_NEG_RE = re.compile(r"%\s*IP\s*NEG\s*\*\s*%", re.IGNORECASE)
 
 def _gerber_is_negative_image(gerber_path: Path) -> bool:
     """True if the Gerber file carries an ``%IPNEG*%`` (image-polarity
-    negative) statement — the deprecated way plane layers are plotted as
+    negative) statement - the deprecated way plane layers are plotted as
     negative artwork. Sniffs the raw text (the header sits in the first few
     hundred bytes) rather than relying on gerbonara, which does not expose the
     resolved image polarity on the parsed file object."""
     try:
-        # Read only the first 4 KB — the IP header sits in the first few
+        # Read only the first 4 KB - the IP header sits in the first few
         # hundred bytes. read_text() would decode the ENTIRE file (tens of MB on
         # a dense copper layer) just to slice off the head, once per copper
         # layer, on top of gerbonara's own full parse.
@@ -733,11 +733,11 @@ def render_gerber_to_shapely(gerber_path: Path) -> shapely.geometry.base.BaseGeo
     # internal-plane plot (Altium's default .GP<n> artwork) draws the
     # anti-pads/clearances as artwork against an implied solid-copper field.
     # gerbonara does not synthesise that field, so the layer otherwise renders
-    # as a few tiny discs at the anti-pad sites — the plane the tool most needs
+    # as a few tiny discs at the anti-pad sites - the plane the tool most needs
     # is lost. Sniff the raw text for the IP-negative statement; if present,
     # seed the accumulator with a flood over the object bounding box and treat
     # every object as a CLEAR that carves the anti-pads out of the field. The
-    # bbox is a local proxy for the board outline (unavailable here) — slightly
+    # bbox is a local proxy for the board outline (unavailable here) - slightly
     # undersized at the board edge, but vastly better than tiny-disc output.
     # Guarded on the statement, so a normal positive layer is never touched.
     _is_negative = _gerber_is_negative_image(gerber_path)
@@ -745,11 +745,11 @@ def render_gerber_to_shapely(gerber_path: Path) -> shapely.geometry.base.BaseGeo
     if _is_negative:
         try:
             (x0, y0), (x1, y1) = gf.bounding_box(MM)
-            pad = 0.5  # mm — small margin so edge anti-pads stay inside
+            pad = 0.5  # mm - small margin so edge anti-pads stay inside
             _neg_background = shapely.geometry.box(
                 x0 - pad, y0 - pad, x1 + pad, y1 + pad)
             log.warning(
-                "%s: negative-image (IP NEG) layer — flooding the object "
+                "%s: negative-image (IP NEG) layer - flooding the object "
                 "bounding box and subtracting clears. Plane extent is "
                 "approximated by the artwork bbox, not the board outline; "
                 "verify the plane copper near the board edge.",
@@ -757,7 +757,7 @@ def render_gerber_to_shapely(gerber_path: Path) -> shapely.geometry.base.BaseGeo
             )
         except Exception as e:
             log.warning("%s: negative-image layer but bbox flood failed (%s) "
-                        "— layer may render empty.", gerber_path.name, e)
+                        "- layer may render empty.", gerber_path.name, e)
 
     # Stream the objects in file order, batching consecutive same-polarity
     # primitives into one unary_union per batch (much faster than unioning
@@ -766,7 +766,7 @@ def render_gerber_to_shapely(gerber_path: Path) -> shapely.geometry.base.BaseGeo
     # ``difference``.
     #
     # Within a batch, stroked primitives (Lines / Arcs) are grouped by pen
-    # width and buffered ONCE per width as a single MultiLineString —
+    # width and buffered ONCE per width as a single MultiLineString -
     # geometrically identical to buffering each stroke separately (buffer
     # distributes over union), but one GEOS call instead of N. Flashed
     # apertures (Circles / Rectangles) go through a per-aperture template
@@ -802,7 +802,7 @@ def render_gerber_to_shapely(gerber_path: Path) -> shapely.geometry.base.BaseGeo
         # Positive images: fold each hole-bearing flash (dark pad + concentric
         # clear circle) into one ``pad − hole`` polygon so the hole stays
         # transparent to the pad's own copper but never erases copper already
-        # laid down underneath it (Gerber spec §4.4.6 — finding 4.1). Negative
+        # laid down underneath it (Gerber spec §4.4.6 - finding 4.1). Negative
         # images already invert polarity below and are planes, not pad flashes,
         # so we leave that path untouched.
         items = prims if _is_negative else _resolve_hole_flashes(prims, flash_cache)
@@ -866,7 +866,7 @@ def render_gerber_to_shapely(gerber_path: Path) -> shapely.geometry.base.BaseGeo
         _flush()
     if flip_count >= _POLARITY_FLIP_WARN_THRESHOLD:
         log.warning(
-            "%s: %d dark/clear polarity flips — each forces a full-layer "
+            "%s: %d dark/clear polarity flips - each forces a full-layer "
             "union/difference, so render time on this layer scales with the "
             "flip count. If this layer is slow, the source Gerber interleaves "
             "positive and clearance artwork per pour.",
@@ -961,8 +961,8 @@ def render_outline_to_polyline(gerber_path: Path) -> tuple[Pt2D, ...]:
                     segments.append((pts[i], pts[i + 1]))
             elif isinstance(prim, gp.ArcPoly):
                 # Each ArcPoly is already a closed region. A board-outline
-                # layer routinely carries SEVERAL — the board contour plus
-                # cutouts, mousebites, or fiducial keepouts — and there is no
+                # layer routinely carries SEVERAL - the board contour plus
+                # cutouts, mousebites, or fiducial keepouts - and there is no
                 # guarantee the true contour comes first (a cutout or fiducial
                 # can precede it). Collect them all and pick the largest by
                 # area below, rather than returning whichever came first.
@@ -1023,7 +1023,7 @@ def render_outline_to_polyline(gerber_path: Path) -> tuple[Pt2D, ...]:
     # small cutout / fiducial can never win over the real board contour.
     candidates = rings + arcpoly_rings
     if not candidates:
-        # Couldn't stitch a closed loop — fall back to the slow path so
+        # Couldn't stitch a closed loop - fall back to the slow path so
         # we still get *some* outline (convex-hull-ish via the buffered
         # union pipeline).
         outline_geom = render_outline_to_shapely(gerber_path)
@@ -1031,7 +1031,7 @@ def render_outline_to_polyline(gerber_path: Path) -> tuple[Pt2D, ...]:
 
     # Absolute polygon area via the shoelace formula. Uses a modular index so
     # it is correct whether the ring is explicitly closed (stitched rings
-    # carry a duplicated first==last vertex) or open (ArcPoly rings do not) —
+    # carry a duplicated first==last vertex) or open (ArcPoly rings do not) -
     # the wrap-around closing edge is zero-length in the closed case.
     def shoelace(pts: list[tuple[float, float]]) -> float:
         n = len(pts)
@@ -1122,7 +1122,7 @@ def _x2_drill_span_to_layer_ids(
 ) -> tuple[int, int] | None:
     """Translate the X2 ``%TF.FileFunction`` span into FYPA layer ids.
 
-    FileFunction is e.g. ``('Plated', '1', '16', 'PTH', 'Drill')`` — the two
+    FileFunction is e.g. ``('Plated', '1', '16', 'PTH', 'Drill')`` - the two
     integers are **1-based physical layer positions** (1 = top, N = bottom)
     in the originating CAD. We map position k → ``ordered_layer_ids[k-1]``.
 
@@ -1139,7 +1139,7 @@ def _x2_drill_span_to_layer_ids(
     Note the in-range mapping still assumes the imported layers are the full
     contiguous stack top-down; a non-contiguous subset can mis-map even
     in-range positions, but that needs the originating stack depth we don't
-    have here — the out-of-range drop covers the cross-plane hazard.
+    have here - the out-of-range drop covers the cross-plane hazard.
     """
     if not ordered_layer_ids:
         return (LAYER_ID_TOP, LAYER_ID_BOTTOM)
@@ -1160,7 +1160,7 @@ def _x2_drill_span_to_layer_ids(
         return (ordered_layer_ids[0], ordered_layer_ids[-1])
     lo, hi = sorted((start_pos, end_pos))
     if lo < 1 or hi > n:
-        return None  # references layer positions we didn't import — caller drops
+        return None  # references layer positions we didn't import - caller drops
     return (ordered_layer_ids[lo - 1], ordered_layer_ids[hi - 1])
 
 
@@ -1202,13 +1202,13 @@ def _preprocess_excellon_g85(text: str) -> tuple[str, int]:
     """Split inline G85 canned-slot cycles so gerbonara can parse the file.
 
     gerbonara 1.5.0 has no G85 rule and raises on the first ``G85`` line,
-    aborting the ENTIRE drill file — so a single oval hole exported as G85
+    aborting the ENTIRE drill file - so a single oval hole exported as G85
     (a very common CAM option) silently drops every via in the file. We split
     each ``X..Y..G85X..Y..`` line at the ``G85`` token into two coordinate
     hits: both slot endpoints become drill hits of the active tool, so the
     layer pair is bridged at each end (the slot middle isn't stamped, but that
     is a strict improvement over losing the file). Because we only insert a
-    line break — never touch the coordinate tokens — gerbonara's format /
+    line break - never touch the coordinate tokens - gerbonara's format /
     zero-suppression detection is unaffected. Returns ``(text, n_slots)``."""
     if "G85" not in text.upper():
         return text, 0
@@ -1231,12 +1231,12 @@ def _gerber_drill_to_vias(
 
     Plated (PTH / blind / buried / microvia) files become vias: round
     flashes (``gp.Circle`` primitives) → one via each; routed slots
-    (``gp.Line`` primitives — common for oval component-lead holes) get
+    (``gp.Line`` primitives - common for oval component-lead holes) get
     discretised into a chain of overlapping circular via stamps so they
     bridge the layer pair across the slot's full length in the FEM mesh.
 
     NonPlated files (mechanical / mounting holes) carry no electrical role,
-    so each flash / slot becomes a ``RawHole`` instead — drawn as the
+    so each flash / slot becomes a ``RawHole`` instead - drawn as the
     "Non Plated TH" Board Features overlay but never meshed.
     """
     import gerbonara.graphic_primitives as gp
@@ -1256,7 +1256,7 @@ def _gerber_drill_to_vias(
         return vias, npth, warnings
 
     file_function = gf.file_attrs.get(".FileFunction") if gf.file_attrs else None
-    # NonPlated = mechanical mounting holes, no electrical role — collect
+    # NonPlated = mechanical mounting holes, no electrical role - collect
     # them as NPTH holes (drawn, not meshed) rather than vias.
     is_npth = bool(file_function
                    and file_function[0].strip().lower() == "nonplated")
@@ -1341,7 +1341,7 @@ def _excellon_to_vias(
         if n_g85:
             warnings.append(
                 f"{path.name}: {n_g85} G85 canned-slot cycle(s) split into "
-                f"endpoint drill hits (gerbonara can't parse G85) — the slot "
+                f"endpoint drill hits (gerbonara can't parse G85) - the slot "
                 f"ends are bridged but the slot middle is not stamped."
             )
         try:
@@ -1440,10 +1440,10 @@ def _excellon_to_vias(
         if n_objs == 0:
             # A drill file that parsed to zero objects is almost always a parse
             # degradation (an unsupported construct gerbonara skipped), not a
-            # genuinely empty file — surface it loudly rather than silently
+            # genuinely empty file - surface it loudly rather than silently
             # importing a board with no interlayer bridges from this file.
             warnings.append(
-                f"{path.name}: parsed to 0 drill hits — the file may use an "
+                f"{path.name}: parsed to 0 drill hits - the file may use an "
                 f"unsupported construct; no vias/holes imported from it."
             )
     return vias, npth, warnings
@@ -1512,7 +1512,7 @@ def _build_stackup(layers: list[GerberStackupLayer],
 
     ``ordered_layer_ids`` is the active copper stack Top→Bottom (extracted
     from the layer assignments). ``layers`` carries the per-id thickness
-    info — must have one entry per id in ``ordered_layer_ids``.
+    info - must have one entry per id in ``ordered_layer_ids``.
     """
     by_id = {L.layer_id: L for L in layers}
     out: list[RawStackupLayer] = []
@@ -1572,7 +1572,7 @@ def extract_gerber_project(
     copper_files
         ``{layer_id: gerber_path}`` for each copper layer to import. ``layer_id``
         follows Altium convention (1 = Top, 32 = Bottom, 2..31 = inner).
-        Multiple files per layer are not supported in this version — pass the
+        Multiple files per layer are not supported in this version - pass the
         already-merged copper if you have positive + clearance plots.
     drill_files
         List of NC-Drill (Excellon) paths. May be empty; missing drill data
@@ -1591,7 +1591,7 @@ def extract_gerber_project(
 
     Returns
     -------
-    ``(extracted_project, warnings)`` — ``warnings`` is a list of
+    ``(extracted_project, warnings)`` - ``warnings`` is a list of
     human-readable strings to surface in the viewer's Messages tab.
     """
     warnings: list[str] = []
@@ -1610,12 +1610,12 @@ def extract_gerber_project(
     #    call is pure-CPU (gerbonara parse + Shapely/GEOS booleans) and
     #    each layer is independent, so for >1 layer we fan out to a
     #    ProcessPoolExecutor and gather (Multi)Polygon results back.
-    #    Windows uses spawn — keep the worker function module-level
+    #    Windows uses spawn - keep the worker function module-level
     #    (render_gerber_to_shapely is) and pass plain Paths.
     sbr_records: list[RawShapeBasedRegion] = []
     all_copper: list[shapely.geometry.base.BaseGeometry] = []
     # Every entry in copper_files is a COPPER layer. A render failure here is
-    # missing copper — a silently-wrong answer for a power-delivery tool — so
+    # missing copper - a silently-wrong answer for a power-delivery tool - so
     # unlike a soft outline/drill failure we collect these and hard-fail the
     # whole import below rather than opening a viewer with layers quietly
     # absent (traced only by a Messages-tab line). Collected across all layers
@@ -1778,7 +1778,7 @@ def extract_gerber_project(
         stackup_records = _build_stackup(stackup, ordered_ids)
 
     # 5. Assemble. Nets / pads / pcb_components / sch_components / tracks /
-    #    arcs / fills / regions all stay empty — the geometry builder
+    #    arcs / fills / regions all stay empty - the geometry builder
     #    handles a project where copper lives entirely in
     #    ``shape_based_regions``.
     project = ExtractedProject(

@@ -11,8 +11,8 @@ from fypa.viewer.widgets import _esc, _focus_pixmap
 
 
 # Item-data role carrying the net table's per-row payload ({name, area,
-# poly_keys, ...}) on the row's first cell. Stashing it on the item — rather
-# than indexing a parallel list by visual row — keeps click / rename handlers
+# poly_keys, ...}) on the row's first cell. Stashing it on the item - rather
+# than indexing a parallel list by visual row - keeps click / rename handlers
 # correct after the user re-sorts the table by clicking a column header.
 _NET_TABLE_ROW_ROLE = int(Qt.UserRole) + 1
 
@@ -25,7 +25,7 @@ class _EditorNetsMixin:
     # Class-level "no focus held" defaults, so the render / panel paths that
     # read them stay safe on a viewer built with ``__new__`` (the test stubs,
     # which skip ``__init__``). Frozen, because every write replaces the set
-    # rather than mutating it — an in-place mutation of a shared class
+    # rather than mutating it - an in-place mutation of a shared class
     # attribute would leak one viewer's focus into the next, so make it fail
     # loudly instead.
     _editor_focus_net: str | None = None
@@ -33,7 +33,7 @@ class _EditorNetsMixin:
     _editor_focus_polys: frozenset | set = frozenset()
 
     def _editor_focus_active(self) -> bool:
-        """True while a net focus is held — i.e. copper outside the focused
+        """True while a net focus is held - i.e. copper outside the focused
         net is being suppressed. Requires editor mode: focus is an editor
         control and must not leak into the viewer-mode heatmap."""
         return bool(
@@ -47,7 +47,7 @@ class _EditorNetsMixin:
         """Whether net focus suppresses this piece of copper entirely.
 
         The counterpart of :meth:`_editor_dim_rgb`'s dim test, but a hard
-        skip rather than a colour blend — focus means the other nets are
+        skip rather than a colour blend - focus means the other nets are
         gone, not faded. ``net`` alone settles it for real nets; unnamed /
         synthetic copper shares the ``"(none)"`` sentinel, so the
         polygon-identity set is what keeps the focused region drawn while
@@ -95,8 +95,8 @@ class _EditorNetsMixin:
                 and row.get("name") == self._editor_focus_net)
 
     def _set_editor_focus(self, row: dict | None) -> None:
-        """Focus the net described by ``row`` — from here on only its copper
-        draws — or release the focus when ``row`` is ``None``. Passing the
+        """Focus the net described by ``row`` - from here on only its copper
+        draws - or release the focus when ``row`` is ``None``. Passing the
         already-focused row toggles it off, so the crosshair is its own
         release.
 
@@ -138,7 +138,7 @@ class _EditorNetsMixin:
             self._render()
 
     def _hotkey_toggle_net_focus(self) -> None:
-        """F — release an active net focus, or focus the net the current
+        """F - release an active net focus, or focus the net the current
         editor selection sits on. A no-op outside editor mode, and on a
         selection with no single net to focus."""
         if not self._editor_mode:
@@ -176,7 +176,7 @@ class _EditorNetsMixin:
                 if len(nets) == 1:
                     name = next(iter(nets))
         if not name or name == "(none)":
-            # Fall back to the highlighted table row — the user may have
+            # Fall back to the highlighted table row - the user may have
             # clicked a row rather than the canvas.
             return self._selected_net_table_row()
         for r in getattr(self, "_net_table_rows", ()) or ():
@@ -221,7 +221,7 @@ class _EditorNetsMixin:
         # the top rather than shuffling rows by an empty display string.
         cell.setData(Qt.UserRole, 0 if on else 1)
         cell.setToolTip(
-            "Showing only this net — click to show all copper again (F)"
+            "Showing only this net - click to show all copper again (F)"
             if on else
             "Show only this net's copper, hiding every other net until "
             "clicked again. Keyboard: F"
@@ -252,7 +252,7 @@ class _EditorNetsMixin:
         chip.setVisible(show)
 
     def _on_editor_focus_chip_link(self, _href: str) -> None:
-        """"Show all" in the focus chip — release the focus."""
+        """"Show all" in the focus chip - release the focus."""
         self._clear_editor_focus()
 
     # --- Editor mode: net inventory table -----------------------------------
@@ -296,7 +296,7 @@ class _EditorNetsMixin:
 
     def _all_copper_poly_areas(self) -> dict[tuple[int, int], float]:
         """``{(layer_id, id(poly_dict)): area}`` for every polygon in
-        :meth:`_layer_strtrees`, from the areas it computed in bulk — the
+        :meth:`_layer_strtrees`, from the areas it computed in bulk - the
         same keys as :meth:`_all_copper_poly_maps`'s ``shape_by_key``.
         Cached the same way; callers must not mutate it."""
         strt = self._layer_strtrees()
@@ -389,7 +389,7 @@ class _EditorNetsMixin:
 
         The number is zero-padded to the width of the region count: 5
         regions → ``$NET_1``…``$NET_5``; 150 regions → ``$NET_001``…
-        ``$NET_150``. Idempotent — a region already named (real net or an
+        ``$NET_150``. Idempotent - a region already named (real net or an
         existing CopperName) is skipped, so re-entering editor mode is a
         no-op."""
         md = self.metadata or {}
@@ -443,10 +443,12 @@ class _EditorNetsMixin:
                 CopperName(anchor_xy=(ax, ay), layer_id=lid, name=name))
             existing_names.add(name)
         self._all_net_names_cache = None
-        self._mark_project_dirty()
+        # Naming copper no directive uses doesn't change the solve: needs a
+        # save, but mustn't light up Resolve on merely entering editor mode.
+        self._mark_project_names_dirty()
 
     def _compute_net_table_rows(self) -> list[dict]:
-        """Per-net rows for the editor net table — one entry per effective
+        """Per-net rows for the editor net table - one entry per effective
         net name with its total copper area (mm²) summed across every
         connected polygon (both layers of a two-layer pour count). Each row
         carries the polygon-identity set used to drive the click highlight
@@ -555,7 +557,7 @@ class _EditorNetsMixin:
         self._apply_net_table_filter()
 
     def _on_net_table_filter_changed(self, _text: str) -> None:
-        """Slot for the net-table filter edit — re-run the row filter as
+        """Slot for the net-table filter edit - re-run the row filter as
         the user types."""
         self._apply_net_table_filter()
 
@@ -580,7 +582,7 @@ class _EditorNetsMixin:
 
     def _update_net_table_label(self, *, visible: int | None = None,
                                 filtered: bool | None = None) -> None:
-        """Rewrite the net table's header line — the row count, plus the focus
+        """Rewrite the net table's header line - the row count, plus the focus
         release link while a focus is held.
 
         The link lives here rather than in a banner of its own because the
@@ -677,7 +679,7 @@ class _EditorNetsMixin:
             return
         if new in {n for n in self._all_net_names() if n != old}:
             self.statusBar().showMessage(
-                f"'{new}' is already a net on this board — pick a "
+                f"'{new}' is already a net on this board - pick a "
                 "different name.", 4000)
             _revert()
             return

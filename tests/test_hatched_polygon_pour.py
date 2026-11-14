@@ -3,7 +3,7 @@
 GitHub issue #41. Altium realises a *solid* pour as `Regions6` fill with the
 perimeter kept as `is_polygon_outline` boundary artwork, and FYPA rightly drops
 that artwork (otherwise a rounded-corner pour gains a spurious band of copper
-along its border). A **hatched** — or "outlines only" — pour is realised the
+along its border). A **hatched** - or "outlines only" - pour is realised the
 other way round: its copper *is* `Tracks6`/`Arcs6`, perimeter included, and the
 net assignment lives on the `Polygons6` record rather than on each primitive.
 
@@ -16,7 +16,7 @@ Applying the solid-pour rules to it produced exactly the two symptoms reported:
 A third hazard is pinned here too: altium_monkey parses a missing `NET` field
 as ``int(record.get('NET', 0))``, so a net-less polygon is indistinguishable
 from one genuinely on net index 0. Inheriting that blindly attaches pour copper
-to whichever net happens to sit first in `Nets6` — 27 of the 134 polygons in
+to whichever net happens to sit first in `Nets6` - 27 of the 134 polygons in
 the Corvette example carry no `NET` field at all.
 """
 from __future__ import annotations
@@ -53,7 +53,7 @@ BOTTOM = 32
 # in ExampleDesigns/ is 100 % HATCHSTYLE=Solid).
 # --------------------------------------------------------------------------
 def _mk_polygon(net_field: str | None, hatch_style: str | None):
-    """One `Polygons6` record. ``net_field`` is the raw record's NET string —
+    """One `Polygons6` record. ``net_field`` is the raw record's NET string -
     ``None`` means the field is absent, which is how Altium writes a net-less
     polygon and how the Corvette example stores 27 of its pours."""
     return SimpleNamespace(
@@ -107,7 +107,7 @@ def test_hatched_pour_tracks_inherit_polygon_net():
 
 def test_hatched_pour_arcs_inherit_polygon_net():
     """A hatched pour's curved perimeter arrives as polygon-owned arcs with no
-    net of their own — same inheritance as the tracks."""
+    net of their own - same inheritance as the tracks."""
     pcb = _mk_pcb(polygons=[_mk_polygon("7", "45Degree")],
                   arcs=[_mk_arc(polygon_index=0, is_outline=True)])
     (arc,) = _extract_arcs(pcb, 0.0, 0.0)
@@ -117,7 +117,7 @@ def test_hatched_pour_arcs_inherit_polygon_net():
 
 
 def test_primitive_net_wins_over_parent_polygon():
-    """Inheritance only fills a gap — a primitive that carries its own net
+    """Inheritance only fills a gap - a primitive that carries its own net
     (a routed track crossing a pour, say) keeps it."""
     pcb = _mk_pcb(polygons=[_mk_polygon("7", "45Degree")],
                   tracks=[_mk_track(net_index=3, polygon_index=0)])
@@ -213,7 +213,7 @@ def test_hatched_pour_outline_is_copper():
 
 
 def test_hatched_pour_outline_still_obeys_the_other_exclusions():
-    """Being hatched only lifts the polygon-outline exclusion — keepout, zero
+    """Being hatched only lifts the polygon-outline exclusion - keepout, zero
     width and plane layers still disqualify a primitive."""
     import dataclasses
 
@@ -264,7 +264,7 @@ def _hatch_line(y_mm: float, net_index: int) -> RawTrack:
 
 
 def test_hatched_pour_perimeter_reaches_the_net_copper_shape():
-    """The whole pour — perimeter plus hatch lines — unions into the +5V
+    """The whole pour - perimeter plus hatch lines - unions into the +5V
     bucket on Top. Before the fix the perimeter was missing from that shape and
     the hatch lines sat in the NO_NET bucket instead."""
     plus5v = 1
@@ -287,7 +287,7 @@ def test_hatched_pour_perimeter_reaches_the_net_copper_shape():
 
 
 def test_solid_pour_outline_absent_from_net_copper_shape():
-    """Control: the same geometry marked as a solid pour contributes nothing —
+    """Control: the same geometry marked as a solid pour contributes nothing -
     its copper would come from the Regions6 fill instead."""
     plus5v = 1
     proj = _proj(tracks=(_outline_track(hatched=False, net_index=plus5v),))

@@ -168,7 +168,7 @@ class _LinuxSpnavPoller(QObject):
 # NavLib client (Windows / macOS via pynavlib)
 # ---------------------------------------------------------------------------
 
-_V3DK_FIT = 2  # 3DxWare virtual key — menu button / palette Fit
+_V3DK_FIT = 2  # 3DxWare virtual key - menu button / palette Fit
 
 
 class _NavlibGuiBridge(QObject):
@@ -239,7 +239,7 @@ class _NavlibGuiBridge(QObject):
 if _PYNAVLIB_AVAILABLE and _pynav is not None:
 
     class FypaNavlibClient(_pynav.NavlibNavigationModel):
-        """NavLib adapter — camera sync with :class:`GLMeshViewer`."""
+        """NavLib adapter - camera sync with :class:`GLMeshViewer`."""
 
         def __init__(self, viewer: GLMeshViewer,
                      on_fit: Callable[[], None]) -> None:
@@ -396,7 +396,7 @@ if _PYNAVLIB_AVAILABLE and _pynav is not None:
             )
 
         def set_camera_target(self, target) -> None:
-            # KiCad returns function_not_supported — NavLib must not recenter
+            # KiCad returns function_not_supported - NavLib must not recenter
             # the look-at here; doing so snapped the view back after every pan.
             pass
 
@@ -407,7 +407,7 @@ if _PYNAVLIB_AVAILABLE and _pynav is not None:
 
         def set_active_command(self, commandId: str) -> None:
             # FYPA does not export custom palette commands.  NavLib may call
-            # this with internal IDs during normal navigation — never treat
+            # this with internal IDs during normal navigation - never treat
             # those as Fit (a loose "frame" substring match fired fit after
             # every pan/zoom).
             pass
@@ -489,12 +489,12 @@ class SpaceMouseController(QObject):
         self._logged_unavailable = True
         if sys.platform in ("win32", "darwin"):
             _log.info(
-                "SpaceMouse: not available — install 3DxWare and "
+                "SpaceMouse: not available - install 3DxWare and "
                 "'uv sync --extra spacemouse' for pynavlib",
             )
         else:
             _log.info(
-                "SpaceMouse: not available — install spacenavd + libspnav0",
+                "SpaceMouse: not available - install spacenavd + libspnav0",
             )
 
     def _set_navlib_enabled(self, enable: bool) -> bool:
@@ -503,7 +503,7 @@ class SpaceMouseController(QObject):
         pynavlib's own ``enable_navigation`` catches the RuntimeError NavLib
         raises when no 3D mouse is connected and re-emits it through the ROOT
         logger as an ERROR with a full traceback. On the overwhelmingly common
-        machine — one with no SpaceMouse plugged in — that turns a non-event
+        machine - one with no SpaceMouse plugged in - that turns a non-event
         into console noise at every launch and every window activation, and it
         is noise we cannot see the outcome of either.
 
@@ -518,7 +518,7 @@ class SpaceMouseController(QObject):
         # ``_enable_navigation`` is the native method pynavlib's wrapper calls
         # inside its own try/except; going straight to it is what lets the
         # error reach us. Fall back to the wrapper if a future pynavlib drops
-        # the private name — noisier, but never broken.
+        # the private name - noisier, but never broken.
         native = getattr(client, "_enable_navigation", None)
         try:
             if callable(native):
@@ -529,7 +529,7 @@ class SpaceMouseController(QObject):
             if not self._logged_no_device:
                 self._logged_no_device = True
                 _log.info(
-                    "SpaceMouse: NavLib navigation unavailable (%s) — "
+                    "SpaceMouse: NavLib navigation unavailable (%s) - "
                     "check that a 3D mouse is connected and 3DxWare is "
                     "running", exc,
                 )

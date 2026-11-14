@@ -14,7 +14,7 @@ those outlines to:
 
 Label 0 is the surviving net's own copper; label ``i + 1`` is
 ``names[i]``. A triangle is classified by its centroid, so a triangle that
-straddles the old boundary goes wholly to one side — the mesh was built on
+straddles the old boundary goes wholly to one side - the mesh was built on
 the merged outline and has no edge there.
 """
 from __future__ import annotations
@@ -114,8 +114,8 @@ def label_points(
     """Section label (0 = surviving net, ``i + 1`` = ``names[i]``) per point.
 
     Each section outline is tested only against the points inside its bounding
-    box, with :func:`shapely.intersects_xy` on the prepared polygon — no
-    ``Point`` object per triangle. A merged mesh runs to 10^5–10^6 triangles
+    box, with :func:`shapely.intersects_xy` on the prepared polygon - no
+    ``Point`` object per triangle. A merged mesh runs to 10^5-10^6 triangles
     while a shorted section is a handful of small outlines, so building a
     point array for the whole mesh and querying an STRtree with it cost
     seconds on the first hide of a section (Mangala: ~2 s → ~0.25 s).

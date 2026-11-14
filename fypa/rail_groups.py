@@ -1,4 +1,4 @@
-"""Rail grouping for PDN net names — shared by the viewer and topology schematic."""
+"""Rail grouping for PDN net names - shared by the viewer and topology schematic."""
 
 from __future__ import annotations
 
@@ -26,12 +26,12 @@ def compute_rail_groups(
 
     * **RESISTOR** directives bridge their two terminal nets → union them.
     * **SOURCE / SINK / REGULATOR** directives mark their terminal's
-      *named* net (the ``PDN_*_NET`` value) as a "primary candidate" —
+      *named* net (the ``PDN_*_NET`` value) as a "primary candidate" -
       any group containing a primary is a rail worth showing in the
       dropdown; groups that don't (signal nets, unused bridges) are
       dropped.
 
-    The group's **display name** is a primary in it — i.e. a net a
+    The group's **display name** is a primary in it - i.e. a net a
     directive explicitly named, never a net that was only pulled into
     the group by a SERIES bridge. So a sink whose ``PDN_N_NET = GND``
     resolved (via the bridge) onto ``+DM_SW1`` still gives a rail named
@@ -174,8 +174,8 @@ def resistor_bridge_pairs(directive: dict) -> list[tuple[str, str]]:
 
     The one place that reads a SERIES part's terminals: the rail grouper
     (union), the rail-tree adjacency (edge) and the editor-SERIES dedupe
-    (key) all call this, so a change to how terminals are read — a terminal
-    with no resolved pins, a three-terminal part — cannot leave the three
+    (key) all call this, so a change to how terminals are read - a terminal
+    with no resolved pins, a three-terminal part - cannot leave the three
     disagreeing about which nets are bridged.
     """
     if directive.get("role") != "RESISTOR" or directive.get("is_open"):
@@ -319,7 +319,7 @@ def _spanning_tree_from_primary(
 
     Walks SERIES and alias edges. Any remaining connected components (nets
     with no path to the primary) are attached under the primary as their
-    own BFS subtrees — not flattened — so SERIES chains among orphans keep
+    own BFS subtrees - not flattened - so SERIES chains among orphans keep
     their nesting.
     """
     member_set = set(members)
@@ -520,14 +520,14 @@ def rail_tree_node_partial_flags(
     """Map each tree net to whether its eye should show the partial badge.
 
     A node is partial when any SERIES descendant's visibility differs from
-    its own — "my state does not describe this whole branch". That covers
+    its own - "my state does not describe this whole branch". That covers
     both mixed descendants and the node being hidden while descendants are
     drawn, and it stays purely informational: the badge never changes what a
     click does (plain click toggles this net, Ctrl+Click the branch), so
     there is no state it can trap the user in.
 
     Leaves, and nodes with no eye of their own, are always False. Single-pass
-    post-order — O(n).
+    post-order - O(n).
     """
     flags: dict[str, bool] = {}
     if root is None:
@@ -558,16 +558,13 @@ def resolve_rail_member_nets(
     rail_names: list[str],
     rail_to_members: dict[str, list[str]],
     subnet_visible: dict[str, dict[str, bool]] | None = None,
-    *,
-    rail_only: bool = False,
 ) -> list[str]:
     """Resolve visible rail names to the net names whose copper should draw.
 
     When ``subnet_visible`` is provided for a multi-net rail, only member nets
     marked visible are included. Members omitted from the per-rail map default
     to visible (so a partial map does not silently hide nets). Single-net
-    rails ignore ``subnet_visible`` entirely. ``rail_only`` further restricts
-    to each rail's primary name.
+    rails ignore ``subnet_visible`` entirely.
     """
     if not rail_names:
         return []
@@ -580,8 +577,6 @@ def resolve_rail_member_nets(
             picks = [n for n in full if subnets.get(n, True)]
         else:
             picks = list(full)
-        if rail_only:
-            picks = [rail_name] if rail_name in picks else []
         for net in picks:
             if net not in seen:
                 seen.add(net)

@@ -2,7 +2,7 @@
 
 Checks the branch algebra against closed-form landmarks (self-resonance, the
 ESR floor, the VRM floor, the capacitive and inductive asymptotes), the
-target-mask arithmetic from TI SWPA222A §4, and the anti-resonance finder —
+target-mask arithmetic from TI SWPA222A §4, and the anti-resonance finder -
 including the case the whole feature exists to expose: two capacitors of
 different value forming a parallel resonance between their self-resonances.
 """
@@ -68,7 +68,7 @@ def test_self_resonance_uses_esl_plus_mounted_inductance():
     expected = 1.0 / (2 * math.pi * math.sqrt(1e-9 * 100e-9))
     assert b.total_l_h == pytest.approx(1.0e-9)
     assert b.srf_hz == pytest.approx(expected)
-    # A worse mount pushes the useful band down — the whole point of Tiers 1-3.
+    # A worse mount pushes the useful band down - the whole point of Tiers 1-3.
     assert _branch(lm=2e-9).srf_hz < b.srf_hz
 
 
@@ -176,7 +176,7 @@ def test_meets_target_and_reached_frequency():
     r2 = rail_impedance("+3V3", freqs, [_branch()], hard,
                         vrm=VrmModel(r_ohm=1e-3))
     assert not r2.meets_target()
-    # It holds up to some frequency, then breaches — and that frequency is
+    # It holds up to some frequency, then breaches - and that frequency is
     # inside the swept band.
     reached = r2.reached_frequency_hz()
     assert freqs[0] <= reached < hard.f_max_hz

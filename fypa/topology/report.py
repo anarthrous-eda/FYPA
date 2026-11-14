@@ -272,5 +272,5 @@ def topology_wiring_report_json(
     *,
     indent: int = 2,
 ) -> str:
-    """Pretty-printed JSON wiring report — suitable for diffing and LLM analysis."""
+    """Pretty-printed JSON wiring report - suitable for diffing and LLM analysis."""
     return json.dumps(topology_wiring_report(model), indent=indent)

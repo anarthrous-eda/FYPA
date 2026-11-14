@@ -76,7 +76,7 @@ class RailCurrents:
         return gain * i_out + (to_float(d.get("quiescent_current")) or 0.0)
 
     def supplier_count(self, rail: str) -> int:
-        """SOURCE / REGULATOR outputs driving ``rail`` — more than one means
+        """SOURCE / REGULATOR outputs driving ``rail`` - more than one means
         the rail load is shared and no single supplier's share is known."""
         members = set(self.rail_to_members.get(rail, [rail]))
         n = 0

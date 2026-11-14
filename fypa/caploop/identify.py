@@ -3,7 +3,7 @@
 Finds every decoupling capacitor (a two-terminal C-designator component
 connected across two power rails, where GND counts as a rail), associates
 each side's escape vias, selects the reference plane-pair cavity, and parses
-the informational part values — everything the tier engines and the
+the informational part values - everything the tier engines and the
 Capacitors tab consume.
 
 Detection is heuristic (designator prefix ``C`` + digit, exactly two nets,
@@ -44,7 +44,7 @@ BOTTOM_LAYER_ID: int = 32
 _CAP_DESIGNATOR_RE = re.compile(r"^C\d", re.IGNORECASE)
 
 # Parameter keys tried, in order, for the informational part values. Altium
-# libraries are conventions, not schemas — miss on all of them just leaves
+# libraries are conventions, not schemas - miss on all of them just leaves
 # the table cell blank.
 _CAPACITANCE_KEYS = ("Capacitance", "Value", "Val", "Comment")
 _VOLTAGE_KEYS = ("Voltage", "Voltage Rating", "Rated Voltage",
@@ -57,7 +57,7 @@ _CAPACITANCE_BAND_F = (1e-13, 1.0)
 _VOLTAGE_BAND_V = (1.0, 1000.0)
 
 _TOKEN_SPLIT_RE = re.compile(r"[\s/,;|]+")
-# A magnitude with no unit of its own — the left half of a spaced "100 nF".
+# A magnitude with no unit of its own - the left half of a spaced "100 nF".
 # Scientific mantissas count: "1e3" is a bare number, not a lettered token,
 # and treating it as lettered left "1e3 uF 16V" unparseable.
 _BARE_NUMBER_RE = re.compile(r"^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$")
@@ -73,7 +73,7 @@ class EscapeVia:
     through-hole pad acting as its own escape.
 
     Two distances, because they answer different questions. ``dist_mm`` (to
-    the nearest pad *centre*) drives the search and cluster window — it is
+    the nearest pad *centre*) drives the search and cluster window - it is
     the stable "is this via near this pad" measure. ``escape_mm`` (to the
     nearest pad *boundary*, zero when the via lands inside the pad) is the
     physical length of the escape run, and is what the inductance model and
@@ -112,11 +112,11 @@ class CavityRef:
 class CapInstance:
     """One decoupling capacitor with everything the tier engines need."""
     component_index: int
-    designator: str           # physical (PCB) designator — the override key
+    designator: str           # physical (PCB) designator - the override key
     source_designator: str
     footprint: str
     # Imperial SMD case code parsed from the footprint ("0402"), or None for a
-    # part the package library can't classify — a tantalum brick, an
+    # part the package library can't classify - a tantalum brick, an
     # electrolytic. The impedance model needs an explicit per-part ESL/ESR
     # override for those.
     package: str | None
@@ -127,7 +127,7 @@ class CapInstance:
     rail_group: str           # rail-group primary name (rail filter key)
     pads_rail: tuple[int, ...]      # indices into extracted.pads
     pads_return: tuple[int, ...]
-    # Current-carrying width of each side's pad (its narrow dimension) — the
+    # Current-carrying width of each side's pad (its narrow dimension) - the
     # escape term's ``w``. Captured here so the tier engines never need the
     # ExtractedProject.
     pad_width_rail_mm: float
@@ -145,7 +145,7 @@ class CapInstance:
     flags: tuple[str, ...]
     included: bool = True
     # True when detection alone (two rail-grouped nets) would have found
-    # this cap — False when only a force-include override admitted it. The
+    # this cap - False when only a force-include override admitted it. The
     # GUI needs the distinction: clearing the override on a forced cap
     # removes it from the analysis entirely, so re-checking its box must
     # write ``include=True``, not ``None``.
@@ -172,7 +172,7 @@ def _case_folded_first(token: str) -> bool:
     comments are routinely upper-cased, so a folded retry is needed either way.
     It cannot be a blind *fallback*, though: :func:`_apply_si_suffix` silently
     drops a leading letter it does not recognise, so "0.1UF" parses literally
-    as 0.1 — farads, and inside the capacitance band — and the correct 1e-7
+    as 0.1 - farads, and inside the capacitance band - and the correct 1e-7
     reading is never reached. That is a factor of a million on the commonest
     decoupling values (only magnitudes ≤ 1.0 stay in band, so 0.1/0.22/0.47/1
     break while 2.2 and 10 do not).
@@ -199,7 +199,7 @@ def _parse_banded_tokens(
 
     Tokens are split on whitespace and common separators so composite value
     strings ("0.1uF/16V", "CAP CER 100NF 25V X7R") yield their parts. A token
-    must contain a letter (an SI prefix or unit) — a bare number like "0.1"
+    must contain a letter (an SI prefix or unit) - a bare number like "0.1"
     is unit-ambiguous (µF by convention, F by SI) and is skipped rather than
     guessed. ``require_char`` restricts to tokens containing that character
     (only "16V"-style tokens count as voltages); ``exclude_char`` drops
@@ -209,7 +209,7 @@ def _parse_banded_tokens(
     bare numbers retried joined to the token that follows. The order matters:
     an Altium comment often puts the case code before the value ("CAP CER 0402
     100N 50V"), and merging first makes "0402"+"100N" parse as 402100 n → 4e-4
-    F, beating the 100 nF the author wrote — 4000× high, and fed straight into
+    F, beating the 100 nF the author wrote - 4000× high, and fed straight into
     the impedance model by :func:`~fypa.caploop.impedance.cap_branch`.
 
     ``merge_unit`` enables that fallback and names the unit letter the partner
@@ -244,7 +244,7 @@ def _parse_banded_tokens(
 
     tokens = [t for t in _TOKEN_SPLIT_RE.split(text) if t]
 
-    # Pass 1 — each token on its own. Magnitude and unit are already together
+    # Pass 1 - each token on its own. Magnitude and unit are already together
     # in the common case, and going first is what stops a numeric case code
     # from swallowing the value token behind it.
     for token in tokens:
@@ -253,7 +253,7 @@ def _parse_banded_tokens(
             if hit is not None:
                 return hit
 
-    # Pass 2 — nothing stood alone, so an Altium ``Value`` field has probably
+    # Pass 2 - nothing stood alone, so an Altium ``Value`` field has probably
     # separated magnitude from unit ("100 nF", "2.2 µF", "1e3 uF").
     if merge_unit is None:
         return None
@@ -281,7 +281,7 @@ def parse_cap_params(
     ``capacitance_F`` is NOT informational: :func:`fypa.caploop.impedance.
     cap_branch` feeds it straight into ``branch_impedance``, so a wrong parse
     is a wrong PDN impedance curve rather than a wrong table cell. Guessing is
-    therefore worse than returning ``None`` — a blank excludes the part from
+    therefore worse than returning ``None`` - a blank excludes the part from
     the model and says so. (``voltage_rating_V`` is display-only.)
     """
     param_dicts = [d for d in (sch_params, pcb_comp.parameters) if d]
@@ -333,7 +333,7 @@ def associate_escape_vias(
     keeps candidates within ``escape_via_max_dist_mm`` AND within
     ``escape_cluster_slack ×`` the nearest candidate's distance (floored at
     a pad-adjacent 0.3 mm so a via-in-pad at distance 0 doesn't collapse the
-    window) — the slack window is what rejects a stitching field that
+    window) - the slack window is what rejects a stitching field that
     happens to fall inside the search radius. With nothing inside the tight
     radius, the single nearest candidate within the search radius is used
     (the caller flags it as a long escape). Through-hole pads are their own
@@ -341,9 +341,9 @@ def associate_escape_vias(
 
     ``mount_layer_id`` is the layer the pads sit on. A via whose barrel does
     not reach that layer cannot take current off the pad, however close it
-    looks from above — buried and far-side vias routinely sit within a
+    looks from above - buried and far-side vias routinely sit within a
     millimetre of a pad on the opposite face. Without this filter a
-    bottom-mounted cap happily "escapes" through a layer 2–15 buried via and
+    bottom-mounted cap happily "escapes" through a layer 2-15 buried via and
     is charged the full board thickness of escape inductance. Only *direct*
     escapes are returned; a stacked continuation via (pad → L15 → L3) is not
     a parallel barrel and is found instead by :func:`expand_reachable_layers`.
@@ -372,7 +372,7 @@ def associate_escape_vias(
     for pad in pads:
         try:
             poly = _pad_polygon(pad, pad.layer_id)
-        except Exception:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover - defensive
             poly = None
         pad_polys.append(poly)
 
@@ -424,7 +424,7 @@ def associate_escape_vias(
                 and e.dist_mm <= window
             )
         elif not escapes:
-            # Nothing local — keep the single nearest so the model has a
+            # Nothing local - keep the single nearest so the model has a
             # current path at all; the caller raises "long-escape".
             escapes.append(candidates[0])
 
@@ -492,7 +492,7 @@ def _probe_region(vias: tuple[EscapeVia, ...],
     Coverage is tested against this region, not against a bare point, for
     two reasons. A plane sheet is built with ``include_vias=False``, so it
     carries an anti-pad (foreign net) or a thermal-relief air gap (same net)
-    *hole* exactly where the via is — a point probe at the via would report
+    *hole* exactly where the via is - a point probe at the via would report
     "no copper here". And the midpoint between two vias of a cluster often
     falls in one of those holes too. Asking "does this net have copper within
     a via-clearance of its own via?" is the question we actually mean.
@@ -550,7 +550,7 @@ def select_reference_cavity(
     Candidates are layer pairs (L_rail, L_return) that the side's current can
     reach (``reach_*``, which follows stacked via chains) and where the side's
     copper forms a sheet at *that side's own* via cluster (``net_layer_shapes``
-    lookup — plane sheets in those shapes are already perforated with anti-pads
+    lookup - plane sheets in those shapes are already perforated with anti-pads
     and pullback by the geometry build). Probing each side at its own cluster
     matters: the midpoint between a rail via and a return via 2 mm away
     frequently lands in the other net's anti-pad, which would spuriously
@@ -558,7 +558,7 @@ def select_reference_cavity(
 
     Ranking is **depth first**, then dielectric gap, then plane-vs-pour. The
     capacitor's loop closes through the nearest plane pair it can reach, not
-    through whichever pair on the board happens to be most tightly coupled —
+    through whichever pair on the board happens to be most tightly coupled -
     ranking by gap first once picked a pair on the far side of a 16-layer
     board (1.7 mm away) over the pair directly beneath the part, because its
     dielectric was 15 µm thinner. Depth is quantised to 50 µm so a hair's
@@ -677,7 +677,7 @@ def design_voltage_for_rail(
 def _directive_pins(d: dict) -> tuple[tuple[dict, ...], tuple[dict, ...]]:
     """(power-side pins, return-side pins) of a SINK / REGULATOR directive.
     An ideal-return terminal (``PDN_NET`` with no copper N side) yields an
-    empty return tuple — the IC-side via loop is then unmodellable."""
+    empty return tuple - the IC-side via loop is then unmodellable."""
     terms = d.get("terminals") or {}
     p_term = terms.get("P") or terms.get("OUT_P") or {}
     n_term = terms.get("N") or terms.get("OUT_N") or {}
@@ -690,7 +690,7 @@ def default_target_for_rail(
 ) -> tuple[str | None, tuple[dict, ...], tuple[dict, ...]]:
     """The default loop endpoint: the largest-current SINK whose P terminal
     lands on the cap's rail group. Returns
-    ``(label, P-terminal pins, N-terminal pins)`` — the N pins locate the
+    ``(label, P-terminal pins, N-terminal pins)`` - the N pins locate the
     IC's return vias for the Tier-3 loop.
     """
     if not directives:
@@ -761,8 +761,8 @@ def _rail_priority(net_name: str) -> int:
 def has_flag(flags: tuple[str, ...] | list[str], name: str) -> bool:
     """Is ``name`` among ``flags``, ignoring any parenthesised detail?
 
-    The side-specific flags carry the offending pad's net —
-    ``"no-escape-via (GND)"`` — so a plain ``"no-escape-via" in flags`` would
+    The side-specific flags carry the offending pad's net -
+    ``"no-escape-via (GND)"`` - so a plain ``"no-escape-via" in flags`` would
     silently miss them. Match the base token instead.
     """
     return any(f == name or f.startswith(f"{name} (") for f in flags)
@@ -780,7 +780,7 @@ def apply_cap_overrides(
     Overrides change nothing about the board: the escape vias, the reference
     cavity and the pad geometry are all identical. Re-running
     :func:`identify_capacitors` for a checkbox click would redo the copper
-    coverage tests for every capacitor — seconds on a real board, on the GUI
+    coverage tests for every capacitor - seconds on a real board, on the GUI
     thread. This applies just the parts that actually moved.
 
     Note that a *force-include* is not applied here: admitting a capacitor
@@ -833,7 +833,7 @@ def identify_capacitors(
 
     ``rail_to_members`` is :func:`fypa.rail_groups.compute_rail_groups`
     output; ``metadata_directives`` is the solve metadata's ``directives``
-    list (design voltage + default targets come from it — both stay ``None``
+    list (design voltage + default targets come from it - both stay ``None``
     without it). ``net_layer_shapes`` is
     :func:`fypa.altium_geometry.build_net_layer_shapes` output and is only
     needed for cavity selection (``None`` ⇒ every cap gets the ``no-cavity``
@@ -916,7 +916,7 @@ def identify_capacitors(
             if extracted.pads[pi].net_index in return_idx_set)
 
         def _pad_width(indices: tuple[int, ...]) -> float:
-            """The pad's narrow dimension — the width the escape current
+            """The pad's narrow dimension - the width the escape current
             crosses. Zero-size pads fall back to a plausible 0402 land."""
             widths = [min(extracted.pads[pi].width_mm,
                           extracted.pads[pi].height_mm)
@@ -988,7 +988,7 @@ def identify_capacitors(
             thin = [net for vias, net in sides if len(vias) == 1]
             if thin:
                 flags.append(f"single-via ({', '.join(thin)})")
-        # Each side's shortest escape run, measured from the pad edge — a
+        # Each side's shortest escape run, measured from the pad edge - a
         # via-in-pad escapes in 0 mm and must never flag.
         long_sides = [
             net for vias, net in sides

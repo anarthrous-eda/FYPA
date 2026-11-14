@@ -1,4 +1,4 @@
-"""The Bridges tab — the single place net bridging is seen and controlled.
+"""The Bridges tab - the single place net bridging is seen and controlled.
 
 Bridging used to be spread across four mechanisms with no one view of the
 result (Altium ``PDN_ROLE=SERIES``, the Net Tie / 0 ohm auto-bridge, the
@@ -57,7 +57,7 @@ def viewer(qapp, monkeypatch):
 
     ``PdnViewer.__init__`` opens a whole board, so run just the Qt base
     initialiser and stub the few collaborators the tab touches. Modal
-    dialogs are recorded rather than shown — under the offscreen platform
+    dialogs are recorded rather than shown - under the offscreen platform
     they would block forever.
     """
     from PySide6.QtWidgets import QMainWindow, QMessageBox
@@ -125,8 +125,8 @@ def test_filters_select_the_right_rows(viewer, mode, expected):
 # --- editing ---------------------------------------------------------------
 
 def test_setting_a_resistance_writes_an_editor_directive(viewer):
-    """Edits must land in the project's own editor directives — the same
-    store and undo path as Edit mode — not a parallel one owned by the tab."""
+    """Edits must land in the project's own editor directives - the same
+    store and undo path as Edit mode - not a parallel one owned by the tab."""
     import fypa.altium_viewer as V
     V.PdnViewer._apply_bridge_series(viewer, _candidates()[0], 0.05)
     eds = _series_directives(viewer)
@@ -201,7 +201,7 @@ def test_modelling_a_part_suppresses_its_auto_bridge(viewer):
 
     The auto-bridge fires while annotations are parsed and merges the two
     nets there and then. An editor SERIES directive is applied afterwards
-    and names a net pair that, post-merge, no longer exists — so leaving
+    and names a net pair that, post-merge, no longer exists - so leaving
     the auto-bridge enabled means the typed resistance is silently dropped
     and the rail still reads as a dead short.
     """
@@ -295,7 +295,7 @@ def test_cancelled_supply_short_keeps_the_saved_resistance(viewer):
 
 
 def test_rejected_non_positive_resistance_keeps_the_saved_resistance(viewer):
-    """Same for the value check — it also used to run after the delete."""
+    """Same for the value check - it also used to run after the delete."""
     import fypa.altium_viewer as V
     rec = {"designator": "FB8", "kind": "ferrite bead", "net_a": "GND",
            "net_b": "AGND", "state": "series", "resistance_ohm": 0.05}
@@ -326,7 +326,7 @@ def test_accepted_edit_replaces_rather_than_stacks(viewer):
 
 def test_disable_button_follows_keyboard_selection(viewer):
     """``cellClicked`` never fires for arrow keys, so it cannot be the only
-    thing that refreshes the buttons — otherwise "Disable auto-bridge"
+    thing that refreshes the buttons - otherwise "Disable auto-bridge"
     stays live over a row that was never auto-bridged."""
     table = viewer.bridges_table
 
@@ -364,7 +364,7 @@ def test_paired_analog_supply_is_not_a_short_warning():
     """VDD / VDDA is a textbook ferrite, not two different supplies.
 
     The suffix rule used to take the final D off VDD, leaving "VD", while
-    VDDA correctly became "VDD" — so the commonest paired analog supply on
+    VDDA correctly became "VDD" - so the commonest paired analog supply on
     any board compared unequal and warned.
     """
     import fypa.altium_viewer as V

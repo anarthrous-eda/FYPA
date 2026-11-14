@@ -1173,7 +1173,7 @@ def test_coincident_ports_do_not_produce_a_double_back_wire():
     """Two ports at the same point route as a single stub, not a stub-back-stub.
 
     Regression for ``two_port_path`` emitting ``H 120 H 100 H 120 H 100`` for
-    coincident endpoints — a self-overlapping wire that ``simplify_wire_path``
+    coincident endpoints - a self-overlapping wire that ``simplify_wire_path``
     cannot collapse.
     """
     p = TopologyPort(

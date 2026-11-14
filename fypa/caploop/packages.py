@@ -1,4 +1,4 @@
-"""SMD capacitor package library — typical ESL / ESR per case size.
+"""SMD capacitor package library - typical ESL / ESR per case size.
 
 The mounted loop inductance FYPA extracts from geometry is only half of what a
 capacitor contributes to a rail's impedance; the part itself adds its own
@@ -8,7 +8,7 @@ of the component, not of the board, so they cannot be derived from the layout.
 Rather than demand a vendor S-parameter model per part, FYPA ships a table of
 **typical values per SMD case size**, which the user can edit, and allows a
 per-part override for the capacitors that matter. The defaults are ordinary
-X5R/X7R MLCC figures near self-resonance — good enough to place the rail's
+X5R/X7R MLCC figures near self-resonance - good enough to place the rail's
 anti-resonances within a factor of about two, which is what a first-pass PDN
 review needs. For a sign-off number, override the handful of caps that set the
 minimum with values from the vendor's model.
@@ -70,7 +70,7 @@ DEFAULT_PACKAGE_MODELS: dict[str, PackageModel] = {
 
 # Metric (mm×0.1) case code → imperial. Note the collision: "0603" is imperial
 # 0603 *and* the metric code for an 0201. The metric reading is only taken when
-# the footprint name says so — see :func:`detect_package`.
+# the footprint name says so - see :func:`detect_package`.
 _METRIC_TO_IMPERIAL: dict[str, str] = {
     "0402": "01005",
     "0603": "0201",
@@ -93,7 +93,7 @@ _IMPERIAL_TO_METRIC: dict[str, str] = {
 FootprintConvention = Literal["auto", "metric", "imperial"]
 FOOTPRINT_CONVENTIONS: tuple[str, ...] = ("auto", "metric", "imperial")
 
-# IPC-7351 chip-capacitor land names, e.g. "CAPC1608X90N" — the digits are
+# IPC-7351 chip-capacitor land names, e.g. "CAPC1608X90N" - the digits are
 # always metric.
 _IPC_RE = re.compile(r"CAPC(\d{4})X\d+", re.IGNORECASE)
 # KiCad-style "C_0402_1005Metric", or anything spelling out the convention.
@@ -196,7 +196,7 @@ def format_package_label(
 ) -> str:
     """Display label for a canonical (imperial-keyed) package name."""
     if not package:
-        return "—"
+        return "-"
     conv = normalize_footprint_convention(convention)
     if conv == "metric":
         return _IMPERIAL_TO_METRIC.get(package, package)
@@ -233,7 +233,7 @@ def detect_package(
 ) -> str | None:
     """Imperial case code for an SMD footprint name, or ``None``.
 
-    Handles the conventions seen in the wild — a bare imperial code
+    Handles the conventions seen in the wild - a bare imperial code
     (``C_0402_SL``, ``0603``), a bare metric one (``1005B``, ``1608C``),
     an explicit metric suffix (``C_0402_1005Metric``), and IPC-7351 land
     names (``CAPC1608X90N``) whose digits are always metric.
@@ -277,7 +277,7 @@ class PackageLibrary:
 
     Starts from :data:`DEFAULT_PACKAGE_MODELS`; user edits are stored per
     package name and round-trip through the ``.fypa`` project file. Only the
-    values are editable — the set of packages is fixed, because it is what
+    values are editable - the set of packages is fixed, because it is what
     :func:`detect_package` can recognise.
     """
 

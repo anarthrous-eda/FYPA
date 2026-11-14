@@ -166,7 +166,7 @@ class _CopperPickMixin:
         "net"}`` for the topmost visible hit, or ``None``.
 
         When ``require_pad_visible`` is set, SMT pads hidden by the Pads
-        overlay are skipped (editor mode — you can only select what you
+        overlay are skipped (editor mode - you can only select what you
         can see)."""
         md = self.metadata or {}
         visible = self._visible_all_copper_layer_ids()
@@ -334,7 +334,7 @@ class _CopperPickMixin:
 
     def _primitive_outline_rings(self, hit: dict
                                   ) -> list[list[tuple[float, float]]]:
-        """Closed world-mm rings outlining the selected primitive — the
+        """Closed world-mm rings outlining the selected primitive - the
         geometry the GL viewer draws as a dashed yellow polygon. Always
         returns at least one ring (caller has a hit)."""
         kind = hit.get("kind")
@@ -383,21 +383,21 @@ class _CopperPickMixin:
         try:
             return f"{float(v):.3f} mm"
         except (TypeError, ValueError):
-            return "—"
+            return "-"
 
     @staticmethod
     def _fmt_xy(x, y) -> str:
         try:
             return f"({float(x):.3f}, {float(y):.3f}) mm"
         except (TypeError, ValueError):
-            return "—"
+            return "-"
 
     @staticmethod
     def _fmt_deg(v) -> str:
         try:
             return f"{float(v):.2f}°"
         except (TypeError, ValueError):
-            return "—"
+            return "-"
 
     _PAD_SHAPE_NAMES = {
         1: "Round",
@@ -411,7 +411,7 @@ class _CopperPickMixin:
         ``_phys_name_to_layer_id``). Returns the raw id as a string when
         the layer isn't in the stackup map."""
         if layer_id is None:
-            return "—"
+            return "-"
         try:
             lid = int(layer_id)
         except (TypeError, ValueError):
@@ -628,7 +628,7 @@ class _CopperPickMixin:
         self._position_editor_panel()
 
     def _clear_copper_selection(self) -> None:
-        """Drop any viewer-mode copper selection — clears the dashed-yellow
+        """Drop any viewer-mode copper selection - clears the dashed-yellow
         GL overlay, empties the right-panel form, and hides the panel
         (unless editor mode is active, in which case the panel stays
         visible with the PDN editor contents)."""
@@ -673,7 +673,7 @@ class _CopperPickMixin:
         """``(seed_obj, net, layer_id, hit)`` for the current copper
         selection, or ``None`` when nothing Tab can expand is selected.
         ``hit`` is the primitive-picker record whose outline level 0
-        restores — editor mode can hold a copper selection with no
+        restores - editor mode can hold a copper selection with no
         primitive (the rail-mesh fallback picker), which has no outline."""
         if self._editor_mode:
             sel = self._editor_selection
@@ -762,7 +762,7 @@ class _CopperPickMixin:
             # Unnamed copper shares one sentinel "net", so expanding by name
             # would outline every unrelated scrap of no-net copper.
             self.statusBar().showMessage(
-                "Tab expands along a net — this copper has no net name.",
+                "Tab expands along a net - this copper has no net name.",
                 4000)
             return True
         level = (level + step) % self._TAB_LEVELS
@@ -789,7 +789,7 @@ class _CopperPickMixin:
                       f"{'' if len(layers) == 1 else 's'}")
         self.statusBar().showMessage(
             f"{net}: {len(hits)} primitive{'' if len(hits) == 1 else 's'} "
-            f"on {where} — Tab to "
+            f"on {where} - Tab to "
             f"{'expand to all visible layers' if level == 1 else 'go back'}"
             ".")
         if not self._editor_mode:
@@ -910,7 +910,7 @@ class _CopperPickMixin:
         # A SOURCE / SINK marker drawn for a schematic (or existing
         # component editor) directive is a click target in its own right:
         # the glyph is a bigger, more obvious mark than the bare footprint,
-        # so clicking it selects the owning component — opening its
+        # so clicking it selects the owning component - opening its
         # read-only / Unlock form (see _populate_editor_form). The marker's
         # pin coordinate lands inside the component box, so we resolve the
         # owner from there; visible_sides_only is off because the marker is
@@ -923,7 +923,7 @@ class _CopperPickMixin:
             if owner is not None:
                 self._select_component(owner)
                 return
-        # A component may sit here but on a hidden side — it can't be
+        # A component may sit here but on a hidden side - it can't be
         # selected. Say why, then fall through to the marker / copper
         # underneath (whatever the user can actually see).
         hidden = self._component_at(world_x, world_y, visible_sides_only=False)
@@ -931,7 +931,7 @@ class _CopperPickMixin:
             side = hidden.get("side") or "hidden"
             self.statusBar().showMessage(
                 f"{hidden.get('designator') or 'Component'} is on the "
-                f"hidden {side} side — turn on the {side}-side Components "
+                f"hidden {side} side - turn on the {side}-side Components "
                 "overlay to select it.", 4000)
         marker = self._free_marker_at(world_x, world_y)
         if marker is not None:
@@ -944,7 +944,7 @@ class _CopperPickMixin:
             self._select_copper(hit["net"], hit,
                                 anchor_xy=(world_x, world_y))
             return
-        # No visible primitive — fall back to the more permissive
+        # No visible primitive - fall back to the more permissive
         # visible-only picker (rail mesh / stub / visible all-copper).
         pick = self._visible_editor_copper_pick(world_x, world_y)
         if pick is not None and pick.get("net") \
@@ -955,7 +955,7 @@ class _CopperPickMixin:
                                 anchor_xy=(world_x, world_y),
                                 layer_id=pick.get("layer_id"))
             return
-        # Copper exists here but only on a hidden layer — mention it so
+        # Copper exists here but only on a hidden layer - mention it so
         # the user knows why nothing got selected, then fall through to
         # clear (a click the user can't see reads as "click off copper",
         # matching viewer-mode behaviour).
@@ -963,9 +963,9 @@ class _CopperPickMixin:
         if hidden is not None and hidden.get("net"):
             phys = hidden.get("physical") or "a hidden layer"
             self.statusBar().showMessage(
-                f"Copper on {phys} is hidden — turn on its eye to "
+                f"Copper on {phys} is hidden - turn on its eye to "
                 "select it.", 4000)
-        # Bare substrate (or hidden-only copper) — clear the selection.
+        # Bare substrate (or hidden-only copper) - clear the selection.
         self._editor_selection = None
         self._clear_editor_highlight()
         self._update_editor_panel()
@@ -1000,7 +1000,7 @@ class _CopperPickMixin:
         return best
 
     def _select_free_marker(self, directive) -> None:
-        """Select a placed free source / sink marker — the right-hand
+        """Select a placed free source / sink marker - the right-hand
         panel opens its PDN form so the role / value / nets can be
         edited (see :meth:`_populate_editor_form`)."""
         self._editor_selection = {"kind": "free", "id": directive.id}
@@ -1037,7 +1037,7 @@ class _CopperPickMixin:
             "nets": nets,
             "bbox": comp.get("bbox"),
             # True once the user clicks "Unlock" on a component whose PDN
-            # values come from the Altium schematic — see _on_editor_unlock.
+            # values come from the Altium schematic - see _on_editor_unlock.
             "unlocked": False,
         }
         self._gl_viewer.set_primitive_selection_outline(None)
@@ -1056,7 +1056,7 @@ class _CopperPickMixin:
         same dashed-yellow polygon used by viewer-mode copper selection.
         ``anchor_xy`` records the click point so the right-hand panel's
         copper-name form (shown only when ``net == "(none)"``) can pin
-        the rename to THIS polygon — its layer comes from ``hit`` when
+        the rename to THIS polygon - its layer comes from ``hit`` when
         present, else from the explicit ``layer_id`` kwarg (callers that
         resolved the click through the visibility-aware picker get a
         layer but no primitive record).
@@ -1095,7 +1095,7 @@ class _CopperPickMixin:
     def _apply_editor_highlight(self, nets: set[str],
                                 polys: set[tuple[int, int]] | None = None,
                                 ) -> None:
-        """Set the connectivity highlight and re-render — non-connected
+        """Set the connectivity highlight and re-render - non-connected
         copper dims to 10%. ``polys`` is an optional per-polygon highlight
         set (``{(layer_id, id(poly_dict))}``) used to light up exactly the
         connected pieces when the click landed on copper whose net name

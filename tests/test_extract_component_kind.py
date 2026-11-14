@@ -1,7 +1,7 @@
 """ComponentKind is captured from PCB records, not just schematic ones.
 
-A Net Tie can exist only on the PcbDoc — added by ECO, or a board opened
-without its schematics — and the auto-bridge in
+A Net Tie can exist only on the PcbDoc - added by ECO, or a board opened
+without its schematics - and the auto-bridge in
 :mod:`fypa.altium.annotations` keys off ``component_kind`` on both sides.
 """
 

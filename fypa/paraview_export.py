@@ -1,13 +1,13 @@
 """ParaView VTU export for the lean in-memory solution.
 
-The viewer holds a :class:`fypa.lean_solution.LeanSolution` — flat numpy
+The viewer holds a :class:`fypa.lean_solution.LeanSolution` - flat numpy
 arrays of per-vertex coordinates, per-vertex voltages, and per-triangle
 vertex indices. The upstream :mod:`pdnsolver.paraview` exporter walks
 padne's half-edge :class:`pdnsolver.mesh.Mesh`, which the lean format no
 longer carries, so File > Export > ParaView uses this writer instead.
 
 The output is the same VTK XML UnstructuredGrid format the CLI's
-``paraview`` subcommand produces — one ``.vtu`` per copper layer, with
+``paraview`` subcommand produces - one ``.vtu`` per copper layer, with
 per-vertex scalar fields for every viewer heatmap mode (voltage,
 voltage drop, current density, power density). Y is negated to match the
 orientation convention used by the upstream exporter so files from
@@ -47,7 +47,7 @@ def _data_array(parent, data_type: str, values, *,
 
     The payload is base64 binary (``format="binary"``) rather than
     whitespace-separated decimal text: ~8x faster to serialise, roughly
-    half the bytes, and exact — Float64 values go out bit-for-bit instead
+    half the bytes, and exact - Float64 values go out bit-for-bit instead
     of through a ``repr()`` decimal round trip.
     """
     from lxml.etree import SubElement
@@ -138,7 +138,7 @@ def _write_vtu(root_children: list, out_path: Path) -> None:
 
 
 def _export_via_points(via_rows: list[dict], output_dir: Path) -> bool:
-    """Write ``vias.vtu`` — one vertex per via with ``via_current`` (A)."""
+    """Write ``vias.vtu`` - one vertex per via with ``via_current`` (A)."""
     from lxml.etree import Element, SubElement
 
     xs: list[float] = []
@@ -208,7 +208,7 @@ def export_lean_solution(
 
     ``voltage_drop`` is measured against ``voltage_drop_reference`` (pass the
     viewer's drop reference so the export matches the interactive heatmap).
-    When unset it defaults to the global max potential across all layers — note
+    When unset it defaults to the global max potential across all layers - note
     that on a multi-rail board this references every layer to the single
     highest rail, so prefer passing the viewer reference when exporting a
     specific rail.
@@ -247,7 +247,7 @@ def export_lean_solution(
             pds_src if pds_src else [None] * len(layer_solution.vertex_xys),
         ))
         if not components:
-            log.warning("Skipping layer %r — no non-empty meshes", layer_name)
+            log.warning("Skipping layer %r - no non-empty meshes", layer_name)
             continue
 
         layer_sigma = copper_conductivity

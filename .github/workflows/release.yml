@@ -6,9 +6,9 @@ name: Release
 #   git tag v1.6.0
 #   git push origin v1.6.0
 #
-# The zip is named after the tag (FYPA_v1.6.0.zip) — the underscore matches
+# The zip is named after the tag (FYPA_v1.6.0.zip) - the underscore matches
 # every release published so far and the filename the README tells users to
-# look for — so no manual renaming, and the release is created with
+# look for - so no manual renaming, and the release is created with
 # auto-generated notes from the merged PRs since the previous tag.
 
 on:
@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   build-and-release:
-    # Same platform rationale as ci.yml — Windows is FYPA's target platform
+    # Same platform rationale as ci.yml - Windows is FYPA's target platform
     # and the platform the PyInstaller spec is written for.
     runs-on: windows-latest
 
@@ -51,7 +51,7 @@ jobs:
 
       - name: Stamp version from tag
         # The built exe reports the release version instead of "0.1.0-dev".
-        # Build-time only — nothing is committed back to the repo.
+        # Build-time only - nothing is committed back to the repo.
         run: |
           $tag = "${{ github.ref_name }}"
           (Get-Content fypa/cli.py) -replace '^__version__ = .*', "__version__ = `"$tag`"" | Set-Content fypa/cli.py

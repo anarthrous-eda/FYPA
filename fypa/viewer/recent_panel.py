@@ -1,15 +1,19 @@
 """The launcher's collapsible Recent side panel.
 
-Lists the shared recent list (the same one File > Recent Projects shows),
-newest first, with a pastel type chip per row:
+Lists the recent-projects list, newest first, with a pastel type chip per row:
 
-* Altium imports get two icons — normal import and clean import.
+* Altium imports get two icons - normal import and clean import.
 * Gerber imports, ``.fypa`` project files and solution ``.pkl`` files get a
   single load icon. A Gerber entry replays the stored layer mapping and
   stackup, so it skips the import dialogs.
 
-Collapsed it is a thin "Recent" strip; the expanded / collapsed state is
+Collapsed it is a thin "Recent" strip. Expanded, a full-height handle on its
+right edge (the same one the viewer's side panel uses) collapses it on a
+click and resizes it on a drag. The expanded / collapsed state is
 remembered across launches.
+
+:class:`RecentDialog` shows the same list, always expanded, in a pop-up -
+the main window's File > Open Recent….
 """
 from __future__ import annotations
 
@@ -20,6 +24,7 @@ from PySide6.QtGui import QColor, QDesktopServices, QFont, QPainter
 from PySide6.QtWidgets import (
     QAbstractButton,
     QAbstractItemView,
+    QDialog,
     QFrame,
     QHBoxLayout,
     QHeaderView,
@@ -48,6 +53,7 @@ from fypa.viewer.prefs import (
     save_recent_panel_expanded,
 )
 from fypa.viewer.theme import _T
+from fypa.viewer.widgets import SidebarToggleButton
 
 
 # Pastel chip per entry kind: (label, background). The chip text is always
@@ -61,6 +67,8 @@ _KIND_CHIPS: dict[str, tuple[str, str]] = {
 _CHIP_FG = "#2a2a2a"
 
 _EXPANDED_WIDTH = 380
+_MIN_WIDTH = 260
+_MAX_WIDTH = 760
 _STRIP_WIDTH = 26
 
 _COL_KIND, _COL_NAME, _COL_LOAD, _COL_CLEAN = range(4)
@@ -121,10 +129,17 @@ class RecentPanel(QWidget):
     :func:`fypa.viewer.project_open._open_recent_project` on it.
     """
 
-    def __init__(self, window, parent=None) -> None:
+    def __init__(self, window, parent=None, *, always_expanded: bool = False,
+                 on_open=None) -> None:
+        """*always_expanded* (the File > Open Recent pop-up): no collapse
+        strip or handle, the list fills its parent, and the launcher's
+        remembered open / closed state is left alone. *on_open* is called
+        just before an entry is opened (the pop-up closes itself there)."""
         super().__init__(parent)
         self._window = window
         self._entries: list[dict] = []
+        self._always_expanded = bool(always_expanded)
+        self._on_open = on_open
         t = _T()
 
         outer = QHBoxLayout(self)
@@ -138,9 +153,9 @@ class RecentPanel(QWidget):
         self._body = QFrame(self)
         self._body.setObjectName("recentPanelBody")
         self._body.setFixedWidth(_EXPANDED_WIDTH)
+        # No right border: the collapse handle beside it draws the edge.
         self._body.setStyleSheet(
-            f"#recentPanelBody {{ background-color:{t['bg_alt']};"
-            f" border-right:1px solid {t['border']}; }}"
+            f"#recentPanelBody {{ background-color:{t['bg_alt']}; }}"
         )
         body = QVBoxLayout(self._body)
         body.setContentsMargins(8, 8, 8, 8)
@@ -153,12 +168,6 @@ class RecentPanel(QWidget):
         )
         header.addWidget(title)
         header.addStretch(1)
-        collapse = QToolButton(self._body)
-        collapse.setText("«")
-        collapse.setAutoRaise(True)
-        collapse.setToolTip("Hide the recent list")
-        collapse.clicked.connect(lambda: self.set_expanded(False))
-        header.addWidget(collapse)
         body.addLayout(header)
 
         self._table = QTableWidget(0, 4, self._body)
@@ -187,7 +196,7 @@ class RecentPanel(QWidget):
         body.addWidget(self._table, 1)
 
         self._empty = QLabel(
-            "Nothing yet — designs you import and solutions you load "
+            "Nothing yet - designs you import and solutions you load "
             "will appear here."
         )
         self._empty.setWordWrap(True)
@@ -209,15 +218,34 @@ class RecentPanel(QWidget):
 
         outer.addWidget(self._body)
 
+        # Full-height collapse / resize handle on the expanded panel's right
+        # edge, the same widget and gestures as the viewer's side panel.
+        self._handle = SidebarToggleButton(self)
+        self._handle.setToolTip(
+            "Drag to resize the recent list · Click to hide it")
+        self._handle.clicked.connect(lambda: self.set_expanded(False))
+        self._handle.pressed.connect(
+            lambda: setattr(self, "_drag_start_w", self._body.width()))
+        self._handle.resizedBy.connect(self._on_resized_by)
+        outer.addWidget(self._handle)
+
         # Follow writes to the recent list from anywhere (an import
-        # finishing, a failed load dropping its entry, File > Recent > Clear).
+        # finishing, a failed load dropping its entry, Clear list).
         add_recent_projects_listener(self.refresh)
         self.destroyed.connect(
             lambda *_a, cb=self.refresh: remove_recent_projects_listener(cb)
         )
 
         self.refresh()
-        self._apply_expanded(load_recent_panel_expanded())
+        if self._always_expanded:
+            self._strip.hide()
+            self._handle.hide()
+            self._body.setMinimumWidth(_MIN_WIDTH)
+            self._body.setMaximumWidth(16777215)
+            self._body.setStyleSheet(
+                f"#recentPanelBody {{ background-color:{t['bg']}; }}")
+        else:
+            self._apply_expanded(load_recent_panel_expanded())
 
     # --- expand / collapse -------------------------------------------------
 
@@ -225,12 +253,21 @@ class RecentPanel(QWidget):
         return self._body.isVisibleTo(self)
 
     def set_expanded(self, expanded: bool) -> None:
+        if self._always_expanded:
+            return
         self._apply_expanded(expanded)
         save_recent_panel_expanded(expanded)
 
     def _apply_expanded(self, expanded: bool) -> None:
         self._body.setVisible(bool(expanded))
+        self._handle.setVisible(bool(expanded))
         self._strip.setVisible(not expanded)
+
+    def _on_resized_by(self, delta: int) -> None:
+        """Handle drag: widen / narrow the expanded list."""
+        start = getattr(self, "_drag_start_w", self._body.width())
+        self._body.setFixedWidth(
+            max(_MIN_WIDTH, min(_MAX_WIDTH, start + int(delta))))
 
     # --- content ------------------------------------------------------------
 
@@ -277,7 +314,7 @@ class RecentPanel(QWidget):
                 f.setItalic(True)
                 item.setFont(f)
                 item.setForeground(QColor(t["fg_dim"]))
-                tip += "\n\nNot found — opening it removes it from the list."
+                tip += "\n\nNot found - opening it removes it from the list."
             item.setToolTip(tip)
             table.setItem(row, _COL_NAME, item)
 
@@ -325,9 +362,11 @@ class RecentPanel(QWidget):
             return
         from fypa.viewer.project_open import _open_recent_project
         entry = dict(self._entries[row])
+        if self._on_open is not None:
+            self._on_open()
         # Defer one tick: the open can rewrite the recent list (a missing
         # file drops its entry), and the refresh that follows rebuilds the
-        # row widgets — including the button whose click we're still inside.
+        # row widgets - including the button whose click we're still inside.
         QTimer.singleShot(
             0, lambda: _open_recent_project(self._window, entry, clean=clean),
         )
@@ -364,3 +403,19 @@ class RecentPanel(QWidget):
         )
         if ans == QMessageBox.Yes:
             clear_recent_projects()
+
+
+class RecentDialog(QDialog):
+    """File > Open Recent… in the main window: the launcher's Recent list
+    in a pop-up. Opening an entry closes the pop-up first, then loads it
+    into *window* the same way the launcher's panel does."""
+
+    def __init__(self, window) -> None:
+        super().__init__(window)
+        self.setWindowTitle("Open Recent")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.panel = RecentPanel(window, self, always_expanded=True,
+                                 on_open=self.accept)
+        layout.addWidget(self.panel)
+        self.resize(560, 480)

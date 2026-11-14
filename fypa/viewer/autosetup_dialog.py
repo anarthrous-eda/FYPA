@@ -2,12 +2,12 @@
 
 Three steps in one dialog:
 
-1. **Setup** — optional datasheet folder. Without one the wizard still runs
+1. **Setup** - optional datasheet folder. Without one the wizard still runs
    on the design alone (pin names, net names, part descriptions, power-port
    symbols), with weaker type / efficiency / current values.
-2. **Analysing** — :func:`fypa.autosetup.run_autosetup` on a worker thread,
+2. **Analysing** - :func:`fypa.autosetup.run_autosetup` on a worker thread,
    with progress and Cancel.
-3. **Review** — every suggestion with a tick box, its value editable in
+3. **Review** - every suggestion with a tick box, its value editable in
    place, and the reasoning (including the datasheet sentence a value came
    from) for the selected row. Apply returns the ticked suggestions; the
    caller turns them into editor directives.
@@ -62,7 +62,7 @@ _SI = {"p": 1e-12, "n": 1e-9, "u": 1e-6, "µ": 1e-6, "μ": 1e-6, "m": 1e-3,
 def format_value(value: float | None, field: str) -> str:
     """``0.00064`` current → ``640 µA``; ``1.8`` voltage → ``1.8 V``."""
     if value is None:
-        return "—"
+        return "-"
     unit = _UNITS[field]
     a = abs(value)
     for mult, prefix in ((1.0, ""), (1e-3, "m"), (1e-6, "µ")):
@@ -120,7 +120,7 @@ class AutoSetupWizard(QDialog):
 
     def __init__(self, parent, *, loaded, editor_directives, datasheet_dir: str = "") -> None:
         super().__init__(parent)
-        self.setWindowTitle("Auto setup — PDN sources, regulators and sinks")
+        self.setWindowTitle("Auto setup - PDN sources, regulators and sinks")
         self.resize(1080, 680)
         self._loaded = loaded
         self._eds = list(editor_directives)
@@ -169,7 +169,7 @@ class AutoSetupWizard(QDialog):
         row = QHBoxLayout()
         row.addWidget(QLabel("Datasheet folder:"))
         self._dir_edit = QLineEdit(datasheet_dir)
-        self._dir_edit.setPlaceholderText("optional — leave blank to use the design data only")
+        self._dir_edit.setPlaceholderText("optional - leave blank to use the design data only")
         self._dir_edit.setClearButtonEnabled(True)
         self._dir_edit.textChanged.connect(self._update_dir_hint)
         row.addWidget(self._dir_edit, 1)
@@ -183,7 +183,7 @@ class AutoSetupWizard(QDialog):
         lay.addWidget(self._dir_hint)
         if not pdf_support_available():
             warn = QLabel("PDF reading is unavailable in this build (pypdf is "
-                          "missing) — datasheets will be ignored.")
+                          "missing) - datasheets will be ignored.")
             warn.setStyleSheet(f"color: {t['warn']};")
             lay.addWidget(warn)
         lay.addStretch(1)
@@ -300,7 +300,7 @@ class AutoSetupWizard(QDialog):
         d = self._dir_edit.text().strip()
         if not d:
             self._dir_hint.setText(
-                "No folder: suggestions use the design data only — regulator "
+                "No folder: suggestions use the design data only - regulator "
                 "types may be guessed and sink currents will be estimates.")
             return
         p = Path(d)
@@ -318,7 +318,7 @@ class AutoSetupWizard(QDialog):
     def _start(self) -> None:
         d = self.datasheet_dir()
         if d and not Path(d).is_dir():
-            self._dir_hint.setText("That folder doesn't exist — clear it to run "
+            self._dir_hint.setText("That folder doesn't exist - clear it to run "
                                    "without datasheets.")
             return
         self._stack.setCurrentIndex(1)
@@ -433,10 +433,10 @@ class AutoSetupWizard(QDialog):
         value.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsEditable)
         if s.value is None:
             value.setForeground(QColor(t["err"]))
-            value.setToolTip("Missing — double-click to enter")
+            value.setToolTip("Missing - double-click to enter")
         elif s.value_field in s.estimated:
             value.setForeground(QColor("#e0a030"))
-            value.setToolTip("Estimate — double-click to change")
+            value.setToolTip("Estimate - double-click to change")
         self._table.setItem(r, C_VALUE, value)
 
         if s.role == "REGULATOR":
@@ -468,7 +468,7 @@ class AutoSetupWizard(QDialog):
     @staticmethod
     def _type_text(s: Suggestion) -> str:
         if s.regulator_type == "SMPS":
-            eff = f"η {s.efficiency * 100:.0f} %" if s.efficiency else "η —"
+            eff = f"η {s.efficiency * 100:.0f} %" if s.efficiency else "η -"
             return f"{eff}  {s.smps_topology or ''}".rstrip()
         return ""
 
@@ -560,7 +560,7 @@ class AutoSetupWizard(QDialog):
         t = _T()
         lines = [f"<b>{_esc(s.role)} {_esc(s.designator)}</b> "
                  f"<span style='color:{t['fg_muted']};'>{_esc(s.part_number)}</span>"
-                 f" — {_esc(s.nets_text())}"]
+                 f" - {_esc(s.nets_text())}"]
         if s.role == "REGULATOR" and s.n_net:
             lines[0] += f", return {_esc(s.n_net)}"
         elif s.role in ("SOURCE", "SINK"):

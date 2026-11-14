@@ -1,6 +1,6 @@
 """Multi-select support for editor-mode PDN markers.
 
-Pure logic, no Qt — the marquee hit-test and the "shared value vs ``*``"
+Pure logic, no Qt - the marquee hit-test and the "shared value vs ``*``"
 field merge are the two pieces worth testing on their own, so they live
 here rather than inside :class:`~fypa.altium_viewer.PdnViewer`.
 
@@ -53,8 +53,8 @@ MIXED = _Mixed()
 
 # The :class:`~fypa.project_file.EditorDirective` fields a multi-sink edit
 # is allowed to write. Deliberately excludes the per-part pad lists
-# (``p_pins`` / ``n_pins`` / ``p_des`` / ``n_des``) — pushing one pad list
-# across several different footprints is never what the user means — and
+# (``p_pins`` / ``n_pins`` / ``p_des`` / ``n_des``) - pushing one pad list
+# across several different footprints is never what the user means - and
 # ``anchor_xy`` / ``layer``, which are per-marker geometry.
 MULTI_SINK_FIELDS: tuple[str, ...] = (
     "current",
@@ -78,7 +78,7 @@ MULTI_SOURCE_FIELDS: tuple[str, ...] = (
 class MarqueeCandidate:
     """One marquee-selectable marker, as the viewport actually draws it.
 
-    ``points`` holds every glyph position for the marker in world mm — a
+    ``points`` holds every glyph position for the marker in world mm - a
     free marker has one, a component-bound directive has one per pad on
     its net(s). ``key`` identifies the underlying object: ``("directive",
     id)`` for an editor directive, ``("schematic", designator)`` for a
@@ -110,7 +110,7 @@ def points_enclosed(points: Sequence[tuple[float, float]],
     Full enclosure, not touching: a component sink glyphs at each of its
     pads, and clipping one corner pad of a large connector should not drag
     the whole sink into the selection. An empty point list is never
-    enclosed — a marker with nothing drawn isn't on screen to select.
+    enclosed - a marker with nothing drawn isn't on screen to select.
     """
     if not points:
         return False
@@ -141,7 +141,7 @@ def merge_values(values: Iterable[Any]) -> Any:
     for v in it:
         # ``isinstance`` guard because ``1.0 == True`` in Python: a bool
         # field and a numeric field that happen to compare equal are still
-        # a disagreement. An int / float pair is *not* — a project file
+        # a disagreement. An int / float pair is *not* - a project file
         # round-trip can hand back ``1`` where another sink holds ``1.0``,
         # and flagging that as ``*`` would be a lie.
         if isinstance(v, bool) != isinstance(first, bool):

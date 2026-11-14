@@ -71,7 +71,7 @@ class CapLoopSettings:
     # fills; ``plane_probe_coverage`` is the minimum. The radius must be well
     # clear of an anti-pad (so a perforated plane still reads as a sheet) and
     # well above a pad's size (so a pad does not). Not surfaced in the
-    # Settings tab — they discriminate plane-from-pad, not physics.
+    # Settings tab - they discriminate plane-from-pad, not physics.
     plane_probe_radius_mm: float = 2.0
     plane_probe_coverage: float = 0.35
 

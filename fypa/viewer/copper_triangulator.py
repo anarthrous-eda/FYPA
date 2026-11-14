@@ -1,6 +1,6 @@
 """Background triangulation of a board's copper for the all-copper view.
 
-Filling a large board's copper means triangulating every polygon — minutes of
+Filling a large board's copper means triangulating every polygon - minutes of
 single-threaded work on a 16-layer design. :class:`CopperTriangulator` does it
 in worker processes after the viewer opens, so the window stays responsive and
 a layer that has been prepared shows the moment its eye is clicked. A layer

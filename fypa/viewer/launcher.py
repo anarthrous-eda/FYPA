@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fypa.viewer.app_menus import _build_help_menu, _build_recent_projects_menu
+from fypa.viewer.app_menus import _build_help_menu
 from fypa.viewer.assets import (
     _force_native_window_icon,
     _load_app_icon,
@@ -121,7 +121,7 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
     def _build_home_tab(self) -> QWidget:
         """Build the Home (welcome) tab. Rebuilt wholesale on a theme change
         (see :meth:`_refresh_inline_theme`) so its inline-styled label, logo
-        and background pick up the new colours — hence the auto-solve
+        and background pick up the new colours - hence the auto-solve
         checkbox is created *and wired* here, not in ``_build_menubar``."""
         t = _T()
         centre = QWidget(self)
@@ -156,7 +156,7 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         label.setTextFormat(Qt.RichText)
         label.setAlignment(Qt.AlignCenter)
         # Handle the link clicks ourselves and dispatch to the existing
-        # menu handlers — don't bounce out to a system browser.
+        # menu handlers - don't bounce out to a system browser.
         label.setOpenExternalLinks(False)
         label.setTextInteractionFlags(
             Qt.LinksAccessibleByMouse | Qt.LinksAccessibleByKeyboard
@@ -183,7 +183,7 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         centre.setStyleSheet(f"background-color: {t['bg']};")
 
         # Collapsible Recent list down the left edge (its own theme-styled
-        # widget, so it sits beside — not inside — the styled welcome area).
+        # widget, so it sits beside - not inside - the styled welcome area).
         from fypa.viewer.recent_panel import RecentPanel
         home = QWidget(self)
         row = QHBoxLayout(home)
@@ -268,15 +268,7 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         )
         file_menu.addAction(open_proj_clean)
 
-        from fypa.viewer.tomachie_menu import SHORTCUT, on_load_tomachie_pdn
-        load_pdn = QAction("Load &Tomachie pdn.json…", self)
-        load_pdn.setShortcut(SHORTCUT)
-        load_pdn.setStatusTip(
-            "Set up sources, regulators, series parts and loads from a Tomachie pdn.json")
-        load_pdn.triggered.connect(lambda: on_load_tomachie_pdn(self))
-        file_menu.addAction(load_pdn)
-
-        # "Solve automatically on import" is no longer a File-menu item — it's
+        # "Solve automatically on import" is no longer a File-menu item - it's
         # the Settings > General options entry; the import path reads the
         # persisted pref (load_auto_solve_on_import) directly.
 
@@ -290,16 +282,17 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         open_gerber.triggered.connect(self._on_menu_import_gerber)
         file_menu.addAction(open_gerber)
 
+        from fypa.viewer.tomachie_menu import add_load_custom_menu
+        add_load_custom_menu(self, file_menu)
+
         open_projfile = QAction("Open &Project File…", self)
         open_projfile.setShortcut("Ctrl+Shift+P")
         open_projfile.setStatusTip(
-            "Open a .fypa project file — its linked solution plus any "
+            "Open a .fypa project file - its linked solution plus any "
             "editor-mode changes."
         )
         open_projfile.triggered.connect(self._on_menu_open_project_file)
         file_menu.addAction(open_projfile)
-
-        _build_recent_projects_menu(file_menu, self)
 
         file_menu.addSeparator()
 
@@ -320,7 +313,7 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         _build_help_menu(self)
 
     def _on_menu_import_gerber(self) -> None:
-        """File > Import Gerber Files…  —  picks Gerber + drill files,
+        """File > Import Gerber Files…  -  picks Gerber + drill files,
         runs the layer-mapping + stackup dialogs, then hands the heavy
         per-layer render + geometry build off to a background
         :class:`_GerberImportWorker` (so Windows doesn't flag the app
@@ -342,7 +335,7 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
 
     def _start_gerber_import(self, result, pseudo) -> None:
         """Run the off-thread half of a Gerber import for already-chosen
-        inputs — from the picker dialogs above, or replayed from a Recent
+        inputs - from the picker dialogs above, or replayed from a Recent
         entry. Records the import in the recent list once the viewer opens."""
         if _any_gerber_import_running():
             QMessageBox.information(
@@ -363,7 +356,7 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         dlg.show()
         QApplication.processEvents()
         _sz = dlg.size()
-        # 2.5x Qt's default width — Gerber import stage labels are longer
+        # 2.5x Qt's default width - Gerber import stage labels are longer
         # than the solve dialog's ("Rendering 16 Gerber layers…", etc.)
         # and Qt's auto-sized width clips them.
         dlg.setFixedSize(int(_sz.width() * 2.5), _sz.height())
@@ -385,7 +378,7 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
             except (RuntimeError, TypeError):
                 pass
             dlg.close()
-            # close() only hides the parented dialog — delete it so imports
+            # close() only hides the parented dialog - delete it so imports
             # don't leak one QProgressDialog each.
             dlg.deleteLater()
             # The worker may still be inside the non-interruptible ProcessPool
@@ -455,7 +448,7 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
 
     def _on_solve_cancelled(self) -> None:
         """User clicked Cancel on the solve progress dialog. Forcibly kill
-        the worker — the launcher is already the "home" state, so just stay
+        the worker - the launcher is already the "home" state, so just stay
         here once the dialog is gone."""
         _clear_pending_altium_recent(self)
         _abort_solve_worker(self)
@@ -467,7 +460,7 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
             self._solve_progress_updater = None
         if self._solve_progress_dlg is not None:
             # QProgressDialog.close() routes through reject() → cancel(),
-            # which emits canceled — and our canceled handler tears down
+            # which emits canceled - and our canceled handler tears down
             # the in-flight solve. Drop the connection first so closing a
             # dialog whose worker finished naturally doesn't get treated
             # as a user cancel.
@@ -485,7 +478,7 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         logging.getLogger(__name__).error("Solve failed: %s", message)
         _drop_pending_altium_recent(self)
         if getattr(self, "_cli_import_pending", False):
-            # Drives main()'s exit code — see the tail of main().
+            # Drives main()'s exit code - see the tail of main().
             self._cli_import_failed = True
             if _headless_platform():
                 # A modal here has no one to dismiss it: a CI job running
@@ -515,16 +508,16 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
             _record_recent_altium_from_metadata(metadata)
         _clear_pending_altium_recent(self)
         # An Altium project with no SOURCE/REGULATOR loads as an editor-mode
-        # stub instead of failing — let the user know it's set up for manual
+        # stub instead of failing - let the user know it's set up for manual
         # marker placement rather than a finished solve.
         _maybe_warn_needs_directives(new_win or self, new_solution)
         _maybe_show_annotation_errors(new_win or self, metadata)
         _maybe_show_mesh_failures(new_win or self, metadata)
-        # Rails with only sources or only sinks were skipped — tell the user.
+        # Rails with only sources or only sinks were skipped - tell the user.
         _maybe_warn_open_loop_rails(new_win or self, metadata)
-        # Nets whose source & sink landed on disconnected copper — tell the user.
+        # Nets whose source & sink landed on disconnected copper - tell the user.
         _maybe_warn_connectivity_breaks(new_win or self, metadata)
-        # Parts joining a solved rail to copper outside the FEM — advisory.
+        # Parts joining a solved rail to copper outside the FEM - advisory.
         _maybe_warn_unannotated_bridges(new_win or self, metadata)
 
     def _on_menu_open_solution(self) -> None:
@@ -587,7 +580,7 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         app = QApplication.instance()
         # The new viewer's GL widget show() is processed asynchronously,
         # so there's a one-tick window where visible_windows == 0 if we
-        # hide/close the launcher synchronously — that trips
+        # hide/close the launcher synchronously - that trips
         # quitOnLastWindowClosed and the whole process exits. Disable
         # the auto-quit, hide the launcher, then restore the flag on the
         # next event-loop tick (by which time new_win is fully shown).

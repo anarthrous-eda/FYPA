@@ -2,7 +2,7 @@
 
 ``_pardiso_solve_sym`` keeps the factorisation alive between solves and reuses
 it when the stiffness matrix is unchanged (e.g. only sink-current magnitudes
-changed — those touch the RHS, not L). These tests check that the reused path
+changed - those touch the RHS, not L). These tests check that the reused path
 gives the right answer (a linear system's response scales with its RHS), that
 the cache is actually exercised (same matrix → same fingerprint, no
 re-factorisation), and that ``free_pardiso_cache`` resets cleanly.

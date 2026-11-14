@@ -47,20 +47,20 @@ class _ProbeMixin:
     # white line is drawn from there to the live cursor position. The
     # status-bar probe label gains a "Difference = X V" suffix that
     # reports the live cursor's voltage minus the anchor voltage. The
-    # over-copper / mode checks happen exactly once on shift-press — once
+    # over-copper / mode checks happen exactly once on shift-press - once
     # the tool is active, the line tracks the cursor regardless of where
     # it ends up.
 
     def eventFilter(self, obj, event) -> bool:
         """Application-wide hook for Shift press/release. Filter is
         installed on the QApplication so we see modifier-key events
-        regardless of which child widget has focus — required because
+        regardless of which child widget has focus - required because
         Qt only dispatches key events to the focused widget by default,
         and the GL viewer doesn't get focus until the user clicks it.
 
         Auto-repeat suppression keeps a held key from re-anchoring on
         every OS keyboard-repeat tick. The window-deactivate branch is
-        a safety net for Alt-Tab — the user releases Shift in another
+        a safety net for Alt-Tab - the user releases Shift in another
         window, our window never sees the release event, so we treat
         any deactivate while the tool is active as an implicit release.
         """
@@ -113,12 +113,13 @@ class _ProbeMixin:
             self._position_scale_overlay()
             self._position_editor_overlays()
             self._position_editor_panel()
+            self._position_whatif_banner()
         return False
 
     def _position_scale_overlay(self) -> None:
         """Pin the heatmap colour-scale strip to the GL viewer's
         bottom-left corner. Safe to call before the overlay / viewer
-        exist (no-op) — wired to every GL-viewer resize via
+        exist (no-op) - wired to every GL-viewer resize via
         :meth:`eventFilter`."""
         bar = getattr(self, "_scale_overlay", None)
         gl = getattr(self, "_gl_viewer", None)
@@ -133,7 +134,7 @@ class _ProbeMixin:
         """Pin the right-hand editor / copper-properties panel to the GL
         viewer's right edge, full height (minus margins). The panel is a
         child of the GL viewer so it floats over the viewport rather than
-        consuming layout space — that keeps the visible copper from
+        consuming layout space - that keeps the visible copper from
         shifting sideways when the panel appears / disappears. Wired to
         every GL-viewer resize via :meth:`eventFilter`.
 
@@ -164,7 +165,7 @@ class _ProbeMixin:
         gl.set_legend_right_inset(float(w) if panel.isVisible() else 0.0)
 
     def _on_spacemouse_fit(self) -> None:
-        """SpaceMouse menu / fit button — frame board or reset 3D view."""
+        """SpaceMouse menu / fit button - frame board or reset 3D view."""
         self._fit_board_to_view()
 
     def closeEvent(self, event) -> None:
@@ -186,7 +187,7 @@ class _ProbeMixin:
             return
         # 2D only. In 3D the anchor would sit on a specific layer's z
         # plane but the cursor's "current voltage" comes from a ray-pick
-        # that can land on a different layer — the resulting difference
+        # that can land on a different layer - the resulting difference
         # would mix two unrelated readings.
         if self.view_3d_box.isChecked():
             return
@@ -281,7 +282,7 @@ class _ProbeMixin:
         flood the CPU. Skipped during drag (the GLMeshViewer is panning,
         so probe values would be meaningless mid-drag anyway).
 
-        2D mode: the signal's (world_x, world_y) is the answer — walk the
+        2D mode: the signal's (world_x, world_y) is the answer - walk the
         cached probe list top-first and report the first layer whose
         copper covers it. 3D mode: a single screen pixel maps to a whole
         camera ray, so the same pixel hits different (x, y) at each
@@ -296,7 +297,7 @@ class _ProbeMixin:
             self._hide_cursor_tooltip()
             return
         now = time.monotonic()
-        # Use the tighter throttle while the cursor tooltip is on — it
+        # Use the tighter throttle while the cursor tooltip is on - it
         # visibly tracks the mouse, so any stutter is jarring. The bottom
         # probe label is more forgiving, so the default 30 Hz is fine.
         throttle = (CURSOR_TOOLTIP_THROTTLE_S
@@ -305,7 +306,7 @@ class _ProbeMixin:
         if now - self._last_probe_at < throttle:
             return
         self._last_probe_at = now
-        # Nothing to probe at all — no FEM rail and no visible physical
+        # Nothing to probe at all - no FEM rail and no visible physical
         # copper. Keep the initial-state hint rather than reporting
         # "(no copper)" over a blank viewport.
         has_visible_all_copper = (
@@ -510,7 +511,7 @@ class _ProbeMixin:
         if not found:
             # An internal plane flooded by a merged-away net: the whole
             # sheet was that net, but only where the hover is on the plane's
-            # own (now canonical) net — not on another net's pad in it.
+            # own (now canonical) net - not on another net's pad in it.
             want = net.upper()
             for canon, orig in whole.get(layer_id, ()):
                 if canon == want and orig not in found:
@@ -595,7 +596,7 @@ class _ProbeMixin:
     #
     # Qt's QToolTip has built-in re-use / debouncing logic that makes
     # showText calls stutter when the content barely changes from one
-    # frame to the next — the tooltip "sticks" instead of tracking the
+    # frame to the next - the tooltip "sticks" instead of tracking the
     # cursor. We sidestep that entirely by drawing our own frameless
     # label that we move() ourselves every hover event.
 
@@ -627,13 +628,13 @@ class _ProbeMixin:
 
         ``via_row`` is the Vias-tab row dict for the via under the
         cursor, or ``None``. When non-None, the tooltip appends per-via
-        current / voltage lines — and stays visible even when ``hit`` is
+        current / voltage lines - and stays visible even when ``hit`` is
         ``None`` (e.g. in 3D when the user is hovering a via barrel
         between visible copper layers, where there is no per-pixel
         copper probe to drive the rest of the tooltip).
 
         ``marker_row`` is the SOURCE/SINK marker row under the cursor,
-        or ``None``. Same any-of-three rule applies — the tooltip stays
+        or ``None``. Same any-of-three rule applies - the tooltip stays
         visible while the user is parked on a marker, even when not
         over copper."""
         if not self.cursor_tooltip_box.isChecked() \
@@ -644,7 +645,7 @@ class _ProbeMixin:
         if hit is not None:
             v_float, lp = hit
             if lp.get("is_bare"):
-                # Non-rail copper from the all-copper overlay — no FEM
+                # Non-rail copper from the all-copper overlay - no FEM
                 # solve runs here, so just name the net / layer.
                 pass
             elif lp.get("is_stub"):
@@ -681,8 +682,8 @@ class _ProbeMixin:
 
         Built lazily on first cursor hover (not at render time) so a rail
         toggle never pays for it. :class:`_FastTriSampler` builds in
-        ~50–150 ms even on a 300k-triangle GND plane — its predecessor,
-        ``LinearTriInterpolator``, took 3–10 s and froze the GUI for
+        ~50-150 ms even on a 300k-triangle GND plane - its predecessor,
+        ``LinearTriInterpolator``, took 3-10 s and froze the GUI for
         several seconds the first time the cursor crossed a heavy plane.
         The result is written back to the ``_layer_cache`` entry (via
         ``_cache_key``) so subsequent renders of the same (layer, mode)
@@ -798,7 +799,7 @@ class _ProbeMixin:
     def _in_hidden_section(lp: dict, x: float, y: float) -> bool:
         """True when (x, y) is on a triangle of a shorted section that the
         Rails control has switched off (see ``tri_keep`` in
-        ``_build_rail_arrays``) — the copper there is not drawn."""
+        ``_build_rail_arrays``) - the copper there is not drawn."""
         keep = lp.get("tri_keep")
         tri = lp.get("triangulation")
         if keep is None or tri is None:
@@ -873,7 +874,7 @@ class _ProbeMixin:
 
         # Step count: at least _RELIEF_PICK_STEPS, but also enough that the
         # ray moves no more than _RELIEF_PICK_MAX_XY_STEP_MM sideways per
-        # step — on an oblique view a coarse march would hop clean over a
+        # step - on an oblique view a coarse march would hop clean over a
         # narrow trace (or a needle-thin spike) and miss it entirely.
         z_hi = z_base + span
         x_top, y_top = self._gl_viewer.screen_to_world_at_z(x_px, y_px, z_hi)
@@ -923,7 +924,7 @@ class _ProbeMixin:
 
         ``z_tops`` / ``z_bots`` come from the via's full ``layer_start``
         → ``layer_end`` metadata span, NOT the sampled-layer span in the
-        Vias-tab row — so when the user hovers a section of barrel that
+        Vias-tab row - so when the user hovers a section of barrel that
         crosses a layer without copper on this net, the 3D ray test
         still hits.
         """
@@ -1024,7 +1025,7 @@ class _ProbeMixin:
         dict for the picked via (the same shape :meth:`_compute_via_report`
         produces), or ``None`` when the cursor isn't over any via."""
         if self.view_3d_box.isChecked():
-            # Barrels aren't drawn in the relief view — nothing to hover.
+            # Barrels aren't drawn in the relief view - nothing to hover.
             if self._gl_viewer.relief_z_span() > 0.0:
                 return None
             return self._pick_hovered_via_3d()
@@ -1061,7 +1062,7 @@ class _ProbeMixin:
 
         Why this is needed: a vertical via barrel viewed from an oblique
         camera lands well off the (x, y) you get by unprojecting the
-        cursor at any single z — the cursor on the side of the barrel
+        cursor at any single z - the cursor on the side of the barrel
         sits at one z while the via's footprint is at another. The
         2D-style ``(wx - vx)² + (wy - vy)² < r²`` check therefore misses.
         Instead we project each via's top and bottom endpoints to
@@ -1070,7 +1071,7 @@ class _ProbeMixin:
         via's projected radius.
 
         Vectorised over all vias with one MVP build + a handful of
-        batched matrix multiplies per hover — cheap enough at 30 Hz
+        batched matrix multiplies per hover - cheap enough at 30 Hz
         even on a 3 000-via board."""
         idx = self._get_or_build_via_hover_index()
         if idx is None:
@@ -1151,13 +1152,13 @@ class _ProbeMixin:
     # When the cursor is over a SOURCE or SINK marker the bottom probe label
     # gets a suffix naming the directive and the current it sources/sinks.
     # SINK current = the prescribed load (directive value). SOURCE current
-    # has no prescribed value — derive it from steady-state KCL on the rail
+    # has no prescribed value - derive it from steady-state KCL on the rail
     # group as the sum of all SINK loads on the same rail.
 
     def _directive_current_for_hover(self, d: dict) -> float | None:
         """Current to report for a directive marker, or None if unknown.
         SINK: the prescribed load. SOURCE: sum of SINK loads on its rail
-        group (KCL — what the source must deliver under DC steady state)."""
+        group (KCL - what the source must deliver under DC steady state)."""
         role = d.get("role")
         if role == "SINK":
             try:
@@ -1201,7 +1202,7 @@ class _ProbeMixin:
         return total if any_found else None
 
     def _rail_sink_load(self, rail_members: set[str]) -> tuple[float, bool]:
-        """Sum of every SINK load coupling into ``rail_members`` — solved
+        """Sum of every SINK load coupling into ``rail_members`` - solved
         schematic directives plus pending editor directives. A schematic
         SINK is dropped when an editor directive overrides its designator,
         and an editor-originated one is dropped from the solved side
@@ -1222,7 +1223,7 @@ class _ProbeMixin:
             # directives, and the project still holds it as a live editor
             # directive. The editor loop below owns it, so counting it here
             # too doubles the reported rail load. Only skip when that loop
-            # will actually run — a solve bundle opened without a project
+            # will actually run - a solve bundle opened without a project
             # would otherwise lose its editor-placed sinks entirely.
             if (self._project is not None
                     and other.get("schdoc") == _EDITOR_SCHDOC):
@@ -1261,7 +1262,7 @@ class _ProbeMixin:
                 if d.overrides_designator}
 
     def _editor_directive_current(self, d) -> float | None:
-        """Hover current for an :class:`EditorDirective` — the prescribed
+        """Hover current for an :class:`EditorDirective` - the prescribed
         load for a SINK, or the KCL rail-load sum for a SOURCE (same basis
         as :meth:`_directive_current_for_hover` uses for solved markers)."""
         if d.role == "SINK":
@@ -1284,7 +1285,7 @@ class _ProbeMixin:
             if d.role not in ("SOURCE", "SINK"):
                 continue
             if not self._directive_rail_visible(d):
-                continue   # marker's rail is hidden — keep hover in step
+                continue   # marker's rail is hidden - keep hover in step
             total = self._editor_directive_current(d)
             label = d.designator or d.id or ""
             size_px = int(self._ROLE_MARKER_STYLE[d.role]["size"]) + 4
@@ -1366,7 +1367,7 @@ class _ProbeMixin:
         if the cursor is inside its hit radius, else ``None``.
 
         Hit radius scales with the marker's pixel size at the current
-        zoom — a generous +2 px slack so the click target matches what
+        zoom - a generous +2 px slack so the click target matches what
         the eye sees and isn't a needle in the centre of the glyph."""
         idx = getattr(self, "_marker_hover_index_cache", None)
         if idx is None:
@@ -1414,7 +1415,7 @@ class _ProbeMixin:
         if per_pin is None or not np.isfinite(per_pin):
             lines.append("I: (n/a)")
             if pending:
-                lines.append("(pending — press Resolve)")
+                lines.append("(pending - press Resolve)")
             return lines
         prefix = "I ≈" if role == "SOURCE" else "I ="
         lines.append(f"{prefix} {per_pin:.4g} A")
@@ -1424,7 +1425,7 @@ class _ProbeMixin:
         if role == "SOURCE":
             lines.append("(rail load)")
         if pending:
-            lines.append("(pending — press Resolve)")
+            lines.append("(pending - press Resolve)")
         return lines
 
     def _format_marker_hover_text(self, row: dict) -> str:
@@ -1434,14 +1435,14 @@ class _ProbeMixin:
         report the whole load on each marker. SOURCE values are tagged
         ``≈ … (rail load)`` to flag they're derived from KCL rather than
         prescribed by the user. Editor edits not yet resolved get a
-        trailing ``[pending — Resolve]`` so the user knows the figure is
+        trailing ``[pending - Resolve]`` so the user knows the figure is
         their unsolved input, not a solved value."""
         role = row.get("role", "")
         label = row.get("label", "") or "?"
         per_pin = row.get("current_a")
         total = row.get("directive_current_a")
         n_pins = int(row.get("terminal_pin_count") or 1)
-        pend = "  [pending — Resolve]" if row.get("pending") else ""
+        pend = "  [pending - Resolve]" if row.get("pending") else ""
         if per_pin is None or not np.isfinite(per_pin):
             return f"   {role} {label}: I = (n/a){pend}"
         prefix = "I ≈" if role == "SOURCE" else "I ="
@@ -1475,8 +1476,8 @@ class _ProbeMixin:
     def _probe_at_stub(self, x: float, y: float
                        ) -> tuple[float | None, dict] | None:
         """Check whether (x, y) falls inside any visible stub (no-current
-        copper).  Returns ``(voltage, info)`` — voltage may be None if
-        un-estimable — or ``None`` if no stub covers the point.
+        copper).  Returns ``(voltage, info)`` - voltage may be None if
+        un-estimable - or ``None`` if no stub covers the point.
         ``info`` has keys ``physical``, ``net``, ``is_stub=True``."""
         if self.metadata is None:
             return None
@@ -1563,7 +1564,7 @@ class _ProbeMixin:
     ) -> tuple[QWidget, QToolButton]:
         """Wrap ``body_widget`` in a click-to-expand QFrame with a header
         button matching the dark-theme styling of the other Settings
-        groups. Returns ``(wrapper, header)`` — keep a reference to the
+        groups. Returns ``(wrapper, header)`` - keep a reference to the
         header if you want to update its title later."""
         wrap = QFrame()
         wrap.setObjectName("collapsibleSection")
@@ -1586,7 +1587,7 @@ class _ProbeMixin:
         header.setAutoRaise(True)
         header.setCursor(Qt.PointingHandCursor)
         tail = "click to collapse" if expanded else "click to expand"
-        header.setText(f"{title} — {tail}")
+        header.setText(f"{title} - {tail}")
         header.setStyleSheet(
             f"QToolButton {{ border: none; padding: 2px 4px;"
             f"              color: {t['fg_strong']}; font-weight: 600;"
@@ -1603,9 +1604,9 @@ class _ProbeMixin:
             body_widget.setVisible(exp)
             header.setArrowType(Qt.DownArrow if exp else Qt.RightArrow)
             # Replace just the "click to …" tail, keep the count prefix.
-            head = header.text().rsplit(" — ", 1)[0]
+            head = header.text().rsplit(" - ", 1)[0]
             new_tail = "click to collapse" if exp else "click to expand"
-            header.setText(f"{head} — {new_tail}")
+            header.setText(f"{head} - {new_tail}")
         header.toggled.connect(_on_toggled)
         return wrap, header
 
@@ -1615,14 +1616,14 @@ class _ProbeMixin:
 
         Re-styles the Heatmap-tab side panel in place (we can't rebuild
         it because the OpenGL canvas can't be torn down without crashing
-        the process). The other tabs (Setup, Nodes, Vias, Settings,
-        Help) are removed and rebuilt via their builders — that's how
+        the process). The other tabs (Properties, Nodes, Vias, Settings,
+        Help) are removed and rebuilt via their builders - that's how
         the dozens of internal labels / tables / buttons inside them
         track the theme without needing individual references.
 
         Transient state inside the rebuilt tabs (filter selections,
         unsaved Settings form edits, scroll positions) is lost on
-        toggle. The tradeoff is the only one I see — chasing every
+        toggle. The tradeoff is the only one I see - chasing every
         nested QLabel by hand would be unmaintainable.
         """
         t = _T()
@@ -1700,12 +1701,12 @@ class _ProbeMixin:
         heatmap_idx = self._heatmap_tab_index
         current_tab_text = self.tabs.tabText(self.tabs.currentIndex())
         # Drop the old Messages-tab buffer listener before its signaller
-        # QObject is destroyed below — leaving the listener in place
+        # QObject is destroyed below - leaving the listener in place
         # would fire on each new record, hit RuntimeError from the dead
         # QObject, and only then self-remove. Schedule the signaller for
         # deletion explicitly because it's parented to the viewer (so
         # it'd otherwise outlive the rebuild until the window itself
-        # closes — a small but unbounded leak on theme toggles).
+        # closes - a small but unbounded leak on theme toggles).
         old_msg_listener = getattr(self, "_messages_listener", None)
         if old_msg_listener is not None:
             log_buffer.remove_listener(old_msg_listener)
@@ -1724,11 +1725,11 @@ class _ProbeMixin:
                 w.deleteLater()
         # Re-add in the original order. _nodes_tab_index / _vias_tab_index
         # need refreshing because both tabs are re-inserted after the others.
-        self.tabs.addTab(self._build_setup_tab(), "Setup")
         self._topology_tab_index = self.tabs.addTab(
             self._build_topology_tab(), "Topology",
         )
         self._topology_populated = False
+        self.tabs.addTab(self._build_properties_tab(), "Properties")
         self._nodes_tab_index = self.tabs.addTab(
             self._build_nodes_tab(), "Nodes",
         )
@@ -1745,7 +1746,7 @@ class _ProbeMixin:
         self._caps_tab_index = self.tabs.addTab(
             self._build_capacitors_tab(), "Capacitors",
         )
-        # Rebuilding replaced the table widget — force a fresh populate on
+        # Rebuilding replaced the table widget - force a fresh populate on
         # next activation (rows cache is kept; only the Qt items are gone).
         self._caps_table_populated = False
         self._caps_click_handler_wired = False
@@ -1802,20 +1803,20 @@ class _ProbeMixin:
 
         Override map is keyed by layer_id (int) since enabled copper
         layer ids are unique within a project. Plane layers are listed
-        but greyed-out — plane geometry isn't supported in v1, so their
+        but greyed-out - plane geometry isn't supported in v1, so their
         thickness has no effect on the FEM today.
         """
         # ``self._stackup_thickness_edits`` maps layer_id →
         # (QLineEdit, extracted_thickness_mm): the thickness the DESIGN
         # states, which is what decides whether a field is an override.
         # ``self._stackup_thickness_solved_mm`` holds what the current
-        # solution was solved with — the baseline a field is dirty against.
+        # solution was solved with - the baseline a field is dirty against.
         # The two differ whenever an override is in effect.
         self._stackup_thickness_edits: dict[int,
                                              tuple[QLineEdit, float]] = {}
         self._stackup_thickness_solved_mm: dict[int, float] = {}
         # Overrides saved in the .fypa (kept in step with every solve, see
-        # _sync_project_stackup_overrides) — they take the field's value so
+        # _sync_project_stackup_overrides) - they take the field's value so
         # a reopened project shows, and re-solves with, what was saved.
         _proj_overrides = dict(getattr(
             getattr(self, "_project", None), "stackup_overrides", None)
@@ -1844,7 +1845,7 @@ class _ProbeMixin:
         count_text = ("no copper layers" if layer_count == 0
                        else f"{layer_count} copper layer"
                             + ("s" if layer_count != 1 else ""))
-        title = f"Stackup — copper thickness & resistivity ({count_text})"
+        title = f"Stackup - copper thickness & resistivity ({count_text})"
 
         if not rows:
             info = QLabel(
@@ -1870,7 +1871,7 @@ class _ProbeMixin:
             "layer); leave it blank to use the board-wide copper "
             "resistivity. It is temperature-corrected with the same "
             "coefficient, and changes only that layer's sheet conductance "
-            "— via barrels stay copper. The "
+            "- via barrels stay copper. The "
             "<i>dielectric</i> rows interleaved below show the core / "
             "prepreg thickness between adjacent copper layers (read-only)."
         )
@@ -1963,7 +1964,7 @@ class _ProbeMixin:
             if is_plane:
                 hint_bits.append(
                     f"<span style='color:{_t['warn']};'>PLANE (not yet "
-                    "modelled — override is informational)</span>"
+                    "modelled - override is informational)</span>"
                 )
             hint = QLabel(
                 f"<span style='color:{_t['fg_hint']};'>({' · '.join(hint_bits)})</span>"
@@ -1981,7 +1982,7 @@ class _ProbeMixin:
             form.addRow(label_widget, row_widget)
 
             # Dielectric below this copper layer (between this layer and
-            # the next one in the stack). Read-only — purely informational
+            # the next one in the stack). Read-only - purely informational
             # so the user can see how far apart the copper layers sit and
             # judge expected via-cylinder lengths in the 3D view.
             if row_index + 1 < len(rows):
@@ -2003,7 +2004,7 @@ class _ProbeMixin:
                 diel_value.setToolTip(
                     "Dielectric (core or prepreg) between this copper "
                     "layer and the one below. Drives via-barrel hop "
-                    "length in the 3D view. Read-only — edit the .PcbDoc "
+                    "length in the 3D view. Read-only - edit the .PcbDoc "
                     "stackup to change."
                 )
                 diel_label = QLabel(
@@ -2087,7 +2088,7 @@ class _ProbeMixin:
              for k, v in (md.get("stackup_overrides") or {}).items()})
 
     def _project_stackup_overrides_for_save(self) -> dict[int, dict] | None:
-        """The Stackup fields as they stand, in ProjectFile form — what the
+        """The Stackup fields as they stand, in ProjectFile form - what the
         user sees is what is saved, even before a Re-run. ``None`` when a
         field doesn't parse (the project's existing entries are kept)."""
         if not getattr(self, "_stackup_thickness_edits", None):
@@ -2112,9 +2113,15 @@ class _ProbeMixin:
             return
         btn.setVisible(abs(val - self._via_current_warn_a) > 1e-12)
 
+    def _via_check_status_label(self):
+        """The Settings tab's status line (where the via warning level
+        lives); the Properties tab's as a fallback."""
+        return (getattr(self, "_prefs_status_label", None)
+                or self._settings_status_label)
+
     def _on_rerun_via_check(self) -> None:
         """Apply the new Via current warning level to the Vias tab in
-        place — no FEM re-solve. Updates the warning count in the tab
+        place - no FEM re-solve. Updates the warning count in the tab
         title, refreshes the filter checkbox label and summary line,
         and re-styles the table cells against the new threshold."""
         edit = getattr(self, "settings_edit_via_current_warn_a", None)
@@ -2124,13 +2131,13 @@ class _ProbeMixin:
         try:
             new_warn = float(text)
         except ValueError:
-            self._settings_status_label.setText(
+            self._via_check_status_label().setText(
                 f"<span style='color:{_T()['warn_fg']};'>Via current warning "
                 f"level: not a number ({text!r})</span>"
             )
             return
         if new_warn < 0:
-            self._settings_status_label.setText(
+            self._via_check_status_label().setText(
                 f"<span style='color:{_T()['warn_fg']};'>Via current warning "
                 f"level must be ≥ 0</span>"
             )
@@ -2157,7 +2164,7 @@ class _ProbeMixin:
             self._update_vias_tab_title(warn_count)
         self._update_via_check_btn_visibility()
         self._on_settings_field_changed()
-        self._settings_status_label.setText(
+        self._via_check_status_label().setText(
             f"<span style='color:{_T()['accent']};'>Via check re-run "
             f"against |I| ≥ {self._via_current_warn_a:g} A.</span>"
         )
@@ -2263,7 +2270,7 @@ class _ProbeMixin:
         def _read_display(key: str, label: str) -> float:
             edit = getattr(self, f"settings_edit_{key}", None)
             if edit is None:
-                # Should not happen — field is always built. Be safe.
+                # Should not happen - field is always built. Be safe.
                 return getattr(self, f"_{key}")
             text = edit.text().strip()
             try:

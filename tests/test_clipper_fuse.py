@@ -29,7 +29,7 @@ def test_signed_area_sign():
 
 
 def test_rings_orientation_normalised():
-    # a CW exterior with a CCW hole — both "wrong" way round
+    # a CW exterior with a CCW hole - both "wrong" way round
     cw_outer = [(0, 0), (0, 10), (10, 10), (10, 0)]          # CW
     ccw_hole = [(3, 3), (7, 3), (7, 7), (3, 7)]              # CCW
     poly = G.Polygon(cw_outer, [ccw_hole])
@@ -80,7 +80,7 @@ _CASES = {
     "plane_two_holes": [G.box(0, 0, 30, 30)
                         .difference(G.box(4, 4, 8, 8))
                         .difference(G.box(20, 20, 26, 26))],
-    # mixed-winding inputs — the case that broke the naive encoder
+    # mixed-winding inputs - the case that broke the naive encoder
     "mixed_winding": [orient(G.box(0, 0, 10, 10), 1.0),
                       orient(G.box(8, 0, 18, 10), -1.0)],
 }

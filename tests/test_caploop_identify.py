@@ -205,7 +205,7 @@ def test_force_include_override_admits_signal_cap():
     assert len(caps) == 1
     assert caps[0].rail_net == "SPI_CLK" and caps[0].return_net == "GND"
     assert caps[0].included
-    # Only the override admitted it — the GUI must not clear that override
+    # Only the override admitted it - the GUI must not clear that override
     # when the user re-checks the box.
     assert not caps[0].auto_detected
 
@@ -219,7 +219,7 @@ def test_exclude_override_keeps_cap_listed_but_not_included():
 
 
 def test_gnd_counts_as_rail_without_annotation():
-    # No GND rail group at all — the GND-alias fallback still classifies it.
+    # No GND rail group at all - the GND-alias fallback still classifies it.
     caps = identify_capacitors(
         _standard_cap_project(), {"+3V3": ["+3V3"]},
         net_layer_shapes=_plane_shapes())
@@ -234,10 +234,10 @@ def test_escape_cluster_rejects_stitching_field():
     proj = _standard_cap_project()
     pads = [proj.pads[0]]  # rail pad at (-0.5, 0)
     proj = _proj(vias=(
-        _via(-0.9, 0.0, PWR),          # dist 0.4 — cluster seed
-        _via(-1.05, 0.0, PWR),         # dist 0.55 ≤ 0.4*1.5 — kept
-        _via(-3.0, 0.0, PWR),          # dist 2.5 — stitching, rejected
-        _via(-0.8, 0.0, GND),          # wrong net — never a candidate
+        _via(-0.9, 0.0, PWR),          # dist 0.4 - cluster seed
+        _via(-1.05, 0.0, PWR),         # dist 0.55 ≤ 0.4*1.5 - kept
+        _via(-3.0, 0.0, PWR),          # dist 2.5 - stitching, rejected
+        _via(-0.8, 0.0, GND),          # wrong net - never a candidate
     ))
     escapes = associate_escape_vias(pads, proj, {PWR}, [1, 39, 40, 32],
                                     settings)
@@ -338,7 +338,7 @@ def test_single_via_flag():
 
 def test_escape_is_measured_from_the_pad_edge_not_its_centre():
     """A via inside the pad escapes in 0 mm. Measuring from the pad centre
-    would charge a via-in-pad ~half the pad length of escape run — and on a
+    would charge a via-in-pad ~half the pad length of escape run - and on a
     1206 land that is most of a nanohenry of fictional inductance."""
     proj = _standard_cap_project(vias=(
         _via(-0.5, 0.0, PWR),          # dead centre of the rail pad
@@ -377,7 +377,7 @@ def test_buried_via_that_misses_the_mounting_layer_is_not_an_escape():
     vias routinely sit under a pad on the opposite face; charging the cap a
     board-thickness of escape inductance through one is pure fiction."""
     proj = _standard_cap_project(vias=(
-        # Same net and right next to the rail pad, but spans L39–L40 only.
+        # Same net and right next to the rail pad, but spans L39-L40 only.
         _via(-0.6, 0.0, PWR, layers=(39, 40)),
         _via(0.9, 0.0, GND), _via(1.05, 0.0, GND),
     ))
@@ -400,8 +400,8 @@ def test_bottom_mounted_cap_ignores_top_only_vias():
 
 def test_stacked_via_chain_extends_cavity_reach_without_adding_a_pair():
     """A continuation via (pad → L39, then L39 → L40) is a *series* barrel.
-    It must not join the escape cluster — that would inflate the parallel
-    pair count and understate the loop — but the plane it reaches must still
+    It must not join the escape cluster - that would inflate the parallel
+    pair count and understate the loop - but the plane it reaches must still
     be visible to cavity selection."""
     from fypa.caploop.identify import expand_reachable_layers
 
@@ -430,7 +430,7 @@ def test_cavity_prefers_the_pair_nearest_the_mounting_surface():
     side of a 16-layer board because its dielectric was 15 µm thinner. The
     loop closes through the *nearest* reachable pair."""
     near = shapely.geometry.box(-10.0, -10.0, 10.0, 10.0)
-    # Add a tighter-but-deeper pair: rail on 32, return on 40 is not it —
+    # Add a tighter-but-deeper pair: rail on 32, return on 40 is not it -
     # instead make the shallow pair (39/40) slightly looser than a deep one.
     caps = _identify(_standard_cap_project(),
                      net_layer_shapes={(39, GND): near, (40, PWR): near,
@@ -474,7 +474,7 @@ def test_no_cavity_when_copper_absent_at_cap():
 
 def test_mounting_layer_is_never_the_reference_plane():
     """The cap's own pads sit on the mounting layer. Letting that layer
-    qualify would collapse the cavity onto the pads themselves — whose
+    qualify would collapse the cavity onto the pads themselves - whose
     'sheet' is two disjoint islands with no return path between them."""
     shapes = _plane_shapes()
     # Big top-layer copper on both nets, right under the cap.
@@ -511,8 +511,8 @@ def test_a_pad_sized_copper_island_is_not_a_reference_plane():
     ({"Comment": "CAP CER 100NF 25V X7R 0402"}, 1e-7, 25.0),
     ({"Comment": "CAP CER 100 nF 25V X7R"}, 1e-7, 25.0),
     ({"Comment": "4u7", "Voltage": "6V3"}, 4.7e-6, 6.3),
-    ({"Value": "10k"}, None, None),          # a resistor value — out of band
-    ({"Comment": "0.1"}, None, None),        # bare number — unit-ambiguous
+    ({"Value": "10k"}, None, None),          # a resistor value - out of band
+    ({"Comment": "0.1"}, None, None),        # bare number - unit-ambiguous
     ({"Comment": "DNP"}, None, None),
     ({}, None, None),
     # --- case code BEFORE the value ---------------------------------------
@@ -525,7 +525,7 @@ def test_a_pad_sized_copper_island_is_not_a_reference_plane():
     ({"Comment": "CAP 0402 100NF"}, 1e-7, None),
     # --- upper-case spaced units ------------------------------------------
     # _apply_si_suffix silently drops an unrecognised leading letter, so
-    # "0.1 UF" read literally as 0.1 F — in band, so the folded 1e-7 reading
+    # "0.1 UF" read literally as 0.1 F - in band, so the folded 1e-7 reading
     # was never reached. A factor of a million on the commonest values.
     ({"Value": "0.1 UF"}, 1e-7, None),
     ({"Value": "0.22 UF"}, 2.2e-7, None),
@@ -647,7 +647,7 @@ def test_v9_dielectric_gaps_weighted_average():
     dk, df = gaps["top layer"]
     assert dk == pytest.approx((4.2 * 10 + 4.6 * 30) / 40)
     assert df == pytest.approx(0.02)
-    # Bottom copper has no gap below it — no data, not a crash.
+    # Bottom copper has no gap below it - no data, not a crash.
     assert gaps["bottom layer"] == (None, None)
 
 
@@ -694,7 +694,7 @@ def test_a_standalone_token_beats_a_merged_pair():
 
 
 def test_merge_is_off_unless_a_unit_is_named():
-    """Without merge_unit the fallback must not run at all — otherwise any
+    """Without merge_unit the fallback must not run at all - otherwise any
     bare number adjacent to any word becomes a value."""
     from fypa.caploop.identify import _CAPACITANCE_BAND_F, _parse_banded_tokens
 

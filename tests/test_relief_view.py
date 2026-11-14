@@ -1,7 +1,7 @@
-"""Relief view — the 3D copper lifted by its heatmap value.
+"""Relief view - the 3D copper lifted by its heatmap value.
 
 The mesh is lifted on the GPU (vertex shader); everything CPU-side that must
-land on that surface — the hover ray-pick and the SOURCE / SINK markers —
+land on that surface - the hover ray-pick and the SOURCE / SINK markers -
 goes through ``_relief_lift_for_value``. These tests pin that the CPU mirror
 matches the shader's mapping and that the ray-pick finds the lifted surface,
 not the flat layer plane underneath it.

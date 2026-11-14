@@ -28,7 +28,7 @@ class _ViaRenderMixin:
 
     # --- Via cylinders (3D-mode only) --------------------------------------
 
-    # Cylinder tessellation — 10 sides keeps the silhouette smooth at
+    # Cylinder tessellation - 10 sides keeps the silhouette smooth at
     # typical zoom without flooding the GPU when there are 100+ vias.
     _VIA_CYL_SEGMENTS: int = 10
     # Minimum world-mm radius for vias whose ``diameter_mm`` is missing
@@ -38,7 +38,7 @@ class _ViaRenderMixin:
     _VIA_CYL_COLOR_RGB: tuple[float, float, float] = (
         0xff / 255.0, 0x8c / 255.0, 0x00 / 255.0,
     )
-    # Alpha applied to barrel sections that carry no rail current — the metal
+    # Alpha applied to barrel sections that carry no rail current - the metal
     # stub ends outside the via's outermost current-carrying copper
     # connection, where the solved section current goes to zero (the same
     # "no current" condition the "Grey no current copper" plane toggle
@@ -50,7 +50,7 @@ class _ViaRenderMixin:
     # decided in :meth:`_hop_live_flags`, reusing the plane classifier's
     # ``_NO_CURRENT_PD_*`` power floor.
     _VIA_DEAD_SECTION_ALPHA: float = _VIA_NO_CURRENT_OPACITY_DEFAULT
-    # Plated-through-hole pad styling — light grey so PTHs are visually
+    # Plated-through-hole pad styling - light grey so PTHs are visually
     # distinct from the orange vias in both the 2D marker overlay and the
     # 3D cylinder view. PTHs span every enabled copper layer (Altium pads
     # have no blind/buried span) so their cylinders run the full stack.
@@ -67,7 +67,7 @@ class _ViaRenderMixin:
         cylinders.
 
         A via is visible if any layer it crosses (full span, not just
-        the endpoint pair) is visible — either via the primary eye on
+        the endpoint pair) is visible - either via the primary eye on
         the selected rail (the via must then be on a rail-member net),
         or via the second eye (all-copper), which shows every net on
         the layer and so bypasses the rail filter.
@@ -102,7 +102,7 @@ class _ViaRenderMixin:
             return
         rail_members = set(self._effective_rail_members(rail_names))
 
-        # Via Current mode supersedes the "Heatmap vias" toggle — the
+        # Via Current mode supersedes the "Heatmap vias" toggle - the
         # mode IS the heatmap, so we always colour every visible via /
         # PTH by its max-|segment-current| (looked up from
         # :attr:`_via_current_lookup`, populated in :meth:`_render`).
@@ -136,7 +136,7 @@ class _ViaRenderMixin:
                 drop_ref = float(self._last_drop_reference)
 
         # Plain (non-heatmap) barrels depend only on the solve, the stackup
-        # z and the fade setting — not on which layers are showing — so each
+        # z and the fade setting - not on which layers are showing - so each
         # via's cylinders are built once and reused. A layer toggle in 3D
         # then only re-selects which vias are in the batch.
         solid_sig = (
@@ -186,7 +186,7 @@ class _ViaRenderMixin:
                 continue
             x = float(v.get("x_mm", 0.0))
             y = float(v.get("y_mm", 0.0))
-            # Draw at drill diameter — that's the actual barrel that carries
+            # Draw at drill diameter - that's the actual barrel that carries
             # current between layers (and what the FEM uses for R). The
             # outer pad diameter belongs to the per-layer copper plane,
             # which is already drawn as part of the layer mesh. Fall back
@@ -238,7 +238,7 @@ class _ViaRenderMixin:
                     pos_chunks.append(pos)
                     col_chunks.append(col)
 
-        # Plated through-hole pads — same per-site gating as vias (visible
+        # Plated through-hole pads - same per-site gating as vias (visible
         # layer ∩ rail). Default to light grey; when the heatmap-vias/PTH
         # toggle is on they're coloured the same way as via cylinders via
         # the shared :meth:`_heatmap_via_chunks` helper (PTH dicts carry
@@ -251,7 +251,7 @@ class _ViaRenderMixin:
             lo_id = min(ls_id, le_id)
             hi_id = max(ls_id, le_id)
             # Visibility: any layer the PTH crosses (full span, not just
-            # endpoints) being visible lets it show — matching the via
+            # endpoints) being visible lets it show - matching the via
             # rule above. Primary eye (rail/heatmap) requires the PTH's
             # net to be on a visible rail; the second eye (all-copper)
             # bypasses that filter.
@@ -353,7 +353,7 @@ class _ViaRenderMixin:
 
         Returns ``None`` when there is no solution, the net isn't
         sampleable, or fewer than two layers on the span carry solved
-        copper — the caller then draws the barrel fully opaque (no current
+        copper - the caller then draws the barrel fully opaque (no current
         data to judge which sections are live). Shares the exact sampling
         the heatmap path uses so the fade lines up with the colouring.
         """
@@ -401,7 +401,7 @@ class _ViaRenderMixin:
 
         A hop carries current when its power clears the same relative floor
         the "Grey no current copper" plane classifier
-        (:meth:`_no_current_mesh_set`) uses — ``_NO_CURRENT_PD_REL`` of the
+        (:meth:`_no_current_mesh_set`) uses - ``_NO_CURRENT_PD_REL`` of the
         via's peak hop, with the ``_NO_CURRENT_PD_ABS`` absolute floor. So a
         barrel fades exactly where its own section current goes to zero:
         the stub ends outside the via's outermost current-carrying copper
@@ -431,7 +431,7 @@ class _ViaRenderMixin:
         carry no current and are always faded; each inter-layer hop is opaque
         only where it carries current (see :meth:`_hop_live_flags`). When the
         via's net can't be sampled on >=2 layers there's no current data, so a
-        single full-span opaque cylinder is returned — the pre-fade behaviour.
+        single full-span opaque cylinder is returned - the pre-fade behaviour.
         """
         sampled_powers = self._sample_via_barrel(
             via, x, y, lo_id, hi_id, stackup_ids, id_to_phys, fallback_r_seg)
@@ -462,7 +462,7 @@ class _ViaRenderMixin:
             _cyl(z_a, z_b, 1.0 if live[i] else dead)
         # Faded metal stub below the bottommost live copper.
         _cyl(sampled[-1][1], z_bot, dead)
-        # All hops collapsed to zero-length (degenerate stackup) — fall back
+        # All hops collapsed to zero-length (degenerate stackup) - fall back
         # to a single opaque cylinder so the via never vanishes entirely.
         if not chunks:
             pos, col = _generate_via_cylinder(
@@ -509,7 +509,7 @@ class _ViaRenderMixin:
         (A/mm², the copper's own unit).
         Returns an empty list when the via has fewer than two sampleable
         layers, or in Current Density mode when the barrel area is unknown
-        (no drill, or a slotted bore) — caller falls back to the
+        (no drill, or a slotted bore) - caller falls back to the
         solid-orange path.
         """
         net = via.get("net", "")
@@ -531,7 +531,7 @@ class _ViaRenderMixin:
             return []
         # (layer_id, z, raw_voltage) for every layer in the span where copper
         # for this net exists. Layers without a sampleable voltage are dropped
-        # — the resulting segment list matches the FEM coupling network.
+        # - the resulting segment list matches the FEM coupling network.
         sampled: list[tuple[int, float, float]] = []
         for lid in span_ids:
             phys = id_to_phys.get(lid)
@@ -543,7 +543,7 @@ class _ViaRenderMixin:
             sampled.append((lid, self._layer_z_for(phys), v_at))
         if len(sampled) < 2:
             # Only one layer was sampleable. For Voltage / Voltage Drop we can
-            # still colour the whole cylinder barrel with that one voltage —
+            # still colour the whole cylinder barrel with that one voltage -
             # via resistance is negligible so a solid shade is a good
             # approximation. Current / Power need at least two voltage samples
             # to compute a meaningful value, so those modes fall back.
@@ -611,7 +611,7 @@ class _ViaRenderMixin:
                 )
             else:
                 # Current / power are constant along each inter-layer barrel
-                # resistor — colour the whole segment one shade. R is the
+                # resistor - colour the whole segment one shade. R is the
                 # actual per-hop value the FEM used (varies with drill,
                 # plating, and dielectric thickness traversed).
                 r_seg = r_by_pair.get(
@@ -635,7 +635,7 @@ class _ViaRenderMixin:
         # bottom of the via so the endpoint colour is clearly visible at each
         # copper-layer junction. The cap colour matches the sampled voltage at
         # that layer, which is the same value the copper-mesh shader draws at
-        # (x, y) — so any z-fighting with the copper surface is invisible
+        # (x, y) - so any z-fighting with the copper surface is invisible
         # (both surfaces are the same colour). Caps are omitted for
         # Current / Power Density because those modes assign per-segment values
         # rather than per-layer endpoint values.
@@ -645,7 +645,7 @@ class _ViaRenderMixin:
             ct_cap = self._shade(lut, v_top_cap - drop_ref, vmin, vmax)
             cb_cap = self._shade(lut, v_bot_cap - drop_ref, vmin, vmax)
             # Each end cap sits at the junction of the outermost hop, so it
-            # fades with that hop's liveness — a cap on a dead stub end
+            # fades with that hop's liveness - a cap on a dead stub end
             # shouldn't read as a bright solid disk.
             a_top = 1.0 if (live and live[0]) else dead
             a_bot = 1.0 if (live and live[-1]) else dead
@@ -669,25 +669,25 @@ class _ViaRenderMixin:
     ) -> tuple | None:
         """Lazily build (and cache for the viewer's lifetime) a nearest-
         vertex voltage lookup for the (physical layer, net) solution
-        layer. Returns ``(cKDTree, potentials)`` — a kd-tree of mesh
-        vertex (x, y) positions plus the matching per-vertex potentials —
+        layer. Returns ``(cKDTree, potentials)`` - a kd-tree of mesh
+        vertex (x, y) positions plus the matching per-vertex potentials -
         or ``None`` if no such layer exists / its mesh is empty.
 
         Padne adds via + directive-pin coupling sites to the Triangle
         mesher as Steiner points, so every point this samples (via
-        centres, resistor pins) IS a mesh vertex — the nearest-vertex
+        centres, resistor pins) IS a mesh vertex - the nearest-vertex
         potential is then the exact mesh-side voltage there.
 
         This used to build a matplotlib ``LinearTriInterpolator``, whose
         implicit ``TrapezoidMapTriFinder`` build is O(seconds) on a large
         plane (e.g. GND) and froze the GUI for several seconds the first
-        time a heavy rail was shown — the per-(phys, net) cache is why
+        time a heavy rail was shown - the per-(phys, net) cache is why
         only the *first* toggle stalled. A ``cKDTree`` build is pure C and
-        ~100x faster — the same swap the Vias / Nodes report tables
+        ~100x faster - the same swap the Vias / Nodes report tables
         already made (see :meth:`_compute_via_report`).
 
-        Orphan vertices — those not referenced by any triangle, which the
-        FEM pins to V=0 to keep the linear system non-singular — are
+        Orphan vertices - those not referenced by any triangle, which the
+        FEM pins to V=0 to keep the linear system non-singular - are
         excluded so an off-copper sample never snaps to a fake 0 V node.
         """
         key = (phys_name, net_name)
@@ -730,8 +730,8 @@ class _ViaRenderMixin:
 
         For via centres and directive pins the (x, y) IS a mesh vertex
         (a padne Steiner point), so the nearest vertex is an exact hit.
-        For a point off the solved copper — a stub centroid, or a via in
-        a clearance gap — the nearest mesh vertex on the same net is
+        For a point off the solved copper - a stub centroid, or a via in
+        a clearance gap - the nearest mesh vertex on the same net is
         still the best estimate: the coupling node is always close by,
         and voltage is near-constant over copper carrying little current.
         """
@@ -751,7 +751,7 @@ class _ViaRenderMixin:
     # Minimum pixel diameter for 2D Via Current markers. When the user
     # zooms out so far that a via's physical footprint would be
     # sub-pixel, the marker stays at this floor so vias never shrink
-    # to invisible dots. At those zoom levels markers will overlap —
+    # to invisible dots. At those zoom levels markers will overlap -
     # the user explicitly asked for this trade-off so the heatmap
     # remains readable.
     _VIA_MARKER_MIN_PX: float = 6.0
@@ -809,7 +809,7 @@ class _ViaRenderMixin:
             # actual current-carrying barrel and the value the FEM
             # solved with, so the 2D marker tracks the same metric.
             # Pad diameter (the annular ring) varies more across via
-            # classes — using it makes power vs signal vias look
+            # classes - using it makes power vs signal vias look
             # noticeably different even when their drill bores are
             # similar. Fall back to pad diameter, then to a sane
             # default, if drill data is missing.
@@ -925,7 +925,7 @@ class _ViaRenderMixin:
                            tuple[list[float], list[float],
                                  list[float], list[str | None]]] = {}
             # Designators whose schematic directive an editor directive
-            # overrides — their hover rows are suppressed so the bottom
+            # overrides - their hover rows are suppressed so the bottom
             # bar reports the (pending) editor value, not the stale one.
             overridden = self._overridden_designators()
             for d in self.metadata.get("directives", []):
@@ -934,7 +934,7 @@ class _ViaRenderMixin:
                     continue
                 # In editor mode the placed editor directives draw their own
                 # live markers (see _editor_marker_groups), so skip the solved
-                # copies of them here — otherwise each free source / sink shows
+                # copies of them here - otherwise each free source / sink shows
                 # twice (the editable marker plus a static solved one at the
                 # same anchor). Outside editor mode the solved marker is the
                 # only representation, so keep it.
@@ -950,7 +950,7 @@ class _ViaRenderMixin:
                     # Per-pin current estimate for hover. Equal split when
                     # area weighting is off; I * A_i / ΣA when the solve used
                     # area-weighted star coupling (physics_constants flag).
-                    # Same equal-potential approximation as the star model —
+                    # Same equal-potential approximation as the star model -
                     # FEM pin currents can still differ when copper access
                     # to the pads is unequal.
                     n_pins = len(term_pins)
@@ -992,8 +992,8 @@ class _ViaRenderMixin:
                         lid = pin.get("layer_id")
                         if lid not in target_layer_ids:
                             continue
-                        # A solved directive's markers — both the P side and
-                        # the return (N) side — show only while their net is
+                        # A solved directive's markers - both the P side and
+                        # the return (N) side - show only while their net is
                         # on a visible rail. This holds in editor mode as well
                         # as normal viewing, so hiding a rail also hides its
                         # source / sink / return markers instead of leaking
@@ -1003,7 +1003,7 @@ class _ViaRenderMixin:
                         # An auto-bridge is not gated on rail visibility:
                         # after the merge both its pads report the surviving
                         # net, which is usually a return net the user is not
-                        # currently viewing — so the rail test would hide
+                        # currently viewing - so the rail test would hide
                         # exactly the inferred shorts they most need to see.
                         # Its own legend row provides the off switch instead.
                         if (role != "AUTO_BRIDGE"
@@ -1013,7 +1013,7 @@ class _ViaRenderMixin:
                         # the whole point of focusing is to see one net's
                         # sources and sinks without the neighbours'. Unlike
                         # the rail test above, this one also takes
-                        # AUTO_BRIDGE — an inferred short on other copper is
+                        # AUTO_BRIDGE - an inferred short on other copper is
                         # exactly the kind of clutter focus is clearing.
                         if focus_marker_nets is not None \
                                 and pin.get("net") not in focus_marker_nets:
@@ -1053,7 +1053,7 @@ class _ViaRenderMixin:
                     continue
                 style = self._ROLE_MARKER_STYLE[role]
                 role_key = style["label"]
-                # One legend row per role — the P / N split is a marker
+                # One legend row per role - the P / N split is a marker
                 # detail, not a separate legend entry. Add the row even
                 # when the user has hidden it (so the toggle stays
                 # reachable) but skip emitting the MarkerGroup so the
@@ -1075,12 +1075,12 @@ class _ViaRenderMixin:
                     ring_width=_MARKER_LAYER_RING_W,
                 ))
 
-            # Via *markers* (orange dots) — the MarkerGroup is 2D-only
+            # Via *markers* (orange dots) - the MarkerGroup is 2D-only
             # (in 3D the cylinders drawn natively in GL take over the
             # same role), but the VIA legend row is registered in both
             # modes so the user can hide vias from the 3D view too.
             # :meth:`_push_via_cylinders` gates on the same hidden key.
-            # Skipped entirely in Via Current mode — those vias come via
+            # Skipped entirely in Via Current mode - those vias come via
             # the per-bucket coloured marker batch below so the 2D view
             # shows the same heatmap the cylinders show in 3D.
             if not is_via_current:
@@ -1096,7 +1096,7 @@ class _ViaRenderMixin:
                     for vx, vy, vd in zip(vxs, vys, vds):
                         via_pts[(vx, vy)] = vd
                 # All-copper (second eye) layers add their own vias
-                # without the rail filter — same rule as the 3D cylinder
+                # without the rail filter - same rule as the 3D cylinder
                 # path in :meth:`_push_via_cylinders`.
                 for lid in copper_layer_ids:
                     vxs, vys, vds = self._collect_via_positions(
@@ -1126,7 +1126,7 @@ class _ViaRenderMixin:
                             min_pixel_diameter=self._VIA_MARKER_MIN_PX,
                         ))
 
-                # PTH (plated through-hole) markers — 2D only; the 3D
+                # PTH (plated through-hole) markers - 2D only; the 3D
                 # path uses the cylinder batch instead and has no legend
                 # toggle for PTHs.
                 # (x, y) -> (diameter_mm, slot) so a slotted PTH draws as a
@@ -1141,7 +1141,7 @@ class _ViaRenderMixin:
                         for px, py, pd, ps in zip(pxs, pys, pds, psl):
                             pth_pts[(px, py)] = (pd, ps)
                     # All-copper (second eye) layers add their own PTHs
-                    # without the rail filter — same rule as vias above:
+                    # without the rail filter - same rule as vias above:
                     # a PTH shows whenever any layer within its span has
                     # its copper eye on, regardless of net / rail.
                     for lid in copper_layer_ids:
@@ -1162,7 +1162,7 @@ class _ViaRenderMixin:
                             dtype=np.float64, count=n_pth)
                         pth_slots = [v[1] for v in pth_pts.values()]
                         # Only attach the obround list when at least one PTH
-                        # is slotted — keeps the common all-round board on the
+                        # is slotted - keeps the common all-round board on the
                         # plain circular-marker path.
                         world_obrounds = (pth_slots
                                           if any(s is not None
@@ -1192,7 +1192,7 @@ class _ViaRenderMixin:
                 target_layer_ids, rail_members,
             ))
 
-        # Jump-highlight ring — always shown, drawn last so it sits on
+        # Jump-highlight ring - always shown, drawn last so it sits on
         # top of every other marker. In 3D place it on the top of the
         # stackup (z=0) so it's clearly visible above the via cylinder.
         if self._highlight_via_xy is not None:
@@ -1208,7 +1208,7 @@ class _ViaRenderMixin:
                 edge_width=2.5,
             ))
 
-        # Editor-mode directive markers (placed sources / sinks) — only
+        # Editor-mode directive markers (placed sources / sinks) - only
         # populated while editor mode is active. The non-editor groups are
         # cached so a free-marker drag can refresh just the markers via
         # _refresh_editor_markers without re-walking every pin.

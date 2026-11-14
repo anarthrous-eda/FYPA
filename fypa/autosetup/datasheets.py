@@ -103,8 +103,8 @@ _RX = {
         rf"(?:{_NUM}\s?%\s*(?:peak\s+|maximum\s+|max\.?\s+|typical\s+)?efficiency)|"
         rf"(?:efficiency\s*(?:of|up to|as high as|reaches|:|>|≥)?\s*{_NUM}\s?%)", re.I),
     "vin": re.compile(
-        rf"(?:input voltage(?: range)?\s*(?:of|from|:)?\s*{_NUM}\s?V?\s?(?:to|-|–|—)\s?{_NUM}\s?V)|"
-        rf"(?:{_NUM}\s?V?\s?(?:to|-|–|—)\s?{_NUM}\s?V\s+(?:input|VIN|operating input))", re.I),
+        rf"(?:input voltage(?: range)?\s*(?:of|from|:)?\s*{_NUM}\s?V?\s?(?:to|-|-|-)\s?{_NUM}\s?V)|"
+        rf"(?:{_NUM}\s?V?\s?(?:to|-|-|-)\s?{_NUM}\s?V\s+(?:input|VIN|operating input))", re.I),
     "vfixed": re.compile(
         rf"fixed output(?: voltages?)?\s*(?:of|:)?\s*{_NUM}\s?V", re.I),
     "iq": re.compile(
@@ -199,8 +199,8 @@ def parse_facts(text: str, path: Path) -> DatasheetFacts:
 def read_pdf_text(path: Path, max_pages: int = MAX_PAGES) -> tuple[str, str | None]:
     """``(text of the first max_pages pages, None)``, or ``("", reason)``.
 
-    Many vendor datasheets are encrypted against editing or printing only —
-    an empty user password opens them — which pypdf handles once a crypto
+    Many vendor datasheets are encrypted against editing or printing only -
+    an empty user password opens them - which pypdf handles once a crypto
     backend (``cryptography``) is installed. A real password, or a damaged
     file, gives a short reason instead of text."""
     try:
@@ -251,7 +251,7 @@ class DatasheetLibrary:
     def __init__(self, folder: Path | str, *, text_reader: Callable[[Path], str] | None = None):
         self.folder = Path(folder)
         self._read = text_reader or self._read_recording
-        # PDFs that couldn't be read, with why — shown in the wizard.
+        # PDFs that couldn't be read, with why - shown in the wizard.
         self.unreadable: dict[Path, str] = {}
         self.pdfs: list[Path] = []
         if self.folder.is_dir():

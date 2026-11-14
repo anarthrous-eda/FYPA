@@ -2,7 +2,7 @@
 
 The rules, in order:
 
-1. **Regulators** — ICs / modules with input pins (VIN, IN, PVIN…) and
+1. **Regulators** - ICs / modules with input pins (VIN, IN, PVIN…) and
    output pins (VOUT, OUT…) on different non-ground nets; or input pins and
    a switch pin (SW / LX) whose inductor leads to the output rail. LDO vs
    SMPS comes from the datasheet when there is one, else from the pins (a
@@ -11,14 +11,14 @@ The rules, in order:
    from the output rail's name (``+1V8`` → 1.8 V), else from a datasheet's
    fixed output. A part whose input and output rails carry the same voltage
    and no switch pin is a load switch: a SERIES element.
-2. **Sources** — a connector pin on a rail that nothing on the board drives
+2. **Sources** - a connector pin on a rail that nothing on the board drives
    (no regulator output, no existing source, not reachable through a
    SERIES bridge from one). One per rail: the connector with most pins on it.
-3. **Sinks** — load ICs (not regulators, connectors or passives) with a
+3. **Sinks** - load ICs (not regulators, connectors or passives) with a
    supply-named pin (VCC, VDD, VS, VCC(A)…) on a rail; one per part and
    rail. Current from the datasheet's supply / quiescent current, else a
    flagged estimate.
-4. **Series** — resistors under 1 Ω and ferrite beads / inductors joining
+4. **Series** - resistors under 1 Ω and ferrite beads / inductors joining
    two rails (current-sense and filter elements). 0 Ω links are left to the
    automatic bridging.
 
@@ -315,7 +315,7 @@ def _regulator_suggestion(view, part, in_net, out_net, gnd, bases, has_sw,
         sug.regulator_type = ("SMPS" if vin and vout and vin / max(vout, 1e-9) > 2.5
                               else "LDO")
         sug.estimated.add("regulator_type")
-        sug.reasons.append("type guessed from the voltage ratio — check it")
+        sug.reasons.append("type guessed from the voltage ratio - check it")
         sug.confidence -= 0.15
 
     # Output voltage: rail name > datasheet fixed output.
@@ -326,7 +326,7 @@ def _regulator_suggestion(view, part, in_net, out_net, gnd, bases, has_sw,
         sug.voltage = float(facts.vout_fixed.value)
         sug.reasons.append(_fact_reason(f"fixed output {sug.voltage:g} V", facts.vout_fixed))
     else:
-        sug.reasons.append(f"no output voltage in the rail name {out_net} — enter it")
+        sug.reasons.append(f"no output voltage in the rail name {out_net} - enter it")
         sug.confidence -= 0.2
 
     if sug.regulator_type == "SMPS":
@@ -352,10 +352,10 @@ def _regulator_suggestion(view, part, in_net, out_net, gnd, bases, has_sw,
         lo, hi = facts.vin_range.value
         if not (lo <= vin <= hi):
             sug.reasons.append(f"⚠ input rail {vin:g} V is outside the datasheet's "
-                               f"{lo:g}–{hi:g} V range")
+                               f"{lo:g}-{hi:g} V range")
             sug.confidence -= 0.2
     if gnd is None:
-        sug.reasons.append("no ground pin found — pick the return net")
+        sug.reasons.append("no ground pin found - pick the return net")
     sug.datasheet = facts.path if facts else None
     sug.confidence = max(0.05, min(0.98, sug.confidence))
     return sug
@@ -390,7 +390,7 @@ def _sources(view: DesignView, rails: _Rails, rail_set: set[str]) -> list[Sugges
         if v is not None:
             sug.reasons.append(f"{v:g} V from the rail name")
         else:
-            sug.reasons.append("no voltage in the rail name — enter it")
+            sug.reasons.append("no voltage in the rail name - enter it")
             sug.confidence -= 0.25
         if gnd is not None:
             sug.reasons.append(f"return through its {gnd} pins")
@@ -443,7 +443,7 @@ def _sinks(view: DesignView, regulator_ids: set[str], rails: _Rails,
             else:
                 sug.current = DEFAULT_SINK_CURRENT
                 sug.estimated.add("current")
-                sug.reasons.append(f"current estimated at {_fmt_a(DEFAULT_SINK_CURRENT)} — "
+                sug.reasons.append(f"current estimated at {_fmt_a(DEFAULT_SINK_CURRENT)} - "
                                    "replace with the datasheet value")
             out.append(sug)
     return out

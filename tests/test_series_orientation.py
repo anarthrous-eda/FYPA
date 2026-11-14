@@ -2,8 +2,8 @@
 
 A bridge whose loads sit on one terminal and whose driver sits on the *other*
 terminal must face its load terminal toward the loads (right), instead of the
-static P-left/N-right default. But a mid-rail tap — driver and loads on the
-same terminal — must keep the default, or the driver wire wraps the box.
+static P-left/N-right default. But a mid-rail tap - driver and loads on the
+same terminal - must keep the default, or the driver wire wraps the box.
 
 Regression for the Methuselah design, where the source drives ``VOUT*_PRE``
 (the resistor N net) and the sinks hang off ``DAC_SOA_VDD`` (the resistor P
@@ -20,7 +20,7 @@ def _term(net: str, pad: str, *, pin_net: str | None = None) -> dict:
     """A terminal on ``net``; ``pin_net`` overrides the physical pin net.
 
     Methuselah's SOURCE has ``requested_net`` = the rail but pins on the
-    ``*_PRE`` bridge net, so the two differ — ``pin_net`` reproduces that.
+    ``*_PRE`` bridge net, so the two differ - ``pin_net`` reproduces that.
     """
     return {"requested_net": net, "pins": [{"net": pin_net or net, "pad": pad}]}
 

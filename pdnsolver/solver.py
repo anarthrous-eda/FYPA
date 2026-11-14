@@ -38,8 +38,8 @@ log = logging.getLogger(__name__)
 
 # Optional fast direct solver. MKL PARDISO (via pypardiso) factorises the
 # 2.5D-PDN MNA matrix several times faster than scipy's SuperLU and is
-# multithreaded. When it isn't installed — or fails to import, e.g. an MKL
-# runtime DLL problem — the solver falls back to SuperLU transparently.
+# multithreaded. When it isn't installed - or fails to import, e.g. an MKL
+# runtime DLL problem - the solver falls back to SuperLU transparently.
 try:
     import pypardiso as _pypardiso
     _HAVE_PARDISO = True
@@ -71,7 +71,7 @@ _mkl_threads_configured = False
 
 
 def _configure_mkl_threads() -> None:
-    """Pin MKL's thread count for PARDISO. Idempotent and best-effort —
+    """Pin MKL's thread count for PARDISO. Idempotent and best-effort -
     a failure here just leaves MKL on its (suboptimal) default."""
     global _mkl_threads_configured
     if _mkl_threads_configured or not _HAVE_PARDISO:
@@ -82,7 +82,7 @@ def _configure_mkl_threads() -> None:
         libmkl = _pypardiso.PyPardisoSolver().libmkl
         libmkl.MKL_Set_Num_Threads(ctypes.c_int(_PARDISO_THREADS))
         log.debug("MKL PARDISO thread count pinned to %d", _PARDISO_THREADS)
-    except Exception as e:  # environment-dependent — never fatal
+    except Exception as e:  # environment-dependent - never fatal
         log.debug("Could not pin MKL thread count (%s); using MKL default.", e)
 
 
@@ -107,7 +107,7 @@ _MESH_PARALLEL_THRESHOLD: int = int(
 _MESH_PARALLEL_MIN_COORDS: int = int(
     os.environ.get("PDNSOLVER_MESH_PARALLEL_MIN_COORDS", "2000"),
 )
-# Cap workers — meshing is CPU-bound and triangulate is single-threaded
+# Cap workers - meshing is CPU-bound and triangulate is single-threaded
 # inside one call, so going above the physical core count just adds
 # context-switching overhead. Use cpu_count() // 2 as a rough heuristic
 # for "physical cores" on machines with SMT/hyperthreading; user can
@@ -119,7 +119,7 @@ _MESH_MAX_WORKERS: int = int(
 
 # --- Linear-solver tolerances -----------------------------------------------
 # Lifted out of inline literals in ``_solve_robust`` so the whole tolerance
-# stack is discoverable and tunable from one place. The values are unchanged —
+# stack is discoverable and tunable from one place. The values are unchanged -
 # see each use site in ``_solve_robust`` for the rationale behind them.
 #
 # Direct-solve residual acceptance: a direct solve is trusted only if
@@ -135,7 +135,7 @@ _JACOBI_EPS_REL: float = 1e-10
 # MINRES fallback: relative tolerance and iteration ceiling.
 _MINRES_RTOL: float = 1e-10
 _MINRES_MAXITER: int = 5000
-# MINRES fallback wall-clock budget. A 1–2 M-variable symmetric-indefinite
+# MINRES fallback wall-clock budget. A 1-2 M-variable symmetric-indefinite
 # system with only a Jacobi preconditioner can need thousands of iterations;
 # without a budget the solve looks frozen (no GUI feedback) and the user
 # cancels it. On timeout the best iterate so far is kept. Override via env
@@ -159,7 +159,7 @@ _MINRES_MAX_DOF: int = int(os.environ.get(
 
 
 def default_mesh_max_workers() -> int:
-    """The default mesh worker-process cap (before any env / runtime override) —
+    """The default mesh worker-process cap (before any env / runtime override) -
     a rough physical-core count. Used by the GUI to seed its Performance
     setting."""
     return _MESH_MAX_WORKERS_DEFAULT
@@ -192,7 +192,7 @@ def set_minres_time_budget(seconds) -> None:
 # Log MINRES progress every N iterations so the GUI substage feed shows the
 # iterative solve advancing instead of appearing hung.
 _MINRES_PROGRESS_EVERY: int = 250
-# When every direct solve fails, report this many worst-residual rows — they
+# When every direct solve fails, report this many worst-residual rows - they
 # localise the near-floating copper region that drove the matrix singular.
 _SINGULAR_DIAG_ROWS: int = 12
 # Tikhonov ridge (last-resort regularisation): ``lambda = max(
@@ -204,7 +204,7 @@ _RIDGE_LAMBDA_REL: float = 1e-9
 # produce small triangles around 2D point-current injection vertices. Without
 # this, coarse triangles regularise the log singularity at each pin over too-
 # large an area and the FEM systematically under-estimates IR drop on narrow
-# conductors — the error grows with conductor length (verified empirically:
+# conductors - the error grows with conductor length (verified empirically:
 # a 1 mm × 100 mm trace at the default 0.6 mm mesh size came out at 25.7 mΩ
 # vs the analytical 47.3 mΩ; the same trace with these ring seeds in place
 # lands within ~5 % of theory at the same global mesh size).
@@ -246,7 +246,7 @@ _PAD_SEED_MAX_POINTS: int = 64
 
 # Tolerance for "is this mesh vertex under the pad". Pad-outline seed
 # vertices land exactly on the region boundary, where shapely's strict
-# ``contains`` is False — so the membership test runs against the region
+# ``contains`` is False - so the membership test runs against the region
 # buffered out by this epsilon. 5 µm is far below any pad/trace dimension.
 _PAD_MEMBERSHIP_EPS_MM: float = 0.005
 
@@ -255,8 +255,8 @@ _PAD_MEMBERSHIP_EPS_MM: float = 0.005
 # the potential goes as ln(ρ), so its gradient is ~1/ρ: the mesh has to be
 # fine at the wall and may coarsen linearly with distance. Triangle keeps
 # every input vertex, so concentric rings of Steiner seeds at r·g, r·g², …
-# — each ring's spacing matching its radial gap, so the triangles between
-# them stay near-equilateral — grade the mesh without switching the whole
+# - each ring's spacing matching its radial gap, so the triangles between
+# them stay near-equilateral - grade the mesh without switching the whole
 # board to the adaptive mesher. Rings stop once their spacing reaches the
 # global maximum element size (the mesh is that coarse anyway). On a 0.3 mm
 # via into a plane at the default 0.6 mm mesh this takes the spreading-
@@ -362,7 +362,7 @@ def _points_within_geoms(
     boundary: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """``(point_index, geom_index)`` for every point strictly inside a tree
-    geometry, ordered by point index — what
+    geometry, ordered by point index - what
     ``strtree.query(points, predicate="within")`` returns. With
     ``boundary=True`` a point on a geometry's edge counts too
     (``predicate="intersects"``).
@@ -419,11 +419,11 @@ def _add_grading_seeds(
     (n, 2) coordinates}`` of the pieces they fall inside.
 
     Rings are generated only for patches whose centre lies in a meshed
-    (connected) piece — a board's thousands of signal-net vias never are —
+    (connected) piece - a board's thousands of signal-net vias never are -
     and each ring is stopped short of the nearest other patch on the layer,
     so a via array's or a BGA field's rings do not interleave into
     near-coincident seeds. Containment is strict (as the per-seed pass's
-    ``contains``), one prepared polygon at a time — see
+    ``contains``), one prepared polygon at a time - see
     :func:`_points_within_geoms`. The caller appends these after the
     per-connection seeds, so those keep their order; within a piece the
     seeds stay in generation order."""
@@ -472,7 +472,7 @@ def _add_grading_seeds(
     if pi.size == 0:
         return {}
     # Group by piece, keeping generation order (ascending point index) within
-    # each — the order the seeds reach Triangle in.
+    # each - the order the seeds reach Triangle in.
     order = np.lexsort((pi, gi))
     pi, gi = pi[order], gi[order]
     starts = np.concatenate(([0], np.flatnonzero(np.diff(gi)) + 1, [gi.size]))
@@ -487,7 +487,7 @@ def _pad_seed_xy(
     cx: float,
     cy: float,
 ) -> np.ndarray:
-    """:func:`_pad_seed_points` as an ``(n, 2)`` coordinate array — the same
+    """:func:`_pad_seed_points` as an ``(n, 2)`` coordinate array - the same
     values, without a shapely Point per seed."""
     centre = np.array([[cx, cy]], dtype=np.float64)
     exterior = getattr(region, "exterior", None)
@@ -525,7 +525,7 @@ def _pad_seed_points(
     # separate ``exterior.interpolate`` calls (each a Python->GEOS round
     # trip). ``line_interpolate_point`` is bit-identical to ``.interpolate``
     # for the same distance, so the arithmetic below must stay written as
-    # ``perimeter * i / n`` — reassociating it to ``i * (perimeter / n)``
+    # ``perimeter * i / n`` - reassociating it to ``i * (perimeter / n)``
     # shifts seeds by ~1 ULP, which moves Triangle's output and drifts the
     # golden regression fingerprints.
     fractions = perimeter * np.arange(n, dtype=np.float64) / n
@@ -547,8 +547,8 @@ def _vertices_under_pad(
     representative.
 
     ``sel_local`` (optional) is this pad's entry from
-    :func:`_pad_members_batch` — the tree-local indices of the vertices under
-    the pad, already found — in which case only the claimed-vertex filter
+    :func:`_pad_members_batch` - the tree-local indices of the vertices under
+    the pad, already found - in which case only the claimed-vertex filter
     and the choice of representative remain to be done here.
 
     Vertices already claimed are excluded so pad groups stay disjoint and
@@ -560,11 +560,11 @@ def _vertices_under_pad(
     Returns an empty array when the pad catches no free vertex.
 
     The membership polygon is ``region`` buffered out by
-    :data:`_PAD_MEMBERSHIP_EPS_MM` so pad-outline seed vertices — which sit
-    exactly on the boundary, where strict ``contains`` is False — count.
+    :data:`_PAD_MEMBERSHIP_EPS_MM` so pad-outline seed vertices - which sit
+    exactly on the boundary, where strict ``contains`` is False - count.
 
     Candidates are pulled with a KDTree ball query over the pad's bounding
-    circle — O(log n + k) — rather than an O(n) scan of every vertex on the
+    circle - O(log n + k) - rather than an O(n) scan of every vertex on the
     layer, which is wasteful when many directives land on a million-vertex
     power/ground net.
     """
@@ -619,7 +619,7 @@ def _pad_members_batch(
     regions: list,
 ) -> list[np.ndarray]:
     """For each pad outline in ``regions``, the tree-local indices of the
-    mesh vertices under it — the membership half of
+    mesh vertices under it - the membership half of
     :func:`_vertices_under_pad` (same bounding-circle candidates, in the same
     order, tested against the same epsilon-buffered outline), done for a
     whole layer's pads in a handful of vectorised calls instead of four
@@ -731,7 +731,7 @@ class SolveCancelled(Exception):
 
 # How long an idle worker pool is kept alive between solves. On Windows the
 # ``spawn`` start method re-imports numpy / shapely / triangle in every
-# worker, measured at ~1.3 s of a ~2 s meshing stage — paid again on every
+# worker, measured at ~1.3 s of a ~2 s meshing stage - paid again on every
 # re-solve, every adaptive-gain iteration and every cap-loop port solve.
 # Keeping the pool warm across solves removes that entirely; the timeout
 # stops a long-idle GUI session from holding N processes forever.
@@ -739,7 +739,7 @@ _MESH_POOL_IDLE_TIMEOUT_S: float = float(
     os.environ.get("PDNSOLVER_MESH_POOL_IDLE_TIMEOUT", "300"),
 )
 # Set PDNSOLVER_MESH_POOL_PERSIST=0 to restore the old behaviour (a fresh
-# pool per solve) — useful when debugging worker-state issues.
+# pool per solve) - useful when debugging worker-state issues.
 _MESH_POOL_PERSIST: bool = (
     os.environ.get("PDNSOLVER_MESH_POOL_PERSIST", "1") != "0"
 )
@@ -753,7 +753,7 @@ class _SharedMeshPool:
     path for its whole lifetime.
 
     When :data:`_MESH_POOL_PERSIST` is set (the default) the pool is also
-    kept alive *between* solves — :meth:`release` parks it in a module-level
+    kept alive *between* solves - :meth:`release` parks it in a module-level
     slot instead of shutting it down, and the next solve adopts it if the
     worker count matches and it hasn't been idle longer than
     :data:`_MESH_POOL_IDLE_TIMEOUT_S`. The cancel path
@@ -819,7 +819,7 @@ def _acquire_pooled_executor(max_workers: int) -> ProcessPoolExecutor:
                 _idle_pool_workers = 0
                 log.debug("Reusing warm mesh pool (%d workers)", max_workers)
                 return pool
-            # Stale or wrong size — drop it and build a fresh one below.
+            # Stale or wrong size - drop it and build a fresh one below.
             _idle_pool = None
             _idle_pool_workers = 0
     if pool is not None:
@@ -856,7 +856,7 @@ def cancel_active_mesh_pool() -> None:
     and safe to call when no pool is active.
 
     Public API for the GUI's solve-cancel path. Internally calls
-    ``pool.shutdown(cancel_futures=True, wait=False)`` — already-running
+    ``pool.shutdown(cancel_futures=True, wait=False)`` - already-running
     Triangle calls in worker processes will still finish their current
     polygon (we can't kill a C library mid-call), but no further work is
     dispatched and the pool's queues are torn down so the workers exit
@@ -900,7 +900,7 @@ class SolverWarning(Warning):
 
 # A connection point farther than this many mesh cells (× the mesher's
 # maximum edge length) from the nearest copper vertex on its net is treated
-# as "off copper" and warned about — see NodeIndexer.create.
+# as "off copper" and warned about - see NodeIndexer.create.
 _OFF_COPPER_WARN_FACTOR = 3.0
 
 
@@ -929,7 +929,7 @@ class ThermalConfig:
     """Settings for the optional coupled electro-thermal solve.
 
     Copper resistivity rises about 0.39 %/K, so a rail that dissipates real
-    power is more resistive than the isothermal solve assumes — and the
+    power is more resistive than the isothermal solve assumes - and the
     error compounds, because the extra resistance dissipates more power.
     With ``enabled`` set, :func:`solve` runs a fixed-point loop: solve,
     convert each triangle's areal power density into a local temperature
@@ -940,9 +940,9 @@ class ThermalConfig:
 
     * **Board model** (``board`` set, a :class:`pdnsolver.thermal.ThermalBoard`
       the FYPA loader builds from the layout): the heat spreads through a
-      layered finite-difference model of the board — every net's copper on
+      layered finite-difference model of the board - every net's copper on
       every layer, the laminate and plated barrels between layers,
-      convection from both faces — and lumped parts (via barrels, series
+      convection from both faces - and lumped parts (via barrels, series
       parts, regulator conversion loss) heat it too. A hot neck warms its
       surroundings and a pour acts as the heatsink it is. Each triangle
       takes its grid cell's temperature, so a feature much narrower than a
@@ -954,7 +954,7 @@ class ThermalConfig:
         ΔT [K] = p [W/mm²] · 1e6 / h [W/(m²·K)]
 
       There is no lateral heat spreading, which makes the result an
-      *upper* bound — often many times over — on the rise of small hot
+      *upper* bound - often many times over - on the rise of small hot
       features, and a reasonable estimate for broad ones. A 1 mm trace at
       5 A over a plane reads ~300 K (the clamp) here, ~25 K in the board
       model (``tests/test_thermal_board.py``).
@@ -987,8 +987,8 @@ class ThermalConfig:
     max_rise_c: float = 300.0
     # Optional board model with lateral heat spreading
     # (:class:`pdnsolver.thermal.ThermalBoard`). When set, each iteration's
-    # copper loss — plus the loss of resistors marked ``heat_source`` (vias,
-    # series parts) and of regulators — is solved on the board's layered
+    # copper loss - plus the loss of resistors marked ``heat_source`` (vias,
+    # series parts) and of regulators - is solved on the board's layered
     # grid, and each triangle takes its cell's temperature, instead of the
     # local ``p / h`` above. ``None`` keeps the local model.
     board: object | None = None
@@ -1067,7 +1067,7 @@ def resolve_connection_geoms(
     for network in problem.networks:
         for conn in network.connections:
             # A layer-less connection (unattached terminal) can't be located on
-            # any layer — skip it rather than KeyError. The downstream stamping
+            # any layer - skip it rather than KeyError. The downstream stamping
             # guards (see solve()) already treat this as a legal state.
             if conn.layer is None:
                 continue
@@ -1116,7 +1116,7 @@ class ConnectivityGraph:
 
         # Pre-build id(layer) → index lookup so we don't pay O(L) per
         # connection in the inner loop. ``problem.layers.index(...)`` is
-        # called once per connection per network — for boards with many
+        # called once per connection per network - for boards with many
         # directives that's O(L · K) work for no reason. id() works as a
         # key because Layer is a frozen dataclass containing an unhashable
         # MultiPolygon (so hash() would fail) and the SAME Layer instance
@@ -1130,7 +1130,7 @@ class ConnectivityGraph:
             nodes_in_this_network = []
             for conn in network.connections:
                 # A layer-less connection (unattached terminal) has no geometry
-                # to place on the connectivity graph — skip rather than KeyError.
+                # to place on the connectivity graph - skip rather than KeyError.
                 if conn.layer is None:
                     continue
                 # Find the layer index for this connection
@@ -1202,7 +1202,7 @@ def _half_cotangent(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     ``a`` and ``b``, computed for every triangle at once.
 
     cot θ = cos θ / sin θ = (a·b) / |a×b|. The apex angle of a triangle is
-    always in (0, π), so sin θ > 0 and the cross magnitude carries no sign —
+    always in (0, π), so sin θ > 0 and the cross magnitude carries no sign -
     the SIGN of cot θ comes solely from the dot product, so obtuse apices
     (θ > 90°, a·b < 0) correctly yield a NEGATIVE cotangent. Dropping that sign
     (taking |cot|) makes the linear-FEM stiffness weight (cot α + cot β)/2
@@ -1258,12 +1258,12 @@ def laplace_operator(mesh: mesh.Mesh) -> scipy.sparse.coo_matrix:
 
     The off-diagonal weight on each directed edge (i, k) is
     ``sum_t cot(opposite_apex_t) / 2`` over the (one or two) triangles t
-    sharing the edge — the standard cotangent-Laplacian stiffness. Boundary
+    sharing the edge - the standard cotangent-Laplacian stiffness. Boundary
     edges get one half-cotangent (only one triangle touches them); interior
     edges get ``(cot α + cot β) / 2``. See :func:`_half_cotangent` for why the
     cotangent must be signed.
 
-    Orphan vertices (in the vertex list but in no triangle — Triangle keeps
+    Orphan vertices (in the vertex list but in no triangle - Triangle keeps
     input seed points even when FP drops them just outside the polygon) are
     pinned to v=0 with a ``1.0`` diagonal entry so the system stays
     non-singular.
@@ -1297,8 +1297,8 @@ def laplace_operator(mesh: mesh.Mesh) -> scipy.sparse.coo_matrix:
         ])
 
         # Diagonal: L[i, i] -= sum of outgoing weights from i. bincount is the
-        # vectorised weighted scatter-add — far faster than np.add.at (an
-        # unbuffered element-by-element loop) — and, like add.at, sums repeated
+        # vectorised weighted scatter-add - far faster than np.add.at (an
+        # unbuffered element-by-element loop) - and, like add.at, sums repeated
         # row indices correctly. minlength=N keeps orphan vertices (no incident
         # triangle) in range.
         diag = (-np.bincount(rows, weights=vals, minlength=N)).astype(
@@ -1345,7 +1345,7 @@ class VertexIndexer:
     # ``[mesh_vertex_offsets[m], mesh_vertex_offsets[m + 1])``.
     #
     # This replaces the former per-vertex ``list[(mesh_idx, vertex_idx)]`` plus
-    # a reverse ``dict`` — the two together built ~2N Python objects (≈400 MB
+    # a reverse ``dict`` - the two together built ~2N Python objects (≈400 MB
     # at 2M vertices) in an O(N) interpreter loop that showed up as the
     # multi-second "Vertex indexing" stage. The reverse dict was never read
     # anywhere. The forward map is only needed as (a) a total vertex count and
@@ -1361,7 +1361,7 @@ class VertexIndexer:
 
     @classmethod
     def create(cls, meshes: list[mesh.Mesh]) -> "VertexIndexer":
-        # Only the vertex COUNT per mesh is needed — never the stub objects —
+        # Only the vertex COUNT per mesh is needed - never the stub objects -
         # so this stays O(meshes), not O(vertices).
         counts = np.fromiter(
             (len(msh.vertices) for msh in meshes),
@@ -1422,19 +1422,19 @@ def _mesh_polygons_in_parallel(
     """Mesh a batch of polygons concurrently via a ProcessPoolExecutor.
 
     Inputs and outputs are kept in the cheapest cross-process form: WKB
-    bytes in, raw ``(vertices, triangles)`` numpy arrays out — pickling
+    bytes in, raw ``(vertices, triangles)`` numpy arrays out - pickling
     the full :class:`mesh.Mesh` (which holds tens of thousands of tiny
     Vertex / Face Python stubs) would dominate runtime and erase the
     parallelism win.
 
     The pool is skipped and Triangle runs in-process when the batch is
-    too small to pay for it — fewer than ``_MESH_PARALLEL_THRESHOLD``
+    too small to pay for it - fewer than ``_MESH_PARALLEL_THRESHOLD``
     pieces, or less than ``_MESH_PARALLEL_MIN_COORDS`` boundary
     coordinates in total. The second gate matters because a piece *count*
     is a poor proxy for meshing work: a handful of micro-slivers would
     otherwise spawn a full worker pool for microseconds of Triangle time.
 
-    ``switches`` is one Triangle switches string *per polygon* — callers
+    ``switches`` is one Triangle switches string *per polygon* - callers
     that don't need per-polygon variation should broadcast a single
     string ``[s] * len(polys)``. Per-polygon switches let the
     connected-mesh path apply :meth:`Mesher.polygon_adaptive_max_size`
@@ -1461,7 +1461,7 @@ def _mesh_polygons_in_parallel(
             f"Mesh worker process terminated while triangulating copper "
             f"(piece {idx + 1}/{n})",
             triangle_cause=(
-                "Triangle aborted in a parallel worker — usually a "
+                "Triangle aborted in a parallel worker - usually a "
                 "degenerate or self-intersecting copper boundary "
                 "(self-touching edges, near-duplicate vertices, or a "
                 "micro-sliver)."
@@ -1499,7 +1499,7 @@ def _mesh_polygons_in_parallel(
     if n < _MESH_PARALLEL_THRESHOLD or _work < _MESH_PARALLEL_MIN_COORDS:
         if n >= _MESH_PARALLEL_THRESHOLD:
             log.debug(
-                "%s: %d pieces but only ~%d boundary coords — meshing serially",
+                "%s: %d pieces but only ~%d boundary coords - meshing serially",
                 log_label, n, _work,
             )
         results: list[tuple[np.ndarray, np.ndarray]] = []
@@ -1528,7 +1528,7 @@ def _mesh_polygons_in_parallel(
         only the probe, never this process, and we can name the real offender.
         """
         log.info(
-            "%s: mesh worker crashed — isolating the failing copper piece "
+            "%s: mesh worker crashed - isolating the failing copper piece "
             "across %d unfinished piece(s)…",
             log_label, len(unfinished),
         )
@@ -1536,7 +1536,7 @@ def _mesh_polygons_in_parallel(
         # order, so the pieces most likely to have been running are checked
         # first). A clean re-mesh leaves the worker healthy, so the pool is
         # reused; the offending piece hard-aborts its worker (BrokenProcessPool)
-        # and we return immediately — no piece after the culprit needs a pool,
+        # and we return immediately - no piece after the culprit needs a pool,
         # so a single spawn suffices instead of one per piece.
         probe = ProcessPoolExecutor(max_workers=1)
         try:
@@ -1562,7 +1562,7 @@ def _mesh_polygons_in_parallel(
     # spawn-mode pool on Windows; workers re-import pdnsolver.mesh and pick up
     # the top-level triangulate_worker by name. When a shared pool is supplied
     # (solve's connected + disconnected passes reuse one), don't create or shut
-    # it down here — the owner does — so the workers spawn at most once per
+    # it down here - the owner does - so the workers spawn at most once per
     # solve. Otherwise create/register/tear-down our own (the standalone path).
     global _active_mesh_pool
     if shared_pool is not None:
@@ -1582,7 +1582,7 @@ def _mesh_polygons_in_parallel(
                 ): i for i in range(n)
             }
         except RuntimeError as exc:
-            # "cannot schedule new futures after shutdown" — the GUI cancelled
+            # "cannot schedule new futures after shutdown" - the GUI cancelled
             # (and shut down) the pool between passes. Surface it as a clean
             # cancellation rather than an opaque RuntimeError.
             if _mesh_cancel_event.is_set():
@@ -1602,12 +1602,12 @@ def _mesh_polygons_in_parallel(
             except mesh.MeshingException as exc:
                 raise _enrich_failure(idx, exc) from exc
             except (BrokenProcessPool, BrokenExecutor) as exc:
-                # A user cancel that tore the pool down can also surface here —
+                # A user cancel that tore the pool down can also surface here -
                 # that's a cancellation, not a bad polygon, so report it cleanly
                 # instead of wasting time pinpointing a non-existent "culprit".
                 if _mesh_cancel_event.is_set():
                     raise SolveCancelled("meshing cancelled") from exc
-                # Triangle can abort a worker process on a bad PSLG — that
+                # Triangle can abort a worker process on a bad PSLG - that
                 # surfaces here instead of a catchable MeshingException, and
                 # poisons every still-pending future, so `idx` is not the
                 # culprit. Close the (now unusable) pool and re-probe the
@@ -1618,7 +1618,7 @@ def _mesh_polygons_in_parallel(
                 raise _pinpoint_worker_crash(unfinished) from exc
             done += 1
             # Per-piece progress every doubling (1, 2, 4, 8, …) plus the
-            # last one — gives a useful pulse without spamming for large
+            # last one - gives a useful pulse without spamming for large
             # batches.
             if done >= next_log or done == n:
                 log.info(f"{log_label}: {done}/{n} pieces meshed")
@@ -1647,7 +1647,7 @@ def generate_meshes_for_problem(prob: problem.Problem,
     # arrays in the same order so mesh_index_to_layer_index is stable.
 
     # Variable-density (adaptive) meshing: when enabled, the connected
-    # meshes use the two-pass graded mesher — fine near pins/vias/copper
+    # meshes use the two-pass graded mesher - fine near pins/vias/copper
     # edges, coarse in plane interiors. ``_adaptive`` is the picklable
     # parameter tuple handed to each Triangle worker; None = uniform.
     _cfg = mesher.config
@@ -1668,7 +1668,7 @@ def generate_meshes_for_problem(prob: problem.Problem,
     # Each entry is (seed_point, add_steiner_ring). A point Connection gets
     # an 8-point Steiner ring to refine the log singularity at its single
     # injection vertex; an equipotential-patch Connection (one carrying a
-    # pad region) instead seeds the pad outline directly — the patch has no
+    # pad region) instead seeds the pad outline directly - the patch has no
     # point singularity, so no ring is needed.
     seed_points_by_layer_id: dict[int, list[tuple[shapely.geometry.Point, bool]]] = (
         collections.defaultdict(list)
@@ -1690,7 +1690,7 @@ def generate_meshes_for_problem(prob: problem.Problem,
                 if not conn.barrel:
                     for sp in _pad_seed_points(conn.region, conn.point):
                         seed_points_by_layer_id[lid].append((sp, False))
-                # Every patch is graded below, once per (layer, x, y) — a
+                # Every patch is graded below, once per (layer, x, y) - a
                 # through via's inner layers carry two hop connections at
                 # the same point, and a PTH terminal one per layer.
                 key = (round(conn.point.x, 6), round(conn.point.y, 6))
@@ -1714,13 +1714,13 @@ def generate_meshes_for_problem(prob: problem.Problem,
         # Lazy-prepare each geometry the first time it gets a candidate
         # seed point. PreparedGeometry caches an internal edge RTree so
         # repeated contains/intersects calls drop from O(boundary_vertices)
-        # to O(log n) — the difference is dramatic on large GND copper
+        # to O(log n) - the difference is dramatic on large GND copper
         # (the 8682 mm² piece has 1000s of boundary vertices).
         #
         # NB: this pass is left point-at-a-time on purpose. It already uses
         # prepared geometries (unlike the connectivity / dead-terminal passes,
         # which resolve_connection_geoms vectorises), and the per-seed order
-        # here feeds Triangle directly — batching it via STRtree.query changed
+        # here feeds Triangle directly - batching it via STRtree.query changed
         # the seed set/order enough to perturb the mesh, so it is not worth the
         # small saving.
         prepared_by_geom_i: dict[int, shapely.prepared.PreparedGeometry] = {}
@@ -1744,11 +1744,11 @@ def generate_meshes_for_problem(prob: problem.Problem,
                 geom_to_seed_points[geom_i].append(seed_point)
 
                 # For point Connections, augment with a small ring of
-                # Steiner points around the injection vertex — forces fine
+                # Steiner points around the injection vertex - forces fine
                 # triangles there regardless of the global mesh size (see
                 # _INJECTION_STEINER_RING_* constants for the why). Ring
                 # members that fall outside the geometry are silently
-                # dropped — happens when the Connection sits at the very tip
+                # dropped - happens when the Connection sits at the very tip
                 # of a thin track or on its boundary. Equipotential-patch
                 # Connections skip this: their pad-outline samples already
                 # provide perimeter density and there is no singularity.
@@ -1790,12 +1790,12 @@ def generate_meshes_for_problem(prob: problem.Problem,
                 if grading_xy is not None:
                     seed_xy = np.concatenate((seed_xy, grading_xy))
                 # Drop exact-duplicate seeds (two Connections at identical
-                # coordinates — stacked pins, a via shared by two directives,
-                # or a pad seeded from two networks — each contribute a seed
+                # coordinates - stacked pins, a via shared by two directives,
+                # or a pad seeded from two networks - each contribute a seed
                 # plus an identical Steiner ring). Triangle lists near-duplicate
                 # vertices as a known failure mode. Order-preserving (keep the
                 # first occurrence in the original order) so the seed sequence
-                # fed to Triangle — and therefore the mesh — is unchanged when
+                # fed to Triangle - and therefore the mesh - is unchanged when
                 # there are no duplicates.
                 _, first_idx = np.unique(seed_xy, axis=0, return_index=True)
                 seed_xy = seed_xy[np.sort(first_idx)]
@@ -1879,7 +1879,7 @@ def generate_disconnected_meshes(prob: problem.Problem,
         return disconnected_meshes_by_layer
 
     # Disconnected pieces are display-only (no FEM run on them), so skip
-    # the per-polygon width-aware sizing — one relaxed switches string
+    # the per-polygon width-aware sizing - one relaxed switches string
     # for everything keeps these triangulations cheap.
     switches = [relaxed_mesher._build_triangle_switches()] * len(polys_to_mesh)
     arrays = _mesh_polygons_in_parallel(
@@ -1919,9 +1919,9 @@ class NodeIndexer:
         Construct a KDTree per layer indexing every non-orphan mesh
         vertex in that layer.
 
-        Orphan vertices — points Triangle preserved from the input that
+        Orphan vertices - points Triangle preserved from the input that
         don't appear in any triangle (typically seed points that fell a
-        hair outside the polygon due to FP) — are excluded.
+        hair outside the polygon due to FP) - are excluded.
         ``laplace_operator`` pins them to v=0 so the system stays
         non-singular, and a Connection that snapped onto one would dump
         its CurrentSource / coupling-Resistor stamps onto a hard-grounded
@@ -1935,7 +1935,7 @@ class NodeIndexer:
         ``layer_to_globals[layer_i]`` is a 1-D int64 array such that
         ``layer_to_globals[layer_i][k]`` is the global vertex index of
         the k-th point fed into ``layer_to_kdtree[layer_i]``. Replaces
-        the previous list-of-(global_idx, Point) tuples — that allocated
+        the previous list-of-(global_idx, Point) tuples - that allocated
         ~2N Python objects per layer just to be discarded after the
         single ``kdtree.query`` call per connection.
         """
@@ -1948,7 +1948,7 @@ class NodeIndexer:
         for mesh_i, layer_i in enumerate(mesh_index_to_layer_index):
             meshes_by_layer.setdefault(layer_i, []).append(mesh_i)
 
-        # Per-mesh global-vertex offset — matches the order
+        # Per-mesh global-vertex offset - matches the order
         # VertexIndexer.create assigns indices (cumulative vertex count
         # of all earlier meshes).
         offsets = np.fromiter(
@@ -1966,7 +1966,7 @@ class NodeIndexer:
                 base = int(offsets[mesh_i])
                 mask = getattr(msh, "_in_triangle_mask", None)
                 if mask is None:
-                    # Legacy mesh without source arrays / mask — walk the
+                    # Legacy mesh without source arrays / mask - walk the
                     # half-edge graph as before.
                     kept_xys: list[tuple[float, float]] = []
                     kept_globals: list[int] = []
@@ -2041,14 +2041,14 @@ class NodeIndexer:
         # (see ``vertex_groups``), and solve() collapses the group into a
         # single variable. The node maps to the group's representative
         # vertex. A Connection without a region (or a pad too small to catch
-        # any mesh vertex) falls back to the single nearest vertex — the
+        # any mesh vertex) falls back to the single nearest vertex - the
         # original point-coupling behaviour.
         vertex_groups: list[np.ndarray] = []
         # Global vertex indices already assigned to a pad group. Keeping
         # groups disjoint guarantees the contraction in solve() is a clean
         # partition (no vertex pulled into two pads).
         # Boolean occupancy mask over global vertex indices (see
-        # _vertices_under_pad) — replaces a Python set so membership and
+        # _vertices_under_pad) - replaces a Python set so membership and
         # marking are both vectorised.
         claimed = np.zeros(vindex.n_vertices, dtype=bool)
         connections = [
@@ -2057,12 +2057,12 @@ class NodeIndexer:
         # Pad patches claim their vertices before via-barrel patches (stable
         # sort keeps every other order intact): a via inside a terminal pad
         # then finds its drill vertices already claimed, falls back to the
-        # nearest vertex, and so joins the pad's group — one node, as the
-        # copper really is — instead of carving a separate patch out of it.
+        # nearest vertex, and so joins the pad's group - one node, as the
+        # copper really is - instead of carving a separate patch out of it.
         connections.sort(key=lambda c: c.barrel)
 
         def _assign(node, vertex_global_idx: int) -> None:
-            # Guard against overwriting a node with a different vertex — should
+            # Guard against overwriting a node with a different vertex - should
             # never happen in practice.
             if (node in node_to_global_index
                     and node_to_global_index[node] != vertex_global_idx):
@@ -2080,8 +2080,8 @@ class NodeIndexer:
         deferred: list = []  # (conn, globals_arr, kdtree)
         # Which vertices lie under each pad does not depend on the visiting
         # order, so find that for every pad up front, a layer at a time
-        # (see _pad_members_batch); only the order-sensitive part — the
-        # claimed-vertex filter — stays in the loop below.
+        # (see _pad_members_batch); only the order-sensitive part - the
+        # claimed-vertex filter - stays in the loop below.
         pad_members: dict[int, np.ndarray] = {}
         _pads_by_tree: dict[int, tuple] = {}
         for conn in connections:
@@ -2096,7 +2096,7 @@ class NodeIndexer:
                     _tree, [c.region for c in _conns])):
                 pad_members[id(_conn)] = _sel
         for conn in connections:
-            # A connection's layer may have no meshed copper at all — e.g. a
+            # A connection's layer may have no meshed copper at all - e.g. a
             # directive pin on a plane with no copper reachable from a driven
             # source. _construct_kdtrees only builds a tree for layers that
             # produced connected meshes, so layer_to_kdtree[layer_i] is absent
@@ -2116,7 +2116,7 @@ class NodeIndexer:
                     SolverWarning, stacklevel=2,
                 )
                 continue
-            # layer_to_globals[layer_i] is a flat int64 array — direct numpy
+            # layer_to_globals[layer_i] is a flat int64 array - direct numpy
             # indexing returns the global vertex index, no tuple unpack.
             globals_arr = layer_to_globals[layer_i]
 
@@ -2136,7 +2136,7 @@ class NodeIndexer:
             deferred.append((conn, globals_arr, kdtree))
 
         # Batch the deferred point lookups, one cKDTree.query per layer (grouped
-        # by tree identity — one tree per layer). Results indexed by position in
+        # by tree identity - one tree per layer). Results indexed by position in
         # ``deferred``.
         by_tree: dict[int, tuple] = {}
         for di, (conn, _ga, kdtree) in enumerate(deferred):
@@ -2162,7 +2162,7 @@ class NodeIndexer:
         for di, (conn, globals_arr, _kdtree) in enumerate(deferred):
             vertex_global_idx = int(globals_arr[q_idx[di]])
             # If the nearest copper vertex is far from where the terminal was
-            # placed, the pin isn't really on this net's copper — its current
+            # placed, the pin isn't really on this net's copper - its current
             # then gets injected at a distant vertex, silently skewing IR-drop.
             # Warn but still attach (preserving the long-standing behaviour);
             # the threshold is a few mesh cells, so normal pins never trip it.
@@ -2235,7 +2235,7 @@ def stamp_network_into_system(network: problem.Network,
     COO accumulation: every ``L[i, j] += v`` / ``L[i, j] = v`` in the
     upstream lil-matrix version becomes ``rows.append(i); cols.append(j);
     vals.append(v)``. The final COO assembly in ``solve()`` sums duplicate
-    (i, j) entries automatically — equivalent to the ``+=`` semantics. For
+    (i, j) entries automatically - equivalent to the ``+=`` semantics. For
     the elements that originally wrote ``L[i, j] = const`` (e.g. the
     VoltageSource voltage-equation rows), each (i, j) is unique to that
     element so there's nothing to overwrite, and accumulation gives the
@@ -2307,7 +2307,7 @@ def stamp_network_into_system(network: problem.Network,
                 cols.extend((i_v, i_v))
                 vals.extend((-draw, draw))
                 # External-FET switch legs: coeff·i_v flows f→t, so f loses it
-                # and t receives it. The pair must sum to zero over i_v — two
+                # and t receives it. The pair must sum to zero over i_v - two
                 # entries at the same (row, col) would cancel under the COO
                 # duplicate summation in assemble(), not add.
                 for leg_f, leg_t, coeff in switch_legs:
@@ -2400,7 +2400,7 @@ def setup_ground_node(i_gnd: int, N: int,
     Wires a 0 V virtual source from ``i_gnd`` to the implicit ground node
     that lives at global index ``N - 1`` (the last variable in the system).
     The upstream lil-matrix version used negative indexing (``L[-1, ...]``)
-    — here we expand it to the explicit index since COO assembly takes
+    - here we expand it to the explicit index since COO assembly takes
     absolute indices only.
     """
     last = N - 1
@@ -2446,7 +2446,7 @@ def process_mesh_laplace_operators(
     triangles offset into its ``vindex`` global-index range), then the whole
     board's half-cotangent weights are computed in ONE vectorised
     :func:`_half_cotangent` pass. This replaces the previous per-mesh
-    ``ThreadPoolExecutor.map(laplace_operator, meshes)`` — on a board with tens
+    ``ThreadPoolExecutor.map(laplace_operator, meshes)`` - on a board with tens
     of thousands of small meshes the per-mesh Python overhead (task dispatch, a
     ``scipy.coo_matrix`` object built and torn down per mesh, GIL-bound small
     numpy) dominated; one global pass removes all of it.
@@ -2567,7 +2567,7 @@ def process_mesh_laplace_operators(
             # Scale: each off-diagonal entry by its triangle's conductance (the
             # 6 edge sub-blocks all index the same triangle set), each diagonal
             # by its vertex's conductance. Scale the 6 T-sized blocks in place
-            # rather than building `np.concatenate([tri_cond] * 6)` — that
+            # rather than building `np.concatenate([tri_cond] * 6)` - that
             # temporary is 6·T entries (~200 MB on a multi-million-triangle
             # board).
             for _b in range(6):
@@ -2584,7 +2584,7 @@ def process_mesh_laplace_operators(
     else:
         used = np.zeros(n_total, dtype=bool)
 
-    # Pin orphan vertices (in no triangle) to keep the matrix non-singular —
+    # Pin orphan vertices (in no triangle) to keep the matrix non-singular -
     # value 1.0·conductance, matching the per-mesh path.
     orphans = np.where(~used)[0].astype(idx_dtype)
     if orphans.size > 0:
@@ -2608,7 +2608,7 @@ def global_triangle_arrays(
     """Concatenated board-wide triangle soup, in the exact order
     :func:`process_mesh_laplace_operators` builds it.
 
-    Returns ``(xys_all, tris_all, tri_mesh_ids)`` — global vertex
+    Returns ``(xys_all, tris_all, tri_mesh_ids)`` - global vertex
     coordinates, triangles in global vertex indices, and the owning mesh
     index per triangle. The electro-thermal loop needs all three: the first
     two to take the potential gradient per triangle, the third to map a
@@ -2710,24 +2710,24 @@ def produce_layer_solutions(layers: list[problem.Layer],
     back out per mesh into ``LayerSolution.temperature_rises`` so the
     viewer can render it exactly like the power density it parallels.
     ``tri_conductance`` (same order) is sliced the same way into
-    ``LayerSolution.tri_conductances``, and each ``adjoints`` entry — a
+    ``LayerSolution.tri_conductances``, and each ``adjoints`` entry - a
     (float32 per-vertex delta in global vertex order, float64 per-mesh
-    offset) pair — into ``LayerSolution.adjoints`` / ``adjoint_offsets``.
+    offset) pair - into ``LayerSolution.adjoints`` / ``adjoint_offsets``.
     """
-    # Bucket mesh indices by layer once — replaces the O(L × M) inner
+    # Bucket mesh indices by layer once - replaces the O(L × M) inner
     # filter ``if mesh_index_to_layer_index[mesh_i] != layer_i``.
     meshes_by_layer: dict[int, list[int]] = {}
     for mesh_i, lid in enumerate(mesh_index_to_layer_index):
         meshes_by_layer.setdefault(lid, []).append(mesh_i)
 
-    # Cumulative vertex offsets — VertexIndexer.create assigns globals in
+    # Cumulative vertex offsets - VertexIndexer.create assigns globals in
     # iteration order, so mesh m's global indices are
     # [offsets[m], offsets[m] + len(meshes[m].vertices)).
     offsets = [0]
     for m in meshes:
         offsets.append(offsets[-1] + len(m.vertices))
 
-    # Triangle offsets parallel to the vertex offsets above — only meshes
+    # Triangle offsets parallel to the vertex offsets above - only meshes
     # that actually carry triangles contribute, matching how
     # global_triangle_arrays concatenates them.
     tri_offsets: dict[int, tuple[int, int]] = {}
@@ -2757,7 +2757,7 @@ def produce_layer_solutions(layers: list[problem.Layer],
             msh = meshes[mesh_i]
             base = offsets[mesh_i]
             n_v = len(msh.vertices)
-            # Direct slice into a ZeroForm — no per-vertex Python loop.
+            # Direct slice into a ZeroForm - no per-vertex Python loop.
             vertex_values = mesh.ZeroForm(msh)
             vertex_values.values[:] = v[base:base + n_v]
             # Power density per triangle from the vectorised flat-array path.
@@ -2872,7 +2872,7 @@ def _log_network_breakdown(
     n_dropped = len(all_networks) - len(filtered)
     if n_dropped:
         log.info(
-            f"  {n_dropped} network(s) dropped (dead-copper terminal) — "
+            f"  {n_dropped} network(s) dropped (dead-copper terminal) - "
             f"their currents are excluded from the solve."
         )
 
@@ -2887,7 +2887,7 @@ def find_ground_node_indices(
     The MNA system loses one degree of freedom for every connected component
     that has no fixed potential, so each component needs its own reference or
     the solve is rank-deficient. A board whose rails all share a GND plane
-    forms one component and yields a single reference — identical to the old
+    forms one component and yields a single reference - identical to the old
     single-ground behaviour. A single-net (PDN_NET) analysis forms its own
     component with no GND copper, so it gets its own reference here.
 
@@ -2937,7 +2937,7 @@ def find_ground_node_indices(
     # Per component: VoltageSource N-terminal votes + fallbacks. ``fallback_vertex``
     # is the lowest-indexed MESH vertex (preferred reference); ``any_fallback`` is
     # the lowest-indexed variable of ANY kind (mesh vertex OR network-internal
-    # node / extra-source variable) — needed so a *lumped-only* component (e.g. a
+    # node / extra-source variable) - needed so a *lumped-only* component (e.g. a
     # resistor chain among internal nodes with no VoltageSource and no copper)
     # still gets a reference instead of leaving the matrix singular and degrading
     # into the expensive MINRES budget path.
@@ -2985,9 +2985,9 @@ def find_ground_node_indices(
             ground_indices.append(any_fallback[comp])
 
     if not ground_indices:
-        # No networks at all — keep the system pinnable (matches the legacy
+        # No networks at all - keep the system pinnable (matches the legacy
         # fallback of grounding vertex 0).
-        log.warning("No networks to ground — defaulting reference to vertex "
+        log.warning("No networks to ground - defaulting reference to vertex "
                     "0. Solver results will be unreliable.")
         return [0]
     ground_indices.sort()
@@ -3108,7 +3108,7 @@ def _power_density_block(x, y, tris, vals, conductivity, out) -> None:
     y12 = y0 - y1
     x21 = x1 - x0
     D = y23 * x13 + x32 * (y0 - y2)
-    # Linear-element gradient — closed form from the affine map:
+    # Linear-element gradient - closed form from the affine map:
     #   ∂V/∂x = (y23·f0 + y31·f1 + y12·f2) / D
     #   ∂V/∂y = (x32·f0 + x13·f1 + x21·f2) / D
     nz = D != 0
@@ -3118,7 +3118,7 @@ def _power_density_block(x, y, tris, vals, conductivity, out) -> None:
     Ey = (x32 * f0 + x13 * f1 + x21 * f2) * invD
     # p = J · E = σ |E|².
     np.multiply(conductivity, Ex * Ex + Ey * Ey, out=out)
-    # On degenerate triangles (D == 0) ∇V is undefined — p = 0 there (the
+    # On degenerate triangles (D == 0) ∇V is undefined - p = 0 there (the
     # products above already give 0 unless a potential is non-finite).
     if not nz.all():
         out[~nz] = 0.0
@@ -3163,7 +3163,7 @@ class _MinresTimeout(Exception):
 class _MinresProgress:
     """MINRES ``callback``: keeps the latest iterate, logs progress to the
     GUI substage feed, and raises :class:`_MinresTimeout` once the wall-clock
-    budget is exhausted — so a multi-million-variable iterative solve reports
+    budget is exhausted - so a multi-million-variable iterative solve reports
     progress instead of appearing frozen, and can never hang indefinitely."""
 
     def __init__(self, label: str, budget_s: float) -> None:
@@ -3188,9 +3188,9 @@ class _MinresProgress:
 
 # Persistent symmetric-indefinite PARDISO solver + a fingerprint of the matrix
 # it currently holds factorised. Keeping the factorisation alive between
-# solve() calls lets a re-solve whose stiffness matrix is unchanged — e.g. the
+# solve() calls lets a re-solve whose stiffness matrix is unchanged - e.g. the
 # GUI editor loop where only sink-current / source-voltage magnitudes change
-# (those touch only the RHS, never L) — skip the ~seconds-to-minutes
+# (those touch only the RHS, never L) - skip the ~seconds-to-minutes
 # factorisation and run just the fast solve phase. The lock serialises access
 # (solves never overlap in practice, but a shared factorisation must not be
 # entered concurrently). ``free_pardiso_cache`` drops it; the GUI also calls
@@ -3200,7 +3200,7 @@ _sym_solver = None
 _sym_fingerprint: str | None = None
 # The upper-triangular PARDISO input matrix that matches the cached
 # factorisation. Cached so a value-only re-solve (identical matrix) reuses it
-# instead of rebuilding triu(L)+setdiag+sort_indices — the pypardiso solve
+# instead of rebuilding triu(L)+setdiag+sort_indices - the pypardiso solve
 # phase still needs a matrix argument, and it must be the one that was
 # factorised.
 _sym_M: "scipy.sparse.csr_matrix | None" = None
@@ -3217,7 +3217,7 @@ def _csr_fingerprint(m: "scipy.sparse.csr_matrix") -> str:
     the cached PARDISO factorisation still matches this matrix.
 
     The previous implementation ran three full SHA-1 passes over indptr +
-    indices + data — ~0.3–0.6 s per solve at 40M nnz, paid even on cache-miss
+    indices + data - ~0.3-0.6 s per solve at 40M nnz, paid even on cache-miss
     solves. This hashes the shape, nnz, the full ``indptr`` (cheap: N+1 entries)
     and a strided sample of ``indices`` / ``data`` instead. A value-only
     re-solve produces a bit-identical matrix (guaranteed hit); a genuine change
@@ -3261,15 +3261,15 @@ def free_pardiso_cache() -> None:
 # Meshing and the per-mesh cotangent-Laplacian assembly are the dominant solve
 # cost (tens of seconds on a large board) and are a pure function of the board
 # geometry, per-layer conductance, connection seed geometry, and the mesher
-# config — never of source/sink magnitudes. The GUI editor loop re-solves the
+# config - never of source/sink magnitudes. The GUI editor loop re-solves the
 # same board with only current/voltage values changed (an RHS-only edit), so
 # caching these outputs lets that re-solve skip re-meshing and re-assembling
 # the Laplacian; only the RHS and the fast solve phase remain (the latter also
 # reuses the cached PARDISO factorisation, keyed on the unchanged matrix).
 #
-# Everything downstream of the mesh/Laplacian — vertex→matrix indexing carries
+# Everything downstream of the mesh/Laplacian - vertex→matrix indexing carries
 # over with the meshes, but node indexing, network stamping, and the matrix
-# build — is ALWAYS redone fresh. NodeID is ``eq=False`` (identity equality)
+# build - is ALWAYS redone fresh. NodeID is ``eq=False`` (identity equality)
 # and a Network's node order comes from a ``set``, so node index assignment is
 # non-deterministic across Problem rebuilds; nothing that depends on it is ever
 # reused. Only the geometry-derived meshes and their Laplacian triples (whose
@@ -3285,10 +3285,10 @@ class _MeshAssembly:
     mesh_cols: np.ndarray
     mesh_vals: np.ndarray
     # Per-layer KDTree over non-orphan mesh vertices + the parallel global-index
-    # array. A pure function of (meshes, mesh_index_to_layer_index) — the same
-    # geometry inputs the meshes/Laplacian are cached on — so it's reused on a
+    # array. A pure function of (meshes, mesh_index_to_layer_index) - the same
+    # geometry inputs the meshes/Laplacian are cached on - so it's reused on a
     # value-only re-solve instead of rebuilding a scipy.spatial.KDTree over
-    # every vertex on every layer (1–3 s on a multi-million-vertex board).
+    # every vertex on every layer (1-3 s on a multi-million-vertex board).
     layer_to_kdtree: "dict[int, scipy.spatial.KDTree]"
     layer_to_globals: "dict[int, np.ndarray]"
 
@@ -3300,8 +3300,8 @@ _mesh_assembly_lock = threading.Lock()
 def free_mesh_assembly_cache() -> None:
     """Drop the cached mesh + Laplacian assembly (see :class:`_MeshAssembly`).
 
-    Bounds resident memory — a large board's meshes + COO triples run to
-    hundreds of megabytes — and, called on solve-cancel, guarantees a solve
+    Bounds resident memory - a large board's meshes + COO triples run to
+    hundreds of megabytes - and, called on solve-cancel, guarantees a solve
     hard-killed mid-meshing can't leave a stale assembly for the next solve to
     reuse. It's pure data, so unlike the PARDISO factorisation there's no
     native resource to release; the next solve simply re-meshes."""
@@ -3316,8 +3316,8 @@ def force_reset_caches_after_terminate() -> None:
     ``_mesh_assembly_lock``.
 
     A ``threading.Lock`` held by a terminated thread is never released, so the
-    ordinary ``free_pardiso_cache`` / ``free_mesh_assembly_cache`` helpers —
-    which *acquire* those locks — would block the caller forever, and every
+    ordinary ``free_pardiso_cache`` / ``free_mesh_assembly_cache`` helpers -
+    which *acquire* those locks - would block the caller forever, and every
     subsequent solve would deadlock trying to take them. This drops both caches
     and rebinds the locks to FRESH objects *without acquiring* the (possibly
     orphaned) old ones.
@@ -3329,8 +3329,8 @@ def force_reset_caches_after_terminate() -> None:
     process exit, the same bounded leak ``_abort_solve_worker`` already accepts
     for a force-killed solve.
 
-    Only safe once the worker is confirmed dead — no live thread may be inside a
-    solve — which is exactly the post-``terminate()`` cancel path."""
+    Only safe once the worker is confirmed dead - no live thread may be inside a
+    solve - which is exactly the post-``terminate()`` cancel path."""
     global _sym_solver, _sym_fingerprint, _sym_M, _sym_solver_lock
     global _mesh_assembly_cache, _mesh_assembly_lock
     _sym_solver = None
@@ -3352,14 +3352,14 @@ def _mesh_assembly_fingerprint(
     the mesher consumes them (seed order perturbs Triangle's output, so the
     hash is order-sensitive, not a set), and the set of (layer, geom) pairs
     that are actually meshed. Source/sink magnitudes and node identity are
-    excluded — they never change the mesh or the Laplacian — so a value-only
+    excluded - they never change the mesh or the Laplacian - so a value-only
     re-solve hashes identically and reuses the cache.
 
     ``connected_layer_mesh_pairs`` matters because it selects *which* polygons
     get meshed at all, and it depends on network connectivity (e.g. whether a
     network has a source), not just on geometry / connection points. Folding it
-    in means a "swap a VoltageSource for a Resistor" edit — which leaves every
-    connection point untouched but changes the connected set — invalidates the
+    in means a "swap a VoltageSource for a Resistor" edit - which leaves every
+    connection point untouched but changes the connected set - invalidates the
     cache instead of silently reusing meshes for the old connectivity.
 
     WKB is exact, so a false hit would need a SHA-1 collision; a false miss (a
@@ -3373,7 +3373,7 @@ def _mesh_assembly_fingerprint(
         h.update(np.float64(layer.conductance).tobytes())
         h.update(shapely.to_wkb(layer.shape))
     # Connections in mesher-consumption order (networks, then each network's
-    # connections) — the same order generate_meshes_for_problem collects seed
+    # connections) - the same order generate_meshes_for_problem collects seed
     # points in, so the hash tracks exactly what perturbs the mesh.
     for network in prob.networks:
         for conn in network.connections:
@@ -3383,7 +3383,7 @@ def _mesh_assembly_fingerprint(
                 # A connection whose layer isn't one of prob.layers by identity
                 # collapses to -1, losing which-layer information from the hash
                 # (two such connections on different layers would collide). This
-                # shouldn't happen — connections reuse the same Layer objects —
+                # shouldn't happen - connections reuse the same Layer objects -
                 # so surface it rather than hashing a lossy sentinel silently.
                 log.warning(
                     "Connection layer not found in prob.layers by identity; "
@@ -3396,7 +3396,7 @@ def _mesh_assembly_fingerprint(
                 # A barrel patch adds grading seeds and is claimed after the
                 # pads, so the same region meshes differently with the flag.
                 h.update(b"B" if conn.barrel else b"P")
-    # Which (layer, geom) pairs are meshed — sorted for order-independence.
+    # Which (layer, geom) pairs are meshed - sorted for order-independence.
     h.update(b"\x00M")
     for pair in sorted(connected_layer_mesh_pairs):
         h.update(np.int64(pair).tobytes())
@@ -3409,10 +3409,10 @@ def _pardiso_solve_sym(
     """Symmetric-indefinite PARDISO solve (mtype -2), reusing the factorisation
     across identical-matrix re-solves.
 
-    PARDISO factorises only the upper triangle here — markedly faster than
+    PARDISO factorises only the upper triangle here - markedly faster than
     the unsymmetric factorisation. Two requirements: it must be given just
     ``triu(L)`` (the full matrix crashes MKL), and the diagonal must be
-    structurally complete — the MNA Lagrange rows (ground node, voltage
+    structurally complete - the MNA Lagrange rows (ground node, voltage
     sources) carry no diagonal entry, which PARDISO rejects as "input
     inconsistent", so the diagonal is materialised (missing entries become
     explicit zeros, numerically a no-op).
@@ -3420,13 +3420,13 @@ def _pardiso_solve_sym(
     A module-level solver is kept alive and re-factorised only when the matrix
     fingerprint changes; when it hasn't (a value-only re-solve), pypardiso runs
     the solve phase alone. On any error the cache is dropped and the exception
-    re-raised so :func:`_solve_robust` falls back — and a stale/garbage result
+    re-raised so :func:`_solve_robust` falls back - and a stale/garbage result
     from a reused factorisation is caught anyway by that function's residual
     check. ``size_limit_storage=0`` makes pypardiso store only a hash of the
     factorised matrix (not a full copy), keeping resident memory down."""
     # Fingerprint L_csc directly rather than the derived triu matrix. L_csc is
     # already canonical (coo→tocsc sorts indices and sums duplicates), so its
-    # hash changes iff the matrix does — and on a value-only re-solve (identical
+    # hash changes iff the matrix does - and on a value-only re-solve (identical
     # matrix) this lets us skip rebuilding triu(L)+setdiag+sort_indices entirely
     # (hundreds of MB of extraction + a full index sort on a ~40M-nnz board) and
     # reuse the cached upper-triangular input instead.
@@ -3442,7 +3442,7 @@ def _pardiso_solve_sym(
             if fp != _sym_fingerprint or _sym_M is None:
                 # First solve, or the matrix changed: build the upper-triangular
                 # PARDISO input (the full matrix crashes MKL; the diagonal must
-                # be structurally complete — missing Lagrange-row entries become
+                # be structurally complete - missing Lagrange-row entries become
                 # explicit zeros) and analyse + factorise once.
                 M = scipy.sparse.triu(L_csc, format="csr")
                 with warnings.catch_warnings():
@@ -3453,7 +3453,7 @@ def _pardiso_solve_sym(
                 _sym_fingerprint = fp
                 _sym_M = M
             # solve() sees the stored factorisation and runs the solve phase
-            # only — the cheap path that makes an identical re-solve fast.
+            # only - the cheap path that makes an identical re-solve fast.
             return _sym_solver.solve(_sym_M, r)
         except BaseException:
             try:
@@ -3472,8 +3472,8 @@ def _pardiso_solve_unsym(
     """Unsymmetric PARDISO solve (full pivoting), freeing the factorisation
     immediately.
 
-    This is the fallback path — reached only when the matrix is asymmetric (a
-    `VoltageRegulator`) or the symmetric solve was rejected — so it's rarely hit
+    This is the fallback path - reached only when the matrix is asymmetric (a
+    `VoltageRegulator`) or the symmetric solve was rejected - so it's rarely hit
     and not worth keeping resident (unlike the symmetric primary path, which is
     cached). Replaces the convenience ``_pypardiso.spsolve``, whose module-global
     solver held the multi-GB LU for the process lifetime."""
@@ -3499,7 +3499,7 @@ def _log_singular_diagnostic(
     """Log the equations the failed direct solve left unsatisfied.
 
     The rows with the largest ``|L·v - r|`` are where the factorisation's
-    small pivots landed — i.e. the variables spanning the matrix's
+    small pivots landed - i.e. the variables spanning the matrix's
     near-null-space. Mapped back through ``row_describer`` to a copper
     (layer, net) slab and location, they localise the near-floating region
     that drove the matrix near-singular.
@@ -3517,11 +3517,11 @@ def _log_singular_diagnostic(
         ]
         log.warning(
             "Worst-residual equations from the failed direct solve (these "
-            "localise the near-singular region — inspect this copper for a "
+            "localise the near-singular region - inspect this copper for a "
             "missing or barely-connected return path):\n%s",
             "\n".join(lines),
         )
-    except Exception as e:  # diagnostic only — never break the solve
+    except Exception as e:  # diagnostic only - never break the solve
         log.debug("Singular-region diagnostic failed: %s", e)
 
 
@@ -3539,41 +3539,41 @@ def _solve_robust(
     PARDISO, symmetric-indefinite or unsymmetric), ``"superlu"`` (scipy's
     direct solver), ``"minres"`` / ``"minres+ridge"`` (Jacobi-preconditioned
     iterative, the latter with Tikhonov regularisation; ``"lgmres"`` /
-    ``"lgmres+ridge"`` when the matrix is unsymmetric — MINRES requires
+    ``"lgmres+ridge"`` when the matrix is unsymmetric - MINRES requires
     symmetry), or
     ``"direct-best-effort"`` when nothing reaches tolerance and the least-bad
     direct solve is handed back. ``iterations`` is the iteration count for
     iterative methods (1 for direct), and ``residual_norm`` is ``||L·v - r||``
-    against the original system — already needed for the fallback check, so
+    against the original system - already needed for the fallback check, so
     it is handed back rather than recomputed by the caller.
 
     The MNA matrix assembled by this solver is **symmetric indefinite**:
     Laplacian + Resistor stamps contribute positive eigenvalues, and the
     VoltageSource and ground-constraint Lagrange rows contribute negative
-    ones. A direct factorisation usually handles this without issue — but
+    ones. A direct factorisation usually handles this without issue - but
     pathological topologies (small isolated meshes connected only by lumped
     elements, heavily fragmented power nets, weakly-coupled mesh components)
     push the matrix near-singular, at which point the factorisation gets
     small pivots and silently returns a solution with a huge residual. The
     Lagrange-multiplier rows (ground_node_current, VoltageSource currents)
-    are particularly sensitive — they end up wildly wrong, propagating to
+    are particularly sensitive - they end up wildly wrong, propagating to
     nonsensical downstream voltages.
 
     Detection at every stage is the same check: the residual ``||L·v - r||``
     must fall below ``max(abs floor, rel_tol·||r||)``. Recovery is staged,
-    cheapest first — a near-singular matrix can defeat one factorisation's
+    cheapest first - a near-singular matrix can defeat one factorisation's
     pivoting but not another's, so a failed direct solve is retried with
     progressively more robust pivoting before the (slow) iterative fallback:
 
-      1. PARDISO symmetric-indefinite (Bunch-Kaufman pivoting) — primary,
+      1. PARDISO symmetric-indefinite (Bunch-Kaufman pivoting) - primary,
          when the matrix is symmetric and PARDISO is installed.
-      2. PARDISO unsymmetric (full MKL pivoting) — stronger pivoting.
+      2. PARDISO unsymmetric (full MKL pivoting) - stronger pivoting.
       3. SuperLU (partial pivoting).
       4. Jacobi-preconditioned MINRES, warm-started from the best direct
          solve and bounded by a wall-clock budget.
       5. MINRES with a Tikhonov ridge as a last resort.
 
-    Each direct retry costs a few seconds — cheap insurance against a
+    Each direct retry costs a few seconds - cheap insurance against a
     multi-minute MINRES run. The result returned is whichever candidate has
     the smallest residual, so a fallback never returns a worse answer than
     the direct solve it replaced. When ``row_describer`` is supplied and
@@ -3582,7 +3582,7 @@ def _solve_robust(
     """
     r_norm = float(np.linalg.norm(r))
     # Tolerance: residual should be well below the RHS magnitude. 1e-6
-    # is conservative — a well-conditioned direct solve gives ~1e-12.
+    # is conservative - a well-conditioned direct solve gives ~1e-12.
     abs_tol = max(_DIRECT_SOLVE_ABS_TOL_FLOOR, _DIRECT_SOLVE_REL_TOL * r_norm)
 
     def _residual(vec: np.ndarray) -> float:
@@ -3613,19 +3613,19 @@ def _solve_robust(
                 warnings.simplefilter("ignore")  # singular-matrix notices
                 v = run()
         except Exception as e:
-            log.warning("Direct solve (%s) raised (%s) — trying next method.",
+            log.warning("Direct solve (%s) raised (%s) - trying next method.",
                         label, e)
             continue
         residual_norm = _residual(v)
         if residual_norm <= abs_tol:
             log.debug(
                 "Direct solve (%s): residual=%.4g (<= tol=%.4g, ||r||=%.4g) "
-                "— good.", label, residual_norm, abs_tol, r_norm,
+                "- good.", label, residual_norm, abs_tol, r_norm,
             )
             return v, label, 1, residual_norm
         log.warning(
             "Direct solve (%s) returned residual=%.4g (> tol=%.4g, "
-            "||r||=%.4g) — near-singular, trying a more robust method.",
+            "||r||=%.4g) - near-singular, trying a more robust method.",
             label, residual_norm, abs_tol, r_norm,
         )
         if residual_norm < best_res:
@@ -3634,12 +3634,12 @@ def _solve_robust(
     # --- Every direct solve failed ---------------------------------------
     log.warning(
         "All direct solves failed (best was %s, residual=%.4g >> tol=%.4g, "
-        "||r||=%.4g). The matrix is near-singular — the factorisation has "
+        "||r||=%.4g). The matrix is near-singular - the factorisation has "
         "small pivots and the solution doesn't satisfy L·v=r. This is "
         "usually caused by a near-floating copper region: an isolated mesh "
         "connected only via lumped elements, or a fragmented power net with "
         "a barely-there return path. Note the matrix depends only on the "
-        "board topology, not on the source/sink values — editing those "
+        "board topology, not on the source/sink values - editing those "
         "changes which RHS directions expose the singularity, not the "
         "singularity itself. Falling back to a Jacobi-preconditioned "
         "iterative solve (MINRES, or LGMRES when the matrix is "
@@ -3652,7 +3652,7 @@ def _solve_robust(
     # Short-circuit the iterative fallback when it cannot possibly converge.
     # For a large near-singular system the Jacobi-MINRES ladder needs far more
     # than _MINRES_MAXITER iterations, so both budgeted passes time out (up to
-    # ~6 min total) only to return the direct best-effort anyway — and this
+    # ~6 min total) only to return the direct best-effort anyway - and this
     # repeats on every value-only re-solve of the same ill-posed board (the
     # matrix, hence the singularity, is unchanged). Skip straight to the best
     # direct solve. This never fires for systems small enough for the iterative
@@ -3664,7 +3664,7 @@ def _solve_robust(
             "cannot converge within %d Jacobi-MINRES iterations, so both "
             "budgeted passes (%.0fs each) would time out and return the direct "
             "best-effort regardless. Returning it now (method=%s, "
-            "residual=%.4g, tol=%.4g) — results for the near-floating region "
+            "residual=%.4g, tol=%.4g) - results for the near-floating region "
             "are unreliable. Set PDNSOLVER_MINRES_MAX_DOF to change this "
             "threshold.",
             n_dof, _MINRES_MAXITER, _MINRES_TIME_BUDGET_S,
@@ -3673,7 +3673,7 @@ def _solve_robust(
         return best_v, "direct-best-effort", 1, best_res
 
     # Jacobi preconditioner: M⁻¹ ≈ diag(1/|L_ii|). Cheap and effective for
-    # symmetric matrices with widely-varying diagonal entries (our case —
+    # symmetric matrices with widely-varying diagonal entries (our case -
     # copper Laplacian diagonals are O(100-1000 S) while Lagrange-row
     # diagonals are 0 by construction, so we floor by a small ε).
     diag = np.asarray(L_csc.diagonal(), dtype=DTYPE)
@@ -3685,13 +3685,13 @@ def _solve_robust(
     M_precond = scipy.sparse.diags(inv_diag, format="csc")
 
     # Warm-start the iterative solver from the best direct solve. Even a
-    # failed direct solve is usually correct across most of the system — only
-    # the near-null-space components are wrong — so it is a far better x0
+    # failed direct solve is usually correct across most of the system - only
+    # the near-null-space components are wrong - so it is a far better x0
     # than zero and cuts the iteration count substantially.
     x0 = best_v
 
     # MINRES requires a symmetric matrix; with a VoltageRegulator stamped
-    # (symmetric=False) its iterates are meaningless — the residual selection
+    # (symmetric=False) its iterates are meaningless - the residual selection
     # below would reject them, but only after burning the wall-clock budget
     # twice. Use LGMRES (general unsymmetric, same callback contract) there;
     # the symmetric path keeps MINRES, bit-identical to before.
@@ -3703,7 +3703,7 @@ def _solve_robust(
     # Iterative tolerance: scipy's default is 1e-5 (rtol). Tightened to 1e-10
     # since we're already in the fallback path. maxiter is a hard ceiling;
     # the wall-clock budget enforced by the callback is the practical bound
-    # — without it a multi-million-variable solve appears to hang.
+    # - without it a multi-million-variable solve appears to hang.
     progress = _MinresProgress(f"{iter_name}/Jacobi", _MINRES_TIME_BUDGET_S)
     try:
         v, info = _iter_solve(
@@ -3715,13 +3715,13 @@ def _solve_robust(
             x0 if x0 is not None else np.zeros_like(r))
         info = -1
         log.warning(
-            "%s hit its %.0fs wall-clock budget after %d iterations — "
+            "%s hit its %.0fs wall-clock budget after %d iterations - "
             "keeping the best iterate so far and trying ridge regularisation.",
             iter_name, _MINRES_TIME_BUDGET_S, progress.iterations,
         )
     residual_norm = _residual(v)
     # Capture the plain-iterative iteration count before the ridge pass below
-    # reuses ``progress`` — so the final return reports the WINNING candidate's
+    # reuses ``progress`` - so the final return reports the WINNING candidate's
     # own iteration count, not the ridge's.
     minres_iters = progress.iterations
     if info == 0 and residual_norm <= abs_tol:
@@ -3763,7 +3763,7 @@ def _solve_robust(
     ridge_res = _residual(v_ridge)
 
     # Return whichever candidate has the smallest residual against the
-    # original system — plain iterative, iterative+ridge, or the best direct
+    # original system - plain iterative, iterative+ridge, or the best direct
     # solve. A fallback must never hand back a worse answer than it started
     # with. NaN residuals (a singular direct solve) sort last.
     # Each candidate carries its OWN iteration count (a direct solve isn't
@@ -3781,7 +3781,7 @@ def _solve_robust(
         "%s+ridge (λ=%.4g): info=%d, residual=%.4g. Best available "
         "solution: method=%s, residual=%.4g (tol=%.4g)%s.",
         iter_name, lam, info, ridge_res, method, res_final, abs_tol,
-        "" if res_final <= abs_tol else " — STILL ABOVE TOLERANCE; results "
+        "" if res_final <= abs_tol else " - STILL ABOVE TOLERANCE; results "
         "for the near-floating region are unreliable",
     )
     return v_final, method, iters_final, res_final
@@ -3801,7 +3801,7 @@ def _record_stage(timings: list, label: str, t0: float, extra: str = "") -> None
 
 def _log_timing_breakdown(timings: list, total: float) -> None:
     """Log every solve stage sorted slowest-first, each with its share of the
-    total wall-clock time — the at-a-glance view of where the solve spends
+    total wall-clock time - the at-a-glance view of where the solve spends
     its time and which stages are worth optimising.
 
     An ``(other / untimed)`` row captures whatever total time was not
@@ -3826,7 +3826,7 @@ def _solve_transposed_multi(
     symmetric: bool,
     row_describer: Callable[[int], str] | None = None,
 ) -> np.ndarray:
-    """Solve ``Lᵀ·Λ = G`` for every column of ``G`` — the adjoint systems.
+    """Solve ``Lᵀ·Λ = G`` for every column of ``G`` - the adjoint systems.
 
     A symmetric ``L`` is its own transpose, so the symmetric PARDISO path
     finds the factorisation the forward solve just cached and runs only the
@@ -3849,7 +3849,7 @@ def _solve_transposed_multi(
             else:
                 lam = scipy.sparse.linalg.splu(A).solve(G)
     except Exception as e:
-        log.warning("Batched adjoint solve raised (%s) — solving each "
+        log.warning("Batched adjoint solve raised (%s) - solving each "
                     "target separately.", e)
     if lam is None:
         lam = np.zeros_like(G)
@@ -3906,7 +3906,7 @@ def solve(prob: problem.Problem,
     # Per-stage timing: ``_t0`` is captured right before each stage and
     # ``_record_stage`` logs a "… done in Xs" line and appends the duration
     # to ``timings``. After the solve, ``_log_timing_breakdown`` prints every
-    # stage ranked by cost — the at-a-glance view of where time goes and
+    # stage ranked by cost - the at-a-glance view of where time goes and
     # which stages are worth optimising.
     _total_t0 = time.monotonic()
     timings: list[tuple[str, float]] = []
@@ -3930,11 +3930,11 @@ def solve(prob: problem.Problem,
     connected_layer_mesh_pairs = find_connected_layer_geom_indices(connectivity_graph)
     _record_stage(timings, "Connectivity graph", _t0)
 
-    # Mesh + Laplacian assembly — the dominant solve cost, and a pure function
+    # Mesh + Laplacian assembly - the dominant solve cost, and a pure function
     # of geometry / conductance / connection seeds / mesher config. Reuse the
     # cached result when those are unchanged (a value-only re-solve: only the
     # source/sink magnitudes differ, which touch the RHS alone). Everything
-    # after this block is rebuilt fresh regardless — see _MeshAssembly.
+    # after this block is rebuilt fresh regardless - see _MeshAssembly.
     _fp = _mesh_assembly_fingerprint(
         prob, mesher.config, connected_layer_mesh_pairs)
     _cached = None
@@ -3957,7 +3957,7 @@ def solve(prob: problem.Problem,
         _record_stage(timings, "Mesh + Laplacian (cached reuse)", _t0,
                       f" ({len(meshes)} mesh(es), {len(mesh_vals)} entries)")
     else:
-        # One worker pool for BOTH meshing passes — spawns/re-imports at most once.
+        # One worker pool for BOTH meshing passes - spawns/re-imports at most once.
         _mesh_pool = _SharedMeshPool()
         try:
             _t0 = time.monotonic()
@@ -4003,7 +4003,7 @@ def solve(prob: problem.Problem,
         _record_stage(timings, "Laplace operator construction", _t0,
                       f" ({len(mesh_vals)} mesh entries)")
 
-        # Per-layer KDTrees over the mesh vertices — a pure function of the
+        # Per-layer KDTrees over the mesh vertices - a pure function of the
         # meshes, so built here (cache-miss) and stored for value-only re-solves
         # to reuse. NodeIndexer.create would otherwise rebuild them every solve.
         _t0 = time.monotonic()
@@ -4045,7 +4045,7 @@ def solve(prob: problem.Problem,
         prob, meshes, mesh_index_to_layer_index, vindex, filtered_networks,
         layer_to_index=layer_to_index,
         # A pin more than a few mesh cells from any copper vertex on its net
-        # isn't really on that copper — flag it rather than silently snapping.
+        # isn't really on that copper - flag it rather than silently snapping.
         off_copper_threshold_mm=_OFF_COPPER_WARN_FACTOR * mesher.config.maximum_size,
         # Reuse the cached (or freshly-built) per-layer KDTrees.
         prebuilt_kdtrees=_prebuilt_kdtrees,
@@ -4075,13 +4075,13 @@ def solve(prob: problem.Problem,
     # Flat-COO assembly: every stamp (mesh laplacians, network elements,
     # ground node) appends to a single (rows, cols, vals) accumulator. The
     # global L is built ONCE at the end via coo_matrix(...).tocsc(), which
-    # sums duplicate (i, j) entries automatically — equivalent to the
+    # sums duplicate (i, j) entries automatically - equivalent to the
     # upstream lil_matrix's ``L[i, j] +=`` semantics, but without paying
     # ``lil_matrix.__setitem__``'s Python-level overhead per write. The mesh
-    # Laplacian triples (mesh_rows/cols/vals) were built above — freshly, or
+    # Laplacian triples (mesh_rows/cols/vals) were built above - freshly, or
     # reused from the mesh-assembly cache on a value-only re-solve.
 
-    # Network stamps are small (a handful of entries per element) — plain
+    # Network stamps are small (a handful of entries per element) - plain
     # Python list .extend is fine; we'll concatenate once at the end.
     net_rows: list = []
     net_cols: list = []
@@ -4136,7 +4136,7 @@ def solve(prob: problem.Problem,
     # Equipotential-patch contraction. Each directive terminal couples into
     # its pad as an equipotential patch: node_indexer.vertex_groups lists,
     # per pad, the mesh vertices under the pad outline. Collapsing each group
-    # into one variable makes the pad an ideal conductor — the terminal
+    # into one variable makes the pad an ideal conductor - the terminal
     # current then crosses the pad boundary distributed by the surrounding
     # copper, instead of all flowing through one vertex (the old point
     # source, which produced a log voltage singularity). The contraction is
@@ -4150,7 +4150,7 @@ def solve(prob: problem.Problem,
         solve_rows = inverse[all_rows]
         solve_cols = inverse[all_cols]
         # Sum each original RHS entry into its reduced slot. bincount is the
-        # vectorised form of this scatter-add — far faster than np.add.at,
+        # vectorised form of this scatter-add - far faster than np.add.at,
         # which falls back to an unbuffered element-by-element loop.
         r_solve = np.bincount(
             inverse, weights=r, minlength=M,
@@ -4167,7 +4167,7 @@ def solve(prob: problem.Problem,
                       " (none)")
 
     # --- Sparse matrix build: COO → CSC -----------------------------------
-    # The single COO→CSC pass sums duplicate (i, j) entries — this is what
+    # The single COO→CSC pass sums duplicate (i, j) entries - this is what
     # makes assembly dramatically faster than the previous lil_matrix path.
     _t0 = time.monotonic()
     log.info("Building sparse matrix (COO → CSC)")
@@ -4182,7 +4182,7 @@ def solve(prob: problem.Problem,
     log.info("Solving the linear system")
     # The MNA matrix is symmetric unless a VoltageRegulator (its gain term)
     # or a remote-sensed source (constraint row on the sense nodes, current
-    # column on the output pins) is present — the only asymmetric stamps
+    # column on the output pins) is present - the only asymmetric stamps
     # (the contraction above preserves symmetry, remapping rows and columns
     # identically). When symmetric, PARDISO can use its faster
     # symmetric-indefinite factorisation.
@@ -4191,17 +4191,17 @@ def solve(prob: problem.Problem,
         or (isinstance(e, problem.VoltageSource) and e.has_remote_sense)
         for net in filtered_networks for e in net.elements
     )
-    # Direct sparse LU first — fast (~1 s on a 400K matrix) and exact when
+    # Direct sparse LU first - fast (~1 s on a 400K matrix) and exact when
     # the system is well-conditioned, which it almost always is. The MNA
     # matrix here is symmetric indefinite: Laplacian (PSD) + lumped Resistor
     # stamps (PSD) + VoltageSource and ground-constraint Lagrange rows
     # (which contribute negative eigenvalues). SuperLU usually handles this
     # without issue.
     #
-    # However, certain pathological topologies — small isolated meshes
+    # However, certain pathological topologies - small isolated meshes
     # connected only by lumped elements, heavily fragmented power nets
     # with many small mesh pieces each having ~1 via to the bottom plane,
-    # weak coupling between mesh components — produce a near-singular
+    # weak coupling between mesh components - produce a near-singular
     # matrix that SuperLU silently mis-solves: it returns a "solution"
     # whose residual is many orders of magnitude larger than machine
     # precision. The Lagrange-multiplier outputs (ground_node_current,
@@ -4214,8 +4214,8 @@ def solve(prob: problem.Problem,
     # cannot. See KNOWN_ISSUES.md for the test case that motivated this.
     # Diagnostic hook: when every direct solve fails, _solve_robust calls
     # this to turn a worst-residual (reduced) matrix row back into a
-    # human-readable location — the copper (layer, net) slab and coordinates
-    # — so the near-floating region that drove the matrix singular can be
+    # human-readable location - the copper (layer, net) slab and coordinates
+    # - so the near-floating region that drove the matrix singular can be
     # pinpointed. The reduced→full index map is materialised lazily, only
     # if a failure actually occurs.
     _n_vert = vindex.n_vertices
@@ -4255,7 +4255,7 @@ def solve(prob: problem.Problem,
         row_describer=_describe_solver_row,
     )
     # Expand the reduced solution back to the full N-variable space so every
-    # downstream consumer (per-layer ZeroForms, diagnostics) is unchanged —
+    # downstream consumer (per-layer ZeroForms, diagnostics) is unchanged -
     # the vertices in a pad group all receive their patch's single solved
     # potential.
     v = v_solve[inverse] if inverse is not None else v_solve
@@ -4419,7 +4419,7 @@ def solve(prob: problem.Problem,
                     f"{thermal.max_rise_c:.0f} K rise clamp. That usually "
                     f"means a micro-sliver of copper carrying an unphysical "
                     f"current density, or a heat-transfer coefficient set far "
-                    f"too low — treat the hot spots as suspect.",
+                    f"too low - treat the hot spots as suspect.",
                     SolverWarning, stacklevel=2,
                 )
         _record_stage(
@@ -4489,7 +4489,7 @@ def solve(prob: problem.Problem,
     # The residual is measured against the system actually solved (reduced
     # when a contraction was applied). ``_solve_robust`` already computed
     # ``||L_csc·v_solve - r_solve||`` for its fallback check and handed it
-    # back — reuse it rather than repeating that 2M-row sparse mat-vec.
+    # back - reuse it rather than repeating that 2M-row sparse mat-vec.
     _t0 = time.monotonic()
     # The implicit ground variables are the last n_ground entries. A
     # well-posed solve drives every one to ~0 (each subsystem is balanced);
@@ -4509,7 +4509,7 @@ def solve(prob: problem.Problem,
     _record_stage(timings, "Solver diagnostics", _t0)
 
     # A regularised / best-effort fallback that never reached tolerance
-    # produces a normal-looking solution object — surface it the same way the
+    # produces a normal-looking solution object - surface it the same way the
     # ground-current diagnostic is surfaced, so callers (and the GUI's
     # captured-warnings panel) see that the numbers are unreliable instead of
     # only a log.info buried in the solve log.
@@ -4519,7 +4519,7 @@ def solve(prob: problem.Problem,
         warnings.warn(
             f"Linear solve did not reach tolerance: residual "
             f"{residual_norm:.4g} > {residual_tol:.4g} (method "
-            f"'{solver_method}'). The matrix is near-singular — usually an "
+            f"'{solver_method}'). The matrix is near-singular - usually an "
             "isolated copper region connected only via lumped elements, or a "
             "fragmented net with a barely-there return path. Voltages in the "
             "near-floating region are unreliable.",
@@ -4528,8 +4528,8 @@ def solve(prob: problem.Problem,
 
     # Trigger on the ground current RELATIVE to the total sink current, not on
     # an absolute atol. A fixed absolute tolerance (np.isclose's default 1e-8 A)
-    # is simultaneously too strict on a 100 A board — where a healthy 1e-6 A
-    # solve residual would trip a scary warning — and too lax on a µA-scale
+    # is simultaneously too strict on a 100 A board - where a healthy 1e-6 A
+    # solve residual would trip a scary warning - and too lax on a µA-scale
     # problem. The floor keeps it from firing on pure round-off when there's no
     # sink current at all.
     ground_current_tol = max(1e-9, 1e-6 * abs(total_sink_current))

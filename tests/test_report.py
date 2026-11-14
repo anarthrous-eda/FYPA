@@ -3,7 +3,7 @@
 The rule tests build :class:`RailReport` objects by hand, so they pin the
 pass / fail logic without a solve. The Sandbox tests solve the example design
 once and check the report against numbers that can be read straight off the
-solution — the report must agree with the viewer's Nodes / Vias tables, which
+solution - the report must agree with the viewer's Nodes / Vias tables, which
 share :mod:`fypa.solution_sampling` with it.
 """
 from __future__ import annotations
@@ -73,7 +73,7 @@ def test_no_limit_is_unchecked_not_a_pass():
     rail = _rail([_load(0.99)])
     checks.rail_findings(rail, ReportSettings())
     # The rail has nothing wrong with it, but its load was never compared
-    # against anything — that must be visible, not folded into PASS.
+    # against anything - that must be visible, not folded into PASS.
     assert rail.status == PASS
     assert rail.loads[0].status == UNCHECKED
     assert [f.severity for f in rail.findings] == [UNCHECKED]
@@ -88,7 +88,7 @@ def test_drop_budget_fails_even_without_min_v():
 
 def test_via_over_limit_fails():
     via = ViaResult(x_mm=1, y_mm=2, net="VDD", span="Top → Bottom",
-                    drill_mm=0.2, fill="—", current_a=1.4, delta_v=1e-3,
+                    drill_mm=0.2, fill="-", current_a=1.4, delta_v=1e-3,
                     power_w=1e-3, over_limit=True)
     rail = _rail([_load(0.99, min_v=0.9)], vias=[via], vias_over=1,
                  max_via_a=1.4)

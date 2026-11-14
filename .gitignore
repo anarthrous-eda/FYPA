@@ -29,7 +29,7 @@ gui_debug.log
 ExampleDesigns/*
 ExampleProjects/
 
-# ...except the Sandbox example design — ship only the Altium source files
+# ...except the Sandbox example design - ship only the Altium source files
 !ExampleDesigns/Sandbox/
 ExampleDesigns/Sandbox/*
 !ExampleDesigns/Sandbox/*.SchDoc

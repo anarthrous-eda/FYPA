@@ -2,7 +2,7 @@
 
 Closed forms checked against hand-computed values, clamp/fallback paths, and
 an end-to-end sanity band on the shared identify fixture (typical 0402 cap
-geometry must land in the 0.1–10 nH decade or the units are wrong).
+geometry must land in the 0.1-10 nH decade or the units are wrong).
 """
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ def test_via_pair_scales_linearly_with_height():
 
 
 def test_via_pair_clamps_overlapping_barrels():
-    # s < 2r would NaN through acosh — clamped to the minimum argument.
+    # s < 2r would NaN through acosh - clamped to the minimum argument.
     l = via_pair_loop_h(1.0, 0.2, 0.15)
     assert math.isfinite(l) and l > 0.0
     assert l == pytest.approx(
@@ -131,7 +131,7 @@ def test_mounted_inductance_fallback_without_cavity():
 
 
 def test_mounted_inductance_target_shrinks_spreading():
-    # The fixture SINK sits 5√2 mm away ≈ default 5 mm — move it closer via
+    # The fixture SINK sits 5√2 mm away ≈ default 5 mm - move it closer via
     # a nearer directive and the closed-form spreading term must shrink.
     near = _directives()
     for d in near:

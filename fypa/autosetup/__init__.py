@@ -3,7 +3,7 @@
 Reads the design (pin names, nets, part parameters, power-port symbols via
 altium_monkey) and, when given one, a folder of datasheets; returns
 :class:`~fypa.autosetup.classify.Suggestion` objects for the user to review
-in the Topology tab's Auto setup wizard. Nothing is applied here — an
+in the Topology tab's Auto setup wizard. Nothing is applied here - an
 accepted suggestion becomes an ordinary FYPA editor directive.
 """
 

@@ -49,7 +49,7 @@ from fypa.viewer.tabs.capacitors import _CapacitorsTabMixin
 from fypa.viewer.tabs.impedance import _ImpedanceTabMixin
 from fypa.viewer.tabs.messages import _MessagesTabMixin
 from fypa.viewer.tabs.nodes import _NodesTabMixin
-from fypa.viewer.tabs.setup import _SetupTabMixin
+from fypa.viewer.tabs.properties import _PropertiesTabMixin
 from fypa.viewer.tabs.topology import _TopologyTabMixin
 from fypa.viewer.tabs.vias import _ViasTabMixin
 from fypa.viewer.theme import _T
@@ -57,11 +57,12 @@ from fypa.viewer.ui_build import _UiBuildMixin
 from fypa.viewer.vias import _ViaRenderMixin
 from fypa.viewer.viewport import _ViewportMixin
 from fypa.viewer.tabs.fixes import _FixesTabMixin
+from fypa.viewer.whatif_panel import _WhatIfMixin
 from fypa.viewer.widgets import _esc
 
 
 # Install the default QSurfaceFormat (OpenGL 3.3 core, vsync on) BEFORE
-# any QOpenGLWidget is constructed. Idempotent — calling it from this
+# any QOpenGLWidget is constructed. Idempotent - calling it from this
 # module-level scope ensures the format is set before the GLMeshViewer
 # in the Heatmap tab gets created.
 _install_default_surface_format()
@@ -89,7 +90,7 @@ class PdnViewer(
     _ProbeMixin,
     _FileMenuMixin,
     _ReportExportMixin,
-    _SetupTabMixin,
+    _PropertiesTabMixin,
     _TopologyTabMixin,
     _NodesTabMixin,
     _ViasTabMixin,
@@ -99,14 +100,15 @@ class PdnViewer(
     _MessagesTabMixin,
     _FixesTabMixin,
     _SettingsTabMixin,
+    _WhatIfMixin,
     QMainWindow,
 ):
-    """Main window — composes the side panel and the matplotlib plot area.
+    """Main window - composes the side panel and the matplotlib plot area.
 
     ``metadata`` (if supplied) is the dict bundled into the solve pickle
-    by :func:`fypa.altium.loader.build_solve_metadata` — used to populate the
-    Setup tab with stackup / physics constants / directive details /
-    solver stats. If ``None`` (e.g. loading a legacy pickle), the Setup
+    by :func:`fypa.altium.loader.build_solve_metadata` - used to populate the
+    Properties tab with stackup / physics constants / directive details /
+    solver stats. If ``None`` (e.g. loading a legacy pickle), the Properties
     tab shows a note explaining why metadata isn't available.
     """
 
@@ -145,7 +147,7 @@ class PdnViewer(
         # that produced this viewer's solution. The editor 'Resolve' hands
         # it straight back to the next worker, so a resolve never re-reads
         # the design-info cache or re-stats the Altium project files. None
-        # when opened from a bare pickle — a resolve then falls back to the
+        # when opened from a bare pickle - a resolve then falls back to the
         # design-info cache.
         self._loaded_project = loaded_project
         # _project_dirty: editor edits not yet written to the .fypa that also
@@ -168,14 +170,14 @@ class PdnViewer(
         self._initial_solve_stale: bool = False
         self._solve_stale: bool = False
         # True while the viewer holds a stub and the user has not run the
-        # FEM yet — drives the overlay button label ("Solve" vs "Resolve").
+        # FEM yet - drives the overlay button label ("Solve" vs "Resolve").
         self._awaiting_first_solve: bool = False
         self._has_adaptive_smps: bool = _viewer_has_adaptive_smps(
             getattr(self, "metadata", None),
             getattr(self, "_loaded_project", None),
         )
         # Whether a solver run has happened that isn't yet persisted to a
-        # pickle — gates the "Save project + latest solver run" option in
+        # pickle - gates the "Save project + latest solver run" option in
         # the Ctrl+S popup. Set True by the resolve handler; a viewer
         # opened from disk starts False (its solution is already saved).
         self._solved_since_save: bool = False
@@ -224,15 +226,15 @@ class PdnViewer(
         self._editor_highlight_nets: set[str] = set()
         # Polygon identities currently highlighted as part of the same
         # electrical net as the editor-mode selection. Keyed by
-        # ``(layer_id, id(poly_dict))`` — the poly dicts come from
+        # ``(layer_id, id(poly_dict))`` - the poly dicts come from
         # ``metadata['all_copper']`` and stay stable across renders.
         # Used when the click lands on copper with no usable net name
         # (e.g. Gerber-sourced ``"(none)"`` copper) so the dim mask can
         # still distinguish the picked rail from disjoint unnamed pieces.
         self._editor_highlight_polys: set[tuple[int, int]] = set()
         # Net-focus ("show only this net", the net table's crosshair
-        # column). Unlike the highlight above — which is a by-product of
-        # whatever is selected and dies with it — focus is sticky: only
+        # column). Unlike the highlight above - which is a by-product of
+        # whatever is selected and dies with it - focus is sticky: only
         # the crosshair, the F hotkey or leaving editor mode releases it,
         # so a stray click in the canvas can't cost the user the view they
         # set up. While it is on, copper outside the focused net is not
@@ -245,17 +247,17 @@ class PdnViewer(
         self._editor_focus_net: str | None = None
         self._editor_focus_nets: set[str] = set()
         self._editor_focus_polys: set[tuple[int, int]] = set()
-        # "drop a free marker of this role on the next viewport click" —
+        # "drop a free marker of this role on the next viewport click" -
         # None, or "SOURCE" / "SINK".
         self._editor_pending_marker: str | None = None
-        # In-progress free-marker drag — a dict carrying the directive id,
+        # In-progress free-marker drag - a dict carrying the directive id,
         # its layer, the drag-start anchor / net, and the last on-copper
         # position; None when no drag is active. See _on_marker_drag_*.
         self._marker_drag: dict | None = None
         # Re-entrancy guard for the X / Y text-box on-copper check so the
         # focus shuffle of the revert warning can't recurse.
         self._suppress_coord_check: bool = False
-        # Undo / redo stacks for free-marker edits — moves and deletes.
+        # Undo / redo stacks for free-marker edits - moves and deletes.
         # Each record carries an "op": a "move" record is
         # {"op": "move", "id", "old_xy", "new_xy", "old_p_net", "new_p_net"};
         # a "delete" record is {"op": "delete", "id", "directive", "index"}
@@ -271,7 +273,7 @@ class PdnViewer(
         self._pending_rails: dict[str, list[str]] = {}
         self._pending_rail_items: list = []
         # Solve-time + display-time settings exposed in the Settings tab.
-        # ``initial_settings`` is a :class:`fypa.altium.loader.SolveSettings` —
+        # ``initial_settings`` is a :class:`fypa.altium.loader.SolveSettings` -
         # passed by the Re-run handler so the new viewer pre-populates the
         # fields with whatever the user just submitted. Falls back to the
         # values recorded in the pickle (which match the FEM that produced
@@ -301,9 +303,9 @@ class PdnViewer(
             self.setWindowIcon(icon)
         # Open maximised so the plot has the most canvas to work with. With
         # aspect='equal', the plot's height grows proportionally with its
-        # width — so a bigger window = a bigger board view, no stretching.
+        # width - so a bigger window = a bigger board view, no stretching.
         self.resize(1400, 900)
-        # Defer the maximise until after show() — calling showMaximized()
+        # Defer the maximise until after show() - calling showMaximized()
         # during __init__ doesn't always stick on Windows.
         self._pending_maximize: bool = True
 
@@ -326,7 +328,7 @@ class PdnViewer(
         # trailing pass once the in-flight render returns.
         self._render_in_progress: bool = False
         self._render_rerender_pending: bool = False
-        # Throttle timestamp for _pump_busy_ui — caps the marquee-bar
+        # Throttle timestamp for _pump_busy_ui - caps the marquee-bar
         # repaint rate at ~33 Hz so the pump can be sprinkled in hot
         # inner loops (every polygon, every per-(phys, net) tile) without
         # blowing up overhead. Reset to 0.0 when the popup opens.
@@ -334,7 +336,7 @@ class PdnViewer(
 
         self._init_solution_indices()
 
-        # Designators of directives currently expanded in the Setup tab.
+        # Designators of directives currently expanded in the Properties tab.
         # Empty by default → all directives collapsed; user click toggles.
         self._expanded_directives: set[str] = set()
 
@@ -351,10 +353,10 @@ class PdnViewer(
         # Per-(layer_index, derive_fn) cache of the assembled mesh arrays
         # + Triangulation + _FastTriSampler + prepared shapely shape.
         # Solution is immutable for the session, so entries live forever
-        # — this makes layer-toggle (re-render) re-use the already-built
+        # - this makes layer-toggle (re-render) re-use the already-built
         # voltage sampler instead of rebuilding it.
         self._layer_cache: dict[tuple[int, int], dict] = {}
-        # Per-layer GEOMETRY cache, keyed by layer_index alone — the
+        # Per-layer GEOMETRY cache, keyed by layer_index alone - the
         # coordinates / triangulation / prepared shape / outline are identical
         # across heatmap modes (only the per-vertex values differ). Splitting it
         # out of ``_layer_cache`` (which is keyed by (layer, derive_fn)) means a
@@ -373,14 +375,14 @@ class PdnViewer(
         # rebuild + GPU re-upload is skipped. Reset on any solution swap.
         self._overlay_geom_sig: tuple | None = None
         # Lazily-computed set of (layer_index, mesh_index) whose solved mesh
-        # carries no current — i.e. a dead-end copper island whose only tie
+        # carries no current - i.e. a dead-end copper island whose only tie
         # to the rest of the net is a single via, so KCL forces zero current
         # through it and it sits at a uniform potential. Used by the "Grey
         # no current copper" toggle to grey these the same way it greys
         # FEM-excluded stubs. ``None`` until first built.
         self._no_current_meshes: set[tuple[int, int]] | None = None
         # Per-layer cache of current-density vectors (J = -sigma * grad V).
-        # Mode-independent — keyed by layer_index only — because the
+        # Mode-independent - keyed by layer_index only - because the
         # current arrows are derived from the raw potentials regardless
         # of which scalar mode the heatmap is showing.
         self._layer_vec_cache: dict[int, dict] = {}
@@ -395,12 +397,12 @@ class PdnViewer(
         # cmap texture: "data" = the viridis ramp keyed on per-vertex
         # values; "neutral" = a flat grey LUT used in Via Current mode
         # so the copper drops out as context behind the heatmapped vias.
-        # ``self._cmap_name`` is unchanged — it still tracks the data
+        # ``self._cmap_name`` is unchanged - it still tracks the data
         # ramp, which the via cylinders / scale controller use directly.
         self._gl_cmap_kind: str = "data"
         # Linear vs logarithmic colour scale. ``_log_scale`` is the user's
         # dropdown choice (persists across modes); ``_log_active`` is the
-        # effective state for the current render — True only when the
+        # effective state for the current render - True only when the
         # mode is log-eligible and the data range is positive. The GL
         # values/levels and the baked via LUTs are pushed through
         # :meth:`_gl_scale`, which is log10 (floored at ``_log_floor``)
@@ -424,7 +426,7 @@ class PdnViewer(
         # (visible_layers, rail, mode) signature of the previous render's
         # scale-controller push. Used so a render that doesn't change the
         # heatmap selection (e.g. a 2D/3D toggle) leaves the user's clamp
-        # alone — only a real layer/rail/mode change resets it.
+        # alone - only a real layer/rail/mode change resets it.
         self._last_scale_selection: tuple[tuple[str, ...], str, str] | None = None
 
         # CAD-style fixed-scale viewport state. When the widget is
@@ -434,14 +436,14 @@ class PdnViewer(
         # ``_need_initial_fit`` is True until the very first time the
         # view is successfully fit to the data. Stays False afterwards
         # so subsequent renders (layer toggle, rail change, mode change)
-        # do NOT reset the user's pan / zoom — they just swap the mesh
+        # do NOT reset the user's pan / zoom - they just swap the mesh
         # in place and leave the viewport alone.
         self._need_initial_fit: bool = True
         # Re-entrancy guard for the GL viewer's synchronous viewChanged
-        # signal — see :meth:`_fit_board_to_canvas` for why this exists.
+        # signal - see :meth:`_fit_board_to_canvas` for why this exists.
         self._suppress_view_changed: bool = False
 
-        # The OpenGL canvas — assigned in _build_ui.
+        # The OpenGL canvas - assigned in _build_ui.
         self._gl_viewer: GLMeshViewer | None = None
         # Legend rows whose markers the user has hidden by clicking the
         # row in the top-right chip. The row stays visible (slashed) so
@@ -459,7 +461,7 @@ class PdnViewer(
         # voltage sample. Cached for the lifetime of the viewer (the
         # solution doesn't change), so flipping rails / vias on and off
         # never rebuilds them. Each entry is a ``(cKDTree, potentials)``
-        # pair or ``None`` — see :meth:`_via_voltage_kdtree`.
+        # pair or ``None`` - see :meth:`_via_voltage_kdtree`.
         self._via_voltage_kdtree_cache: dict[
             tuple[str, str], tuple | None
         ] = {}
@@ -467,7 +469,7 @@ class PdnViewer(
         # the same Voltage-Drop offset that the layer heatmap uses.
         self._last_drop_reference: float | None = None
 
-        # Single-entry cache of the stub triangle geometry — see
+        # Single-entry cache of the stub triangle geometry - see
         # :meth:`_push_stubs`. Stub positions depend only on the visible
         # layer/rail set and the 2D/3D z, never on the colour scheme or
         # scale, so a recolour reuses this and only re-bakes the colours.
@@ -496,7 +498,7 @@ class PdnViewer(
         # difference tool. Installing it on QApplication (rather than
         # the GL viewer or this window) means Shift key events are
         # picked up regardless of which child widget currently has
-        # keyboard focus — without this, the user has to click the
+        # keyboard focus - without this, the user has to click the
         # viewport first before the tool responds.
         app = QApplication.instance()
         if app is not None:
@@ -508,12 +510,15 @@ class PdnViewer(
             # A stackup override saved in the project but not solved into
             # the linked solution shows as a pending (dirty) field.
             self._on_settings_field_changed()
+        # What-ifs saved in the project, and the base fingerprint they are
+        # checked against.
+        self._whatif_after_base_solve(project=self._project)
         if (self.metadata or {}).get("mesh_failures"):
             _activate_mesh_failure_layer(self)
         self._render()
         # Pay the one full GC pass over the freshly loaded solution now,
         # while the window is still opening, instead of on the user's first
-        # click — see fypa.viewer.heap.
+        # click - see fypa.viewer.heap.
         from fypa.viewer.heap import settle_heap
         settle_heap("viewer opened")
 
@@ -668,7 +673,7 @@ class PdnViewer(
         ``GLMeshViewer.clear_mesh`` zeroes the GPU vertex count; if
         ``_last_mesh_upload`` is left pointing at the previous arrays the
         next render can skip :meth:`set_mesh` (identity match) while still
-        calling :meth:`set_values` — which then raises length mismatch."""
+        calling :meth:`set_values` - which then raises length mismatch."""
         self._gl_viewer.clear_mesh()
         self._last_mesh_upload = None
 
@@ -679,7 +684,7 @@ class PdnViewer(
         True when the design has no PDN rails at all (a Gerber import, or a
         project with no SOURCE/REGULATOR directives) OR while an unsolved
         stub is loaded (Import Altium Design with auto-solve off). A stub's
-        rails carry no solved data yet, so auto-showing them is misleading —
+        rails carry no solved data yet, so auto-showing them is misleading -
         mirror the no-PDN defaults until the user runs the solver."""
         if not self._rail_names:
             return True
@@ -778,7 +783,7 @@ class PdnViewer(
         """Swap in a freshly-solved result without replacing the window.
 
         Rebuilds solution-derived indices, clears render caches, refreshes
-        the layer / rail lists and Setup tab, then re-renders in place —
+        the layer / rail lists and Properties tab, then re-renders in place -
         preserving the user's pan / zoom.
 
         ``is_import`` marks the File > Import Altium Design path, which can
@@ -790,6 +795,9 @@ class PdnViewer(
         File), the viewer binds to that ``.fypa`` in place instead of opening
         a new window. Returns ``True`` when the in-place refresh succeeded."""
         log = logging.getLogger(__name__)
+        # A What-If view may have the base parked aside: put it back so the
+        # swap below replaces the real base.
+        self._whatif_drop_view_state()
         try:
             self.solution = new_solution
             self.metadata = metadata
@@ -807,7 +815,7 @@ class PdnViewer(
             )
 
             # A returned stub (load-only import, or a project still missing
-            # SOURCE/REGULATOR directives) hasn't been through the FEM yet —
+            # SOURCE/REGULATOR directives) hasn't been through the FEM yet -
             # keep the ↻ Solve overlay up rather than clearing it. Derive the
             # state from the solution so every caller stays consistent instead
             # of each one having to remember _mark_awaiting_first_solve().
@@ -861,7 +869,7 @@ class PdnViewer(
                 # The Overlays (Board Features) list is filtered by source kind
                 # (Gerber imports hide silkscreen/pads/designator rows). An
                 # import can swap the source kind of this window, so rebuild the
-                # list — otherwise an Altium design imported into a Gerber-opened
+                # list - otherwise an Altium design imported into a Gerber-opened
                 # viewer permanently hides those rows (and vice-versa leaves dead
                 # rows). Safe to call synchronously; metadata is already set.
                 self._build_overlay_list()
@@ -870,7 +878,7 @@ class PdnViewer(
             # for the bound project's overrides; an opened project file is
             # authoritative over its (possibly older) solve pickle, so it is
             # not overwritten here. Either way the Stackup box is rebuilt
-            # from the new metadata — it is built once per window.
+            # from the new metadata - it is built once per window.
             if project is None:
                 self._sync_project_stackup_overrides()
             self._rebuild_stackup_settings_box()
@@ -884,8 +892,8 @@ class PdnViewer(
             preserve = (not project_swap and not (was_awaiting and not is_stub))
             self._rebuild_layer_rail_lists(preserve_visibility=preserve)
 
-            if getattr(self, "setup_browser", None) is not None:
-                self._refresh_setup_html()
+            if getattr(self, "properties_browser", None) is not None:
+                self._refresh_properties_html()
             if getattr(self, "_topology_view", None) is not None:
                 self._topology_populated = False
                 if self.tabs.currentIndex() == getattr(
@@ -902,7 +910,7 @@ class PdnViewer(
             self._bridges_table_populated = False
             self._update_bridges_tab_title()
             # Capacitor rows derive from the (re)loaded extracted design +
-            # directives — drop the identification and copper shapes with
+            # directives - drop the identification and copper shapes with
             # them, and recompute on next tab activation.
             self._caps_table_populated = False
             self._invalidate_caps_cache(repopulate=False, heavy=True)
@@ -960,7 +968,15 @@ class PdnViewer(
             )
             # The new solution's objects would otherwise trigger a multi-
             # second full GC on the user's first interaction (typically the
-            # first rail toggle) — take it now. See fypa.viewer.heap.
+            # first rail toggle) - take it now. See fypa.viewer.heap.
+            # What-ifs: reload them from an opened project, drop them on an
+            # import of another design, and re-check which are out of date.
+            try:
+                self._whatif_after_base_solve(project=project,
+                                              is_import=is_import)
+            except Exception:
+                log.warning("What-If refresh after solve failed",
+                            exc_info=True)
             from fypa.viewer.heap import settle_heap
             settle_heap("solve result applied")
             return True
@@ -993,12 +1009,12 @@ class PdnViewer(
 
         * **RESISTOR** directives bridge their two terminal nets → union them.
         * **SOURCE / SINK / REGULATOR** directives mark their terminal's
-          *named* net (the ``PDN_*_NET`` value) as a "primary candidate" —
+          *named* net (the ``PDN_*_NET`` value) as a "primary candidate" -
           any group containing a primary is a rail worth showing in the
           dropdown; groups that don't (signal nets, unused bridges) are
           dropped.
 
-        The group's **display name** is a primary in it — i.e. a net a
+        The group's **display name** is a primary in it - i.e. a net a
         directive explicitly named, never a net that was only pulled into
         the group by a SERIES bridge. So a sink whose ``PDN_N_NET = GND``
         resolved (via the bridge) onto ``+DM_SW1`` still gives a rail named
@@ -1041,7 +1057,7 @@ class PdnViewer(
 
     def showEvent(self, event) -> None:
         """Apply the deferred ``showMaximized`` once Qt has actually shown the
-        window. Doing this in ``__init__`` is unreliable on Windows — the
+        window. Doing this in ``__init__`` is unreliable on Windows - the
         platform window doesn't exist yet so the maximise request gets lost.
         """
         super().showEvent(event)
@@ -1051,8 +1067,8 @@ class PdnViewer(
         # Authoritative one-time board fit. The GL resize from show /
         # maximise normally drives this via _on_gl_view_changed, but
         # schedule it here too (deferred a tick so the maximised geometry
-        # is applied first) so designs that push no FEM mesh — gerber
-        # imports — still frame on first show. _fit_board_to_canvas
+        # is applied first) so designs that push no FEM mesh - gerber
+        # imports - still frame on first show. _fit_board_to_canvas
         # self-guards on _need_initial_fit, so whichever path runs first
         # wins and the rest are cheap no-ops.
         if self._need_initial_fit:
@@ -1066,7 +1082,7 @@ class PdnViewer(
         if not getattr(self, "_vias_warn_init_scheduled", False):
             self._vias_warn_init_scheduled = True
             QTimer.singleShot(0, self._init_vias_warn_count)
-        # Same pattern for Nodes — show "Nodes ⚠ N" when any sink with a
+        # Same pattern for Nodes - show "Nodes ⚠ N" when any sink with a
         # PDN_MIN_V annotation has a pin below its declared minimum.
         if not getattr(self, "_nodes_warn_init_scheduled", False):
             self._nodes_warn_init_scheduled = True

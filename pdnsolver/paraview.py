@@ -211,8 +211,8 @@ def create_piece(mesh_obj: mesh.Mesh, potentials: mesh.ZeroForm) -> Element:
     """
     # Modern meshes are built with build_halfedges=False (the solver reads the
     # flat _source_xys / _source_tris arrays directly) and this exporter now
-    # reads those same arrays. Only a mesh without them — older or hand-built
-    # — needs the half-edge graph materialised for the fallback walk in
+    # reads those same arrays. Only a mesh without them - older or hand-built
+    # - needs the half-edge graph materialised for the fallback walk in
     # _extract_triangle_connectivity. _build_halfedges is idempotent, but it
     # is also expensive, so skip it entirely on the fast path.
     source_tris = getattr(mesh_obj, "_source_tris", None)
@@ -224,7 +224,7 @@ def create_piece(mesh_obj: mesh.Mesh, potentials: mesh.ZeroForm) -> Element:
     if have_source_tris:
         # mesh.faces holds one Face per source triangle and none of them are
         # boundary faces (those live in mesh.boundaries), so this is the same
-        # count the filtered walk produces — without building the stubs.
+        # count the filtered walk produces - without building the stubs.
         num_cells = int(source_tris.shape[0])
     else:
         num_cells = len([f for f in mesh_obj.faces if not f.is_boundary])

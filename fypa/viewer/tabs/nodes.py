@@ -29,7 +29,7 @@ class _NodesTabMixin:
 
     # --- Nodes tab ------------------------------------------------------------
 
-    # Columns of the Nodes-tab table. (display label, numeric? — used for
+    # Columns of the Nodes-tab table. (display label, numeric? - used for
     # tab-stop alignment and sort key.)
     # Column 0 is the per-row "Go" jump cell (a clickable text cell, same
     # as the Vias tab); the rest are normal text/numeric cells.
@@ -48,7 +48,7 @@ class _NodesTabMixin:
         ("Power (W/mm^2)",     True),
         # PDN_MIN_V check (SINK only): the declared minimum acceptable rail
         # voltage, the measured-vs-declared margin, and the per-pin pass/fail
-        # verdict. Cells are blank ("—") for non-SINK rows and for the SINK
+        # verdict. Cells are blank ("-") for non-SINK rows and for the SINK
         # N-terminal (the return side); the margin and status are highlighted
         # red on FAIL so a long table can be skim-audited at a glance.
         ("Min V (V)",          True),
@@ -57,14 +57,14 @@ class _NodesTabMixin:
     )
 
     def _build_nodes_tab(self) -> QWidget:
-        """Build the Nodes tab — a sortable table of every directive node
+        """Build the Nodes tab - a sortable table of every directive node
         and its computed metrics. The filter combo lets users narrow down
         to a single role (e.g. just SINKs) when there are hundreds of nodes."""
         widget = QWidget(self.tabs)
         outer = QVBoxLayout(widget)
         outer.setContentsMargins(8, 8, 8, 8)
 
-        # Filter bar — role + rail combos. Both filters apply; rows must
+        # Filter bar - role + rail combos. Both filters apply; rows must
         # satisfy BOTH selections to be visible.
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel("Role:"))
@@ -108,7 +108,7 @@ class _NodesTabMixin:
         self.nodes_table.verticalHeader().setVisible(False)
         self.nodes_table.horizontalHeader().setStretchLastSection(True)
         # Interactive (user-draggable). See _build_vias_tab for why
-        # ResizeToContents during populate is a perf disaster — the same
+        # ResizeToContents during populate is a perf disaster - the same
         # one-shot ``resizeColumnsToContents`` after populate applies here.
         self.nodes_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.Interactive)
@@ -127,7 +127,7 @@ class _NodesTabMixin:
         self.nodes_table.customContextMenuRequested.connect(
             self._on_nodes_context_menu)
         outer.addWidget(self.nodes_table, 1)
-        # Deliberately NOT calling _populate_nodes_table() here — the row build
+        # Deliberately NOT calling _populate_nodes_table() here - the row build
         # is deferred to first tab activation (see __init__ + _on_tabs_current_changed).
         self._nodes_stack = self._wrap_placeholder(widget)
         self._sync_placeholder_tabs()
@@ -167,7 +167,7 @@ class _NodesTabMixin:
         if self._has_solve_results():
             return ""
         if (getattr(self, "metadata", None) or {}).get("mesh_failed"):
-            return ("The last solve failed to mesh — see the Messages tab. "
+            return ("The last solve failed to mesh - see the Messages tab. "
                     f"Fix the reported copper and re-solve to show {shows}.")
         return f"Run a solve first to show {shows}."
 
@@ -182,7 +182,7 @@ class _NodesTabMixin:
         """Placeholder for a tab grouped by rail, or "" when rails exist.
 
         Rails come from SOURCE / SINK / REGULATOR directives in the metadata,
-        not from the solve — a schematic-annotated design has them before any
+        not from the solve - a schematic-annotated design has them before any
         solve. Sources and sinks placed in the PDN editor only reach the
         metadata on the next solve, so those need one first."""
         if getattr(self, "_rails", None):
@@ -190,15 +190,15 @@ class _NodesTabMixin:
         extracted = getattr(getattr(self, "_loaded_project", None),
                             "extracted", None)
         if extracted is not None and not extracted.pcb_components:
-            # No rail would help — say the thing that actually would.
+            # No rail would help - say the thing that actually would.
             return ("Capacitor analysis needs component data, which Gerber "
-                    "imports don't carry — import the Altium design instead.")
+                    "imports don't carry - import the Altium design instead.")
         if self._has_editor_sources_or_sinks():
-            return (f"Run a solve first to show {shows} — capacitors are "
+            return (f"Run a solve first to show {shows} - capacitors are "
                     "grouped by rail, and the sources and sinks placed in "
                     "the PDN editor only define rails once solved.")
         return ("No sources or sinks set up yet. Capacitors are grouped by "
-                "the rails they define — place SOURCE and SINK directives in "
+                "the rails they define - place SOURCE and SINK directives in "
                 f"the PDN editor, then run a solve to show {shows}.")
 
     # (stack attribute, placeholder-text method, end of its sentence)
@@ -216,7 +216,7 @@ class _NodesTabMixin:
     )
 
     def _wrap_placeholder(self, content: QWidget) -> QStackedWidget:
-        """Stack *content* over a centred placeholder sentence — a table of
+        """Stack *content* over a centred placeholder sentence - a table of
         blank cells says less than a sentence saying why they're blank.
         :meth:`_sync_placeholder_tabs` picks which one shows."""
         stack = QStackedWidget(self.tabs)
@@ -251,7 +251,7 @@ class _NodesTabMixin:
     def _update_bridges_tab_title(self) -> None:
         """Badge the tab with the number of parts that affect a solved rail.
 
-        Those are the rows that change an answer — a part joining a solved
+        Those are the rows that change an answer - a part joining a solved
         rail to copper no directive touches means that copper is missing
         from the FEM. Putting the count on the tab is what stops the whole
         feature being something the user has to think to go and look at.
@@ -270,8 +270,8 @@ class _NodesTabMixin:
         opens them. On a 7 000-via board the Vias populate alone takes
         ~35 s of blocked GUI thread; doing it on initial viewer open was
         the freeze users were seeing under the "saving cache" label.
-        Done once per tab — the populated flags guard against re-runs.
-        A tab showing its placeholder stays unpopulated — there's nothing
+        Done once per tab - the populated flags guard against re-runs.
+        A tab showing its placeholder stays unpopulated - there's nothing
         to fill it with yet, and its populated flag stays False so it
         builds once the placeholder clears."""
         self._sync_placeholder_tabs()
@@ -293,15 +293,10 @@ class _NodesTabMixin:
                 self._populate_vias_table()
             finally:
                 QApplication.restoreOverrideCursor()
-        elif (index == getattr(self, "_fixes_tab_index", -1)
-                and not self._placeholder_text("_fixes_stack")
-                and not getattr(self, "_fixes_populated", True)):
-            self._fixes_populated = True
-            QApplication.setOverrideCursor(Qt.WaitCursor)
-            try:
-                self._populate_fixes_tab()
-            finally:
-                QApplication.restoreOverrideCursor()
+        elif index == getattr(self, "_fixes_tab_index", -1):
+            # Not run on open - the tab shows a Run button until the
+            # report has run for this solution (_run_fixes_report).
+            self._sync_fixes_page()
         elif (index == getattr(self, "_bridges_tab_index", -1)
                 and not getattr(self, "_bridges_table_populated", True)):
             self._bridges_table_populated = True
@@ -309,7 +304,7 @@ class _NodesTabMixin:
         elif (index == getattr(self, "_caps_tab_index", -1)
                 and not self._placeholder_text("_caps_stack")
                 and not getattr(self, "_caps_table_populated", True)):
-            # The row build is seconds of geometry work — run it behind a busy
+            # The row build is seconds of geometry work - run it behind a busy
             # dialog rather than freezing on the GUI thread. The populated flag
             # is set by the continuation, so a build that fails or is re-entered
             # doesn't leave the tab permanently blank.
@@ -332,11 +327,11 @@ class _NodesTabMixin:
 
     def _get_or_compute_node_rows(self) -> list[dict]:
         """Run :meth:`_compute_node_report` at most once per viewer and cache
-        the result. Mirrors :meth:`_get_or_compute_via_rows` — used both by
+        the result. Mirrors :meth:`_get_or_compute_via_rows` - used both by
         the deferred PDN_MIN_V warning-count initialiser (so the tab title
         shows "Nodes ⚠ N" before the user ever opens the tab) and by
         :meth:`_populate_nodes_table` (so the first populate skips the
-        compute cost — it's already done)."""
+        compute cost - it's already done)."""
         cached = getattr(self, "_nodes_rows_cache", None)
         if cached is None:
             cached = self._compute_node_report()
@@ -382,7 +377,7 @@ class _NodesTabMixin:
         # Action-column styling, fetched once. Mirrors the Vias tab.
         _t = _T()
         action_fg = QBrush(QColor(_t["accent"]))
-        # Red highlight for FAIL rows on the PDN_MIN_V check — same palette
+        # Red highlight for FAIL rows on the PDN_MIN_V check - same palette
         # the Vias tab uses for over-current cells. PASS gets a green
         # counterpart so a row that was deliberately limit-checked stands
         # out from rows where no PDN_MIN_V was declared (those stay neutral).
@@ -410,7 +405,7 @@ class _NodesTabMixin:
             action_item.setForeground(action_fg)
             action_item.setTextAlignment(Qt.AlignCenter)
             action_item.setToolTip(
-                "Click to jump to this node in the Heatmap tab — zooms "
+                "Click to jump to this node in the Heatmap tab - zooms "
                 "in, enables the node's layer if needed, and drops a "
                 "yellow highlight ring."
             )
@@ -443,7 +438,7 @@ class _NodesTabMixin:
                     continue
                 value = cells[c]
                 if value is None:
-                    item = QTableWidgetItem("—")
+                    item = QTableWidgetItem("-")
                 elif is_numeric and isinstance(value, (int, float)):
                     if isinstance(value, int):
                         text = f"{value:d}"
@@ -465,7 +460,7 @@ class _NodesTabMixin:
         log.info("Nodes populate: items %.2fs", time.monotonic() - _t1)
         _t2 = time.monotonic()
         self.nodes_table.setSortingEnabled(True)
-        # Default sort: Role ascending (column 1 — column 0 is the "Go"
+        # Default sort: Role ascending (column 1 - column 0 is the "Go"
         # action cell).
         self.nodes_table.sortByColumn(1, Qt.AscendingOrder)
         log.info("Nodes populate: sort %.2fs", time.monotonic() - _t2)

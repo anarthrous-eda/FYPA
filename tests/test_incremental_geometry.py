@@ -1,7 +1,7 @@
 """Rebuilding only the copper of the nets a Bridges-tab change moved.
 
 Disabling one auto-bridge re-merges a couple of nets, which changes the
-per-net geometry cache key — and used to rebuild every (layer, net) bucket
+per-net geometry cache key - and used to rebuild every (layer, net) bucket
 (20 s on Mangala) plus every layer's all-nets copper (26 s serially). The
 cache now keeps the board's net state, so the next load rebuilds only the
 changed nets. These tests hold that to a full rebuild: per-net copper must

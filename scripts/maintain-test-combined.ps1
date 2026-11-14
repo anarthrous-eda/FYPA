@@ -9,14 +9,14 @@
 
     Default (no -Rebuild): if origin/test/combined exists, check it out and
     merge the base branch plus any extras whose tips are not already ancestors
-    of HEAD (incremental — keeps prior conflict resolutions). Pass -Rebuild for
+    of HEAD (incremental - keeps prior conflict resolutions). Pass -Rebuild for
     a clean recreate from baseBranch (expect conflicts again).
 
     The published tip is stamped with its inputs in refs/notes/test-combined,
     which is fetched and pushed with the branch so any machine can tell an
     up-to-date tip from a stale one.
 
-    Local unpushed commits are never merged — tips are always origin/<branch>.
+    Local unpushed commits are never merged - tips are always origin/<branch>.
     Missing remote extras abort the run.
 
     Config resolution (first match wins):
@@ -91,7 +91,7 @@ Set-Location $RepoRoot
 . (Join-Path $PSScriptRoot '_git-helpers.ps1')
 
 # Notes ref carrying the input stamp of each published tip. Shared, so it has
-# to travel with the branch — see Sync-StampNotes / Publish-StampNotes.
+# to travel with the branch - see Sync-StampNotes / Publish-StampNotes.
 $StampNotesRef = 'refs/notes/test-combined'
 
 function Test-GitAncestor {
@@ -447,14 +447,14 @@ function Read-TestCombinedConfig {
 
 function Clear-TestCombinedUpstream {
     param([string] $Branch)
-    # Creating from origin/main sets upstream to main — confusing ("ahead of main").
+    # Creating from origin/main sets upstream to main - confusing ("ahead of main").
     # Fails loudly when there is no upstream to clear, which is a normal state
     # here, so the exit code is discarded rather than allowed to surface.
     Invoke-GitSoft -Quiet @('branch', '--unset-upstream', $Branch) | Out-Null
 }
 
 if (-not (Test-Path "FYPA.py")) {
-    throw "FYPA.py not found in $RepoRoot — run this script from the FYPA repo."
+    throw "FYPA.py not found in $RepoRoot - run this script from the FYPA repo."
 }
 
 $ReturnBranch = Get-CurrentBranch
@@ -499,7 +499,7 @@ if ($Abort) {
         Sync-RemoteBranches -RemoteName $Remote -Branches @($AbortTestBranch)
     }
     catch {
-        Write-Warning "Fetch $Remote/$AbortTestBranch failed — using existing refs if present."
+        Write-Warning "Fetch $Remote/$AbortTestBranch failed - using existing refs if present."
     }
     $RemoteAbortRef = "$Remote/$AbortTestBranch"
     if (Test-GitRef "refs/remotes/$Remote/$AbortTestBranch") {
@@ -523,7 +523,7 @@ if ($Abort) {
         }
     }
     elseif ($onAbortBranch) {
-        Write-Host "==> No $RemoteAbortRef — checking out $ReturnBranch and deleting local tip"
+        Write-Host "==> No $RemoteAbortRef - checking out $ReturnBranch and deleting local tip"
         Restore-DevBranch -Branch $ReturnBranch
         if (Test-GitRef "refs/heads/$AbortTestBranch") {
             Invoke-Git @('branch', '-D', $AbortTestBranch)
@@ -539,7 +539,7 @@ if ($Abort) {
         $AbortCurrent = Get-CurrentBranch
     }
     Clear-ReturnBranchMemo
-    Write-Host "==> Abort done — on $AbortCurrent"
+    Write-Host "==> Abort done - on $AbortCurrent"
     exit 0
 }
 
@@ -582,7 +582,7 @@ if (-not $TestBranch) { throw "testBranch is empty." }
 Write-Host "==> Branch source: $Remote tips only (no local-ahead merge)"
 
 Sync-RemoteBranches -RemoteName $Remote -Branches (@($BaseBranch) + $ExtraFeatureBranches)
-# test/combined may not exist yet on first publish — soft-fetch only.
+# test/combined may not exist yet on first publish - soft-fetch only.
 try {
     Sync-RemoteBranches -RemoteName $Remote -Branches @($TestBranch)
 }
@@ -659,7 +659,7 @@ $UseIncremental = (
 )
 
 if ($CanReuse) {
-    Write-Host "==> Stamp matches $RemoteTestRef — reuse"
+    Write-Host "==> Stamp matches $RemoteTestRef - reuse"
 }
 elseif ($UseIncremental) {
     Write-Host "==> Incremental update from $RemoteTestRef (pass -Rebuild for clean recreate)"
@@ -668,7 +668,7 @@ elseif ($Rebuild) {
     Write-Host "==> -Rebuild: clean recreate from $BaseRef"
 }
 else {
-    Write-Host "==> No $RemoteTestRef yet — first create from $BaseRef"
+    Write-Host "==> No $RemoteTestRef yet - first create from $BaseRef"
 }
 
 $IgnoredPaths = $script:CombinedIgnoredPaths
@@ -786,7 +786,7 @@ catch {
         Set-ReturnBranchMemo -Branch $ReturnBranch
         Write-Host @"
 
-==> Merge conflict — still on $TestBranch (do not git switch away).
+==> Merge conflict - still on $TestBranch (do not git switch away).
 
 Finish:
   git add -u

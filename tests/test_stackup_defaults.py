@@ -2,7 +2,7 @@
 
 ``altium_monkey`` initialises ``copper_thickness`` to 0 mils when a .PcbDoc
 has no COPTHICK field for a layer. Zero thickness means zero sheet
-conductance — an infinitely resistive layer — which downstream shows up as a
+conductance - an infinitely resistive layer - which downstream shows up as a
 nonsense solve or a ZeroDivisionError rather than as an obvious "your stackup
 is missing" error. The geometry layer substitutes 1 oz and says so.
 """
@@ -24,7 +24,7 @@ def _sigma() -> float:
     """Copper conductivity read from the module at call time.
 
     ``SolveSettings.apply_to_modules`` monkey-patches this global, and other
-    tests in the suite do call it — so binding the value at import time makes
+    tests in the suite do call it - so binding the value at import time makes
     these tests pass alone and fail in a full run.
     """
     return _geom.COPPER_CONDUCTIVITY_S_PER_MM

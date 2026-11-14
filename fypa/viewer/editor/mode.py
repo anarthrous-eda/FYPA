@@ -16,9 +16,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fypa.viewer.assets import _load_editmode_icon, _triangle_icon
+from fypa.viewer.assets import (
+    _load_editmode_icon,
+    _resolve_icon,
+    _triangle_icon,
+    _whatif_icon,
+)
 from fypa.viewer.prefs import save_adaptive_regulator_gain
-from fypa.viewer.theme import _T
+from fypa.viewer.theme import _T, current_theme_mode
 from fypa.viewer.widgets import _ClickAbsorbingPanel
 
 
@@ -61,29 +66,26 @@ class _EditorModeMixin:
         bg.hide()
         self._editor_overlay_bg = bg
 
+        # Icon, label, size and colours depend on the mode (labelled pastel
+        # blue "Edit" in viewer mode, square icon-only in editor mode) and
+        # are applied by _sync_editor_toggle_look.
         btn = QToolButton(self._gl_viewer)
         btn.setCheckable(True)
         btn.setCursor(Qt.PointingHandCursor)
-        icon = _load_editmode_icon()
-        if icon is not None:
-            btn.setIcon(icon)
-            btn.setIconSize(QSize(20, 20))
-        else:
-            btn.setText("Edit")
-        btn.setToolTip("Toggle editor mode (E) — place PDN sources / sinks")
-        btn.setFixedSize(34, 34)
+        btn.setIconSize(QSize(20, 20))
+        btn.setToolTip("Toggle editor mode (E) - place PDN sources / sinks")
         btn.toggled.connect(self._on_editor_mode_toggled)
         self._editor_toggle_btn = btn
 
-        # Free-marker palette — red up-triangle SOURCE / blue down-triangle
+        # Free-marker palette - red up-triangle SOURCE / blue down-triangle
         # SINK, matching the solved-directive markers (_ROLE_MARKER_STYLE).
         # Hidden until editor mode is entered. SERIES has no free-marker
         # button: a free marker has a single anchor point, but a SERIES
         # element bridges two separate copper points, so SERIES is
-        # component-bound only — assign it by selecting the part.
+        # component-bound only - assign it by selecting the part.
         # Tooltips come from _MARKER_TIPS so the build-time text and the
         # live text _sync_marker_buttons re-applies (enabled / disabled)
-        # can't drift apart — notably over the S / L hotkey hints.
+        # can't drift apart - notably over the S / L hotkey hints.
         for role, attr, up in (
             ("SOURCE", "_editor_add_source_btn", True),
             ("SINK", "_editor_add_sink_btn", False),
@@ -107,7 +109,8 @@ class _EditorModeMixin:
         # handler are unchanged, so the solve-time reads and the resolve-enable
         # logic keep working regardless of where the widget is.
 
-        rbtn = QPushButton("↻  Resolve", self._gl_viewer)
+        rbtn = QPushButton("Resolve", self._gl_viewer)
+        rbtn.setIconSize(QSize(16, 16))
         rbtn.setCursor(Qt.PointingHandCursor)
         rbtn.setToolTip(
             "Re-run the solver with the current editor changes applied"
@@ -115,8 +118,25 @@ class _EditorModeMixin:
         rbtn.clicked.connect(self._on_resolve_clicked)
         rbtn.hide()
         self._resolve_btn = rbtn
+
+        # What-If panel toggle - sits right of Resolve. Viewer mode only:
+        # hidden (and the panel closed) while editor mode is on.
+        wbtn = QPushButton("What-If", self._gl_viewer)
+        wbtn.setIconSize(QSize(16, 16))
+        wbtn.setCheckable(True)
+        wbtn.setCursor(Qt.PointingHandCursor)
+        wbtn.setToolTip(
+            "Show / hide the What-If panel (W): try a change - copper "
+            "weight, temperature, via plating - and compare it with this "
+            "result. Not available in editor mode.")
+        wbtn.toggled.connect(self._set_whatif_panel_visible)
+        self._whatif_btn = wbtn
         self._restyle_editor_overlay_buttons()
         self._position_editor_overlays()
+
+    # What-If button colour per theme (pastel orange).
+    _WHATIF_ORANGE_DARK = "#f4b47c"
+    _WHATIF_ORANGE_LIGHT = "#e08a45"
 
     def _restyle_editor_overlay_buttons(self) -> None:
         """Re-apply the active theme to the editor overlay buttons. Shared
@@ -135,13 +155,16 @@ class _EditorModeMixin:
                 f" border: 1px solid {t['border']};"
                 f" border-radius: 8px;"
             )
-        for attr in ("_editor_toggle_btn", "_editor_add_source_btn",
-                     "_editor_add_sink_btn"):
+        for attr in ("_editor_add_source_btn", "_editor_add_sink_btn"):
             b = getattr(self, attr, None)
             if b is not None:
                 b.setStyleSheet(qss)
+        self._sync_editor_toggle_look(force=True)
         rbtn = getattr(self, "_resolve_btn", None)
         if rbtn is not None:
+            # Refresh badge left of the label, drawn like the What-If badge;
+            # rebuilt here so a theme switch recolours it.
+            rbtn.setIcon(_resolve_icon("#2ca92c", t["bg"], t["fg_dim"]))
             # Border + text use a fixed "go" green (not a theme token) so the
             # Resolve action reads as a positive call-to-action in both themes.
             rbtn.setStyleSheet(
@@ -153,9 +176,75 @@ class _EditorModeMixin:
                 .format(green="#2ca92c", bg=t["bg"], hover=t["bg_hover"],
                         dim=t["fg_dim"])
             )
+        wbtn = getattr(self, "_whatif_btn", None)
+        if wbtn is not None:
+            # Fixed pastel orange (not a theme token), like Resolve's fixed
+            # green, so the two read as a pair; a touch deeper on the light
+            # theme so it still stands out against near-white.
+            orange = (self._WHATIF_ORANGE_DARK
+                      if current_theme_mode() == "dark"
+                      else self._WHATIF_ORANGE_LIGHT)
+            # Question-mark badge left of the label, like Resolve's arrow;
+            # rebuilt here so a theme switch recolours it.
+            wbtn.setIcon(_whatif_icon(orange, t["bg"]))
+            wbtn.setStyleSheet(
+                "QPushButton {{ border: 1px solid {accent}; border-radius: 6px;"
+                "  padding: 6px 12px; font-weight: bold;"
+                "  background-color: {bg}; color: {accent}; }}"
+                "QPushButton:hover {{ background-color: {hover}; }}"
+                "QPushButton:checked {{ background-color: {accent};"
+                "  color: {bg}; }}"
+                .format(accent=orange, bg=t["bg"], hover=t["bg_hover"])
+            )
         ag_chk = getattr(self, "_adaptive_gain_check", None)
         if ag_chk is not None:
             ag_chk.setStyleSheet(f"QCheckBox {{ color: {t['fg']}; }}")
+
+    def _sync_editor_toggle_look(self, force: bool = False) -> None:
+        """Give the editor toggle its per-mode look. Viewer mode: icon plus
+        an "Edit" label in the theme's pastel blue accent, styled like the
+        Resolve / What-If buttons it heads the column of. Editor mode: the
+        34 x 34 icon-only square (accent-filled while checked) that leads
+        the SOURCE / SINK marker row. Skips the restyle when the mode hasn't
+        changed since the last call, unless ``force`` (theme switch)."""
+        btn = getattr(self, "_editor_toggle_btn", None)
+        if btn is None:
+            return
+        editing = bool(getattr(self, "_editor_mode", False))
+        if not force and getattr(self, "_editor_toggle_look", None) == editing:
+            return
+        self._editor_toggle_look = editing
+        t = _T()
+        if editing:
+            icon = _load_editmode_icon()
+            btn.setText("" if icon is not None else "Edit")
+            if icon is not None:
+                btn.setIcon(icon)
+            btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+            btn.setStyleSheet(self._EDITOR_OVERLAY_BTN_QSS % {
+                "border": t["border"], "bg": t["bg"],
+                "hover": t["bg_hover"], "accent": t["accent"],
+            })
+            btn.setFixedSize(34, 34)
+        else:
+            accent = t["accent"]
+            icon = _load_editmode_icon(accent)
+            if icon is not None:
+                btn.setIcon(icon)
+            btn.setText("Edit")
+            btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            btn.setStyleSheet(
+                "QToolButton {{ border: 1px solid {c}; border-radius: 6px;"
+                "  padding: 4px 12px 4px 10px; font-weight: bold;"
+                "  background-color: {bg}; color: {c}; }}"
+                "QToolButton:hover {{ background-color: {hover}; }}"
+                .format(c=accent, bg=t["bg"], hover=t["bg_hover"])
+            )
+            # Undo the editor-mode fixed size; the column layout in
+            # _position_editor_overlays sets the final width.
+            btn.setMinimumSize(0, 0)
+            btn.setMaximumSize(16777215, 16777215)
+            btn.adjustSize()
 
     def _solve_overlay_visible(self) -> bool:
         if isinstance(getattr(self, "metadata", None), dict):
@@ -174,18 +263,18 @@ class _EditorModeMixin:
             self._awaiting_first_solve or self._solve_stale or adaptive_on
         )
         # A pending / stale solve is only actionable if the solver would
-        # accept it — otherwise the click just lands on the "Project is not
+        # accept it - otherwise the click just lands on the "Project is not
         # solveable" dialog, so keep the button greyed out with a tooltip
         # that says what's missing instead. The exception is a Bridges-tab
         # change: it alters which nets exist, so the design must be rebuilt
         # whether or not there is a rail to solve yet (the click then
-        # reloads the design without solving — see _on_resolve_clicked).
+        # reloads the design without solving - see _on_resolve_clicked).
         return wanted and (self._has_solveable_directives()
                            or self._design_reload_pending())
 
     def _design_reload_pending(self) -> bool:
-        """True when the project's Bridges-tab settings — auto-bridge
-        opt-outs, the auto-SERIES limit — differ from what the in-memory
+        """True when the project's Bridges-tab settings - auto-bridge
+        opt-outs, the auto-SERIES limit - differ from what the in-memory
         design was built with. Both act while annotations are parsed, so
         only a reload of the design applies them."""
         loaded = getattr(self, "_loaded_project", None)
@@ -203,13 +292,13 @@ class _EditorModeMixin:
                 != float(limit))
 
     _NOTHING_TO_SOLVE_TIP = (
-        "Nothing to solve yet — the design needs a SOURCE and a SINK on the "
+        "Nothing to solve yet - the design needs a SOURCE and a SINK on the "
         "same rail. Switch on Edit to place them, then Solve."
     )
 
     def _has_solveable_directives(self) -> bool:
         """True when the schematic + editor directives form at least one
-        closed rail (a source and a sink that share connected nets) — the
+        closed rail (a source and a sink that share connected nets) - the
         same test :attr:`LoadedProject.is_solveable` applies once the editor
         directives are merged in. Answers ``True`` when there is no in-memory
         design to inspect (a viewer opened from a bare pickle) or the check
@@ -225,7 +314,7 @@ class _EditorModeMixin:
 
         def _named_copper_at(ed):
             # Free marker on copper the user has since named via a
-            # CopperName rename — mirror _unnamed_copper_directives()'s
+            # CopperName rename - mirror _unnamed_copper_directives()'s
             # promotion, read-only.
             if (ed.kind != "free" or ed.anchor_xy is None
                     or ed.layer_id is None):
@@ -252,30 +341,52 @@ class _EditorModeMixin:
         self._refresh_solve_stale_overlay()
 
     def _position_editor_overlays(self) -> None:
-        """Pin the editor toggle, source / sink, and resolve buttons in a
-        row along the GL viewer's top-left corner. Safe before the widgets
-        exist (no-op); wired to every GL-viewer resize via
-        :meth:`eventFilter`."""
+        """Pin the overlay buttons to the GL viewer's top-left corner, as a
+        column: Edit, then Resolve, then What-If (viewer mode). In editor
+        mode the top row is the square edit toggle plus the SOURCE / SINK
+        marker buttons, with Resolve still directly beneath it and What-If
+        hidden. Safe before the widgets exist (no-op); wired to every
+        GL-viewer resize via :meth:`eventFilter`."""
         gl = getattr(self, "_gl_viewer", None)
         btn = getattr(self, "_editor_toggle_btn", None)
         if gl is None or btn is None:
             return
+        editing = bool(getattr(self, "_editor_mode", False))
+        self._sync_editor_toggle_look()
         margin, gap = 12, 6
-        x = margin
-        btn.move(x, margin)
+        rbtn = getattr(self, "_resolve_btn", None)
+        wbtn = getattr(self, "_whatif_btn", None)
+        if wbtn is not None:
+            wbtn.setVisible(not editing)
+        # The labelled buttons in the column (viewer mode: Edit, Resolve,
+        # What-If; editor mode: just Resolve, under the square toggle) share
+        # the largest one's size so the column reads as one block.
+        column = [b for b in (rbtn, wbtn) if b is not None and not b.isHidden()]
+        if not editing:
+            column.insert(0, btn)
+        if column:
+            hints = [b.sizeHint() for b in column]
+            w = max(s.width() for s in hints)
+            h = max(s.height() for s in hints)
+            for b in column:
+                b.resize(w, h)
+
+        btn.move(margin, margin)
         btn.raise_()
-        x += btn.width() + gap
+        x = margin + btn.width() + gap
         for attr in ("_editor_add_source_btn", "_editor_add_sink_btn"):
             b = getattr(self, attr, None)
             if b is not None and not b.isHidden():
                 b.move(x, margin)
                 b.raise_()
                 x += b.width() + gap
-        rbtn = getattr(self, "_resolve_btn", None)
-        if rbtn is not None and rbtn.isVisible():
-            rbtn.adjustSize()
-            rbtn.move(x + 2, margin)
-            rbtn.raise_()
+        # In editor mode, clear the backdrop that wraps the top row too.
+        y = margin + btn.height() + gap + (6 if editing else 0)
+        for b in (rbtn, wbtn):
+            if b is not None and not b.isHidden():
+                b.move(margin, y)
+                b.raise_()
+                y += b.height() + gap
 
         # Size the click-absorbing backdrop to wrap the edit toggle + the two
         # free-marker buttons (not the Resolve button, which sits apart), with
@@ -309,7 +420,7 @@ class _EditorModeMixin:
         )
 
     def _build_editor_panel(self) -> QWidget:
-        """Right-hand panel — multi-purpose. In editor mode it hosts the
+        """Right-hand panel - multi-purpose. In editor mode it hosts the
         PDN-role form (filled by :meth:`_populate_editor_form` on
         component / free-marker selection). In viewer mode it hosts the
         copper-properties form (filled by
@@ -337,7 +448,7 @@ class _EditorModeMixin:
         self._editor_hint.setWordWrap(True)
         lay.addWidget(self._editor_hint)
 
-        # Net-focus release chip — visible for as long as a net focus is
+        # Net-focus release chip - visible for as long as a net focus is
         # held, whatever else the panel is showing. The net table (which owns
         # the crosshair that sets focus) is the panel's idle view and hides on
         # any selection, so without this the only way back to all-copper would
@@ -351,7 +462,7 @@ class _EditorModeMixin:
         self._editor_focus_chip.hide()
         lay.addWidget(self._editor_focus_chip)
 
-        # Attached-PDN summary — the sources / sinks / series elements that
+        # Attached-PDN summary - the sources / sinks / series elements that
         # couple into the selected copper's rail group, filled by
         # :meth:`_update_editor_panel` on a named-copper selection and
         # hidden for every other selection. Element names are links that
@@ -365,7 +476,7 @@ class _EditorModeMixin:
         self._editor_net_summary.hide()
         lay.addWidget(self._editor_net_summary)
 
-        # Form host — (re)populated by _populate_editor_form on selection.
+        # Form host - (re)populated by _populate_editor_form on selection.
         self._editor_form_host = QWidget()
         self._editor_form_layout = QVBoxLayout(self._editor_form_host)
         self._editor_form_layout.setContentsMargins(0, 0, 0, 0)
@@ -391,7 +502,7 @@ class _EditorModeMixin:
         self._copper_props_host.hide()
         lay.addWidget(self._copper_props_host)
 
-        # Net inventory table (editor mode only) — every net on the board
+        # Net inventory table (editor mode only) - every net on the board
         # with its total copper area, ordered by area descending. Clicking
         # a row lights up that net's copper in the viewport; the crosshair
         # column shows only that net (see :meth:`_set_editor_focus`). See
@@ -404,7 +515,7 @@ class _EditorModeMixin:
         self._net_table_label.linkActivated.connect(
             self._on_editor_focus_chip_link)
         lay.addWidget(self._net_table_label)
-        # Live name filter — hides non-matching rows as the user types
+        # Live name filter - hides non-matching rows as the user types
         # (case-insensitive substring). Inherits the panel's themed
         # QLineEdit styling. See :meth:`_apply_net_table_filter`.
         self._net_table_filter = QLineEdit(panel)
@@ -421,7 +532,7 @@ class _EditorModeMixin:
             ["", "Net", "Area (mm²)"])
         self._net_table.horizontalHeaderItem(
             self._NET_COL_FOCUS).setToolTip(
-                "Focus — show only one net's copper at a time")
+                "Focus - show only one net's copper at a time")
         self._net_table.verticalHeader().setVisible(False)
         self._net_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._net_table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -436,7 +547,7 @@ class _EditorModeMixin:
         # The focus crosshair is a fixed-width icon gutter; the name column
         # takes the slack. A QTableWidgetItem icon (not a cell widget) is
         # what carries the glyph, because setCellWidget widgets do NOT move
-        # with sortItems — they would stay put while the rows beneath them
+        # with sortItems - they would stay put while the rows beneath them
         # re-ordered, leaving every crosshair on the wrong net.
         hh.setSectionResizeMode(
             self._NET_COL_FOCUS, QHeaderView.Fixed)
@@ -474,7 +585,7 @@ class _EditorModeMixin:
     def _apply_editor_panel_theme(self) -> None:
         """(Re)pin the active theme's colours onto the right-hand panel's
         inline-styled widgets. Called once at build time and again from
-        :meth:`_refresh_inline_theme` on a theme switch — the panel lives
+        :meth:`_refresh_inline_theme` on a theme switch - the panel lives
         on the GL canvas, so it is restyled in place rather than rebuilt."""
         panel = getattr(self, "_editor_panel_widget", None)
         if panel is None:
@@ -576,10 +687,15 @@ class _EditorModeMixin:
         """Slot for the editor toggle button (and the E hotkey through it).
 
         Entering editor mode on a big board first needs the connected-copper
-        index (:meth:`_connected_components_data`) — seconds of work. When it
+        index (:meth:`_connected_components_data`) - seconds of work. When it
         isn't built yet, build it on a worker thread behind the app's modal
         busy dialog and enter editor mode once it's done; otherwise enter /
         leave straight away."""
+        if checked:
+            # The editor edits the base design, so show the base.
+            ensure = getattr(self, "_whatif_ensure_base", None)
+            if callable(ensure):
+                ensure()
         if checked and self._editor_prep_needs_background():
             self._prepare_editor_in_background()
             return
@@ -601,7 +717,7 @@ class _EditorModeMixin:
         def _finish():
             self._editor_prep_running = False
             # The dialog is application-modal, so the toggle can't have
-            # been flipped back meanwhile — but don't enter if it was.
+            # been flipped back meanwhile - but don't enter if it was.
             if not self._editor_toggle_btn.isChecked():
                 return
             QApplication.setOverrideCursor(Qt.WaitCursor)
@@ -623,11 +739,11 @@ class _EditorModeMixin:
         _run_background_load(
             self, _work, _ok, _err,
             title="Editor mode",
-            label="Preparing editor mode — indexing copper connectivity…",
+            label="Preparing editor mode - indexing copper connectivity…",
         )
 
     def _apply_editor_mode(self, checked: bool) -> None:
-        """Enter / leave editor mode — swaps the viewport look, shows /
+        """Enter / leave editor mode - swaps the viewport look, shows /
         hides the right-hand panel, and clears transient selection state
         on the way out (placed directives persist in the project)."""
         self._editor_mode = bool(checked)
@@ -659,7 +775,7 @@ class _EditorModeMixin:
             self._editor_pending_marker = None
             self._marker_drag = None
             # Focus hides copper, and there is no control for it outside
-            # editor mode — leaving must not strand the user with two thirds
+            # editor mode - leaving must not strand the user with two thirds
             # of the board missing from the viewer.
             self._clear_editor_focus(render=False)
             self._clear_editor_highlight()
@@ -667,7 +783,7 @@ class _EditorModeMixin:
             self._update_pending_rails()
             # Warm the connected-copper index now so the first selection
             # click doesn't pay the one-time STRtree / union-find build
-            # cost — on big boards that's seconds of work the user would
+            # cost - on big boards that's seconds of work the user would
             # otherwise see as a click-to-highlight delay.
             try:
                 self._connected_components_data()
@@ -685,6 +801,10 @@ class _EditorModeMixin:
                 logging.getLogger(__name__).exception(
                     "auto-naming isolated copper regions failed")
             self._refresh_net_table()
+        # The What-If panel is viewer-mode only: entering the editor closes
+        # it (its button is hidden by _position_editor_overlays below).
+        if self._editor_mode:
+            self._set_whatif_panel_visible(False)
         # Source / sink free-marker buttons live in the viewport overlay
         # and are visible only while editor mode is active.
         for attr in ("_editor_add_source_btn", "_editor_add_sink_btn"):
@@ -714,7 +834,7 @@ class _EditorModeMixin:
         A no-op outside editor mode, where the buttons are hidden anyway.
         Inside it the work goes through :meth:`_on_editor_add_marker`, so
         the keyboard hits the same named-copper guard and the same button
-        sync as the mouse — the pressed key lights the button up.
+        sync as the mouse - the pressed key lights the button up.
         """
         if not getattr(self, "_editor_mode", False):
             return

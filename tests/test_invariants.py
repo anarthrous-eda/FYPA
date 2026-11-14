@@ -1,7 +1,7 @@
 """Solver invariant tests.
 
 These assert properties that must hold for *any* well-posed solve, independent
-of the specific geometry — the residual is small, the system is balanced, the
+of the specific geometry - the residual is small, the system is balanced, the
 field is finite, and repeated solves are deterministic.
 """
 from __future__ import annotations

@@ -51,10 +51,10 @@ from fypa.viewer.theme import _T
 # leaves room for it rather than drawing it over the label.
 _BUTTON_W = 16
 
-# Label shown in the checklist for an empty / "—" cell.
+# Label shown in the checklist for an empty / "-" cell.
 BLANK_LABEL = "(Blanks)"
 
-# A numeric column with more distinct values than this lists none of them —
+# A numeric column with more distinct values than this lists none of them -
 # a checklist of 3 000 via X coordinates is noise; Min / Max is the tool.
 _NUMERIC_LIST_LIMIT = 60
 
@@ -204,12 +204,12 @@ class TableColumnFilter(QObject):
         item = self._table.item(row, col)
         if item is None:
             return BLANK_LABEL
-        # A check state is only present once setCheckState was called — the
+        # A check state is only present once setCheckState was called - the
         # ItemIsUserCheckable flag is on for every QTableWidgetItem by default.
         if item.data(Qt.CheckStateRole) is not None:
             return "Ticked" if item.checkState() == Qt.Checked else "Not ticked"
         text = item.text().strip()
-        return text if text and text != "—" else BLANK_LABEL
+        return text if text and text != "-" else BLANK_LABEL
 
     def cell_number(self, row: int, col: int) -> float | None:
         item = self._table.item(row, col)
@@ -267,7 +267,7 @@ class TableColumnFilter(QObject):
 
     def make_clear_button(self, text: str = "Clear column filters") -> QPushButton:
         """A button that clears every column filter, enabled only while one
-        is set — so the filter bar says when rows are hidden by the header."""
+        is set - so the filter bar says when rows are hidden by the header."""
         btn = QPushButton(text)
         btn.setToolTip("Remove every filter set from the column headers. "
                        "Click a header's funnel (or right-click the header) "
@@ -344,7 +344,7 @@ class _FilterPopup(QFrame):
         sort_row.addWidget(desc)
         lay.addLayout(sort_row)
 
-        # Values present in rows that pass every *other* column filter — so,
+        # Values present in rows that pass every *other* column filter - so,
         # as in Excel, filtering Net first narrows what the next column lists.
         counts: dict[str, int] = {}
         numbers: dict[str, float | None] = {}
@@ -418,7 +418,7 @@ class _FilterPopup(QFrame):
             self._list.itemChanged.connect(self._on_item_changed)
             lay.addWidget(self._list, 1)
         else:
-            note = QLabel(f"{len(counts)} distinct values — use Min / Max.")
+            note = QLabel(f"{len(counts)} distinct values - use Min / Max.")
             note.setStyleSheet(f"QLabel {{ color: {t['fg_muted']}; }}")
             lay.addWidget(note)
 

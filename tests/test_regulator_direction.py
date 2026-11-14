@@ -4,11 +4,11 @@ Guards the sign of the input-current mirror (``solver.py``,
 ``stamp_network_into_system``): the regulator must DRAW ``gain * I_out``
 from its input pin (``s_f``) and return it at ``s_t``. With the sign
 flipped the regulator *injects* current into its input rail, so the input
-pin solves ABOVE the source voltage — an inverted upstream IR-drop map.
+pin solves ABOVE the source voltage - an inverted upstream IR-drop map.
 
 The pre-existing regulator tests could not catch this: the quiescent test
 checks network construction only, the adaptive-gain test mocks ``solve``,
-and the unsym-path test asserts residual + finiteness — all satisfied by a
+and the unsym-path test asserts residual + finiteness - all satisfied by a
 sign flip. These tests assert the physical direction and magnitudes.
 
 Topology (three 30 x 5 mm strips, 1 oz copper):
@@ -119,7 +119,7 @@ def _layer_arrays(sol, layer_index: int):
 
 
 def _sample(xys: np.ndarray, vals: np.ndarray, x: float, y: float) -> float:
-    """Potential at the mesh vertex nearest (x, y) — pins are mesh seeds, so
+    """Potential at the mesh vertex nearest (x, y) - pins are mesh seeds, so
     the nearest vertex IS the attach vertex."""
     i = np.argmin((xys[:, 0] - x) ** 2 + (xys[:, 1] - y) ** 2)
     return float(vals[i])
@@ -128,7 +128,7 @@ def _sample(xys: np.ndarray, vals: np.ndarray, x: float, y: float) -> float:
 # Analytic uniform-flow IR drop along VIN between the pads (29 mm of 5 mm
 # strip carrying the full input current). The measured pad-to-pad drop also
 # contains the point-injection constriction at both ends, so it exceeds this
-# — the tolerance band below allows for it.
+# - the tolerance band below allows for it.
 _I_IN = _GAIN * _I_OUT + _I_Q
 _STRIP_DROP_V = _I_IN * (1.0 / _CU) * 29.0 / _W
 
@@ -142,7 +142,7 @@ def test_regulator_input_pin_below_source_voltage(reg_solution):
     drop = v_src - v_reg
     assert drop > 0, (
         f"regulator INJECTS into its input rail (V rises by {-drop * 1e3:.3f}"
-        " mV along VIN) — input-current mirror sign is flipped"
+        " mV along VIN) - input-current mirror sign is flipped"
     )
     # Constriction at the two point injections adds to the uniform-flow drop;
     # a generous band still rejects both a sign flip and a wrong gain.

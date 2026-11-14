@@ -48,7 +48,7 @@ _ROLE_SECTION_ORDER: dict[str, int] = {
 
 
 def spec_port_role(spec: NodeSpec, pname: str) -> str:
-    """Effective role for one port — per-port on multi-role symbols."""
+    """Effective role for one port - per-port on multi-role symbols."""
     port_roles = spec.get("port_roles")
     if port_roles and pname in port_roles:
         return port_roles[pname]
@@ -257,7 +257,7 @@ def _suffix_for_channel(index: int, *, multi: bool, base: str) -> str:
 
 
 def _terminal_physical_key(term: TerminalDict | None) -> str:
-    """Pad set + wire net — rail merging must not fold distinct schematic ports."""
+    """Pad set + wire net - rail merging must not fold distinct schematic ports."""
     if not term:
         return ""
     wnet = wire_net(terminal_net(term)) or ""
@@ -303,7 +303,7 @@ def _collapse_ports_by_physical_key(
 
     ``channel_ports`` names the per-channel rows going in; the returned set
     names them after collapsing. A row that ends up alone loses its channel
-    index (``P1`` → ``P``) and stops being a channel row — with no siblings
+    index (``P1`` → ``P``) and stops being a channel row - with no siblings
     left, its label should show every pad net again.
     """
     channel_ports = channel_ports or set()

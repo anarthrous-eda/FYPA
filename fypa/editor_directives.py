@@ -10,7 +10,7 @@ directive into a real :class:`~fypa.altium.annotations.SourceSpec` /
 and appends it to the loaded
 project's :class:`~fypa.altium.annotations.AnnotationResult`. From there
 :func:`fypa.altium.loader.build_problem` treats it exactly like a schematic
-directive — it meshes the referenced nets and stamps the lumped element.
+directive - it meshes the referenced nets and stamps the lumped element.
 """
 
 from __future__ import annotations
@@ -36,12 +36,12 @@ _ANCHOR_PAD = "(editor)"
 
 def apply_editor_directives(loaded, editor_directives) -> list[str]:
     """Append synthetic SourceSpec / SinkSpec / ResistorSpec specs to
-    ``loaded.annotations.directives`` — one per editor directive.
+    ``loaded.annotations.directives`` - one per editor directive.
 
     ``loaded`` is a :class:`fypa.altium.loader.LoadedProject`; it is mutated
     in place (the caller owns a fresh copy loaded from the design-info
     pickle). Returns a list of human-readable warnings for directives that
-    could not be resolved — those are skipped rather than aborting the solve.
+    could not be resolved - those are skipped rather than aborting the solve.
     """
     from fypa.altium.annotations import (
         ResistorSpec,
@@ -97,7 +97,7 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
     # --- Per-rail return groups for single-net editor directives ----------
     # Each electrically-connected rail needs its OWN ideal-0 V return node.
     # One return group shared across the whole board lets a SINK on rail A
-    # close its loop through a SOURCE on rail B — a path the copper can't
+    # close its loop through a SOURCE on rail B - a path the copper can't
     # carry, so the FEM matrix goes near-singular. Mirror fypa.altium.annotations'
     # _assign_return_groups: union connected nets, one return id per group.
     _uf: dict[str, str] = {}
@@ -116,7 +116,7 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
         if ra != rb:
             _uf[rb] = ra
 
-    # SERIES directives bridge two nets — keep a point-to-point check that
+    # SERIES directives bridge two nets - keep a point-to-point check that
     # spans a ferrite / 0 Ω link inside a single rail group.
     for _d in loaded.annotations.directives:
         if not isinstance(_d, ResistorSpec):
@@ -132,7 +132,7 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
         for other in bridged[1:]:
             _uf_union(bridged[0], other)
 
-    # Editor SERIES directives bridge two nets as well — they aren't in
+    # Editor SERIES directives bridge two nets as well - they aren't in
     # ``loaded.annotations.directives`` yet (they get appended below), so
     # union their P / N nets here, same reasoning as the schematic
     # ResistorSpec loop above: a single-net SOURCE / SINK on either side of
@@ -195,7 +195,7 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
 
         ``pin_filter`` is the directive's optional pad-designator restriction
         (the PDN_PINS equivalent): when set, only the component's pads whose
-        designator is in the set couple — so a source declared on pin 1 stays
+        designator is in the set couple - so a source declared on pin 1 stays
         on pin 1 instead of spreading to every pad on the net."""
         if not net_name:
             return None
@@ -209,7 +209,7 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
         if ci is not None:
             pins = _pads_on_component(ci, nidx, wanted_pins)
         if not pins:
-            # Free marker, or a component with no pad on this net — couple
+            # Free marker, or a component with no pad on this net - couple
             # at the supplied fallback point on the net's copper.
             fx, fy = fallback_xy
             pins.append(TerminalPin(
@@ -305,7 +305,7 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
     applied = 0
     # Several directives on one part (a load on two rails, a dual-output
     # regulator) become channels of it, like a schematic PDN1_* / PDN2_*
-    # part — so each gets its own label (U1#1, U1#2) instead of two results
+    # part - so each gets its own label (U1#1, U1#2) instead of two results
     # both called U1. That includes an editor directive added to a part the
     # schematic already sets up for another rail: it numbers on from the
     # schematic's channels.
@@ -328,7 +328,7 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
             channel_of[eid] = start + i
     # Regulators are resolved in the loop but built after it: an SMPS needs
     # its input voltage for the gain, and that comes from whichever source
-    # or regulator feeds its input — possibly another editor directive.
+    # or regulator feeds its input - possibly another editor directive.
     pending_regulators: list[tuple] = []
     for ed in editor_directives:
         label = ed.designator or f"editor:{ed.id}"
@@ -354,7 +354,7 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
             if center is None:
                 # The bound component is gone from the PCB (renamed / deleted).
                 # Falling back to (0, 0) would silently anchor the terminal at
-                # the origin — and if any copper of its net happens to sit
+                # the origin - and if any copper of its net happens to sit
                 # there, the solve succeeds with a wrong injection point. Skip
                 # with a warning instead.
                 warnings.append(
@@ -368,7 +368,7 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
         # Pin restrictions only apply to a component-bound terminal that
         # actually has pads to pick from; a free marker couples at its anchor.
         # Multi-DES lists (PDN_*_DES) likewise apply only to component-bound
-        # two-net SOURCE/SINK — listed designators only, host not included.
+        # two-net SOURCE/SINK - listed designators only, host not included.
         p_pins = getattr(ed, "p_pins", None) if ed.kind != "free" else None
         n_pins = getattr(ed, "n_pins", None) if ed.kind != "free" else None
         p_des = getattr(ed, "p_des", None) if ed.kind != "free" else None
@@ -432,7 +432,7 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
                     continue
             # The same short the annotation path arbitrates, which this path
             # never called: a lumped element with both terminals on one node.
-            # Two shapes reach it — both terminals on one real pad (overlapping
+            # Two shapes reach it - both terminals on one real pad (overlapping
             # pin filters), or both on one net (a free marker whose P and N
             # nets are the same). Anchor pins carry the ``_ANCHOR_PAD``
             # placeholder rather than a pad name, so comparing designators
@@ -511,7 +511,7 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
                 channel_index=channel_of.get(ed.id), return_group=return_group,
                 min_voltage=min_v,
             )
-        else:  # SERIES — a lumped resistance bridging the two nets
+        else:  # SERIES - a lumped resistance bridging the two nets
             if ed.resistance is None:
                 warnings.append(f"{label}: SERIES has no resistance; skipped.")
                 continue
@@ -541,7 +541,7 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
 
     # Open-loop rails (only sources or only sinks) are detected centrally in
     # :func:`fypa.altium.loader._flag_open_loop_rails`, which runs over the
-    # merged schematic + editor directive list at solve time — so a rail
+    # merged schematic + editor directive list at solve time - so a rail
     # closed by a mix of schematic and editor markers is recognised, and the
     # offending rail is skipped (not solved as an unreliable open loop) while
     # the rest of the board still solves.
@@ -597,7 +597,7 @@ def _append_editor_regulators(loaded, pending, rail_root, warnings) -> int:
     Gain follows the schematic rules (:func:`fypa.altium.annotations.
     _resolve_regulator_gain`): an LDO draws its output current (gain 1); an
     SMPS draws ``Vout / (Vin · η)`` of it, with ``Vin`` taken from whatever
-    drives the input rail — a source, or another regulator's output, looked
+    drives the input rail - a source, or another regulator's output, looked
     up across SERIES bridges via ``rail_root``. The SMPS is marked
     adaptive-gain eligible like a schematic SMPS without PDN_GAIN, so the
     solve can refine the gain from the input voltage it actually finds.
@@ -690,7 +690,7 @@ _UNNAMED_NET = "(none)"
 def has_closed_pdn_loop(loaded, editor_directives, *,
                         p_net_resolver=None) -> bool:
     """True when the schematic + editor directives together form at least
-    one **closed** rail — a connected group of nets carrying both a source
+    one **closed** rail - a connected group of nets carrying both a source
     (schematic ``SourceSpec`` / ``RegulatorSpec`` or an editor SOURCE) and a
     sink (``SinkSpec`` or an editor SINK). This is the condition
     :attr:`fypa.altium.loader.LoadedProject.is_solveable` checks *after*
@@ -702,16 +702,16 @@ def has_closed_pdn_loop(loaded, editor_directives, *,
 
     * like :func:`apply_editor_directives`, it drops schematic directives an
       editor directive overrides (``overrides_designator``) and skips editor
-      directives the re-solve would skip — unsupported roles, a SOURCE with
+      directives the re-solve would skip - unsupported roles, a SOURCE with
       no voltage, a SINK with no current, a SERIES with no positive
       resistance, or a terminal still on unnamed ``"(none)"`` copper;
     * like :func:`fypa.altium.loader._analyze_open_loop_rails`, it applies
-      the :mod:`fypa.open_loop` rules — rails joined by series elements but
-      not through return nets, a sink fed by a source (through regulators) —
+      the :mod:`fypa.open_loop` rules - rails joined by series elements but
+      not through return nets, a sink fed by a source (through regulators) -
       and is true when any sink survives them.
 
     ``p_net_resolver(ed) -> str | None`` may supply a net name for a free
-    marker whose ``p_net`` is still ``"(none)"`` — the viewer passes its
+    marker whose ``p_net`` is still ``"(none)"`` - the viewer passes its
     :class:`~fypa.project_file.CopperName` lookup so copper the user named
     after placing the marker still counts, exactly as the resolve path
     promotes it.
@@ -787,7 +787,7 @@ def has_closed_pdn_loop(loaded, editor_directives, *,
         if ed.role == "SERIES" and (ed.resistance is None or ed.resistance <= 0):
             continue
         if ed.role not in ("SOURCE", "SINK", "SERIES"):
-            continue  # unsupported role — apply_editor_directives skips it
+            continue  # unsupported role - apply_editor_directives skips it
         p_name = ed.p_net
         if p_name == _UNNAMED_NET and p_net_resolver is not None:
             try:
@@ -796,7 +796,7 @@ def has_closed_pdn_loop(loaded, editor_directives, *,
                 log.debug("p_net_resolver failed for %s", ed.id, exc_info=True)
         two_net = ed.role == "SERIES" or not ed.single_net
         names = [p_name] + ([ed.n_net] if two_net else [])
-        # A terminal on unnamed copper can't be solved — treat the whole
+        # A terminal on unnamed copper can't be solved - treat the whole
         # directive as unresolved, as apply_editor_directives drops it.
         if len(_keys(*names)) != len(names):
             continue
@@ -865,7 +865,7 @@ def apply_copper_names(loaded, copper_names) -> list[str]:
 
     The mutation uses :func:`dataclasses.replace` because
     :class:`~fypa.altium.extract.ExtractedProject` is a frozen
-    dataclass — the result is a brand-new tuple of nets / regions /
+    dataclass - the result is a brand-new tuple of nets / regions /
     tracks / etc., and ``loaded.extracted`` is rebound to it.
     """
     import dataclasses
@@ -947,7 +947,7 @@ def apply_copper_names(loaded, copper_names) -> list[str]:
     # Single-pass collection of NO_NET primitives across all enabled
     # layers. Building each primitive's shapely polygon ONCE and caching
     # it by primitive id lets the retag step at the end skip the
-    # rebuild — on a Gerber-sourced board with tens of thousands of SBRs
+    # rebuild - on a Gerber-sourced board with tens of thousands of SBRs
     # the rebuild used to be the dominant cost of the resolve.
     t0 = time.monotonic()
     pieces_by_layer: dict[int, list[_sg.base.BaseGeometry]] = {}
@@ -990,7 +990,7 @@ def apply_copper_names(loaded, copper_names) -> list[str]:
     # entries) goes through a vectorised batch path: one
     # ``shapely.linearrings`` + one ``shapely.polygons`` C call builds all
     # exteriors + holes at once, dropping ~10× the per-instance Python
-    # overhead. SBRs with arc edges fall through to the slow path —
+    # overhead. SBRs with arc edges fall through to the slow path -
     # discretising arcs has to happen per-region anyway.
     import numpy as _np
     import shapely as _shp
@@ -1012,7 +1012,7 @@ def apply_copper_names(loaded, copper_names) -> list[str]:
         # One numpy array per ring; concat once. Per-vertex tuple gather
         # is still in Python, but the shapely construction itself is one
         # vectorised C dispatch. The whole batch path is wrapped in
-        # try/except — any shapely / numpy upset (API drift, malformed
+        # try/except - any shapely / numpy upset (API drift, malformed
         # ring, etc.) falls back to the per-region builder so the resolve
         # still completes instead of bubbling up as an opaque crash.
         batch_polys = None
@@ -1043,7 +1043,7 @@ def apply_copper_names(loaded, copper_names) -> list[str]:
                 # (exterior + holes) live in the same flat array, the
                 # first occurrence of each index becomes the shell, and
                 # indices must be in increasing order. So: stack
-                # exteriors then holes, then stable-sort by index — the
+                # exteriors then holes, then stable-sort by index - the
                 # exterior of polygon i keeps its position before any
                 # holes that target i. Passing ``holes=`` alongside
                 # ``indices=`` is explicitly disallowed.
@@ -1112,7 +1112,7 @@ def apply_copper_names(loaded, copper_names) -> list[str]:
     # electrically-disjoint copper piece, plus an STRtree for fast
     # point-in-polygon queries. Each layer's ``unary_union`` is the
     # dominant cost on a Gerber board (thousands of disjoint pieces per
-    # layer, 16 layers) — shapely 2 releases the GIL inside union_all,
+    # layer, 16 layers) - shapely 2 releases the GIL inside union_all,
     # so we fan out across a thread pool the same way
     # :func:`fypa.altium_geometry._parallel_union_buckets` does.
     t0 = time.monotonic()
@@ -1139,7 +1139,7 @@ def apply_copper_names(loaded, copper_names) -> list[str]:
     if big_layers >= 2 and len(pieces_by_layer) >= 2:
         import concurrent.futures
         import os
-        # Cap workers — union_all releases the GIL but still pegs a core
+        # Cap workers - union_all releases the GIL but still pegs a core
         # per task; min(8, cpu_count()) is plenty.
         max_workers = min(8, (os.cpu_count() or 4),
                           len(pieces_by_layer))
@@ -1156,7 +1156,7 @@ def apply_copper_names(loaded, copper_names) -> list[str]:
     timings["per-layer union + STRtree"] = time.monotonic() - t0
 
     if not layer_index:
-        # Nothing to rename — every rename will hit the "no unnamed copper"
+        # Nothing to rename - every rename will hit the "no unnamed copper"
         # warning path. Skip the heavy setup.
         for c in copper_names:
             layer_id = int(c.layer_id)
@@ -1276,7 +1276,7 @@ def apply_copper_names(loaded, copper_names) -> list[str]:
     timings["rename closure"] = time.monotonic() - t0
 
     if not matches:
-        # No anchors landed on NO_NET copper — every rename was a no-op
+        # No anchors landed on NO_NET copper - every rename was a no-op
         # (warned above). ``nets`` is still a fresh copy of the original
         # tuple; no replacement needed.
         log.info("apply_copper_names: applied 0, %d warning(s), %.2fs",
@@ -1325,7 +1325,7 @@ def apply_copper_names(loaded, copper_names) -> list[str]:
 
     def _maybe(prim):
         """Retag a NO_NET primitive on a rename layer using the cached
-        polygon — never rebuilds the polygon, never iterates matches."""
+        polygon - never rebuilds the polygon, never iterates matches."""
         if prim.net_index != NO_NET or prim.layer_id not in rename_layers:
             return prim
         poly = prim_poly_cache.get(id(prim))
@@ -1405,7 +1405,7 @@ def apply_copper_names(loaded, copper_names) -> list[str]:
     )
 
     # If the loaded project cached its lazy unioned geometry, it's stale
-    # now — drop the cache so the next access rebuilds against the
+    # now - drop the cache so the next access rebuilds against the
     # renamed primitives.
     loaded.__dict__.pop("geometry", None)
 

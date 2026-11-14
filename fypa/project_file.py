@@ -3,10 +3,10 @@
 A project file is a small JSON document that ties together everything FYPA
 needs to reopen a board exactly as the user left it:
 
-* the design source it came from — either an Altium project (``.PrjPcb`` +
+* the design source it came from - either an Altium project (``.PrjPcb`` +
   ``.PcbDoc``) or a set of Gerber + Excellon files (``gerber_files`` +
   ``drill_files`` + an optional ``outline_file``),
-* the two cache pickles produced by the solve pipeline — ``design-info.pkl``
+* the two cache pickles produced by the solve pipeline - ``design-info.pkl``
   (extraction + geometry, see :func:`fypa.cli._design_info_cache_path`) and
   ``solve.pkl`` (the FEM solution, see :func:`fypa.cli._solve_cache_path`),
 * any **editor-mode directives** the user has placed by hand (sources / sinks
@@ -18,7 +18,7 @@ needs to reopen a board exactly as the user left it:
   ``gerber_stackup`` the user confirmed in the import dialogs, so reopening
   the project skips those dialogs.
 
-The pickles are *referenced*, not embedded — they can be large (tens to
+The pickles are *referenced*, not embedded - they can be large (tens to
 hundreds of MB). Paths are stored relative to the ``.fypa`` file when both sit
 on the same drive, so a project folder can be moved or shared as a unit.
 """
@@ -59,7 +59,7 @@ class EditorDirective:
     for SINK, ``resistance`` for SERIES; the unused ones are ``None``.
 
     A SERIES directive always bridges two real nets (a ferrite bead, sense
-    resistor, 0 Ω jumper, …), so it is inherently two-net — ``single_net``
+    resistor, 0 Ω jumper, …), so it is inherently two-net - ``single_net``
     is ``False`` and both ``p_net`` and ``n_net`` are required.
     """
 
@@ -77,14 +77,14 @@ class EditorDirective:
     # ``PDN_PINS`` / ``PDN_P_PINS`` / ``PDN_N_PINS`` parameters). Each is a
     # list of pad designators (e.g. ``["1"]``) the terminal couples to;
     # ``None`` means *every* pad of the component that sits on the terminal's
-    # net — the default for a freshly placed marker. Only meaningful for a
+    # net - the default for a freshly placed marker. Only meaningful for a
     # component-bound directive; ignored for a free marker. ``p_pins`` pairs
     # with ``p_net`` (PDN_PINS in single-net mode), ``n_pins`` with ``n_net``.
     p_pins: list[str] | None = None
     n_pins: list[str] | None = None
     # Optional multi-connector designator lists (schematic ``PDN_P_DES`` /
     # ``PDN_N_DES``). When set on a two-net SOURCE/SINK, that terminal's pads
-    # come only from the listed designators — the host is not auto-included.
+    # come only from the listed designators - the host is not auto-included.
     # ``None`` keeps host-only resolution (backward compatible). Ignored for
     # free markers and single-net / SERIES directives.
     p_des: list[str] | None = None
@@ -105,13 +105,13 @@ class EditorDirective:
     # disable the check or for non-SINK roles.
     min_voltage: float | None = None
     # When set, this editor directive replaces (overrides) the Altium
-    # schematic directive carrying this designator — the re-solve drops the
+    # schematic directive carrying this designator - the re-solve drops the
     # schematic one so they don't both stamp a lumped element. ``None`` for
     # an ordinary editor directive that simply adds a new source / sink.
     overrides_designator: str | None = None
     # --- REGULATOR only ---------------------------------------------------
     # A regulator has four terminals: ``p_net`` / ``n_net`` (with ``p_pins``
-    # / ``n_pins``) are its OUTPUT pair, these are its INPUT pair — the
+    # / ``n_pins``) are its OUTPUT pair, these are its INPUT pair - the
     # editor-mode equivalent of PDN_IN_P_NET / PDN_IN_N_NET / PDN_IN_*_PINS.
     # ``in_n_net`` defaults to ``n_net`` when unset. ``voltage`` is the output
     # voltage. A regulator is always component-bound and two-net.
@@ -203,7 +203,7 @@ class CopperName:
 
     Altium copper without a net assignment surfaces as the sentinel string
     ``"(none)"`` everywhere downstream, which collapses every disjoint
-    unnamed copper piece on the board onto one rail — the solver then
+    unnamed copper piece on the board onto one rail - the solver then
     can't tell them apart, and any source / sink placed on one piece is
     silently dropped (no rail of that name in the solution).
 
@@ -212,7 +212,7 @@ class CopperName:
     :func:`fypa.editor_directives.apply_copper_names` walks the extracted
     project, finds the no-net region whose geometry contains
     ``anchor_xy`` on ``layer_id``, adds a synthetic net carrying
-    ``name``, and re-points that region at it — so only THIS piece gets
+    ``name``, and re-points that region at it - so only THIS piece gets
     the new name (the other disjoint unnamed pieces stay ``"(none)"``).
     """
 
@@ -244,7 +244,7 @@ class CopperName:
 class CapOverride:
     """Per-capacitor user override for the Capacitors (loop inductance) tab.
 
-    Keyed by the physical (PCB) designator — unique per board, stable across
+    Keyed by the physical (PCB) designator - unique per board, stable across
     re-extractions. ``include`` overrides the auto-detection verdict
     (``True`` forces a structurally-valid cap into the analysis, ``False``
     drops a detected one); ``None`` leaves detection alone. ``target_label``
@@ -255,7 +255,7 @@ class CapOverride:
     ``esl_h`` / ``esr_ohm`` override the part's own parasitics for the
     impedance model, which otherwise reads them from the SMD package library
     by case size. They are the only way to model a capacitor whose footprint
-    carries no case-size code — a tantalum brick, an electrolytic — since no
+    carries no case-size code - a tantalum brick, an electrolytic - since no
     table can predict those.
 
     ``capacitance_f`` replaces the value parsed from the part's Altium
@@ -341,15 +341,15 @@ class ProjectFile:
     # nets merged; listing it here leaves it open at DC instead. Needed
     # because the auto-bridge runs during annotation parsing, long before
     # editor directives are applied, so an editor directive cannot veto one
-    # — this list is the only thing that can. Case-insensitive on use.
+    # - this list is the only thing that can. Case-insensitive on use.
     no_auto_bridge: list[str] = field(default_factory=list)
     # A Tomachie power-tree file supplying PDN_* directives, and the corner
-    # ("typ" / "max") it is solved at (File > Load Tomachie pdn.json…).
+    # ("typ" / "max") it is solved at (File > Load Custom… > Tomachie pdn.json…).
     pdn_json: str | None = None
     pdn_corner: str = "typ"
     # Unannotated resistors whose value is at or below this many ohms are
     # modelled as SERIES with their own value (current-sense shunts). 0 turns
-    # it off. Mirrors fypa.altium.annotations.DEFAULT_AUTO_SERIES_MAX_OHM —
+    # it off. Mirrors fypa.altium.annotations.DEFAULT_AUTO_SERIES_MAX_OHM -
     # not imported, so loading a .fypa never pulls in the Altium parser.
     auto_series_max_ohm: float = 0.1
     # Settings-tab copper-thickness overrides, keyed by copper layer id:
@@ -360,6 +360,10 @@ class ProjectFile:
     stackup_overrides: dict[int, dict[str, float | None]] = field(
         default_factory=dict)
     viewer_settings: dict[str, Any] = field(default_factory=dict)
+    # What-If scenarios (see fypa.whatif): plain dicts from
+    # WhatIfScenario.to_dict, so loading a .fypa doesn't import numpy.
+    # ``result_pickle`` inside each is made relative on save.
+    what_ifs: list[dict[str, Any]] = field(default_factory=list)
 
     # ---- Gerber-import fields (schema v2) --------------------------------
     # Populated when the project was imported from Gerber files instead of
@@ -372,7 +376,7 @@ class ProjectFile:
     # basename -> Altium-convention layer id (1 Top, 32 Bottom, 2..31 inner,
     # 33/34 silk; see fypa.gerber.extract for sentinels).
     layer_assignments: dict[str, int] = field(default_factory=dict)
-    # Serialised GerberStackupLayer list — each dict carries layer_id /
+    # Serialised GerberStackupLayer list - each dict carries layer_id /
     # name / copper_thickness_mm / dielectric_thickness_mm. We round-trip
     # plain dicts so that loading a v2 .fypa doesn't force a hard import
     # of fypa.gerber.extract (PySide6 may not be needed for a CLI load).
@@ -409,6 +413,10 @@ class ProjectFile:
                 for lid, entry in sorted(self.stackup_overrides.items())
             },
             "viewer_settings": dict(self.viewer_settings),
+            "what_ifs": [
+                {**dict(w), "result_pickle": _rel(w.get("result_pickle"), base)}
+                for w in self.what_ifs if isinstance(w, dict)
+            ],
             "source_kind": self.source_kind,
             "gerber_files": [_rel(p, base) for p in self.gerber_files],
             "drill_files": [_rel(p, base) for p in self.drill_files],
@@ -464,6 +472,11 @@ class ProjectFile:
                 doc.get("stackup_overrides")),
             net_renames=dict(doc.get("net_renames", {})),
             viewer_settings=dict(doc.get("viewer_settings", {})),
+            # Additive: older files have no what-ifs.
+            what_ifs=[
+                {**dict(w), "result_pickle": _abs(w.get("result_pickle"), base)}
+                for w in doc.get("what_ifs", []) if isinstance(w, dict)
+            ],
             source_kind=str(doc.get("source_kind", "altium")),
             gerber_files=[_abs(p, base) for p in doc.get("gerber_files", [])
                           if p],
@@ -558,7 +571,7 @@ class ProjectFile:
         left untouched, so the include toggle, the target picker and the
         value / package / parasitic editors each update their own part
         independently. An override whose fields are all back at ``None`` is
-        removed entirely — the .fypa doesn't accumulate no-op entries."""
+        removed entirely - the .fypa doesn't accumulate no-op entries."""
         existing = self.cap_override_for(designator)
         merged = existing or CapOverride(designator=designator)
         if include is not ...:
@@ -635,7 +648,7 @@ class ProjectFile:
 def _load_stackup_overrides(raw: Any) -> dict[int, dict[str, float | None]]:
     """Parse the ``stackup_overrides`` object of a ``.fypa``. Entries that
     are malformed, or carry a missing / negative thickness, are dropped
-    rather than failing the whole load — a hand-edited file should still
+    rather than failing the whole load - a hand-edited file should still
     open."""
     out: dict[int, dict[str, float | None]] = {}
     if not isinstance(raw, dict):

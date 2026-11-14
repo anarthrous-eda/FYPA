@@ -1,9 +1,9 @@
-"""``PDN_PIN_R`` — per-part override of the multi-pin star coupling resistance.
+"""``PDN_PIN_R`` - per-part override of the multi-pin star coupling resistance.
 
 The global default (``loader.COUPLING_RESISTANCE_OHM``, 100 mohm) stands in for
 an IC package's internal pin-to-pin resistance: bond wires, die metal, the
-on-die supply grid. That is a property of the *part*, not the board — a BGA's
-supply grid and a TO-220's leadframe are nothing alike — so it is overridable
+on-die supply grid. That is a property of the *part*, not the board - a BGA's
+supply grid and a TO-220's leadframe are nothing alike - so it is overridable
 per part. Unset, behaviour is exactly as before.
 """
 from __future__ import annotations
@@ -47,7 +47,7 @@ def test_integer_and_string_numbers_are_accepted():
 @pytest.mark.parametrize("bad", [0.0, -0.0, -1.0, -0.001])
 def test_non_positive_falls_back_rather_than_shorting_the_pins(bad):
     """Zero coupling would short every pin of the terminal through an ideal
-    wire and divide by zero in the stamp — the default is the safe answer."""
+    wire and divide by zero in the stamp - the default is the safe answer."""
     assert _sink_pin_coupling(_Sink(bad)) == COUPLING_RESISTANCE_OHM
 
 

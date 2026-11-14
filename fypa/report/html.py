@@ -37,31 +37,31 @@ def esc(x) -> str:
 # --- number formatting ----------------------------------------------------------
 
 def fmt_v(v: float | None) -> str:
-    return "—" if v is None else f"{v:.3f} V"
+    return "-" if v is None else f"{v:.3f} V"
 
 
 def fmt_mv(v: float | None, signed: bool = False) -> str:
     if v is None:
-        return "—"
+        return "-"
     s = f"{v * 1e3:+.3g}" if signed else f"{v * 1e3:.3g}"
     return s.replace("-", "−") + " mV"
 
 
 def fmt_a(a: float | None) -> str:
     if a is None:
-        return "—"
+        return "-"
     return f"{a * 1e3:.3g} mA" if abs(a) < 0.1 else f"{a:.3g} A"
 
 
 def fmt_w(w: float | None) -> str:
     if w is None:
-        return "—"
+        return "-"
     return f"{w * 1e3:.3g} mW" if abs(w) < 1.0 else f"{w:.3g} W"
 
 
 def fmt_ohm(r: float | None) -> str:
     if r is None:
-        return "—"
+        return "-"
     if r < 1.0:
         return f"{r * 1e3:.3g} mΩ"
     return f"{r:.3g} Ω"
@@ -69,7 +69,7 @@ def fmt_ohm(r: float | None) -> str:
 
 def fmt_hz(f: float | None) -> str:
     if not f:
-        return "—"
+        return "-"
     for scale, unit in ((1e9, "GHz"), (1e6, "MHz"), (1e3, "kHz")):
         if f >= scale:
             return f"{f / scale:.3g} {unit}"
@@ -77,11 +77,11 @@ def fmt_hz(f: float | None) -> str:
 
 
 def fmt_xy(xy) -> str:
-    return "—" if not xy else f"({xy[0]:.2f}, {xy[1]:.2f})"
+    return "-" if not xy else f"({xy[0]:.2f}, {xy[1]:.2f})"
 
 
 def fmt_j(j: float | None) -> str:
-    return "—" if j is None else f"{j:.3g} A/mm²"
+    return "-" if j is None else f"{j:.3g} A/mm²"
 
 
 def chip(status: str, text: str | None = None) -> str:
@@ -134,7 +134,7 @@ font-size:12px;font-weight:600;white-space:nowrap}
 .chip.pass{color:var(--pass);background:var(--pass-bg)}
 .chip.na{color:var(--na);background:var(--na-bg)}
 .chip.fail::before{content:"\\2716"}.chip.warn::before{content:"\\25B2"}
-.chip.pass::before{content:"\\2714"}.chip.na::before{content:"\\2013"}
+.chip.pass::before{content:"\\2714"}.chip.na::before{content:"\\-"}
 table{width:100%;border-collapse:collapse;font-size:13px}
 th{text-align:left;font-weight:600;color:var(--muted);font-size:12px;
 border-bottom:1px solid var(--fg);padding:6px 8px;vertical-align:bottom}
@@ -186,7 +186,7 @@ def render_html(report: Report) -> str:
         "<!doctype html>", '<html lang="en">', "<head>",
         '<meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
-        f"<title>PDN Report — {esc(report.project_name)}</title>",
+        f"<title>PDN Report - {esc(report.project_name)}</title>",
         f"<style>{_CSS}</style>", "</head>", "<body>", '<div class="page">',
     ]
     out.append(_header(report))
@@ -220,7 +220,7 @@ def _header(r: Report) -> str:
     rows.append(("FYPA", r.fypa_version))
     if r.settings.revision:
         rows.append(("Revision", r.settings.revision))
-    rows.append(("Prepared by", r.settings.author or "—"))
+    rows.append(("Prepared by", r.settings.author or "-"))
     meta = "".join(f"<dt>{esc(k)}</dt><dd>{esc(v)}</dd>" for k, v in rows)
     sub = r.analyses[:1].upper() + r.analyses[1:] if r.analyses else ""
     rev = f"Rev {esc(r.settings.revision)} · " if r.settings.revision else ""
@@ -233,7 +233,7 @@ def _header(r: Report) -> str:
 def _summary(r: Report) -> str:
     sev, head, why = r.verdict()
     cls = _CHIP_CLASS.get(sev, "na")
-    glyph = {FAIL: "✖", WARN: "▲", PASS: "✔", UNCHECKED: "–"}[sev]
+    glyph = {FAIL: "✖", WARN: "▲", PASS: "✔", UNCHECKED: "-"}[sev]
     counts = []
     for s, word in ((FAIL, "failure"), (WARN, "warning"),
                     (UNCHECKED, "unchecked")):
@@ -269,9 +269,9 @@ def _rail_table(r: Report) -> str:
         tr_cls = {FAIL: "row-fail", WARN: "row-warn"}.get(rail.status, "")
         if rail.kind == "return":
             cells = [link, '<td class="num muted">return</td>',
-                     '<td class="num">—</td>', '<td class="num">—</td>',
+                     '<td class="num">-</td>', '<td class="num">-</td>',
                      f'<td class="num">rise {fmt_mv(rail.ground_rise_v)}</td>',
-                     '<td class="num">—</td>']
+                     '<td class="num">-</td>']
         else:
             margin_cls = ("bad" if "below-min-v" in codes else
                           "caution" if "low-margin" in codes else
@@ -310,7 +310,7 @@ def _rail_table(r: Report) -> str:
 def _impedance_cell(rail: RailReport) -> str:
     dec = rail.decoupling
     if rail.kind == "return" or dec is None:
-        return '<td class="nolimit">—</td>'
+        return '<td class="nolimit">-</td>'
     if not dec.analysed:
         return '<td class="nolimit">Not analysed</td>'
     if dec.meets_target:
@@ -580,7 +580,7 @@ def _sec_vias(rail: RailReport, r: Report) -> str:
     rows = "".join(
         f'<tr class="{"row-fail" if v.over_limit else ""}">'
         f'<td class="num">{fmt_xy((v.x_mm, v.y_mm))}</td><td>{esc(v.span)}</td>'
-        f'<td>{"—" if v.drill_mm is None else f"{v.drill_mm:.2f} mm"} · '
+        f'<td>{"-" if v.drill_mm is None else f"{v.drill_mm:.2f} mm"} · '
         f'{esc(v.fill)}</td>'
         f'<td class="num {"bad" if v.over_limit else ""}">{fmt_a(v.current_a)}</td>'
         f'<td class="num">{fmt_mv(abs(v.delta_v))}</td>'
@@ -618,7 +618,7 @@ def _sec_series(rail: RailReport, r: Report) -> str:
     for g in rail.regulators:
         rows.append(
             f"<tr><td>{esc(g.designator)}</td><td>{esc(g.kind)}</td>"
-            f"<td>{esc(g.input_rail or '—')} → {esc(g.output_rail)}</td>"
+            f"<td>{esc(g.input_rail or '-')} → {esc(g.output_rail)}</td>"
             f'<td class="num">{fmt_v(g.v_out_set)}</td>'
             f'<td class="num">{fmt_v(g.v_in)}</td>'
             f'<td class="num">{fmt_a(g.i_out)}</td>'
@@ -718,7 +718,7 @@ def _appendix(r: Report) -> str:
             body = "".join(
                 f"<tr><td>{esc(p['load'])}</td><td>{esc(p['pad'])}</td>"
                 f"<td>{esc(p['net'])}</td><td>{esc(p['layer'])}</td>"
-                f'<td class="num">{fmt_xy((p["x_mm"], p["y_mm"])) if p["x_mm"] is not None else "—"}</td>'
+                f'<td class="num">{fmt_xy((p["x_mm"], p["y_mm"])) if p["x_mm"] is not None else "-"}</td>'
                 f'<td class="num">{fmt_v(p["v_load"])}</td></tr>'
                 for p in rail.pin_rows)
             out.append(f"<details><summary>{esc(rail.name)} · "
@@ -736,7 +736,7 @@ def _appendix(r: Report) -> str:
             body = "".join(
                 f"<tr><td>{esc(c.get('designator'))}</td>"
                 f'<td class="num">{_fmt_cap(c.get("capacitance_f"))}</td>'
-                f"<td>{esc(c.get('package') or '—')}</td>"
+                f"<td>{esc(c.get('package') or '-')}</td>"
                 f'<td class="num">{_num(c.get("l_nh"), ".3g", " nH")}</td>'
                 f"<td>{esc(c.get('tier') or '')}</td>"
                 f"<td>{esc(', '.join(c.get('flags') or []))}</td></tr>"
@@ -757,12 +757,12 @@ def _appendix(r: Report) -> str:
 
 
 def _num(v: float | None, spec: str, unit: str) -> str:
-    return "—" if v is None else f"{v:{spec}}{unit}"
+    return "-" if v is None else f"{v:{spec}}{unit}"
 
 
 def _fmt_cap(c: float | None) -> str:
     if not c or not math.isfinite(c):
-        return "—"
+        return "-"
     for scale, unit in ((1e-6, "µF"), (1e-9, "nF"), (1e-12, "pF")):
         if c >= scale:
             return f"{c / scale:.3g} {unit}"

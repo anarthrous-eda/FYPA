@@ -36,7 +36,6 @@ class _IsolateViewerStub:
     _on_layer_eye2_shift_clicked = PdnViewer._on_layer_eye2_shift_clicked
     _sync_rail_eye_from_subnets = PdnViewer._sync_rail_eye_from_subnets
     _sync_all_rails_eye = PdnViewer._sync_all_rails_eye
-    _sync_rail_only_visibility = PdnViewer._sync_rail_only_visibility
 
     def __init__(self) -> None:
         self._layer_eye_buttons: list[tuple[str, EyeButton]] = []
@@ -117,9 +116,9 @@ def test_eye_button_keeps_caller_tooltip_across_state_change(qapp) -> None:
     """An unsolved-rail eye explains why it is disabled; a later state change
     must not replace that with generic show/hide text."""
     eye = EyeButton(visible=False)
-    eye.setToolTip("Unsolved rail — press Resolve to compute it.")
+    eye.setToolTip("Unsolved rail - press Resolve to compute it.")
     eye.setVisibleState(True)
-    assert eye.toolTip() == "Unsolved rail — press Resolve to compute it."
+    assert eye.toolTip() == "Unsolved rail - press Resolve to compute it."
 
 
 def test_eye_button_does_not_latch_shift_from_cancelled_press(qapp) -> None:
@@ -133,7 +132,7 @@ def test_eye_button_does_not_latch_shift_from_cancelled_press(qapp) -> None:
     eye.toggled_visible.connect(toggles.append)
 
     QTest.mousePress(eye, Qt.LeftButton, Qt.ShiftModifier)
-    # Release well outside the button — Qt suppresses ``clicked``.
+    # Release well outside the button - Qt suppresses ``clicked``.
     QTest.mouseRelease(
         eye, Qt.LeftButton, Qt.ShiftModifier, eye.rect().bottomRight() * 8,
     )
@@ -162,7 +161,7 @@ def test_layer_isolate_then_invert(qapp) -> None:
 
 def test_first_shift_click_on_sole_visible_layer_isolates(qapp) -> None:
     """The user narrows to one layer by ordinary clicks, then shift-clicks it.
-    That is a request to isolate, not to invert — inverting would hide it."""
+    That is a request to isolate, not to invert - inverting would hide it."""
     viewer = _IsolateViewerStub()
     a, b = EyeButton(visible=True), EyeButton(visible=False)
     viewer._layer_eye_buttons = [("L1", a), ("L2", b)]
@@ -191,7 +190,7 @@ def test_manual_toggle_between_shift_clicks_re_isolates(qapp) -> None:
 
 
 def test_invert_that_would_hide_everything_is_refused(qapp) -> None:
-    """A single-entry list has no complement to swap to — inverting it would
+    """A single-entry list has no complement to swap to - inverting it would
     blank the viewport, including the all-copper eye a no-PDN board forces on."""
     viewer = _IsolateViewerStub()
     only = EyeButton(visible=True)
@@ -268,7 +267,7 @@ def test_rail_group_isolate_and_invert(qapp) -> None:
 
 
 def test_partially_visible_group_isolates_rather_than_inverts(qapp) -> None:
-    """VCC_3V3 visible, VCC_5V and GND hidden: the VCC group is not isolated —
+    """VCC_3V3 visible, VCC_5V and GND hidden: the VCC group is not isolated -
     shift-clicking the parent must complete the isolation, not invert it."""
     viewer, e = _rail_stub()
     e["vcc_5v"].setVisibleState(False, emit=False)
@@ -337,7 +336,7 @@ def test_layer_shift_click_slots_use_their_own_list(qapp) -> None:
 
 def test_layer_and_layer2_isolation_keys_do_not_collide(qapp) -> None:
     """Isolating L1 in the heatmap list then L1 in the copper list are two
-    different isolations — the second must not read as a repeat and invert."""
+    different isolations - the second must not read as a repeat and invert."""
     viewer = _IsolateViewerStub()
     a1, b1 = EyeButton(visible=True), EyeButton(visible=True)
     a2, b2 = EyeButton(visible=True), EyeButton(visible=True)

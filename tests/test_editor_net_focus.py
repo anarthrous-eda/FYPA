@@ -1,10 +1,10 @@
-"""Editor-mode net focus — the net table's crosshair column.
+"""Editor-mode net focus - the net table's crosshair column.
 
 The editor is worked one net at a time: pick a net, place its source and
 sinks, move on. Selecting a net to see where its copper runs used to be the
 only way to isolate it, and any stray click in the canvas threw that away.
-Focus makes it sticky — and hides the other nets outright rather than fading
-them — so these tests pin the two properties the feature lives or dies by:
+Focus makes it sticky - and hides the other nets outright rather than fading
+them - so these tests pin the two properties the feature lives or dies by:
 
 * nothing that clears a *selection* may clear the focus, and
 * focused-out copper is gone from the geometry, not dimmed to 10%.
@@ -31,7 +31,7 @@ def qapp():
 
 
 # Two named nets and one synthetic (Gerber-style) region whose record-level
-# net name is the "(none)" sentinel — the case net names alone cannot tell
+# net name is the "(none)" sentinel - the case net names alone cannot tell
 # apart, so it focuses by polygon identity instead.
 V3_POLYS = {(1, 101), (2, 102)}
 GND_POLYS = {(1, 201)}
@@ -375,7 +375,7 @@ def test_a_long_net_name_is_elided_so_the_link_survives(viewer):
 # --- the chip covers the one state the header cannot ------------------------
 
 def test_the_chip_stays_down_while_the_table_is_up(viewer):
-    """Two release controls at once would be noise — and the chip is the one
+    """Two release controls at once would be noise - and the chip is the one
     that moves the table."""
     _click_crosshair(viewer, "+3V3")
     assert viewer._net_table.isHidden() is False
@@ -383,7 +383,7 @@ def test_the_chip_stays_down_while_the_table_is_up(viewer):
 
 
 def test_the_chip_takes_over_when_a_selection_hides_the_table(viewer):
-    """A component selection hides the table — and with it the header link —
+    """A component selection hides the table - and with it the header link -
     so the chip is the only release left. It has to be showing."""
     _click_crosshair(viewer, "+3V3")
     viewer._editor_selection = {"kind": "component", "designator": "U1",
@@ -600,8 +600,8 @@ def _directives(v):
             layer="Top Layer", layer_id=1))
     v._project = proj
     # The "(none)" marker's anchor resolves to a real polygon that is in no
-    # focus set, so focusing a named net drops it. (The unresolvable case —
-    # where the marker stays put — has tests of its own below.)
+    # focus set, so focusing a named net drops it. (The unresolvable case -
+    # where the marker stays put - has tests of its own below.)
     v._unowned_poly = object()
     v._copper_poly_under_point = lambda x, y, lid: v._unowned_poly
     return proj
@@ -616,7 +616,7 @@ def _marker_nets(v) -> set[str]:
 def marker_viewer(viewer):
     _directives(viewer)
     # Strip the rail half of the gate: no solve here, so every directive is
-    # "not on any solved rail" and passes it anyway — this just makes that
+    # "not on any solved rail" and passes it anyway - this just makes that
     # explicit so a failure points at the focus half.
     viewer._effective_rail_members = lambda rails: []
     viewer._visible_rails = list
@@ -677,7 +677,7 @@ def test_a_marker_whose_anchor_wont_resolve_stays_visible(marker_viewer):
 
 
 def test_a_hidden_marker_is_not_clickable(marker_viewer):
-    """The glyph is gone, so the hit-test must not still find it — otherwise
+    """The glyph is gone, so the hit-test must not still find it - otherwise
     a click on empty board would select an invisible sink."""
     _click_crosshair(marker_viewer, "+3V3")
     assert marker_viewer._free_marker_at(10.0, 10.0) is not None   # focused
@@ -687,7 +687,7 @@ def test_a_hidden_marker_is_not_clickable(marker_viewer):
 # --- markers show when the rail OR its copper is on screen -------------------
 #
 # Editing is done one net at a time, and that net usually has no solved rail
-# yet — so gating markers purely on rail visibility hid the sources and sinks
+# yet - so gating markers purely on rail visibility hid the sources and sinks
 # being placed. The rule is now: visible rail, or visible copper.
 
 @pytest.fixture
@@ -746,7 +746,7 @@ def test_visible_copper_does_not_rescue_the_marker_outside_editor_mode(
 
 def test_focus_still_wins_over_visible_copper(rail_viewer):
     """Visible copper is a reason to show a marker, not a way around the
-    focus — a GND sink must not reappear because GND copper is on screen."""
+    focus - a GND sink must not reappear because GND copper is on screen."""
     rail_viewer._visible_all_copper_layer_ids = lambda: {1: "Top Layer"}
     d = rail_viewer._project.directive_by_id("d1")
     d.p_net = "GND"

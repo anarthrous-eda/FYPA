@@ -36,7 +36,7 @@ def vtk_binary_data(values: Iterable[int | float] | np.ndarray,
     VTK's inline binary encoding is *two independently base64-encoded
     blocks concatenated*: first a single ``header_type`` word holding the
     byte count of the payload, then the raw little-endian array data. (The
-    header is encoded on its own, so it carries its own base64 padding —
+    header is encoded on its own, so it carries its own base64 padding -
     this is what ``vtkBase64OutputStream`` emits and what ParaView expects
     for uncompressed inline data.)
 
@@ -160,7 +160,7 @@ def global_voltage_max(layer_potentials) -> float:
     """Return the maximum vertex potential across all layer mesh components.
 
     The peak is seeded from the data, not floored at zero, so an all-negative
-    solution returns its true (negative) max — matching the per-island
+    solution returns its true (negative) max - matching the per-island
     fallback in :func:`per_vertex_fields`. Returns ``0.0`` only when there is
     no data at all.
     """

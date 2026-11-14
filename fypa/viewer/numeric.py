@@ -20,7 +20,7 @@ class _CLocaleDoubleValidator(QDoubleValidator):
 
     Qt validates the *resulting string* and silently drops any keystroke that
     would make it Invalid. So a validator that simply refuses the comma turns a
-    German user's ``0,5`` into ``05`` — 5.0, a silent 10x error, which is no
+    German user's ``0,5`` into ``05`` - 5.0, a silent 10x error, which is no
     improvement on the 1.234 that rewriting the comma to a dot produced.
 
     Returning Intermediate instead lets the character land: the field still
@@ -35,7 +35,7 @@ class _CLocaleDoubleValidator(QDoubleValidator):
             state, _text, _pos = super().validate(text.replace(",", ""), pos)
             if state == QDoubleValidator.Invalid:
                 return QDoubleValidator.Invalid, text, pos
-            # Typeable, never committable — see the class docstring.
+            # Typeable, never committable - see the class docstring.
             return QDoubleValidator.Intermediate, text, pos
         return super().validate(text, pos)
 
@@ -49,14 +49,14 @@ def _numeric_validator(parent=None, *, bottom: float | None = 0.0,
 
     Qt gives a validator the *system* locale, while ``_fmt_settings_value``
     and :func:`float` both use the C locale. On a comma-decimal system that
-    inverts the intended behaviour — the field accepts ``0,5`` and rejects
-    ``0.5`` — which is the bug the German-locale report describes. Pinning the
+    inverts the intended behaviour - the field accepts ``0,5`` and rejects
+    ``0.5`` - which is the bug the German-locale report describes. Pinning the
     validator to C, and refusing the group separator, makes a comma wrong *at
     the keystroke* instead of silently readable as something else later.
 
     ``ScientificNotation`` is required, not optional: ``_fmt_settings_value``
     formats with ``%g`` and emits exponent form for small magnitudes, so a
-    standard-notation validator would reject the app's own output — and would
+    standard-notation validator would reject the app's own output - and would
     eat the ``e`` and ``-`` out of scientific input the user types, committing
     ``1e-3`` as 13.
 
@@ -118,7 +118,7 @@ def _parse_numeric_text(text: str) -> float:
 
 # Capacitance suffixes accepted by the Capacitors tab's value editor, in
 # farads. The empty key is the bare number, which means the unit the column
-# is labelled with — µF.
+# is labelled with - µF.
 _CAPACITANCE_UNIT_F: dict[str, float] = {
     "": 1e-6,
     "f": 1.0,
@@ -141,7 +141,7 @@ def _parse_capacitance_f(text: str) -> float:
 
     A bare number is µF, the unit the column is labelled with. A unit
     suffix overrides that, because "100n" typed into a µF field means
-    100 nF and never 100 µF — and silently reading it as µF would be
+    100 nF and never 100 µF - and silently reading it as µF would be
     exactly the 1000x error this editor exists to correct.
 
     Raises ``ValueError`` on anything else, including a comma decimal: on a

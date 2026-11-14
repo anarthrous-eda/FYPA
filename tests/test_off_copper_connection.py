@@ -8,7 +8,7 @@ copper reachable from a source:
   aborting the entire solve with an unhelpful traceback.
 * If the layer *was* meshed but the point sat well off the copper, the nearest
   vertex was accepted with no distance check, so the terminal's current was
-  injected at a possibly-distant vertex — silently skewing IR-drop with no
+  injected at a possibly-distant vertex - silently skewing IR-drop with no
   warning.
 
 The solve now degrades gracefully: a mesh-less layer skips the connection with
@@ -57,7 +57,7 @@ def _driven_rail_gnd():
 def _solver_warnings(prob: P.Problem) -> list[str]:
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        # Must not raise — that is the crash this fix prevents.
+        # Must not raise - that is the crash this fix prevents.
         S.solve(prob)
     return [str(w.message) for w in caught
             if issubclass(w.category, S.SolverWarning)]
@@ -67,7 +67,7 @@ def test_meshless_layer_connection_does_not_crash():
     """A terminal on a layer with no meshed copper warns instead of KeyError."""
     rail, gnd, st, nets = _driven_rail_gnd()
     # An isolated layer whose copper never connects to a source, with the
-    # terminal placed off even its own copper — nothing meshes it, so it has
+    # terminal placed off even its own copper - nothing meshes it, so it has
     # no KD-tree. This used to raise KeyError out of NodeIndexer.create.
     orphan = _strip(100.0, 100.0, 110.0, 105.0, "orphan")
     oa = P.NodeID()

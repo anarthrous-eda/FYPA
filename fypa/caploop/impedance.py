@@ -1,6 +1,6 @@
-"""Per-rail PDN impedance Z(f) — the third classic PDN parameter.
+"""Per-rail PDN impedance Z(f) - the third classic PDN parameter.
 
-Where :mod:`fypa.caploop.tier1`–:mod:`~fypa.caploop.tier3` extract the loop
+Where :mod:`fypa.caploop.tier1`-:mod:`~fypa.caploop.tier3` extract the loop
 inductance of each decoupling capacitor from geometry, this module turns those
 numbers into the quantity a designer actually signs off on: the impedance the
 IC sees looking into its power rail, across frequency, against a target mask.
@@ -15,21 +15,21 @@ brings |Z| down because plane spreading and package inductance dominate.
 The model is the classic lumped one. Every element sits in parallel between the
 rail and its return, seen from the IC:
 
-* each capacitor — ``Z = ESR + jω(ESL + L_mount) + 1/(jωC)``, where ``L_mount``
+* each capacitor - ``Z = ESR + jω(ESL + L_mount) + 1/(jωC)``, where ``L_mount``
   is what FYPA extracted (Tier 3 if solved, else Tier 2, else Tier 1) and
   ``ESL``/``ESR`` come from the package library or a per-part override;
-* the VRM — ``Z = R + jωL``, which sets the low-frequency floor;
-* the plane pair itself — ``Z = 1/(jωC_plane)``, ``C_plane = ε0·εr·A/h``.
+* the VRM - ``Z = R + jωL``, which sets the low-frequency floor;
+* the plane pair itself - ``Z = 1/(jωC_plane)``, ``C_plane = ε0·εr·A/h``.
 
 ``Z(f) = 1 / Σ 1/Z_k``. Two capacitors whose branches are inductive and
 capacitive respectively at the same frequency form a parallel resonance: the
-denominator nearly cancels and |Z| spikes. Those **anti-resonances** — not the
-individual minima — are what a decoupling strategy lives or dies by, so they
+denominator nearly cancels and |Z| spikes. Those **anti-resonances** - not the
+individual minima - are what a decoupling strategy lives or dies by, so they
 are found and reported explicitly.
 
 Limitations worth knowing: this is a lumped model, so it cannot see plane
 *resonances* (the board becoming a cavity a half-wavelength across) and it is
-therefore trustworthy below the first of them — a few hundred MHz on a typical
+therefore trustworthy below the first of them - a few hundred MHz on a typical
 board. It also ignores the cap↔cap mutual inductance available in
 :class:`~fypa.caploop.tier2_fem.CavityMatrix`; that matters most when many caps
 share one cavity and would raise the anti-resonance peaks slightly.
@@ -68,7 +68,7 @@ class CapBranch:
 
     @property
     def srf_hz(self) -> float:
-        """Series self-resonant frequency — where this branch is at its
+        """Series self-resonant frequency - where this branch is at its
         lowest impedance (``|Z| = ESR``)."""
         lc = self.total_l_h * self.capacitance_f
         if lc <= 0.0:
@@ -178,7 +178,7 @@ def cap_branch(
     """Build one capacitor's branch, or explain why it can't take part.
 
     A per-part override wins over the package library, and supplies both values
-    for a part the library can't classify — that is how a tantalum brick or a
+    for a part the library can't classify - that is how a tantalum brick or a
     through-hole electrolytic gets into the model at all.
     """
     if not capacitance_f or capacitance_f <= 0.0:
@@ -193,7 +193,7 @@ def cap_branch(
         model.esr_ohm if model else None)
     if esl is None or esr is None:
         return None, (
-            "unsupported package (not an SMD chip capacitor) — "
+            "unsupported package (not an SMD chip capacitor) - "
             "set ESL and ESR on this part to include it")
     return CapBranch(
         designator=designator,
@@ -211,7 +211,7 @@ def plane_capacitance_f(area_mm2: float, h_mm: float,
                         dk: float | None = None) -> float:
     """Parallel-plate capacitance of a plane pair: ``ε0·εr·A/h``.
 
-    Small — tens of nanofarads on a big board — but it is the only thing
+    Small - tens of nanofarads on a big board - but it is the only thing
     holding the rail down above the last capacitor's self-resonance, so it sets
     the high-frequency tail.
     """
@@ -267,7 +267,7 @@ def rail_impedance(
 
 def find_antiresonances(freqs_hz, z_mag, target: RailTarget | None = None,
                         ) -> list[Antiresonance]:
-    """Local maxima of |Z(f)| — the parallel resonances between branches.
+    """Local maxima of |Z(f)| - the parallel resonances between branches.
 
     A strict interior local maximum, so a monotonic rise into the top of the
     sweep isn't reported as a peak (it isn't one; the sweep just ended).

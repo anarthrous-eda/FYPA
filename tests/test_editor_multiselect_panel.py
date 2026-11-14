@@ -166,7 +166,7 @@ def test_a_sink_outside_the_box_is_not_selected(viewer):
 
 def test_a_partly_enclosed_multi_pad_sink_is_not_selected(viewer):
     """U4 glyphs at two pads 100 mm apart. Clipping one must not drag the
-    whole sink in — that is the difference between enclose and touch."""
+    whole sink in - that is the difference between enclose and touch."""
     viewer._project.upsert_directive(_sink("U1"))
     viewer._project.upsert_directive(_sink("U2"))
     viewer._project.upsert_directive(_sink("U4"))
@@ -195,7 +195,7 @@ def test_an_empty_sweep_clears_the_selection(viewer):
 
 def test_copper_and_roleless_parts_are_never_candidates(viewer):
     """Nothing on the board carries a PDN role, so a box over all of it
-    selects nothing — otherwise every drag would catch stray passives and
+    selects nothing - otherwise every drag would catch stray passives and
     degrade to 'multiple objects selected'."""
     _sweep(viewer, -100, -100, 500, 500)
     assert viewer._editor_multi == []
@@ -624,7 +624,7 @@ def test_every_multi_selected_sink_is_emphasised_in_the_viewport(viewer):
 
 
 def test_a_mixed_role_selection_boxes_each_glyph_in_its_own_shape(viewer):
-    """One box group per role — a sink's box must not be drawn with the
+    """One box group per role - a sink's box must not be drawn with the
     source's triangle-up outline."""
     viewer._project.upsert_directive(_sink("U1"))
     viewer._project.upsert_directive(

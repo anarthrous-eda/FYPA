@@ -23,7 +23,7 @@ function Expand-GitArgs {
         `Invoke-Git @('branch', '--show-current')`, 7 enumerates the array into
         two arguments while 5.1 keeps it as one nested element, which a
         [string[]] parameter then joins into the single argument
-        "branch --show-current" — git rejects it. Declaring the parameter
+        "branch --show-current" - git rejects it. Declaring the parameter
         [object[]] and flattening by hand makes both hosts behave the same.
     #>
     param([object[]] $GitArgs)
@@ -53,7 +53,7 @@ function Get-FirstLine {
         `[string] ($empty | Select-Object -First 1)` does NOT give '': the
         pipeline yields AutomationNull and the cast produces $null, so the
         .Trim() that usually follows throws "You cannot call a method on a
-        null-valued expression". Detached HEAD hits this — `git branch
+        null-valued expression". Detached HEAD hits this - `git branch
         --show-current` exits 0 and prints nothing.
     #>
     param([object[]] $Lines)
@@ -71,7 +71,7 @@ function Invoke-GitCore {
 
     .DESCRIPTION
         `2>&1` merges git's stderr into the pipeline as ErrorRecord objects,
-        and under $ErrorActionPreference = 'Stop' those are terminating — so
+        and under $ErrorActionPreference = 'Stop' those are terminating - so
         the ordinary "From github.com:..." progress git prints to stderr on a
         SUCCESSFUL fetch would abort the caller. Capturing into a variable is
         not enough (Windows PowerShell still raises NativeCommandError during
@@ -174,7 +174,7 @@ function Get-RefSha {
 # Paths whose local edits are per-machine noise on the shared branch: they are
 # waved through the dirty-worktree gate instead of blocking a run. They are
 # also the paths Get-DirtyIgnoredPath preserves across the hard reset that
-# follows — see the warning there.
+# follows - see the warning there.
 $script:CombinedIgnoredPaths = @('.gitignore', 'FYPA.code-workspace')
 
 function Get-StatusPath {
@@ -265,7 +265,7 @@ function Restore-WorktreePath {
             Copy-Item -LiteralPath $Backup.Files[$Path] -Destination $Path -Force
         }
         catch {
-            Write-Warning "Could not restore $Path — a copy is at $($Backup.Files[$Path])"
+            Write-Warning "Could not restore $Path - a copy is at $($Backup.Files[$Path])"
             return
         }
     }

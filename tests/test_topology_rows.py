@@ -39,7 +39,7 @@ def _md(*directives: dict) -> dict:
 
 
 # Source → series → regulator → sink, plus an undriven sense resistor and
-# off-tree auto-bridges — the shape of a real mezzanine board.
+# off-tree auto-bridges - the shape of a real mezzanine board.
 TREE = _md(
     _d("SOURCE", "J2", "12 V", P="12P0V", N="GND"),
     _d("RESISTOR", "R18", "5 mOhm", P="+12V", N="12P0V"),
@@ -146,7 +146,7 @@ def test_rail_with_no_loads_ends_in_an_end_tag() -> None:
 def test_loop_back_is_tagged_with_a_jump_to_the_other_part(net: str) -> None:
     # Stepper driver U1 feeds coil J7 on AX; J7 returns to U1 on AY/BX/BY.
     # Those nets can't be tree wires, so both ends are tags that point at
-    # each other — not a "no loads" end on U1.
+    # each other - not a "no loads" end on U1.
     md = load_topology_fixture("project_a_stepper_loop_rails")
     model = build_topology_model(md, layout="rows")
     tags = [t for t in model.tags if t.net == net]
@@ -208,6 +208,92 @@ def test_fixture_layout_is_clean(name: str) -> None:
         assert n.x + n.width <= model.width and n.y + n.height <= model.height
     for t in model.tags:
         assert t.x >= 0 and t.x + t.width <= model.width
+
+
+def test_add_sink_handles_are_off_by_default() -> None:
+    model = build_topology_model(TREE, layout="rows")
+    assert not any(t.kind == "add" for t in model.tags)
+    assert not any(w.routing_kind == "add_tap" for w in model.wires)
+
+
+def test_add_sink_handle_counts_parts_not_already_on_the_rail() -> None:
+    cands = {
+        "+vdd": {"J1", "U9", "u10"},   # J1 is already the sink: 2 left
+        "+12V": {"U6"},                # U6 is drawn there (fed regulator)
+        "+1V8A": {"U9"},               # no loads: the end tag offers it
+        "12P0V": {"J2"},               # J2 is the source on it
+    }
+    model = build_topology_model(TREE, layout="rows", add_candidates=cands)
+    (add,) = [t for t in model.tags if t.kind == "add"]
+    assert (add.net, add.text) == ("+VDD", "+ SINK (2)")
+    # One tap below the sink, in the sink's column, wired dashed off its bus.
+    j1 = _node(model, "J1")
+    assert add.x == pytest.approx(j1.x) and add.y > j1.y + j1.height
+    (tap,) = [w for w in model.wires if w.routing_kind == "add_tap"]
+    assert tap.dashed and tap.net == "+VDD"
+    pts = parse_wire_path(tap.path_d)
+    assert pts[-1] == pytest.approx((add.x, add.y))
+    # It starts on the rail's own solid wiring (bus, or trunk when straight).
+    sx, sy = pts[0]
+    on_rail = [
+        s for s in compute_schematic_geometry(model.wires).segments
+        if s.net == "+VDD"
+        and min(s.x1, s.x2) - WIRE_EPS <= sx <= max(s.x1, s.x2) + WIRE_EPS
+        and min(s.y1, s.y2) - WIRE_EPS <= sy <= max(s.y1, s.y2) + WIRE_EPS
+    ]
+    assert on_rail
+    # Clickable and highlights its rail.
+    assert find_tag_at(model, add.x + add.width / 2, add.y) is add
+    assert topology_net_at(model, add.x + add.width / 2, add.y) == "+VDD"
+    assert "Manual setup" in topology_tooltip_at(model, add.x + 4, add.y)
+    assert 'stroke-dasharray="3 2"' in render_topology_svg(model)
+
+
+def test_no_add_handle_when_every_candidate_is_already_on_the_rail() -> None:
+    model = build_topology_model(TREE, layout="rows", add_candidates={"+VDD": {"J1"}})
+    assert not any(t.kind == "add" for t in model.tags)
+
+
+@pytest.mark.parametrize("name", _all_fixture_names())
+def test_fixture_layout_is_clean_with_add_handles(name: str) -> None:
+    md = load_topology_fixture(name)
+    plain = build_topology_model(md, layout="rows")
+    cands = {w.net: {"ZZ999"} for w in plain.wires if w.net and w.net != GND_NET}
+    model = build_topology_model(md, layout="rows", add_candidates=cands)
+    adds = [t for t in model.tags if t.kind == "add"]
+    taps = [w for w in model.wires if w.routing_kind == "add_tap"]
+    assert len(adds) == len(taps)
+    geo = compute_schematic_geometry(model.wires)
+    assert not any(geo.vert_crossings.values()), name
+
+    def overlaps(a, b) -> bool:
+        return a[0] < b[2] - 1 and b[0] < a[2] - 1 and a[1] < b[3] - 1 and b[1] < a[3] - 1
+
+    node_boxes = [(n.x, n.y, n.x + n.width, n.y + n.height) for n in model.nodes]
+    tag_boxes = [(t.x, t.y - t.height / 2, t.x + t.width, t.y + t.height / 2)
+                 for t in model.tags]
+    for t in adds:
+        box = (t.x, t.y - t.height / 2, t.x + t.width, t.y + t.height / 2)
+        assert not any(overlaps(box, nb) for nb in node_boxes), (name, t.net)
+        assert sum(overlaps(box, tb) for tb in tag_boxes) == 1, (name, t.net)  # itself
+        assert t.x + t.width <= model.width and t.y + t.height / 2 <= model.height
+    # The dashed taps run clear of every symbol and every other net's wire.
+    for w in taps:
+        pts = parse_wire_path(w.path_d)
+        for (x1, y1), (x2, y2) in zip(pts, pts[1:]):
+            lo_x, hi_x = sorted((x1, x2))
+            lo_y, hi_y = sorted((y1, y2))
+            for nb in node_boxes:
+                assert not (lo_x < nb[2] - WIRE_EPS and hi_x > nb[0] + WIRE_EPS
+                            and lo_y < nb[3] - WIRE_EPS and hi_y > nb[1] + WIRE_EPS), name
+            for s in geo.segments:
+                if s.net == w.net:
+                    continue
+                s_lo_x, s_hi_x = sorted((s.x1, s.x2))
+                s_lo_y, s_hi_y = sorted((s.y1, s.y2))
+                touch = (lo_x <= s_hi_x + WIRE_EPS and s_lo_x <= hi_x + WIRE_EPS
+                         and lo_y <= s_hi_y + WIRE_EPS and s_lo_y <= hi_y + WIRE_EPS)
+                assert not touch, (name, w.net, s.net)
 
 
 def test_tag_hit_testing() -> None:

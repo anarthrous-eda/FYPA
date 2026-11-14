@@ -8,9 +8,9 @@ over-states the rise of small hot features many times over.
 This module adds lateral spreading. The board is a stack of copper-layer
 sheets on a square finite-difference grid over the board outline:
 
-* **In plane**, each layer's sheet conducts ``k_cu·t_cu·coverage`` — the
+* **In plane**, each layer's sheet conducts ``k_cu·t_cu·coverage`` - the
   fraction of the cell covered by copper of *any* net, since all copper
-  spreads heat — plus half of each touching laminate's ``k_xy·t``.
+  spreads heat - plus half of each touching laminate's ``k_xy·t``.
 * **Through the board**, neighbouring layers couple through the laminate
   between them (``k_z·A/t``, FR-4 being ~2.7x worse through-plane than in
   plane) and through plated barrels (``k_cu·A_wall/dz``) wherever a via or
@@ -26,7 +26,7 @@ holding each triangle's centroid) and from lumped parts the solver marks
 The conductance matrix does not depend on temperature, so it is factorised
 once; each electro-thermal iteration is one back-substitution. A trace much
 narrower than a cell reads its cell's mean temperature, so the hottest
-sliver of a thin neck reads low by however much it is hotter than its cell —
+sliver of a thin neck reads low by however much it is hotter than its cell -
 the trade KiPI (whose design notes this follows) also makes.
 
 Units: millimetres, watts, kelvin. Conductivities are given in W/(m·K) and
@@ -91,7 +91,7 @@ class ThermalBoard:
 
     Build it with :func:`build_thermal_board`. ``problem_layer_map[i]`` is
     the thermal layer of the solver's ``prob.layers[i]`` (``-1`` when it is
-    unknown — its heat is then dropped, and the loop warns)."""
+    unknown - its heat is then dropped, and the loop warns)."""
     x0: float
     y0: float
     dx: float
@@ -390,7 +390,7 @@ def _factorize_spd(A) -> tuple[Callable[[np.ndarray], np.ndarray],
     MKL PARDISO when available, in a solver instance of its own so the
     electrical solve's cached factorisation is left alone, in SPD mode on
     the upper triangle (2.6 s for 640k unknowns on a 16-layer board).
-    SuperLU otherwise — whose fill on a layered 3-D grid grows fast, which
+    SuperLU otherwise - whose fill on a layered 3-D grid grows fast, which
     is why :func:`build_thermal_board` coarsens the grid when PARDISO is
     missing. Returns ``(solve(b), release(), method)``."""
     if _have_pardiso():

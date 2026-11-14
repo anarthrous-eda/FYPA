@@ -129,8 +129,8 @@ def test_widening_into_other_copper_is_blocked():
 
 
 def test_copper_lookups_are_clipped_to_the_area():
-    """Lookups only union the copper inside the area asked about — a whole
-    layer of every net took minutes on a large board — and split own from
+    """Lookups only union the copper inside the area asked about - a whole
+    layer of every net took minutes on a large board - and split own from
     others by net."""
     copper = R._Copper({"Top": [
         ("A", box(0, 0, 10, 10)),

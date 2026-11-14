@@ -1,4 +1,4 @@
-"""File > Export > Report… — the design report dialog and its export flow.
+"""Reports > Generate Report… - the design report dialog and its export flow.
 
 The report itself is built headless by :mod:`fypa.report`; this mixin adds
 what only the viewer holds: the capacitor / impedance results, the Messages
@@ -202,13 +202,15 @@ def _parse(text: str, name: str, optional: bool = False) -> float | None:
 
 
 class _ReportExportMixin:
-    """File > Export > Report… on :class:`PdnViewer`."""
+    """Reports > Generate Report… on :class:`PdnViewer`."""
 
     def _on_menu_export_report(self) -> None:
+        # The report documents the base design, not a what-if on screen.
+        self._whatif_ensure_base()
         if self.solution is None or not self._has_solve_results():
             QMessageBox.information(
                 self, "Nothing to report",
-                "Solve the design first — the report documents the solved "
+                "Solve the design first - the report documents the solved "
                 "results.")
             return
         stored = {}

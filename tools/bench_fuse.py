@@ -13,9 +13,9 @@ The Clipper2 rows need the optional backend installed (``uv sync --extra
 fast-fuse``); without it they are skipped with a note.
 
 Backends compared:
-  * shapely  — the default (threaded ``shapely.union_all``).
-  * clipper  — in-process Clipper2 (run serially; it is GIL-bound).
-  * verify   — runs both and keeps shapely wherever the areas disagree
+  * shapely  - the default (threaded ``shapely.union_all``).
+  * clipper  - in-process Clipper2 (run serially; it is GIL-bound).
+  * verify   - runs both and keeps shapely wherever the areas disagree
                (this is the safe per-board qualification mode).
 """
 from __future__ import annotations
@@ -26,7 +26,7 @@ import sys
 import time
 from pathlib import Path
 
-# Allow `python tools/bench_fuse.py` from anywhere — put the repo root (this
+# Allow `python tools/bench_fuse.py` from anywhere - put the repo root (this
 # file's parent's parent) on sys.path so `import fypa` resolves.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -61,7 +61,7 @@ def main() -> int:
     print(f"  shapely (threaded)  {t_sh:7.2f}s")
 
     if not _clipper_fuse.clipper_available():
-        print("  clipper             SKIPPED — pyclipr not installed "
+        print("  clipper             SKIPPED - pyclipr not installed "
               "(uv sync --extra fast-fuse)")
         return 0
 
@@ -83,7 +83,7 @@ def main() -> int:
     print(f"  per-bucket: worst diff {worst:.2e} mm^2, "
           f"buckets over tol({args.tol:g}) = {mism}/{len(buckets)}")
     if mism == 0:
-        print("  => clipper matches shapely within tolerance — safe to enable "
+        print("  => clipper matches shapely within tolerance - safe to enable "
               "(FYPA_FUSE_BACKEND=clipper).")
     else:
         print("  => some buckets differ; inspect before trusting 'clipper' "

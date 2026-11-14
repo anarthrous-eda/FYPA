@@ -164,7 +164,7 @@ def test_altium_gnd_pinched_pour_meshes_adaptive():
 
 def test_hole_touching_exterior_at_a_point_is_one_vertex():
     # 10 x 10 square with a triangular hole whose apex touches the bottom
-    # edge's vertex at (5, 0) — a valid polygon, shared point in two rings.
+    # edge's vertex at (5, 0) - a valid polygon, shared point in two rings.
     shell = [(0, 0), (5, 0), (10, 0), (10, 10), (0, 10)]
     hole = [(5, 0), (6, 3), (4, 3)]
     poly = shapely.geometry.Polygon(shell, [hole])

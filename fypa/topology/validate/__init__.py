@@ -89,7 +89,7 @@ def check_conditional_gnd_names(model: TopologyModel) -> list[dict]:
     ``VSS`` and similar names are deliberately *not* folded into GND by name
     alone (a real board can carry a negative rail called VSS), so such a net
     is drawn as its own bus unless the electrical rail grouping ties it to a
-    GND-grouped net — in which case its ports already carry the GND net here.
+    GND-grouped net - in which case its ports already carry the GND net here.
     A port still carrying the conditional name means it was kept separate; a
     single ``warning`` per distinct name tells the user it was not assumed to
     be ground (rather than letting the change be silent)."""

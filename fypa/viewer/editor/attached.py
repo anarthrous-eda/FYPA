@@ -14,7 +14,7 @@ class _AttachedPdnMixin:
 
     # --- Attached-PDN summary (copper selection) ---------------------------
     #
-    # Clicking copper answers "what is on this rail?" — the panel lists every
+    # Clicking copper answers "what is on this rail?" - the panel lists every
     # source / sink / regulator / series element coupling into the selected
     # net's connected group, with the value the solve uses for it.
 
@@ -37,7 +37,7 @@ class _AttachedPdnMixin:
 
     @staticmethod
     def _terminal_nets(term: dict | None) -> set[str]:
-        """Every net a metadata directive terminal couples to — the net it
+        """Every net a metadata directive terminal couples to - the net it
         asked for plus the nets of the pads it resolved to. Empty for an
         ideal 0 V return, which owns no copper."""
         if not term or term.get("ideal_return"):
@@ -52,13 +52,13 @@ class _AttachedPdnMixin:
         return nets
 
     def _net_attachment_rows(self, net: str) -> list[dict]:
-        """PDN elements coupling into ``net``'s connected group — one row
+        """PDN elements coupling into ``net``'s connected group - one row
         per source / sink / regulator / series element, carrying the
         terminal(s) that land on the group and the element's headline
         value (V for a source, A for a sink, ohms for a series element).
 
-        Both directive lists are read — solved directives from the last
-        run's metadata and the project's own editor directives — with the
+        Both directive lists are read - solved directives from the last
+        run's metadata and the project's own editor directives - with the
         same de-dupe the rail-load sum uses (see :meth:`_rail_sink_load`):
         a schematic directive an editor directive overrides is dropped,
         and an editor directive that survived a re-solve is owned by the
@@ -74,7 +74,7 @@ class _AttachedPdnMixin:
         from fypa.topology import format_directive_value
 
         directives = (self.metadata or {}).get("directives") or []
-        # Editor directives the last solve actually applied — the rest are
+        # Editor directives the last solve actually applied - the rest are
         # still pending a Resolve, and say so in the panel.
         solved_editor = {d.get("designator") for d in directives
                          if d.get("schdoc") == _EDITOR_SCHDOC}
@@ -115,7 +115,7 @@ class _AttachedPdnMixin:
         if self._project is not None:
             for ed in self._project.editor_directives:
                 # A single-net SOURCE / SINK returns through an ideal 0 V
-                # node, not through copper — only its P terminal can land
+                # node, not through copper - only its P terminal can land
                 # on the selected group.
                 two_net = (not ed.single_net) or ed.role == "SERIES"
                 if ed.role == "REGULATOR":
@@ -156,7 +156,7 @@ class _AttachedPdnMixin:
 
     def _net_summary_html(self, net: str) -> str:
         """Rich-text block listing what is attached to the selected copper
-        — one line per element (role glyph, name, terminal, value), the
+        - one line per element (role glyph, name, terminal, value), the
         rail's total sink load, and a pending tag for editor directives the
         current solve hasn't applied yet."""
         if not net or net == "(none)":
@@ -167,7 +167,7 @@ class _AttachedPdnMixin:
         rows = self._net_attachment_rows(net)
         head = "<b>Attached PDN elements</b>"
         if not rows:
-            return (f"{head}<br><span style='color:{muted};'>None — no "
+            return (f"{head}<br><span style='color:{muted};'>None - no "
                     "source, sink or series element couples into this "
                     "net.</span>")
 
@@ -193,7 +193,7 @@ class _AttachedPdnMixin:
                         or self._component_record(ref[1]) is not None):
                 label = (f"<a href='sel:{_esc(ref[0])}:{_esc(str(ref[1]))}' "
                          f"style='color:{t['fg']};'>{label}</a>")
-            value = _esc(r["value"] or "\u2014")
+            value = _esc(r["value"] or "-")
             if r.get("min_voltage") is not None:
                 value += (f" <span style='color:{muted};'>&ge;"
                           f"{float(r['min_voltage']):.4g}&nbsp;V</span>")
@@ -219,7 +219,7 @@ class _AttachedPdnMixin:
         if hidden > 0:
             foot.append(f"+ {hidden} more not shown")
         if any(r.get("pending") for r in rows):
-            foot.append("* pending \u2014 press Resolve")
+            foot.append("* pending - press Resolve")
 
         html = (f"{head} <span style='color:{muted};'>"
                 f"{' &middot; '.join(bits)}</span>"
@@ -296,7 +296,7 @@ class _AttachedPdnMixin:
         if kind == "copper" and sel and not unnamed_copper:
             self._editor_hint.setText(
                 f"Copper net <b>{_esc(sel.get('net', '') or '')}</b> "
-                "selected — connected copper is highlighted. Select a "
+                "selected - connected copper is highlighted. Select a "
                 "component or drop a free marker to add a source / sink."
             )
         elif not has_form:
@@ -314,7 +314,7 @@ class _AttachedPdnMixin:
                         "net attachment summary failed")
             summary.setText(html)
             summary.setVisible(bool(html))
-        # The net inventory table is the "idle" view — show it only in
+        # The net inventory table is the "idle" view - show it only in
         # editor mode with nothing selected, so a component / marker /
         # copper selection gives its form (or hint) the full panel.
         if hasattr(self, "_net_table"):
@@ -326,8 +326,8 @@ class _AttachedPdnMixin:
         self._sync_marker_buttons()
 
     _MARKER_TIPS: dict = {
-        "SOURCE": "Drop a free SOURCE (S) — click, then click copper",
-        "SINK": "Drop a free SINK (L) — click, then click copper",
+        "SOURCE": "Drop a free SOURCE (S) - click, then click copper",
+        "SINK": "Drop a free SINK (L) - click, then click copper",
     }
     _MARKER_TIP_DISABLED = (
         "At least one piece of copper needs a net name in the project "
@@ -336,7 +336,7 @@ class _AttachedPdnMixin:
 
     def _design_has_named_copper(self) -> bool:
         """True iff the board carries at least one piece of copper with
-        a real net name — either named at extract time (Altium nets,
+        a real net name - either named at extract time (Altium nets,
         Gerber pours with apertures resolved to a net) or via a user
         :class:`~fypa.project_file.CopperName` rename. Free markers
         anchor to a net, so the SOURCE / SINK overlay buttons stay
@@ -388,7 +388,7 @@ class _AttachedPdnMixin:
         """Arm 'drop a free <role> marker on the next viewport click'.
         Clicking the same button again disarms it."""
         if not self._design_has_named_copper():
-            # Defensive — the button is disabled in this state, but a
+            # Defensive - the button is disabled in this state, but a
             # programmatic call still shouldn't arm a placement that
             # can't succeed.
             self._editor_pending_marker = None
@@ -408,12 +408,12 @@ class _AttachedPdnMixin:
         """Force-flag the displayed solve as stale (used at viewer load
         when the loaded solve pre-dates the project's editor directives).
         Editor / settings dirty flags can independently extend
-        staleness — see :meth:`_refresh_solve_stale_overlay`."""
+        staleness - see :meth:`_refresh_solve_stale_overlay`."""
         self._initial_solve_stale = bool(stale)
         self._refresh_solve_stale_overlay()
 
     def _mark_awaiting_first_solve(self) -> None:
-        """Stub loaded with design info but no FEM run yet — show ↻ Solve."""
+        """Stub loaded with design info but no FEM run yet - show ↻ Solve."""
         self._awaiting_first_solve = True
         self._set_solve_stale(True)
 
@@ -457,13 +457,13 @@ class _AttachedPdnMixin:
                 rbtn.setEnabled(enabled)
                 solveable = enabled or self._has_solveable_directives()
                 if self._awaiting_first_solve:
-                    rbtn.setText("↻  Solve")
+                    rbtn.setText("Solve")
                     rbtn.setToolTip(
                         "Run the FEM solver on the loaded design"
                         if solveable else self._NOTHING_TO_SOLVE_TIP
                     )
                 else:
-                    rbtn.setText("↻  Resolve")
+                    rbtn.setText("Resolve")
                     if enabled and not self._has_solveable_directives():
                         rbtn.setToolTip(
                             "Rebuild the design with the Bridges-tab changes "
@@ -489,6 +489,19 @@ class _AttachedPdnMixin:
         out of date and a re-solve is needed."""
         self._project_dirty = True
         self._refresh_solve_stale_overlay()
+        self._invalidate_topology()
+
+    def _mark_project_names_dirty(self) -> None:
+        """Record a project change that needs saving but leaves the solve
+        valid - e.g. auto-minted names for no-net copper, which no
+        directive uses yet. Unlike :meth:`_mark_project_dirty` it doesn't
+        enable Resolve; a later edit that puts a directive on that copper
+        marks the project dirty itself."""
+        self._display_dirty = True
+        self._invalidate_topology()
+
+    def _invalidate_topology(self) -> None:
+        """Refresh the Topology tab now if it's showing, else on next visit."""
         if getattr(self, "_topology_view", None) is not None:
             tab_idx = getattr(self, "_topology_tab_index", -1)
             if self.tabs.currentIndex() == tab_idx:

@@ -33,7 +33,7 @@ def _resistor(a: str, b: str) -> dict:
 
 
 def test_rail_tree_chain_nests_by_series_hops():
-    """A—R—A.1—R—A.1.1 nests as A → A.1 → A.1.1."""
+    """A-R-A.1-R-A.1.1 nests as A → A.1 → A.1.1."""
     metadata = {
         "directives": [
             _source("A"),
@@ -62,7 +62,7 @@ def test_rail_tree_chain_nests_by_series_hops():
 
 
 def test_rail_tree_star_splits_under_primary():
-    """A—R—A.1 and A—R—A.2 are siblings under A."""
+    """A-R-A.1 and A-R-A.2 are siblings under A."""
     metadata = {
         "directives": [
             _source("A"),
@@ -198,7 +198,7 @@ def test_rail_tree_local_label_series_nests_via_alias():
 def test_rail_tree_orphan_component_keeps_series_nesting():
     """SERIES chain unreachable from primary stays nested under an orphan root."""
     # Explicit membership (not from compute_rail_groups): PRIMARY shares the
-    # member list but has no SERIES/alias edge to the X—Y—Z chain.
+    # member list but has no SERIES/alias edge to the X-Y-Z chain.
     metadata = {
         "directives": [
             _resistor("X", "Y"),

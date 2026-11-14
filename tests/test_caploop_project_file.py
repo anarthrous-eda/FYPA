@@ -1,7 +1,7 @@
 """Per-capacitor override persistence in the .fypa project file.
 
 The Capacitors tab's include / target choices round-trip through
-``ProjectFile.cap_overrides`` as an additive key — older .fypa files (which
+``ProjectFile.cap_overrides`` as an additive key - older .fypa files (which
 lack it entirely) must still load at the unchanged schema version.
 """
 from __future__ import annotations
@@ -130,7 +130,7 @@ def test_clearing_every_field_removes_the_override():
 
 def test_an_esl_only_override_is_kept():
     """One parasitic may be overridden while the other falls back to the
-    package library — the ESL is the one that usually needs a vendor value."""
+    package library - the ESL is the one that usually needs a vendor value."""
     proj = ProjectFile()
     proj.upsert_cap_override("C1", esl_h=0.2e-9)
     esls, esrs = proj.cap_parasitic_overrides()

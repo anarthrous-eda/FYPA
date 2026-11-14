@@ -22,15 +22,15 @@ class _MarkerOverlayMixin:
 
     # --- Directive-pin overlay -----------------------------------------------
 
-    # Marker style per role — colours stand out against the viridis heatmap
+    # Marker style per role - colours stand out against the viridis heatmap
     # AND on the dark viewbox background. ``symbol`` is a pyqtgraph marker
     # name (one of 'o', 's', 't', 'd', 'star', '+', 'x', 'p', 'h', 't1' …).
     # NOTE: keys match the role string produced by
-    # fypa.altium.loader.build_solve_metadata() — that strips the trailing "Spec"
+    # fypa.altium.loader.build_solve_metadata() - that strips the trailing "Spec"
     # off the dataclass name and uppercases it (so ResistorSpec → RESISTOR).
     # Keyed by the role string seen in the relevant context: solved
     # directives carry the Spec class name (``RESISTOR`` for a SERIES
-    # element — see fypa.altium.loader), while editor directives carry the
+    # element - see fypa.altium.loader), while editor directives carry the
     # ``EDITOR_ROLES`` name (``SERIES``). Both keys map to the same style.
     _ROLE_MARKER_STYLE: dict[str, dict] = {
         "SOURCE":    {"symbol": "tri_up",   "color": "#ff3030", "size": 18, "label": "SOURCE"},
@@ -70,7 +70,7 @@ class _MarkerOverlayMixin:
         Layer outlines (gated by ``_outlines_btn``) trace each visible
         (layer, net) shape in the physical layer's swatch colour. Stub
         outlines (same gate, same colour) trace the no-current copper
-        pieces that the FEM filter excluded — these aren't in
+        pieces that the FEM filter excluded - these aren't in
         ``layer_probes`` because there's no FEM solution for them, so we
         walk ``metadata['stubs']`` separately.
 
@@ -250,7 +250,7 @@ class _MarkerOverlayMixin:
         prev_normal = np.roll(edge_normal, 1, axis=0)
         bisector = edge_normal + prev_normal
         bis_len = np.linalg.norm(bisector, axis=1)
-        # Degenerate (collinear reversal) — fall back to the outgoing normal.
+        # Degenerate (collinear reversal) - fall back to the outgoing normal.
         flat = bis_len < 1e-9
         bisector[flat] = edge_normal[flat]
         bis_len[flat] = 1.0
@@ -287,7 +287,7 @@ class _MarkerOverlayMixin:
             positions[:, 2] = 0.01
 
         # User-set colour for the board-outline row (defaults to a bold
-        # warm orange — reads on both viridis and the standard dark/light
+        # warm orange - reads on both viridis and the standard dark/light
         # themes without being mistaken for any of the layer swatches).
         # Alpha follows the row's TransparencyButton.
         colour = np.asarray(self._overlay_colors["board_outline"],
@@ -299,7 +299,7 @@ class _MarkerOverlayMixin:
         self._gl_viewer.set_board_outline(positions, colors)
         self._sync_navlib_frame_bounds()
 
-    # RGB of the stub-copper polygons — dim grey so they're visibly
+    # RGB of the stub-copper polygons - dim grey so they're visibly
     # present but obviously distinct from the heatmap LUT colours.
     # The viewer's clear-colour is black, so this sits clearly above the
     # background without competing with the viridis-coloured rails.
@@ -312,7 +312,7 @@ class _MarkerOverlayMixin:
         rather than flat grey.
 
         Stub voltage colouring is opt-in (the ``colour_stubs_box`` toggle)
-        and only meaningful for the Voltage / Voltage Drop modes — current
+        and only meaningful for the Voltage / Voltage Drop modes - current
         and power are zero inside a stub by definition. When this returns
         False a colour-scheme change can't affect the stubs, so the fast
         recolour path (:meth:`_recolor_overlays`) can skip re-pushing them.
@@ -337,12 +337,12 @@ class _MarkerOverlayMixin:
         vanished. By default each stub is flat dim grey (obviously
         "no data"); when the user toggles ``colour_stubs_box`` AND the
         active mode is Voltage / Voltage Drop, each stub is instead
-        coloured by its approximate voltage — sampled from the same-net
+        coloured by its approximate voltage - sampled from the same-net
         solved layer at the stub's centroid. Voltage is constant across
         each stub (no current flows through it).
 
         The triangle *positions* depend only on the visible layer/rail
-        set and the 2D/3D z — never on the colour scheme or scale — so
+        set and the 2D/3D z - never on the colour scheme or scale - so
         they're cached (single entry, keyed on exactly those inputs).
         A colour-scheme / scale change reuses the cached positions and
         only re-bakes the per-vertex colour array, which is what makes
@@ -400,14 +400,14 @@ class _MarkerOverlayMixin:
     ) -> tuple[np.ndarray | None, list[tuple[dict, str | None, int]]]:
         """Aggregate the stub triangle positions for the visible stub set.
 
-        Returns ``(positions, spans)`` — ``positions`` is the concatenated
+        Returns ``(positions, spans)`` - ``positions`` is the concatenated
         ``(M, 3)`` float32 vertex array (or ``None`` when no stub is
         visible) and ``spans`` is a parallel list of
         ``(stub, net, vertex_count)`` so :meth:`_bake_stub_colors` can
         rebuild the colour array without re-triangulating. Triangulation
         itself is cached per stub by :meth:`_triangulate_stub`.
 
-        ``focus_nets``: the editor net focus, when one is held — stubs
+        ``focus_nets``: the editor net focus, when one is held - stubs
         outside it are dropped from the batch, matching the all-copper skip
         in :meth:`_refresh_overlay_geometry`.
         """
@@ -456,7 +456,7 @@ class _MarkerOverlayMixin:
 
         # Voltage-coloured mode only makes sense for Voltage / Voltage
         # Drop modes. Current density and power density are zero in a
-        # stub by definition — colouring stubs with the lowest LUT entry
+        # stub by definition - colouring stubs with the lowest LUT entry
         # would be visually misleading, so fall back to grey.
         colour_by_v = self._stubs_coloured_by_voltage(mode)
         lut: np.ndarray | None = None
@@ -489,7 +489,7 @@ class _MarkerOverlayMixin:
         FEM solution at the stub's centroid.
 
         Tries every physical layer that has a solved (layer, net) pair.
-        Caches the answer on the stub dict — voltages are constant per
+        Caches the answer on the stub dict - voltages are constant per
         solve so the lookup only needs to happen once per stub.
         """
         if net_name is None:
@@ -567,7 +567,7 @@ class _MarkerOverlayMixin:
     # top and bottom copper layers, so it visually rests on the surface.
     _SERIES_BAR_Z_LIFT_MM: float = 0.001
     # Extrusion height (mm) of the bar above its mounting surface in 3D mode.
-    # Set to 0 to revert to a flat rectangle.  Tunable — increase for more
+    # Set to 0 to revert to a flat rectangle.  Tunable - increase for more
     # visual prominence, decrease if it obscures nearby copper detail.
     _SERIES_BAR_HEIGHT_MM: float = 0.005
 
@@ -583,11 +583,11 @@ class _MarkerOverlayMixin:
         centroid of terminal "N" pins. The rectangle is ``_SERIES_BAR_HALF_WIDTH_MM``
         wide (world-space mm) and is coloured by the active heatmap mode:
 
-        * **Voltage / Voltage Drop** — smooth gradient from the P-side
+        * **Voltage / Voltage Drop** - smooth gradient from the P-side
           heatmap colour to the N-side colour.
-        * **Current Density** — neutral grey: a resistor has no copper
+        * **Current Density** - neutral grey: a resistor has no copper
           cross-section, so it has no A/mm² to put on the scale.
-        * **Power Density** — uniform colour from P = I² · R.
+        * **Power Density** - uniform colour from P = I² · R.
         """
         if self.metadata is None or not phys_list:
             self._gl_viewer.clear_series_bars()
@@ -740,7 +740,7 @@ class _MarkerOverlayMixin:
                 c2 = self._shade(lut, val2, vmin, vmax)
             elif mode in (_VIA_CURRENT_MODE, "Current Density"):
                 # Neither mode defines a value for series resistors (a
-                # resistor has no copper cross-section, so no A/mm²) —
+                # resistor has no copper cross-section, so no A/mm²) -
                 # colour them with the same neutral shade the copper uses
                 # in Via Current mode so they read as context, not data.
                 neutral_rgb = tuple(c / 255.0 for c in (160, 160, 160))
@@ -829,7 +829,7 @@ class _MarkerOverlayMixin:
                 z_cap = z_top + extrude_sign * 5e-4  # outer cap, away from board
                 z_cap_inner = z - extrude_sign * 5e-4  # inner cap, board side
 
-                # Black box walls (4 sides). No top/base face needed —
+                # Black box walls (4 sides). No top/base face needed -
                 # the cap-coplanar frames close the silhouette.
                 p, c = _vquad(a_ox, a_oy, d_ox, d_oy, z, z_top, black, black)
                 pos_chunks.append(p); col_chunks.append(c)
@@ -891,14 +891,14 @@ class _MarkerOverlayMixin:
 
         Fast path: ``fypa.altium.loader._build_stub_record`` pre-triangulates
         every stub at solve time and ships the result in the pickle as
-        ``stub['triangles_xy']`` — already in the (N*3, 2) float32 layout
+        ``stub['triangles_xy']`` - already in the (N*3, 2) float32 layout
         the GL stub batch wants, so the viewer just uploads it. Old
         pickles (or stubs where the loader's triangle call failed) fall
         through to the lazy Triangle-library path below.
 
         Lazy path: Shewchuk's Triangle (via the ``triangle`` PyPI
         package) does a constrained Delaunay of the exterior + interior
-        rings with one hole marker per interior — fills non-convex shapes
+        rings with one hole marker per interior - fills non-convex shapes
         (including those with holes) exactly. The earlier
         ``shapely.ops.triangulate`` + ``poly.contains(centroid)``
         approach was a vertex-set Delaunay bounded by the convex hull:
@@ -928,12 +928,12 @@ class _MarkerOverlayMixin:
 
         The source data sometimes carries overlapping polygons for the
         same layer (a GND plane plus smaller copper objects nominally
-        sitting in its clearances, plus pad / via-clearance fills) — each
+        sitting in its clearances, plus pad / via-clearance fills) - each
         overlap adds another blend pass at the layer's transparency
         alpha, cumulatively pushing the area to opacity even when the per-
         vertex alpha is low. Merging into one non-overlapping triangulation
         bypasses that. Cached per ``(layer_name, frozenset(rail_members))``
-        — the metadata is fixed for the viewer's lifetime, so no other
+        - the metadata is fixed for the viewer's lifetime, so no other
         invalidation is needed.
 
         Returns ``None`` when the layer has no non-rail-member geometry.
@@ -1016,7 +1016,7 @@ class _MarkerOverlayMixin:
         pairs_chunks: list[np.ndarray] = []
         for ring in rings:
             # Close the ring if the source data didn't (extraction stores
-            # exterior/holes as open rings — first vertex != last).
+            # exterior/holes as open rings - first vertex != last).
             if not np.allclose(ring[0], ring[-1]):
                 ring = np.vstack([ring, ring[:1]])
             if ring.shape[0] < 2:
@@ -1037,7 +1037,7 @@ class _MarkerOverlayMixin:
         cmap texture matches ``kind``.
 
         ``kind`` is ``"data"`` (the viridis ramp keyed on per-vertex
-        values — every mode except Via Current) or ``"neutral"`` (a
+        values - every mode except Via Current) or ``"neutral"`` (a
         flat-grey LUT used in Via Current mode so the copper renders
         as context behind the heatmapped vias). The viewer caches the
         active kind so this is a no-op when the LUT hasn't changed.
@@ -1058,7 +1058,7 @@ class _MarkerOverlayMixin:
 
         Pushing both the per-vertex values and the level clamps through
         this keeps the GL viewer's linear normalisation shader correct
-        for the log scale with no shader change — see :meth:`_render`."""
+        for the log scale with no shader change - see :meth:`_render`."""
         if not self._log_active:
             return v
         return np.log10(np.maximum(v, self._log_floor))
@@ -1074,7 +1074,7 @@ class _MarkerOverlayMixin:
             self._gl_scale(vmin), self._gl_scale(vmax))
 
     def _on_scale_type_changed(self, is_log: bool) -> None:
-        """The Linear / Logarithmic dropdown changed — re-render so the
+        """The Linear / Logarithmic dropdown changed - re-render so the
         copper mesh, the via overlays and the gradient strip all switch
         scale together. ``_render`` re-derives ``_log_active`` (the
         dropdown is disabled for ineligible modes, but guard anyway)."""
@@ -1091,8 +1091,8 @@ class _MarkerOverlayMixin:
         ``lookup`` maps ``(net, x_mm, y_mm)`` to the via's
         max-|segment-current| (matches the Vias-tab ``current`` column)
         for every via whose net is in the effective rail set. The
-        range is taken across that whole set — independent of which
-        physical layers are toggled visible — so flipping layers
+        range is taken across that whole set - independent of which
+        physical layers are toggled visible - so flipping layers
         doesn't move the colormap. Falls back to ``(0.0, 1.0)`` when
         no via matches the rail filter.
         """

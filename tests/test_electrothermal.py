@@ -1,7 +1,7 @@
 """Coupled electro-thermal solve: analytic validation and opt-in guarantees.
 
 Copper resistivity rises ~0.39 %/K, so a rail dissipating real power is more
-resistive than an isothermal solve assumes — and the error compounds, because
+resistive than an isothermal solve assumes - and the error compounds, because
 the extra resistance dissipates more power. ``solver.ThermalConfig`` turns on
 a fixed-point loop that models this.
 
@@ -29,7 +29,7 @@ _CU = SIGMA_S_PER_MM * THICKNESS_MM      # sheet conductance, S
 RS = 1.0 / _CU                           # sheet resistance, ohm/sq
 ALPHA = 0.00393                          # /K
 
-# 2 A on a 2 mm-wide 1 oz trace — ~1 A/mm, a realistically warm rail. Far
+# 2 A on a 2 mm-wide 1 oz trace - ~1 A/mm, a realistically warm rail. Far
 # above this the closed form runs away (the denominator approaches zero) and
 # the trace would not survive in reality either.
 WIDTH_MM, LENGTH_MM, PAD_MM, CURRENT_A = 2.0, 100.0, 0.5, 2.0
@@ -81,7 +81,7 @@ def test_thermal_defaults_to_off():
 
 
 def test_omitting_thermal_is_bit_identical_to_disabling_it():
-    """A disabled config must not perturb the solve by even one ULP —
+    """A disabled config must not perturb the solve by even one ULP -
     electro-thermal is opt-in, so every existing result has to be reproduced
     exactly."""
     _, r_default = _solve_strip()
@@ -140,7 +140,7 @@ def test_hot_resistance_matches_closed_form(h_w_per_m2k):
 
 
 def test_self_heating_always_raises_resistance():
-    """Sign check — the coupling is positive feedback, never negative."""
+    """Sign check - the coupling is positive feedback, never negative."""
     _, r_cold = _solve_strip()
     cfg = S.ThermalConfig(enabled=True, heat_transfer_w_per_m2k=20.0)
     _, r_hot = _solve_strip(thermal=cfg)

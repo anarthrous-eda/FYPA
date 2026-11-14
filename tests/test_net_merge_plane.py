@@ -3,7 +3,7 @@
 After a low-Ω SERIES auto-merge, `_apply_net_remap` rewrites every primitive's
 net_index onto the canonical class representative. Internal-plane sheets are
 flooded by NAME (`plane_net_name`) resolved against `proj.nets` at geometry
-time — a path the primitive rewrite never touched — so a plane whose net was
+time - a path the primitive rewrite never touched - so a plane whose net was
 the *non-canonical* member kept resolving to its pre-merge index, landed in a
 bucket filtered out of the active-net set, and the whole plane silently
 vanished from the FEM. `_apply_net_remap` must rewrite plane_net_name to the

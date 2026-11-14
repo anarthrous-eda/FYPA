@@ -21,7 +21,7 @@ from fypa.viewer.window import PdnViewer
 
 def main(solution, warnings_list=None, metadata=None,
          gerber_import_target=None, altium_import_target=None) -> int:
-    """CLI entry — show the viewer for the given Solution and run the Qt
+    """CLI entry - show the viewer for the given Solution and run the Qt
     event loop. Returns the QApplication exit code.
 
     If ``solution is None``, opens an empty :class:`LauncherWindow` instead
@@ -34,7 +34,7 @@ def main(solution, warnings_list=None, metadata=None,
 
     ``altium_import_target`` (CLI ``FYPA gui <PrjPcb>``): dict with at least
     ``prjpcb_path`` and a resolved ``pcbdoc_path`` (silent first-board /
-    ``--pcbdoc`` selection — no multi-board picker). Optional ``clean`` and
+    ``--pcbdoc`` selection - no multi-board picker). Optional ``clean`` and
     mesh overrides (only when the user passed ``--mesh-*``). Starts the same
     File > Import Altium Design worker path after the launcher is shown.
     """
@@ -44,13 +44,13 @@ def main(solution, warnings_list=None, metadata=None,
     # solve-worker thread on every solve is a needless mutation of shared
     # state that was never reset.
     logging.captureWarnings(True)
-    # Windows taskbar grouping — must happen BEFORE any window is shown.
+    # Windows taskbar grouping - must happen BEFORE any window is shown.
     _set_windows_app_user_model_id()
     app = QApplication.instance()
     owns_app = app is None
     if owns_app:
         app = QApplication(sys.argv)
-    # Theme — load the persisted choice (default: dark) and apply the
+    # Theme - load the persisted choice (default: dark) and apply the
     # matching palette + base stylesheet to the QApplication BEFORE any
     # window is constructed, so the side panel, menubar and dialogs
     # follow the theme on every machine regardless of system palette.

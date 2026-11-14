@@ -1,7 +1,14 @@
-"""The Setup tab."""
+"""The Properties tab."""
 from __future__ import annotations
 
-from PySide6.QtWidgets import QTextBrowser, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QLabel,
+    QSplitter,
+    QTextBrowser,
+    QVBoxLayout,
+    QWidget,
+)
 
 from fypa.viewer.display import _FILL_MODE_REPORT_LABELS
 from fypa.viewer.tabs.help import _HELP_SECTIONS, _help_tab_html
@@ -9,14 +16,14 @@ from fypa.viewer.theme import _T, current_theme
 from fypa.viewer.widgets import _contrasting_text_color, _esc
 
 
-# --- Setup-tab HTML formatter (module-level, no Qt deps) ---------------------
+# --- Properties-tab HTML formatter (module-level, no Qt deps) ---------------------
 
 def _plating_summary(phys: dict) -> str:
     from fypa.altium.loader import plating_summary
     return plating_summary(phys)
 
 
-def _format_setup_html(solution, metadata: dict | None,
+def _format_properties_html(solution, metadata: dict | None,
                        expanded_directives: set[str] | frozenset[str] = frozenset(),
                        *,
                        phys_color_fn=None,
@@ -28,7 +35,7 @@ def _format_setup_html(solution, metadata: dict | None,
     whose terminal-pin tables should be shown. Any directive NOT in this
     set is rendered collapsed (heading only, click to expand).
 
-    Falls back to a "metadata not available — re-solve with the current
+    Falls back to a "metadata not available - re-solve with the current
     version" notice when ``metadata is None`` (legacy pickle).
     """
     from fypa.viewer.window import PdnViewer
@@ -43,8 +50,8 @@ def _format_setup_html(solution, metadata: dict | None,
         )
 
     parts: list[str] = []
-    # Self-contained styling — colours come from the active theme dict so
-    # the Setup tab tracks dark / light mode the same as the rest of the UI.
+    # Self-contained styling - colours come from the active theme dict so
+    # the Properties tab tracks dark / light mode the same as the rest of the UI.
     _t = current_theme()
     parts.append(
         "<style>"
@@ -114,7 +121,7 @@ def _format_setup_html(solution, metadata: dict | None,
                              "at solve temperature")
             diel_mm = row.get("dielectric_thickness_mm", 0.0) or 0.0
             diel_cell = (f"{diel_mm*1000:.1f} µm" if diel_mm > 0
-                         else "<span class='muted'>—</span>")
+                         else "<span class='muted'>-</span>")
             # Tint the id cell with the physical-layer swatch used in the
             # Heatmap tab so users can cross-reference at a glance.
             bg = phys_color_fn(row["name"]) if phys_color_fn else None
@@ -179,7 +186,7 @@ def _format_setup_html(solution, metadata: dict | None,
                      f"<td class='num'>{phys.get('conductive_fill_resistivity_ohm_mm', 0)*1.0e3:.3g} mΩ·mm</td>"
                      f"<td class='muted'>Applied as a parallel rod inside the "
                      f"plated barrel for filled vias "
-                     f"({_esc(_FILL_MODE_REPORT_LABELS.get(phys.get('conductive_fill_mode', 'auto'), 'auto'))}) — "
+                     f"({_esc(_FILL_MODE_REPORT_LABELS.get(phys.get('conductive_fill_mode', 'auto'), 'auto'))}) - "
                      f"<b>{cond_fill_count}</b> via(s) on this board.</td></tr>"
                      f"<tr><th>Multi-pin coupling resistance</th>"
                      f"<td class='num'>{phys.get('coupling_resistance_ohm', 0)*1000:.3f} mΩ</td>"
@@ -192,16 +199,16 @@ def _format_setup_html(solution, metadata: dict | None,
                      f"as R ∝ 1/pad area (supply and GND).</td></tr>"
                      "</table>")
 
-    # Directives — each heading is a clickable toggle (collapsed by default).
+    # Directives - each heading is a clickable toggle (collapsed by default).
     # Synthetic AUTO_BRIDGE records are excluded: they carry no annotation
     # the user wrote, and the "Bridged / shorted nets" table above already
     # lists each one. Counting them here inflates the number people read as
     # "how many parts did I annotate".
     directives = [d for d in metadata.get("directives", [])
                   if d.get("role") != "AUTO_BRIDGE"]
-    parts.append(f"<h2>PDN directives <span class='muted'>({len(directives)} — click a heading to expand)</span></h2>")
+    parts.append(f"<h2>PDN directives <span class='muted'>({len(directives)} - click a heading to expand)</span></h2>")
     if not directives:
-        parts.append("<p class='warn'>No directives parsed — nothing to solve.</p>")
+        parts.append("<p class='warn'>No directives parsed - nothing to solve.</p>")
     for d in directives:
         desig = d.get("designator", "?")
         # ``label`` (e.g. "U5#1") disambiguates multi-channel SOURCE/SINK
@@ -293,8 +300,8 @@ def _format_setup_html(solution, metadata: dict | None,
     # (a Net Tie, a 0 Ω resistor, a wire jumper, or a SERIES the user gave a
     # sub-milliohm value), so the loader merges the two nets into one rail and
     # re-inserts the physical link as a same-net bridge resistor. That merge
-    # is invisible everywhere else — after it, both pads report the surviving
-    # net name — so this is the one place the user can see which rails were
+    # is invisible everywhere else - after it, both pads report the surviving
+    # net name - so this is the one place the user can see which rails were
     # tied together and by what.
     bridges = metadata.get("merged_bridges") or []
     if bridges:
@@ -303,7 +310,7 @@ def _format_setup_html(solution, metadata: dict | None,
             "<p class='muted'>These parts join two nets with (near-)zero "
             "resistance, so FYPA solves them as a single rail and models the "
             "link itself as a bridge resistor at the pads below. A part here "
-            "was <b>not</b> annotated by you \u2014 it was inferred from its "
+            "was <b>not</b> annotated by you - it was inferred from its "
             "Altium ComponentKind, value or footprint. To model a real "
             "resistance instead, annotate it with "
             "<code>PDN_ROLE=SERIES</code> and <code>PDN_R</code>.</p>")
@@ -342,10 +349,10 @@ def _format_setup_html(solution, metadata: dict | None,
     return "".join(parts)
 
 
-class _SetupTabMixin:
-    """The Setup tab."""
+class _PropertiesTabMixin:
+    """The Properties tab."""
 
-    # --- Setup tab ----------------------------------------------------------
+    # --- Properties tab ----------------------------------------------------------
 
     def _build_help_tab(self) -> QWidget:
         """Static HTML reference, one collapsible section per tab. Clicking a
@@ -386,41 +393,73 @@ class _SetupTabMixin:
         self.help_browser.setHtml(_help_tab_html(self._help_expanded))
         scroll_bar.setValue(scroll_pos)
 
-    def _build_setup_tab(self) -> QWidget:
-        """Build the Setup tab — a scrollable HTML view of everything the
-        FEM was given. Helps users verify that copper thickness, conductivity,
-        directive values, etc. match what they entered in Altium.
+    def _build_properties_tab(self) -> QWidget:
+        """Build the Properties tab: everything that defines THIS design's solve.
 
-        Directive blocks render as collapsible sections; clicking the
-        heading re-renders the HTML with that designator toggled into / out
-        of :attr:`_expanded_directives`.
+        Left: the editable base properties (physics, via fill, stackup, mesh,
+        capacitor loop knobs) with Re-run Solver - see
+        :meth:`_build_design_inputs_widget`. Right: the read-only design
+        report, a scrollable HTML view of everything the FEM was actually
+        given (extracted records, stackup, physics constants, directives,
+        active nets, solver stats, warnings), so users can check it matches
+        what they entered in Altium.
+
+        Directive blocks in the report render as collapsible sections;
+        clicking the heading re-renders the HTML with that designator
+        toggled into / out of :attr:`_expanded_directives`.
         """
         widget = QWidget(self.tabs)
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(0, 0, 0, 0)
+        _t = _T()
 
-        self.setup_browser = QTextBrowser()
-        self.setup_browser.setOpenExternalLinks(False)
+        splitter = QSplitter(Qt.Horizontal, widget)
+        splitter.setChildrenCollapsible(False)
+        splitter.addWidget(self._build_design_inputs_widget())
+
+        report = QWidget()
+        report.setObjectName("propertiesReportPane")
+        report.setStyleSheet(
+            f"QWidget#propertiesReportPane {{ background-color: {_t['bg']}; }}")
+        report_layout = QVBoxLayout(report)
+        report_layout.setContentsMargins(8, 8, 8, 8)
+        report_layout.setSpacing(4)
+        heading = QLabel(
+            f"<b>Design report</b> <span style='color:{_t['fg_hint']};'>"
+            "(read-only - what the solver was given)</span>")
+        heading.setStyleSheet(f"QLabel {{ color: {_t['fg']}; }}")
+        report_layout.addWidget(heading)
+
+        self.properties_browser = QTextBrowser()
+        self.properties_browser.setOpenExternalLinks(False)
         # `setOpenLinks(False)` lets `anchorClicked` fire without QTextBrowser
         # trying to navigate to a (nonexistent) URL.
-        self.setup_browser.setOpenLinks(False)
-        self.setup_browser.anchorClicked.connect(self._on_setup_anchor_clicked)
+        self.properties_browser.setOpenLinks(False)
+        self.properties_browser.anchorClicked.connect(self._on_properties_anchor_clicked)
         # Pin the widget palette to the active theme so scrollbar gutter
         # etc. don't clash with the HTML body's background.
-        _t = _T()
-        self.setup_browser.setStyleSheet(
+        self.properties_browser.setStyleSheet(
             f"QTextBrowser {{ background-color: {_t['bg']}; color: {_t['fg']}; }}"
         )
-        self._refresh_setup_html()
-        layout.addWidget(self.setup_browser)
+        self._refresh_properties_html()
+        report_layout.addWidget(self.properties_browser, 1)
+        splitter.addWidget(report)
+        # Equal halves: the stretch factors keep the split at 50% as the
+        # window resizes, and the equal initial sizes stop the two panes'
+        # differing size hints from skewing the first layout.
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([10000, 10000])
+        layout.addWidget(splitter)
+        self._properties_splitter = splitter
         return widget
 
-    def _refresh_setup_html(self) -> None:
-        """Re-render the Setup tab HTML, preserving the scroll position so
+    def _refresh_properties_html(self) -> None:
+        """Re-render the Properties tab HTML, preserving the scroll position so
         toggling a directive doesn't jump the view."""
-        scroll_bar = self.setup_browser.verticalScrollBar()
+        scroll_bar = self.properties_browser.verticalScrollBar()
         scroll_pos = scroll_bar.value()
-        self.setup_browser.setHtml(_format_setup_html(
+        self.properties_browser.setHtml(_format_properties_html(
             self.solution, self.metadata, self._expanded_directives,
             phys_color_fn=self._layer_color_for,
         ))

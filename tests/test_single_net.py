@@ -1,9 +1,9 @@
-"""Single-net (PDN_NET) analysis — solver-level tests.
+"""Single-net (PDN_NET) analysis - solver-level tests.
 
 A point-to-point check models one net with an ideal 0 Ω return: a SOURCE and
 a SINK both land on the same copper and share one virtual return node, so the
 current loop closes. The two directives are emitted as *separate* Networks
-that share a NodeID — exactly what ``altium_loader`` builds for PDN_NET
+that share a NodeID - exactly what ``altium_loader`` builds for PDN_NET
 directives. See ``altium_annotations.py`` for the annotation schema.
 """
 from __future__ import annotations
@@ -33,11 +33,11 @@ def _single_net_problem(length_mm: float = 40.0, width_mm: float = 6.0,
     """A SOURCE and a SINK on one copper strip sharing an ideal return node.
 
     The SOURCE's N terminal and the SINK's return terminal are the *same*
-    ``NodeID`` reused across two Networks — the way the loader closes a
+    ``NodeID`` reused across two Networks - the way the loader closes a
     point-to-point loop for single-net directives.
     """
     layer = _strip_layer(length_mm, width_mm)
-    ref = P.NodeID()  # shared ideal 0 Ω return — no copper connection
+    ref = P.NodeID()  # shared ideal 0 Ω return - no copper connection
 
     src_p = P.NodeID()
     src_net = P.Network(
@@ -76,7 +76,7 @@ def test_single_net_produces_ir_drop():
         solution.layer_solutions[0].potentials[0].values, dtype=np.float64)
     assert np.all(np.isfinite(pots))
     spread = float(pots.max() - pots.min())
-    # 2 A through a 40 x 6 mm strip — a few mV of drop.
+    # 2 A through a 40 x 6 mm strip - a few mV of drop.
     assert 1e-4 < spread < 5e-2, f"implausible drop: {spread:.4e} V"
     # The SOURCE holds its pad at `voltage` above the 0 V ideal return; every
     # copper vertex sits at or below it, and the source pad is the maximum.
@@ -86,12 +86,12 @@ def test_single_net_produces_ir_drop():
 
 def test_single_net_coexists_with_a_normal_analysis():
     """A single-net analysis and an ordinary two-net analysis on electrically
-    isolated copper solve together — each isolated subsystem gets its own
+    isolated copper solve together - each isolated subsystem gets its own
     voltage reference, so neither floats."""
     # Subsystem A: single-net strip (SOURCE + SINK sharing an ideal return).
     single = _single_net_problem(voltage=5.0, current=2.0)
 
-    # Subsystem B: a normal rail/return pair — two separate copper strips,
+    # Subsystem B: a normal rail/return pair - two separate copper strips,
     # a VoltageSource bridging them and a CurrentSource loading them.
     rail = _strip_layer(30.0, 5.0)
     gnd = P.Layer(shape=MultiPolygon([shapely.box(0.0, 10.0, 30.0, 15.0)]),
@@ -119,7 +119,7 @@ def test_single_net_coexists_with_a_normal_analysis():
     )
     solution = S.solve(combined)
     # Both subsystems are referenced, so the system is non-singular and
-    # balanced — a floating island would blow up the residual.
+    # balanced - a floating island would blow up the residual.
     assert solution.solver_info.residual_norm < 1e-6
     assert abs(solution.solver_info.ground_node_current) < 1e-6
     for ls in solution.layer_solutions:

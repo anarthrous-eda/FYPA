@@ -104,7 +104,7 @@ def parse_camera_matrix_2d(
     w_px = max(1, width_px)
     h_px = max(1, height_px)
     # Derive mpp from the horizontal extent implied by eye height and FOV-like
-    # factor — when NavLib only pans, mpp is unchanged; when it zooms via
+    # factor - when NavLib only pans, mpp is unchanged; when it zooms via
     # view_extents we rely on zoom_mpp_from_view_extents_2d instead.
     mpp = max(eye_z / max(w_px, h_px) * 2.0, 1e-9)
     return float(cx), float(cy), float(mpp)
@@ -291,7 +291,7 @@ def perspective_frustum_at_near(
     """NavLib frustum planes at the near clip (world mm), KiCad-style.
 
   ``left/right/top/bottom`` are half-extents on the near plane, not raw
-  ``tan(fov/2)`` slopes — NavLib Fit uses these to pick camera distance.
+  ``tan(fov/2)`` slopes - NavLib Fit uses these to pick camera distance.
     """
     fov_h_half = math.radians(fov_deg) * 0.5
     half_h = near * math.tan(fov_h_half)
@@ -372,7 +372,7 @@ def model_extents_from_bounds(
 def snapshot_navlib_state(viewer: GLMeshViewer) -> dict:
     """Capture viewer camera state for round-trip / tests."""
     if viewer.view_mode() == "3d":
-        tx, ty, tz = viewer._cam_target  # noqa: SLF001 — test helper
+        tx, ty, tz = viewer._cam_target  # noqa: SLF001 - test helper
         return {
             "mode": "3d",
             "target": (tx, ty, tz),

@@ -8,7 +8,7 @@ shared annotation parse + LoadedProject assembly.
 With ``sch_components = ()``, :func:`parse_annotations` returns an empty
 result (no SOURCE / SINK / SERIES / REGULATOR directives) and the SERIES
 bridge-merge pre-pass in :func:`fypa.altium.loader.load_project` becomes a
-no-op — so the only thing that distinguishes a Gerber project from a fresh
+no-op - so the only thing that distinguishes a Gerber project from a fresh
 Altium project at this stage is the absence of schematic directives. The
 user adds them via editor mode (:mod:`fypa.editor_directives`).
 """
@@ -33,7 +33,7 @@ def load_gerber_project(extracted: ExtractedProject) -> LoadedProject:
     enabled = extracted.enabled_copper_layer_ids()
     if not enabled:
         log.warning(
-            "Gerber project has no enabled copper layers — was the stackup "
+            "Gerber project has no enabled copper layers - was the stackup "
             "empty? The board won't solve.",
         )
     annotations = parse_annotations(extracted, enabled_layers=enabled)

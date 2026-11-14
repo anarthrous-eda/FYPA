@@ -1,4 +1,4 @@
-"""Tests for File > Recent Projects persistence helpers."""
+"""Tests for the recent-projects persistence helpers."""
 
 from __future__ import annotations
 
@@ -133,7 +133,7 @@ def test_recent_project_label_includes_parent_and_pcbdoc(tmp_path: Path) -> None
     fypa.parent.mkdir()
     fypa.write_text("{}", encoding="utf-8")
     assert recent_project_label({"kind": "fypa", "path": str(fypa)}) == (
-        "board.fypa — designs"
+        "board.fypa - designs"
     )
 
     prjpcb = tmp_path / "altium" / "main.PrjPcb"
@@ -145,7 +145,7 @@ def test_recent_project_label_includes_parent_and_pcbdoc(tmp_path: Path) -> None
         "kind": "altium",
         "prjpcb_path": str(prjpcb),
         "pcbdoc_path": str(pcbdoc),
-    }) == "main.PrjPcb — altium [main.PcbDoc]"
+    }) == "main.PrjPcb - altium [main.PcbDoc]"
 
 
 def test_remove_recent_project_entry_normalizes_path(tmp_path: Path) -> None:
@@ -448,55 +448,20 @@ def test_open_recent_altium_uses_cached_import_by_default(
     )
 
 
-def test_open_recent_altium_honours_clean_preference(tmp_path: Path) -> None:
+def test_open_recent_altium_clean_flag_passes_through(tmp_path: Path) -> None:
+    """The Recent panel's Load / Clean icons pass *clean* explicitly."""
     from unittest.mock import MagicMock, patch
 
-    from fypa.altium_viewer import (
-        _open_recent_project,
-        load_recent_open_clean,
-        save_recent_open_clean,
-    )
-
-    assert load_recent_open_clean() is False
-    save_recent_open_clean(True)
-    assert load_recent_open_clean() is True
+    from fypa.altium_viewer import _open_recent_project
 
     prjpcb = tmp_path / "board.PrjPcb"
     entry = {"kind": "altium", "prjpcb_path": str(prjpcb)}
     window = MagicMock()
-    try:
-        with patch("fypa.viewer.project_open._open_altium_project_at") as mock_open:
-            _open_recent_project(window, entry)
-        mock_open.assert_called_once_with(
-            window, prjpcb, None, clean=True, from_recent=True,
-        )
-    finally:
-        save_recent_open_clean(False)
-
-
-def test_open_recent_altium_explicit_clean_overrides_preference(
-        tmp_path: Path) -> None:
-    """The Recent panel's two icons pass clean explicitly; the File-menu
-    preference must not override them."""
-    from unittest.mock import MagicMock, patch
-
-    from fypa.altium_viewer import _open_recent_project, save_recent_open_clean
-
-    prjpcb = tmp_path / "board.PrjPcb"
-    entry = {"kind": "altium", "prjpcb_path": str(prjpcb)}
-    window = MagicMock()
-    save_recent_open_clean(True)
-    try:
-        with patch("fypa.viewer.project_open._open_altium_project_at") as mock_open:
-            _open_recent_project(window, entry, clean=False)
-        mock_open.assert_called_once_with(
-            window, prjpcb, None, clean=False, from_recent=True,
-        )
-    finally:
-        save_recent_open_clean(False)
     with patch("fypa.viewer.project_open._open_altium_project_at") as mock_open:
         _open_recent_project(window, entry, clean=True)
-    assert mock_open.call_args.kwargs["clean"] is True
+    mock_open.assert_called_once_with(
+        window, prjpcb, None, clean=True, from_recent=True,
+    )
 
 
 # --- solution + gerber entry kinds -------------------------------------------
@@ -536,7 +501,7 @@ def test_record_and_load_solution_entry(tmp_path: Path) -> None:
     record_recent_project({"kind": "solution", "path": str(sol)})
     entries = load_recent_projects()
     assert entries == [{"kind": "solution", "path": str(sol.resolve())}]
-    assert recent_project_label(entries[0]) == "board.pkl — runs"
+    assert recent_project_label(entries[0]) == "board.pkl - runs"
     sol.unlink()
     assert prune_missing_recent_projects() == []
 

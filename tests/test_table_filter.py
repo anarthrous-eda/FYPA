@@ -33,9 +33,9 @@ def _table(qapp):
         t.setItem(r, 0, QTableWidgetItem(go))
         t.setItem(r, 1, QTableWidgetItem(net))
         if cur is None:
-            t.setItem(r, 2, QTableWidgetItem("—"))
+            t.setItem(r, 2, QTableWidgetItem("-"))
         else:
-            # Sort key on UserRole, decorated display text — the Capacitors
+            # Sort key on UserRole, decorated display text - the Capacitors
             # tab's pattern.
             it = _MessagesSortItem(f"~{cur:g}")
             it.setData(Qt.UserRole, cur)
@@ -44,7 +44,7 @@ def _table(qapp):
         chk.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
         chk.setCheckState(Qt.Checked if use else Qt.Unchecked)
         t.setItem(r, 3, chk)
-    # Enabled after populating, as the tabs do — otherwise every setItem
+    # Enabled after populating, as the tabs do - otherwise every setItem
     # re-sorts the rows out from under the loop.
     t.setSortingEnabled(True)
     t.sortByColumn(0, Qt.AscendingOrder)

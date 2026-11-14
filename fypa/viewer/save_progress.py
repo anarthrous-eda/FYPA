@@ -1,7 +1,7 @@
 """Run a project / solution save off the GUI thread behind a progress dialog.
 
 A large design's save copies the solve + design-info pickles beside the
-``.fypa`` and may pickle the in-memory solution — hundreds of MB that used to
+``.fypa`` and may pickle the in-memory solution - hundreds of MB that used to
 run on the GUI thread, freezing the window ("Not Responding") with no hint of
 what it was doing. :func:`run_save_with_progress` runs the Qt-free part on a
 plain worker thread and spins a local event loop until it finishes, so callers
@@ -115,7 +115,7 @@ def run_save_with_progress(parent, title: str, work):
     def _run() -> None:
         try:
             box["result"] = work(status)
-        except BaseException as e:  # noqa: BLE001 — surfaced to the caller
+        except BaseException as e:  # noqa: BLE001 - surfaced to the caller
             box["exc"] = e
 
     th = threading.Thread(target=_run, name="fypa-project-save", daemon=True)

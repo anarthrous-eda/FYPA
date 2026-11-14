@@ -28,7 +28,7 @@ class _MessagesSortItem(QTableWidgetItem):
     internally (Qt source: ``role = (role == Qt::EditRole ? Qt::DisplayRole
     : role)`` inside ``setData``), so the usual pattern of
     ``setData(Qt.EditRole, sort_key)`` overwrites the cell's display text
-    with the sort key — fine when the sort key happens to be the value
+    with the sort key - fine when the sort key happens to be the value
     you wanted to show, but in the Messages tab we need the cell to show
     an emoji or a formatted timestamp while still sorting by an int level
     or a float epoch.
@@ -56,13 +56,13 @@ class _MessagesTabMixin:
 
     # --- Messages tab ------------------------------------------------------
 
-    # Columns of the Messages-tab table. (display label, numeric?) — the
+    # Columns of the Messages-tab table. (display label, numeric?) - the
     # numeric flag is informational; sort keys are carried on the cell's
     # Qt.UserRole via :class:`_MessagesSortItem` so the Time column sorts
     # by epoch and the Level column by logging level number rather than
     # by the displayed string. (Setting Qt.EditRole on a QTableWidgetItem
-    # would clobber the DisplayRole text — Qt aliases EditRole to
-    # DisplayRole for this class — which is why we don't go that route.)
+    # would clobber the DisplayRole text - Qt aliases EditRole to
+    # DisplayRole for this class - which is why we don't go that route.)
     _MESSAGES_TABLE_COLUMNS: tuple[tuple[str, bool], ...] = (
         ("Time",    True),
         ("Level",   True),
@@ -99,7 +99,7 @@ class _MessagesTabMixin:
         return "🐛"
 
     def _build_messages_tab(self) -> QWidget:
-        """Build the Messages tab — a sortable, filterable table of every
+        """Build the Messages tab - a sortable, filterable table of every
         log record captured since the process started (see
         :mod:`fypa.log_buffer`). Errors, warnings, and info messages are
         all routed here so the user can audit what the loader / solver /
@@ -112,7 +112,7 @@ class _MessagesTabMixin:
         outer = QVBoxLayout(widget)
         outer.setContentsMargins(8, 8, 8, 8)
 
-        # Filter bar — one checkbox per level, plus an Auto-scroll toggle
+        # Filter bar - one checkbox per level, plus an Auto-scroll toggle
         # and a Clear button. The Clear button drops every buffered
         # record (process-wide) so the table reflects the current state
         # rather than the cumulative session log.
@@ -166,7 +166,7 @@ class _MessagesTabMixin:
         header = self.messages_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setStretchLastSection(True)
-        # Theme-driven styling — matches the Nodes / Vias tables.
+        # Theme-driven styling - matches the Nodes / Vias tables.
         _t = _T()
         self.messages_table.setStyleSheet(
             f"QTableWidget {{ background-color: {_t['bg']}; color: {_t['fg']};"
@@ -188,7 +188,7 @@ class _MessagesTabMixin:
 
     def _install_messages_signaller(self) -> None:
         """Create the QObject bridge that re-emits log records on the GUI
-        thread. Idempotent — called both from :meth:`_install_messages_listener`
+        thread. Idempotent - called both from :meth:`_install_messages_listener`
         and during the theme-driven tab rebuild so a fresh tab inherits
         the existing buffer feed."""
         if getattr(self, "_messages_signaller", None) is not None:
@@ -207,7 +207,7 @@ class _MessagesTabMixin:
 
     def _install_messages_listener(self) -> None:
         """Register the per-viewer listener with the global log buffer.
-        Safe to call repeatedly — the buffer dedupes by callable identity."""
+        Safe to call repeatedly - the buffer dedupes by callable identity."""
         self._install_messages_signaller()
         signaller = self._messages_signaller
         if getattr(self, "_messages_listener", None) is None:
@@ -217,7 +217,7 @@ class _MessagesTabMixin:
                 try:
                     signaller.recordReady.emit(rec)
                 except RuntimeError:
-                    # Underlying QObject destroyed — listener is stale;
+                    # Underlying QObject destroyed - listener is stale;
                     # remove ourselves so the buffer stops calling us.
                     log_buffer.remove_listener(_listener)
             self._messages_listener = _listener
@@ -264,12 +264,12 @@ class _MessagesTabMixin:
     _MESSAGES_FLUSH_MS: int = 150
 
     def _on_messages_record(self, rec: log_buffer.MessageRecord) -> None:
-        """Slot for the signaller — runs on the GUI thread thanks to the
+        """Slot for the signaller - runs on the GUI thread thanks to the
         QueuedConnection. Only queues the record; :meth:`_flush_messages`
         adds the queued batch to the table shortly after.
 
         Adding each record as it arrived re-sorted the whole table and
-        recounted every row per record — ~16 ms each on a table of a few
+        recounted every row per record - ~16 ms each on a table of a few
         thousand rows. A solve logs hundreds of records, and that GUI work
         held the GIL against the solve worker: a Resolve's annotation
         warnings alone took 4 s to log instead of 30 ms.
@@ -325,7 +325,7 @@ class _MessagesTabMixin:
         Adds per-level colour to the Level cell so errors/warnings pop
         without needing to read the column text."""
         _t = _T()
-        # Time cell — displays the full local-time stamp, but sort key
+        # Time cell - displays the full local-time stamp, but sort key
         # is the raw epoch so a roll past midnight (or a re-ordering
         # after Clear) still sorts chronologically. Sort key lives on
         # UserRole rather than EditRole because QTableWidgetItem aliases
@@ -338,7 +338,7 @@ class _MessagesTabMixin:
 
         level_item = _MessagesSortItem(self._messages_level_glyph(rec.level))
         # Numeric sort key so ERROR sits above WARNING above INFO when
-        # the column is sorted descending — without it the alphabetical
+        # the column is sorted descending - without it the alphabetical
         # order of the emoji codepoints leaks through. See the
         # _MessagesSortItem docstring for the EditRole-vs-DisplayRole
         # trap that motivates using UserRole here.
@@ -380,7 +380,7 @@ class _MessagesTabMixin:
     def _apply_messages_filter(self, *_args) -> None:
         """Wholesale rebuild on filter change. The buffer is small
         (capped at 5 000 records), so a full rebuild stays well under
-        a frame — simpler than tracking per-row visibility deltas."""
+        a frame - simpler than tracking per-row visibility deltas."""
         self._populate_messages_table()
 
     def _on_messages_clear(self) -> None:
@@ -395,7 +395,7 @@ class _MessagesTabMixin:
         self._update_messages_summary(0, 0)
 
     def _update_messages_summary(self, visible: int, total: int) -> None:
-        """Footer counter — "N messages shown out of M total" — kept in
+        """Footer counter - "N messages shown out of M total" - kept in
         sync with the table state."""
         label = getattr(self, "messages_summary_label", None)
         if label is None:

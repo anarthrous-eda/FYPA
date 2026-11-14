@@ -1,4 +1,4 @@
-FYPA — IR-drop and current-density viewer for Altium PCB designs
+FYPA - IR-drop and current-density viewer for Altium PCB designs
 Copyright (C) 2025 CuTree Designs
 
 Licensed under the GNU Affero General Public License, version 3 or later.
@@ -54,7 +54,7 @@ of modifications. Their licenses are reproduced inside the respective
 subdirectories where relevant.
 
 --------------------------------------------------------------------------------
-padne — PCB power-delivery-network FEM solver
+padne - PCB power-delivery-network FEM solver
 --------------------------------------------------------------------------------
 * Upstream: https://github.com/atx/padne
 * License:  GNU General Public License v3.0
@@ -68,7 +68,7 @@ padne — PCB power-delivery-network FEM solver
             solver.
 
 --------------------------------------------------------------------------------
-altium_monkey — Altium PCB project parser
+altium_monkey - Altium PCB project parser
 --------------------------------------------------------------------------------
 * Upstream: https://github.com/wavenumber-eng/altium_monkey
 * License:  GNU Affero General Public License v3.0

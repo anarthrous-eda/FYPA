@@ -2,7 +2,7 @@
 
 Builds the real PdnViewer from a cached solve, enters editor mode, then
 exercises the change through real Qt mouse events on the GL viewer and
-the real panel widgets. Not a unit test — the QApplication, the widgets
+the real panel widgets. Not a unit test - the QApplication, the widgets
 and the modified mousePress/Move/Release handlers all run for real.
 """
 import os

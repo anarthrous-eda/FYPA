@@ -1,25 +1,25 @@
 """Copper sensitivity from the adjoint fields the solver returns.
 
-For a target load the solver defines ``J = V(f) - V(t)`` — the voltage the
-load actually receives — and, alongside the forward potentials ``v``, solves
+For a target load the solver defines ``J = V(f) - V(t)`` - the voltage the
+load actually receives - and, alongside the forward potentials ``v``, solves
 the adjoint system ``Lᵀλ = e_f - e_t`` (see ``Problem.sensitivity_targets``).
 With the system matrix assembled as ``L = Σ_t σ_t·K_t`` (triangle ``t``'s
 cotangent stiffness ``K_t`` scaled by its sheet conductance ``σ_t``)::
 
     dJ/dσ_t = -λᵀ K_t v = Σ_edges w_e · Δλ_e · Δv_e
 
-where ``w_e`` is the edge's half-cotangent weight — the same weights the
+where ``w_e`` is the edge's half-cotangent weight - the same weights the
 solver assembles with, so the derivative is exact for the discrete model.
 
 ``σ_t·dJ/dσ_t`` is the first-order rise in the load's voltage if triangle
-``t`` carried twice the copper — which is what a parallel, stitched copy of
+``t`` carried twice the copper - which is what a parallel, stitched copy of
 the same copper weight on another layer does. Divided by the triangle's
 area it becomes a density (V per mm² of parallel copper) that is also the
 right quantity at the copper's edge: pushing an edge out by ``δ`` over a
 length ``ℓ`` adds ``ℓ·δ`` of copper at that density.
 
 A lumped resistor carrying ``I`` from ``a`` to ``b`` gets the same
-treatment: ``G·dJ/dG = I·(λ_a - λ_b)`` — the gain from a second identical
+treatment: ``G·dJ/dG = I·(λ_a - λ_b)`` - the gain from a second identical
 resistor (a via) in parallel.
 
 Everything here is a first-order estimate: accurate for modest changes,

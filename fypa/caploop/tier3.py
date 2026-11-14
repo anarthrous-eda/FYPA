@@ -1,8 +1,8 @@
-"""Tier 3 — the full cap→plane→IC loop.
+"""Tier 3 - the full cap→plane→IC loop.
 
 Tier 1 stops at the capacitor's own mount; Tier 2 solves the cavity between
 the cap and the IC. Tier 3 closes the loop by adding the term at the far end
-— the IC's own via pair climbing out of the cavity to its balls — and rolls
+- the IC's own via pair climbing out of the cavity to its balls - and rolls
 the per-cap totals up per rail:
 
 ``L_total = L_escape(both pads) + L_via(cap→cavity) + L_spread(FEM) +
@@ -13,8 +13,8 @@ per-rail rollup combines the included caps in parallel, which is what the IC
 actually sees at frequencies where every cap is still capacitive.
 
 The via terms reuse :func:`fypa.caploop.tier1.via_pair_loop_h`. Plating
-thickness — which dominates the DC barrel *resistance* model in
-:func:`fypa.altium.loader._barrel_segment_resistance_ohm` — is irrelevant
+thickness - which dominates the DC barrel *resistance* model in
+:func:`fypa.altium.loader._barrel_segment_resistance_ohm` - is irrelevant
 here: loop inductance is set by the current's enclosed area, and the return
 current rides the barrel's outer wall regardless of how thick the plating is.
 """
@@ -52,7 +52,7 @@ class Tier3Result:
     spread_h: float
     via_loop_ic_h: float
     ic_pairs: int
-    # True when a term could not be modelled and was taken as zero — the
+    # True when a term could not be modelled and was taken as zero - the
     # total is then a lower bound, not an estimate.
     is_partial: bool = False
     reason: str = ""
@@ -73,7 +73,7 @@ def barrel_pair_loop_h(drill_mm: float, hop_mm: float, s_mm: float,
     """Loop inductance of one via pair spanning ``hop_mm`` of stack.
 
     Degenerate geometry (missing drill / zero span) falls back to the
-    settings value rather than producing a divide-by-zero or a 0 H short —
+    settings value rather than producing a divide-by-zero or a 0 H short -
     the same discipline the DC via-resistance model applies.
     """
     settings = settings or CapLoopSettings()
@@ -96,7 +96,7 @@ def build_ic_geometry(
     Uses the same clustering as the capacitor side
     (:func:`~fypa.caploop.identify.associate_escape_vias`), so both ends of
     the loop are modelled consistently. ``None`` when the target has no
-    return-side pins (an ideal-return directive) or no vias at all — the
+    return-side pins (an ideal-return directive) or no vias at all - the
     caller then reports a partial Tier-3 total.
     """
     settings = settings or CapLoopSettings()
@@ -169,7 +169,7 @@ def total_loop(
 
     ``spread_h`` is the Tier-2 FEM cavity term; ``None`` (a split plane, a
     missing cavity) means there is no meaningful total and the caller shows
-    "—" rather than a number built on a term it doesn't have. A missing
+    "-" rather than a number built on a term it doesn't have. A missing
     ``ic`` yields a *partial* total (the IC via term taken as zero, so the
     result is a lower bound) rather than nothing, because the other three
     terms are still the bulk of the loop.
@@ -206,7 +206,7 @@ def rail_rollup(
     """Per-rail summary from ``(rail, designator, total_h)`` triples.
 
     The parallel combination is what the IC sees below the caps' series
-    resonance — halving every cap's mounted L, or doubling the cap count,
+    resonance - halving every cap's mounted L, or doubling the cap count,
     each halve it.
     """
     by_rail: dict[str, list[float]] = {}

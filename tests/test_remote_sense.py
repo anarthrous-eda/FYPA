@@ -1,7 +1,7 @@
 """Remote sense on SOURCE / REGULATOR outputs (PDN_SENSE_DES and friends).
 
-A remote-sensed supply holds its setpoint across the sense pads — usually at
-the load — and raises its own output pins by whatever the copper drops on
+A remote-sensed supply holds its setpoint across the sense pads - usually at
+the load - and raises its own output pins by whatever the copper drops on
 the way. These tests cover the directive parsing; the solve itself is
 checked against closed form in ``test_validation.py``.
 """

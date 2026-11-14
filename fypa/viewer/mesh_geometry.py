@@ -11,7 +11,7 @@ def _drill_footprint_xy(x: float, y: float, radius: float,
                         slot: tuple[float, float, float, bool] | None,
                         n_segments: int) -> np.ndarray:
     """Open perimeter ring ``(M, 2)`` of a drill footprint centred at
-    ``(x, y)`` — a circle of ``radius``, or a slot when ``slot`` =
+    ``(x, y)`` - a circle of ``radius``, or a slot when ``slot`` =
     ``(length_mm, width_mm, rotation_deg, rounded)`` (an obround when
     ``rounded`` else a square-cornered rectangle).
 
@@ -40,7 +40,7 @@ def _generate_disk_cap(
     n_segments: int = 10,
     slot: tuple[float, float, float, bool] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Filled drill-footprint cap at ``(x, y, z)`` — triangle fan from centre
+    """Filled drill-footprint cap at ``(x, y, z)`` - triangle fan from centre
     to rim. A circle by default, or an obround when ``slot`` is given.
 
     Returns ``(positions, colors)`` float32 arrays ready for GL_TRIANGLES.
@@ -71,15 +71,15 @@ def _generate_via_cylinder(x: float, y: float, z_top: float, z_bottom: float,
     ``(x, y)`` extending from ``z_top`` to ``z_bottom``.
 
     A round barrel (cylinder) by default, or an obround barrel (slot) when
-    ``slot`` = ``(length_mm, width_mm, rotation_deg)`` — the 3D counterpart
+    ``slot`` = ``(length_mm, width_mm, rotation_deg)`` - the 3D counterpart
     of a slotted plated through-hole. Returns ``(positions, colors)`` float32
     arrays suitable for :meth:`gl_mesh_viewer.GLMeshViewer.set_cylinders`.
     Each side facet contributes two triangles (six vertices) drawn via
-    ``GL_TRIANGLES``. Caps are omitted — the user's view only ever sees the
+    ``GL_TRIANGLES``. Caps are omitted - the user's view only ever sees the
     side surface in PDN inspection.
     """
     if slot is None:
-        # Round barrel — by far the common case, and a board has thousands.
+        # Round barrel - by far the common case, and a board has thousands.
         # Same vertices in the same order as the general path below, built
         # from a per-segment-count template instead of a dozen small array
         # constructions per via.
@@ -180,7 +180,7 @@ def _generate_via_cylinder_gradient(
 def _apply_alpha(col_rgb: np.ndarray, alpha: float) -> np.ndarray:
     """Append a constant alpha column to an (N, 3) RGB colour array,
     returning an (N, 4) RGBA array. Used to fade via-barrel sections that
-    carry no rail current — the cylinder batch is alpha-blended, so a
+    carry no rail current - the cylinder batch is alpha-blended, so a
     sub-1.0 alpha renders that section as a faint ghost."""
     a = np.full((col_rgb.shape[0], 1), float(alpha), dtype=np.float32)
     return np.concatenate(
@@ -232,7 +232,7 @@ def _extrude_to_prism(
       the prism so we don't waste triangles on them.
 
     Per-vertex value (used by the colormap shader) is duplicated top↔bottom
-    so the copper is uniformly coloured through its thickness — matches the
+    so the copper is uniformly coloured through its thickness - matches the
     FEM's sheet-conductor assumption (no in-z variation).
 
     Returns ``(xs, ys, zs, vs, tris)`` ready to feed into the GL viewer's
@@ -266,7 +266,7 @@ def _prism_triangles(tris: np.ndarray, n: int) -> np.ndarray:
     ``n .. 2n``, reversed winding) and two triangles per boundary edge.
 
     Depends only on the mesh topology, not on where the layer sits in z, so
-    the viewer caches it per layer — finding the boundary edges is the
+    the viewer caches it per layer - finding the boundary edges is the
     expensive part of an extrusion.
     """
     top_tris = tris.astype(np.int64, copy=False)
@@ -352,21 +352,21 @@ def _shape_outline_segments(shape) -> np.ndarray:
 
 
 class _FastTriSampler:
-    """Point-samples a triangulated linear scalar field — a drop-in
+    """Point-samples a triangulated linear scalar field - a drop-in
     replacement for :class:`matplotlib.tri.LinearTriInterpolator` that
     skips its ``TrapezoidMapTriFinder``.
 
     Matplotlib builds that trapezoid map eagerly inside the interpolator
     constructor. On a large copper plane (a GND pour reaches 300k+
-    triangles) that takes 3–10 s and froze the GUI for several seconds
-    the first time the hover probe touched the plane — the per-layer
+    triangles) that takes 3-10 s and froze the GUI for several seconds
+    the first time the hover probe touched the plane - the per-layer
     interpolator cache is why only the *first* hover stalled.
 
     This sampler instead builds a ``cKDTree`` over triangle centroids
-    (pure C, ~50–80x faster to construct) and, at query time,
+    (pure C, ~50-80x faster to construct) and, at query time,
     barycentric-interpolates the nearest triangle that contains the
-    point. The interpolation is mathematically identical — linear over
-    each triangle — so results match ``LinearTriInterpolator`` to
+    point. The interpolation is mathematically identical - linear over
+    each triangle - so results match ``LinearTriInterpolator`` to
     floating-point precision (verified <1e-16 V across every GND plane
     in the example projects). Same pure-C-spatial-index swap the Vias /
     Nodes report tables already use (see :meth:`PdnViewer._compute_via_report`).
@@ -374,7 +374,7 @@ class _FastTriSampler:
 
     # Candidate triangles examined per query. For any quality mesh the
     # containing triangle's centroid is among the nearest few; 32 is a
-    # wide safety margin — verified to give zero strict-inside misses
+    # wide safety margin - verified to give zero strict-inside misses
     # across every GND plane in the bundled example designs.
     _K: int = 32
 
@@ -407,8 +407,8 @@ class _FastTriSampler:
 
     def __call__(self, x: float, y: float):
         """Sample the field at world coords (x, y). Returns a 0-d
-        ``numpy`` masked array — the same type ``LinearTriInterpolator``
-        returns — masked when the point is off the mesh."""
+        ``numpy`` masked array - the same type ``LinearTriInterpolator``
+        returns - masked when the point is off the mesh."""
         _d, idx = self._tree.query((x, y), k=self._k)
         idx = np.atleast_1d(idx)
         px = x - self._ax[idx]
@@ -425,7 +425,7 @@ class _FastTriSampler:
         min_w[inv == 0.0] = -np.inf          # never pick a degenerate tri
         j = int(np.argmax(min_w))            # triangle the point is "most inside"
         if min_w[j] < -0.5:
-            # Well outside every candidate triangle — a genuine off-mesh
+            # Well outside every candidate triangle - a genuine off-mesh
             # point (e.g. a meshing gap inside the copper outline). Match
             # LinearTriInterpolator's masked off-mesh result.
             return np.ma.masked_array(0.0, mask=True)
@@ -440,8 +440,8 @@ class _FastTriSampler:
 def _triangulate_polygon_for_stub(poly):
     """Constrained Delaunay triangulation of a Shapely Polygon.
 
-    Returns ``(vertex_xys, triangles)`` as numpy arrays — ``(N, 2)``
-    float64 and ``(M, 3)`` int32 — in the format the viewer's
+    Returns ``(vertex_xys, triangles)`` as numpy arrays - ``(N, 2)``
+    float64 and ``(M, 3)`` int32 - in the format the viewer's
     :class:`LeanLayerSolution` expects.
 
     Uses :func:`shapely.constrained_delaunay_triangles` (GEOS 3.10+),

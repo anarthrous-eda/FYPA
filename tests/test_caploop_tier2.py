@@ -2,7 +2,7 @@
 
 The key physics test: on an unbroken cavity the FEM must agree with the
 two-port closed form. A slot between the ports must raise the answer
-materially — the whole reason Tier 2 exists. Also covers the duality
+materially - the whole reason Tier 2 exists. Also covers the duality
 constant, zero-current source acceptance (the inactive ports of an N-port
 solve), matrix reciprocity, mesh-assembly cache reuse across the N solves,
 and disconnected cavity islands.
@@ -95,7 +95,7 @@ def test_spreading_scales_linearly_with_cavity_height():
 
 
 def test_split_plane_raises_spreading_inductance():
-    """A slot forcing the return current around it — where closed forms fail."""
+    """A slot forcing the return current around it - where closed forms fail."""
     box = shapely.geometry.box(-PLANE / 2, -PLANE / 2, PLANE / 2, PLANE / 2)
     slot = shapely.geometry.box(-0.5, -PLANE / 2 + 2.0, 0.5, PLANE / 2)
     split = _cavity(box.difference(slot))
@@ -128,7 +128,7 @@ def test_port_matrix_is_reciprocal_and_coupled():
 
 def test_isolated_cavity_island_yields_nan_row():
     """A cap on a plane island with no path to the target: not zero coupling,
-    *unknown* — the row is NaN and the caller reports a split plane."""
+    *unknown* - the row is NaN and the caller reports a split plane."""
     main = shapely.geometry.box(-20.0, -10.0, 0.0, 10.0)
     island = shapely.geometry.box(2.0, -10.0, 20.0, 10.0)
     sheet = _cavity(shapely.geometry.MultiPolygon([main, island]))
@@ -166,7 +166,7 @@ def test_cavity_is_meshed_and_solved_once_for_all_ports(caplog):
     solves = sum(1 for m in messages if "Solving the linear system" in m)
     assert meshings == 1, f"cavity meshed {meshings} times, expected 1"
     assert solves == 1, (
-        f"{solves} linear solves for {len(caps)} ports — expected 1 "
+        f"{solves} linear solves for {len(caps)} ports - expected 1 "
         f"(the per-port loop appears to have come back)"
     )
 
@@ -182,7 +182,7 @@ def test_build_cavity_problem_wires_one_source_per_cap():
     assert len(network.connections) == 3          # 2 caps + shared IC
     assert len(network.elements) == 2
     assert [e.current for e in network.elements] == [1.0, 0.0]
-    # Every source draws from the same IC node — the matrix's reference.
+    # Every source draws from the same IC node - the matrix's reference.
     assert len({e.f for e in network.elements}) == 1
 
 
@@ -224,14 +224,14 @@ def test_multi_via_port_is_a_disc_union_not_a_hull():
     sheet = _solid_cavity()
     port = _make_port("U1", [(-3.0, 0.0), (3.0, 0.0)], R_PORT, sheet.shape)
     assert len(port.points) == 2 and len(port.discs) == 2
-    # The gap between the two vias belongs to nobody — a hull would cover it.
+    # The gap between the two vias belongs to nobody - a hull would cover it.
     assert not port.region.covers(shapely.geometry.Point(0.0, 0.0))
     assert port.region.area == pytest.approx(sum(d.area for d in port.discs))
 
 
 def test_ports_inside_a_device_footprint_keep_their_own_potential():
     """Regression for the hull bug, end to end: a cap port between two IC
-    pins must report a real self inductance. With a hull it read exactly 0 —
+    pins must report a real self inductance. With a hull it read exactly 0 -
     the cap's mesh vertices had been claimed by the IC's own node.
     (Tolerances are in henries: 0.01 nH = 1e-11.)"""
     sheet = _solid_cavity()
@@ -243,7 +243,7 @@ def test_ports_inside_a_device_footprint_keep_their_own_potential():
 
 def test_each_port_is_exactly_one_connection():
     """pdnsolver maps one node to one representative vertex, so a multi-via
-    port must be a single Connection whose region is the disc union — two
+    port must be a single Connection whose region is the disc union - two
     Connections sharing a node raise "Duplicate connection vertices"."""
     sheet = _solid_cavity()
     caps, _ = _ports(sheet, cap_xys=((-SEP / 2, 0.0),))
@@ -262,7 +262,7 @@ def test_each_port_is_exactly_one_connection():
 
 def test_run_tier2_and_tier3_on_a_flooded_plane_board():
     """The whole chain on a synthetic board whose planes are really flooded
-    (with anti-pads punched around every via) — the path the GUI takes."""
+    (with anti-pads punched around every via) - the path the GUI takes."""
     from fypa.altium.loader import _layer_z_centers_mm
     from fypa.altium_geometry import build_net_layer_shapes
     from fypa.caploop.identify import identify_capacitors
@@ -327,7 +327,7 @@ def test_disjoint_radii_shrink_to_keep_discs_apart():
 def test_a_cap_on_the_targets_own_via_reports_zero_with_a_reason():
     """A capacitor mounted on the IC's via-in-pad is electrically the same
     cavity port: there is no plane spreading between them. That must be
-    stated, not emitted as a bare zero that reads like a computed value —
+    stated, not emitted as a bare zero that reads like a computed value -
     and it must not enter the port matrix, which has to stay reciprocal."""
     from fypa.altium_geometry import build_net_layer_shapes
     from fypa.caploop.identify import identify_capacitors
@@ -362,7 +362,7 @@ def test_a_cap_on_the_targets_own_via_reports_zero_with_a_reason():
 
 def test_port_matrix_is_exactly_reciprocal_once_ports_are_independent():
     """With coincident ports merged out and discs kept disjoint, the matrix
-    obeys reciprocity to numerical precision — the property a downstream
+    obeys reciprocity to numerical precision - the property a downstream
     Z(f) solve relies on."""
     sheet = _solid_cavity()
     m, _, _ = _solve_self_l(sheet, cap_xys=((-SEP / 2, 0.0), (0.0, 6.0)))

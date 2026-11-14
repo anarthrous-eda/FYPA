@@ -1,7 +1,7 @@
 """Manual setup: the logic behind the Topology tab's Manual setup wizard.
 
-The wizard edits a working list of FYPA editor directives — supplies
-(SOURCE / REGULATOR) and loads (SINK) bound to parts — the way KiPI's PI
+The wizard edits a working list of FYPA editor directives - supplies
+(SOURCE / REGULATOR) and loads (SINK) bound to parts - the way KiPI's PI
 setup panel edits VRMs and loads: pick a net, then a part on it (busiest
 first), then optionally its pins; empty fields are filled from the design
 (voltage from the net name, ground from the part, a regulator's input from
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import copy
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 
 from fypa.autosetup.design import DesignView, Part
@@ -153,10 +153,13 @@ def net_choices(view: DesignView) -> list[str]:
     return sorted(used, key=rank)
 
 
-def parts_on_net(view: DesignView, net: str, *, prefer: str = "") -> list[tuple[str, str]]:
+def parts_on_net(view: DesignView, net: str, *, prefer: str = "",
+                 taken: Collection[str] = ()) -> list[tuple[str, str]]:
     """``(designator, label)`` for parts with a pin on ``net``, busiest first
     (``U4  TPS62130  (3)``). ``prefer`` ("supply" / "load") floats the likely
-    kind of part to the top among equals."""
+    kind of part to the top among equals. Parts in ``taken`` (designators,
+    any case: already a load on this net) go last, marked as such."""
+    taken_up = {t.upper() for t in taken}
     rows = []
     for part in view.parts_on(net):
         n = len(part.pins_on(net))
@@ -166,8 +169,11 @@ def parts_on_net(view: DesignView, net: str, *, prefer: str = "") -> list[tuple[
             kind = 0 if part.prefix in IC_PREFIXES else 1
         else:
             kind = 0
+        is_taken = part.designator.upper() in taken_up
         label = f"{part.designator}  {part.mpn or part.value_text}".rstrip() + f"  ({n})"
-        rows.append(((kind, -n, part.designator), part.designator, label))
+        if is_taken:
+            label += "  - already a load here"
+        rows.append(((is_taken, kind, -n, part.designator), part.designator, label))
     rows.sort()
     return [(des, label) for _k, des, label in rows]
 
@@ -205,7 +211,7 @@ def pins_of(part: Part | None, net: str | None) -> list[tuple[str, str]]:
 
 def input_net_choices(view: DesignView, part: Part | None, out_net: str | None) -> list[str]:
     """A regulator's possible inputs: the part's own nets, not ground and not
-    its output — rails first (named like one / drawn with a power port), then
+    its output - rails first (named like one / drawn with a power port), then
     the rest, so a feedback / enable net is still pickable if it really is
     the input."""
     if part is None:
@@ -220,8 +226,8 @@ def input_net_choices(view: DesignView, part: Part | None, out_net: str | None) 
 
 
 def other_rails(view: DesignView, part: Part, net: str) -> list[str]:
-    """The part's other power rails — named like a rail or drawn with a power
-    port — so a bypass / feedback / enable net doesn't count (falling back to
+    """The part's other power rails - named like a rail or drawn with a power
+    port - so a bypass / feedback / enable net doesn't count (falling back to
     every non-ground net when none of them reads like a rail)."""
     nets = [n for n in part.nets() if n != net and not view.is_gnd(n)]
     rails = [n for n in nets if looks_like_rail(n) or n.upper() in view.power_ports]
@@ -231,10 +237,12 @@ def other_rails(view: DesignView, part: Part, net: str) -> list[str]:
 # --- autofill ----------------------------------------------------------------------
 
 
-def autofill(d: EditorDirective, view: DesignView) -> list[str]:
+def autofill(d: EditorDirective, view: DesignView, *,
+             taken: Collection[str] = ()) -> list[str]:
     """Fill the directive's empty fields from the design; returns what changed.
 
-    Only empty fields are touched, so anything the user typed stays."""
+    Only empty fields are touched, so anything the user typed stays. A load's
+    part is never guessed from ``taken`` (parts already a load on its net)."""
     filled: list[str] = []
     net = d.p_net
     if not net:
@@ -247,6 +255,9 @@ def autofill(d: EditorDirective, view: DesignView) -> list[str]:
     if not d.designator:
         prefer = "supply" if d.role in SUPPLY_ROLES else "load"
         cands = parts_on_net(view, net, prefer=prefer)
+        if d.role == "SINK":
+            taken_up = {t.upper() for t in taken}
+            cands = [c for c in cands if c[0].upper() not in taken_up]
         if len(cands) == 1 or (cands and d.role == "SINK"):
             d.designator = cands[0][0]
             filled.append("part")
@@ -361,7 +372,7 @@ def _term_pads(term: dict | None) -> list[str] | None:
 
 def from_schematic(md: dict) -> EditorDirective | None:
     """Editable copy of a schematic SOURCE / SINK / REGULATOR (metadata
-    dict) that overrides it on the next resolve — the wizard's Override."""
+    dict) that overrides it on the next resolve - the wizard's Override."""
     role = md.get("role")
     terms = md.get("terminals") or {}
     des = md.get("designator")
@@ -464,7 +475,7 @@ def validate(entries: list[Entry], view: DesignView,
                 err("ground and supply are the same net")
             elif not part.pins_on(gnd):
                 issues.append(Issue("warning", d.id,
-                                    f"{name}: has no pin on {gnd} — the return "
+                                    f"{name}: has no pin on {gnd} - the return "
                                     "couples at the part's centre"))
         if d.role == "REGULATOR":
             if not d.in_p_net:
@@ -496,7 +507,7 @@ def validate(entries: list[Entry], view: DesignView,
 
     for a, b in list(bridges) + list(view.bridges):
         parent[find(a)] = find(b)
-    # The rows (locked schematic ones included) are the whole supply side —
+    # The rows (locked schematic ones included) are the whole supply side -
     # not view.driven, which still counts editor supplies being removed here.
     supplied = {find(e.directive.p_net) for e in entries
                 if e.is_supply and e.directive.p_net}

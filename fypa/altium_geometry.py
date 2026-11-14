@@ -17,7 +17,7 @@ Geometry rules
 --------------
 * **Tracks** with ``is_keepout`` are skipped, as are ``is_polygon_outline``
   tracks belonging to a *solid* pour (boundary artwork over the region fill).
-  A hatched or outlines-only pour keeps its perimeter — there the tracks are
+  A hatched or outlines-only pour keeps its perimeter - there the tracks are
   the copper. The remaining tracks are buffered LineStrings of half-width
   with round caps.
   Tracks on layer id ``MULTI_LAYER_PAD_LAYER_ID`` (74) with an assigned net
@@ -102,7 +102,7 @@ def layer_copper_conductivity(layer_id) -> float:
 # Copper weight assumed when the Altium stackup carries no thickness for a
 # layer. altium_monkey initialises ``copper_thickness`` to 0 mils when the
 # .PcbDoc has no COPTHICK field, and a zero thickness means zero sheet
-# conductance — an infinitely resistive layer, which shows up downstream as a
+# conductance - an infinitely resistive layer, which shows up downstream as a
 # nonsense solve or a ZeroDivisionError building the metadata rather than as
 # an obvious "your stackup is missing" error. 35 µm (1 oz) is the overwhelming
 # default for signal layers, so substituting it and saying so loudly is far
@@ -178,7 +178,7 @@ def volume_current_density(sheet_j, conductance: float, sigma: float):
     """Convert sheet current density (A/mm of width) to volume current
     density (A/mm² of cross-section) by dividing by the copper thickness.
 
-    The layer's thickness is ``conductance / sigma`` — exact, since the sheet
+    The layer's thickness is ``conductance / sigma`` - exact, since the sheet
     conductance was built as thickness × sigma (including the 1 oz default
     substituted for a stackup with no thickness). Works on scalars and numpy
     arrays; a non-positive conductance gives zero.
@@ -198,7 +198,7 @@ PAD_SHAPE_ROUNDED_RECTANGLE: int = 4
 PAD_SHAPE_CUSTOM: int = 10
 
 # Discretisation tolerances (mm).
-ARC_CHORD_TOLERANCE_MM: float = 0.025  # ≈ 1 mil — keeps mesh-quality artifacts below copper width
+ARC_CHORD_TOLERANCE_MM: float = 0.025  # ≈ 1 mil - keeps mesh-quality artifacts below copper width
 CIRCLE_RESOLUTION: int = 32             # segments per full circle for round buffers
 # ``Geometry.buffer(d)`` defaults to quad_segs=16 (per quarter circle), whereas
 # the top-level ``shapely.buffer(array, d)`` defaults to 8. Pin 16 when batching
@@ -213,10 +213,10 @@ class GeometryLayer:
 
     A GeometryLayer can represent either:
 
-    * **a full physical layer with all nets merged** (``net_index == NO_NET``) —
+    * **a full physical layer with all nets merged** (``net_index == NO_NET``) -
       legacy single-union geometry, used for quicklook PNGs and as a fallback
       shape lookup; or
-    * **one net's copper on one physical layer** (``net_index >= 0``) — used by
+    * **one net's copper on one physical layer** (``net_index >= 0``) - used by
       the FEM-facing pipeline so each net is its own electrical conductor and
       cross-net unioning artefacts cannot bleed voltage between rails.
 
@@ -237,7 +237,7 @@ class GeometryLayer:
 
 def _track_polygon(t: RawTrack) -> shapely.geometry.Polygon:
     # A zero-length track (a == b) buffers to an EMPTY polygon via LineString,
-    # but Altium renders it as a filled copper dot of the track width — and
+    # but Altium renders it as a filled copper dot of the track width - and
     # such dots are used to hand-stitch features together, so dropping them
     # loses a connection. Buffer the endpoint as a disc instead.
     if t.a.x == t.b.x and t.a.y == t.b.y:
@@ -254,13 +254,13 @@ def _arc_polyline_points(a: RawArc) -> list[tuple[float, float]]:
     sweep = (a.end_angle_deg - a.start_angle_deg) % 360.0
     if sweep == 0.0:
         # Altium repour circles arrive as a 360°-multiple sweep and are meant
-        # to be a full disc — but a genuinely degenerate standalone arc
+        # to be a full disc - but a genuinely degenerate standalone arc
         # (collapsed edit, buggy exporter) also lands here and becomes a full
         # annulus of copper that can short across a clearance. We can't tell
         # the two apart from sweep alone, so keep the (usually-correct) full-
         # circle promotion but log it so the annulus case is diagnosable.
         log.debug(
-            "Arc at (%.3f, %.3f) r=%.3f has zero net sweep — promoting to a "
+            "Arc at (%.3f, %.3f) r=%.3f has zero net sweep - promoting to a "
             "full circle (repour convention); verify if unexpected.",
             a.center.x, a.center.y, a.radius_mm,
         )
@@ -276,7 +276,7 @@ def _arc_polyline_points(a: RawArc) -> list[tuple[float, float]]:
         n = max(8, int(math.ceil(math.radians(sweep) / max_step_rad)))
     angles = np.linspace(math.radians(a.start_angle_deg),
                          math.radians(a.start_angle_deg + sweep), n + 1)
-    # Vectorised trig over the whole angle array — iterating numpy scalars with
+    # Vectorised trig over the whole angle array - iterating numpy scalars with
     # math.cos/sin in a list comp is ~10× slower for the same float64 values.
     xs = a.center.x + a.radius_mm * np.cos(angles)
     ys = a.center.y + a.radius_mm * np.sin(angles)
@@ -295,7 +295,7 @@ def _arc_polygon(a: RawArc) -> shapely.geometry.Polygon:
 def _shape_based_polygon_indices(proj: ExtractedProject) -> frozenset[int]:
     """Polygon indices already covered by ``ShapeBasedRegions6`` for this
     project. Used to dedupe legacy ``Regions6`` records that modern Altium
-    dual-stores in both streams — see :class:`RawRegion.polygon_index`.
+    dual-stores in both streams - see :class:`RawRegion.polygon_index`.
 
     Recomputed per call; ``ExtractedProject`` is a frozen+slots dataclass
     so attribute caching is awkward, and the set is small (one entry per
@@ -309,7 +309,7 @@ def _shape_based_polygon_indices(proj: ExtractedProject) -> frozenset[int]:
 def _skip_region_as_duplicate(r: RawRegion,
                               sbr_polygon_indices: frozenset[int]) -> bool:
     """Whether ``r`` is the legacy ``Regions6`` copy of a polygon-pour
-    region that's also stored — with truer geometry — in
+    region that's also stored - with truer geometry - in
     ``ShapeBasedRegions6``. Drop the legacy copy to avoid double-counting
     copper and to skip the degenerate zero-width sliver records that
     modern Altium tends to emit there."""
@@ -322,7 +322,7 @@ def _region_polygon(
 ) -> shapely.geometry.base.BaseGeometry:
     """Build a Shapely (Multi)Polygon from a Regions6 record.
 
-    Same sanitisation flow as :func:`_shape_based_region_polygon` — an
+    Same sanitisation flow as :func:`_shape_based_region_polygon` - an
     invalid outline goes through :func:`shapely.make_valid` and only the
     polygonal fragments are kept. Returns an empty polygon for fully
     degenerate input so the caller can drop it. ``make_valid`` is more
@@ -332,7 +332,7 @@ def _region_polygon(
     outline = [(p.x, p.y) for p in r.outline]
     holes = [[(p.x, p.y) for p in ring] for ring in r.holes]
     if _shoelace_area(outline) <= 0.0:
-        # Zero-area input — Altium emits these as vestigial slivers when a
+        # Zero-area input - Altium emits these as vestigial slivers when a
         # polygon repour encounters near-zero-width clearances. They aren't
         # copper. Skip silently at DEBUG; otherwise every repour pollutes
         # the log with a dozen identical warnings.
@@ -399,7 +399,7 @@ def _summarise_region_input(
 ) -> str:
     """One-line summary of a region's raw outline for the drop warning.
 
-    Includes vertex count, raw signed area (shoelace, ignores holes — tells
+    Includes vertex count, raw signed area (shoelace, ignores holes - tells
     us if the polygon is collinear or self-cancelling), bbox dimensions,
     a handful of leading vertices, and hole / arc counts when relevant.
     Used by :func:`_region_polygon` and :func:`_shape_based_region_polygon`
@@ -446,12 +446,12 @@ def _shape_based_outline_points(
     straight edges only the start vertex's position is emitted (the next
     iteration emits the end). For arc edges, intermediate samples are
     inserted between the two endpoints; the number of samples is chosen
-    so the chord error stays below :data:`ARC_CHORD_TOLERANCE_MM` — same
+    so the chord error stays below :data:`ARC_CHORD_TOLERANCE_MM` - same
     bound the arc primitive uses, so the meshed geometry matches.
 
     Altium stores the arc's start/end angles in degrees, measured CCW from
-    +x about ``vertex.center``, and — like the standalone ``Arcs6`` primitive
-    (:func:`_arc_polyline_points`) — the sweep is always CCW: normalise
+    +x about ``vertex.center``, and - like the standalone ``Arcs6`` primitive
+    (:func:`_arc_polyline_points`) - the sweep is always CCW: normalise
     ``(end - start) % 360`` into ``[0, 360)``. The previous code took the raw
     signed difference and treated a negative value as a CW sweep, which traced a
     wrap-around corner the long way (e.g. a ``360° → 90°`` rounded corner became
@@ -483,7 +483,7 @@ def _shape_based_outline_points(
             steps = max(2, int(math.ceil(abs(sweep_rad) / max_step_rad)))
         # Emit ``steps - 1`` intermediate points; the arc's endpoint is
         # contributed as the next vertex's start position so we don't
-        # duplicate it here. Vectorised over k — same float64 values as the
+        # duplicate it here. Vectorised over k - same float64 values as the
         # per-point math.cos/sin loop, ~10× faster on arc-dense pours.
         ks = np.arange(1, steps)
         rads = np.radians(cur.start_angle_deg + sweep_deg * (ks / steps))
@@ -628,7 +628,7 @@ def _keep_polygonal(
         if len(polys) == 1:
             return polys[0]
         return shapely.ops.unary_union(polys)
-    # LineString, Point, MultiLineString, MultiPoint — all non-areal.
+    # LineString, Point, MultiLineString, MultiPoint - all non-areal.
     return shapely.geometry.Polygon()
 
 
@@ -662,7 +662,7 @@ def _pad_outer_shape(p: RawPad, layer_id: int | None = None
         # Altium's "Round" pad is a circle only when width == height. With
         # unequal dimensions it is an oblong / obround (a stadium: a rectangle
         # with fully-rounded semicircular ends of radius min(w, h) / 2). Build
-        # it as the core box buffered by that radius — when w == h the box
+        # it as the core box buffered by that radius - when w == h the box
         # collapses to a point and the buffer yields the plain circle.
         r = min(w, h) / 2.0
         s = shapely.geometry.box(cx - w / 2.0 + r, cy - h / 2.0 + r,
@@ -721,12 +721,12 @@ def _pad_outer_shape(p: RawPad, layer_id: int | None = None
     if shape == PAD_SHAPE_CUSTOM:
         log.warning(
             "Custom-shape pad %r at (%.3f, %.3f) approximated by its %.3f×%.3f "
-            "mm bounding rectangle — copper may be overstated.",
+            "mm bounding rectangle - copper may be overstated.",
             designator, cx, cy, w, h,
         )
     else:
         log.warning(
-            "Unhandled pad shape code %d (pad %r) at (%.3f, %.3f) — falling "
+            "Unhandled pad shape code %d (pad %r) at (%.3f, %.3f) - falling "
             "back to bounding rectangle", shape, designator, cx, cy,
         )
     if w <= 0 or h <= 0:
@@ -746,7 +746,7 @@ def _pad_polygon(p: RawPad, layer_id: int | None = None
     # 2.5D PDN-FEM purposes the pad is one solid copper disc on each layer
     # it touches; the hole becomes a separate inter-layer coupling element
     # injected by fypa.altium.loader.build_problem(). Subtracting the hole would
-    # leave a no-copper point at the pad centre — making the FEM unable to
+    # leave a no-copper point at the pad centre - making the FEM unable to
     # attach via-coupling Connections at the via location.
     #
     # ``layer_id`` selects the copper layer so a pad with a per-layer pad stack
@@ -812,7 +812,7 @@ def _pour_outline_is_artwork(prim: RawTrack | RawArc) -> bool:
     For a *solid* pour it is: the poured copper lives in the region fill, and
     including the outline would give a rounded-corner pour a spurious band of
     copper along its border. A hatched (or outlines-only) pour is the opposite
-    case — its copper *is* tracks and arcs, and the perimeter Altium flags as
+    case - its copper *is* tracks and arcs, and the perimeter Altium flags as
     the polygon outline is the pour's outer conductor. Excluding it dropped
     the border of every hatched pour from the mesh (GitHub issue #41).
     """
@@ -862,7 +862,7 @@ def _via_on_layer(v: RawVia, layer_id: int, enabled: list[int],
     """Whether via ``v``'s barrel spans ``layer_id`` in the enabled stack.
 
     ``pos`` is an optional ``{layer_id: position}`` map; pass it (built once by
-    the caller) to avoid three O(L) ``enabled.index(...)`` scans per via — this
+    the caller) to avoid three O(L) ``enabled.index(...)`` scans per via - this
     function is called per via × per layer, so the scans were O(vias × L²)."""
     if pos is None:
         pos = {lid: i for i, lid in enumerate(enabled)}
@@ -882,7 +882,7 @@ def _ensure_multipolygon(geom) -> shapely.geometry.MultiPolygon:
         return shapely.geometry.MultiPolygon([geom])
     if geom.geom_type == "MultiPolygon":
         return geom
-    # GeometryCollection — keep only the polygonal pieces.
+    # GeometryCollection - keep only the polygonal pieces.
     polys = [g for g in getattr(geom, "geoms", []) if g.geom_type == "Polygon"]
     return shapely.geometry.MultiPolygon(polys)
 
@@ -928,10 +928,10 @@ class _ThroughFeatureCache:
     across every plane layer (``_plane_sheet_polygon`` is called per plane, and
     all through features span the whole stack). A through-hole pad's footprint
     is layer-independent unless it carries a per-layer pad stack
-    (``layer_variations`` — rare), and a via disc never depends on the layer;
+    (``layer_variations`` - rare), and a via disc never depends on the layer;
     only via *membership* (``_via_on_layer``) is per-layer. So we cache the disc
     geometry and the non-variation pad footprints, and recompute only the rare
-    variation pads per layer. Read-only after construction — safe to share
+    variation pads per layer. Read-only after construction - safe to share
     across the per-layer thread pool in :func:`build_layer_geometries`."""
 
     __slots__ = ("pad_footprint_by_id", "via_feats")
@@ -945,11 +945,11 @@ class _ThroughFeatureCache:
             if not (p.is_through_hole or p.layer_id == MULTI_LAYER_PAD_LAYER_ID):
                 continue
             if getattr(p, "layer_variations", ()):
-                continue  # per-layer stack — recompute per layer
+                continue  # per-layer stack - recompute per layer
             poly = _pad_polygon(p, None)
             if poly is not None and not poly.is_empty:
                 self.pad_footprint_by_id[id(p)] = _drop_holes(poly)
-        # (via, hole-dropped disc, net) — disc reused; membership per layer.
+        # (via, hole-dropped disc, net) - disc reused; membership per layer.
         self.via_feats: list[tuple[RawVia, shapely.geometry.base.BaseGeometry, int]] = []
         for v, disc in _batch_via_polygons(proj.vias):
             if not disc.is_empty:
@@ -1067,7 +1067,7 @@ def _thermal_spokes(
     feat_radius = 0.5 * math.hypot(maxx - minx, maxy - miny)
     reach = feat_radius + air_gap_mm + conductor_mm
     spokes: list[shapely.geometry.base.BaseGeometry] = []
-    start = math.pi / 4.0  # 45° — Altium's default relief orientation
+    start = math.pi / 4.0  # 45° - Altium's default relief orientation
     for i in range(entries):
         ang = start + i * (2.0 * math.pi / entries)
         tip = (c.x + reach * math.cos(ang), c.y + reach * math.sin(ang))
@@ -1108,7 +1108,7 @@ def _plane_sheet_polygon(
     try:
         base: shapely.geometry.base.BaseGeometry = shapely.geometry.Polygon(
             [(p.x, p.y) for p in pts])
-    except Exception as e:  # pragma: no cover — defensive
+    except Exception as e:  # pragma: no cover - defensive
         log.warning("Plane sheet skipped: board-outline Polygon ctor failed (%s)", e)
         return None
     if not base.is_empty and not base.is_valid:
@@ -1130,7 +1130,7 @@ def _plane_sheet_polygon(
     entries = int(proj.plane_relief_entries)
 
     # Buffer every anti-pad in ONE array-form shapely.buffer with a per-feature
-    # distance (air-gap for same-net, clearance for foreign) — far fewer
+    # distance (air-gap for same-net, clearance for foreign) - far fewer
     # Python↔C round trips than a per-feature .buffer(). Feature ORDER is
     # preserved (the anti-pad union below is order-sensitive), and quad_segs is
     # pinned to the value Geometry.buffer() uses by default so the buffered
@@ -1191,10 +1191,10 @@ def _plane_sheet_polygon(
 
     # Split-plane detection: a plane layer carrying *copper* regions on a net
     # other than its own means the artwork splits the layer between multiple
-    # nets — which this single-net flood model can't represent (the other
+    # nets - which this single-net flood model can't represent (the other
     # net's copper is missing). Altium stores split-plane copper as filled
     # Regions6 (`proj.regions`, net inherited from the parent Polygons6),
-    # NOT only as ShapeBasedRegions — the previous check looked at the SBR
+    # NOT only as ShapeBasedRegions - the previous check looked at the SBR
     # stream alone and so never fired on the common case. Scan BOTH streams
     # and name the foreign nets so the warning is actionable.
     #
@@ -1217,7 +1217,7 @@ def _plane_sheet_polygon(
                     foreign_net_names.add(f"#{r.net_index}")
     if foreign_net_names:
         log.warning(
-            "Plane layer %d (net %r) carries copper on other net(s) %s — this "
+            "Plane layer %d (net %r) carries copper on other net(s) %s - this "
             "is a SPLIT plane. FYPA models it as a single %r flood, so the "
             "other net(s)' copper on this layer is NOT represented and their "
             "return-path resistance will be overstated. Split the plane into "
@@ -1349,7 +1349,7 @@ def build_layer_geometry(proj: ExtractedProject, layer_id: int,
                  else shapely.ops.unary_union(sheets))
         if sheet is None:
             log.warning("Layer %d (%s) is a plane (net=%s) but the board has no"
-                        " outline to flood — emitting empty layer.",
+                        " outline to flood - emitting empty layer.",
                         layer_id, stackup.name, stackup.plane_net_name)
             shape = shapely.geometry.MultiPolygon()
         else:
@@ -1369,10 +1369,10 @@ def build_layer_geometry(proj: ExtractedProject, layer_id: int,
 
     # Batch the track / arc buffers through one shapely C dispatch each (the
     # same helpers the per-net path uses) instead of a per-primitive
-    # LineString.buffer() Python call — bit-identical output (verified
+    # LineString.buffer() Python call - bit-identical output (verified
     # WKB-for-WKB), far fewer Python↔C round trips on track-heavy layers.
     # (The all-nets union below now runs through the Clipper2 fuse seam at the
-    # 1 nm lossless scale — see the fuse() call at the end of this function.)
+    # 1 nm lossless scale - see the fuse() call at the end of this function.)
     valid_tracks = [t for t in proj.tracks
                     if not _is_multilayer_copper(t.layer_id, t.net_index)
                     and _copper_primitive_on_layer(
@@ -1468,7 +1468,7 @@ def build_layer_geometry(proj: ExtractedProject, layer_id: int,
     if not pieces:
         shape: shapely.geometry.MultiPolygon = shapely.geometry.MultiPolygon()
     else:
-        # Fuse all-nets copper via the selected backend — Clipper2 by default
+        # Fuse all-nets copper via the selected backend - Clipper2 by default
         # (~10-16x faster than GEOS on a full-layer union), shapely on any error
         # or when FYPA_FUSE_BACKEND=shapely. grid_size=None selects Clipper2's
         # 1 nm integer scale, lossless for PCB coordinates, so the display
@@ -1726,7 +1726,7 @@ def build_per_net_and_layer_geometry(
 
 
 def build_layer_geometries(proj: ExtractedProject) -> list[GeometryLayer]:
-    """Legacy single-union geometry — one :class:`GeometryLayer` per physical
+    """Legacy single-union geometry - one :class:`GeometryLayer` per physical
     layer with **all nets unioned together**. Used for quicklook PNGs and as
     a fallback shape lookup; the FEM-facing pipeline uses
     :func:`build_per_net_geometry_layers` instead so that nets remain
@@ -1734,9 +1734,9 @@ def build_layer_geometries(proj: ExtractedProject) -> list[GeometryLayer]:
 
     Layers are built on a thread pool. Each layer's ``unary_union`` of its
     thousands of copper primitives dominates the cost, and shapely 2
-    releases the GIL inside the union — so one worker per layer gives
+    releases the GIL inside the union - so one worker per layer gives
     near-linear speedup (a 16-layer board's ~75 s serial build drops to
-    roughly 10–15 s). Each :func:`build_layer_geometry` call only reads
+    roughly 10-15 s). Each :func:`build_layer_geometry` call only reads
     the frozen ``proj`` and builds its own geometry, so it is thread-safe.
     """
     enabled = proj.enabled_copper_layer_ids()
@@ -1756,8 +1756,8 @@ def build_layer_geometries(proj: ExtractedProject) -> list[GeometryLayer]:
                                      multilayer_cache)
                 for lid in enabled]
 
-    # The Clipper2 fuse backend (the default) is GIL-bound — unlike shapely 2's
-    # union it does not release the GIL — so a per-layer thread pool would only
+    # The Clipper2 fuse backend (the default) is GIL-bound - unlike shapely 2's
+    # union it does not release the GIL - so a per-layer thread pool would only
     # thrash the GIL. Run serial when it's active; serial Clipper2 still beats
     # the threaded shapely path on large boards (same trade-off as
     # _parallel_union_buckets). The shapely / verify backends keep the pool.
@@ -1787,7 +1787,7 @@ def build_per_net_geometry_layers(proj: ExtractedProject) -> list[GeometryLayer]
     Each layer contains only that net's copper (tracks + arcs + regions +
     pads + vias of that net), unioned within the net so its connected
     components are correct. Because nets are never unioned across each other,
-    the FEM treats each (layer, net) as an independent conductor — making
+    the FEM treats each (layer, net) as an independent conductor - making
     inter-net shorts via accidentally-overlapping copper geometrically
     impossible.
 
@@ -1849,7 +1849,7 @@ def build_per_net_geometry_layers_split(
     The FEM only needs the few rails a directive touches; the other
     ~thousands of (layer, net) pairs feed the viewer's "all copper" overlay
     only. Unioning them is the bulk of the geometry cost, so it is pushed
-    onto a background thread — the caller uses ``active_layers`` for the FEM
+    onto a background thread - the caller uses ``active_layers`` for the FEM
     immediately and joins ``rest_future`` (which yields the non-active
     GeometryLayers) once its own remaining work is done, overlapping the
     two. The buffering pass is shared, so this is the same total work as
@@ -1876,7 +1876,7 @@ def build_per_net_geometry_layers_split(
         rest_b = None   # built lazily in the background union below
     else:
         buckets = _build_net_layer_buckets(proj, enabled, include_vias=True)
-        # No directive touches a net — treat every real net as active, but
+        # No directive touches a net - treat every real net as active, but
         # keep NO_NET copper out of the FEM regardless (it carries no rail
         # current; it exists only for the viewer's "all copper" overlay).
         active_b = {k: v for k, v in buckets.items() if k[1] != NO_NET}
@@ -1894,7 +1894,7 @@ def build_per_net_geometry_layers_split(
 
     def _build_rest() -> list[GeometryLayer]:
         # ``rest_b is None`` means the active path filtered the sweep, so the
-        # non-active buckets have not been buffered yet — do that here, off
+        # non-active buckets have not been buffered yet - do that here, off
         # the caller's critical path, rather than ahead of the FEM.
         buckets = (rest_b if rest_b is not None
                    else _build_net_layer_buckets(
@@ -1907,7 +1907,7 @@ def build_per_net_geometry_layers_split(
     ex.shutdown(wait=False)   # task still completes; executor frees when done
 
     # The caller awaits ``rest_future.result()`` at the end of a long
-    # ``build_problem`` — but if that raises first, the future is never
+    # ``build_problem`` - but if that raises first, the future is never
     # awaited and a background-union failure would vanish silently. Log it
     # from a done-callback so it is always observed regardless of the
     # caller's control flow.
@@ -1926,7 +1926,7 @@ def _batch_buffer_tracks(tracks: list[RawTrack]) -> list[shapely.geometry.Polygo
     """Vectorise the per-track LineString.buffer() Python loop.
 
     Each call to ``LineString(...).buffer(half_width, cap_style=round, ...)``
-    is one shapely C call wrapped in Python — for boards with thousands of
+    is one shapely C call wrapped in Python - for boards with thousands of
     tracks the per-call overhead dominates. ``shapely.linestrings`` +
     ``shapely.buffer`` route the whole batch through a single C dispatch.
     Same output as calling ``_track_polygon`` per track, just faster.
@@ -1944,7 +1944,7 @@ def _batch_buffer_tracks(tracks: list[RawTrack]) -> list[shapely.geometry.Polygo
         coords[i, 1, 1] = t.b.y
         half_widths[i] = t.width_mm * 0.5
     # Zero-length tracks (a == b) buffer to EMPTY as LineStrings but Altium
-    # draws them as filled copper dots — route them through Point instead so a
+    # draws them as filled copper dots - route them through Point instead so a
     # stitching dot isn't silently dropped (see _track_polygon).
     degenerate = ((coords[:, 0, 0] == coords[:, 1, 0])
                   & (coords[:, 0, 1] == coords[:, 1, 1]))
@@ -1967,8 +1967,8 @@ def _batch_via_polygons(
 ) -> list[tuple[RawVia, shapely.geometry.Polygon]]:
     """Vectorise the per-via ``Point().buffer()`` loop into one ``shapely.buffer``
     C dispatch, returning ``(via, disc)`` for every via with a positive diameter
-    in input order. Byte-identical to :func:`_via_polygon` — same radius, same
-    ``quad_segs``, round cap — but one GEOS call instead of 10⁴+ Python→GEOS
+    in input order. Byte-identical to :func:`_via_polygon` - same radius, same
+    ``quad_segs``, round cap - but one GEOS call instead of 10⁴+ Python→GEOS
     round trips on a stitched board."""
     valid = [v for v in vias if v.diameter_mm > 0]
     if not valid:
@@ -1991,7 +1991,7 @@ def _batch_buffer_arcs(arcs: list[RawArc]) -> list[shapely.geometry.Polygon]:
 
     Each arc has a different polyline vertex count, so we can't push them
     through one ``shapely.linestrings`` call (it requires a uniform shape).
-    The expensive step is the buffer, though — building one ``LineString``
+    The expensive step is the buffer, though - building one ``LineString``
     per arc the normal way and then passing the whole numpy object-array
     of LineStrings into one ``shapely.buffer`` call routes every buffer
     through GEOS in a single C dispatch instead of N Python-level calls."""
@@ -2016,13 +2016,13 @@ def _batch_buffer_arcs(arcs: list[RawArc]) -> list[shapely.geometry.Polygon]:
 #
 # The reference is strong, not weak: ExtractedProject is a frozen slots
 # dataclass without ``__weakref__``, and adding ``weakref_slot=True`` would
-# make it unpicklable — which the design-info cache depends on. A single slot
+# make it unpicklable - which the design-info cache depends on. A single slot
 # bounds the cost to one extraction, the same one the viewer holds for the
 # session anyway, and clear_net_layer_bucket_cache() releases it on demand.
 #
 # Why it exists: one session runs this pass at least twice over the same
-# extraction — once when the viewer builds its stub metadata and again inside
-# build_problem — and it is the single most expensive step in the geometry
+# extraction - once when the viewer builds its stub metadata and again inside
+# build_problem - and it is the single most expensive step in the geometry
 # pipeline (buffering every track, arc, pad and via on the board). The second
 # run is pure repetition. A single slot is enough: the two calls are
 # back-to-back on the same project, and holding only one keeps a large board's
@@ -2051,7 +2051,7 @@ def _build_net_layer_buckets(
     exclude_nets: set[int] | None = None,
 ) -> dict[tuple[int, int], list[shapely.geometry.base.BaseGeometry]]:
     """Per-(layer_id, net_index) lists of un-unioned copper primitive
-    polygons — the bucketing (and buffering) half of
+    polygons - the bucketing (and buffering) half of
     :func:`build_net_layer_shapes`.
 
     Split out so callers that want to union the active and non-active nets
@@ -2060,15 +2060,15 @@ def _build_net_layer_buckets(
 
     The result is memoised on the project's identity (see
     :func:`clear_net_layer_bucket_cache`) because a single session calls this
-    at least twice over the same extraction — the viewer's stub-metadata build
-    and ``build_problem`` — and the polygons it returns are a pure function of
+    at least twice over the same extraction - the viewer's stub-metadata build
+    and ``build_problem`` - and the polygons it returns are a pure function of
     ``(proj, enabled_layers, include_vias)``. Callers treat the returned dict
     as read-only; they partition it into new dicts rather than mutating it.
 
     ``only_nets`` / ``exclude_nets`` restrict the sweep to a subset of net
     indices *before* any buffering happens. The FEM needs only the handful of
     rails a directive touches, while the other few thousand (layer, net)
-    pairs exist purely for the viewer's "all copper" overlay — so buffering
+    pairs exist purely for the viewer's "all copper" overlay - so buffering
     every track, arc, pad and via on the board to assemble a Problem that
     will use 0.2 % of them is the single most wasteful step in the pipeline.
     Filtering is a pure prefilter: the result is exactly the subset of the
@@ -2080,7 +2080,7 @@ def _build_net_layer_buckets(
     the session's second full sweep is free, and a caller that wants just
     the active rails never pays for the rest.
 
-    ``include_vias`` — see :func:`build_net_layer_shapes`.
+    ``include_vias`` - see :func:`build_net_layer_shapes`.
     """
     global _bucket_cache_proj, _bucket_cache_key, _bucket_cache_value
     cache_key = (tuple(enabled_layers), bool(include_vias))
@@ -2117,7 +2117,7 @@ def _build_net_layer_buckets(
     buckets: dict[tuple[int, int], list[shapely.geometry.base.BaseGeometry]] = {}
     enabled_set = set(enabled_layers)
     # On a negative internal-plane layer, tracks / arcs / regions / fills are
-    # plane-defining artwork (the flood boundary and split lines), NOT copper —
+    # plane-defining artwork (the flood boundary and split lines), NOT copper -
     # e.g. the boundary track is drawn centred on the board edge, so half its
     # width sits outside the outline. The plane's copper is the synthesised
     # sheet alone, so this artwork is excluded from the copper buckets.
@@ -2127,8 +2127,8 @@ def _build_net_layer_buckets(
     def _add(layer_id: int, net_index: int, geom):
         # NO_NET copper (an unassigned arc / region / free pour) is bucketed
         # under the NO_NET key rather than dropped: it never reaches the FEM
-        # — build_per_net_geometry_layers_split routes the NO_NET bucket to
-        # the non-active geometry — but the viewer's "all copper" overlay
+        # - build_per_net_geometry_layers_split routes the NO_NET bucket to
+        # the non-active geometry - but the viewer's "all copper" overlay
         # needs it so unassigned copper still renders.
         if geom is None or geom.is_empty:
             return
@@ -2233,7 +2233,7 @@ def _build_net_layer_buckets(
     # conductor in the per-net FEM. It unions with the same-net via/pad discs
     # already bucketed onto this layer above (the vias that stitch the plane to
     # top/bottom copper), keeping the rail connected.
-    # Through-feature footprints are layer-independent — build once, reuse for
+    # Through-feature footprints are layer-independent - build once, reuse for
     # every plane sheet below instead of rebuilding all pad/via polygons per
     # plane (see _ThroughFeatureCache). Built lazily: only if there's a plane.
     _through_cache: _ThroughFeatureCache | None = None
@@ -2256,7 +2256,7 @@ def _build_net_layer_buckets(
     log.info("build_net_layer_shapes: buffered primitives into %d (layer, net) "
              "bucket(s) in %.2fs", len(buckets), time.monotonic() - _t_buckets)
     # Memoise for the second caller in the session (see the docstring).
-    # Only the unfiltered sweep is stored — a filtered one is a subset and
+    # Only the unfiltered sweep is stored - a filtered one is a subset and
     # caching it would let a later full request be served short.
     # Replacing the slot drops the previous project's polygons.
     if unfiltered:
@@ -2276,24 +2276,24 @@ def build_net_layer_shapes(
 
     ``include_vias`` controls whether via primitives contribute:
 
-    * ``False`` (default) — non-via primitives only. Used as the ground-truth
+    * ``False`` (default) - non-via primitives only. Used as the ground-truth
       net-membership oracle for the legacy single-union via-coupling filter,
       so a via's own disc can't self-confirm an otherwise-illegitimate
       coupling.
-    * ``True`` — full per-net copper including via discs. Used to build the
+    * ``True`` - full per-net copper including via discs. Used to build the
       :class:`GeometryLayer` objects fed to padne in the per-net FEM pipeline,
       where each net needs its own conductor including its vias.
 
     Through-hole pads contribute to every enabled copper layer (plated
     through, copper on every layer they span). Primitives without a net
-    assignment are bucketed under the :data:`NO_NET` key — kept so the
+    assignment are bucketed under the :data:`NO_NET` key - kept so the
     viewer's "all copper" overlay can render unassigned copper, while the
     FEM pipeline filters the NO_NET bucket out of its active set.
     """
     buckets = _build_net_layer_buckets(proj, enabled_layers, include_vias)
     # Per-(layer, net) unary_union: shapely 2 releases the GIL inside
     # unary_union, so a thread pool gives real parallelism here. Threading
-    # beats process pools — no pickling of shapely geometries needed.
+    # beats process pools - no pickling of shapely geometries needed.
     _t_union = time.monotonic()
     unioned = _parallel_union_buckets(buckets)
     log.info("build_net_layer_shapes: per-net union of %d bucket(s) done "
@@ -2309,13 +2309,13 @@ def _parallel_union_buckets(
 
     With ``snap`` true (the default), ``shapely.union_all`` runs ON a 1 µm
     precision grid (``grid_size=_UNION_SNAP_GRID_MM``): the result is already
-    snapped — no near-duplicate vertices for ``triangle.triangulate`` to
-    choke on — and valid, in a single GEOS pass. This replaces the old
+    snapped - no near-duplicate vertices for ``triangle.triangulate`` to
+    choke on - and valid, in a single GEOS pass. This replaces the old
     union-then-``set_precision`` two-step, whose separate snap dominated the
     geometry path's cost.
 
     A grid union is slower per bucket than a plain one, so ``snap=False``
-    skips it — used for display-only geometry (the viewer's "all copper"
+    skips it - used for display-only geometry (the viewer's "all copper"
     overlay) that is never handed to the mesher and so needs no snap.
 
     shapely 2 releases the GIL inside ``union_all``, so a thread pool gives
@@ -2325,8 +2325,8 @@ def _parallel_union_buckets(
     total_pieces = sum(len(p) for p in buckets.values())
     big_buckets = sum(1 for v in buckets.values() if len(v) > 1)
     use_threads = big_buckets >= 4 and total_pieces >= 200
-    # The Clipper2 backend (pyclipr, the default) is GIL-bound — it does NOT
-    # release the GIL the way shapely 2's union does — so running it across the
+    # The Clipper2 backend (pyclipr, the default) is GIL-bound - it does NOT
+    # release the GIL the way shapely 2's union does - so running it across the
     # thread pool only thrashes the GIL and is slower than serial. Force serial
     # whenever it's the active backend; serial Clipper2 still beats threaded
     # shapely on large boards. "verify" runs both, so leave it threaded (the
@@ -2337,7 +2337,7 @@ def _parallel_union_buckets(
 
     def _union_one(key, pieces):
         # Fuse via the selected backend (shapely by default; opt-in Clipper2
-        # with shapely fallback — see fypa._clipper_fuse). Default path is
+        # with shapely fallback - see fypa._clipper_fuse). Default path is
         # identical to shapely.union_all(pieces, grid_size=grid).
         return _sanitise_unioned_shape(
             _clipper_fuse.fuse(pieces, grid, key=key), key,
@@ -2349,7 +2349,7 @@ def _parallel_union_buckets(
 
     import concurrent.futures
     import os
-    # Cap workers — union_all releases the GIL but still pegs a core per
+    # Cap workers - union_all releases the GIL but still pegs a core per
     # task; min(8, cpu_count()) is plenty.
     max_workers = min(8, (os.cpu_count() or 4))
     result: dict[tuple[int, int], shapely.geometry.base.BaseGeometry] = {}
@@ -2367,7 +2367,7 @@ def _parallel_union_buckets(
 # snap. 1 μm is well below any meaningful PCB feature dimension (smallest
 # track widths are ~75 μm; via drill ≥ 150 μm) but coarse enough to absorb
 # float-rounding jitter that produces vertices "almost but not quite the
-# same" — the exact pathology that makes ``triangle.triangulate`` fail.
+# same" - the exact pathology that makes ``triangle.triangulate`` fail.
 _UNION_SNAP_GRID_MM: float = 1.0e-3
 
 
@@ -2379,7 +2379,7 @@ def _sanitise_unioned_shape(
 
     The 1 µm precision snap that protects ``triangle.triangulate`` from
     near-duplicate vertices is now folded into the union itself
-    (:func:`shapely.union_all` with ``grid_size`` — see
+    (:func:`shapely.union_all` with ``grid_size`` - see
     :func:`_parallel_union_buckets`), and a precision-grid union is valid by
     construction. So this is just a cheap guard: a grid union of polygons
     is already a Polygon/MultiPolygon (the fast path), and only a degenerate

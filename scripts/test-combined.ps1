@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     The combined branch is maintained centrally (see scripts/maintain-test-combined.ps1).
-    This script only fetches and checks out the remote tip — it does not merge
+    This script only fetches and checks out the remote tip - it does not merge
     feature branches.
 
     To rebuild and push test/combined:
@@ -17,7 +17,7 @@
     Combined branch name. Default: test/combined
 
 .PARAMETER Rebuild
-    Not supported here — prints how to run maintain-test-combined.ps1 and exits 1.
+    Not supported here - prints how to run maintain-test-combined.ps1 and exits 1.
 
 .PARAMETER SkipTests
     Skip the pytest topology suite; still runs FYPA.py unless the script exits earlier.
@@ -66,7 +66,7 @@ Then re-run this script to check out $Remote/$TestBranch.
 }
 
 if (-not (Test-Path "FYPA.py")) {
-    throw "FYPA.py not found in $RepoRoot — run this script from the FYPA repo."
+    throw "FYPA.py not found in $RepoRoot - run this script from the FYPA repo."
 }
 
 $PrjPcbPath = $null

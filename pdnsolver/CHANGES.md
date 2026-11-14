@@ -7,12 +7,12 @@ below are © 2025 CuTree Designs and licensed under AGPL-3.0-or-later (matching
 the umbrella project's licence).
 
 The motivation for vendoring rather than depending on upstream was a chain
-of small porting changes — primarily the mesher and a couple of Python-3.11
-compatibility fixes — that haven't been upstreamed yet.
+of small porting changes - primarily the mesher and a couple of Python-3.11
+compatibility fixes - that haven't been upstreamed yet.
 
 ## Summary of changes
 
-### `solver.py` — ground-node selection fix and debug logging
+### `solver.py` - ground-node selection fix and debug logging
 
 `find_best_ground_node_index()` previously iterated over **all** networks
 (`prob.networks`) while the `NodeIndexer` was built only from the
@@ -28,7 +28,7 @@ Changes:
   This guarantees every candidate index exists in `NodeIndexer`.
 * Ground selection now votes: it counts how many `VoltageSource`s share
   each GND mesh vertex and picks the most-shared one (i.e. the common
-  power-supply GND bus).  Ties are broken by highest source voltage —
+  power-supply GND bus).  Ties are broken by highest source voltage -
   same behaviour as before for single-supply boards, more robust for
   multi-rail boards.
 * `_log_network_breakdown()` helper logs a per-element-type count of
@@ -40,7 +40,7 @@ Changes:
   of total sink current and describes the most likely root causes
   (isolated GND regions, no via path to reference).
 
-### `mesh.py` — meshing backend ported from CGAL to `triangle`
+### `mesh.py` - meshing backend ported from CGAL to `triangle`
 
 Upstream uses a CGAL-based 2-D mesher exposed via a compiled `padne._cgal`
 extension. CGAL wouldn't build on Windows on the development machine, so the
@@ -56,7 +56,7 @@ Jonathan Shewchuk's `triangle` C library).
 * The resulting `Mesh` / `Vertex` / `Face` objects preserve upstream's
   public shape so the rest of the solver is untouched.
 
-### `solver.py` — orphan-vertex guards
+### `solver.py` - orphan-vertex guards
 
 The Laplace operator construction (`laplace_operator()`) crashed on meshes
 whose `triangle` output contained vertices with no incident half-edges
@@ -76,10 +76,10 @@ on real-world boards.
   Resistor stamps would attach to the v=0-pinned node. That dumped the
   injected current into the pin term (`σ·v = I`) instead of through real
   copper, dragging any via-coupled copper on the other layer to `≈ I/σ`
-  (a few mV) — visible in the viewer as a multi-volt fake "drop" the
+  (a few mV) - visible in the viewer as a multi-volt fake "drop" the
   moment the affected layer was enabled.
 
-### `solver.py` — Steiner-ring refinement at current-injection vertices
+### `solver.py` - Steiner-ring refinement at current-injection vertices
 
 The 2-D FEM has a log singularity at every point-current source / sink. A
 single mesh vertex carrying the injected current produces a voltage that
@@ -109,15 +109,15 @@ or right on its boundary).
 
 After the fix, the same length sweep at 0.6 mm global mesh size barely
 moved (the singularity-at-the-injection-vertex was *not* the dominant
-error source — see next section). The ring refinement was kept anyway
+error source - see next section). The ring refinement was kept anyway
 because it's cheap and is the standard way to regularise 2-D point
 sources; it may matter on geometries other than the long thin strip used
 for the regression test.
 
-### `mesh.py` / `solver.py` — per-polygon adaptive `maximum_size`
+### `mesh.py` / `solver.py` - per-polygon adaptive `maximum_size`
 
 Follow-up to the Steiner-ring change. Re-running the length sweep with
-the ring alone showed the bias was nearly unchanged — meaning the FEM
+the ring alone showed the bias was nearly unchanged - meaning the FEM
 under-estimation on thin conductors comes from the **transverse mesh
 resolution across the strip width**, not from the singularity at the
 injection vertices. A 1 mm trace meshed at the default 0.6 mm `maximum_size`
@@ -136,7 +136,7 @@ A 1 mm × 20 mm trace gets ~0.19 mm automatically; a 50×50 mm pour stays at
 the global 0.6 mm. Helper lives in `Mesher.polygon_adaptive_max_size` and
 the FEM-bound `generate_meshes_for_problem` path now builds one Triangle
 switches string per polygon. The display-only `generate_disconnected_meshes`
-path still uses one shared switches string — those meshes aren't solved on.
+path still uses one shared switches string - those meshes aren't solved on.
 
 Plumbing changes:
 * `Mesher._build_triangle_switches` now accepts an optional
@@ -151,7 +151,7 @@ Limitations:
   (e.g. a large pour with a thin spur on the same net) get the wide
   pour's averaged width and the spur is still under-refined.** Fixing
   that requires local-width sampling (medial axis) or per-region max-area
-  attributes — deferred until real-board profiling shows it matters.
+  attributes - deferred until real-board profiling shows it matters.
 * Holes in the polygon inflate `polygon.length` and shrink the
   characteristic width estimate. For typical via-perforated pours this
   over-refines slightly; for pathologically perforated copper it could
@@ -171,7 +171,7 @@ triangles. Measured now, the interior slope of the strip fixtures matches
 holds it to 1e-5. The per-polygon `maximum_size` is still useful (it
 resolves current crowding at bends and pads), just not for the reason given.
 
-### `solver.py` / `problem.py` — drill-circle via contacts and mesh grading
+### `solver.py` / `problem.py` - drill-circle via contacts and mesh grading
 
 Via hops used to land on a single point at the via centre (plus the
 25 µm Steiner ring). A point contact in 2-D is a log singularity, so a via's
@@ -192,7 +192,7 @@ STRtree query per layer, which made seed placement *faster* than before on
 boards with many signal vias. `barrel` is part of the mesh-assembly
 fingerprint.
 
-### `solver.py` / `problem.py` — remote sense
+### `solver.py` / `problem.py` - remote sense
 
 `VoltageSource` and `VoltageRegulator` take optional `sense_p` / `sense_n`
 nodes: the constraint row reads them (`V(sense_p) − V(sense_n) = V`) while
@@ -200,7 +200,7 @@ the current column stays on the output pins. The system is then
 asymmetric, which `matrix_is_symmetric` now accounts for (PARDISO's
 unsymmetric path, LGMRES fallback; the adjoint already solves Lᵀ).
 
-### `thermal.py` — board thermal model
+### `thermal.py` - board thermal model
 
 A layered finite-difference board model (every net's copper on every
 layer, laminate and plated barrels between layers, convection from both
@@ -209,7 +209,7 @@ set, in place of the local `p / h`. `Resistor.heat_source` marks real
 dissipating parts (vias, series parts); regulators add their conversion
 loss. See the module docstring and `tests/test_thermal_board.py`.
 
-### `ui.py` — Python-3.11 compatibility + minor robustness
+### `ui.py` - Python-3.11 compatibility + minor robustness
 
 * Replaced PEP 695 class-level generic syntax
   (`class Foo[T: HasIndex]: ...`) with explicit `TypeVar` /
@@ -217,7 +217,7 @@ loss. See the module docstring and `tests/test_thermal_board.py`.
 * Same change applied to other files using PEP 695 generics
   (`mesh.py`, `solver.py`).
 
-> **NB:** The upstream `ui.py` viewer is not currently used by FYPA —
+> **NB:** The upstream `ui.py` viewer is not currently used by FYPA -
 > we ship a custom OpenGL viewer ([../gl_mesh_viewer.py](../gl_mesh_viewer.py))
 > driven from [../altium_viewer.py](../altium_viewer.py) instead. `ui.py`
 > remains in the tree for now but is unused.

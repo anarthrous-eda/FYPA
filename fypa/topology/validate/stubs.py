@@ -40,7 +40,7 @@ def stub_end_connected(
 ) -> bool:
     """True when ``(stub_x, port_y)`` joins same-net routing (not a dead stub end).
 
-    Uses schematic segments — the same geometry as junction detection:
+    Uses schematic segments - the same geometry as junction detection:
 
     1. Junction dot at the stub end.
     2. Two or more wire directions (corner, T, or pass-through).

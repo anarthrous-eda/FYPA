@@ -13,12 +13,12 @@ from fypa.altium_geometry import volume_current_density
 # Modes the viewer offers. Each is (label, unit, derive_fn). The derive_fn
 # takes (tris, potentials, power_density, conductance, n_verts, sigma) and
 # returns a numpy array of values per vertex.
-#   tris            — (M, 3) int32, vertex indices into the mesh
-#   potentials      — (N,) float64, per-vertex voltage (V)
-#   power_density   — (M,) float64 or None, per-face power density (W/mm²)
-#   conductance     — sheet conductance (S) of the layer
-#   n_verts         — vertex count of the mesh (== potentials.size)
-#   sigma           — copper conductivity (S/mm) the solve used
+#   tris            - (M, 3) int32, vertex indices into the mesh
+#   potentials      - (N,) float64, per-vertex voltage (V)
+#   power_density   - (M,) float64 or None, per-face power density (W/mm²)
+#   conductance     - sheet conductance (S) of the layer
+#   n_verts         - vertex count of the mesh (== potentials.size)
+#   sigma           - copper conductivity (S/mm) the solve used
 def _voltage_per_vertex(tris, potentials, power_density, conductance, n_verts, sigma):
     return potentials.copy()
 
@@ -59,16 +59,16 @@ _MODES = [
     ("Current Density", "A/mm^2", _current_density_per_vertex),
     ("Power Density",   "W/mm^2", _power_density_per_vertex),
     # Via Current: copper renders neutral grey (the derive_fn output is
-    # ignored — see :meth:`PdnViewer._render`), and the heatmap belongs
+    # ignored - see :meth:`PdnViewer._render`), and the heatmap belongs
     # to the via cylinders / markers. Scale range = (min, max) of every
     # visible via's max-segment |I| on the selected rails.
     ("Via Current",     "A",     _voltage_per_vertex),
 ]
 
 # The Fixes tab's value map: where more copper raises the selected load's
-# voltage most (V per mm² of parallel copper). Not in the Mode combo — the
+# voltage most (V per mm² of parallel copper). Not in the Mode combo - the
 # tab's "Show value map" box turns it on (see PdnViewer._current_selection).
-# Its values come from the load's adjoint field, not from this function —
+# Its values come from the load's adjoint field, not from this function -
 # see PdnViewer._layer_arrays and fypa.copper_roi.
 _VALUE_MAP_MODE_ENTRY = ("Copper ROI", "V/mm^2", _copper_roi_per_vertex)
 
@@ -104,7 +104,7 @@ _SPIKE_PRONE_MODES: frozenset[str] = frozenset(
 
 # Heatmap modes whose data spans many decades, so a logarithmic colour
 # scale earns its keep: current density (J spikes hard at copper
-# constrictions), power density (~ J²·ρ — roughly the square of that
+# constrictions), power density (~ J²·ρ - roughly the square of that
 # dynamic range), and via current (long-tailed: most vias near 0 A, a
 # handful near a regulator). The linear/log toggle is enabled only for
 # these. Voltage sits in a narrow band and Voltage Drop is signed, so a
@@ -116,8 +116,8 @@ _LOG_ELIGIBLE_MODES: frozenset[str] = frozenset(
 
 
 # A log colour scale spans at most this many decades below the window
-# maximum. Values under the resulting floor — including the exact zeros
-# of no-current copper — clamp to the bottom of the LUT instead of
+# maximum. Values under the resulting floor - including the exact zeros
+# of no-current copper - clamp to the bottom of the LUT instead of
 # diverging to log(0) = -inf.
 _LOG_SCALE_DECADES: float = 6.0
 
@@ -134,7 +134,7 @@ _VIA_CURRENT_WARN_A: float = 1.0
 # Conductive-fill override mode → human-readable phrase for the Physics-
 # constants report (mirrors loader.SolveSettings.conductive_fill_mode).
 _FILL_MODE_REPORT_LABELS: dict[str, str] = {
-    "auto": "auto — per via from the IPC-4761 FILLING material",
+    "auto": "auto - per via from the IPC-4761 FILLING material",
     "all": "override: all vias forced filled",
     "none": "override: no vias filled",
 }
@@ -150,7 +150,7 @@ _DISPLAY_PERCENTILE_HIGH: float = 99.0
 
 
 # Percentile used to cap the *slider's full extent* (data_max) on spike-prone
-# modes. The raw vertex maximum can be 10–100× the physically meaningful range
+# modes. The raw vertex maximum can be 10-100× the physically meaningful range
 # because of the FEM logarithmic gradient singularity at pinned-voltage
 # vertices (SOURCE/SINK pins), which makes the slider's "Max" label
 # misleading. P99.9 still sits well above the P99 default-selection clamp so
@@ -248,11 +248,11 @@ def _build_neutral_cmap_lut(
 #
 # The heatmap looks up per-vertex colours through a 256-entry RGBA LUT
 # (see :func:`_build_cmap_lut`). The scheme is user-selectable from a
-# dropdown next to the colour-scale bar — :data:`_HEATMAP_COLORMAPS` is the
+# dropdown next to the colour-scale bar - :data:`_HEATMAP_COLORMAPS` is the
 # ordered ``(display name, matplotlib colormap name)`` menu; index 0 is the
 # default applied on first render.
 #
-# "Acton" and "Bam" are Scientific Colour Maps (Crameri — the same schemes
+# "Acton" and "Bam" are Scientific Colour Maps (Crameri - the same schemes
 # JuliaPlots ships). matplotlib doesn't bundle them, so
 # :func:`_register_custom_colormaps` builds them from anchor colours and
 # registers them under ``fypa_``-prefixed names that ``get_cmap`` resolves
@@ -307,7 +307,7 @@ _register_custom_colormaps()
 
 
 # Ordered ``(display name, matplotlib colormap name)`` for the colour-scale
-# dropdown. Index 0 is the default. To add a scheme, append a row — the
+# dropdown. Index 0 is the default. To add a scheme, append a row - the
 # combo, gradient strip and LUT build all read this tuple.
 _HEATMAP_COLORMAPS: tuple[tuple[str, str], ...] = (
     ("Viridis (default)", "viridis"),

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection, Mapping
+
 from fypa.topology.constants import (
     CANVAS_HEIGHT_PAD_GND,
     CANVAS_HEIGHT_PAD_NO_GND,
@@ -26,17 +28,22 @@ def build_topology_model(
     *,
     layout: str = "columns",
     show_bridges: bool = False,
+    add_candidates: Mapping[str, Collection[str]] | None = None,
 ) -> TopologyModel:
     """Build a Flow diagram layout model for the PDN simulation schematic.
 
     ``layout="rows"`` gives one row per power origin with power-port tags
     between rows (:mod:`fypa.topology.rows`); ``"columns"`` is the classic
-    single-chain column layout. ``show_bridges`` only affects the rows layout.
+    single-chain column layout. ``show_bridges`` and ``add_candidates`` (the
+    viewer's "+ SINK" handles, see :func:`~fypa.topology.rows.build_rows_model`)
+    only affect the rows layout.
     """
     if layout == "rows":
         from fypa.topology.rows import build_rows_model
 
-        return build_rows_model(metadata, show_bridges=show_bridges)
+        return build_rows_model(
+            metadata, show_bridges=show_bridges, add_candidates=add_candidates,
+        )
     if metadata is None:
         return TopologyModel()
 
@@ -59,7 +66,7 @@ def build_topology_model(
     )
     finalize_wire_labels(wires, nodes=layout.directive_nodes, geo=geo)
 
-    # Wires can extend right of the last node column — e.g. a right-side stack
+    # Wires can extend right of the last node column - e.g. a right-side stack
     # with ≥2 lanes puts its outermost bus at node_right + a stagger, past
     # content_right. Include the drawn geometry so the viewBox never clips it.
     max_wire_x = max(

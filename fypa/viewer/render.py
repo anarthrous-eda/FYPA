@@ -14,6 +14,7 @@ from matplotlib.tri import Triangulation
 
 from fypa.viewer.diagnostics import _apply_mesh_failure_highlights
 from fypa.viewer.display import (
+    _build_cmap_lut,
     _COPPER_ROI_MODE,
     _copper_roi_per_vertex,
     _VALUE_MAP_MODE_ENTRY,
@@ -51,14 +52,12 @@ class _RenderMixin:
 
     def _effective_rail_members(self, rail_names) -> list[str]:
         """The list of net names whose copper should appear when the given
-        rails are selected, honouring the "Show only rail net" checkbox.
-
-        Off → union of full rail groups (e.g. ``[+3V3, 3V3_SW]`` for +3V3).
-        On  → just each selected rail's primary name (bridged nets hidden).
+        rails are selected: each rail's member nets (e.g. ``[+3V3, 3V3_SW]``
+        for +3V3), filtered by the per-subnet eye buttons.
 
         Accepts either a single rail name (legacy single-rail call sites)
         or a list of rail names (multi-rail control). An empty list / empty
-        string returns ``[]`` — caller code treats that as "no rail filter
+        string returns ``[]`` - caller code treats that as "no rail filter
         currently selected", which in practice means the heatmap mesh has
         no nets to draw.
         """
@@ -85,7 +84,6 @@ class _RenderMixin:
             list(rail_names),
             self._rail_to_members,
             subnet_visible,
-            rail_only=self.rail_only_box.isChecked(),
         )
 
     def _merged_hidden_sections(self) -> dict[str, frozenset[str]]:
@@ -113,7 +111,7 @@ class _RenderMixin:
                                 entry: dict):
         """``(names, per-triangle labels)`` for a merged net's layer mesh, or
         ``None`` when no shorted section lies on this layer. Cached per
-        layer — it depends only on the solve."""
+        layer - it depends only on the solve."""
         cache = self.__dict__.setdefault("_merged_label_cache", {})
         if layer_index in cache:
             return cache[layer_index]
@@ -155,14 +153,14 @@ class _RenderMixin:
     # A dead-end island's current is ~0 (numerical noise), so its peak power
     # density sits orders of magnitude below the board's busiest copper. Flag
     # a mesh when its peak |power density| is at or below a small fraction of
-    # the global peak (with an absolute floor for the all-quiet case) — this
+    # the global peak (with an absolute floor for the all-quiet case) - this
     # cleanly catches the dead-end case without ever greying loaded copper.
     _NO_CURRENT_PD_REL: float = 1e-4
     _NO_CURRENT_PD_ABS: float = 1e-12
 
     def _no_current_mesh_set(self) -> set[tuple[int, int]]:
         """Return (and cache) the set of ``(layer_index, mesh_index)`` whose
-        solved mesh carries no current — a dead-end copper island tied to the
+        solved mesh carries no current - a dead-end copper island tied to the
         rest of its net by a single via, so KCL forces ~zero current through
         it and it sits at a uniform potential.
 
@@ -170,7 +168,7 @@ class _RenderMixin:
         board-wide peak (see ``_NO_CURRENT_PD_*``). Used by the "Grey no
         current copper" toggle to grey these the same way it greys
         FEM-excluded stub copper. A mesh with no power-density data is left
-        unflagged (conservative — never grey copper we can't measure)."""
+        unflagged (conservative - never grey copper we can't measure)."""
         if self._no_current_meshes is not None:
             return self._no_current_meshes
         result: set[tuple[int, int]] = set()
@@ -209,7 +207,7 @@ class _RenderMixin:
         potential that floats a fraction of a mV ABOVE the rail. The float
         is real: a directive ``VoltageSource`` pins only the *difference*
         across its two pins, and the single global 0 V datum lands at the
-        board's lowest GND node — so a source's own return pin sits slightly
+        board's lowest GND node - so a source's own return pin sits slightly
         above 0 and drags its + net's absolute reading above the rail.
         Referencing each net to its own source return removes that datum
         offset.
@@ -218,7 +216,7 @@ class _RenderMixin:
         is left at absolute potential. When a net has several sources the
         one whose + pin sits highest wins (the rail's defining source),
         mirroring the Voltage Drop anchor choice. Cached for the viewer's
-        lifetime — it depends only on the (immutable) solution.
+        lifetime - it depends only on the (immutable) solution.
         """
         cached = getattr(self, "_src_return_offset_cache", None)
         if cached is not None:
@@ -273,7 +271,7 @@ class _RenderMixin:
         ``(layer_id, net)``, or None if no vertex lies within 0.01 mm.
 
         Reads the full solution, independent of which physical layers /
-        rails are visible — used for references (source-return offset,
+        rails are visible - used for references (source-return offset,
         Voltage Drop anchor) that must not move when a layer is hidden.
         The per-(phys, net) KD-tree is built over the slab's non-orphan
         vertices (orphans are pinned to V=0 and would shadow the real pin
@@ -350,7 +348,7 @@ class _RenderMixin:
         # BOTTOM-first for GPU draw order (topmost rendered last → on top).
         # A "selected" physical layer is forced to the very end of the
         # batch so it paints above every other layer regardless of stackup
-        # rank — that's the whole point of the layer-row selection.
+        # rank - that's the whole point of the layer-row selection.
         #
         # The batch holds EVERY physical layer of the selected rails, not
         # just the visible ones: a hidden layer's vertices stay uploaded and
@@ -376,7 +374,7 @@ class _RenderMixin:
         zs_parts: list[np.ndarray] = []
         vs_parts: list[np.ndarray] = []
         tris_parts: list[np.ndarray] = []
-        # Per-vertex "no current" mask (0/1), parallel to xs — fed to the
+        # Per-vertex "no current" mask (0/1), parallel to xs - fed to the
         # mesh shader's neutral attribute so the "Grey no current copper"
         # toggle can grey dead-end islands. Each piece is mesh-uniform.
         nc_parts: list[np.ndarray] = []
@@ -395,7 +393,7 @@ class _RenderMixin:
         # triangles / no-current mask depend ONLY on the draw order, the rail
         # members, the extrude flag + copper thickness, and each layer's
         # render-z (which folds in the selected-layer 2D lift and the 2D/3D
-        # mode). Per-vertex VALUES are not part of this — they're rebuilt per
+        # mode). Per-vertex VALUES are not part of this - they're rebuilt per
         # mode below. ``id(self.solution)`` scopes the cache to the current
         # solve (also cleared on re-solve via _clear_solution_derived_caches).
         # On a hit we reuse the exact same array objects so _render_impl's
@@ -428,7 +426,7 @@ class _RenderMixin:
                 layer_index = self._index_by_pair.get((phys, net))
                 if layer_index is None:
                     continue
-                # Per-(phys, net) pump — this loop is the bulk of
+                # Per-(phys, net) pump - this loop is the bulk of
                 # _build_rail_arrays cost on multi-rail, multi-layer
                 # selections. The throttle keeps the overhead negligible.
                 self._pump_busy_ui()
@@ -460,7 +458,7 @@ class _RenderMixin:
                     ltris = etris
                 vs_parts.append(lvs)
                 # Geometry (coords / z / triangles / no-current mask) is mode-
-                # independent — rebuild it only on a cache miss. On a hit the
+                # independent - rebuild it only on a cache miss. On a hit the
                 # concatenated batch is reused wholesale below.
                 if not reuse_geom:
                     if extrude_3d:
@@ -480,20 +478,20 @@ class _RenderMixin:
                     zs_parts.append(lzs)
                     # No-current mask for this block, aligned to lxs. The prism
                     # extrusion duplicates the vertex set top↔bottom (and adds
-                    # no new vertices — side walls reuse those indices), so the
+                    # no new vertices - side walls reuse those indices), so the
                     # mask is duplicated the same way to stay length-matched.
                     nc_block = entry["no_current_mask"]
                     if extrude_3d:
                         nc_block = np.concatenate([nc_block, nc_block])
                     nc_parts.append(nc_block)
-                    # Vectorised offset add — re-base local indices into the
+                    # Vectorised offset add - re-base local indices into the
                     # combined GPU batch.
                     tris_parts.append(ltris + v_off)
                 block = {
                     "physical": phys,
                     "net": net,
                     # Vertex count this (phys, net) contributed to the
-                    # combined mesh — used to build the per-vertex alpha
+                    # combined mesh - used to build the per-vertex alpha
                     # array (see :meth:`_combined_mesh_alpha_array`),
                     # which folds in both the per-layer Transparency
                     # setting and the editor-mode connectivity dim.
@@ -526,7 +524,7 @@ class _RenderMixin:
                     "n_vertices": n,
                     "triangulation": entry["triangulation"],
                     "interpolator": entry["interpolator"],
-                    # Cache key stored for lazy interpolator writeback — when
+                    # Cache key stored for lazy interpolator writeback - when
                     # the hover probe builds the interpolator on first cursor
                     # move, it writes back to the cache entry so subsequent
                     # renders of the same (layer, mode) reuse it.
@@ -550,13 +548,13 @@ class _RenderMixin:
               else np.empty(0, dtype=np.float64))
 
         if reuse_geom:
-            # Same geometry as the last build — hand back the identical array
+            # Same geometry as the last build - hand back the identical array
             # objects so the set_mesh identity check in _render_impl skips the
             # GPU re-upload. vs (above) still aligns: the loop visited the
             # exact same (phys, net) blocks in the same order and extrude mode.
             xs, ys, zs, tris, no_current = cached_geom[1]
             if vs.size != xs.size:
-                # Values/geometry drift (e.g. stale cache) — rebuild geometry.
+                # Values/geometry drift (e.g. stale cache) - rebuild geometry.
                 reuse_geom = False
                 self._rail_geom_cache = None
                 return self._build_rail_arrays(
@@ -613,6 +611,10 @@ class _RenderMixin:
         ROI mode's values also depend on the selected target load."""
         if derive_fn is _copper_roi_per_vertex:
             return (layer_index, id(derive_fn), getattr(self, "_roi_key", None))
+        # A What-If difference view caches its own (what-if - base) values.
+        diff = getattr(self, "_whatif_diff_live", None)
+        if diff is not None:
+            return (layer_index, id(derive_fn), "whatif-diff", diff["id"])
         return (layer_index, id(derive_fn))
 
     def _layer_arrays(self, layer_index: int, derive_fn) -> dict:
@@ -625,9 +627,9 @@ class _RenderMixin:
         immutable so the cache lives for the session.
 
         Keying on ``id(derive_fn)`` (rather than the mode label) means
-        modes that share a derive function — e.g. 'Voltage' and
+        modes that share a derive function - e.g. 'Voltage' and
         'Voltage Drop', which both use ``_voltage_per_vertex`` (Voltage
-        Drop's shift is applied later, downstream in ``_render``) —
+        Drop's shift is applied later, downstream in ``_render``) -
         share a single cache entry.
         """
         key = self._layer_cache_key(layer_index, derive_fn)
@@ -638,7 +640,7 @@ class _RenderMixin:
         # Mode-independent geometry (coords / triangulation / shape / masks),
         # built and cached once per layer. This holds the per-kept-mesh
         # ``(tris_local, pot, pd, n)`` tuples so the values below are computed
-        # over the EXACT same kept-mesh set and order — vs stays aligned to xs.
+        # over the EXACT same kept-mesh set and order - vs stays aligned to xs.
         geom = self._layer_geometry(layer_index)
         conductance = geom["_conductance"]
         if derive_fn is _copper_roi_per_vertex:
@@ -654,12 +656,15 @@ class _RenderMixin:
             ]
         vs = (np.concatenate(vs_parts) if vs_parts
               else np.empty(0, dtype=np.float64))
+        if (getattr(self, "_whatif_diff_live", None) is not None
+                and derive_fn is not _copper_roi_per_vertex):
+            vs = self._whatif_diff_values(layer_index, derive_fn, vs)
 
         entry = {k: v for k, v in geom.items() if not k.startswith("_")}
         entry["vs"] = vs
         # The voltage sampler (_FastTriSampler) is built lazily on first cursor
         # hover via _ensure_interpolator() and written back to THIS (layer,
-        # mode) entry — it interpolates the mode's values, so it's per-mode.
+        # mode) entry - it interpolates the mode's values, so it's per-mode.
         entry["interpolator"] = None
         self._layer_cache[key] = entry
         return entry
@@ -676,7 +681,7 @@ class _RenderMixin:
 
         ls = self.solution.layer_solutions[layer_index]
         layer = self.solution.problem.layers[layer_index]
-        # Lean format: per-mesh-component numpy arrays — no half-edge
+        # Lean format: per-mesh-component numpy arrays - no half-edge
         # iteration, no per-vertex Python attribute access.
         xys_meshes = ls.vertex_xys
         tris_meshes = ls.triangles
@@ -689,7 +694,7 @@ class _RenderMixin:
         # Per-vertex no-current mask (0/1), parallel to xs.
         mnc_parts: list[np.ndarray] = []
         # Per-kept-mesh (tris_local, pot, pd, n) for the mode-specific value
-        # pass — keeps vs aligned to xs with the identical skip logic.
+        # pass - keeps vs aligned to xs with the identical skip logic.
         kept: list[tuple[np.ndarray, np.ndarray, np.ndarray, int]] = []
         kept_mesh_idx: list[int] = []
         nc_set = self._no_current_mesh_set()
@@ -770,7 +775,7 @@ class _RenderMixin:
 
     def _layer_boundary_edges(self, layer_index: int) -> np.ndarray:
         """``(E, 2)`` vertex-index pairs (into the layer's ``xs`` / ``ys`` /
-        ``vs``) of the FEM mesh's boundary edges — edges used by exactly
+        ``vs``) of the FEM mesh's boundary edges - edges used by exactly
         one triangle, i.e. the copper's outer edge and its holes as the
         mesh actually draws them.
 
@@ -778,7 +783,7 @@ class _RenderMixin:
         shapely outline: each end is a mesh vertex with a known value, so
         the outline can be lifted exactly like the surface (linear along
         the edge, just as the triangle edge is) with no resampling.
-        Built lazily — only the relief view needs it — and cached on the
+        Built lazily - only the relief view needs it - and cached on the
         layer's geometry entry."""
         geom = self._layer_geometry(layer_index)
         cached = geom.get("_boundary_edges")
@@ -810,16 +815,16 @@ class _RenderMixin:
 
         Returned dict has:
 
-        * ``xs, ys`` — ``(N,)`` float64 vertex coordinates (mm) packed
+        * ``xs, ys`` - ``(N,)`` float64 vertex coordinates (mm) packed
           across all mesh components of the layer (same packing scheme
           as :meth:`_layer_arrays`).
-        * ``tris`` — ``(M, 3)`` int32 triangle indices.
-        * ``cx, cy`` — ``(M,)`` triangle centroid coordinates (mm).
-        * ``Jx, Jy`` — ``(M,)`` per-triangle current-density components
+        * ``tris`` - ``(M, 3)`` int32 triangle indices.
+        * ``cx, cy`` - ``(M,)`` triangle centroid coordinates (mm).
+        * ``Jx, Jy`` - ``(M,)`` per-triangle current-density components
           (A/mm). Zero on degenerate (zero-area) triangles.
-        * ``trifinder`` — matplotlib ``TriFinder`` for point-in-triangle
+        * ``trifinder`` - matplotlib ``TriFinder`` for point-in-triangle
           lookups during arrow grid sampling.
-        * ``bounds`` — ``(x_min, x_max, y_min, y_max)`` of the layer.
+        * ``bounds`` - ``(x_min, x_max, y_min, y_max)`` of the layer.
         """
         cached = self._layer_vec_cache.get(layer_index)
         if cached is not None:
@@ -898,7 +903,7 @@ class _RenderMixin:
     # Pre-exaggeration mm offset applied to arrow z in 3D mode so the
     # arrow sits above the copper top face instead of z-fighting with
     # it. Scaled by the GL viewer's vertical-exaggeration uniform, so a
-    # 0.0025 mm lift becomes 0.125 mm at the default 50× — enough to
+    # 0.0025 mm lift becomes 0.125 mm at the default 50× - enough to
     # clear z-fight without the arrow visibly floating above the copper.
     # Manual-adjust knob: bump this up if you still see z-fighting,
     # drop it if the arrows look detached from the layer.
@@ -925,7 +930,7 @@ class _RenderMixin:
         ``density`` is the approximate number of arrows along the
         shorter side of the *combined* visible-layer bounds. Spacing is
         shared across every layer in this pass so a small island layer
-        and a full-board plane get the same arrow size — and is derived
+        and a full-board plane get the same arrow size - and is derived
         from world bounds (not the viewport), so zoom / pan / 3D dolly
         don't change the sample positions or trigger a rebuild.
         """
@@ -945,7 +950,7 @@ class _RenderMixin:
         # Pre-pass: resolve per-layer vector caches once and take the
         # union of their bounds. The arrow spacing is derived from this
         # union (not each layer's own bounds), so every layer in the
-        # current selection gets the same arrow size — otherwise a tiny
+        # current selection gets the same arrow size - otherwise a tiny
         # island layer would render thousands of tiny arrows next to a
         # plane layer's coarse grid.
         resolved: list[tuple[dict, dict]] = []
@@ -1065,14 +1070,14 @@ class _RenderMixin:
 
     def _refresh_arrows(self) -> None:
         """Push the current-arrow overlay (or clear it) based on the
-        side-panel state. Works in both 2D and 3D — in 3D each arrow is
+        side-panel state. Works in both 2D and 3D - in 3D each arrow is
         lifted to its layer's stackup z so it floats on the copper top
         face."""
         if (not hasattr(self, "show_arrows_box")
                 or self._gl_viewer is None):
             return
         # Relief view: arrows sit on the flat layer plane and would be
-        # buried under (or float over) the lifted surface — hide them.
+        # buried under (or float over) the lifted surface - hide them.
         if (not self.show_arrows_box.isChecked()
                 or not self._layer_probes
                 or self._gl_viewer.relief_z_span() > 0.0):
@@ -1089,7 +1094,7 @@ class _RenderMixin:
     # ``_BUSY_POPUP_DELAY_MS`` the modal "Updating display…" popup
     # appears mid-flight; if it finishes faster, no popup is ever shown.
     # The deferred-show pattern means we don't have to predict slowness
-    # up front — fast cached operations cost nothing, slow ones get the
+    # up front - fast cached operations cost nothing, slow ones get the
     # dialog without flashing it on quick toggles. Used by both the
     # render path and the overlay-refresh path (all-copper toggles on
     # big boards run through :meth:`_refresh_overlay_geometry`, not
@@ -1100,7 +1105,7 @@ class _RenderMixin:
         # Re-entrancy: the inner work pumps QApplication.processEvents()
         # (via :meth:`_pump_busy_ui`) so the deferred-show timer can fire
         # and the marquee can repaint. If a queued signal re-enters this
-        # wrapper mid-flight, drop it — running the work twice would
+        # wrapper mid-flight, drop it - running the work twice would
         # corrupt GL state (half-pushed meshes, mis-ordered overlay
         # batches). The popup itself is ApplicationModal so it blocks
         # user input on other windows; in practice this guard only fires
@@ -1111,7 +1116,7 @@ class _RenderMixin:
         # work leaves the control out of sync with the view (the second rail's
         # eye reads "open" but its copper is never pushed until an unrelated
         # re-render). Remember the most recent pending work and run one trailing
-        # pass once the current one returns — mirroring _render's coalescing.
+        # pass once the current one returns - mirroring _render's coalescing.
         # Latest-wins is safe: each work rebuilds fully from the current widget
         # state, so the final pass reflects every flipped toggle.
         if self._render_busy_active:
@@ -1131,7 +1136,7 @@ class _RenderMixin:
                 return
             d = QProgressDialog("Updating display…", "", 0, 0, self)
             d.setWindowTitle("Working")
-            # The work isn't cancellable — it's one synchronous call.
+            # The work isn't cancellable - it's one synchronous call.
             # Strip the cancel button so the dialog is unambiguously a
             # busy indicator.
             d.setCancelButton(None)
@@ -1154,7 +1159,7 @@ class _RenderMixin:
         # Hold the GL view's repaints until the work is done. The work pushes
         # its batches one at a time and pumps the event loop between them;
         # without this every pump repaints the whole scene with whatever has
-        # been pushed so far — a dozen full redraws per refresh, which on a
+        # been pushed so far - a dozen full redraws per refresh, which on a
         # large board costs more than the refresh itself. Re-enabling
         # schedules the single repaint that shows the finished result.
         gv = getattr(self, "_gl_viewer", None)
@@ -1209,8 +1214,8 @@ class _RenderMixin:
     def _render(self) -> None:
         # Re-entrancy guard. _render_impl pumps QApplication.processEvents()
         # at every stage boundary (to keep the busy-popup marquee alive); a
-        # queued signal that connects directly to _render — the outline
-        # toggle, the value-scale range change — can fire inside one of
+        # queued signal that connects directly to _render - the outline
+        # toggle, the value-scale range change - can fire inside one of
         # those pumps and re-enter before the modal busy dialog is up.
         # Running the body twice interleaved corrupts GL state (the
         # half-pushed-meshes hazard _run_with_busy_popup's own guard warns
@@ -1261,8 +1266,17 @@ class _RenderMixin:
         phys_list, rails, mode = self._current_selection()
         label, unit, derive_fn = self._mode_derive_fn(mode)
         is_via_current = (mode == _VIA_CURRENT_MODE)
+        # What-If difference view: draw what-if minus base for this mode
+        # (None when no difference is shown or the mode can't be differenced).
+        begin = getattr(self, "_whatif_begin_render", None)
+        diff_live = begin(mode) if callable(begin) else None
+        if diff_live is not None:
+            label = f"Δ {label} (what-if − base)"
+        upd_banner = getattr(self, "_update_whatif_banner", None)
+        if callable(upd_banner):
+            upd_banner()
 
-        # The "Reference to source return" toggle only affects Voltage mode —
+        # The "Reference to source return" toggle only affects Voltage mode -
         # hide it elsewhere. Set here (before any early-return path) so its
         # visibility tracks the mode even when there's no mesh to draw.
         src_ref_box = getattr(self, "src_ref_box", None)
@@ -1271,24 +1285,27 @@ class _RenderMixin:
 
         # Overlays (silkscreen / pads / components / designators) are
         # independent of the FEM heatmap. Refresh them up-front so a
-        # rail or 2D/3D change keeps them in sync — and so they still draw
+        # rail or 2D/3D change keeps them in sync - and so they still draw
         # when the early-outs below fire (no layer / rail selected).
         self._refresh_overlay_geometry(rails)
         # Same up-front treatment for the editor-mode component selection
-        # box — it must survive the no-layer / no-rail early-outs below.
+        # box - it must survive the no-layer / no-rail early-outs below.
         self._refresh_editor_selection()
 
         # Copper-mesh cmap follows the active mode: every other mode
         # paints the copper from its per-vertex scalar field, so we
         # need the viridis ramp. Via Current paints the heatmap onto
-        # the vias instead — the copper drops out as context, so we
+        # the vias instead - the copper drops out as context, so we
         # push a flat-grey LUT and ignore the per-vertex values.
-        self._ensure_gl_cmap("neutral" if is_via_current else "data")
+        # A difference picks its palette once its range is known (below).
+        diff_cmap = None
+        if diff_live is None:
+            self._ensure_gl_cmap("neutral" if is_via_current else "data")
 
         # Drop cached probe state until we build new layer probes.
         # In Via Current mode the per-vertex copper values are blanked
         # (vs_arr is zeroed below), so reporting them as "Via Current"
-        # would mislead — fall back to the underlying voltage label /
+        # would mislead - fall back to the underlying voltage label /
         # unit so the hover bar still reads a meaningful number for
         # the copper underneath the cursor. The via overlay (the
         # ``_via_hover_info`` suffix) is what surfaces the actual
@@ -1319,7 +1336,7 @@ class _RenderMixin:
             self._gl_viewer.clear_stub_triangles()
             self._gl_viewer.set_overlay_top_right("")
             # Re-push the editor-directive markers even though there's no
-            # mesh / rails — the user is allowed to drop free SOURCE / SINK
+            # mesh / rails - the user is allowed to drop free SOURCE / SINK
             # markers on a Gerber import BEFORE any rail exists, and the
             # whole point of the click is to see them appear. Clearing
             # markers here on the rail-less early-out would wipe the marker
@@ -1333,7 +1350,7 @@ class _RenderMixin:
             elif is_stub:
                 action = self._stub_action_word()
                 self.summary_label.setText(
-                    f"(import complete — add Source / Sink directives "
+                    f"(import complete - add Source / Sink directives "
                     f"and press {action} to compute voltage distribution)"
                 )
             else:
@@ -1364,13 +1381,13 @@ class _RenderMixin:
             self._gl_viewer.clear_series_bars()
             self._gl_viewer.clear_stub_triangles()
             self._gl_viewer.set_overlay_top_right("")
-            # No heatmap mesh on these rails — e.g. a rail carrying a SOURCE
+            # No heatmap mesh on these rails - e.g. a rail carrying a SOURCE
             # but no SINK (an unsolved / open current loop), which is exactly
             # what the user is mid-way through wiring up in editor mode. Don't
             # wipe the markers here: the editor-mode source / sink markers and
             # the via overlays still belong on screen (they gate on the
             # all-copper eye, on for the top layer by default, not on the
-            # absent heatmap), so re-push them instead of clearing — mirroring
+            # absent heatmap), so re-push them instead of clearing - mirroring
             # the no-rails early-out above. Clearing here is what made a just-
             # placed source / sink vanish until a second eye was toggled.
             self._update_markers_and_legend(phys_list, rails)
@@ -1382,20 +1399,20 @@ class _RenderMixin:
             if is_stub:
                 action = self._stub_action_word()
                 self.summary_label.setText(
-                    f"(import complete — press {action} to compute "
+                    f"(import complete - press {action} to compute "
                     "voltage distribution for the placed directives)"
                 )
             else:
-                self.summary_label.setText("(no mesh — selected layers have no copper on these rails)")
+                self.summary_label.setText("(no mesh - selected layers have no copper on these rails)")
             self._ensure_mesh_failure_highlights()
             return
 
         # Vertices referenced by at least one triangle. Orphan vertices
         # (pinned to V=0 by the FEM solver to keep the linear system
         # well-conditioned) are invisible in the heatmap but would
-        # otherwise dominate min/max stats — especially in Voltage Drop
+        # otherwise dominate min/max stats - especially in Voltage Drop
         # mode where they'd appear as a fake -V_source drop.
-        # Taken over the VISIBLE blocks only — the batch also holds the
+        # Taken over the VISIBLE blocks only - the batch also holds the
         # hidden layers, which must not move the colour scale or the stats.
         # Each layer's used-vertex list is cached with its geometry, so this
         # is a concatenation rather than a scan of every triangle.
@@ -1415,7 +1432,7 @@ class _RenderMixin:
         if is_via_current:
             # Range comes from the per-via |I| report, restricted to vias
             # on the selected rails (independent of which physical layers
-            # are toggled visible — flipping layers shouldn't rescale the
+            # are toggled visible - flipping layers shouldn't rescale the
             # colour bar). Per-vertex copper values aren't meaningful in
             # this mode, so we zero them out; the neutral LUT collapses
             # every entry to the same grey anyway.
@@ -1440,7 +1457,7 @@ class _RenderMixin:
         # toward the sinks. Pin voltages are sampled from the
         # *per-layer* interpolator matching each pin's layer_id, so the
         # reference is correct even when multiple physical layers are on.
-        if mode == _VOLTAGE_DROP_MODE:
+        if mode == _VOLTAGE_DROP_MODE and diff_live is None:
             target_layer_ids = {self._phys_name_to_layer_id.get(p)
                                 for p in phys_list}
             target_layer_ids.discard(None)
@@ -1528,8 +1545,8 @@ class _RenderMixin:
                 # its ~50-150 ms _FastTriSampler every render (per visible
                 # layer), store the constant drop shift on the probe and apply
                 # it at sample time in _probe_at_point. The lazily-built sampler
-                # then stays keyed to the BASE values — shared uncorrupted with
-                # plain Voltage mode (which uses the same _layer_cache entry) —
+                # then stays keyed to the BASE values - shared uncorrupted with
+                # plain Voltage mode (which uses the same _layer_cache entry) -
                 # and the costly per-render rebuild disappears. (Finding 3.7.)
                 for lp in layer_probes:
                     lp["value_offset"] = drop_reference
@@ -1538,16 +1555,22 @@ class _RenderMixin:
         # the heatmap reads each net's true differential (<= rail voltage)
         # rather than an absolute potential that floats a fraction of a mV
         # above the rail (the global 0 V datum sits at a different GND node
-        # than the source return — see _source_return_offsets). Each net is
+        # than the source return - see _source_return_offsets). Each net is
         # shifted by its own offset; nets with no source (GND) are left as-is.
         # Opt-out via the "Reference to source return" toggle (default on;
         # visibility is managed at the top of _render).
         src_ref_on = src_ref_box is None or src_ref_box.isChecked()
-        if mode == "Voltage" and not is_via_current and src_ref_on:
-            offsets = self._source_return_offsets()
+        # In a What-If difference, Voltage Drop shows the change in each
+        # net's source-referenced voltage (the source itself is fixed, so
+        # that IS the change in drop): both modes subtract the change in the
+        # source-return offset instead of the offset itself.
+        if ((mode == "Voltage" and not is_via_current and src_ref_on)
+                or (diff_live is not None and mode == _VOLTAGE_DROP_MODE)):
+            offsets = (diff_live["offsets"] if diff_live is not None
+                       else self._source_return_offsets())
             # Build a per-vertex offset aligned to vs_arr. vs_arr is
             # concatenated in the original (bottom-first) loop order, while
-            # layer_probes was reversed to top-first — so walk the probes in
+            # layer_probes was reversed to top-first - so walk the probes in
             # reverse to recover the concatenation order and slice by the
             # vertex count each slab contributed. (``_mesh_blocks`` is
             # already in concatenation order and covers the hidden layers'
@@ -1590,7 +1613,7 @@ class _RenderMixin:
         # Default colour-scale window (percentile-clipped for spike-prone
         # modes so FEM singularities don't crush the visible range).
         # Use the used (non-orphan) subset for the percentile calc too.
-        # Via Current applies a similar clip — real boards have a
+        # Via Current applies a similar clip - real boards have a
         # long-tail distribution (lots of low-current stitching vias,
         # a handful of high-current vias near regulators), so a raw
         # min..max map crushes 99% of the vias into the bottom of the
@@ -1608,16 +1631,52 @@ class _RenderMixin:
 
         # Resolve the linear vs log colour scale for this render. Log is
         # only meaningful for the wide-dynamic-range modes and needs a
-        # strictly positive window, so it's decided here — once — and the
+        # strictly positive window, so it's decided here - once - and the
         # GL push, the scale bar and the baked via overlays all key off
         # ``self._log_active`` / ``self._log_floor`` for a consistent map.
-        log_eligible = mode in _LOG_ELIGIBLE_MODES
+        if diff_live is not None:
+            # Signed change, white = no change. When the change goes both
+            # ways the window is symmetric around 0; when it goes one way
+            # only (e.g. a hotter board can only lower voltages) it runs from
+            # the worst change to 0 on that half of the palette, so no part
+            # of the key is spent on values that don't occur. Spike-prone
+            # modes clip at the 99th percentile of |d|.
+            used_vals = vs_arr[used_idx] if used_idx.size > 0 else vs_arr
+            abs_used = np.abs(used_vals)
+            full = float(abs_used.max()) if abs_used.size else 0.0
+            clip = full
+            if mode in _SPIKE_PRONE_MODES and abs_used.size >= 100:
+                clip = float(np.percentile(abs_used, 99.0))
+            full = max(full, 1e-15)
+            clip = max(min(clip, full), 1e-15)
+            lo = float(used_vals.min()) if used_vals.size else 0.0
+            hi = float(used_vals.max()) if used_vals.size else 0.0
+            # Opposite-sign values under 1 % of the largest change are
+            # solver noise, not a real improvement / worsening.
+            noise = 0.01 * full
+            base_cmap = self._whatif_diff_cmap(mode)
+            if hi <= noise and lo < 0.0:
+                vmin, vmax = -full, 0.0
+                display_min, display_max = -clip, 0.0
+                diff_cmap = self._whatif_half_cmap(base_cmap, "low")
+            elif lo >= -noise and hi > 0.0:
+                vmin, vmax = 0.0, full
+                display_min, display_max = 0.0, clip
+                diff_cmap = self._whatif_half_cmap(base_cmap, "high")
+            else:
+                vmin, vmax = -full, full
+                display_min, display_max = -clip, clip
+                diff_cmap = base_cmap
+            if self._gl_cmap_kind != "diff:" + diff_cmap:
+                self._gl_viewer.set_colormap(_build_cmap_lut(diff_cmap))
+                self._gl_cmap_kind = "diff:" + diff_cmap
+        log_eligible = mode in _LOG_ELIGIBLE_MODES and diff_live is None
         self._log_active = (self._log_scale and log_eligible
                             and math.isfinite(vmax) and vmax > 0.0)
         if self._log_active:
             self._log_floor = max(vmax * 10.0 ** (-_LOG_SCALE_DECADES),
                                    1e-300)
-            # A log axis can't show zero / negatives — floor the window.
+            # A log axis can't show zero / negatives - floor the window.
             # It also keeps the bulk readable AND the spikes on-scale by
             # itself, so the default window spans the full (floored) data
             # range rather than the linear-scale percentile clip.
@@ -1626,14 +1685,14 @@ class _RenderMixin:
         else:
             self._log_floor = 1e-12
 
-        # If the heatmap selection (layers/rails/mode/rail-only-filter/scale)
-        # hasn't changed since the last render — e.g. a 2D ↔ 3D toggle, which
-        # only rebuilds the mesh geometry — keep the user's current clamp
+        # If the heatmap selection (layers/rails/mode/scale)
+        # hasn't changed since the last render - e.g. a 2D ↔ 3D toggle, which
+        # only rebuilds the mesh geometry - keep the user's current clamp
         # instead of snapping back to the auto-detected default. A linear↔log
         # switch counts as a change so the window resets to the new default.
         selection_sig = (tuple(phys_list), tuple(rails), mode,
-                         self.rail_only_box.isChecked(), self._log_active,
-                         src_ref_on)
+                         self._log_active, src_ref_on,
+                         None if diff_live is None else diff_live["id"])
         preserve_scale = (self._last_scale_selection == selection_sig)
         self._last_scale_selection = selection_sig
         if preserve_scale:
@@ -1643,12 +1702,12 @@ class _RenderMixin:
             levels_min, levels_max = display_min, display_max
 
         # Push everything to the GPU. set_mesh is the heavy upload. Skip it when
-        # the geometry arrays are the exact same objects as the last push — a
+        # the geometry arrays are the exact same objects as the last push - a
         # re-render that reuses the cached geometry without rebuilding the rail
         # arrays. set_mesh resets the per-vertex alpha / neutral / values, but
         # the host re-pushes those unconditionally below, so a skip is safe.
         # ``zs`` is per-vertex z (mm, pre-exaggeration); only used by the
-        # 3D mode's perspective MVP — ignored by the 2D ortho path.
+        # 3D mode's perspective MVP - ignored by the 2D ortho path.
         _mark("prep")
         # Compare by object identity against the *retained* last-pushed arrays
         # (holding the references so a garbage-collected array's id can't be
@@ -1664,7 +1723,7 @@ class _RenderMixin:
                                       zs=zs.astype(np.float32))
             self._last_mesh_upload = (xs_arr, ys_arr, tris_arr, zs)
         # Which layers of the uploaded batch to draw: one index run per
-        # visible block, neighbours merged. This — not a re-upload — is all
+        # visible block, neighbours merged. This - not a re-upload - is all
         # a layer eye changes.
         firsts: list[int] = []
         counts: list[int] = []
@@ -1696,7 +1755,7 @@ class _RenderMixin:
                                             xs_arr.size)
         )
         # Grey solved dead-end (no-current) copper when the "Grey no current
-        # copper" toggle is on — the same toggle that greys FEM-excluded
+        # copper" toggle is on - the same toggle that greys FEM-excluded
         # stubs. Pushed as the per-vertex neutral mask; cleared otherwise so
         # the copper paints from the colormap as usual. Skipped in Via
         # Current mode, where the whole copper is already a neutral backdrop.
@@ -1715,10 +1774,16 @@ class _RenderMixin:
         # Carry the user's chosen colour scheme through the re-render
         # (mode / layer / rail switches must not snap it back to default).
         self.scale_controller.setLogVisible(log_eligible)
+        user_cmap = self._cmap_name
         self._update_scale_controller(vmin, vmax, display_min, display_max,
-                                       self._cmap_name, label, unit,
+                                       (diff_cmap
+                                        if diff_cmap is not None
+                                        else self._cmap_name),
+                                       label, unit,
                                        reset_selection=not preserve_scale,
                                        log_active=self._log_active)
+        # The difference palette is temporary - keep the user's choice.
+        self._cmap_name = user_cmap
         _mark("scale_controller")
 
         # Markers + legend (also overlaid via the GLMeshViewer's QPainter
@@ -1726,58 +1791,69 @@ class _RenderMixin:
         self._update_markers_and_legend(phys_list, rails)
         _mark("markers_legend")
 
-        # Layer + pad outlines (GL_LINES). Cheap toggle — segments are
+        # Layer + pad outlines (GL_LINES). Cheap toggle - segments are
         # cached at first use, so flipping either checkbox just uploads /
         # clears one VBO pair.
         self._refresh_outlines(layer_probes, phys_list, rails)
         _mark("outlines")
 
-        # Stub-copper overlay — polygons of copper the FEM excluded.
+        # Stub-copper overlay - polygons of copper the FEM excluded.
         # Always pushed so users see what's there even when arrows /
         # outlines / heatmap-vias are off. Default is flat grey; if the
         # user opts into colour-by-V we sample the same-net solved
         # layer at each stub's centroid using ``mode`` + ``drop_reference``.
-        self._push_stubs(phys_list, rails, mode=mode,
-                          drop_reference=drop_reference)
+        # In a What-If difference these overlays would show BASE values on
+        # a difference scale, so they are left off.
+        if diff_live is None:
+            self._push_stubs(phys_list, rails, mode=mode,
+                             drop_reference=drop_reference)
+        else:
+            self._gl_viewer.clear_stub_triangles()
         _mark("stubs")
 
-        # Series-component bars — gradient rectangles between the two
+        # Series-component bars - gradient rectangles between the two
         # terminal pin positions of each RESISTOR directive.
-        self._push_series_bars(phys_list, rails, mode,
-                               drop_reference=drop_reference)
+        if diff_live is None:
+            self._push_series_bars(phys_list, rails, mode,
+                                   drop_reference=drop_reference)
+        else:
+            self._gl_viewer.clear_series_bars()
         _mark("series_bars")
 
-        # Via cylinders — only meaningful in 3D mode (in 2D they'd
+        # Via cylinders - only meaningful in 3D mode (in 2D they'd
         # collapse to overlapping circles at z=0). The heatmap-vias path
         # needs the same Voltage-Drop reference the layer heatmap used.
         # Via Current mode always pushes cylinders in 3D; in 2D the
         # per-via colours are emitted via the marker overlay path inside
         # :meth:`_update_markers_and_legend`.
         self._last_drop_reference = drop_reference
-        if self.view_3d_box.isChecked():
+        if self.view_3d_box.isChecked() and diff_live is None:
             self._push_via_cylinders(phys_list, rails, mode=mode)
         else:
             self._gl_viewer.clear_cylinders()
         _mark("via_cylinders")
 
         # Current-flow arrow overlay (2D only). Cheap if disabled.
-        self._refresh_arrows()
+        if diff_live is None:
+            self._refresh_arrows()
+        else:
+            self._gl_viewer.clear_arrows()
         _mark("arrows")
 
-        # Board outline overlay — independent of layer/rail selection.
+        # Board outline overlay - independent of layer/rail selection.
         self._refresh_board_outline()
         _mark("board_outline")
 
         # Fit to data ONLY on the very first render (or while we're
         # still waiting for the deferred initial fit after Qt sizes the
-        # widget). Subsequent renders — layer toggles, mode/rail
-        # changes — leave the user's pan/zoom alone.
+        # widget). Subsequent renders - layer toggles, mode/rail
+        # changes - leave the user's pan/zoom alone.
         if self._need_initial_fit:
             self._fit_board_to_canvas()
 
         self._ensure_mesh_failure_highlights()
 
-        # Summary stats over the mesh's actual values — orphan vertices
+        # Summary stats over the mesh's actual values - orphan vertices
         # excluded (same reason as the scale-range filtering above). In
         # Via Current mode the per-vertex copper values are blanked, so
         # we report stats over the per-via |I| set instead.
@@ -1799,6 +1875,18 @@ class _RenderMixin:
                 )
         else:
             vs_used = vs_arr[used_idx] if used_idx.size > 0 else vs_arr
+            if diff_live is not None:
+                self.summary_label.setText(
+                    f"<b>{label}</b><br>"
+                    f"min Δ = {vs_used.min():+.4g} {unit}<br>"
+                    f"max Δ = {vs_used.max():+.4g} {unit}<br>"
+                    f"mean Δ = {vs_used.mean():+.4g} {unit}<br>"
+                    "red = worse, blue = better"
+                )
+                _mark("summary")
+                if _prof is not None:
+                    _prof.append(("TOTAL", time.perf_counter() - _t0))
+                return
             self.summary_label.setText(
                 f"<b>{label}</b><br>"
                 f"min = {vs_used.min():.4g} {unit}<br>"
@@ -1821,13 +1909,13 @@ class _RenderMixin:
         """Push fresh data bounds + label/unit into the scale controller.
 
         With ``reset_selection=True`` (default) the user clamp snaps back
-        to (sel_min, sel_max) — that's the right behaviour across layer /
+        to (sel_min, sel_max) - that's the right behaviour across layer /
         rail / mode changes (e.g. a Voltage Drop clamp of -0.05..-0.01 is
         nonsense when you switch to Current Density). Callers re-rendering
         the same selection (e.g. a 2D/3D toggle) pass ``False`` so the
         user's existing clamp is preserved.
 
-        ``log_active`` is the effective scale type — the gradient strip
+        ``log_active`` is the effective scale type - the gradient strip
         needs it set before :meth:`ScaleController.setRange` so the
         handles land at the right (log-spaced) positions.
         """
@@ -1874,7 +1962,7 @@ class _RenderMixin:
             return data_min, data_max
         sel_max = float(np.percentile(arr, self._display_percentile_high))
         # Only clip when the percentile is meaningfully below the raw
-        # max — otherwise the slider's drag-to-real-max range
+        # max - otherwise the slider's drag-to-real-max range
         # collapses and the heatmap reads the same as the unclipped
         # case anyway.
         if sel_max >= data_max * 0.95:
@@ -1904,7 +1992,7 @@ class _RenderMixin:
             return data_min, data_max
         sel_max = float(np.percentile(vs_arr, self._display_percentile_high))
         # Only clip if the percentile is meaningfully below the actual
-        # max — otherwise the slider's drag-to-real-max range collapses.
+        # max - otherwise the slider's drag-to-real-max range collapses.
         if sel_max >= data_max * 0.95:
             return data_min, data_max
         if sel_max <= data_min:

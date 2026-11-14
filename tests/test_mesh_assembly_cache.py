@@ -2,7 +2,7 @@
 
 ``solve()`` caches the meshes and their cotangent-Laplacian triples (the
 dominant cost) keyed on a content fingerprint of the geometry, per-layer
-conductance, connection seeds, and mesher config — everything that determines
+conductance, connection seeds, and mesher config - everything that determines
 them, and nothing else. A value-only re-solve (only source/sink magnitudes
 changed) hashes identically and skips re-meshing + re-assembling the Laplacian;
 a geometry or conductance change misses and rebuilds. These tests check that
@@ -112,7 +112,7 @@ def test_value_only_resolve_reuses_assembly_and_scales():
 
 def test_cached_resolve_matches_fresh_resolve():
     """The cached value-only re-solve equals a from-scratch solve of the same
-    problem — reuse changes speed, never the result."""
+    problem - reuse changes speed, never the result."""
     S.solve(_strip_problem(1.0))            # populate the cache
     sol_cached = S.solve(_strip_problem(2.5))   # reuse it (value-only)
 
@@ -137,7 +137,7 @@ def test_geometry_change_rebuilds_assembly():
 
 
 def test_conductance_change_rebuilds_assembly():
-    """Same geometry, changed conductance (a stackup edit) rebuilds — the
+    """Same geometry, changed conductance (a stackup edit) rebuilds - the
     Laplacian scales with conductance, so the cached triples can't be reused."""
     S.solve(_strip_problem(1.0))
     first = S._mesh_assembly_cache

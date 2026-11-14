@@ -49,7 +49,7 @@ class _EditorFormMixin:
         return self._project
 
     def _all_net_names(self) -> list[str]:
-        """Sorted list of every net name known to this viewer — solved
+        """Sorted list of every net name known to this viewer - solved
         per-net layers, rail-group members, metadata copper / pads /
         vias, and any user-supplied :class:`CopperName` renames. Used
         to populate the N-net picker. Cached; invalidate by setting
@@ -98,7 +98,7 @@ class _EditorFormMixin:
         pin_filter=None,
     ) -> list[tuple[float, float]]:
         """Centres of the named component's pads that sit on any net in
-        ``nets`` — one point per matching pin.
+        ``nets`` - one point per matching pin.
 
         Lets an editor directive draw a marker on every pin it couples to
         (mirroring the solved-directive pin markers) instead of one glyph
@@ -108,13 +108,13 @@ class _EditorFormMixin:
         back to :meth:`_component_center`.
 
         When ``visible_layer_ids`` is given, only pads sitting on at least
-        one of those layers are returned — used to hide editor markers whose
+        one of those layers are returned - used to hide editor markers whose
         copper layer the user has turned off.
 
         With ``with_layer_color`` each point becomes ``(x, y, colour, z)``,
         where ``colour`` is the swatch colour of the pad's copper layer
-        (preferring a visible one when filtering) — drives the layer-colour
-        ring on editor markers — and ``z`` is that layer's world-z (mm) so
+        (preferring a visible one when filtering) - drives the layer-colour
+        ring on editor markers - and ``z`` is that layer's world-z (mm) so
         the marker sits at the right depth in 3D. ``None`` / ``0.0`` when the
         pad's layer is unknown.
 
@@ -155,7 +155,7 @@ class _EditorFormMixin:
             cx = 0.5 * (float(arr[:, 0].min()) + float(arr[:, 0].max()))
             cy = 0.5 * (float(arr[:, 1].min()) + float(arr[:, 1].max()))
             if with_layer_color:
-                # Colour by the pad's copper layer — favour a currently
+                # Colour by the pad's copper layer - favour a currently
                 # visible one so a multi-layer pad rings in the layer the
                 # user is actually looking at.
                 lid = next((l for l in lids
@@ -170,7 +170,7 @@ class _EditorFormMixin:
         return pts
 
     def _pending_series_directives(self) -> list:
-        """Editor SERIES directives no solve has included yet — e.g. a FET
+        """Editor SERIES directives no solve has included yet - e.g. a FET
         just set up as switched on in the Bridges tab. Once solved, the part
         is a RESISTOR directive in the metadata and drawn as a solved bar
         instead. Cheap (no pad walk), so the hover can ask on every move."""
@@ -326,10 +326,10 @@ class _EditorFormMixin:
 
     @staticmethod
     def _terminal_net_label(term: dict | None) -> str:
-        """Human label for a metadata directive terminal — its named net,
+        """Human label for a metadata directive terminal - its named net,
         else its pins' nets, else an ideal-return / dash placeholder."""
         if not term:
-            return "—"
+            return "-"
         if term.get("ideal_return"):
             return "ideal 0 V return"
         rn = term.get("requested_net")
@@ -337,11 +337,11 @@ class _EditorFormMixin:
             return rn
         nets = sorted({p.get("net") for p in term.get("pins", []) or []
                        if p.get("net")})
-        return ", ".join(nets) if nets else "—"
+        return ", ".join(nets) if nets else "-"
 
     def _schematic_directives_for(self, sel: dict) -> list[dict]:
         """Schematic PDN directives (from the solve metadata) belonging to
-        the selected component — matched by designator, or by a directive
+        the selected component - matched by designator, or by a directive
         terminal pin landing inside the component's bounding box (robust to
         multi-channel designator re-basing)."""
         if not self.metadata:
@@ -354,7 +354,7 @@ class _EditorFormMixin:
             # solved directive carries a synthetic pin at the marker's anchor,
             # which can land inside some component's bbox and would otherwise
             # be reported (and Unlock-able) as that component's "schematic"
-            # directive — duplicating the free marker onto a component.
+            # directive - duplicating the free marker onto a component.
             if d.get("schdoc") == _EDITOR_SCHDOC:
                 continue
             if des and d.get("designator") == des:
@@ -420,14 +420,14 @@ class _EditorFormMixin:
         note.setWordWrap(True)
         note.setStyleSheet(f"color: {t['fg_muted']}; font-size: 8pt;")
         lay.addWidget(note)
-        # Unlock button — for editable roles (SOURCE / SINK / SERIES /
+        # Unlock button - for editable roles (SOURCE / SINK / SERIES /
         # REGULATOR). A schematic SERIES carries the RESISTOR role name in
         # solve metadata.
         if any(d.get("role") in ("SOURCE", "SINK", "RESISTOR", "REGULATOR")
                for d in directives):
             unlock = QPushButton("🔓  Unlock to edit")
             unlock.setToolTip(
-                "Edit these PDN values in FYPA — the edited directive "
+                "Edit these PDN values in FYPA - the edited directive "
                 "overrides the schematic one on the next resolve."
             )
             unlock.clicked.connect(self._on_editor_unlock)
@@ -435,7 +435,7 @@ class _EditorFormMixin:
 
     def _unlockable_schematic_directive(self, sel: dict) -> dict | None:
         """The first SOURCE / SINK / SERIES / REGULATOR schematic directive
-        on the selected component — the one the Unlock button / form edits.
+        on the selected component - the one the Unlock button / form edits.
         A schematic SERIES carries the ``RESISTOR`` role in solve metadata
         (named after its ResistorSpec)."""
         for d in self._schematic_directives_for(sel):
@@ -445,7 +445,7 @@ class _EditorFormMixin:
 
     @staticmethod
     def _terminal_primary_net(term: dict | None) -> str | None:
-        """One representative net for a metadata directive terminal — its
+        """One representative net for a metadata directive terminal - its
         named net, else its first pin's net. ``None`` for an ideal return."""
         if not term or term.get("ideal_return"):
             return None
@@ -459,7 +459,7 @@ class _EditorFormMixin:
 
     @staticmethod
     def _terminal_pin_pads(term: dict | None) -> list[str]:
-        """Pad designators of a metadata directive terminal's pins — the
+        """Pad designators of a metadata directive terminal's pins - the
         PDN_PINS set the schematic resolved to. ``[]`` for an ideal return or
         a terminal with no pins.
 
@@ -518,7 +518,7 @@ class _EditorFormMixin:
 
     @staticmethod
     def _pin_display_pad(pin: dict | None) -> str:
-        """Display label for a metadata pin — prefer compound ``pad_label``."""
+        """Display label for a metadata pin - prefer compound ``pad_label``."""
         if not pin:
             return ""
         label = pin.get("pad_label")
@@ -541,7 +541,7 @@ class _EditorFormMixin:
         return pins or None
 
     def _on_editor_unlock(self) -> None:
-        """Unlock a schematic-defined component for editing — the read-only
+        """Unlock a schematic-defined component for editing - the read-only
         info is replaced by the editable form, seeded from the schematic
         directive. Applying it overrides the schematic directive."""
         sel = self._editor_selection
@@ -554,7 +554,7 @@ class _EditorFormMixin:
         editable X / Y boxes and marker-edit undo / redo buttons (covering
         both moves and deletes). The layer is offered as a drop-down listing
         only the copper layers that carry the marker's net at its current
-        X / Y — so the marker can be re-pinned to another layer of the same
+        X / Y - so the marker can be re-pinned to another layer of the same
         rail at the same spot (a stacked plane / pour). When the net exists on
         just one layer there, the picker collapses to a read-only label."""
         t = _T()
@@ -598,21 +598,21 @@ class _EditorFormMixin:
         self._ef_loc_x = QLineEdit(f"{float(ax):.4f}")
         self._ef_loc_x.setValidator(
             _numeric_validator(self, bottom=-1e9, top=1e9))
-        self._ef_loc_x.setToolTip("X position (mm) — must stay on copper")
+        self._ef_loc_x.setToolTip("X position (mm) - must stay on copper")
         self._ef_loc_x.editingFinished.connect(
             self._on_free_marker_coord_edited)
         form.addRow("X (mm)", self._ef_loc_x)
         self._ef_loc_y = QLineEdit(f"{float(ay):.4f}")
         self._ef_loc_y.setValidator(
             _numeric_validator(self, bottom=-1e9, top=1e9))
-        self._ef_loc_y.setToolTip("Y position (mm) — must stay on copper")
+        self._ef_loc_y.setToolTip("Y position (mm) - must stay on copper")
         self._ef_loc_y.editingFinished.connect(
             self._on_free_marker_coord_edited)
         form.addRow("Y (mm)", self._ef_loc_y)
         lay.addLayout(form)
 
         hint = QLabel(
-            "Drag the marker, or edit X / Y — the location must stay on "
+            "Drag the marker, or edit X / Y - the location must stay on "
             "copper of its layer, or it reverts.")
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color: {t['fg_muted']}; font-size: 8pt;")
@@ -635,7 +635,7 @@ class _EditorFormMixin:
     def _populate_copper_name_form(self, sel: dict) -> None:
         """Populate the right-hand form with a single-field form for
         naming a copper piece that has no Altium net name. The click
-        anchor + layer pin the rename to one specific polygon — other
+        anchor + layer pin the rename to one specific polygon - other
         disjoint unnamed copper on the board is unaffected. When the
         same polygon already carries a :class:`CopperName`, the form
         title flips to "Named copper" and the field is pre-filled with
@@ -659,7 +659,7 @@ class _EditorFormMixin:
             lay.addWidget(QLabel("<b>Named copper</b>"))
             hint = QLabel(
                 "This copper is named <b>" + _esc(existing.name)
-                + "</b> — edit the name below and Apply to rename it, or "
+                + "</b> - edit the name below and Apply to rename it, or "
                 "leave it as-is. Other disjoint unnamed copper is "
                 "unaffected."
             )
@@ -667,7 +667,7 @@ class _EditorFormMixin:
             lay.addWidget(QLabel("<b>Unnamed copper</b>"))
             hint = QLabel(
                 "This copper has no net name in Altium. Give it a name "
-                "here to make it solvable — only this piece is named, "
+                "here to make it solvable - only this piece is named, "
                 "other disjoint unnamed copper stays as <b>(none)</b>."
             )
         hint.setWordWrap(True)
@@ -732,9 +732,9 @@ class _EditorFormMixin:
             _err("Enter a net name.")
             return
         if raw == "(none)" or raw.lower() in {"none", "(none)"}:
-            _err("'(none)' is the unnamed-copper sentinel — pick a real name.")
+            _err("'(none)' is the unnamed-copper sentinel - pick a real name.")
             return
-        # Disallow reusing an existing named net — that would let the user
+        # Disallow reusing an existing named net - that would let the user
         # silently merge this unnamed copper onto another rail without the
         # connectivity to support it (and confuse the FEM matrix).
         existing_nets = {n for n in self._all_net_names() if n != "(none)"}
@@ -745,7 +745,7 @@ class _EditorFormMixin:
         # instead of creating a duplicate CopperName.
         prev = self._copper_name_at(anchor[0], anchor[1], layer_id)
         if raw in existing_nets and (prev is None or prev.name != raw):
-            _err(f"'{raw}' is already a net on this board — pick a "
+            _err(f"'{raw}' is already a net on this board - pick a "
                  "different name.")
             return
 
@@ -757,7 +757,7 @@ class _EditorFormMixin:
             proj.upsert_copper_name(CopperName(
                 anchor_xy=anchor, layer_id=layer_id, name=raw,
             ))
-        # Net-name cache is stale now — the new name needs to appear in
+        # Net-name cache is stale now - the new name needs to appear in
         # dropdowns and connectivity probes immediately.
         self._all_net_names_cache = None
         # Retroactively update any free marker already placed on the same
@@ -774,7 +774,7 @@ class _EditorFormMixin:
         self._mark_project_dirty()
         # Promote the selection to the now-named net so the connectivity
         # highlight tracks it. Keep the form widgets in place (don't call
-        # _populate_editor_form) — that preserves the user's text in the
+        # _populate_editor_form) - that preserves the user's text in the
         # field and keeps the success status visible until the next
         # interaction. The metadata still holds the renamed pieces as
         # ``"(none)"`` until the next solve, so we keep the polygon-based
@@ -786,18 +786,18 @@ class _EditorFormMixin:
             highlight_polys = self._connected_copper_polys(layer_id, seed_poly)
         self._apply_editor_highlight(
             self._connected_nets(raw), polys=highlight_polys)
-        msg = f"Named — this copper is now <b>{_esc(raw)}</b>."
+        msg = f"Named - this copper is now <b>{_esc(raw)}</b>."
         if updated:
             msg += (f" Updated {updated} existing marker"
                     f"{'s' if updated != 1 else ''}.")
         if status is not None:
             status.setText(f"<span style='color:{t['ok']};'>{msg}</span>")
         # Naming the first piece of copper enables the SOURCE / SINK
-        # free-marker buttons — without this refresh they'd stay greyed
+        # free-marker buttons - without this refresh they'd stay greyed
         # out (and tooltipped as "no named copper") until the next event
         # nudged a marker-button sync.
         self._sync_marker_buttons()
-        # The newly-named copper changes the net inventory — refresh the
+        # The newly-named copper changes the net inventory - refresh the
         # table so the new name appears (or an old "(none)" row shrinks).
         self._refresh_net_table()
 
@@ -831,7 +831,7 @@ class _EditorFormMixin:
             title = "<b>Free marker</b>"
         lay.addWidget(QLabel(title))
 
-        # Free markers are moveable — a fixed-layer label, editable X / Y
+        # Free markers are moveable - a fixed-layer label, editable X / Y
         # boxes, and dedicated move undo / redo. Attributes are reset here
         # so the rest of the form (and the drag path) never touches a
         # QLineEdit left dangling by the _clear_layout above.
@@ -844,7 +844,7 @@ class _EditorFormMixin:
             self._build_free_marker_location(lay, existing)
 
         # A component carrying PDN_* directives in the Altium schematic is
-        # shown read-only with an Unlock button — until the user unlocks it
+        # shown read-only with an Unlock button - until the user unlocks it
         # (or an editor override already exists), no editable form appears.
         sch_unlock: dict | None = None
         if sel["kind"] == "component":
@@ -858,7 +858,7 @@ class _EditorFormMixin:
         form = QFormLayout()
         form.setContentsMargins(0, 0, 0, 0)
         self._ef_role = QComboBox()
-        # SERIES is component-bound only — it bridges two real pads, so a
+        # SERIES is component-bound only - it bridges two real pads, so a
         # single-anchor free marker can't express it. Offer SERIES for a
         # component selection (or when editing a directive that is already
         # SERIES), never for a fresh free marker.
@@ -866,7 +866,7 @@ class _EditorFormMixin:
         if sel["kind"] == "component" or (
                 existing is not None and existing.role == "SERIES"):
             role_items.append("SERIES")
-        # REGULATOR is a real part with input and output pins — component
+        # REGULATOR is a real part with input and output pins - component
         # selections only.
         if sel["kind"] == "component":
             role_items.append("REGULATOR")
@@ -907,7 +907,7 @@ class _EditorFormMixin:
         self._ef_eff_label = QLabel("Efficiency (%)")
         form.addRow(self._ef_eff_label, self._ef_eff)
         self._ef_topo = QComboBox()
-        self._ef_topo.addItems(["—", "BUCK", "BOOST", "BUCKBOOST", "INVERTER"])
+        self._ef_topo.addItems(["-", "BUCK", "BOOST", "BUCKBOOST", "INVERTER"])
         self._ef_topo.setToolTip("Optional SMPS topology (PDN_SMPS_TOPOLOGY).")
         self._ef_topo_label = QLabel("Topology")
         form.addRow(self._ef_topo_label, self._ef_topo)
@@ -936,7 +936,7 @@ class _EditorFormMixin:
         self._ef_nnet.addItems(self._all_net_names())
         self._ef_nnet_label = QLabel("N net")
         form2.addRow(self._ef_nnet_label, self._ef_nnet)
-        # Optional pin restriction (PDN_PINS equivalent) — comma-separated pad
+        # Optional pin restriction (PDN_PINS equivalent) - comma-separated pad
         # designators the terminal couples to. Only meaningful for a
         # component-bound directive: a free marker is a single anchor point, so
         # the fields are hidden for it. Blank ⇒ every pad of the component on
@@ -971,14 +971,14 @@ class _EditorFormMixin:
             "(PDN_IN_P_PINS). Blank = every pad on the IN net.")
         self._ef_inpins_label = QLabel("IN pins")
         form2.addRow(self._ef_inpins_label, self._ef_inpins)
-        # Multi-connector designator lists (PDN_P_DES / PDN_N_DES) — CSV of
+        # Multi-connector designator lists (PDN_P_DES / PDN_N_DES) - CSV of
         # other component designators whose pads feed this terminal. Two-net
         # SOURCE/SINK only; host is not auto-included when set.
         self._ef_pdes = QLineEdit()
         self._ef_pdes.setPlaceholderText("host only")
         self._ef_pdes.setToolTip(
             "Optional: comma-separated designators for the P terminal "
-            "(PDN_P_DES). Pads come only from those parts — the host is "
+            "(PDN_P_DES). Pads come only from those parts - the host is "
             "not auto-included. Leave blank to use the host component."
         )
         self._ef_pdes_label = QLabel("P DES")
@@ -987,18 +987,18 @@ class _EditorFormMixin:
         self._ef_ndes.setPlaceholderText("host only")
         self._ef_ndes.setToolTip(
             "Optional: comma-separated designators for the N terminal "
-            "(PDN_N_DES). Pads come only from those parts — the host is "
+            "(PDN_N_DES). Pads come only from those parts - the host is "
             "not auto-included. Leave blank to use the host component."
         )
         self._ef_ndes_label = QLabel("N DES")
         form2.addRow(self._ef_ndes_label, self._ef_ndes)
-        # Remote sense (PDN_SENSE_DES / PDN_SENSE_N_DES) — SOURCE only.
+        # Remote sense (PDN_SENSE_DES / PDN_SENSE_N_DES) - SOURCE only.
         self._ef_sense = QLineEdit()
         self._ef_sense.setPlaceholderText("local (at the source)")
         self._ef_sense.setToolTip(
             "Optional remote sense (PDN_SENSE_DES): comma-separated "
             "designators whose pads on the P net are where the source holds "
-            "its voltage — usually the load. The source's own pins then rise "
+            "its voltage - usually the load. The source's own pins then rise "
             "by whatever the copper drops on the way. Blank = sense locally."
         )
         self._ef_sense_label = QLabel("Sense DES")
@@ -1080,7 +1080,7 @@ class _EditorFormMixin:
                     "schematic directive.</span>"
                 )
         elif sch_unlock is not None:
-            # Just unlocked, no editor override yet — seed the form from the
+            # Just unlocked, no editor override yet - seed the form from the
             # schematic directive so the user adjusts its actual values. A
             # schematic SERIES carries the RESISTOR role name in metadata.
             raw_role = sch_unlock.get("role")
@@ -1118,7 +1118,7 @@ class _EditorFormMixin:
                 self._ef_nnet_keep = n_net
             # Seed the pin restriction from the schematic directive's pads so
             # an Altium PDN_PINS source (e.g. J23 pin 1 only) stays on those
-            # pins through the override — instead of spreading to every pad on
+            # pins through the override - instead of spreading to every pad on
             # the net once it resolves as an editor directive.
             self._ef_pins.setText(
                 ", ".join(self._terminal_pin_pads(terms.get("P"))))
@@ -1133,7 +1133,7 @@ class _EditorFormMixin:
                 ", ".join(self._terminal_des_list(n_term, host_des)))
             self._ef_remove.setEnabled(False)
             self._ef_status.setText(
-                f"<span style='color:{t['warn']};'>Unlocked — Apply "
+                f"<span style='color:{t['warn']};'>Unlocked - Apply "
                 "replaces the schematic directive on the next resolve.</span>"
             )
         else:
@@ -1155,7 +1155,7 @@ class _EditorFormMixin:
         if efficiency:
             self._ef_eff.setText(f"{float(efficiency) * 100:g}")
         topo = (topology or "").upper()
-        self._ef_topo.setCurrentText(topo if topo else "—")
+        self._ef_topo.setCurrentText(topo if topo else "-")
         if in_net:
             self._set_combo(self._ef_innet, in_net)
         self._ef_inpins.setText(", ".join(in_pins or []))
@@ -1270,7 +1270,7 @@ class _EditorFormMixin:
                 "must be greater than zero.</span>"
             )
             return
-        # SERIES and REGULATOR always sit on two real nets — never single-net.
+        # SERIES and REGULATOR always sit on two real nets - never single-net.
         single = (self._ef_single.isChecked()
                   and role not in ("SERIES", "REGULATOR"))
         p_net = self._ef_pnet.currentText() or None
@@ -1290,7 +1290,7 @@ class _EditorFormMixin:
                 return
         if role == "SERIES" and not n_net:
             self._ef_status.setText(
-                f"<span style='color:{_T()['err']};'>Pick an N net — a "
+                f"<span style='color:{_T()['err']};'>Pick an N net - a "
                 "SERIES element bridges two nets.</span>"
             )
             return
@@ -1376,7 +1376,7 @@ class _EditorFormMixin:
         self._update_pending_rails()
         self._render()
         self._ef_status.setText(
-            f"<span style='color:{_T()['ok']};'>Applied — press Resolve "
+            f"<span style='color:{_T()['ok']};'>Applied - press Resolve "
             "to re-solve.</span>"
         )
 
@@ -1453,10 +1453,10 @@ class _EditorFormMixin:
     def _place_free_marker(self, world_x: float, world_y: float) -> None:
         """Drop a free source / sink / series marker on the copper under the
         cursor and open its form. No-op (with a hint) if the click missed
-        copper, or if the copper under the cursor is on a hidden layer —
+        copper, or if the copper under the cursor is on a hidden layer -
         the user shouldn't be able to drop a marker on copper they can't
         see. A SERIES marker is created two-net with its N net still unset
-        — the form prompts for it before the directive can resolve."""
+        - the form prompts for it before the directive can resolve."""
         from fypa.project_file import EditorDirective
         role = self._editor_pending_marker
         if role is None:
@@ -1468,11 +1468,11 @@ class _EditorFormMixin:
             if hidden is not None and hidden.get("net"):
                 phys = hidden.get("physical") or "a hidden layer"
                 self.statusBar().showMessage(
-                    f"Copper on {phys} is hidden — turn on its eye to "
+                    f"Copper on {phys} is hidden - turn on its eye to "
                     "place a marker there.", 4000)
             else:
                 self.statusBar().showMessage(
-                    "No copper there — click on a copper region.", 4000)
+                    "No copper there - click on a copper region.", 4000)
             return
         if net == "(none)":
             # Free markers anchor to a net; unnamed copper has none. The
@@ -1480,7 +1480,7 @@ class _EditorFormMixin:
             # block the placement and prompt the user to name the copper
             # first (click the polygon to surface the copper-name form).
             self.statusBar().showMessage(
-                "This copper has no net name — name it first, then drop "
+                "This copper has no net name - name it first, then drop "
                 "the free marker on it.", 5000)
             return
         layer = pick.get("physical")
@@ -1506,7 +1506,7 @@ class _EditorFormMixin:
     # --- Editor mode: free-marker move (drag + X/Y edit + undo) -------------
 
     def _refresh_editor_markers(self) -> None:
-        """Marker-only viewport refresh — re-push the cached non-editor
+        """Marker-only viewport refresh - re-push the cached non-editor
         marker groups plus freshly rebuilt editor-directive markers,
         without rebuilding the FEM mesh. Used on every tick of a
         free-marker drag so the move stays smooth."""
@@ -1516,14 +1516,14 @@ class _EditorFormMixin:
             return
         self._gl_viewer.set_markers(
             list(cached) + self._editor_marker_groups())
-        # Keep the hover index in step with the moved marker — recombine
+        # Keep the hover index in step with the moved marker - recombine
         # the cached solved-directive rows with freshly rebuilt editor rows.
         self._set_marker_hover_rows(
             self._metadata_marker_hover_rows
             + self._editor_marker_hover_rows())
 
     def _free_marker_layer_id(self, directive) -> int | None:
-        """The Altium copper layer id a free marker is pinned to — its
+        """The Altium copper layer id a free marker is pinned to - its
         stored ``layer_id``, else resolved from its physical layer name."""
         if directive.layer_id is not None:
             return directive.layer_id
@@ -1536,12 +1536,12 @@ class _EditorFormMixin:
                             net_name: str | None = None) -> dict | None:
         """Netted copper of the given layer under the point, or ``None``.
         Unlike :meth:`_copper_at_point` this never crosses to another
-        layer — a free marker's layer is fixed, so its move must stay on
+        layer - a free marker's layer is fixed, so its move must stay on
         it. Net-less copper is skipped so a moved marker always re-derives
         a real net, exactly as placement requires.
 
         With ``net_name`` set the test additionally requires the copper to
-        carry that exact net — used by the marker-drag constraint so a
+        carry that exact net - used by the marker-drag constraint so a
         free marker can only ride copper of its own net. Two disjoint
         polygons of the same net on this layer both qualify, so the
         marker can "jump" across the gap between them while the cursor
@@ -1608,7 +1608,7 @@ class _EditorFormMixin:
         """Whether ``(world_x, world_y)`` lands on copper of the free
         marker's fixed layer AND its current net. A free marker can only
         be dragged across copper carrying the same net name as its anchor
-        — disjoint copper of that net on the marker's layer still
+        - disjoint copper of that net on the marker's layer still
         qualifies, so the marker hops across the gap if the user drags
         across it, but copper of a different net (or bare substrate)
         rejects the move and the marker pins at its last valid spot.
@@ -1624,7 +1624,7 @@ class _EditorFormMixin:
 
     def _marker_drag_hit_test(self, world_x: float,
                               world_y: float) -> bool:
-        """GL-viewer hook — True when a draggable free marker sits under
+        """GL-viewer hook - True when a draggable free marker sits under
         the point, so the viewer claims the press as a move gesture.
         Disabled while a marker-drop is armed (that press places a new
         marker instead)."""
@@ -1634,7 +1634,7 @@ class _EditorFormMixin:
 
     def _on_marker_drag_started(self, world_x: float,
                                 world_y: float) -> None:
-        """Begin a free-marker drag — record the start anchor / net and
+        """Begin a free-marker drag - record the start anchor / net and
         select the grabbed marker (a press with no drag still selects)."""
         marker = self._free_marker_at(world_x, world_y)
         if marker is None or marker.anchor_xy is None:
@@ -1652,7 +1652,7 @@ class _EditorFormMixin:
 
     def _on_marker_drag_moved(self, world_x: float,
                               world_y: float) -> None:
-        """Track a free-marker drag — move the marker to the cursor while
+        """Track a free-marker drag - move the marker to the cursor while
         it stays on copper of its layer, else hold it at the last valid
         spot so it can't be dragged off copper."""
         drag = self._marker_drag
@@ -1676,7 +1676,7 @@ class _EditorFormMixin:
 
     def _on_marker_drag_released(self, world_x: float,
                                  world_y: float) -> None:
-        """Finish a free-marker drag — commit the move (recording it for
+        """Finish a free-marker drag - commit the move (recording it for
         undo) when it actually moved, else just leave it selected."""
         drag = self._marker_drag
         self._marker_drag = None
@@ -1700,7 +1700,7 @@ class _EditorFormMixin:
         """Apply a committed free-marker move: update the anchor, re-derive
         the net from the copper under the new spot (a free marker's net
         follows its copper, mirroring placement), record it for undo, and
-        refresh the viewport. Does NOT rebuild the panel form — the caller
+        refresh the viewport. Does NOT rebuild the panel form - the caller
         owns that, so it can defer it out of a text-box signal."""
         directive.anchor_xy = (float(new_xy[0]), float(new_xy[1]))
         pick = self._copper_on_layer_at(
@@ -1731,7 +1731,7 @@ class _EditorFormMixin:
         self._update_marker_undo_buttons()
 
     def _delete_selected_free_marker(self) -> None:
-        """Delete the currently selected free marker — Delete / Backspace
+        """Delete the currently selected free marker - Delete / Backspace
         in editor mode. Routes to :meth:`_on_editor_remove` so the same
         undo timeline / record shape is shared with the panel's Remove
         button. Scoped to free markers (per the original feature
@@ -1766,7 +1766,7 @@ class _EditorFormMixin:
             d = (self._project.directive_by_id(rec["id"])
                  if self._project else None)
             self._marker_undo.pop()
-            if d is None:   # marker was removed — drop the stale record
+            if d is None:   # marker was removed - drop the stale record
                 self._update_marker_undo_buttons()
                 return
             d.anchor_xy = rec["old_xy"]
@@ -1830,7 +1830,7 @@ class _EditorFormMixin:
             self._populate_editor_form()
 
     def _after_marker_undo_redo(self, directive, selection=None) -> None:
-        """Shared tail of undo / redo — reselect the directive and refresh
+        """Shared tail of undo / redo - reselect the directive and refresh
         the viewport + panel. ``selection`` lets a delete-undo restore the
         prior selection state (a component-bound directive re-selects the
         component, with its pin-net union driving the highlight). When
@@ -1884,7 +1884,7 @@ class _EditorFormMixin:
             try:
                 box.setText(f"{val:.4f}")
             except RuntimeError:
-                pass   # widget rebuilt out from under us — harmless
+                pass   # widget rebuilt out from under us - harmless
 
     def _on_free_marker_coord_edited(self) -> None:
         """Check an X / Y text-box edit once focus leaves the box: the new
@@ -1925,7 +1925,7 @@ class _EditorFormMixin:
             self._sync_free_marker_coord_fields(*old_xy)
             return
         self._commit_marker_move(d, old_xy, d.p_net, (nx, ny))
-        # Targeted refresh only — rebuilding the whole form here would
+        # Targeted refresh only - rebuilding the whole form here would
         # delete the QLineEdit mid-signal and steal focus while the user
         # is still tabbing between the X / Y boxes.
         self._sync_free_marker_coord_fields(
@@ -1935,7 +1935,7 @@ class _EditorFormMixin:
 
     def _refresh_free_marker_net_combo(self) -> None:
         """Resync the form's net picker to the selected free marker's
-        current ``p_net`` — used after a move re-derived the net, so the
+        current ``p_net`` - used after a move re-derived the net, so the
         combo (and a subsequent Apply) reflect the copper it now sits on.
         A no-op when the form isn't currently showing the picker."""
         combo = getattr(self, "_ef_pnet", None)
@@ -1950,12 +1950,12 @@ class _EditorFormMixin:
                 self._set_combo(combo, d.p_net)
             combo.blockSignals(False)
         except RuntimeError:
-            pass   # form rebuilt out from under us — harmless
+            pass   # form rebuilt out from under us - harmless
 
     def _on_free_marker_layer_changed(self, _idx: int) -> None:
         """Re-pin the selected free marker to the layer chosen in the layer
-        picker. The anchor X / Y and net are unchanged — the picker only ever
-        offers layers carrying the same net at this point — so this is just a
+        picker. The anchor X / Y and net are unchanged - the picker only ever
+        offers layers carrying the same net at this point - so this is just a
         layer swap. Selecting the current layer is a no-op."""
         combo = getattr(self, "_ef_layer_combo", None)
         sel = self._editor_selection
@@ -1976,7 +1976,7 @@ class _EditorFormMixin:
 
     def _refresh_free_marker_layer_combo(self) -> None:
         """Rebuild the free-marker layer picker's option list against the
-        marker's current X / Y — used after an X / Y text edit moved it
+        marker's current X / Y - used after an X / Y text edit moved it
         (which doesn't rebuild the whole form). A no-op when the picker isn't
         currently shown (the net exists on only one layer there)."""
         combo = getattr(self, "_ef_layer_combo", None)
@@ -2001,7 +2001,7 @@ class _EditorFormMixin:
             combo.setCurrentIndex(sel_idx)
             combo.blockSignals(False)
         except RuntimeError:
-            pass   # form rebuilt out from under us — harmless
+            pass   # form rebuilt out from under us - harmless
 
     def _directive_focus_visible(self, d) -> bool:
         """Whether an editor directive survives the net focus.
@@ -2031,7 +2031,7 @@ class _EditorFormMixin:
 
     def _directive_copper_visible(self, d) -> bool:
         """Whether the copper an editor directive is anchored to is itself on
-        screen — i.e. the marker has somewhere visible to sit.
+        screen - i.e. the marker has somewhere visible to sit.
 
         Only the all-copper (second eye) layers count. The heatmap eyes are
         the rail view, which :meth:`_directive_rail_visible` has already
@@ -2057,7 +2057,7 @@ class _EditorFormMixin:
 
     def _directive_rail_visible(self, d) -> bool:
         """Whether an editor directive's marker should be drawn: its rail is
-        visible, or (in editor mode) the copper it sits on is — and, while
+        visible, or (in editor mode) the copper it sits on is - and, while
         one is held, it belongs to the focused net.
 
         Source / sink markers track the rail eyes the same way the solved
@@ -2080,7 +2080,7 @@ class _EditorFormMixin:
         # rail is switched off because the user is working from the
         # all-copper view), so gating purely on rail visibility hid the very
         # markers being placed. Outside editor mode the rail test stands on
-        # its own — the heatmap is what the markers annotate there.
+        # its own - the heatmap is what the markers annotate there.
         if self._editor_mode and self._directive_copper_visible(d):
             return True
         solved_members: set[str] = set()
@@ -2090,7 +2090,7 @@ class _EditorFormMixin:
         return not (conn & solved_members)
 
     def _editor_marker_groups(self) -> list:
-        """MarkerGroups for the placed editor directives — drawn only in
+        """MarkerGroups for the placed editor directives - drawn only in
         editor mode so they don't clutter the normal viewer. The directive
         matching the current selection is emphasised: a 30%-larger glyph
         with a 30%-thicker outline, wrapped in a yellow selection box, so
@@ -2110,7 +2110,7 @@ class _EditorFormMixin:
             sel_ids = {d.id for d in multi}
         else:
             sel_ids = set() if selected is None else {selected.id}
-        # Only draw markers whose copper layer the user can currently see —
+        # Only draw markers whose copper layer the user can currently see -
         # a free marker on a hidden layer, or a component pin on a hidden
         # layer, drops out so editor markers track layer visibility.
         visible_ids = self._visible_layer_ids()
@@ -2118,7 +2118,7 @@ class _EditorFormMixin:
         # Keyed (role, is_selected, is_n_side): the selected marker lands
         # in its own group (larger / thicker), and the N-side pins land in
         # theirs so they can carry the green outline. Each point is an
-        # ``(x, y, layer_colour, z)`` tuple — the colour drives the marker's
+        # ``(x, y, layer_colour, z)`` tuple - the colour drives the marker's
         # outer layer ring (``None`` ⇒ no ring) and ``z`` is the copper
         # layer's world-z (mm) so 3D markers sit at the right depth.
         by_key: dict[tuple[str, bool, bool],
@@ -2150,7 +2150,7 @@ class _EditorFormMixin:
         for (role, is_sel, is_n_side), pts in by_key.items():
             if not pts:
                 continue
-            # Match the solved-directive markers — red up-triangle SOURCE,
+            # Match the solved-directive markers - red up-triangle SOURCE,
             # blue down-triangle SINK (see _ROLE_MARKER_STYLE).
             style = self._ROLE_MARKER_STYLE.get(
                 role, {"symbol": "star", "color": "#ffffff", "size": 18})
@@ -2167,7 +2167,7 @@ class _EditorFormMixin:
                 ring_colors=[p[2] for p in pts],
                 ring_width=_MARKER_LAYER_RING_W,
             ))
-        # Yellow selection box around each emphasised marker — an unfilled
+        # Yellow selection box around each emphasised marker - an unfilled
         # rectangle hugging the enlarged glyph (the *_box symbols draw the
         # triangle's true bounding rect, so no margin / no clipping),
         # outlined at the same thickness as the selected marker's edge. One
@@ -2181,7 +2181,7 @@ class _EditorFormMixin:
             box_symbol = {"tri_up": "tri_up_box",
                           "tri_down": "tri_down_box"}.get(
                               sel_style.get("symbol"), "s")
-            # Same size as the selected glyph — the box symbol derives the
+            # Same size as the selected glyph - the box symbol derives the
             # tight rect from it. One box per pin of each selected directive.
             box_px = int(round((sel_style["size"] + 4)
                                * _EDITOR_MARKER_SELECT_SCALE))
@@ -2189,7 +2189,7 @@ class _EditorFormMixin:
                 xs=np.array([p[0] for p in sel_pts], dtype=np.float64),
                 ys=np.array([p[1] for p in sel_pts], dtype=np.float64),
                 zs=np.array([p[3] for p in sel_pts], dtype=np.float64),
-                color="transparent",   # unfilled — outline only
+                color="transparent",   # unfilled - outline only
                 symbol=box_symbol,
                 size=box_px,
                 edge_color="#ffff00",

@@ -4,7 +4,7 @@
 a negative value as a clockwise arc. For a wrap-around rounded corner (Altium
 stores e.g. `start=360°, end=90°`, raw sweep −270°) that traced the corner the
 long way around (a 270° arc) instead of the intended 90° CCW quarter. The fix
-normalises the sweep `% 360` into `[0, 360)` — exactly what the standalone
+normalises the sweep `% 360` into `[0, 360)` - exactly what the standalone
 `Arcs6` primitive (`_arc_polyline_points`) does. Verified on the example corpus:
 every negative raw sweep present was a −270° that is really a +90° corner.
 """
@@ -17,7 +17,7 @@ from fypa.altium_geometry import _shape_based_outline_points
 
 
 def _angles_of_intermediate_points(center, pts, endpoints):
-    """Angles (deg, 0–360) about `center` of the tessellated points that are
+    """Angles (deg, 0-360) about `center` of the tessellated points that are
     NOT one of the region's declared corner vertices."""
     corners = {(round(x, 6), round(y, 6)) for x, y in endpoints}
     out = []
@@ -30,7 +30,7 @@ def _angles_of_intermediate_points(center, pts, endpoints):
 
 def test_wraparound_arc_sweeps_short_ccw_not_long_cw():
     """A 360°→90° arc edge is a 90° CCW quarter, so its intermediate samples
-    stay in the first quadrant (angles 0–90) — not the long way through
+    stay in the first quadrant (angles 0-90) - not the long way through
     180°/270°."""
     center = Pt2D(0.0, 0.0)
     r = 5.0
@@ -44,7 +44,7 @@ def test_wraparound_arc_sweeps_short_ccw_not_long_cw():
     angles = _angles_of_intermediate_points(
         center, pts, [(r, 0.0), (0.0, r), (0.0, 0.0)])
     assert angles, "expected intermediate arc samples"
-    # Every intermediate sample must be on the short 90° CCW arc (0°–90°),
+    # Every intermediate sample must be on the short 90° CCW arc (0°-90°),
     # i.e. first quadrant. The old long-way −270° sweep put them at 270°→90°
     # through the other three quadrants.
     assert all(0.0 <= a <= 90.0 for a in angles), (
@@ -52,7 +52,7 @@ def test_wraparound_arc_sweeps_short_ccw_not_long_cw():
 
 
 def test_ordinary_arc_unchanged():
-    """A plain positive small sweep (a normal rounded corner) is unaffected —
+    """A plain positive small sweep (a normal rounded corner) is unaffected -
     the fix only touches wrap-around/negative sweeps."""
     center = Pt2D(0.0, 0.0)
     r = 4.0

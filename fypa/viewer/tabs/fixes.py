@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -13,7 +13,9 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QPushButton,
     QSplitter,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -61,7 +63,7 @@ class _FixesTabMixin:
 
         intro = QLabel(
             "Where extra copper would help each load most. Loads are listed "
-            "by how much of their drop budget they use — the drop from the "
+            "by how much of their drop budget they use - the drop from the "
             "rail's setpoint over (nominal − PDN_MIN_V) where PDN_MIN_V is "
             f"set, otherwise over {copper_roi.DEFAULT_BUDGET_PCT:g} % of "
             "nominal. Pick a load to rank its fixes; click Go to see one "
@@ -122,9 +124,57 @@ class _FixesTabMixin:
         split.setStretchFactor(1, 3)
         outer.addWidget(split, 1)
 
-        self._fixes_stack = self._wrap_placeholder(widget)
+        # Page 0 asks for the report, page 1 shows it. The report isn't run
+        # on tab open: ranking every load and analysing one takes a moment,
+        # and a tab that stalls just from being clicked feels broken.
+        self._fixes_pages = QStackedWidget(self.tabs)
+        self._fixes_pages.addWidget(self._build_fixes_run_page())
+        self._fixes_pages.addWidget(widget)
+        self._sync_fixes_page()
+        self._fixes_stack = self._wrap_placeholder(self._fixes_pages)
         self._sync_placeholder_tabs()
         return self._fixes_stack
+
+    def _build_fixes_run_page(self) -> QWidget:
+        t = _T()
+        page = QWidget(self.tabs)
+        lay = QVBoxLayout(page)
+        lay.addStretch(1)
+        text = QLabel(
+            "Rank the loads by drop budget used and find where extra copper "
+            "would help each one most.")
+        text.setWordWrap(True)
+        text.setAlignment(Qt.AlignCenter)
+        text.setStyleSheet(f"QLabel {{ color: {t['fg_muted']}; }}")
+        lay.addWidget(text)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        btn = QPushButton("Run fixes report")
+        btn.clicked.connect(self._run_fixes_report)
+        row.addWidget(btn)
+        row.addStretch(1)
+        lay.addLayout(row)
+        lay.addStretch(1)
+        return page
+
+    def _sync_fixes_page(self) -> None:
+        """Show the report once it has run for this solution, else the
+        Run button."""
+        pages = getattr(self, "_fixes_pages", None)
+        if pages is not None and _qt_widget_alive(pages):
+            pages.setCurrentIndex(
+                1 if getattr(self, "_fixes_populated", False) else 0)
+
+    def _run_fixes_report(self) -> None:
+        if self._placeholder_text("_fixes_stack"):
+            return
+        self._fixes_populated = True
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            self._populate_fixes_tab()
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._sync_fixes_page()
 
     def _fixes_table(self, columns) -> QTableWidget:
         t = _T()
@@ -280,7 +330,7 @@ class _FixesTabMixin:
         self.fixes_summary.setText(
             f"<b>{s.label}</b> on {s.rail} sees {s.drop_v * 1e3:.3g} mV of "
             f"drop against a {s.budget_v * 1e3:.3g} mV budget "
-            f"({s.basis_text}) — {s.used:.0%}, {status}.")
+            f"({s.basis_text}) - {s.used:.0%}, {status}.")
 
     def _fill_fixes_table(self) -> None:
         tbl = self.fixes_table
@@ -361,7 +411,6 @@ class _FixesTabMixin:
                 changed = True
         if changed:
             self._sync_all_rails_eye()
-            self._sync_rail_only_visibility()
 
     def _refresh_roi_highlights(self) -> None:
         gl = getattr(self, "_gl_viewer", None)
@@ -397,7 +446,7 @@ class _FixesTabMixin:
 
     def _roi_vertex_values(self, layer_index: int, geom: dict) -> list:
         """Per kept mesh, the selected load's value density averaged onto
-        vertices (V/mm², clipped at 0 — copper that would lower the voltage
+        vertices (V/mm², clipped at 0 - copper that would lower the voltage
         is rare and reads as no value). Zeros until a load is analysed."""
         per_mesh = (getattr(self._roi_result, "density", None) or {}
                     ).get(layer_index)
@@ -417,8 +466,8 @@ class _FixesTabMixin:
     # --- lifecycle ------------------------------------------------------------------
 
     def _reset_copper_roi(self) -> None:
-        """Forget every result — a new solution invalidates them. If the tab
-        is open, rebuild it once the solution swap is done."""
+        """Forget every result - a new solution invalidates them. The tab
+        goes back to its Run button."""
         self._roi_key = None
         self._roi_scores = None
         self._roi_result = None
@@ -428,20 +477,20 @@ class _FixesTabMixin:
         gl = getattr(self, "_gl_viewer", None)
         if gl is not None:
             gl.set_roi_highlights(None)
-        tabs = getattr(self, "tabs", None)
-        if (tabs is not None and _qt_widget_alive(tabs)
-                and tabs.currentIndex() == getattr(
-                    self, "_fixes_tab_index", -1)):
-            QTimer.singleShot(
-                0, lambda: self._on_tabs_current_changed(tabs.currentIndex()))
+        self._sync_fixes_page()
 
     def _show_fixes_for(self, label: str) -> None:
-        """Nodes-tab entry point: open the Fixes tab on this load."""
-        # Picked up by the populate a first open triggers, so it analyses
-        # this load rather than the default one first.
-        self._fixes_pending = label
+        """Nodes-tab entry point: open the Fixes tab on this load, running
+        the report if it hasn't run - the menu pick is the request for it."""
         self.tabs.setCurrentIndex(self._fixes_tab_index)
-        self._fixes_pending = None
+        if not self._fixes_populated:
+            # Picked up by the populate, so it analyses this load rather
+            # than the default one first.
+            self._fixes_pending = label
+            try:
+                self._run_fixes_report()
+            finally:
+                self._fixes_pending = None
         if self._roi_score(label) is None and self._roi_scores:
             # A pin row names the designator; a channel label adds "#n".
             label = next((s.label for s in self._roi_scores

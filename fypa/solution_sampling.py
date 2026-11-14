@@ -54,7 +54,7 @@ def face_to_vertex_average(tris: np.ndarray, face_values: np.ndarray,
 
 
 def pin_display_pad(pin: dict | None) -> str:
-    """Display label for a metadata pin — prefer compound ``pad_label``."""
+    """Display label for a metadata pin - prefer compound ``pad_label``."""
     if not pin:
         return ""
     label = pin.get("pad_label")
@@ -70,13 +70,13 @@ def pin_display_pad(pin: dict | None) -> str:
 class SolutionSampler:
     """Nearest-vertex sampler over a solved :class:`LeanSolution`.
 
-    Trees are built lazily per (physical layer, net) — only for pairs that
-    are actually sampled — and cached for the sampler's lifetime.
+    Trees are built lazily per (physical layer, net) - only for pairs that
+    are actually sampled - and cached for the sampler's lifetime.
 
     Orphan vertices (not referenced by any triangle) are left out of every
     tree. Padne pins those to V=0 to keep the linear system non-singular;
     including them would let a pin or via sample V=0 instead of the real
-    voltage when its (x, y) sits within the match tolerance of an orphan —
+    voltage when its (x, y) sits within the match tolerance of an orphan -
     which, combined with a ~1 mΩ via hop, reads as a multi-thousand-amp
     ghost current.
     """
@@ -302,7 +302,7 @@ def compute_via_rows(sampler: SolutionSampler,
     """One row per via with its worst per-hop current and total power.
 
     The voltage at the via's (x, y) is sampled on every layer that is an
-    endpoint of one of the via's FEM segments — the same Layer instances
+    endpoint of one of the via's FEM segments - the same Layer instances
     :func:`fypa.altium.loader._coupling_networks` built the via resistors
     between. Per-hop resistance comes from the via's own ``segments`` list,
     so a hop across a thicker dielectric uses the R the FEM solved with.
@@ -334,7 +334,7 @@ def compute_via_rows(sampler: SolutionSampler,
             continue
         # An EMPTY segments list means _coupling_networks skipped this via
         # (no copper on >=2 layers in its span, so no resistor was inserted
-        # in the FEM). A "current" for it would be meaningless — every hop R
+        # in the FEM). A "current" for it would be meaningless - every hop R
         # would be the fallback constant while the voltages came from
         # neighbouring sites, giving ghost currents of thousands of amps.
         site_segments = via.get("segments") or []
@@ -393,7 +393,7 @@ def compute_via_rows(sampler: SolutionSampler,
         top_lid, v_top = sampled_sorted[0]
         bot_lid, v_bottom = sampled_sorted[-1]
         via_dict = prep["via"]
-        ipc_label = via_dict.get("ipc4761_label", "—") or "—"
+        ipc_label = via_dict.get("ipc4761_label", "-") or "-"
         # A · marker on conductively-filled rows flags the parallel-shunt
         # resistance model.
         if via_dict.get("is_conductive_fill"):

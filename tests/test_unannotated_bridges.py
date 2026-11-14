@@ -4,7 +4,7 @@ Two related behaviours, both about copper the solve would otherwise miss:
 
 * A part that is electrically a piece of metal (an Altium Net Tie, a 0 ohm
   resistor, a wire link) is bridged automatically with a low-ohm
-  ``ResistorSpec`` — the same object a hand-written ``PDN_ROLE=SERIES``
+  ``ResistorSpec`` - the same object a hand-written ``PDN_ROLE=SERIES``
   produces, so it renders and behaves as a SERIES element everywhere
   downstream.
 * A part that conducts but whose resistance only the user knows (a ferrite,
@@ -45,7 +45,7 @@ def test_zero_ohm_values_are_recognised(text):
 ])
 def test_real_values_are_not_mistaken_for_links(text):
     """A false positive here silently shorts two nets, which is the one
-    failure a PDN tool must not have — so anything with a non-zero
+    failure a PDN tool must not have - so anything with a non-zero
     magnitude must be rejected."""
     assert _looks_like_zero_ohm_value(text) is False
 
@@ -121,8 +121,8 @@ def test_conducting_part_prefixes_are_classified(designator, kind):
 
 
 @pytest.mark.parametrize("designator", [
-    "U7",     # IC — spans nets but does not conduct between them at DC
-    "C10",    # capacitor — open at DC
+    "U7",     # IC - spans nets but does not conduct between them at DC
+    "C10",    # capacitor - open at DC
     "D4",     # diode
     "Y1",     # crystal
     "",
@@ -239,7 +239,7 @@ def test_real_resistor_is_not_auto_bridged():
 
 
 def test_small_but_nonzero_resistor_is_not_auto_bridged():
-    """0R01 is a 10 mohm shunt, not a link — shorting it would erase a real
+    """0R01 is a 10 mohm shunt, not a link - shorting it would erase a real
     measurable drop. With auto-SERIES on it is modelled at its own value;
     with it off, nothing touches it."""
     specs = _resistors(parse_annotations(_link_proj("0R01"), enabled_layers=[1]))
@@ -311,7 +311,7 @@ def test_opt_out_round_trips_through_the_project_file(tmp_path):
 
 
 def test_project_file_without_the_key_loads_with_an_empty_opt_out(tmp_path):
-    """Older .fypa files predate the field — additive, so no schema bump."""
+    """Older .fypa files predate the field - additive, so no schema bump."""
     import json
     from fypa.project_file import ProjectFile
     path = tmp_path / "old.fypa"
@@ -410,6 +410,72 @@ def test_advisory_names_the_net_that_is_missing_not_the_live_rail():
     message = "\n".join(_flag_unannotated_bridges(loaded))
     assert "'SHIELD' is then solved too" in message
     assert "'VBUS' is then solved too" not in message
+
+
+def _two_resistor_proj(value: str):
+    """R1 from VBUS to SHIELD and R2 from SHIELD to GND, both ``value`` -
+    a path that rejoins a second solved net, so not a dead end."""
+    import dataclasses
+    proj = _bridge_proj("R1", {}, value=value, footprint="R0603")
+    return dataclasses.replace(
+        proj,
+        sch_components=proj.sch_components + (RawSchComponent(
+            designator="R2", schdoc_name="Pwr.SchDoc",
+            parameters={"Value": value}, pin_designators=("1", "2")),),
+        pcb_components=proj.pcb_components + (RawPcbComponent(
+            designator="R2", center=Pt2D(5, 0), rotation_deg=0.0,
+            layer_name="TOP", footprint="R0603", source_designator="R2"),),
+        pads=proj.pads + (_pad(2, "1", 1, 5.0), _pad(2, "2", 0, 6.0)),
+    )
+
+
+def _no_auto_series(proj, designator):
+    ann = parse_annotations(proj, enabled_layers=[1], auto_series_max_ohm=0)
+    loaded = LoadedProject(extracted=proj, annotations=ann)
+    return loaded, next(r for r in collect_bridge_candidates(loaded)
+                        if r["designator"] == designator)
+
+
+def test_high_value_resistor_is_not_an_advisory():
+    """A 4.7k pull-up carries nothing next to milliohm copper."""
+    loaded, rec = _no_auto_series(_two_resistor_proj("4.7k"), "R1")
+    assert rec["state"] == "high_ohm"
+    assert not rec["impact"] and not rec["excluded_net"]
+    assert "4.7 kΩ" in rec["why"] and "negligible" in rec["why"]
+    assert not _flag_unannotated_bridges(loaded)
+
+
+def test_exactly_100_ohm_is_ignored():
+    _loaded, rec = _no_auto_series(_two_resistor_proj("100R"), "R1")
+    assert rec["state"] == "high_ohm"
+
+
+@pytest.mark.parametrize("value", ["10R", "47", "99R"])
+def test_resistor_under_100_ohm_is_still_an_advisory(value):
+    _loaded, rec = _no_auto_series(_two_resistor_proj(value), "R1")
+    assert rec["state"] == "unmodelled"
+    assert rec["impact"] and "Ω" in rec["impact"]
+    assert "return resistance" not in rec["impact"]
+
+
+def test_unreadable_value_is_still_an_advisory():
+    """Treating an unknown value as harmless could hide a real path."""
+    _loaded, rec = _no_auto_series(_two_resistor_proj("TBD"), "R1")
+    assert rec["state"] == "unmodelled"
+    assert rec["part_ohm"] is None
+    assert "unknown" in rec["impact"]
+
+
+def test_high_value_part_between_unsolved_nets_is_not_a_current_path():
+    """The dead-end walk must not link islands through a 4.7k either."""
+    from fypa.altium.loader import _clear_dead_end_impacts
+    active = {0, 1}
+    low = _rec("L1", 0, 5, active)
+    far = _rec("L2", 6, 1, active)
+    pullup = dict(_rec("R9", 5, 6, active), part_ohm=4700.0)
+    recs = [low, far, pullup]
+    _clear_dead_end_impacts(recs, active)
+    assert not low["impact"] and not far["impact"]
 
 
 def test_a_part_annotated_with_any_role_is_not_reported_unmodelled():

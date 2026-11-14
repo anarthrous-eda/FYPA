@@ -33,14 +33,14 @@ class _GradientBar(QWidget):
     always kept ≤ ``high`` with at least a tiny gap so the heatmap
     doesn't collapse.
 
-    Colours are fixed rather than theme-driven — the chip sits on the
+    Colours are fixed rather than theme-driven - the chip sits on the
     heatmap (not in the themed side panel), so it always uses a dark
     background with light text, matching the GL viewer's legend chip.
     """
 
     rangeChanged = Signal(float, float)
 
-    # --- Fixed overlay colours (theme-independent — chip sits on the GL
+    # --- Fixed overlay colours (theme-independent - chip sits on the GL
     # viewer, like the legend chip) ---
     _CHIP_BG = QColor(30, 30, 30)
     _CHIP_BORDER = QColor("#666666")
@@ -97,12 +97,12 @@ class _GradientBar(QWidget):
         # Metric name + unit shown above the strip, e.g. "Voltage" / "V".
         # Kept separate so an engineering SI prefix (chosen per render
         # from the data range) can be folded into the unit at paint time
-        # — e.g. a ~1 mV axis renders its title as "Voltage [mV]".
+        # - e.g. a ~1 mV axis renders its title as "Voltage [mV]".
         self._label: str = ""
         self._unit: str = ""
         # Log-spaced value axis. When True the handle ↔ value mapping is
         # logarithmic; the data range must be strictly positive for it to
-        # take effect (callers floor it — see PdnViewer._render).
+        # take effect (callers floor it - see PdnViewer._render).
         self._log: bool = False
         height = (self._CHIP_PAD + self._TITLE_H + self._MARGIN_TOP
                   + self._STRIP_HEIGHT + self._TICK_GAP + self._TICK_MARK
@@ -177,8 +177,8 @@ class _GradientBar(QWidget):
         """Pre-compute the colormap LUT stops and the clamp end-colors. Cached
         so paintEvent doesn't re-sample matplotlib on every repaint (drags fire
         many repaints per second). The QLinearGradient geometry itself is built
-        per-paint because it must span the *clamp window* [low, high] — not the
-        whole data-range strip — to match how the GPU maps the LUT (full LUT
+        per-paint because it must span the *clamp window* [low, high] - not the
+        whole data-range strip - to match how the GPU maps the LUT (full LUT
         stretched across the window, flat clamp colours outside)."""
         cmap = _mpl_cm.get_cmap(self._cmap_name)
         n_stops = 32
@@ -205,13 +205,13 @@ class _GradientBar(QWidget):
         )
 
     def _log_ok(self) -> bool:
-        """True when the log axis can actually be used — it needs a
+        """True when the log axis can actually be used - it needs a
         strictly positive, non-degenerate data range."""
         return (self._log and self._data_min > 0.0
                 and self._data_max > self._data_min)
 
     def _value_to_t(self, value: float) -> float:
-        """Normalised 0..1 position of ``value`` along the strip — log-
+        """Normalised 0..1 position of ``value`` along the strip - log-
         spaced when the log axis is active, linear otherwise."""
         if self._log_ok():
             lo = math.log10(self._data_min)
@@ -242,7 +242,7 @@ class _GradientBar(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
 
-        # Chip background — an opaque dark rect + light border, matching
+        # Chip background - an opaque dark rect + light border, matching
         # the GL viewer's legend chip so the strip reads on top of the
         # heatmap regardless of the colours underneath.
         p.fillRect(self.rect(), self._CHIP_BG)
@@ -250,7 +250,7 @@ class _GradientBar(QWidget):
         p.setBrush(Qt.NoBrush)
         p.drawRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5))
 
-        # Title ("Voltage [mV]" etc. — SI prefix folded in per render).
+        # Title ("Voltage [mV]" etc. - SI prefix folded in per render).
         title = self._display_title()
         if title:
             f = p.font()
@@ -265,12 +265,12 @@ class _GradientBar(QWidget):
             )
 
         # Gradient strip + border. The full LUT is stretched across the clamp
-        # window [low, high] — exactly what the GPU does — with flat clamp
+        # window [low, high] - exactly what the GPU does - with flat clamp
         # colours outside it (values below `low` render at LUT[0], above `high`
         # at LUT[1]). Previously the LUT spanned the whole data-range strip, so
         # a given hue on the bar sat at a different value than on the board
         # whenever the window ≠ the data range (the out-of-the-box state for
-        # Current/Power Density) — users mis-read every saturated region.
+        # Current/Power Density) - users mis-read every saturated region.
         strip = self._strip_rect()
         low_x = self._value_to_x(self._low)
         high_x = self._value_to_x(self._high)
@@ -327,7 +327,7 @@ class _GradientBar(QWidget):
         """Draw ``_N_TICKS`` evenly-spaced tick marks under the strip,
         each labelled with the data value at that position. Values are
         divided by the axis SI prefix's divisor so the labels stay plain
-        numbers (the prefix lives in the title — see :meth:`_si_scale`)."""
+        numbers (the prefix lives in the title - see :meth:`_si_scale`)."""
         divisor, _prefix = self._si_scale(self._data_min, self._data_max,
                                           self._unit)
         f = p.font()
@@ -339,7 +339,7 @@ class _GradientBar(QWidget):
         mark_bot = mark_top + self._TICK_MARK
         label_top = mark_bot
         # Pre-compute every tick value so each label can be formatted
-        # against its local spacing — constant in linear mode, but
+        # against its local spacing - constant in linear mode, but
         # varies along the axis in log mode.
         values: list[float] = []
         for i in range(n):
@@ -363,7 +363,7 @@ class _GradientBar(QWidget):
             p.setPen(self._TICK)
             p.drawLine(QPointF(x, mark_top), QPointF(x, mark_bot))
             text = self._fmt_tick(value, step)
-            # Keep the end labels inside the chip — left-align the first,
+            # Keep the end labels inside the chip - left-align the first,
             # right-align the last, centre the rest.
             if i == 0:
                 box = QRectF(x, label_top, 90.0, self._TICK_LABEL_H)
@@ -397,7 +397,7 @@ class _GradientBar(QWidget):
 
     def _display_title(self) -> str:
         """Heading shown above the strip, with the active SI prefix
-        folded into the unit — e.g. ``Voltage [mV]``."""
+        folded into the unit - e.g. ``Voltage [mV]``."""
         if not self._unit:
             return self._label
         _divisor, prefix = self._si_scale(
@@ -408,7 +408,7 @@ class _GradientBar(QWidget):
     def _fmt_tick(value: float, step: float = 0.0) -> str:
         """Format an already-SI-scaled tick value as a plain number.
 
-        No scientific notation — the SI prefix in the axis title
+        No scientific notation - the SI prefix in the axis title
         carries the magnitude. Precision comes from ``step`` (the
         spacing to the neighbouring tick): each label shows ~2 sig
         figs of the step, so the whole axis reads at a consistent
@@ -424,7 +424,7 @@ class _GradientBar(QWidget):
         labels that collide along the axis. Larger numbers therefore
         show fewer decimal places."""
         if not math.isfinite(value):
-            return "—"
+            return "-"
         if step > 0.0 and math.isfinite(step):
             digits = max(0, 1 - int(math.floor(math.log10(step))))
         elif value == 0.0:
@@ -432,7 +432,7 @@ class _GradientBar(QWidget):
         else:
             digits = max(0, 2 - int(math.floor(math.log10(abs(value)))))
         # Trim decimals so the whole number never exceeds _MAX_SIG_FIGS
-        # significant figures — i.e. the bigger the integer part, the
+        # significant figures - i.e. the bigger the integer part, the
         # fewer decimals it keeps (values < 1 are left untouched).
         int_digits = (int(math.floor(math.log10(abs(value)))) + 1
                       if abs(value) >= 1.0 else 0)
@@ -468,7 +468,7 @@ class _GradientBar(QWidget):
             return
         pos = event.position()
         strip = self._strip_rect()
-        # Only the strip and the handle band just above it are draggable —
+        # Only the strip and the handle band just above it are draggable -
         # clicks on the title or the tick labels must not move a handle.
         if not (strip.top() - 11 <= pos.y() <= strip.bottom() + 2):
             return
@@ -491,7 +491,7 @@ class _GradientBar(QWidget):
 
     def _update_from_drag(self, x_pixel: float) -> None:
         v = self._x_to_value(x_pixel)
-        # Don't let the handles cross — leave at least 1e-6 of the data span
+        # Don't let the handles cross - leave at least 1e-6 of the data span
         # between them so the heatmap retains a tiny colour range.
         gap = max((self._data_max - self._data_min) * 1e-6, 1e-30)
         if self._dragging == "low":
@@ -533,7 +533,7 @@ class ScaleController(QWidget):
         self.title_label = QLabel("<b>Colour scale</b>")
         layout.addWidget(self.title_label)
 
-        # Colour-scheme picker — recolours the heatmap live. Sits directly
+        # Colour-scheme picker - recolours the heatmap live. Sits directly
         # under the title so it reads as part of the colour-scale panel.
         cmap_row = QHBoxLayout()
         cmap_row.setContentsMargins(0, 0, 0, 0)
@@ -547,7 +547,7 @@ class ScaleController(QWidget):
             self.cmap_combo.addItem(display_name)
         self.cmap_combo.setToolTip(
             "Colour scheme for the heatmap. Changing it recolours the "
-            "viewport immediately — no re-solve needed."
+            "viewport immediately - no re-solve needed."
         )
         self.cmap_combo.currentIndexChanged.connect(self._on_cmap_combo_changed)
         cmap_row.addWidget(self.cmap_label, 0)
@@ -556,7 +556,7 @@ class ScaleController(QWidget):
 
         # Linear / logarithmic value axis. Hidden by the viewer for
         # modes where a log scale is meaningless (Voltage) or undefined
-        # (the signed Voltage Drop) — see PdnViewer._render.
+        # (the signed Voltage Drop) - see PdnViewer._render.
         scale_row = QHBoxLayout()
         scale_row.setContentsMargins(0, 0, 0, 0)
         scale_row.setSpacing(6)
@@ -569,7 +569,7 @@ class ScaleController(QWidget):
         self.scale_combo.setToolTip(
             "Linear or logarithmic colour scale. A log scale spreads the "
             "low end so the bulk of the board and the spikes are both "
-            "readable at once — available for Current Density, Power "
+            "readable at once - available for Current Density, Power "
             "Density and Via Current (those span many decades). Hidden "
             "for Voltage / Voltage Drop."
         )
@@ -578,7 +578,7 @@ class ScaleController(QWidget):
         scale_row.addWidget(self.scale_combo, 1)
         layout.addLayout(scale_row)
 
-        # The gradient strip itself is NOT placed in this side panel — it
+        # The gradient strip itself is NOT placed in this side panel - it
         # lives as an overlay on the heatmap viewer's bottom-left corner
         # (PdnViewer._build_ui reparents it onto the GL viewer). It is
         # created here, parentless, so this controller can keep driving
@@ -619,17 +619,17 @@ class ScaleController(QWidget):
         max_col.addWidget(self.max_edit)
         edits_row.addLayout(max_col, 1)
 
-        # Reset-to-data-range button — a small square button sitting to
+        # Reset-to-data-range button - a small square button sitting to
         # the right of the Max box. The Min/Max columns carry a label
         # above the edit, so AlignBottom drops the button level with the
         # input boxes (not the taller label+edit column). The "↺" glyph
         # is the button's *text*, so it's painted in the themed text
-        # colour and tracks light/dark mode — a QStyle standard icon
+        # colour and tracks light/dark mode - a QStyle standard icon
         # would not. Min/Max stay at equal stretch (1 each) so they keep
         # the same width; the button column is fixed-width (stretch 0).
         self.reset_button = QPushButton("↺")
         self.reset_button.setToolTip(
-            "Reset to data range — restore Min / Max to the auto-detected "
+            "Reset to data range - restore Min / Max to the auto-detected "
             "data range for the current layer, rail, and mode."
         )
         _reset_font = self.reset_button.font()
@@ -667,7 +667,7 @@ class ScaleController(QWidget):
         # The "Min" / "Max" / "Scheme" / "Scale" header labels weren't
         # captured as instance attributes; find them by their plain text
         # so we can re-style. (The gradient strip itself is a fixed-colour
-        # overlay on the GL viewer — it has no theme to follow.)
+        # overlay on the GL viewer - it has no theme to follow.)
         for lbl in self.findChildren(QLabel):
             if lbl is self.title_label:
                 continue
@@ -686,7 +686,7 @@ class ScaleController(QWidget):
     def setColormap(self, cmap_name: str) -> None:
         """Set the active colour scheme (matplotlib colormap name). Syncs
         both the gradient strip and the dropdown selection WITHOUT emitting
-        :attr:`colormapChanged` — used for programmatic sync from the
+        :attr:`colormapChanged` - used for programmatic sync from the
         viewer (the dropdown itself is the only thing that emits)."""
         self.bar.setColormap(cmap_name)
         for i, (_display, mpl_name) in enumerate(_HEATMAP_COLORMAPS):
@@ -697,7 +697,7 @@ class ScaleController(QWidget):
                 break
 
     def _on_cmap_combo_changed(self, index: int) -> None:
-        """User picked a scheme from the dropdown — repaint the gradient
+        """User picked a scheme from the dropdown - repaint the gradient
         strip and let the viewer recolour the heatmap."""
         if 0 <= index < len(_HEATMAP_COLORMAPS):
             mpl_name = _HEATMAP_COLORMAPS[index][1]
@@ -713,7 +713,7 @@ class ScaleController(QWidget):
 
     def setLogVisible(self, visible: bool) -> None:
         """Show or hide the Scale (Linear / Logarithmic) dropdown for the
-        current mode. Hidden — not merely greyed — for modes where a log
+        current mode. Hidden - not merely greyed - for modes where a log
         axis is meaningless (Voltage) or undefined (the signed Voltage
         Drop), so the panel only ever shows controls that do something."""
         self.scale_combo.setVisible(visible)
@@ -737,7 +737,7 @@ class ScaleController(QWidget):
         """Set the data extents (full slider range) and optionally the
         initial Min/Max selection.
 
-        ``sel_min`` / ``sel_max`` default to the data extents — pass a
+        ``sel_min`` / ``sel_max`` default to the data extents - pass a
         narrower window when the auto-detected data range contains
         outliers (e.g. FEM spikes at pinned-voltage vertices) so the
         default heatmap isn't crushed to one corner of the colour scale.
@@ -782,7 +782,7 @@ class ScaleController(QWidget):
 
     def _set_edit_values(self, low: float, high: float) -> None:
         # ``blockSignals`` is the simple way to suppress editingFinished
-        # while we update the text — otherwise typing in one box would
+        # while we update the text - otherwise typing in one box would
         # trigger a re-render mid-edit when focus moves.
         self.min_edit.blockSignals(True)
         self.max_edit.blockSignals(True)
@@ -794,7 +794,7 @@ class ScaleController(QWidget):
     @staticmethod
     def _fmt(value: float) -> str:
         if not math.isfinite(value):
-            return "—"
+            return "-"
         if value == 0:
             return "0"
         if abs(value) < 1e-3 or abs(value) >= 1e5:

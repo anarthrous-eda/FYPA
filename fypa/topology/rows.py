@@ -27,6 +27,7 @@ parallel sources).
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 
 from fypa.topology.constants import (
@@ -491,8 +492,19 @@ def directive_value_text(d: dict) -> str:
 
 
 class _Placer:
-    def __init__(self, builder: _TreeBuilder) -> None:
+    def __init__(
+        self,
+        builder: _TreeBuilder,
+        add_candidates: Mapping[str, Collection[str]] | None = None,
+    ) -> None:
         self.builder = builder
+        # net (upper) -> designators (upper) that could be added as a SINK;
+        # None = no "+ SINK" handles at all.
+        self.add_candidates = (
+            None if add_candidates is None else {
+                k.upper(): {d.upper() for d in v} for k, v in add_candidates.items()
+            }
+        )
         self.nodes: list[TopologyNode] = []
         self.wires: list[TopologyWire] = []
         self.tags: list[TopologyTag] = []
@@ -646,8 +658,60 @@ class _Placer:
             taps.extend(pts)
             cursor = c_bottom + SIBLING_GAP
             bottom = max(bottom, c_bottom)
+        # "+ SINK" handle one tap below the last load. A rail with no loads
+        # gets the "no loads" end tag instead, which already offers it.
+        n_add = self._add_sink_count(net) if branch.children else 0
+        add_y = cursor + TAG_H / 2
+        if n_add:
+            cursor += TAG_H + SIBLING_GAP
+            bottom = max(bottom, add_y + TAG_H / 2)
         self._route_net(net, branch.label, drv, bus_x, taps, label_from=label_from)
+        if n_add:
+            self._add_sink_handle(net, branch.label, drv, bus_x, cx, add_y, taps, n_add)
         return cursor, bottom
+
+    def _add_sink_count(self, net: str) -> int:
+        """Candidate loads on ``net`` not already drawn on it (any role)."""
+        if self.add_candidates is None or not net or net == GND_NET:
+            return 0
+        cands = self.add_candidates.get(net.upper())
+        if not cands:
+            return 0
+        drawn = {
+            str(part.spec.get("designator") or "").split("#")[0].upper()
+            for part, _ in self.builder.by_net.get(net, [])
+        }
+        return len(cands - drawn)
+
+    def _add_sink_handle(
+        self,
+        net: str,
+        label: str,
+        drv: TopologyPort,
+        bus_x: float,
+        cx: float,
+        y: float,
+        taps: list[tuple[float, float]],
+        n: int,
+    ) -> None:
+        """Dashed tap off the bus to a dashed ``+ SINK (n)`` tag at ``y``."""
+        from_y = max([drv.y] + [ty for _, ty in taps])
+        self.wires.append(TopologyWire(
+            net=net,
+            path_d=f"M {bus_x:.1f},{from_y:.1f} V {y:.1f} H {cx:.1f}",
+            routing_kind="add_tap",
+            dashed=True,
+        ))
+        text = f"+ SINK ({n})"
+        w = tag_width(text)
+        self.tags.append(TopologyTag(
+            net=net, text=text, kind="add", x=cx, y=y, width=w, height=TAG_H,
+            tooltip=(
+                f"{label}: {n} more part(s) on this rail (ICs, connectors) "
+                "could be a load.\nClick to add a SINK on it in Manual setup."
+            ),
+        ))
+        self._grow_x(cx + w)
 
     def _route_net(
         self,
@@ -663,7 +727,7 @@ class _Placer:
         straight = len(taps) == 1 and abs(taps[0][1] - drv.y) < 0.5
         if not taps:
             # Nothing hangs off this net here: tag it once every part is
-            # placed — "continues at …" if the net reaches a part drawn
+            # placed - "continues at …" if the net reaches a part drawn
             # elsewhere (a loop), else "no loads".
             self.pending_ends.append(drv)
             return
@@ -843,13 +907,13 @@ class _Placer:
                 where = ", ".join(f"{n}.{t}" for n, t, _ in others[:4])
                 self._add_tag_at_port(
                     drv, drv.net, drv.net, kind="net",
-                    tooltip=f"{drv.net} — continues at {where}. Click to jump there.",
+                    tooltip=f"{drv.net} - continues at {where}. Click to jump there.",
                     target=others[0][2],
                 )
             else:
                 self._add_tag_at_port(
                     drv, drv.net, drv.net, kind="end",
-                    tooltip=f"{drv.net} — no sink or regulator is on this rail.",
+                    tooltip=f"{drv.net} - no sink or regulator is on this rail.",
                 )
         for node, port, part in self.pending_tags:
             if part.kind == "origin" and port.role == "REGULATOR" and not is_output_port(
@@ -858,13 +922,13 @@ class _Placer:
                 refs = [pt for net, pt in self.ref_points.get(part.node_id, []) if net == port.net]
                 if refs:
                     target = refs[0]
-                    tip = f"{port.net} — fed from the row above. Click to jump there."
+                    tip = f"{port.net} - fed from the row above. Click to jump there."
                 elif port.net in self.net_home:
                     target = self.net_home[port.net]
-                    tip = f"{port.net} — drawn elsewhere. Click to jump there."
+                    tip = f"{port.net} - drawn elsewhere. Click to jump there."
                 else:
                     target = None
-                    tip = f"{port.net} — nothing drives this rail."
+                    tip = f"{port.net} - nothing drives this rail."
                 kind = "feed" if target is not None else "undriven"
                 tag = self._add_tag_at_port(
                     port, port.net, port.net, kind=kind, tooltip=tip, target=target,
@@ -873,7 +937,7 @@ class _Placer:
                 continue
             home = self.net_home.get(port.net)
             if home is not None and (abs(home[0] - port.x) > 0.5 or abs(home[1] - port.y) > 0.5):
-                tip = f"{port.net} — drawn elsewhere. Click to jump there."
+                tip = f"{port.net} - drawn elsewhere. Click to jump there."
                 kind = "net"
             elif home is not None:
                 tip = port.net
@@ -885,11 +949,11 @@ class _Placer:
                     home = others[0][2]
                     where = ", ".join(f"{n}.{t}" for n, t, _ in others[:4])
                     tip = (
-                        f"{port.net} — nothing drives this rail; also on {where}."
+                        f"{port.net} - nothing drives this rail; also on {where}."
                         " Click to jump there."
                     )
                 else:
-                    tip = f"{port.net} — nothing drives this rail."
+                    tip = f"{port.net} - nothing drives this rail."
                 kind = "undriven" if part.kind != "origin" else "net"
             self._add_tag_at_port(
                 port, port.net, port.net, kind=kind, tooltip=tip, target=home,
@@ -997,14 +1061,21 @@ def build_rows_model(
     metadata: TopologyMetadata | None,
     *,
     show_bridges: bool = False,
+    add_candidates: Mapping[str, Collection[str]] | None = None,
 ) -> TopologyModel:
-    """Build the rows-layout topology model (see module docstring)."""
+    """Build the rows-layout topology model (see module docstring).
+
+    ``add_candidates`` (net -> designators of parts that could be a load on
+    it) turns on the "+ SINK (n)" handle under each rail's last load: a
+    dashed tap and tag, drawn only where some candidate isn't already on
+    that rail. ``None`` (the default, e.g. the design report) draws none.
+    """
     if metadata is None:
         return TopologyModel(layout="rows")
     parsed = parse_topology_directives(metadata)
     parts = _parts_from_specs(parsed.node_specs)
     rows, hidden, builder = _plan_rows(parts)
-    placer = _Placer(builder)
+    placer = _Placer(builder, add_candidates)
 
     bands: list[TopologyBand] = []
     y = MARGIN
@@ -1043,7 +1114,7 @@ def build_rows_model(
         else:
             notes.append(
                 f"{len(hidden)} auto-bridge(s) on nets with no source, sink or "
-                "regulator are hidden — use “Bridges” to show them."
+                "regulator are hidden - use “Bridges” to show them."
             )
 
     from fypa.topology.render import rows_legend_width

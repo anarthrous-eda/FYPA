@@ -20,7 +20,7 @@ and [fypa/caploop/packages.py](../fypa/caploop/packages.py).
 Z_target = V_rail · ripple% / I_transient
 ```
 
-held from DC up to **F_MAX** — the frequency beyond which adding capacitors no
+held from DC up to **F_MAX** - the frequency beyond which adding capacitors no
 longer brings |Z| down, because plane spreading and package inductance
 dominate. Both the ripple budget and the transient current are yours to
 declare; FYPA reads the rail's nominal voltage from its `PDN_ROLE=SOURCE`
@@ -54,19 +54,19 @@ the last self-resonance.
 
 ### Where each input comes from
 
-* **C** — parsed from the part's Altium parameters (the Capacitors tab's
+* **C** - parsed from the part's Altium parameters (the Capacitors tab's
   `C (µF)` column), or the per-part override typed into that cell. A capacitor
   with neither is excluded, and said so.
-* **L_mount** — the best tier FYPA has for that part: Tier 3 if the cavity
+* **L_mount** - the best tier FYPA has for that part: Tier 3 if the cavity
   solve has run, else Tier 2, else the Tier-1 closed form. Press **Compute
   Tier 2/3** on the Capacitors tab and the impedance plot redraws against the
   better numbers.
-* **ESL, ESR** — the package library, overridable per part (below).
-* **C_plane** — `ε0·εr·A/h` over the rail's dominant reference cavity, using
+* **ESL, ESR** - the package library, overridable per part (below).
+* **C_plane** - `ε0·εr·A/h` over the rail's dominant reference cavity, using
   the area of the *intersection* of the two planes and the **Dk extracted from
   the stackup**. When the stackup carries no Dk the tab falls back to 4.5 and
   labels the value as such rather than quietly pretending.
-* **VRM R, L** — yours to declare, per rail.
+* **VRM R, L** - yours to declare, per rail.
 
 Every input above the plot persists per rail in the `.fypa` project file.
 
@@ -88,8 +88,8 @@ shown in an editable table on the Impedance tab:
 Reverse-geometry parts (0204, 0306, 0508, 0612) put the terminations on the
 long edges and are listed with correspondingly lower ESL.
 
-ESL grows with body length — the current has further to travel between
-terminations — and ESR falls with electrode area. Editing a cell changes every
+ESL grows with body length - the current has further to travel between
+terminations - and ESR falls with electrode area. Editing a cell changes every
 capacitor of that case size at once. Only the packages you actually edit are
 written to the project file, so a project that never touched a value inherits
 later revisions of the built-in default.
@@ -110,30 +110,30 @@ The case size is parsed from the footprint name. FYPA recognises:
 
 Note that `0603` is both an imperial code *and* the metric code for an 0201.
 For that ambiguous pair (`0402` / `0603`), the **Case size convention**
-setting — on both the Capacitors and Impedance tabs, one project-wide value —
+setting - on both the Capacitors and Impedance tabs, one project-wide value -
 decides how a bare code is read:
 
 | | bare `0402` / `0603` | metric-only codes (1005, 1608, 3216, …) |
 |---|---|---|
 | **Auto** (default) | imperial, unless the name marks it otherwise | read as metric |
-| **Metric** | metric — so `C0603` is an 0201 | read as metric |
+| **Metric** | metric - so `C0603` is an 0201 | read as metric |
 | **Imperial** | imperial | not case codes at all; the part is unsupported |
 
 Under Auto, a name that spells out an imperial land pattern (`C_0402_SL`,
 `C0402`) stays imperial. Choosing **Metric** or **Imperial** overrides that
-heuristic — it exists to guess which convention a library uses, and an
+heuristic - it exists to guess which convention a library uses, and an
 explicit choice answers the question.
 
 Names that already state their units are never overridden: IPC-7351 land
 names (`CAPC1608X90N`) and explicit suffixes (`C_0402_1005Metric`) classify
 the same under all three settings.
 
-Pad geometry from the layout is always in millimetres — only the **name**
+Pad geometry from the layout is always in millimetres - only the **name**
 convention affects classification and how the Pkg column is labelled.
 
 **Only SMD chip packages are supported.** A tantalum D-case brick, an
-electrolytic, anything through-hole — none has a case-size code, and none has an
-ESL a table could predict. Those capacitors are listed with `—` in the `Pkg`
+electrolytic, anything through-hole - none has a case-size code, and none has an
+ESL a table could predict. Those capacitors are listed with `-` in the `Pkg`
 column and **excluded from the impedance model with a stated reason**, never
 silently defaulted.
 
@@ -150,7 +150,7 @@ replaced; clearing an override restores that value.
 | `ESL (nH)` | value entry | the package library default |
 | `ESR (mΩ)` | value entry | the package library default |
 
-**`C (µF)`** takes a bare number in µF, or a number with its own unit —
+**`C (µF)`** takes a bare number in µF, or a number with its own unit -
 `100n`, `4.7uF`, `220pF`. A suffix always wins over the column's unit, so
 `100n` is 100 nF and never 100 µF. Use it for a part whose `Comment` no
 heuristic can read, and for the effective capacitance after DC-bias and
@@ -166,8 +166,8 @@ persists, never the metric display label, so the choice survives a change of
 **Case size convention**.
 
 **`ESL (nH)` / `ESR (mΩ)`** pin the parasitics themselves. Supplying both is
-the way to admit a capacitor with no case size at all — a tantalum brick, an
-electrolytic — where the picker has nothing to offer.
+the way to admit a capacitor with no case size at all - a tantalum brick, an
+electrolytic - where the picker has nothing to offer.
 
 Overrides live on the same per-designator record as the include and target
 choices, so setting one never disturbs another.
@@ -176,7 +176,7 @@ choices, so setting one never disturbs another.
 
 * **Plane resonances.** This is a lumped model. It cannot see the board
   becoming a cavity a half-wavelength across, so trust it below the first plane
-  resonance — a few hundred MHz on a typical board, lower for a large plane.
+  resonance - a few hundred MHz on a typical board, lower for a large plane.
   (The Tier-2 FEM's port matrix is the groundwork for lifting this.)
 * **Cap↔cap mutual inductance.** The
   [`CavityMatrix`](../fypa/caploop/tier2_fem.py) that Tier 2 produces holds the
@@ -184,7 +184,7 @@ choices, so setting one never disturbs another.
   They would raise the anti-resonance peaks slightly when many capacitors share
   one cavity.
 * **Frequency-dependent ESR** (dielectric loss, skin effect) and the DC bias
-  and temperature derating of MLCC capacitance — a 100 nF X5R at 80 % of its
+  and temperature derating of MLCC capacitance - a 100 nF X5R at 80 % of its
   rated voltage is not 100 nF. Override `C (µF)` on the part to model the
   effective value if it matters.
 * **The IC's package and die capacitance**, which take over above F_MAX.
@@ -196,11 +196,11 @@ choices, so setting one never disturbs another.
 * The **blue trace** is |Z(f)| for the selected rail.
 * The **red dashed line** is `Z_target`, drawn only as far as F_MAX (the dotted
   vertical).
-* **Triangles** mark the worst three anti-resonances below F_MAX — red if they
+* **Triangles** mark the worst three anti-resonances below F_MAX - red if they
   breach the mask, amber otherwise.
 * **Show individual capacitors** overlays each branch faintly, which is how you
   find out *which* two parts are forming a given peak.
 
 The summary line under the plot states the verdict. When the mask is missed it
-reports the frequency at which |Z| **first** breaches it — the honest reading of
-how far the decoupling actually holds — rather than only the worst peak.
+reports the frequency at which |Z| **first** breaches it - the honest reading of
+how far the decoupling actually holds - rather than only the worst peak.

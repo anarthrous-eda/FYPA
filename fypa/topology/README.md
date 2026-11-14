@@ -14,20 +14,23 @@ full build pipeline (avoids circular imports with ``fypa.rail_groups``).
 
 `build_topology_model(metadata, layout=...)` has two layouts:
 
-- **`"rows"`** (`rows.py`, the viewer and report default) — one row per power
+- **`"rows"`** (`rows.py`, the viewer and report default) - one row per power
   origin. Each SOURCE starts a row; each REGULATOR gets its own row under the
   row that feeds it, indented by conversion depth. Within a row nets fan out
   left to right as a tree (no crossings by construction). Connections that
-  leave the row become `TopologyTag`s — `ref` (`→ U6` where a regulator is
+  leave the row become `TopologyTag`s - `ref` (`→ U6` where a regulator is
   fed), `feed` (the input net on the regulator's row), `net` (a loop or a
-  second rail on a part drawn elsewhere), `undriven`, `end` (no loads) — each
+  second rail on a part drawn elsewhere), `undriven`, `end` (no loads) - each
   carrying a `target` point the viewer pans to on click. GND ports sit on the
   symbol's bottom edge with a local ground glyph (`model.gnd_glyphs`); there
   is no return rail. Rails nothing drives get their own rows; auto-bridges on
-  nets with no PDN role are hidden unless `show_bridges=True`. Invariant:
+  nets with no PDN role are hidden unless `show_bridges=True`.
+  `add_candidates={net: designators}` (viewer only; the report passes none)
+  adds an `add` tag `+ SINK (n)` on a dashed `add_tap` wire under each bus's
+  last load, where n counts candidates not already drawn on that net. Invariant:
   every port ends at a wire endpoint (wired, tagged or grounded). Tests:
   `tests/test_topology_rows.py`.
-- **`"columns"`** (the API default, "Classic" in the viewer) — the
+- **`"columns"`** (the API default, "Classic" in the viewer) - the
   single-chain column layout below. Everything from here down describes it.
 
 ## Pipeline
@@ -56,13 +59,13 @@ TopologyModel  ──►  render.render_topology_svg()
                  ──►  validate.validate_topology()
 ```
 
-Single-pass: layout gap widths come from `placement.plan_signal_buses()` — no
+Single-pass: layout gap widths come from `placement.plan_signal_buses()` - no
 measure-then-rebuild routing pass.
 
 ## Metadata contract
 
 Topology consumes a **subset** of the solve metadata dict produced by
-`build_solve_metadata()` — not the full viewer/FEM bundle (~30 top-level keys).
+`build_solve_metadata()` - not the full viewer/FEM bundle (~30 top-level keys).
 
 Typed shapes live in `metadata_schema.py`:
 
@@ -80,17 +83,17 @@ Placement and bus-plan keys live in `placement/types.py`:
 
 | Type | Purpose |
 |------|---------|
-| `ColumnSideKey` | `(column_x, "left" \| "right")` — stack hub lane |
-| `GutterSpanKey` | `(x_lo, x_hi)` — column gap shared by gutter nets |
-| `GapRoutingKey` | `("gap", x_lo, x_hi)` — 2-port gutter routing group |
-| `StackBusKey` | `(column_x, side, net)` — planned bus beside a stack column |
-| `GndTrunkKey` | `(trunk_x, side)` — planned GND column trunk |
+| `ColumnSideKey` | `(column_x, "left" \| "right")` - stack hub lane |
+| `GutterSpanKey` | `(x_lo, x_hi)` - column gap shared by gutter nets |
+| `GapRoutingKey` | `("gap", x_lo, x_hi)` - 2-port gutter routing group |
+| `StackBusKey` | `(column_x, side, net)` - planned bus beside a stack column |
+| `GndTrunkKey` | `(trunk_x, side)` - planned GND column trunk |
 
 `build_topology_model()`, `build_node_layout()`, and `compute_rail_groups()` accept
 `TopologyMetadata | None`. Fields are optional (`total=False`) to match real pickles
 and trimmed JSON fixtures.
 
-Dev/CI validation: `assert_topology_metadata(data)` — lightweight shape check used by
+Dev/CI validation: `assert_topology_metadata(data)` - lightweight shape check used by
 `tests/test_topology_metadata_schema.py` on every fixture under
 `tests/fixtures/topology/*.json`.
 
@@ -109,7 +112,7 @@ json.dump(trim, open("tests/fixtures/topology/my_case.json", "w"), indent=2)
 | `types.py` | `TopologyNode`, `TopologyPort`, `TopologyWire`, `TopologyModel` |
 | `constants.py` | Layout/routing/label constants |
 | `placement/` | `ports.py`, `bus_grid.py`, `hub_planning.py`, `classify.py`, `types.py`, `plan_types.py`, `plan_lookup.py`, `plan_gnd.py`, `plan_pairs.py`, `plan_hubs.py`, `plan.py` |
-| `metadata/` | `layout_bridge`, `nets`, `specs`, `tooltips`, `feeds` — directive parsing |
+| `metadata/` | `layout_bridge`, `nets`, `specs`, `tooltips`, `feeds` - directive parsing |
 | `metadata_schema.py` | `TopologyMetadata`, `NodeSpec`, `DirectiveDict`, … TypedDict contract |
 | `terminal_roles.py` | `is_power_input_port`, `is_output_port` (shared role rules) |
 | `net_aliases.py` | `GND_ALIASES`, `is_gnd_alias()` (import-light, shared with `rail_groups`) |
@@ -121,10 +124,10 @@ json.dump(trim, open("tests/fixtures/topology/my_case.json", "w"), indent=2)
 | `issues.py` | Shared `Issue` / `make_issue()` for validate + report |
 | `render.py` | SVG drawing (wires, nodes, GND symbol, legend) |
 | `validate/` | `segments.py`, `wires.py`, `labels.py`, `stubs.py`, `hub.py`, `util.py`; `validate_topology()` in `__init__.py` |
-| `report.py` | `topology_wiring_report()` — JSON debug output |
+| `report.py` | `topology_wiring_report()` - JSON debug output |
 | `hit_test.py` | `find_component_at`, `find_port_at`, `find_wire_at`, `topology_net_at` |
-| `builder.py` | `build_topology_model()` — orchestrates the pipeline |
-| `preview.py` | `metadata_for_topology()` — live editor preview metadata |
+| `builder.py` | `build_topology_model()` - orchestrates the pipeline |
+| `preview.py` | `metadata_for_topology()` - live editor preview metadata |
 | `util.py` | Formatting (Ω, mA, V), `truncate_label()` |
 | `svg_testutil.py` | Test-only SVG normalization + fixed theme |
 
@@ -140,14 +143,14 @@ json.dump(trim, open("tests/fixtures/topology/my_case.json", "w"), indent=2)
 
 **Hub routing** (`routing/hub.py::route_hub`) models a net as a **tree**:
 
-1. **Row buses** — collinear groups of two or more ports on the same Y become a
+1. **Row buses** - collinear groups of two or more ports on the same Y become a
    horizontal `hub_row` wire (`paths.hub_row_path`, stub span from
    `paths.hub_row_stub_columns`). Obstacles may push the row downward via
    `obstacle_detour_y` (a *detoured* row keeps its nominal port Y for vertical
    drops onto the bus).
-2. **Trunk** — when taps meet the hub column at different Y values, one vertical
+2. **Trunk** - when taps meet the hub column at different Y values, one vertical
    `hub` wire at `bus_x` spans `min(tap_y)…max(tap_y)`.
-3. **Taps** — each port reaches a row or the trunk via `hub_tap` wires: straight
+3. **Taps** - each port reaches a row or the trunk via `hub_tap` wires: straight
    vertical onto a row, horizontal feed from a row edge to `bus_x`, escape-column
    detour when a foreign vertical blocks the stub column, or a direct trunk tap for
    singletons.
@@ -156,21 +159,21 @@ Row-to-trunk attachment (`_connect_row_to_bus`) retries horizontal feed Y values
 `obstacle_detour_y_candidates`, reserving vertical/horizontal bands and checking
 `trunk_vertical_clear` plus foreign-segment blocking before emitting a feed wire.
 
-The same function serves gutter and beside-column buses — only `bus_x` differs.
+The same function serves gutter and beside-column buses - only `bus_x` differs.
 Keeping each segment minimal and non-overlapping (instead of a single retracing
 polyline) is exactly what junction detection relies on: interior taps meeting the
 trunk give a dot, the top/bottom taps are corners. A single-row hub with no trunk
-feed may have no `hub` wire — collinear row/tap geometry forms the bus.
+feed may have no `hub` wire - collinear row/tap geometry forms the bus.
 
 ### RoutingContext
 
-Reserves channels **during** path generation (bands only — bus x comes from `BusPlan`):
+Reserves channels **during** path generation (bands only - bus x comes from `BusPlan`):
 
-- **Horizontal bands** — occupied y ranges for collision avoidance
-- **Vertical bands** — occupied x ranges (`reserve_vertical`)
-- **`obstacle_detour_y()`** — first feasible Y below obstacles and reserved bands
+- **Horizontal bands** - occupied y ranges for collision avoidance
+- **Vertical bands** - occupied x ranges (`reserve_vertical`)
+- **`obstacle_detour_y()`** - first feasible Y below obstacles and reserved bands
   (net-aware: same-net bands may share a row; foreign bands force a push downward)
-- **`obstacle_detour_y_candidates()`** — ordered Y list for retry loops (row feeds,
+- **`obstacle_detour_y_candidates()`** - ordered Y list for retry loops (row feeds,
   detoured hub rows); deduplicates within `WIRE_EPS`
 
 Bus positions are planned in `placement.plan_signal_buses()` using
@@ -179,7 +182,7 @@ Bus positions are planned in `placement.plan_signal_buses()` using
 (`pair_buses` → `hub_buses` → `stack_buses`; GND trunks via path geometry).
 
 Signal wires store the planned vertical at `TopologyWire.bus_x`. GND routes do
-**not** set `bus_x` — trunk positions come from `BusPlan.gnd_trunks` and
+**not** set `bus_x` - trunk positions come from `BusPlan.gnd_trunks` and
 `gnd_trunk` wire paths instead.
 
 ### GND (routing only)
@@ -199,7 +202,7 @@ GND uses the same junction rules as every other net. Routing is a **tree** per c
 1. **No two foreign vertical segments on the same x** (same-net trunks may share x).
 2. **No two foreign horizontal segments on the same y with overlapping x** (same-net
    collinear bus taps may share y).
-3. **GND junction dots** — interior taps on the rail only (≥3 directions), not rail
+3. **GND junction dots** - interior taps on the rail only (≥3 directions), not rail
    endpoints.
 
 ### Obstacle avoidance (orthogonal detours)
@@ -212,8 +215,8 @@ Signal and hub routes push **horizontally** around node bodies via
 
 Orthogonal SVG paths (`M` / `H` / `V`) are decomposed into segments. Rules apply per net, identically for GND and signals.
 
-- **Junction** — count the distinct directions (up/down/left/right) in which same-net wire leaves a point; **3 or more** → dot. Two directions are a straight pass-through or a 90° corner (no dot). Overlapping collinear segments merge into one direction, so this is fully net-agnostic (GND taps, hub taps, and signal Ts all use the same rule).
-- **Bridge** — different nets → semicircle arc on the vertical
+- **Junction** - count the distinct directions (up/down/left/right) in which same-net wire leaves a point; **3 or more** → dot. Two directions are a straight pass-through or a 90° corner (no dot). Overlapping collinear segments merge into one direction, so this is fully net-agnostic (GND taps, hub taps, and signal Ts all use the same rule).
+- **Bridge** - different nets → semicircle arc on the vertical
 
 **Single source of truth:** `geometry.compute_schematic_geometry(wires)` decomposes
 the wires once and returns segments, junctions, and bridge crossings in a
@@ -244,7 +247,7 @@ render parity, always use `compute_schematic_geometry(...).junctions`.
 | `hub_net_disconnected` | A hub-routed net (`hub` / `hub_row` / `hub_tap`) with 2+ ports has them in more than one wire-graph component (`validate/hub.py`) |
 | `foreign_wire_crossing` | Foreign horizontal/vertical bus segments cross in a shared gutter (`validate/segments`; hub vs pair nets; trunk verticals + horizontals only) |
 | `canvas_width_reasonable` | Canvas wider than `MAX_CANVAS_WIDTH` (2400 px) |
-| `vertical_under_node` | Vertical segment runs under a node body (**warning** — does not increment `summary.issues`; no src/dst skip unlike `segment_through_foreign_node`) |
+| `vertical_under_node` | Vertical segment runs under a node body (**warning** - does not increment `summary.issues`; no src/dst skip unlike `segment_through_foreign_node`) |
 
 **Severity:** `topology_wiring_report()` counts only non-warning issues in
 `summary.issues`. Warnings (e.g. `vertical_under_node`) appear in the full
@@ -327,7 +330,7 @@ tests/fixtures/topology/
     column_gnd_feedback.svg
 ```
 
-Helper: `tests/topology_fixtures.py` — `load_topology_fixture(name)`.
+Helper: `tests/topology_fixtures.py` - `load_topology_fixture(name)`.
 
 ```python
 from tests.topology_fixtures import load_topology_fixture
@@ -379,7 +382,7 @@ Or via `scripts/test-pdn-topology.ps1` (pytest before GUI start).
 
 Snapshot tests compare normalized SVG from `render_topology_svg()` against golden
 files in `tests/fixtures/topology/svg/`. Tests use a fixed theme
-(`svg_testutil.DEFAULT_TEST_THEME`) — not the viewer's `current_theme()`.
+(`svg_testutil.DEFAULT_TEST_THEME`) - not the viewer's `current_theme()`.
 
 Regenerate goldens after intentional layout/render changes:
 
@@ -406,14 +409,14 @@ After updating, also verify `topology_wiring_report()` / wiring.json if routing 
 ## Extension
 
 `layout/` and `routing/` share net classification via `placement.classify_signal_nets()`
-and gutter spans via `placement.plan_signal_buses()` / `placement.net_gutter_key` —
+and gutter spans via `placement.plan_signal_buses()` / `placement.net_gutter_key` -
 layout never imports routing.
 
 New routing rules → `routing/` (+ fixture + invariant + regression test).
 
 New invariant → appropriate module under `validate/`, covered in `test_topology_invariants.py`.
 
-New fixture from Altium project — see **Metadata contract** above for the trim keys.
+New fixture from Altium project - see **Metadata contract** above for the trim keys.
 
 ```python
 # One-time: extract metadata from pickle (same trim as fixture convention)

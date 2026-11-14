@@ -23,7 +23,7 @@ class _ViewportMixin:
         )
 
     def _fit_board_to_view(self) -> None:
-        """User-triggered fit — frames board outline (or mesh) with margin."""
+        """User-triggered fit - frames board outline (or mesh) with margin."""
         if self._gl_viewer is None or not self._gl_viewer.isVisible():
             return
         self._sync_navlib_frame_bounds()
@@ -36,7 +36,7 @@ class _ViewportMixin:
             self._gl_viewer.fit_to_bounds(*bounds, padding=1.08)
 
     def _fit_board_to_canvas(self) -> None:
-        """Frame the board in the GL canvas, with a little margin, centred —
+        """Frame the board in the GL canvas, with a little margin, centred -
         the one-time fit applied when a design is first shown. No-op after
         it succeeds, so the user's pan/zoom is preserved thereafter.
 
@@ -48,7 +48,7 @@ class _ViewportMixin:
 
         Gated on the canvas actually being on-screen: the first ``_render``
         runs from ``__init__`` *before* the window is shown, when the GL
-        widget still has its pre-layout default size — fitting then yields a
+        widget still has its pre-layout default size - fitting then yields a
         wildly wrong (zoomed-out) scale. While not yet visible we leave
         ``_need_initial_fit`` set so the first real GL resize (from show /
         maximise) re-drives this via ``_on_gl_view_changed`` at the correct
@@ -98,7 +98,7 @@ class _ViewportMixin:
 
         * **Deferred initial fit**: ``_render`` ran before Qt had sized
           the widget, so the initial ``_fit_board_to_canvas`` used a
-          stale size. The first real resize triggers this signal — we
+          stale size. The first real resize triggers this signal - we
           re-fit now that ``self.width()/height()`` are correct.
         * **User pan / zoom / window resize**: just cache the new
           mm-per-pixel so future code (e.g. window-resize handlers) can
@@ -109,7 +109,7 @@ class _ViewportMixin:
         if self._need_initial_fit:
             # Now that the canvas is on-screen at its real size, run (or
             # re-run) the one-time board fit. Self-guards on visibility and
-            # available bounds, so this is a cheap no-op until both hold —
+            # available bounds, so this is a cheap no-op until both hold -
             # and gerber imports (no mesh ``_data_bounds``) still fit via
             # their board outline.
             self._fit_board_to_canvas()
@@ -119,10 +119,10 @@ class _ViewportMixin:
             self._mm_per_pixel = mpp
         # Arrows are anchored to layer bounds (not screen pixels), so
         # pan / zoom / 3D dolly don't change their world-space positions
-        # — no rebuild needed on view change.
+        # - no rebuild needed on view change.
 
     def _on_arrows_toggled(self, checked: bool) -> None:
-        """Arrow checkbox flipped — show/hide the density control and
+        """Arrow checkbox flipped - show/hide the density control and
         push the overlay (or clear it). Cheap; doesn't trigger a full
         _render."""
         self.arrow_spacing_label.setVisible(checked)
@@ -149,7 +149,7 @@ class _ViewportMixin:
     def _via_marker_diameter_mm(self, entry: dict) -> float:
         """Physical diameter (mm) used to size a via / PTH marker dot.
 
-        Drill diameter preferred — the same convention as the 3D via
+        Drill diameter preferred - the same convention as the 3D via
         cylinders (:meth:`_push_via_cylinders`) and the Via Current
         overlay (the drill bore is the current-carrying barrel). Falls
         back to the outer pad diameter, then to
@@ -217,7 +217,7 @@ class _ViewportMixin:
             bot_n = max(start_rank, end_rank) + 1
             text = f"{top_n}:{bot_n}"
             diam = self._via_marker_diameter_mm(v)
-            # Height ≈ 55% of the drill barrel — comfortably inside the
+            # Height ≈ 55% of the drill barrel - comfortably inside the
             # marker dot / cylinder cap, with room for a 2-digit:2-digit
             # label on 10+ layer stacks.
             height_mm = max(0.05, 0.55 * diam)
@@ -250,11 +250,11 @@ class _ViewportMixin:
 
         ``rail_scoped`` selects which eye is asking:
 
-        * ``True`` (first-column / heatmap eye) — only vias whose net is on
+        * ``True`` (first-column / heatmap eye) - only vias whose net is on
           a visible rail show. With no rail visible (``rail_members`` empty)
           nothing shows: the heatmap eye carries no rail to scope to, so it
           must not fall through to "show every via".
-        * ``False`` (second-column / all-copper eye) — the rail filter is
+        * ``False`` (second-column / all-copper eye) - the rail filter is
           bypassed entirely; every via crossing the layer shows.
         """
         if target_layer_id is None or self.metadata is None:
@@ -334,7 +334,7 @@ class _ViewportMixin:
         """Net-name-only form of :meth:`_editor_focus_hides`, for the
         annotations that carry a net but no polygon to test by identity
         (via and PTH dots). A focus on synthetic copper holds no real net
-        name, so it hides all of them — none of them is the copper the user
+        name, so it hides all of them - none of them is the copper the user
         asked to see."""
         if not self._editor_focus_active():
             return False
@@ -355,7 +355,7 @@ class _ViewportMixin:
 
         Also returns a parallel ``slots`` list: each entry is the pad's
         ``(length_mm, width_mm, rotation_deg)`` obround drill, or ``None`` for
-        a round bore — so the 2D marker can draw a slotted PTH as a capsule."""
+        a round bore - so the 2D marker can draw a slotted PTH as a capsule."""
         if target_layer_id is None or self.metadata is None:
             return [], [], [], []
         xs: list[float] = []
@@ -382,20 +382,20 @@ class _ViewportMixin:
 
     def _on_colormap_changed(self, cmap_name: str) -> None:
         """The colour-scale dropdown picked a new scheme. Recolour every
-        heatmapped surface — *without* the full :meth:`_render` rebuild.
+        heatmapped surface - *without* the full :meth:`_render` rebuild.
 
         A scheme change touches no geometry and no scalar values: the
         copper mesh recolours on the GPU straight from the 1-D LUT texture
         (the ``set_colormap`` push below), and the gradient strip is
         repainted by the ScaleController itself. The only CPU-side work
-        left is re-baking the overlays that carry baked LUT colours — stub
-        copper, series bars and (in 3D / Via Current) the via cylinders —
+        left is re-baking the overlays that carry baked LUT colours - stub
+        copper, series bars and (in 3D / Via Current) the via cylinders -
         which :meth:`_recolor_overlays` handles. Skipping ``_render`` here
         avoids rebuilding the rail mesh batch, re-uploading the vertex
         buffers and recomputing the colour-scale range on every toggle.
 
         In Via Current mode the copper keeps its flat-grey LUT
-        (``_gl_cmap_kind == "neutral"``) — only the via overlays recolour.
+        (``_gl_cmap_kind == "neutral"``) - only the via overlays recolour.
         """
         if cmap_name == self._cmap_name:
             return
@@ -415,7 +415,7 @@ class _ViewportMixin:
         :meth:`_reshade_baked_via_overlays` (used by the scale-slider
         path); it additionally covers the stub and series-bar overlays,
         which also carry baked LUT colours. The copper mesh is *not*
-        touched here — it recolours from the GPU LUT texture alone.
+        touched here - it recolours from the GPU LUT texture alone.
         """
         if self._gl_viewer is None:
             return
@@ -432,7 +432,7 @@ class _ViewportMixin:
         drop_reference = self._last_drop_reference
         # Stub copper carries baked LUT colours only when "colour by V"
         # is active; otherwise it's flat grey and the scheme change can't
-        # touch it — skip the (geometry-rebuilding) re-push in that case.
+        # touch it - skip the (geometry-rebuilding) re-push in that case.
         if self._stubs_coloured_by_voltage(mode):
             self._push_stubs(phys_list, rails, mode=mode,
                              drop_reference=drop_reference)
@@ -440,7 +440,7 @@ class _ViewportMixin:
         self._push_series_bars(phys_list, rails, mode,
                                drop_reference=drop_reference)
         # Via cylinders (3D) carry baked LUT colours only when the
-        # heatmap is painted onto them — Via Current mode, or any mode
+        # heatmap is painted onto them - Via Current mode, or any mode
         # with the Heatmap-vias toggle on. Otherwise they're solid orange.
         heatmap_vias = (
             getattr(self, "heatmap_vias_box", None) is not None
@@ -450,7 +450,7 @@ class _ViewportMixin:
             self._push_via_cylinders(phys_list, rails, mode=mode)
 
     def _on_scale_range_changed(self, vmin: float, vmax: float) -> None:
-        """ScaleController emitted a new clamp — push it to the GL viewer
+        """ScaleController emitted a new clamp - push it to the GL viewer
         as a uniform update. Instant for the copper mesh (just a uniform);
         the via overlays in Via Current mode and the cylinder heatmap in
         other modes hold per-vertex baked colours that *don't* react to
@@ -460,7 +460,7 @@ class _ViewportMixin:
             vmax = vmin + 1e-12
         self._vmin, self._vmax = vmin, vmax
         if self._gl_viewer is not None:
-            # GL values were uploaded in _gl_scale space — the level
+            # GL values were uploaded in _gl_scale space - the level
             # clamp must travel through the same transform to match.
             self._gl_viewer.set_levels(float(self._gl_scale(vmin)),
                                         float(self._gl_scale(vmax)))
@@ -496,7 +496,7 @@ class _ViewportMixin:
 
         2D Via Current goes through the full :meth:`_render` so the
         marker overlay refreshes via the same path the 2D↔3D toggle
-        uses — calling just :meth:`_update_markers_and_legend` in
+        uses - calling just :meth:`_update_markers_and_legend` in
         isolation wasn't enough on some Qt builds (the paint event
         coalesced behind the GL viewer's pending state and the
         markers stayed at their previous colours until something
@@ -526,7 +526,7 @@ class _ViewportMixin:
     _LAYER_Z_SPACING_MM: float = 0.4
     # How far (pre-exaggeration mm) board features (NPTH, pads, silk,
     # components, designators) hover above/below the outer copper in 3D.
-    # Capped small so they hug the surface — on a 2-layer board the mean
+    # Capped small so they hug the surface - on a 2-layer board the mean
     # layer pitch equals the whole board thickness, which would otherwise
     # float them a full board-thickness off each face.
     _FEATURE_LIFT_MM: float = 0.005
@@ -562,7 +562,7 @@ class _ViewportMixin:
         other layer regardless of its real stackup position; everywhere
         else (3D mode, or no selection) this is identical to
         :meth:`_layer_z_for`. Keeping the physical z untouched in 3D is
-        deliberate — vias and the per-layer cylinder spans rely on the
+        deliberate - vias and the per-layer cylinder spans rely on the
         real stackup z lining up across calls."""
         if (phys == self._selected_layer
                 and getattr(self, "view_3d_box", None) is not None
@@ -579,7 +579,7 @@ class _ViewportMixin:
 
         The ``_preserve_view_on_toggle`` flag (set by the Ctrl+Alt+2/3
         hotkeys) tells us the GL viewer's mode has already been switched
-        via :meth:`gl_mesh_viewer.set_view_mode_preserving` — skip the
+        via :meth:`gl_mesh_viewer.set_view_mode_preserving` - skip the
         standard re-fit path so the preserved camera survives.
         """
         if not getattr(self, "_preserve_view_on_toggle", False):
@@ -590,13 +590,13 @@ class _ViewportMixin:
         self._render_with_busy_popup()
 
     def _on_layer_spacing_changed(self, value: int) -> None:
-        """Live update of the 3D vertical-exaggeration uniform — affects
+        """Live update of the 3D vertical-exaggeration uniform - affects
         both the mesh-layer separation and the via cylinder length.
         Cheap (one uniform), no mesh rebuild, so dragging stays smooth."""
         self._gl_viewer.set_vertical_exaggeration(float(value))
         self.layer_spacing_label.setText(f"Layer spacing: {value}×")
         # The relief lift is fixed in displayed mm, so its pre-exaggeration
-        # span changes with the spacing — re-seat the markers on it.
+        # span changes with the spacing - re-seat the markers on it.
         if self._gl_viewer.relief_z_span() > 0.0:
             self._schedule_relief_marker_refresh()
 
@@ -607,11 +607,11 @@ class _ViewportMixin:
     # (see gl_mesh_viewer._VERTEX_SHADER_SRC). relief_layer_z is the layer's
     # own plane in the per-layer relief and (almost) one common base in the
     # ignoring-layers relief. Everything on the CPU side that has to agree
-    # with that surface — the hover ray-pick and the SOURCE / SINK markers —
+    # with that surface - the hover ray-pick and the SOURCE / SINK markers -
     # goes through _relief_surface_z / the GL viewer's relief_layer_z.
     #
     # "Relief in effect" is tested everywhere as
-    # ``self._gl_viewer.relief_z_span() > 0`` — the single source of truth,
+    # ``self._gl_viewer.relief_z_span() > 0`` - the single source of truth,
     # which is 0 in 2D, in Via Current mode and when there is no mesh.
 
     # relief_combo indices.
@@ -653,7 +653,7 @@ class _ViewportMixin:
         if not self._relief_requested():
             return 0.0
         if self.mode_combo.currentText() == _VIA_CURRENT_MODE:
-            # Copper values are zeroed in Via Current mode — nothing to lift,
+            # Copper values are zeroed in Via Current mode - nothing to lift,
             # and the via barrels it exists to show would be hidden.
             return 0.0
         bounds = getattr(self, "_data_bounds", None)
@@ -734,7 +734,7 @@ class _ViewportMixin:
 
     def _schedule_relief_marker_refresh(self) -> None:
         """Debounced marker re-push after a relief-height / scale / spacing
-        change — the markers carry baked z, the mesh does not."""
+        change - the markers carry baked z, the mesh does not."""
         from PySide6.QtCore import QTimer
         timer = getattr(self, "_relief_marker_timer", None)
         if timer is None:
@@ -752,7 +752,7 @@ class _ViewportMixin:
 
     def _hotkey_toggle_relief(self) -> None:
         """Z / View menu: cycle Off → Per layer → Ignoring layers → Off.
-        From 2D it switches to 3D with per-layer relief — relief is
+        From 2D it switches to 3D with per-layer relief - relief is
         meaningless in 2D, so that's the only useful reading of the key
         there."""
         if not self.view_3d_box.isChecked():
@@ -779,7 +779,6 @@ class _ViewportMixin:
             ("0", self._hotkey_reset_3d_view),
             ("Z", self._hotkey_toggle_relief),
             ("O", self._hotkey_toggle_outlines),
-            ("R", self._hotkey_toggle_rail_only),
             ("T", self._hotkey_toggle_cursor_tooltip),
             ("A", self._hotkey_toggle_arrows),
             ("V", self._hotkey_toggle_heatmap_vias),
@@ -788,8 +787,11 @@ class _ViewportMixin:
             ("H", self._hotkey_cycle_colormap),
             ("Shift+H", self._hotkey_cycle_colormap_reverse),
             ("B", self._toggle_sidebar),
+            # Show / hide the What-If panel (same as its viewport button;
+            # no-op in editor mode).
+            ("W", self._toggle_whatif_panel_visible),
             ("E", self._hotkey_toggle_editor),
-            # Arm a free SOURCE / SINK placement — keyboard equivalents of
+            # Arm a free SOURCE / SINK placement - keyboard equivalents of
             # the viewport triangle buttons; no-ops outside editor mode.
             ("S", self._hotkey_arm_source_marker),
             ("L", self._hotkey_arm_sink_marker),
@@ -797,7 +799,7 @@ class _ViewportMixin:
             # keyboard twin of the net table's crosshair column. No-op
             # outside editor mode.
             ("F", self._hotkey_toggle_net_focus),
-            # Free-marker edit undo / redo (move + delete) — no-ops outside
+            # Free-marker edit undo / redo (move + delete) - no-ops outside
             # editor mode.
             ("Ctrl+Z", self._undo_marker_action),
             ("Ctrl+Shift+Z", self._redo_marker_action),
@@ -849,7 +851,7 @@ class _ViewportMixin:
         persisted; ``_sidebar_content_w`` is that same width clamped to what
         currently fits beside the plot. Persisting the clamp instead would
         shrink a 400 px preference to the 180 px minimum the first time the
-        project is opened on a narrow window — permanently, since the next
+        project is opened on a narrow window - permanently, since the next
         save writes the shrunken value back.
         """
         scroll = getattr(self, "_sidebar_scroll", None)
@@ -900,7 +902,7 @@ class _ViewportMixin:
         self.view_3d_box.setChecked(True)
 
     def _hotkey_2d_mode_preserving(self) -> None:
-        """Switch to 2D while keeping the same world region framed —
+        """Switch to 2D while keeping the same world region framed -
         the 3D look-at point becomes the 2D centre, camera distance
         becomes mm-per-pixel via the perspective FOV."""
         if not self.view_3d_box.isChecked():
@@ -913,7 +915,7 @@ class _ViewportMixin:
             self._preserve_view_on_toggle = False
 
     def _hotkey_3d_mode_preserving(self) -> None:
-        """Switch to 3D while keeping the same world region framed —
+        """Switch to 3D while keeping the same world region framed -
         the 2D centre becomes the look-at point and the camera enters
         top-down at a distance that matches the 2D mm-per-pixel."""
         if self.view_3d_box.isChecked():
@@ -926,20 +928,13 @@ class _ViewportMixin:
             self._preserve_view_on_toggle = False
 
     def _hotkey_reset_3d_view(self) -> None:
-        """No-op in 2D — '0' only resets the view when the user is
+        """No-op in 2D - '0' only resets the view when the user is
         actually looking at the 3D model."""
         if self.view_3d_box.isChecked():
             self._gl_viewer.reset_3d_view()
 
     def _hotkey_toggle_outlines(self) -> None:
         self._outlines_btn.toggle()
-
-    def _hotkey_toggle_rail_only(self) -> None:
-        # No-op when the box is hidden — it's only hidden while toggling it
-        # wouldn't change anything (no visible rail has SERIES siblings).
-        if not self.rail_only_box.isVisible():
-            return
-        self.rail_only_box.toggle()
 
     def _hotkey_toggle_cursor_tooltip(self) -> None:
         self.cursor_tooltip_box.toggle()

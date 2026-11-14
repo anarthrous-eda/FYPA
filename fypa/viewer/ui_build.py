@@ -40,9 +40,8 @@ class _UiBuildMixin:
 
     def _build_ui(self) -> None:
         # Top-level: a menubar over a tab widget. Tab 0 is the heatmap view
-        # (everything that used to be the whole window); Tab 1 is the Setup
-        # tab populated from the metadata dict so users can verify what the
-        # FEM was given.
+        # (everything that used to be the whole window); the Properties tab
+        # holds the base properties and a report of what the FEM was given.
         self._build_menubar()
         self.tabs = QTabWidget(self)
         self.setCentralWidget(self.tabs)
@@ -77,7 +76,7 @@ class _UiBuildMixin:
 
         # Each physical-layer row carries four controls: the primary eye
         # (layer in the heatmap), a second eye that shows ALL the copper on
-        # that layer — every net, not just the analysed rails — a
+        # that layer - every net, not just the analysed rails - a
         # transparency cycler and a wire-mesh / solid fill toggle for that
         # all-copper view.
         self._layer_eye_buttons: list[tuple[str, EyeButton]] = []
@@ -92,7 +91,7 @@ class _UiBuildMixin:
         # What the last Shift+click isolated, so a second Shift+click on the
         # same item inverts. "Is it the only thing visible?" cannot stand in
         # for this: the default rail visibility already leaves exactly one rail
-        # showing, and narrowing to one layer by ordinary clicks is routine —
+        # showing, and narrowing to one layer by ordinary clicks is routine -
         # in both cases the FIRST Shift+click would invert instead of isolate.
         self._isolated_key: object | None = None
 
@@ -101,12 +100,12 @@ class _UiBuildMixin:
             tip_show=(
                 "Show the analysed rails on every layer.\n"
                 "This first column controls rail copper only (the PDN "
-                "heatmap) — use the second eye to show all copper."
+                "heatmap) - use the second eye to show all copper."
             ),
             tip_hide=(
                 "Hide the analysed rails on every layer.\n"
                 "This first column controls rail copper only (the PDN "
-                "heatmap) — use the second eye to show all copper."
+                "heatmap) - use the second eye to show all copper."
             ),
         )
         self._all_layers_eye2 = EyeButton(
@@ -116,7 +115,7 @@ class _UiBuildMixin:
         )
         self._all_layers_fill = FillToggleButton(solid=True)
         self._all_layers_transparency = TransparencyButton(step=0)
-        # Layer-outline toggle — only meaningful for the visible rails'
+        # Layer-outline toggle - only meaningful for the visible rails'
         # copper (that's what the outline pass traces), so it lives on the
         # "All Rails" row below. Replaces the old "Show layer outlines (O)"
         # side-panel checkbox.
@@ -145,7 +144,7 @@ class _UiBuildMixin:
             self._add_layer_row(phys)
 
         # Clicking a layer row (anywhere outside its eye/fill/transparency
-        # buttons — those consume the click before itemClicked fires)
+        # buttons - those consume the click before itemClicked fires)
         # toggles that layer as the selected layer; clicking the already-
         # selected layer clears the selection back to none.
         self.layer_list.itemClicked.connect(self._on_layer_item_clicked)
@@ -165,7 +164,7 @@ class _UiBuildMixin:
 
         side.addSpacing(8)
         side.addWidget(QLabel("<b>Rails</b>"))
-        # Altium-style rail list — mirrors the physical-layer control above
+        # Altium-style rail list - mirrors the physical-layer control above
         # so users can show any combination of rails at once. The first row
         # is an "All Rails" toggle that mirrors the same UX as "All Layers".
         # Rails are the PRIMARY names of bridge groups (e.g. "+3V3"), not
@@ -182,7 +181,7 @@ class _UiBuildMixin:
         )
         self.rail_list.setAlternatingRowColors(True)
         self.rail_list.setToolTip(
-            "PDN rails — tick one or more to show their copper. Each rail "
+            "PDN rails - tick one or more to show their copper. Each rail "
             "groups together nets bridged by a RESISTOR directive (e.g. "
             "selecting '+3V3' shows both +3V3 and 3V3_SW copper if L2 "
             "bridges them). Expand a rail (▶) to toggle individual subnet "
@@ -221,13 +220,13 @@ class _UiBuildMixin:
 
         side.addSpacing(8)
         side.addWidget(QLabel("<b>Board Features</b>"))
-        # Non-copper display layers — silkscreen, pads, vias, components and
+        # Non-copper display layers - silkscreen, pads, vias, components and
         # designators. Same QListWidget-of-rows control as the Physical
         # layers / Rails lists above, but each row carries two eyes (visible
-        # on the selected rails only vs. visible everywhere — a mutually
+        # on the selected rails only vs. visible everywhere - a mutually
         # exclusive pair) before the label, a wire-mesh / solid fill toggle
-        # at the far right, and — for the layers that exist on both board
-        # sides — a split toggle that breaks the row into Top / Bottom rows.
+        # at the far right, and - for the layers that exist on both board
+        # sides - a split toggle that breaks the row into Top / Bottom rows.
         self.overlay_list = QListWidget()
         self.overlay_list.setSelectionMode(QAbstractItemView.NoSelection)
         self.overlay_list.setFocusPolicy(Qt.NoFocus)
@@ -239,8 +238,8 @@ class _UiBuildMixin:
         )
         self.overlay_list.setAlternatingRowColors(True)
         self.overlay_list.setToolTip(
-            "Non-copper overlays. Each row has two eyes — show on the "
-            "selected rails only (left) or show everywhere (right) — a "
+            "Non-copper overlays. Each row has two eyes - show on the "
+            "selected rails only (left) or show everywhere (right) - a "
             "colour swatch that opens a picker for the overlay's colour, "
             "and a wire-mesh / solid fill toggle on the right. Overlay, "
             "pads, components and designators can be split into separate "
@@ -255,7 +254,7 @@ class _UiBuildMixin:
         # Min/Max text-box entry. Editing the range clamps the heatmap
         # colours interactively without re-rasterising the mesh. Sits
         # directly under the Mode combo so the scale tracks the metric.
-        # Its gradient strip is not shown here — it is reparented onto the
+        # Its gradient strip is not shown here - it is reparented onto the
         # GL viewer as a bottom-left overlay (see below).
         self.scale_controller = ScaleController()
         self.scale_controller.rangeChanged.connect(self._on_scale_range_changed)
@@ -273,9 +272,9 @@ class _UiBuildMixin:
         # The 2D/3D view, via-heatmap, no-current-copper-colour and
         # FEM-mesh-overlay toggles moved to the View menu (see
         # _build_view_menu). Their QCheckBox objects are kept as the
-        # canonical state holders — so every isChecked() / setChecked() /
+        # canonical state holders - so every isChecked() / setChecked() /
         # toggle() call site and the existing toggled-signal wiring stay
-        # unchanged — but they are never added to a layout, so they remain
+        # unchanged - but they are never added to a layout, so they remain
         # hidden. The View menu actions drive them and mirror their state
         # in the menu item labels via _refresh_view_menu_labels.
         self.show_mesh_box = QCheckBox("Show copper mesh")
@@ -287,26 +286,13 @@ class _UiBuildMixin:
         self.heatmap_vias_box = QCheckBox("Heatmap vias/PTH (V)")
         self.heatmap_vias_box.setChecked(False)
 
-        self.rail_only_box = QCheckBox("Show only rail net (R)")
-        self.rail_only_box.setToolTip(
-            "When on, only the copper of each selected rail's own primary "
-            "net is shown — any nets joined to it via SERIES bridges (e.g. "
-            "3V3_SW bridged to +3V3 by L2) are hidden. Markers, the probe, "
-            "and the net-name lookup all follow the same filter."
-        )
-        side.addWidget(self.rail_only_box)
-        # The control only does anything when at least one visible rail is
-        # bridged to siblings; hide it when no current selection would be
-        # affected by toggling it.
-        self._sync_rail_only_visibility()
-
         self.src_ref_box = QCheckBox("Reference to source return")
         self.src_ref_box.setChecked(True)
         self.src_ref_box.setToolTip(
             "Voltage mode only. On: each net's heatmap is referenced to its "
             "own SOURCE return pin, so it reads the net's true differential "
             "(≤ rail voltage). Off: shows absolute potential referenced "
-            "to the single global 0 V point — which can read a fraction of a "
+            "to the single global 0 V point - which can read a fraction of a "
             "mV ABOVE the rail, because a source's return pin doesn't sit "
             "exactly at that global 0 V."
         )
@@ -338,7 +324,7 @@ class _UiBuildMixin:
             "magnitude) of current flow at a regular grid of sample points. "
             "The arrow shaft length scales with sqrt(|J|) so weak and strong "
             "currents are both visible. Press A to toggle. Works in both "
-            "2D and 3D — in 3D each arrow sits on its layer's copper top."
+            "2D and 3D - in 3D each arrow sits on its layer's copper top."
         )
         side.addWidget(self.show_arrows_box)
 
@@ -353,21 +339,21 @@ class _UiBuildMixin:
         self.arrow_spacing_slider.setToolTip(
             "Approximate number of arrows along the shorter side of each "
             "layer. Arrows are placed at fixed world-space positions, so "
-            "zooming pans through them instead of resampling — keeps the "
+            "zooming pans through them instead of resampling - keeps the "
             "count bounded on very large designs."
         )
         self.arrow_spacing_slider.valueChanged.connect(
             self._on_arrow_density_changed,
         )
         side.addWidget(self.arrow_spacing_slider)
-        # The density control only matters while arrows are shown — keep
+        # The density control only matters while arrows are shown - keep
         # the label + slider hidden until "Show current arrows" is ticked.
         self.arrow_spacing_label.setVisible(False)
         self.arrow_spacing_slider.setVisible(False)
 
-        # Layer-spacing slider — drives both the per-layer z separation
+        # Layer-spacing slider - drives both the per-layer z separation
         # and the via cylinder length in 3D mode (they share the same
-        # vertical-exaggeration uniform, so dragging is instant — no
+        # vertical-exaggeration uniform, so dragging is instant - no
         # mesh rebuild). No-op in 2D mode.
         side.addSpacing(8)
         self.layer_spacing_label = QLabel("Layer spacing: 10×")
@@ -387,7 +373,7 @@ class _UiBuildMixin:
         )
         side.addWidget(self.layer_spacing_slider)
 
-        # Relief view (3D only) — lifts the copper by its heatmap value so
+        # Relief view (3D only) - lifts the copper by its heatmap value so
         # voltage drop reads as a slope (high voltage drawn high). Purely
         # shader uniforms, so switching / dragging re-uses the uploaded mesh.
         # Hidden in 2D; the height slider only shows while relief is on.
@@ -463,7 +449,7 @@ class _UiBuildMixin:
         self._SIDEBAR_MAX_W = 520
         self._SIDEBAR_SCROLLBAR_W = 18
         self._sidebar_content_w = self._SIDEBAR_DEFAULT_W
-        # What the user asked for, before clamping to the current window —
+        # What the user asked for, before clamping to the current window -
         # see _apply_sidebar_content_width.
         self._sidebar_requested_w = self._SIDEBAR_DEFAULT_W
         self._sidebar_drag_start_w = self._sidebar_content_w
@@ -506,7 +492,7 @@ class _UiBuildMixin:
         outer.addWidget(self._sidebar_toggle_btn)
         self._load_sidebar_width_from_project()
 
-        # Plot area — custom QOpenGLWidget rendering the FEM mesh directly
+        # Plot area - custom QOpenGLWidget rendering the FEM mesh directly
         # via shaders (per-vertex colour interpolation, MVP transform on
         # GPU). Pan and zoom become single matrix uniforms; no rasterise,
         # no texture upload, always pixel-sharp.
@@ -515,9 +501,9 @@ class _UiBuildMixin:
         plot_layout.setSpacing(0)
 
         self._gl_viewer = GLMeshViewer()
-        # Push the colormap LUT once — every render reuses it via uniform.
+        # Push the colormap LUT once - every render reuses it via uniform.
         self._gl_viewer.set_colormap(_build_cmap_lut(self._cmap_name))
-        # Resize / pan / zoom all flow through this signal — we use it to
+        # Resize / pan / zoom all flow through this signal - we use it to
         # keep our cached mm-per-pixel in sync (so window resizes preserve
         # the user's zoom level CAD-style) and to schedule a re-fit on
         # the first render once Qt has settled the widget size.
@@ -547,7 +533,7 @@ class _UiBuildMixin:
 
         plot_layout.addWidget(self._gl_viewer, 1)
 
-        # Heatmap colour-scale strip — overlaid on the GL viewer's
+        # Heatmap colour-scale strip - overlaid on the GL viewer's
         # bottom-left corner rather than living in the side panel. It's a
         # live child widget (not a paintGL overlay) so the Min/Max drag
         # handles stay interactive. The ScaleController still owns it and
@@ -556,7 +542,7 @@ class _UiBuildMixin:
         # GL-viewer resize via eventFilter) keeps it pinned bottom-left.
         self._scale_overlay = self.scale_controller.bar
         self._scale_overlay.setParent(self._gl_viewer)
-        # Hidden when there are no rails — the heatmap is empty so the
+        # Hidden when there are no rails - the heatmap is empty so the
         # scale strip has nothing meaningful to display.
         self._scale_overlay.setVisible(bool(self._rails))
         self._position_scale_overlay()
@@ -573,7 +559,7 @@ class _UiBuildMixin:
         )
         plot_layout.addWidget(self.probe_label_widget)
 
-        # Editor-mode overlay buttons — live children of the GL viewer,
+        # Editor-mode overlay buttons - live children of the GL viewer,
         # pinned top-left (the scale strip owns bottom-left). The editor
         # toggle is always visible; the resolve button only shows while
         # there are unsolved editor edits. _position_editor_overlays
@@ -585,7 +571,11 @@ class _UiBuildMixin:
         plot_widget.setLayout(plot_layout)
         outer.addWidget(plot_widget, 1)
 
-        # Right-hand panel — overlaid on the GL viewer's right edge
+        # What-If panel - right of the plot; shown / hidden by the What-If
+        # button beside Resolve (or W), viewer mode only.
+        self._build_whatif_panel(outer)
+
+        # Right-hand panel - overlaid on the GL viewer's right edge
         # rather than added to the outer layout. Floating it as a child
         # widget (same pattern as ``_scale_overlay``) keeps the viewport's
         # pixel size and pan / zoom centre invariant when the panel
@@ -603,13 +593,6 @@ class _UiBuildMixin:
             "PdnViewer init: pre-tabs done (%.2fs)",
             time.monotonic() - self._init_t0,
         )
-        # Setup tab — populated from the metadata bundle that ships with the
-        # solve pickle. Built once at construction time; doesn't react to
-        # heatmap selection changes.
-        _t = time.monotonic()
-        self.tabs.addTab(self._build_setup_tab(), "Setup")
-        self._init_log.info("PdnViewer init: Setup tab (%.2fs)", time.monotonic() - _t)
-
         _t = time.monotonic()
         self._topology_populated = False
         self._topology_tab_index = self.tabs.addTab(
@@ -617,12 +600,19 @@ class _UiBuildMixin:
         )
         self._init_log.info("PdnViewer init: Topology tab (%.2fs)", time.monotonic() - _t)
 
-        # Nodes tab — sortable, filterable table of every directive node's
+        # Properties tab - the editable base properties plus the read-only report of
+        # the metadata bundle that ships with the solve pickle. Built once at
+        # construction; refreshed on each new result.
+        _t = time.monotonic()
+        self.tabs.addTab(self._build_properties_tab(), "Properties")
+        self._init_log.info("PdnViewer init: Properties tab (%.2fs)", time.monotonic() - _t)
+
+        # Nodes tab - sortable, filterable table of every directive node's
         # voltage / drop / current density / power density. The empty
         # table structure is built up-front (cheap); the actual row
         # population (one QTableWidgetItem per node × N columns + a voltage
         # interpolator per (layer, net)) is deferred to the first time the
-        # user navigates to this tab — see :meth:`_on_tabs_current_changed`.
+        # user navigates to this tab - see :meth:`_on_tabs_current_changed`.
         # Without this, opening a viewer on a board with thousands of nodes
         # blocks the GUI thread for several seconds.
         _t = time.monotonic()
@@ -630,12 +620,12 @@ class _UiBuildMixin:
         self._nodes_tab_index = self.tabs.addTab(self._build_nodes_tab(), "Nodes")
         self._init_log.info("PdnViewer init: Nodes tab (%.2fs)", time.monotonic() - _t)
 
-        # Fixes — where extra copper would help each load most. Ranking the
+        # Fixes - where extra copper would help each load most. Ranking the
         # loads samples every pin, so it's populated on first open.
         self._fixes_populated = False
         self._fixes_tab_index = self.tabs.addTab(self._build_fixes_tab(), "Fixes")
 
-        # Vias tab — sortable, filterable table of every via's worst-segment
+        # Vias tab - sortable, filterable table of every via's worst-segment
         # current + power dissipation. Same lazy-populate treatment as the
         # Nodes tab; on a 7 000-via board the populate step alone took
         # 35 seconds of blocked GUI thread. The empty structure plus a
@@ -646,7 +636,7 @@ class _UiBuildMixin:
         self._vias_tab_index = self.tabs.addTab(self._build_vias_tab(), "Vias")
         self._init_log.info("PdnViewer init: Vias tab (%.2fs)", time.monotonic() - _t)
 
-        # Bridges — every part that joins two nets, and what FYPA did with
+        # Bridges - every part that joins two nets, and what FYPA did with
         # it. Cheap to build (the candidate scan already ran during the
         # solve), but populated lazily like its neighbours for consistency.
         _t = time.monotonic()
@@ -657,11 +647,11 @@ class _UiBuildMixin:
         self._init_log.info("PdnViewer init: Bridges tab (%.2fs)",
                             time.monotonic() - _t)
 
-        # Capacitors tab — decoupling-cap loop-inductance analysis. Same
+        # Capacitors tab - decoupling-cap loop-inductance analysis. Same
         # lazy-populate treatment; unlike Nodes/Vias there's no deferred
         # warning-count init either, because the row build includes a
         # per-net copper-shape union (seconds on a big board) that we don't
-        # want to pay invisibly at startup — the ⚠ badge appears after the
+        # want to pay invisibly at startup - the ⚠ badge appears after the
         # first tab open.
         _t = time.monotonic()
         self._caps_table_populated = False
@@ -670,7 +660,7 @@ class _UiBuildMixin:
         self._init_log.info("PdnViewer init: Capacitors tab (%.2fs)",
                             time.monotonic() - _t)
 
-        # Impedance tab — per-rail Z(f) against a target mask, built on the
+        # Impedance tab - per-rail Z(f) against a target mask, built on the
         # loop inductances the Capacitors tab extracts. Same lazy populate:
         # the plot needs those rows.
         _t = time.monotonic()
@@ -680,7 +670,7 @@ class _UiBuildMixin:
         self._init_log.info("PdnViewer init: Impedance tab (%.2fs)",
                             time.monotonic() - _t)
 
-        # Messages tab — sortable, filterable view of every log record
+        # Messages tab - sortable, filterable view of every log record
         # captured since the process started (see fypa.log_buffer). Lets
         # the user audit loader / solver / editor warnings without
         # opening fypa.log directly.
@@ -691,14 +681,14 @@ class _UiBuildMixin:
         self._init_log.info("PdnViewer init: Messages tab (%.2fs)",
                             time.monotonic() - _t)
 
-        # Settings tab — tunable physics + meshing + display knobs and a
+        # Settings tab - tunable physics + meshing + display knobs and a
         # Re-run button. Changes apply on the next solve (Re-run opens a
         # fresh viewer with the new solution).
         _t = time.monotonic()
         self.tabs.addTab(self._build_settings_tab(), "Settings")
         self._init_log.info("PdnViewer init: Settings tab (%.2fs)", time.monotonic() - _t)
 
-        # Help tab — static reference for hotkeys + mouse controls. Built
+        # Help tab - static reference for hotkeys + mouse controls. Built
         # once at construction; never updates.
         _t = time.monotonic()
         self.tabs.addTab(self._build_help_tab(), "Help")
@@ -710,7 +700,7 @@ class _UiBuildMixin:
 
         # Lazy-populate the Nodes/Vias tables on first activation. Done
         # this way (rather than on construction) so opening a viewer on a
-        # large board is instant — the user lands on the Heatmap tab and
+        # large board is instant - the user lands on the Heatmap tab and
         # only pays for the row builds if they actually navigate to the
         # table tabs.
         self.tabs.currentChanged.connect(self._on_tabs_current_changed)
@@ -722,7 +712,6 @@ class _UiBuildMixin:
         # A mode pick turns the Fixes tab's value map off before re-rendering.
         self.mode_combo.currentTextChanged.connect(self._clear_roi_value_map)
         self.mode_combo.currentTextChanged.connect(self._render_with_busy_popup)
-        self.rail_only_box.toggled.connect(self._render_with_busy_popup)
         self.src_ref_box.toggled.connect(self._render_with_busy_popup)
         self.via_span_box.toggled.connect(
             lambda _checked: self._refresh_overlay_geometry(
@@ -740,7 +729,7 @@ class _UiBuildMixin:
         self.heatmap_vias_box.toggled.connect(self._render_with_busy_popup)
         self.show_arrows_box.toggled.connect(self._on_arrows_toggled)
         # Keep the View-menu item labels in step whenever one of their
-        # backing checkboxes flips — whether from the menu action, a
+        # backing checkboxes flips - whether from the menu action, a
         # keyboard hotkey, or a restored project setting.
         for _box in (self.view_3d_box, self.heatmap_vias_box,
                      self.colour_stubs_box, self.show_mesh_box):

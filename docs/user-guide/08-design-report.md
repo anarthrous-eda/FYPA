@@ -9,7 +9,7 @@ revision with the next.
 ## 8.1 Generating one
 
 1. Solve the design (see [the viewer tour](05-viewer-tour.md)).
-2. Choose **File ▸ Export ▸ Report…** (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd>).
+2. Choose **Reports ▸ Generate Report…** (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd>).
 3. Pick the format, content and limits (below), then **Generate…** and
    choose where to save it.
 
@@ -25,13 +25,13 @@ the `.fypa` project file for next time.
 | **PDF**  | Formal records: design reviews, archiving, sending to customers. A4 pages with page numbers, and table headers repeated across page breaks. |
 
 Tick **Also save the numbers as JSON** to write `<name>.json` next to the
-report — the same results as data, for comparing two revisions or checking
+report - the same results as data, for comparing two revisions or checking
 them in a script.
 
 ## 8.2 How the report reads
 
-**1 · Executive summary.** A banner states the outcome plainly — *1 of 5
-rails failed*, *All 5 rails passed*, and so on — and says what drove it.
+**1 · Executive summary.** A banner states the outcome plainly - *1 of 5
+rails failed*, *All 5 rails passed*, and so on - and says what drove it.
 Below it, one row per rail: nominal voltage, load current, lowest load
 voltage, worst drop, minimum margin, maximum via current, peak current
 density, impedance against target, and status. The cell that caused a
@@ -70,10 +70,10 @@ report ends with a sign-off block.
 | ✖ **FAIL** | A result is outside its limit. |
 | ▲ **WARN** | Within limits but worth a look (small margin, flagged capacitor, annotation warning). |
 | ✔ **PASS** | Checked against a limit and within it. |
-| – **UNCHECKED** | Computed, but there was **no limit** to check it against. |
+| - **UNCHECKED** | Computed, but there was **no limit** to check it against. |
 
 UNCHECKED matters: a sink with no `PDN_MIN_V` still gets its voltage
-calculated, but nothing says whether that voltage is good enough — so the
+calculated, but nothing says whether that voltage is good enough - so the
 report shows it grey, never green. Status is always a symbol and a word, so
 a black-and-white printout still reads.
 
@@ -99,7 +99,7 @@ Impedance tab.
 ### How the numbers are defined
 
 - **Voltage at a load** is the load's lowest supply pin minus its highest
-  return pin — the worst differential voltage the part can see.
+  return pin - the worst differential voltage the part can see.
 - **Drop** is the rail's setpoint (its source voltage or regulator output)
   minus that voltage, so it includes the return path. The report shows how
   much of the drop is in the return.
@@ -130,7 +130,7 @@ python FYPA.py report out.pkl report.pdf --revision B --author "A. Engineer"
 | `--json` | Also write the numbers to `report.json` |
 | `--detail failing\|all\|summary` | How much of each rail to print |
 | `--via-limit A`, `--margin-warn-pct`, `--drop-budget-pct`, `--j-limit` | The limits from 8.4 |
-| `--fail-on fail\|warn` | Exit with status 1 on a failure (or a warning) — for CI |
+| `--fail-on fail\|warn` | Exit with status 1 on a failure (or a warning) - for CI |
 
 The command-line report leaves out the decoupling analysis, which needs the
-viewer's capacitor identification; use **File ▸ Export ▸ Report…** for that.
+viewer's capacitor identification; use **Reports ▸ Generate Report…** for that.

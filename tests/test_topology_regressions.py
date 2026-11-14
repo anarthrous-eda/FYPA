@@ -98,7 +98,7 @@ def test_regression_project_b_j1_d1_direct_vdd():
                 x_lo, x_hi = min(seg.x1, seg.x2), max(seg.x1, seg.x2)
                 if x_lo <= j1_stub + 1 and x_hi >= d1_stub - 1:
                     row_at_j1 = True
-    assert row_at_j1, "expected horizontal J1–D1 segment at J1 row"
+    assert row_at_j1, "expected horizontal J1-D1 segment at J1 row"
 
     symbol_edges = {round(j1.x, 1), round(j1.x + j1.width, 1),
                     round(u3.x, 1), round(u3.x + u3.width, 1)}
@@ -537,7 +537,7 @@ def test_regression_gnd_taps_dotted_corners_not():
     trunk_x = round(tap_195["vertices"][-1]["x"], 1)
     assert (trunk_x, 195.0) in junctions
 
-    # Where a trunk meets the rail end is a 90° corner — no dot,
+    # Where a trunk meets the rail end is a 90° corner - no dot,
     # except at the GND symbol anchor (rail + trunk + symbol stub).
     gnd_anchor = (round(report["canvas"]["gnd_symbol_x"], 1), rail_y)
     for w in report["wires"]:

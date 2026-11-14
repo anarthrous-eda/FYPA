@@ -901,7 +901,7 @@ class _MarqueeMixin:
 
     def _refresh_editor_selection(self) -> None:
         """Push the selected component's world-space bounding box to the
-        GL viewer for its yellow selection box — the component-level twin
+        GL viewer for its yellow selection box - the component-level twin
         of the source / sink marker's selection box. Cleared when nothing,
         or a non-component, is selected. Called every render so it stays
         in sync without scattered set / clear calls."""

@@ -8,7 +8,7 @@ the process lifetime).
 The direct test guards the CSC→CSR handling: passing a CSC matrix straight to
 PyPardisoSolver takes its transposed-solve path and returns the WRONG answer, so
 we must feed CSR (as `spsolve` does). A residual-only end-to-end test wouldn't
-catch that — `_solve_robust` would silently fall back to SuperLU — so we check
+catch that - `_solve_robust` would silently fall back to SuperLU - so we check
 the function directly against a known solution, plus an end-to-end regulator
 solve for integration coverage.
 """

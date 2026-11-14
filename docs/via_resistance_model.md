@@ -13,7 +13,7 @@ document point at the relevant ranges.
 
 ## Where vias fit into the FEM
 
-The FEM is per-(physical-layer, net) — every enabled copper layer is
+The FEM is per-(physical-layer, net) - every enabled copper layer is
 triangulated as an independent 2-D Laplace problem. Vias and PTH pads are
 the only objects that couple voltages between layers. For each via, FYPA
 inserts a chain of small `Resistor` elements (one per layer-to-layer
@@ -36,13 +36,13 @@ Why it matters (a 0.3 mm via into a 10 mm plane, against the analytical
 
 | Contact model | 0.6 mm mesh (default) | 0.3 mm | 0.1 mm |
 |---|---|---|---|
-| Point at the via centre (before) | +78.5 % | +80.8 % | +84.3 % — diverges |
+| Point at the via centre (before) | +78.5 % | +80.8 % | +84.3 % - diverges |
 | Drill-circle patch, no grading | −4.1 % | −2.5 % | +0.3 % |
 | Drill-circle patch + grading (now) | −0.02 % | | |
 
 A point contact is a log singularity: its "spreading resistance" depends on
 the mesh, grows without bound as the mesh is refined, and added about
-0.26 mΩ per via end per 1 oz layer — about 40 % on a typical through via.
+0.26 mΩ per via end per 1 oz layer - about 40 % on a typical through via.
 
 A via that sits inside a terminal pad (via-in-pad) joins that pad's
 equipotential group rather than carving its own patch out of it: pads are
@@ -63,11 +63,11 @@ R_wall = ρ_cu(T) * L_hop / A_annulus
 A_annulus = π * ((d/2)² − ((d − 2t)/2)²)
 ```
 
-(the cross-section of the plated barrel — drill diameter minus the
+(the cross-section of the plated barrel - drill diameter minus the
 unplated centre void).
 
 If the via has an IPC-4761 fill **with a conductive material** (copper
-paste, silver epoxy, electroplated-copper fill, etc. — see
+paste, silver epoxy, electroplated-copper fill, etc. - see
 [Conductive-fill model](#conductive-fill-model)), a second rod of fill
 material is added in parallel:
 
@@ -91,7 +91,7 @@ A = π * (d/2)²
 ```
 
 This branch keeps the formula valid for tiny micro-vias whose plating
-effectively fills the hole. (There is no separate fill term in this case —
+effectively fills the hole. (There is no separate fill term in this case -
 the void no longer exists.) See `_barrel_segment_resistance_ohm` in
 [fypa/altium/loader.py](../fypa/altium/loader.py).
 
@@ -105,7 +105,7 @@ FYPA reads the IPC-4761 protection record on every via and classifies the
 fill as **conductive** or **non-conductive** before solving:
 
 * A via must have one of the IPC-4761 *FILLING* protection types
-  (V, VIa, VIb, VII — enum values 9, 10, 11, 12; value 5 is also accepted as
+  (V, VIa, VIb, VII - enum values 9, 10, 11, 12; value 5 is also accepted as
   a synonym for the V *filling* type, for resilience against `altium_monkey`
   enum reorderings). Tenting, plugging, and capping are not fills and leave
   the barrel cross-section unchanged.
@@ -115,7 +115,7 @@ fill as **conductive** or **non-conductive** before solving:
   *silver*, *Ag*. A leading "non-conductive" prefix disqualifies the row
   even if it contains "copper" downstream.
 * A filled via whose material is empty or unrecognised is treated as
-  **non-conductive** (the epoxy default). This is conservative — it leaves
+  **non-conductive** (the epoxy default). This is conservative - it leaves
   the resistance unchanged rather than silently shunting current down an
   invisible fill rod.
 
@@ -127,7 +127,7 @@ user-tunable bulk resistivity:
 | Conductive fill resistivity      | 5×10⁻³ Ω·mm | 5×10⁻⁴ Ω·cm = 500 µΩ·cm (~300× copper)    |
 
 The default approximates a typical silver-loaded thermosetting epoxy.
-Pure electroplated copper-fill closure ≈ copper itself (1.68 µΩ·cm) —
+Pure electroplated copper-fill closure ≈ copper itself (1.68 µΩ·cm) -
 drop the setting to ~2×10⁻⁵ Ω·mm in that case.
 
 The classifier and per-hop helper live in
@@ -145,7 +145,7 @@ For a 0.3 mm drill, 1 mm hop, 25 µm plating:
 | Copper-paste fill (~8×10⁻⁵ Ω·mm) | ~0.4 mΩ                 |
 | Pure copper fill (1.7×10⁻⁵ Ω·mm) | ~0.13 mΩ                |
 
-The silver-epoxy result is barely measurable — the fill is ~300× more
+The silver-epoxy result is barely measurable - the fill is ~300× more
 resistive than the copper wall, so almost all current still flows in the
 plating. Conductive fills only meaningfully change `R_hop` when their
 resistivity is within an order of magnitude of copper.
@@ -154,38 +154,38 @@ resistivity is within an order of magnitude of copper.
 
 | Input                            | Where it comes from                                                          | User-editable?                                              |
 |----------------------------------|------------------------------------------------------------------------------|-------------------------------------------------------------|
-| `d` — drill diameter             | Altium `RawVia.hole_diameter_mm` / `RawPad.hole_mm`                          | No (set in Altium PCB)                                      |
-| `L_hop` — hop length             | Distance between layer **centres** in the Altium stackup                     | No directly, but follows from stackup edits in the viewer   |
-| `t` — plating thickness          | Settings tab → *Via plating* per via type (see [Plating by via type](#plating-by-via-type)) | **Yes**                                      |
-| `ρ_cu(T)` — copper resistivity   | Derived from `ρ₂₀`, `α`, `T`: `ρ(T) = ρ₂₀ * (1 + α*(T − 20))`               | **Yes** — via the three fields below                        |
-| `ρ₂₀` — resistivity at 20 °C     | Settings tab → *Copper resistivity (at 20 °C)* (default 1.68 µΩ·cm)          | **Yes**                                                     |
-| `α` — temperature coefficient    | Settings tab → *Copper temperature coefficient α* (default 0.00393 /°C)      | **Yes**                                                     |
-| `T` — board temperature          | Settings tab → *Board temperature* (default 20 °C)                           | **Yes**                                                     |
+| `d` - drill diameter             | Altium `RawVia.hole_diameter_mm` / `RawPad.hole_mm`                          | No (set in Altium PCB)                                      |
+| `L_hop` - hop length             | Distance between layer **centres** in the Altium stackup                     | No directly, but follows from stackup edits in the viewer   |
+| `t` - plating thickness          | Settings tab → *Via plating* per via type (see [Plating by via type](#plating-by-via-type)) | **Yes**                                      |
+| `ρ_cu(T)` - copper resistivity   | Derived from `ρ₂₀`, `α`, `T`: `ρ(T) = ρ₂₀ * (1 + α*(T − 20))`               | **Yes** - via the three fields below                        |
+| `ρ₂₀` - resistivity at 20 °C     | Settings tab → *Copper resistivity (at 20 °C)* (default 1.68 µΩ·cm)          | **Yes**                                                     |
+| `α` - temperature coefficient    | Settings tab → *Copper temperature coefficient α* (default 0.00393 /°C)      | **Yes**                                                     |
+| `T` - board temperature          | Settings tab → *Board temperature* (default 20 °C)                           | **Yes**                                                     |
 | Fallback `R` (per hop)           | Settings tab → *Fallback via resistance* (default 1.0 mΩ)                    | **Yes**                                                     |
 | IPC-4761 fill type               | Altium via record (`ipc4761_via_type`)                                       | No (set in Altium PCB)                                      |
 | Fill material string             | Altium via-structure FILLING row (`material`)                                | No (set in Altium PCB)                                      |
-| `ρ_fill` — conductive fill ρ    | Settings tab → *Conductive fill resistivity* (default 5×10⁻³ Ω·mm)           | **Yes**                                                     |
+| `ρ_fill` - conductive fill ρ    | Settings tab → *Conductive fill resistivity* (default 5×10⁻³ Ω·mm)           | **Yes**                                                     |
 
 Concretely, all of these answers are "yes":
 
-* **Distance between the layers it hops** — yes. `L_hop` is the absolute
+* **Distance between the layers it hops** - yes. `L_hop` is the absolute
   z-difference between the *centres* of the two copper layers, computed
   from the Altium stackup's `copper_thickness_mm` and
   `dielectric_thickness_mm`. See `_layer_z_centers_mm` in
   [fypa/altium/loader.py:638-669](../fypa/altium/loader.py#L638-L669).
   Edits to the stackup made through the viewer feed straight into this.
 
-* **Diameter of the via** — yes. The drill diameter (`hole_diameter_mm`)
+* **Diameter of the via** - yes. The drill diameter (`hole_diameter_mm`)
   is taken directly from the Altium via record. (Note: this is the hole,
-  not the via pad diameter — the pad diameter does not enter the model.)
+  not the via pad diameter - the pad diameter does not enter the model.)
 
-* **Copper resistivity setup** — yes. The 20 °C reference resistivity is
+* **Copper resistivity setup** - yes. The 20 °C reference resistivity is
   a user setting, as is the temperature coefficient α used to slide it.
 
-* **Temperature setting** — yes. Changing *Board temperature* recomputes
+* **Temperature setting** - yes. Changing *Board temperature* recomputes
   `ρ_cu(T)` for every hop on the next solve. The same temperature-
   corrected `ρ` is also applied to the plane-sheet conductivity on every
-  copper layer — so via resistance and copper sheet resistance stay
+  copper layer - so via resistance and copper sheet resistance stay
   consistent.
 
 The Settings-tab field schema and the matching parameter docs live in
@@ -221,7 +221,7 @@ via's nominal net **actually has copper covering the via's (x, y)**. This
 matters in two ways:
 
 * Inner layers that the net does *not* reach (the via just passes by) are
-  skipped — they get no drill patch, so no phantom current can flow
+  skipped - they get no drill patch, so no phantom current can flow
   there.
 * If fewer than two layers in the via's `layer_start..layer_end` span
   actually carry net copper at the via, the via is dropped from the FEM
@@ -237,12 +237,12 @@ explicit blind/buried span). See `_via_through_holes` at
 
 ## Does Altium report whether the via is filled?
 
-Yes — Altium stores quite a lot of "what is in / around the hole"
+Yes - Altium stores quite a lot of "what is in / around the hole"
 information in its PCB records, including:
 
 * **IPC-4761 fill type** (`ipc4761_via_type`) and per-feature
   side/material rows: `Ia`, `Ib`, `IIa/IIb`, `IIIa/IIIb`,
-  `IVa/IVb`, `Va/Vb`, `VI`, `VII` — i.e. tented, plugged, filled-and-
+  `IVa/IVb`, `Va/Vb`, `VI`, `VII` - i.e. tented, plugged, filled-and-
   plated-over, etc. Parsed by
   [altium_monkey/.../altium_record_pcb__via.py](../altium_monkey/src/py/altium_monkey/altium_record_pcb__via.py).
 * **Soldermask tenting** flags (`is_tent_top`, `is_tent_bottom`).
@@ -254,7 +254,7 @@ information in its PCB records, including:
 IPC-4761 type and the FILLING row's material string onto `RawVia` so the
 resistance model can apply the conductive-fill shunt described above.
 Tenting, backdrill, and the remaining IPC-4761 feature rows (covering,
-plugging, capping) are still discarded — they do not change the conducting
+plugging, capping) are still discarded - they do not change the conducting
 cross-section of the barrel, so leaving them out of the model is exact for
 DC resistance.
 
@@ -272,7 +272,7 @@ which vias' `R_hop` includes the parallel-shunt model.
 ### Behaviour by IPC-4761 type
 
 * A **non-conductive fill** (the most common IPC-4761 case for via-in-pad
-  designs — epoxy, polymer, "Non-Conductive Paste") changes the barrel
+  designs - epoxy, polymer, "Non-Conductive Paste") changes the barrel
   cross-section by adding a non-conducting rod inside the void. DC
   resistance is unchanged. FYPA's classifier rejects the row and falls
   back to the wall-only formula, which matches reality.
@@ -312,7 +312,7 @@ segment is logged at DEBUG level (`Skipped …` lines from
 `_coupling_networks`) and shown with `R_hop = fallback` in the per-via
 segment records that the viewer's Vias tab consumes.
 
-This degrades gracefully — the solve still produces a result; vias whose
+This degrades gracefully - the solve still produces a result; vias whose
 geometry is unknown just look like 1 mΩ short hops rather than failing
 the solve outright.
 
@@ -323,25 +323,25 @@ the solve outright.
    represented.
 2. **Hollow plated cylinders.** Every via and PTH pad is a plated
    cylinder whose wall thickness is set per via type (through / PTH,
-   blind, buried, microvia — see [Plating by via type](#plating-by-via-type)),
+   blind, buried, microvia - see [Plating by via type](#plating-by-via-type)),
    and its `layer_start..layer_end` span is respected when chaining hops.
    A stacked microvia column is a chain of separate microvias.
 3. **One plating per via type.** Each type has one wall thickness for the
    whole board; a design whose plating varies within a type (heavy-copper
    outer vias next to standard ones of the same type) is not represented.
 4. **Limited fill / cap / tent modelling.** Capping, tenting, and
-   plugging are ignored — they do not change the conducting cross-section
+   plugging are ignored - they do not change the conducting cross-section
    of the barrel and are exact for DC. **Conductive fills** (copper /
    silver paste, electroplated-copper closure) *are* modelled as a
    parallel rod inside the plated wall (see
    [Conductive-fill model](#conductive-fill-model)). Non-conductive
-   epoxies and polymer fills are deliberately ignored — they do not
+   epoxies and polymer fills are deliberately ignored - they do not
    change DC R.
 5. **No backdrill awareness.** A backdrilled stub is still treated as
    electrically connected up to `layer_end`. Use with care on backdrilled
    designs.
 6. **Layer centres, not surfaces.** `L_hop` is measured between the
-   *centres* of two copper layers — i.e. it includes half of each copper
+   *centres* of two copper layers - i.e. it includes half of each copper
    thickness plus the full dielectric between them. This is the physically
    reasonable choice (current must traverse the bulk of each copper layer
    on its way to the in-plane mesh), but a thicker copper layer therefore
@@ -349,14 +349,14 @@ the solve outright.
    same dielectric below it.
 7. **Pad diameter is irrelevant.** Only the drill is used for the barrel
    cross-section. The annular ring on each layer does not enter
-   `R_hop` — it is captured separately as part of that layer's 2-D copper
+   `R_hop` - it is captured separately as part of that layer's 2-D copper
    mesh.
 8. **Fallback is not an error.** A via that hits the fallback path
    produces a plausible 1 mΩ-per-hop result; the solve does not crash.
    The DEBUG log is the only signal that the physical model was bypassed
-   — check it if a board has unexpectedly low IR drop.
+   - check it if a board has unexpectedly low IR drop.
 
-## Editable settings — quick reference
+## Editable settings - quick reference
 
 All of the following live on the viewer's **Settings** tab. Editing them
 does not trigger an immediate re-solve; press **Re-run Solver** to apply.

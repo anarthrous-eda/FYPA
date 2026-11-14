@@ -1,10 +1,10 @@
 # 6. Exporting to ParaView
 
-FYPA's built-in viewer is tuned for fast design iteration — switch
+FYPA's built-in viewer is tuned for fast design iteration - switch
 layers, tweak a sink current, resolve, look at the heatmap. For deeper
-post-processing — 3-D layer-stackup views, slicing through the voltage
+post-processing - 3-D layer-stackup views, slicing through the voltage
 field at arbitrary planes, publication-quality figures, comparison
-against measured data — FYPA can export the solve to **ParaView**.
+against measured data - FYPA can export the solve to **ParaView**.
 
 [ParaView](https://www.paraview.org/) is a free, open-source 3-D
 scientific-visualisation tool from Kitware, widely used in
@@ -31,7 +31,7 @@ built-in viewer cannot give you the angle, slice or comparison you need.
 FYPA writes one **VTU file** (VTK Unstructured Grid, XML format) per
 enabled copper layer. Each file contains:
 
-- The FEM triangle mesh for that layer — vertices and triangle
+- The FEM triangle mesh for that layer - vertices and triangle
   connectivity.
 - The solved **voltage** at every vertex (in volts).
 
@@ -43,7 +43,7 @@ need.
 > Only the voltage field is exported. Current density and power
 > density are derivable from voltage and the per-layer copper
 > thickness inside ParaView via the Gradient and Calculator filters
-> — or recompute them yourself from the raw mesh and voltage data.
+> - or recompute them yourself from the raw mesh and voltage data.
 
 ## 6.3 Exporting from the viewer
 
@@ -53,7 +53,7 @@ opens (defaulting to the project's cache folder); pick a destination
 and one `.vtu` file is written per copper layer. The status bar shows
 how many files were written.
 
-This is the quickest path — no extra `solve` step, no pickle handling,
+This is the quickest path - no extra `solve` step, no pickle handling,
 and any in-editor changes you have already resolved are reflected in
 the export. Use it whenever you just want to look at the current solve
 in ParaView.
@@ -65,7 +65,7 @@ in ParaView.
 ## 6.4 Exporting from the command line
 
 For batch / scripted workflows there is also a CLI export that reads a
-**solve pickle** — the `.pkl` file produced by the `solve` subcommand.
+**solve pickle** - the `.pkl` file produced by the `solve` subcommand.
 The lean pickle used by the GUI cache will not work for this path: it
 omits the per-triangle topology that the CLI exporter expects.
 
@@ -88,14 +88,14 @@ python FYPA.py paraview solution.pkl paraview_out\
 
 Arguments:
 
-- `solution.pkl` — the pickle produced by `solve`.
-- `paraview_out\` — the output directory. Created if missing. One
+- `solution.pkl` - the pickle produced by `solve`.
+- `paraview_out\` - the output directory. Created if missing. One
   `.vtu` file is written per copper layer.
 
 The command prints `ParaView export complete: paraview_out` on
 success.
 
-> The prebuilt Windows executable bundles the export the same way —
+> The prebuilt Windows executable bundles the export the same way -
 > from a terminal in the folder containing `FYPA.exe`, run
 > `FYPA.exe paraview solution.pkl paraview_out\`.
 
@@ -117,7 +117,7 @@ success.
    layout view then shows all layers stacked.
 
 The standard ParaView tutorials (Filters, Slice, Contour, Calculator)
-all apply unchanged — FYPA's output is plain VTK from that point on.
+all apply unchanged - FYPA's output is plain VTK from that point on.
 
 ## 6.6 Troubleshooting
 
@@ -126,7 +126,7 @@ all apply unchanged — FYPA's output is plain VTK from that point on.
 | `` `paraview` needs the `lxml` package `` (CLI) or **ParaView export unavailable** dialog (viewer) | The `lxml` Python package is not installed.                                   | `pip install lxml` into the FYPA venv. (The prebuilt `.exe` bundles it already.) |
 | `` `paraview` can't export from a lean-format pickle ``                            | The pickle was produced by the GUI cache rather than the `solve` subcommand. Only affects the CLI path; the **File > Export > ParaView…** menu reads the in-memory solution and is not subject to this. | Re-run `python FYPA.py solve YourBoard.PrjPcb solution.pkl` to produce a full pickle, or use the viewer's menu instead. |
 | ParaView opens a file but the **Coloring** dropdown has no `voltage` option        | The `.vtu` loaded as geometry only (e.g. the **Apply** button was not clicked). | Click **Apply** in the Properties panel after opening the file.              |
-| All layers are drawn in the same plane in 3-D view                                  | VTU files have no inherent z-offset — each is a 2-D mesh.                     | Use the **Transform** filter on each source to translate it to its physical z-position. |
+| All layers are drawn in the same plane in 3-D view                                  | VTU files have no inherent z-offset - each is a 2-D mesh.                     | Use the **Transform** filter on each source to translate it to its physical z-position. |
 
 ## Next steps
 

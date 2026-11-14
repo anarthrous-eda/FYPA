@@ -51,7 +51,7 @@ class TopologyNode:
     jump_row: JumpRowDict | None = None
     sections: list[NodeSection] = field(default_factory=list)
     # Rows layout: a one-line chip (designator · value) instead of a full
-    # symbol — used for 0 Ω auto-bridges.
+    # symbol - used for 0 Ω auto-bridges.
     compact: bool = False
     value_str: str = ""
 

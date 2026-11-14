@@ -137,7 +137,7 @@ def scan_power_ports(schdoc_paths, progress: Callable[[str], None] | None = None
                      ) -> dict[str, set[int]]:
     """Power-port symbols on every SchDoc via altium_monkey: name → styles.
 
-    Best effort — an unreadable sheet is logged and skipped."""
+    Best effort - an unreadable sheet is logged and skipped."""
     out: dict[str, set[int]] = {}
     try:
         from altium_monkey import AltiumSchDoc
@@ -228,7 +228,7 @@ def build_design_view(
 
 
 def _record_existing_setup(view: DesignView, loaded, nets, editor_directives) -> None:
-    """What is already set up — so suggestions don't duplicate it, and so
+    """What is already set up - so suggestions don't duplicate it, and so
     existing sources / regulators count as drivers of their rails."""
     from fypa.altium.annotations import (
         RegulatorSpec,

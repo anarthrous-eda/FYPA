@@ -183,7 +183,7 @@ def test_activate_mesh_failure_layer_enables_and_selects():
 
 
 def test_package_mesh_failure_returns_stub_for_cli_gui_path(monkeypatch):
-    """Mesh-failure packaging must keep Settings in metadata for Setup tab."""
+    """Mesh-failure packaging must keep Settings in metadata for Properties tab."""
     from types import SimpleNamespace
 
     from fypa.altium.loader import SolveSettings, package_mesh_failure
@@ -272,7 +272,7 @@ def test_package_mesh_failure_returns_stub_for_cli_gui_path(monkeypatch):
 
 def test_solve_loaded_reports_failure_without_building_a_stub(monkeypatch):
     """Headless ``solve`` writes nothing on a mesh failure, so it must not pay
-    for package_mesh_failure — which re-runs build_problem over the whole board
+    for package_mesh_failure - which re-runs build_problem over the whole board
     and builds a stub solution for every copper layer."""
     from types import SimpleNamespace
 
@@ -431,7 +431,7 @@ def test_schedule_cli_altium_import_skips_unset_mesh(monkeypatch, tmp_path):
 def test_do_solve_fails_when_meshing_failed_with_no_records(
         monkeypatch, tmp_path):
     """build_mesh_failure_records returns [] when _build_stub_record rejects
-    the piece — the same degenerate sliver that makes Triangle abort. Reading
+    the piece - the same degenerate sliver that makes Triangle abort. Reading
     that as success pickled an empty stub and exited 0."""
     from types import SimpleNamespace
 
@@ -548,7 +548,7 @@ def test_no_cli_flag_uses_the_persisted_preference(monkeypatch):
 
 def test_cli_mesh_overrides_resync_the_settings_widgets(monkeypatch, tmp_path):
     """The Settings tab was populated during __init__, so an override applied
-    afterwards left the widget showing the old value — a dirty red outline on
+    afterwards left the widget showing the old value - a dirty red outline on
     a launcher the user never touched, and Apply would undo the override."""
     from types import SimpleNamespace
 

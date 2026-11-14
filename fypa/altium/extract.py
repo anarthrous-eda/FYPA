@@ -15,7 +15,7 @@ Conventions
   the sentinel returned by altium_monkey on tracks that are not part of a
   polygon outline.
 - A primitive owned by a polygon pour inherits that polygon's net when it
-  carries none of its own — Altium keeps the net on the `Polygons6` record for
+  carries none of its own - Altium keeps the net on the `Polygons6` record for
   poured copper (regions for a solid fill, tracks/arcs for a hatched one).
   Tracks and arcs also record whether that parent pour is hatched, because a
   hatched pour's perimeter is real copper rather than boundary artwork.
@@ -93,8 +93,8 @@ class RawTrack:
     component_index: int      # -1 if not part of a component
     is_keepout: bool
     # True when the parent polygon pour is *not* solid-filled (any hatch
-    # style, or "outlines only"). A hatched pour's copper IS its tracks —
-    # including the perimeter — so `is_polygon_outline` must not exclude
+    # style, or "outlines only"). A hatched pour's copper IS its tracks -
+    # including the perimeter - so `is_polygon_outline` must not exclude
     # them the way it does for a solid pour. See `_polygon_lookup`.
     polygon_hatched: bool = False
 
@@ -110,7 +110,7 @@ class RawArc:
     net_index: int
     is_keepout: bool
     # An arc that forms part of a *solid* polygon-pour outline (flags1 & 0x02)
-    # is boundary artwork, not copper — the poured copper is the region/fill.
+    # is boundary artwork, not copper - the poured copper is the region/fill.
     # Like is_polygon_outline tracks, these must be excluded from the copper
     # geometry or a rounded-corner pour gains a spurious band of copper along
     # its outline. A hatched pour is the exception: see `polygon_hatched`.
@@ -128,7 +128,7 @@ class RawVia:
     layer_end: int            # Altium layer_id of via bottom layer
     net_index: int
     # IPC-4761 fill / protection metadata. ``ipc4761_via_type`` is the raw
-    # Altium enum integer (0 = NONE / unprotected, 9–12 = fill variants).
+    # Altium enum integer (0 = NONE / unprotected, 9-12 = fill variants).
     # ``fill_material`` is the free-text material string from the FILLING
     # IPC-4761 feature row (e.g. "", "Copper", "Silver Epoxy", "Polymer");
     # empty when no fill row exists. FYPA's via-barrel resistance model
@@ -140,7 +140,7 @@ class RawVia:
 
 @dataclass(frozen=True, slots=True)
 class RawHole:
-    """A non-plated through hole (NPTH) — a mechanical / mounting hole with
+    """A non-plated through hole (NPTH) - a mechanical / mounting hole with
     no copper barrel, no net and no layer span. It carries no electrical
     role, so it is never meshed; it is surfaced purely so the viewer can
     draw it as the "Non Plated TH" Board Features overlay. ``diameter_mm``
@@ -170,7 +170,7 @@ class RawPad:
     # short axis), length = ``slot_length_mm`` (long axis), rotated by
     # ``slot_rotation_deg`` *relative to* the pad's own ``rotation_deg``.
     # A slot is only "real" when ``hole_shape == 2`` and the slot is longer
-    # than the bore (``slot_length_mm > hole_mm``) — see :func:`is_slot_hole`.
+    # than the bore (``slot_length_mm > hole_mm``) - see :func:`is_slot_hole`.
     hole_shape: int = 0
     slot_length_mm: float = 0.0
     slot_rotation_deg: float = 0.0
@@ -192,10 +192,10 @@ def slot_hole_geometry(pad) -> tuple[str, float, float, float] | None:
     ``rotation_deg`` is absolute (the slot rotation composed with the pad's
     own rotation). ``kind`` is:
 
-    * ``"rect"`` — Altium ``hole_shape == 1``: a rectangular / square-cornered
+    * ``"rect"`` - Altium ``hole_shape == 1``: a rectangular / square-cornered
       hole (a rectangular slot when ``slot_size`` adds length, a plain square
       when it does not).
-    * ``"obround"`` — Altium ``hole_shape == 2``: a rounded-end slot. Only
+    * ``"obround"`` - Altium ``hole_shape == 2``: a rounded-end slot. Only
       counts when genuinely longer than the bore; a zero-length obround is
       just a round hole, so this returns ``None`` (matching altium_monkey).
 
@@ -279,7 +279,7 @@ class RawShapeBasedRegion:
     """A filled copper region from Altium's ``ShapeBasedRegions6`` stream.
 
     Same role as :class:`RawRegion` but the outline can contain circular-arc
-    segments — these come from manually-placed "Place > Region" objects with
+    segments - these come from manually-placed "Place > Region" objects with
     arc edges and from polygon pours rendered with thermal-relief spokes /
     rounded clearances. Holes remain simple polylines (Altium stores them as
     double-precision vertices with no arc info).
@@ -390,8 +390,8 @@ class RawPcbComponent:
     # Altium ``ComponentKind`` as stored on the PCB record (COMPONENTKIND /
     # VERSION2 / VERSION3). Same encoding as
     # :attr:`RawSchComponent.component_kind`. Captured on both sides because a
-    # Net Tie can exist only on the PCB — added by ECO, or a board opened
-    # without its schematics — and the auto-bridge has to see it there too.
+    # Net Tie can exist only on the PCB - added by ECO, or a board opened
+    # without its schematics - and the auto-bridge has to see it there too.
     component_kind: int = 0
     # Hierarchy path of UniqueIDs from root sheet symbol(s) down to the
     # schematic component (PCB ``SOURCEUNIQUEID``, e.g. ``\XOZXOXGE\QJGQOCLZ``).
@@ -434,7 +434,7 @@ class RawStackupLayer:
     # Relative permittivity (Dk) and loss tangent (Df) of the dielectric
     # BELOW this copper layer (the same gap ``dielectric_thickness_mm``
     # measures). A multi-ply gap (core + prepreg) is thickness-weighted.
-    # ``None`` when the .PcbDoc doesn't store a value — consumers fall back
+    # ``None`` when the .PcbDoc doesn't store a value - consumers fall back
     # to their own default. Not used by the DC solve (conductance is
     # Dk-independent); carried for the PDN inductance/impedance analyses.
     dielectric_dk: float | None = None
@@ -554,7 +554,7 @@ class ExtractedProject:
     # Lazily filled single-sheet netlists, keyed like :attr:`schdoc_paths`.
     # Empty until a child-sheet local-net fallback needs a sheet, and dropped
     # by ``__getstate__`` so it never reaches the design-info pickle (see
-    # there) — it is a rebuildable cache, not project data.
+    # there) - it is a rebuildable cache, not project data.
     sheet_netlists: dict[str, Any] = field(default_factory=dict)
     # altium_monkey ≥ 2026.7 maps netlist ``source_sheets`` to physical page
     # ids (``physical:0:logical:0:main.SchDoc:child:…``). This tuple maps each
@@ -614,7 +614,7 @@ class ExtractedProject:
 
     def __setstate__(self, state: dict) -> None:
         # frozen=True blocks setattr, and slots=True means there is no
-        # __dict__ to update — set each slot directly.
+        # __dict__ to update - set each slot directly.
         for name, value in state.items():
             object.__setattr__(self, name, value)
 
@@ -633,7 +633,7 @@ class ExtractedProject:
             seen.add(cur)
             cur = by_id[cur].next_layer_id
         # A well-formed chain terminates with next_layer_id == 0. A single-layer
-        # flex board is a legitimate 1-long chain (Top → 0) — trust it. Only
+        # flex board is a legitimate 1-long chain (Top → 0) - trust it. Only
         # fall back to the artwork scan when the linkage is actually broken:
         # empty (id=1 absent), a dangling next_layer_id, or a cycle (cur != 0).
         if not ordered or cur != 0:
@@ -684,7 +684,7 @@ def _polygon_net_of(poly) -> int | None:
     missing ``NET`` field as ``int(record.get('NET', 0))``, so a net-less
     polygon is indistinguishable from one genuinely on net index 0. Inheriting
     that would silently attach pour copper to whichever net happens to sit at
-    index 0 — 27 of Corvette's 134 polygons carry no ``NET`` field at all, and
+    index 0 - 27 of Corvette's 134 polygons carry no ``NET`` field at all, and
     were landing on ``PWR_I2C.SDA``. The raw record is consulted so "absent"
     stays absent; a polygon built programmatically has no raw record, and there
     ``poly.net`` is all we have.
@@ -703,7 +703,7 @@ def _polygon_is_hatched(poly) -> bool:
     """True when a pour is not solid-filled, so its copper is tracks and arcs.
 
     Note the two distinct "None"s: a *missing* ``hatch_style`` attribute
-    (Python ``None``) means solid — that is altium_monkey's own default —
+    (Python ``None``) means solid - that is altium_monkey's own default -
     whereas the *string* ``'None'`` is Altium's "outlines only" fill, whose
     copper really is just the perimeter tracks.
     """
@@ -715,7 +715,7 @@ def _polygon_lookup(pcb):
     """Return ``(net_of, hatched_of)`` resolvers mapping a primitive's
     ``polygon_index`` to facts about its parent ``Polygons6`` record.
 
-    Both are resolved once per polygon up front — a board has a hundred or so
+    Both are resolved once per polygon up front - a board has a hundred or so
     pours but tens of thousands of primitives asking about them.
     """
     polygons = list(getattr(pcb, "polygons", None) or ())
@@ -752,7 +752,7 @@ def _extract_tracks(pcb, ox_mm: float, oy_mm: float) -> tuple[RawTrack, ...]:
 
     A hatched (or outlines-only) pour renders its copper as tracks, and Altium
     leaves those tracks' own ``net_index`` unlinked (0xFFFF) because the net
-    assignment lives on the parent ``Polygons6`` record — the same split
+    assignment lives on the parent ``Polygons6`` record - the same split
     :func:`_extract_regions` already handles for solid pours. Without this the
     hatch lines arrive as NO_NET and drop out of the per-net pipeline.
     """
@@ -780,7 +780,7 @@ def _extract_tracks(pcb, ox_mm: float, oy_mm: float) -> tuple[RawTrack, ...]:
 
 def _extract_arcs(pcb, ox_mm: float, oy_mm: float) -> tuple[RawArc, ...]:
     """Extract ``Arcs6`` records, inheriting the parent polygon's net exactly
-    as :func:`_extract_tracks` does — a hatched pour's rounded corners and
+    as :func:`_extract_tracks` does - a hatched pour's rounded corners and
     curved perimeter arrive as polygon-owned arcs with no net of their own."""
     poly_net, poly_hatched = _polygon_lookup(pcb)
     out: list[RawArc] = []
@@ -865,7 +865,7 @@ def _extract_vias(pcb, ox_mm: float, oy_mm: float) -> tuple[RawVia, ...]:
 
 # IPC-4761 FILLING feature type enum value (PcbViaStructureFeatureType.FILLING).
 # Repeated here so fypa.altium.extract has no hard import dependency on
-# altium_monkey enums — the value is part of the on-disk Altium format.
+# altium_monkey enums - the value is part of the on-disk Altium format.
 _IPC4761_FEATURE_FILLING: int = 3
 
 
@@ -875,8 +875,8 @@ def _via_fill_material(v) -> str:
     Altium stores per-feature material strings on the via_structure side-table
     record (see ``altium_pcb_via_structure.AltiumPcbViaStructure``). A via
     with no structure attached (most commonly because it has IPC-4761 type
-    NONE) returns the empty string. The material text is free-form — Altium
-    surfaces it verbatim in the Via dialog — and downstream code is expected
+    NONE) returns the empty string. The material text is free-form - Altium
+    surfaces it verbatim in the Via dialog - and downstream code is expected
     to do case-insensitive substring matching ("copper", "silver", etc.) to
     classify it.
     """
@@ -930,7 +930,7 @@ def _pad_layer_variations(
         except Exception:
             continue
         l_cr = int(corner_list[lid - 1]) if lid - 1 < len(corner_list) else corner_pct
-        # Skip layers identical to the top-level (uniform) values — the
+        # Skip layers identical to the top-level (uniform) values - the
         # geometry builder falls back to those, so storing them is redundant.
         if (l_shape == shape and l_cr == corner_pct
                 and abs(l_w - width_mm) < 1e-6 and abs(l_h - height_mm) < 1e-6):
@@ -963,7 +963,7 @@ def _extract_pads(pcb, ox_mm: float, oy_mm: float) -> tuple[RawPad, ...]:
             is_plated=bool(getattr(p, 'is_plated', True)),
             hole_shape=int(getattr(p, 'hole_shape', 0) or 0),
             # slot_size is in Altium internal units (10000/mil), like region
-            # vertices — reuse region_raw_to_mm for the conversion.
+            # vertices - reuse region_raw_to_mm for the conversion.
             slot_length_mm=region_raw_to_mm(
                 float(getattr(p, 'slot_size', 0) or 0)),
             slot_rotation_deg=float(getattr(p, 'slot_rotation', 0.0) or 0.0),
@@ -1018,7 +1018,7 @@ def _split_holes(hole_vertices, hole_count: int,
             for ring in rings
         )
 
-    # Closure split disagreed with hole_count — fall back to equal division if
+    # Closure split disagreed with hole_count - fall back to equal division if
     # it divides evenly, else dump as a single ring. Either way, warn: the
     # flat-list shape is not what we expected and the result may be wrong.
     total = len(hole_vertices)
@@ -1043,7 +1043,7 @@ def _extract_regions(pcb, ox_mm: float, oy_mm: float) -> tuple[RawRegion, ...]:
     Altium's Regions6 records (the filled output of polygon pours) often have
     ``net_index = None`` because the net assignment lives on the parent
     Polygons6 record. Without this inheritance, the largest copper pours on
-    the board come out unassigned — wreaking havoc on per-net-aware FEM.
+    the board come out unassigned - wreaking havoc on per-net-aware FEM.
     """
     _polygon_net, _ = _polygon_lookup(pcb)
 
@@ -1073,7 +1073,7 @@ def _shape_based_vertex(v, ox_mm: float, oy_mm: float) -> RawRegionVertex:
     """Convert one ``PcbExtendedVertex`` to a :class:`RawRegionVertex`.
 
     Extended vertices store position and (optional) arc-centre + radius in
-    Altium's internal integer unit (10000 per mil) — same scaling as
+    Altium's internal integer unit (10000 per mil) - same scaling as
     Regions6 vertices. Arc start/end angles are in degrees.
     """
     is_arc = bool(getattr(v, "is_round", False)) and float(getattr(v, "radius", 0) or 0) > 0
@@ -1111,7 +1111,7 @@ def _extract_shape_based_regions(pcb, ox_mm: float, oy_mm: float,
     Polygon pours are rendered into this stream by Altium (with thermal
     reliefs / clearance gaps already applied), and manually-placed regions
     with arc edges land here too. Net inheritance from the parent polygon
-    follows the same rule as :func:`_extract_regions` — if the region
+    follows the same rule as :func:`_extract_regions` - if the region
     record itself has no net but is owned by a polygon, take the polygon's
     net so polygon-pour copper isn't silently dropped from the per-net
     pipeline.
@@ -1142,7 +1142,7 @@ def _extract_shape_based_regions(pcb, ox_mm: float, oy_mm: float,
             raw_net = _polygon_net(poly_idx)
         # A standalone unassigned SBR (0xFFFF with no parent polygon, or a
         # polygon that is itself unassigned) must become NO_NET, not the phantom
-        # net 65535 — otherwise the editor-mode path treats 0xFFFF as a real
+        # net 65535 - otherwise the editor-mode path treats 0xFFFF as a real
         # active net. Regions6 already maps its sentinel to None; do the same.
         if raw_net == 0xFFFF:
             raw_net = None
@@ -1208,7 +1208,7 @@ def _extract_pcb_components(pcb, ox_mm: float, oy_mm: float,
     out: list[RawPcbComponent] = []
     for c in pcb.components:
         # One corrupt/hand-edited component record (bad mil string, malformed
-        # rotation, etc.) must not abort the entire project load — warn and
+        # rotation, etc.) must not abort the entire project load - warn and
         # skip it. A dropped component only loses its designator overlay /
         # any PDN annotations it carried; the copper geometry is unaffected.
         try:
@@ -1397,7 +1397,7 @@ def _extract_stackup(pcb) -> tuple[RawStackupLayer, ...]:
     # (1..16, parsed from the ``PLANE<n>NETNAME`` board records), NOT by the
     # stackup ``layer_id``. Looking it up directly with a stackup layer_id
     # (Top=1, Mid=2..31, Bottom=32) mis-flags signal layers whose id happens
-    # to collide with a plane index as planes — see issue #4. Map each plane
+    # to collide with a plane index as planes - see issue #4. Map each plane
     # index into the legacy internal-plane layer-id space (Internal Plane 1 ==
     # PcbLayer.INTERNAL_PLANE_1 == 39) so it only matches a stackup entry that
     # is genuinely an internal plane.
@@ -1433,7 +1433,7 @@ def _extract_stackup(pcb) -> tuple[RawStackupLayer, ...]:
         ))
 
     # Internal-plane layers (legacy ids 39-54) are never present in the legacy
-    # ``LAYER1..32`` stackup above — they live only in the resolved physical
+    # ``LAYER1..32`` stackup above - they live only in the resolved physical
     # stack. When the board assigns planes to nets, splice them in so the
     # enabled-copper walk (which follows ``next_layer_id``, already pointing at
     # the plane ids) traverses them and downstream geometry can model them.
@@ -1669,7 +1669,7 @@ def _sheet_ignored_pins_by_component(
     SchDoc layout): ``pin.pin_parameters`` when the library attached them, and
     sheet ``all_objects`` parameters whose ``owner_index`` equals the pin's
     ``_record_index``. Component-owned parameters (owner → component record)
-    are ignored here — use ``PDN_IGNORE_PINS`` on the part when pin-level
+    are ignored here - use ``PDN_IGNORE_PINS`` on the part when pin-level
     ownership cannot be resolved.
     """
     ignored: list[set[str]] = [set() for _ in components]
@@ -1731,7 +1731,7 @@ def _extract_sch_component(
     """Extract one component's designator + parameters + pin list from its children.
 
     Returns None if the component has no AltiumSchDesignator child (rare; usually
-    means a non-instantiated symbol — safe to skip for PDN purposes).
+    means a non-instantiated symbol - safe to skip for PDN purposes).
 
     ``ignored_pins`` comes from the sheet-level batch in
     :func:`_extract_sch_components`; when omitted, pin-owned ignores are not
@@ -1831,7 +1831,7 @@ def _parameters_owned_by_index(schdoc, owner_index: int) -> dict[str, str]:
 
     altium_monkey attaches sheet-symbol parameters this way (OwnerIndex →
     sheet symbol ``index_in_sheet``). They are *not* placed on
-    ``symbol.children`` — that list only holds entries / name / filename.
+    ``symbol.children`` - that list only holds entries / name / filename.
     """
     parameters: dict[str, str] = {}
     for param in getattr(schdoc, "parameters", ()) or ():
@@ -1936,12 +1936,12 @@ def list_pcbdoc_paths(prjpcb_path: str | Path) -> list[Path]:
     Cheap: just opens the .PrjPcb to enumerate document paths; does not
     parse the PCB binary OR any SchDoc. Used by the GUI launcher / CLI to
     pick a board when the project contains more than one, and on the
-    cache-hit fast path before the solve cache lookup — so it must not
+    cache-hit fast path before the solve cache lookup - so it must not
     trigger AltiumDesign.from_prjpcb, which eagerly parses every SchDoc.
     """
     # AltiumPrjPcb is not exposed at altium_monkey's top level (its
     # __getattr__ lazy-loader only handles AltiumDesign / AltiumSchDoc /
-    # AltiumPcbDoc / etc.) — import from the submodule directly.
+    # AltiumPcbDoc / etc.) - import from the submodule directly.
     from altium_monkey.altium_prjpcb import AltiumPrjPcb
     prjpcb_path = Path(prjpcb_path)
     if not prjpcb_path.exists():
@@ -2240,8 +2240,8 @@ def _extract_pcb_fields(pcb, prjpcb_path: Path) -> dict[str, Any]:
 
     # Altium PCB editor displays coordinates relative to the user-defined
     # origin (Board6/ORIGINX,ORIGINY, stored in mils). Subtracting it here
-    # means every Pt2D — and therefore the viewer's cursor readout, the
-    # Nodes/Vias tables, and the saved metadata — matches what Altium shows.
+    # means every Pt2D - and therefore the viewer's cursor readout, the
+    # Nodes/Vias tables, and the saved metadata - matches what Altium shows.
     origin_x_mils = float(getattr(pcb.board, "origin_x", 0.0) or 0.0)
     origin_y_mils = float(getattr(pcb.board, "origin_y", 0.0) or 0.0)
     ox_mm = mils_to_mm(origin_x_mils)

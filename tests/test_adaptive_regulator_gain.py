@@ -119,7 +119,7 @@ def _multi_smps_loaded(gain: float = 0.2) -> SimpleNamespace:
 
 def test_adaptive_gain_undamped_when_regulators_are_independent():
     """Several regulators on a stiff rail are not coupled, so they must still
-    converge in one full step — damping them would cost real solve passes."""
+    converge in one full step - damping them would cost real solve passes."""
     loaded = _multi_smps_loaded()
     adaptive_info = _run_adaptive(loaded, lambda *a: 48.0)
 
@@ -134,7 +134,7 @@ def test_adaptive_gain_undamped_when_regulators_are_independent():
 
 def test_adaptive_gain_damps_after_residual_changes_sign():
     """Damping engages off an observed sign flip, and the tolerance it converges
-    at is the true residual — not the shorter damped step.
+    at is the true residual - not the shorter damped step.
 
     A pure droop model (Vin falling as gain rises) can never produce this: it
     makes the fixed-point Jacobian all-positive, so the iteration is monotone
@@ -181,7 +181,7 @@ def test_adaptive_gain_does_not_damp_a_monotone_droop_design():
         return 48.0 - 14.0 * total_gain
 
     # A blend this aggressive would crawl and blow the iteration cap if it were
-    # ever applied — reaching convergence proves it was not.
+    # ever applied - reaching convergence proves it was not.
     with patch("fypa.altium.loader._ADAPTIVE_GAIN_BLEND", 0.05):
         adaptive_info = _run_adaptive(loaded, _vin)
 
@@ -191,7 +191,7 @@ def test_adaptive_gain_does_not_damp_a_monotone_droop_design():
 
 def test_adaptive_gain_reports_gains_used_by_returned_solution():
     """On non-convergence the reported gain must match the gain the returned
-    solution was solved with — not the not-yet-applied next iterate."""
+    solution was solved with - not the not-yet-applied next iterate."""
     loaded = SimpleNamespace(
         extracted=SimpleNamespace(),
         annotations=AnnotationResult(directives=[_adaptive_smps_regulator()]),

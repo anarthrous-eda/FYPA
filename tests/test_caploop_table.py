@@ -1,6 +1,6 @@
 """Capacitors-tab Qt rendering: cell text, sort keys, toggles, filters.
 
-These exercise the parts of the tab that only fail once Qt is in the loop —
+These exercise the parts of the tab that only fail once Qt is in the loop -
 notably that ``QTableWidgetItem`` aliases ``Qt.EditRole`` onto
 ``Qt.DisplayRole``, so the conventional "set the sort key on EditRole"
 pattern silently replaces "Go ▶" with "0" and "0.5295" with
@@ -82,7 +82,7 @@ def viewer(qapp):
 
 
 def _cell(v, col):
-    """Cell of row 0 by column *label* — indices shift whenever a column is
+    """Cell of row 0 by column *label* - indices shift whenever a column is
     inserted, and a stale index silently asserts against the wrong column."""
     if isinstance(col, str):
         col = av._CAPS_COL[col]
@@ -94,7 +94,7 @@ def test_action_and_numeric_cells_keep_their_display_text(viewer):
     assert _cell(viewer, viewer._CAPS_ACTION_COL).text() == "Go ▶"
     # L1 is formatted to 4 significant figures, not a raw float repr.
     l1 = _cell(viewer, "L1 (nH)").text()
-    assert l1 not in ("", "—")
+    assert l1 not in ("", "-")
     assert len(l1) <= 6 and float(l1) > 0.0
 
 
@@ -120,8 +120,8 @@ def test_row_shows_the_resolved_target_and_design_voltage(viewer):
     assert _cell(viewer, "Target").text() == "U5"        # largest-current SINK
     assert _cell(viewer, "Vias").text() == "2+2"       # escape vias per side
     assert "↔" in _cell(viewer, "Cavity").text()        # cavity pair
-    assert _cell(viewer, "L2 (nH)").text() == "—"        # L2 unsolved
-    assert _cell(viewer, "L3 (nH)").text() == "—"        # L3 unsolved
+    assert _cell(viewer, "L2 (nH)").text() == "-"        # L2 unsolved
+    assert _cell(viewer, "L3 (nH)").text() == "-"        # L3 unsolved
 
 
 # --- part parasitics (impedance model) ----------------------------------------
@@ -184,9 +184,9 @@ def test_unrecognised_package_shows_no_defaults(qapp):
                 _comp("C1"), footprint="FP-TCJD-MFG"),)))
     v._caps_tab_index = v.tabs.addTab(v._build_capacitors_tab(), "Capacitors")
     v._populate_caps_table()
-    assert _cell(v, "Pkg").text() == "—"
-    assert _cell(v, "ESL (nH)").text() == "—"
-    assert _cell(v, "ESR (mΩ)").text() == "—"
+    assert _cell(v, "Pkg").text() == "-"
+    assert _cell(v, "ESL (nH)").text() == "-"
+    assert _cell(v, "ESR (mΩ)").text() == "-"
     assert "not a recognised SMD chip package" in _cell(v, "Pkg").toolTip()
 
 
@@ -324,7 +324,7 @@ def test_skipped_tier2_explains_itself_in_the_tooltip(viewer):
                                reason="no cavity path to target (split plane)")
     viewer._on_cap_tier23_done({cap.designator: t2}, [],
                                {cap.designator: None})
-    assert _cell(viewer, "L2 (nH)").text() == "—"
+    assert _cell(viewer, "L2 (nH)").text() == "-"
     assert "split plane" in _cell(viewer, "L2 (nH)").toolTip()
     # The L3 cell has no total *because* of that, and says so.
     assert "split plane" in _cell(viewer, "L3 (nH)").toolTip()
@@ -374,7 +374,7 @@ def test_overlay_toggle_triggers_a_render(viewer):
 # --- responsiveness -----------------------------------------------------------
 #
 # The first row build unions every (layer, net) copper shape and walks every
-# component — 7.5 s on a 16-layer board. Doing it on the GUI thread made the
+# component - 7.5 s on a 16-layer board. Doing it on the GUI thread made the
 # tab look hung. These pin the fixes: the cold build goes to a worker, and the
 # warm paths never redo it.
 
@@ -393,7 +393,7 @@ def test_cold_row_build_runs_off_the_gui_thread(qapp):
     done: list[bool] = []
 
     v._ensure_cap_rows_async(lambda: done.append(True))
-    # Returned immediately, with the build in flight — the GUI stays live.
+    # Returned immediately, with the build in flight - the GUI stays live.
     assert v._caps_rows_pending
     assert not done
 
@@ -413,7 +413,7 @@ def test_warm_rows_skip_the_worker_entirely(viewer):
 def test_a_request_arriving_mid_build_is_queued_not_dropped(qapp,
                                                             monkeypatch):
     """The Capacitors tab, the overlay and the Impedance tab all want the same
-    rows. Whoever asks while a build is running must still get its callback —
+    rows. Whoever asks while a build is running must still get its callback -
     dropping it leaves that view blank forever."""
     v = _Viewer()
     v._caps_tab_index = v.tabs.addTab(v._build_capacitors_tab(), "Capacitors")
@@ -447,8 +447,8 @@ def test_copper_shapes_are_built_once_and_shared(viewer):
 
 
 def test_override_toggle_reuses_the_identification(viewer):
-    """An exclude or a retarget changes no geometry, so identification — the
-    slow half — must not run again."""
+    """An exclude or a retarget changes no geometry, so identification - the
+    slow half - must not run again."""
     identity = viewer._caps_identity_cache
     assert identity is not None
     viewer._set_cap_override("C1", include=False)
@@ -458,7 +458,7 @@ def test_override_toggle_reuses_the_identification(viewer):
 
 def test_a_settings_change_does_rebuild_the_identification(viewer):
     """Settings feed escape clustering and cavity selection, so they must
-    invalidate it — the cache is keyed on them."""
+    invalidate it - the cache is keyed on them."""
     from fypa.caploop.constants import CapLoopSettings
 
     assert viewer._caps_identity_cache is not None
@@ -495,7 +495,7 @@ def test_capacitance_column_shows_the_parsed_value(qapp):
 
 def test_an_unparseable_value_says_the_cap_is_out_of_the_model(viewer):
     """The fixture part carries no parameters at all."""
-    assert _cell(viewer, "C (µF)").text() == "—"
+    assert _cell(viewer, "C (µF)").text() == "-"
     tip = _cell(viewer, "C (µF)").toolTip()
     assert "excluded from the impedance model" in tip
     assert "Double-click to set it" in tip
@@ -542,11 +542,11 @@ def test_package_override_relabels_the_cell_and_moves_the_parasitics(viewer):
 
 def test_package_override_admits_an_unrecognised_footprint(qapp):
     """A footprint the parser can't classify is the case the picker exists
-    for — one choice, and the part is in the impedance model."""
+    for - one choice, and the part is in the impedance model."""
     v = _viewer_with(qapp, footprint="FP-TCJD-MFG",
                      parameters={"Value": "10uF"})
-    assert _cell(v, "Pkg").text() == "—"
-    assert _cell(v, "ESL (nH)").text() == "—"
+    assert _cell(v, "Pkg").text() == "-"
+    assert _cell(v, "ESL (nH)").text() == "-"
     v._set_cap_override("C1", package="1210")
     lib = v._caploop_package_library()
     assert _cell(v, "Pkg").text() == "1210 ✎"
@@ -556,7 +556,7 @@ def test_package_override_admits_an_unrecognised_footprint(qapp):
 
 def test_package_override_stores_the_canonical_key_not_the_label(viewer):
     """Stored metric-labelled, the choice would break the next time the
-    convention changed — and would match no library entry."""
+    convention changed - and would match no library entry."""
     viewer._set_cap_override("C1", package="0805")
     viewer._set_footprint_convention("metric")
     viewer._invalidate_caps_cache()
@@ -572,7 +572,7 @@ def test_clearing_the_package_override_falls_back_to_detection(viewer):
 
 
 def test_a_package_override_reuses_the_identification(viewer):
-    """It selects a library entry and a label — no geometry changes, so the
+    """It selects a library entry and a label - no geometry changes, so the
     expensive identification must not run again."""
     identity = viewer._caps_identity_cache
     assert identity is not None
@@ -601,7 +601,7 @@ def test_capacitance_input_units(text, farads):
 @pytest.mark.parametrize("text", ["", "banana", "0,1", "100 farads", "1n2"])
 def test_capacitance_input_rejects_what_it_cannot_read(text):
     """A comma decimal is rejected, not translated: on a comma-grouping
-    locale 1,234 is a thousand — reading it as 1.234 is a silent 1000x error."""
+    locale 1,234 is a thousand - reading it as 1.234 is a silent 1000x error."""
     with pytest.raises(ValueError):
         av._parse_capacitance_f(text)
 
@@ -685,7 +685,7 @@ def test_double_clicking_the_package_cell_pins_the_case_size(viewer,
 
 def test_picking_the_detected_case_size_stores_no_override(viewer,
                                                            monkeypatch):
-    """C1's footprint already reads as 0402 — pinning it would leave a record
+    """C1's footprint already reads as 0402 - pinning it would leave a record
     that a later footprint rename could silently contradict."""
     _stub_menu(monkeypatch, "0402")
     _dbl(viewer, "Pkg")

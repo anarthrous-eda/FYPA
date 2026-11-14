@@ -52,7 +52,7 @@ def test_face_index_centroids_and_values():
     pts, vals = FaceSpatialIndex._extract_points_and_values(ls)
     # Independent reference: centroid = mean of each triangle's 3 vertices.
     # (The old face.centroid walk needed the half-edge graph, which
-    # from_triangle_soup doesn't build — so the flat-array path is also more
+    # from_triangle_soup doesn't build - so the flat-array path is also more
     # robust, not just faster.)
     vpts = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=float)
     tris = np.array([[0, 1, 2], [0, 2, 3]])

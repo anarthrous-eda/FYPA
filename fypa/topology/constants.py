@@ -112,7 +112,7 @@ LABEL_FALLBACK_OFFSETS = (10.0, 14.0, 18.0, 22.0, 26.0)
 LABEL_SHORT_VERTICAL_THRESHOLD = 24.0
 LABEL_VERTICAL_ANCHOR_FRACTIONS = (0.3, 0.45, 0.55, 0.7)
 
-# (terminal_name, side, sort_key) — left = input, right = output
+# (terminal_name, side, sort_key) - left = input, right = output
 ROLE_PORTS: dict[str, list[tuple[str, str, int]]] = {
     "SOURCE": [("N", "left", 1), ("P", "right", 0)],
     "SINK": [("N", "left", 1), ("P", "left", 0)],

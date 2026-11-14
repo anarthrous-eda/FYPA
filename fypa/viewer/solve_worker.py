@@ -31,8 +31,8 @@ class _SolveProgressUpdater(QObject):
       | Meshing + solving (21 (layer, net) slabs, 67 networks)…  (12s)
       | Currently: Constructing the Laplace operators
 
-    A second, independent counter — the total wall-clock time since the
-    load started — ticks in the dialog's bottom-left corner ("Elapsed:
+    A second, independent counter - the total wall-clock time since the
+    load started - ticks in the dialog's bottom-left corner ("Elapsed:
     Ns"). Unlike the per-stage counter it never resets between stages.
 
     Both counters tick once a second via a QTimer parented to ``self``
@@ -40,7 +40,7 @@ class _SolveProgressUpdater(QObject):
     worker's cleanup path to stop ticking before the dialog closes.
 
     The dialog starts as an indeterminate barber-pole (the caller builds
-    it with range 0–0) and is upgraded to a determinate bar as soon as
+    it with range 0-0) and is upgraded to a determinate bar as soon as
     the worker emits ``total_stages``. Each subsequent ``stage_changed``
     ticks the bar one step; if the worker overruns its forecast, the
     maximum is extended so progress is always monotonic.
@@ -56,8 +56,8 @@ class _SolveProgressUpdater(QObject):
         # Determinate-bar bookkeeping: a stage counter that ticks once per
         # stage_changed and a maximum that's set when the worker emits
         # total_stages. Until then the dialog stays in barber-pole mode
-        # (range 0–0); the swap to a determinate bar happens the moment
-        # we hear back from the worker — typically within milliseconds of
+        # (range 0-0); the swap to a determinate bar happens the moment
+        # we hear back from the worker - typically within milliseconds of
         # start().
         self._stage_count: int = 0
         self._stage_max: int = 0
@@ -69,7 +69,7 @@ class _SolveProgressUpdater(QObject):
         self._timer = QTimer(self)
         self._timer.setInterval(1000)
         self._timer.timeout.connect(self._render)
-        # Tick immediately — the total counter must run even before the
+        # Tick immediately - the total counter must run even before the
         # first stage_changed arrives (e.g. during the solve-cache probe).
         self._timer.start()
         worker.stage_changed.connect(self._on_stage)
@@ -87,7 +87,7 @@ class _SolveProgressUpdater(QObject):
         self._stage_max = n
         # setRange(0, N) flips QProgressDialog out of barber-pole mode
         # into a determinate bar. Reflect whatever stages have already
-        # fired (rare in practice — total_stages is emitted at the top
+        # fired (rare in practice - total_stages is emitted at the top
         # of run(), before any stage_changed) so the bar starts at the
         # right position rather than snapping back to 0.
         self._dlg.setRange(0, n)
@@ -100,7 +100,7 @@ class _SolveProgressUpdater(QObject):
 
         The dialog is fixed-size by the time this runs, and the Cancel
         button's vertical position depends only on the dialog height
-        (unchanged by the width-only stretch in the caller) — so a
+        (unchanged by the width-only stretch in the caller) - so a
         one-shot move() holds for the dialog's whole lifetime.
         """
         label = QLabel(dlg)
@@ -144,7 +144,7 @@ class _SolveProgressUpdater(QObject):
     def _render(self) -> None:
         if self._dlg is None:
             return
-        # Total wall-clock counter (bottom-left) — updated every tick,
+        # Total wall-clock counter (bottom-left) - updated every tick,
         # independent of which stage is currently running.
         total = int(time.monotonic() - self._total_start)
         self._elapsed_label.setText(f"Elapsed: {total}s")
@@ -217,7 +217,7 @@ class _CapLoopWorker(QThread):
 
     Each cavity is a single-layer FEM domain and every solve after the first
     reuses the cached mesh + Laplacian, so this is far cheaper than a board
-    solve — but a rail with dozens of caps still runs for seconds, which is
+    solve - but a rail with dozens of caps still runs for seconds, which is
     long enough to freeze the GUI. Kept in-process (unlike
     :mod:`fypa.solve_subprocess`) because the cavity problems are small and
     the extracted design is already in this process's memory.
@@ -283,7 +283,7 @@ class _CapLoopWorker(QThread):
                     cap, mounted_inductance(cap, self._settings),
                     res.spread_h, ic, self._settings)
             self.finished_ok.emit(results, matrices, tier3)
-        except Exception as e:  # noqa: BLE001 — surfaced to the user
+        except Exception as e:  # noqa: BLE001 - surfaced to the user
             if self._cancel.is_set():
                 self.failed.emit("Cancelled.")
             else:
@@ -297,7 +297,7 @@ class _CapLoopWorker(QThread):
 class _SolveWorker(QThread):
     """Background worker that re-runs the FEM solve off the GUI thread.
 
-    The solve takes 10–60 s on typical boards; running it on the main
+    The solve takes 10-60 s on typical boards; running it on the main
     thread freezes the UI (Windows shows "Not Responding") and the
     Settings-tab status label can't update mid-solve. Punting it to a
     QThread lets the progress dialog spin and stage messages stream in
@@ -337,11 +337,15 @@ class _SolveWorker(QThread):
                   pdn_json: Path | None = None,
                   pdn_corner: str = "typ",
                   auto_series_max_ohm: float | None = None,
+                  write_solve_cache: bool = True,
                   parent=None) -> None:
         super().__init__(parent)
         self._prjpcb_path = prjpcb_path
+        # False for What-If solves: the solve cache holds ONE result per
+        # project, and it must stay the base design's.
+        self._write_solve_cache = bool(write_solve_cache)
         # A Tomachie power-tree file supplying PDN_* directives (File > Load
-        # Tomachie pdn.json…). Like the auto-bridge opt-out it acts while
+        # Custom… > Tomachie pdn.json…). Like the auto-bridge opt-out it acts while
         # annotations are parsed, so it reaches load_project.
         self._pdn_json = pdn_json
         self._pdn_corner = pdn_corner
@@ -357,13 +361,13 @@ class _SolveWorker(QThread):
             from fypa.altium.annotations import DEFAULT_AUTO_SERIES_MAX_OHM
             auto_series_max_ohm = DEFAULT_AUTO_SERIES_MAX_OHM
         self._auto_series_max_ohm = float(auto_series_max_ohm)
-        # ``{(designator, schdoc, channel_index): current_amperes}`` —
+        # ``{(designator, schdoc, channel_index): current_amperes}`` -
         # substituted into the parsed AnnotationResult before build_problem
         # so the FEM sees the new currents. ``channel_index`` is None for
         # the legacy unindexed SINK channel and an int for indexed channels
         # (PDN1_I / PDN2_I / …).
         self._sink_overrides = dict(sink_overrides or {})
-        # ``{layer_id: copper_thickness_mm}`` — substituted into the
+        # ``{layer_id: copper_thickness_mm}`` - substituted into the
         # ExtractedProject's stackup so both per-layer conductance and
         # via-barrel hop lengths reflect the new thicknesses.
         self._stackup_overrides = dict(stackup_overrides or {})
@@ -376,14 +380,14 @@ class _SolveWorker(QThread):
         self._use_design_cache = bool(use_design_cache)
         # True = try the FYPA SOLVE cache first; on hit, emit finished_ok
         # immediately with the cached (solution, metadata) and skip
-        # extract/mesh/solve entirely. The pickle.load can take 5–10 s for
+        # extract/mesh/solve entirely. The pickle.load can take 5-10 s for
         # large boards, so doing it on this worker thread (rather than the
         # main thread before starting the worker) keeps the progress
         # dialog responsive instead of freezing the UI.
         self._try_solve_cache_first = bool(try_solve_cache_first)
         # FYPA editor-mode directives (project-file sources / sinks). When
         # present they're converted to synthetic SourceSpec / SinkSpec and
-        # appended to the loaded AnnotationResult before build_problem —
+        # appended to the loaded AnnotationResult before build_problem -
         # and, like the override paths, they disable the solve cache (the
         # result diverges from the on-disk project).
         self._editor_directives = list(editor_directives or [])
@@ -395,7 +399,7 @@ class _SolveWorker(QThread):
         self._copper_names = list(copper_names or [])
         # In-memory LoadedProject handed in by the editor 'Resolve' path:
         # the pristine design info the viewer already holds. When set, the
-        # worker re-solves against it directly — no design-info cache read,
+        # worker re-solves against it directly - no design-info cache read,
         # no project-file stat, no re-extract. None for every other flow
         # (normal load / Re-run / clean), which load design info as before.
         self._loaded_project = loaded_project
@@ -404,11 +408,11 @@ class _SolveWorker(QThread):
         self._load_only = bool(load_only)
         self._adaptive_regulator_gain = bool(adaptive_regulator_gain)
         # Opt-in (FYPA_SOLVE_SUBPROCESS): run the heavy mesh+solve+package step
-        # in a child process so a cancel just kills the child — no QThread
+        # in a child process so a cancel just kills the child - no QThread
         # terminate() that could orphan the solver's module locks. Off by
         # default; the in-process path below is unchanged when disabled.
         from fypa.solve_subprocess import subprocess_solve_enabled
-        # Persisted in-app toggle OR the env-var override — either turns it on.
+        # Persisted in-app toggle OR the env-var override - either turns it on.
         self._use_subprocess = (
             load_solve_in_subprocess() or subprocess_solve_enabled()
         )
@@ -419,7 +423,7 @@ class _SolveWorker(QThread):
         # (build_solve_metadata / to_lean_solution / cache pickle). Those hold
         # the GIL continuously for 10+ s on large boards and only observe a
         # cancel at the NEXT stage boundary, so the GUI abort path must NOT
-        # terminate() while this is set — it would kill the thread mid-GIL and
+        # terminate() while this is set - it would kill the thread mid-GIL and
         # hang the whole app. It waits for the flag to clear instead.
         self._in_python_packaging = False
 
@@ -571,7 +575,7 @@ class _SolveWorker(QThread):
         which additionally records ``mesher_config`` and per-via segment
         resistances. That difference is deliberate, not drift: nothing was
         meshed on this path, so there is no mesher run or via segmentation to
-        record, and inventing values would misreport the Setup tab.
+        record, and inventing values would misreport the Properties tab.
         """
         from fypa.altium.loader import build_solve_metadata
 
@@ -631,10 +635,10 @@ class _SolveWorker(QThread):
         """Best-effort count of stage_changed emissions ``run()`` will fire,
         used to scale the QProgressDialog bar. Branches that depend on
         cache hit/miss (only known at runtime) are estimated by assuming
-        the miss path — i.e. the bar will read slightly under 100% on a
+        the miss path - i.e. the bar will read slightly under 100% on a
         cache hit, which is acceptable since hits finish in <5 s anyway.
         """
-        # "Checking solve cache…" — only when the fast-path is eligible.
+        # "Checking solve cache…" - only when the fast-path is eligible.
         fast_path_eligible = (self._try_solve_cache_first
                               and not self._load_only
                               and not self._stackup_overrides
@@ -673,7 +677,7 @@ class _SolveWorker(QThread):
         stages, 10+ s on large boards) unwinds the thread cooperatively. Those
         phases hold the GIL continuously; a ``terminate()`` fired there kills
         the thread while it owns the GIL, which never gets released and hangs
-        the whole app — the opposite of what the user asked for by cancelling.
+        the whole app - the opposite of what the user asked for by cancelling.
         Returning early from ``run`` avoids that: no ``finished_ok`` is emitted,
         so the GUI won't open a stale viewer either.
         """
@@ -712,11 +716,11 @@ class _SolveWorker(QThread):
             # Read by the per-net geometry cache in _emit_stub_and_finish.
             self._pcbdoc_resolved = pcbdoc_resolved
 
-            # Solve-cache fast path: pickle.load can take 5–10 s on large
+            # Solve-cache fast path: pickle.load can take 5-10 s on large
             # boards and blocks until the file is fully read, so doing it
             # here (off the GUI thread) keeps the progress dialog responsive.
             # On hit, finish immediately and skip extract/mesh/solve.
-            # Skipped when overrides are active — the cached solve was
+            # Skipped when overrides are active - the cached solve was
             # computed against the on-disk project and would be wrong.
             if (self._try_solve_cache_first
                     and not self._load_only
@@ -740,42 +744,42 @@ class _SolveWorker(QThread):
                         cached[1], self._adaptive_regulator_gain):
                     logging.getLogger(__name__).info(
                         "Solve cache entry was not solved with adaptive SMPS "
-                        "gain and this design has eligible regulators — "
+                        "gain and this design has eligible regulators - "
                         "re-solving.",
                     )
                     cached = None
                 if cached is not None:
                     logging.getLogger(__name__).info(
-                        "Solve cache hit for %s — skipping extract + solve.",
+                        "Solve cache hit for %s - skipping extract + solve.",
                         self._prjpcb_path.name,
                     )
                     self.stage_changed.emit(
-                        "Solve cache hit — opening viewer…"
+                        "Solve cache hit - opening viewer…"
                     )
                     # Solve-cache hit skips the extract entirely, so there's
-                    # no LoadedProject to hand on — a later resolve from this
+                    # no LoadedProject to hand on - a later resolve from this
                     # viewer falls back to the design-info cache.
                     self.finished_ok.emit(cached[0], cached[1], None)
                     return
 
-            # Whole-load stage timer — logs a breakdown just before the
+            # Whole-load stage timer - logs a breakdown just before the
             # viewer opens so a clean load self-reports where its time went.
             _timer = _StageTimer(logging.getLogger(__name__))
 
             # A resolve (editor directives present) always re-solves against
-            # the design info that's already loaded — it must never re-stat
+            # the design info that's already loaded - it must never re-stat
             # the Altium project files to revalidate it.
             _is_resolve = bool(self._editor_directives)
 
             loaded = None
             if self._loaded_project is not None:
-                # In-memory reuse — the editor 'Resolve' path hands us the
+                # In-memory reuse - the editor 'Resolve' path hands us the
                 # LoadedProject the viewer already holds. No cache read, no
                 # project-file stat, no re-extract: take the object as-is.
                 self.stage_changed.emit("Reusing loaded design info…")
                 loaded = self._loaded_project
             elif self._use_design_cache and pcbdoc_resolved is not None:
-                # No in-memory LoadedProject — e.g. the load hit the solve
+                # No in-memory LoadedProject - e.g. the load hit the solve
                 # cache, so nothing was extracted. Fall back to the
                 # design-info cache. On a resolve, reuse it as-is:
                 # current_fp=None skips the fingerprint compare and the
@@ -791,7 +795,7 @@ class _SolveWorker(QThread):
                     )
                     # Unpickling the cached LoadedProject ("reusing the
                     # design extract") runs many seconds on a big board.
-                    # Time it so the load breakdown reports the cost — it
+                    # Time it so the load breakdown reports the cost - it
                     # parallels the "Save design-info cache" stage.
                     with _timer.stage("Load design-info cache"):
                         design_fp = (
@@ -812,8 +816,8 @@ class _SolveWorker(QThread):
                     loaded = None
 
             # The auto-bridge opt-out takes effect while annotations are
-            # parsed — the merge it suppresses has already happened by the
-            # time anything here could veto it — so a LoadedProject built
+            # parsed - the merge it suppresses has already happened by the
+            # time anything here could veto it - so a LoadedProject built
             # with a different set cannot be patched up, only rebuilt. This
             # is what makes the Bridges tab's "Disable auto-bridge" button
             # take effect on the very next Resolve, as its hint promises.
@@ -834,9 +838,9 @@ class _SolveWorker(QThread):
                         "Tomachie pdn.json changed; reloading design info…")
                     loaded = None
             # Same for the low-value resistor auto-SERIES limit. ``None``
-            # means "not recorded" — a Gerber project (no Altium parameters to
+            # means "not recorded" - a Gerber project (no Altium parameters to
             # act on, and nothing load_project could reload it from) or a
-            # design-info cache written before the setting existed — and is
+            # design-info cache written before the setting existed - and is
             # left alone rather than forcing an Altium reload.
             _have_limit = (getattr(loaded, "auto_series_max_ohm_applied", None)
                            if loaded is not None else None)
@@ -873,8 +877,8 @@ class _SolveWorker(QThread):
                 #
                 # Skipped on a clean load (``use_design_cache`` False): a
                 # clean load won't read a design-info cache anyway, so
-                # writing one — ~5 s of pickling the ExtractedProject on a
-                # big board — is pure dead weight on the critical path. The
+                # writing one - ~5 s of pickling the ExtractedProject on a
+                # big board - is pure dead weight on the critical path. The
                 # first subsequent *non-clean* load repopulates it.
                 if self._use_design_cache and pcbdoc_resolved is not None:
                     # Pickling the whole LoadedProject runs 10+ s on a big
@@ -896,10 +900,10 @@ class _SolveWorker(QThread):
             else:
                 self.stage_changed.emit(
                     "Reusing loaded design info…" if _is_resolve
-                    else "Design-info cache hit — reusing extract."
+                    else "Design-info cache hit - reusing extract."
                 )
 
-            # The design info exactly as loaded — before any stackup / sink
+            # The design info exactly as loaded - before any stackup / sink
             # override or editor directive is applied. Emitted to the new
             # viewer so it can hand this same object straight back as the
             # in-memory source for the next resolve (see _loaded_project).
@@ -918,7 +922,7 @@ class _SolveWorker(QThread):
             # pristine in-memory LoadedProject the viewer retains (reused by
             # the next Resolve) is never touched.
             #
-            # This clone must run WHENEVER a mutating step will — the previous
+            # This clone must run WHENEVER a mutating step will - the previous
             # ``loaded is pristine_loaded`` gate skipped it after a stackup
             # override, but ``_apply_stackup_overrides`` returns a fresh
             # LoadedProject that still SHARES ``annotations`` with the pristine
@@ -937,7 +941,7 @@ class _SolveWorker(QThread):
                 if not has_adaptive_smps_regulators(loaded):
                     logging.getLogger(__name__).info(
                         "Adaptive SMPS gain requested but no regulator is "
-                        "eligible — treating as off (keeps the solve cache).",
+                        "eligible - treating as off (keeps the solve cache).",
                     )
                     self._adaptive_regulator_gain = False
 
@@ -990,7 +994,7 @@ class _SolveWorker(QThread):
                         "Editor directive not applied: %s", w,
                     )
 
-            # is_solveable check runs HERE — after editor directives + copper
+            # is_solveable check runs HERE - after editor directives + copper
             # names + overrides have been applied. A Gerber-sourced project
             # starts with zero schematic directives; an Altium project may also
             # rely entirely on editor-mode directives. Checking earlier would
@@ -1011,10 +1015,10 @@ class _SolveWorker(QThread):
                     _log.error("Project is not solveable (diagnostic failed: %s)", _exc)
 
                 # Recoverable case: the project has copper and the annotation
-                # parse is clean — the *only* missing piece is a SOURCE /
+                # parse is clean - the *only* missing piece is a SOURCE /
                 # REGULATOR directive (see LoadedProject.is_solveable). Rather
                 # than refuse to load, open the viewer in editor mode with a
-                # stub solution — exactly how a Gerber import opens — so the
+                # stub solution - exactly how a Gerber import opens - so the
                 # user can place a SOURCE marker by hand and then Resolve.
                 # Restricted to a plain initial load: overrides / editor
                 # directives mean the user explicitly asked for a re-solve, so
@@ -1034,18 +1038,18 @@ class _SolveWorker(QThread):
                 )
                 if recoverable_no_source:
                     _log.info(
-                        "No SOURCE/REGULATOR directive — opening in editor "
+                        "No SOURCE/REGULATOR directive - opening in editor "
                         "mode (stub solution) for manual setup."
                     )
                     self._emit_stub_and_finish(
                         loaded, pristine_loaded, _timer,
                         needs_directives=True,
-                        stage_message="No PDN settings found — opening design…",
+                        stage_message="No PDN settings found - opening design…",
                     )
                     return
 
-                # Annotation errors but copper present — open stub viewer so
-                # the user can inspect Setup → Annotation log and fix Altium
+                # Annotation errors but copper present - open stub viewer so
+                # the user can inspect Properties → Annotation log and fix Altium
                 # parameters without hunting the log file.
                 recoverable_annotation_errors = (
                     bool(loaded.extracted.enabled_copper_layer_ids())
@@ -1054,12 +1058,12 @@ class _SolveWorker(QThread):
                 )
                 if recoverable_annotation_errors:
                     _log.info(
-                        "Annotation errors — opening design with stub "
+                        "Annotation errors - opening design with stub "
                         "solution for review."
                     )
                     self._emit_stub_and_finish(
                         loaded, pristine_loaded, _timer,
-                        stage_message="Annotation errors — opening design…",
+                        stage_message="Annotation errors - opening design…",
                     )
                     return
 
@@ -1101,7 +1105,7 @@ class _SolveWorker(QThread):
 
             # Persist the solve to the FYPA solve cache so the next
             # "Import Altium Design" can skip both extract and solve.
-            # Skip when stackup_overrides / sink_overrides are in play —
+            # Skip when stackup_overrides / sink_overrides are in play -
             # the resulting solve diverges from the on-disk project, so
             # caching it would poison the next plain load. Failures are
             # non-fatal: the viewer still opens.
@@ -1115,6 +1119,11 @@ class _SolveWorker(QThread):
                 _cache_log.info(
                     "Solve cache NOT written: meshing failed "
                     "(stub only).",
+                )
+            elif not self._write_solve_cache:
+                _cache_log.info(
+                    "Solve cache NOT written: What-If solve (the cache "
+                    "keeps the base design's result).",
                 )
             elif (self._stackup_overrides or self._sink_overrides
                     or self._editor_directives
@@ -1145,7 +1154,7 @@ class _SolveWorker(QThread):
                         self._prjpcb_path, pcbdoc_resolved,
                     )
                     # Pickling the solution + metadata is another GIL-holding
-                    # Python stage — guard it from terminate() the same way.
+                    # Python stage - guard it from terminate() the same way.
                     self._in_python_packaging = True
                     try:
                         with _timer.stage("Write solve cache"):
@@ -1169,9 +1178,9 @@ class _SolveWorker(QThread):
                         type(e).__name__, e,
                     )
 
-            # Final stage before handing off — the new PdnViewer construction
+            # Final stage before handing off - the new PdnViewer construction
             # in the GUI thread's _on_solve_finished slot is heavy on big
-            # boards (tabs, GL widgets, setup HTML for thousands of
+            # boards (tabs, GL widgets, Properties HTML for thousands of
             # components) and blocks the dialog from repainting until it
             # finishes. Update the label so the user sees what's actually
             # happening instead of a stale "saving cache" message.
@@ -1198,7 +1207,7 @@ class _SolveWorker(QThread):
 
         Returns ``(new_solution, metadata)``, or ``None`` if a cancel was
         requested at a stage boundary. A meshing failure also returns a
-        ``(stub, metadata)`` pair — with ``metadata["mesh_failed"]`` set — so
+        ``(stub, metadata)`` pair - with ``metadata["mesh_failed"]`` set - so
         the caller's single emit path handles it, exactly as the subprocess
         path already did. This is the original in-process path, unchanged
         except that the cancel checks return ``None`` (so the caller returns)
@@ -1262,9 +1271,9 @@ class _SolveWorker(QThread):
                     return None
                 # Emit first so the progress dialog updates before the
                 # (potentially slow) stub + metadata packaging.
-                self.stage_changed.emit("Meshing failed — opening design…")
+                self.stage_changed.emit("Meshing failed - opening design…")
                 # Packaging may re-run build_problem and triangulate every
-                # stub piece — a long pure-Python phase holding the GIL. Mark
+                # stub piece - a long pure-Python phase holding the GIL. Mark
                 # it so a Cancel here waits instead of calling
                 # QThread.terminate() and deadlocking the app.
                 self._in_python_packaging = True
@@ -1296,7 +1305,7 @@ class _SolveWorker(QThread):
         )
         if abs(si.ground_node_current) > 1e-3:
             _log_post.warning(
-                "Ground node current is %.4g A — far from zero. The FEM "
+                "Ground node current is %.4g A - far from zero. The FEM "
                 "is injecting this current at the reference vertex to "
                 "balance the system. Absolute voltages are unreliable.",
                 si.ground_node_current,
@@ -1304,7 +1313,7 @@ class _SolveWorker(QThread):
 
         if self._cancel_requested():
             return None
-        # Enter the pure-Python packaging phase — signal the GUI abort path not
+        # Enter the pure-Python packaging phase - signal the GUI abort path not
         # to terminate() us while these GIL-holding stages run (see
         # ``_in_python_packaging`` and ``_cancel_requested``).
         self._in_python_packaging = True
@@ -1376,7 +1385,7 @@ class _SolveWorker(QThread):
         ExtractedProject + RawStackupLayer are both frozen dataclasses,
         so we rebuild the stackup tuple via :func:`dataclasses.replace`.
         ``loaded.geometry`` is recomputed too so the displayed per-layer
-        conductance reflects the new thickness — the FEM itself reads
+        conductance reflects the new thickness - the FEM itself reads
         ``loaded.extracted.stackup`` directly via
         :func:`fypa.altium.loader.build_per_net_geometry_layers`, so the
         solve correctness only depends on the new ExtractedProject.
@@ -1396,10 +1405,10 @@ class _SolveWorker(QThread):
         new_extracted = _dc_replace(
             loaded.extracted, stackup=tuple(new_stackup),
         )
-        # Rebuild the legacy single-union geometry — cheap relative to
+        # Rebuild the legacy single-union geometry - cheap relative to
         # the solve, and keeps the diagnostic_summary honest about the
         # new sheet conductance. ``replace_loaded`` carries every other
-        # field across — absorbed low-Ω bridges above all: without them
+        # field across - absorbed low-Ω bridges above all: without them
         # the merged copper they join floats and the solve goes singular.
         new_geometry = build_layer_geometries(new_extracted)
         return replace_loaded(
@@ -1410,7 +1419,7 @@ class _SolveWorker(QThread):
         """Mutate ``loaded.annotations.directives`` in-place so every
         SinkSpec whose ``(designator, schdoc, channel_index)`` matches an
         override gets replaced with a copy carrying the new ``current``.
-        Unmatched overrides are silently ignored — typically because the
+        Unmatched overrides are silently ignored - typically because the
         user deleted a SINK directive (or removed an indexed channel) in
         Altium between solves."""
         from dataclasses import replace as _dc_replace
@@ -1426,7 +1435,7 @@ class _SolveWorker(QThread):
                 )
 
     def _clone_loaded_for_edit(self, loaded):
-        """Backward-compatible alias — see :func:`clone_loaded_for_edit`."""
+        """Backward-compatible alias - see :func:`clone_loaded_for_edit`."""
         from fypa.altium.loader import clone_loaded_for_edit
         return clone_loaded_for_edit(loaded)
 
@@ -1454,8 +1463,8 @@ def record_stackup_overrides(metadata, pristine_loaded, overrides) -> None:
     """Record on ``metadata`` which copper-thickness overrides this solve
     applied, and what the design itself says each layer's thickness is.
 
-    ``metadata["stackup"]`` rows carry the thickness the solve USED — the
-    override when there is one — so on their own they cannot tell an
+    ``metadata["stackup"]`` rows carry the thickness the solve USED - the
+    override when there is one - so on their own they cannot tell an
     override from the design value. The Settings tab needs both: the solved
     value to show and to mark a field dirty against, the extracted one to
     decide whether the field is an override at all. Without it a reopened
@@ -1492,8 +1501,8 @@ def _cache_serves_adaptive_request(metadata, adaptive_requested: bool) -> bool:
 
     "Adaptive SMPS gain" is persisted *globally*, so a user who ticks it once
     for one board carries it into every later import. On a design with no
-    eligible regulator the flag is a no-op — ``solve_problem_adaptive``
-    short-circuits on :func:`has_adaptive_smps_regulators` — so refusing the
+    eligible regulator the flag is a no-op - ``solve_problem_adaptive``
+    short-circuits on :func:`has_adaptive_smps_regulators` - so refusing the
     cache there costs a full 10-60 s re-solve on every import for a result
     that would be bit-identical.
 
@@ -1549,10 +1558,10 @@ def _choose_pcbdoc(parent: QWidget | None, prjpcb_path: Path,
 
     Returns ``(proceed, selected_path)``:
 
-    * ``(True, path)``  — caller should solve against ``path``.
-    * ``(True, None)``  — failed to enumerate, but caller may still
+    * ``(True, path)``  - caller should solve against ``path``.
+    * ``(True, None)``  - failed to enumerate, but caller may still
       attempt with altium_monkey's default. Used as a soft fallback.
-    * ``(False, None)`` — user cancelled the chooser; caller should
+    * ``(False, None)`` - user cancelled the chooser; caller should
       abort silently.
 
     A single-PCB project returns the only path without prompting.
@@ -1572,7 +1581,7 @@ def _choose_pcbdoc(parent: QWidget | None, prjpcb_path: Path,
     if not paths:
         QMessageBox.critical(
             parent, "No PcbDoc in project",
-            f"{prjpcb_path.name} does not reference any .PcbDoc — FYPA "
+            f"{prjpcb_path.name} does not reference any .PcbDoc - FYPA "
             "needs a PCB document for power analysis.",
         )
         return False, None
@@ -1607,7 +1616,7 @@ def _abort_solve_worker(owner) -> None:
     falls back to ``QThread.terminate()`` for when the worker is mid-solve
     in a long-running scipy/Triangle C call we can't interrupt politely.
     Forcible termination may leak some Triangle / scipy arena memory until
-    process exit, but the interpreter itself stays usable — the user can
+    process exit, but the interpreter itself stays usable - the user can
     open another project without restarting.
 
     Also closes the progress dialog and clears ``owner``'s solve refs so
@@ -1617,7 +1626,7 @@ def _abort_solve_worker(owner) -> None:
     if worker is not None:
         # Detach BOTH the result signals (finished_ok/failed/stage_changed)
         # and QThread.finished. The latter normally fires
-        # ``_cleanup_solve_worker``, but we do its work inline below — and
+        # ``_cleanup_solve_worker``, but we do its work inline below - and
         # leaving it connected would race with a fresh solve started right
         # after cancel: the OLD worker's late ``finished`` would wipe
         # ``owner._solve_worker``, which by then points at the NEW worker.
@@ -1645,7 +1654,7 @@ def _abort_solve_worker(owner) -> None:
         # Subprocess solve path: the heavy work runs in a child process holding
         # the solver's caches/locks in ITS own address space. Kill it directly
         # so the cancel is prompt and nothing in this (parent) process can be
-        # left locked — the whole reason the subprocess path exists. The worker
+        # left locked - the whole reason the subprocess path exists. The worker
         # thread's polling loop also notices requestInterruption() below and
         # tears the child down cooperatively; this is belt-and-braces.
         _child = getattr(worker, "_solve_child", None)
@@ -1657,18 +1666,18 @@ def _abort_solve_worker(owner) -> None:
                 logging.getLogger(__name__).warning(
                     "solve child terminate raised %s; carrying on.", _exc,
                 )
-        # Ask the worker to stop, THEN free the solver caches — never before.
+        # Ask the worker to stop, THEN free the solver caches - never before.
         # free_pardiso_cache/free_mesh_assembly_cache acquire module locks that
         # the worker holds for the whole factorisation ("seconds to minutes");
         # calling them here on the GUI thread while the worker is mid-solve
-        # would block the event loop and show "Not Responding" — the exact hang
+        # would block the event loop and show "Not Responding" - the exact hang
         # cancel exists to avoid.
         worker.requestInterruption()
         # Give the worker a chance to stop cooperatively at its next stage
         # boundary first (see _SolveWorker._cancel_requested). This matters for
         # the pure-Python packaging phase: terminate() fired while the worker
         # holds the GIL would deadlock the GUI. Only force-kill if it doesn't
-        # unwind on its own — that's the native mesh/solve section, where
+        # unwind on its own - that's the native mesh/solve section, where
         # terminate() is safe because the GIL is released.
         reaped = worker.wait(1500)
         if not reaped:
@@ -1676,7 +1685,7 @@ def _abort_solve_worker(owner) -> None:
             # packaging stage (build_solve_metadata / to_lean_solution / cache
             # pickle) it holds the GIL continuously for 10+ s and only observes
             # the cancel at the NEXT stage boundary. terminate() here would kill
-            # the thread while it owns the GIL — it never gets released and the
+            # the thread while it owns the GIL - it never gets released and the
             # whole app hangs (the exact failure cancel exists to avoid). So
             # while the packaging flag is set, keep waiting for it to reach that
             # boundary and unwind cooperatively instead of force-killing.
@@ -1699,9 +1708,9 @@ def _abort_solve_worker(owner) -> None:
                     )
         else:
             # Stuck in a native scipy/Triangle call we can't interrupt (not in a
-            # Python packaging stage — that case kept waiting above). Force it
+            # Python packaging stage - that case kept waiting above). Force it
             # down. terminate() may kill the worker WHILE it holds
-            # _sym_solver_lock / _mesh_assembly_lock — a threading.Lock held by
+            # _sym_solver_lock / _mesh_assembly_lock - a threading.Lock held by
             # a dead thread is never released, so the ordinary frees (and every
             # future solve) would deadlock on it. force_reset rebinds those
             # locks to fresh objects and drops the caches WITHOUT acquiring the
@@ -1727,7 +1736,7 @@ def _abort_solve_worker(owner) -> None:
     if dlg is not None:
         # QProgressDialog.closeEvent re-emits ``canceled``, so closing a dialog
         # whose ``canceled`` is still wired to the cancel handler re-enters it
-        # synchronously — terminating/​waiting the worker a second time and
+        # synchronously - terminating/​waiting the worker a second time and
         # opening a duplicate launcher window. Disconnect first (guarded, same
         # as the worker signals above).
         try:
@@ -1765,7 +1774,7 @@ def _build_stub_lean_solution_from_loaded(loaded, layer_geometry=None):
     stub = build_stub_lean_solution_from_loaded(loaded, layer_geometry)
     log.info(
         # Spans the lazy loaded.geometry access AND the per-layer LeanLayer
-        # construction — naming only the former made this read as a pure
+        # construction - naming only the former made this read as a pure
         # geometry-access cost when deciding whether that property is the
         # bottleneck.
         "Stub solution: geometry access + build took %.2fs (%d layer(s))",

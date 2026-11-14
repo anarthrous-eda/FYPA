@@ -27,7 +27,7 @@ _BUFFER_MAXLEN: int = 5000
 
 @dataclass(frozen=True)
 class MessageRecord:
-    """One captured log entry — the minimum the Messages tab needs."""
+    """One captured log entry - the minimum the Messages tab needs."""
 
     ts: float        # Unix epoch seconds (wall-clock, fractional)
     level: int       # logging.* level number
@@ -78,7 +78,7 @@ class _BufferHandler(logging.Handler):
 
 def install() -> None:
     """Attach the buffer handler to the root logger if not already.
-    Idempotent — called from :func:`fypa.cli._setup_logging` (and safe
+    Idempotent - called from :func:`fypa.cli._setup_logging` (and safe
     to call directly from the viewer module as a belt-and-braces fallback
     for code paths that bypass ``_setup_logging``)."""
     global _installed
@@ -130,7 +130,7 @@ def clear() -> None:
 
 
 def format_timestamp(ts: float) -> str:
-    """``YYYY-MM-DD HH:MM:SS.mmm`` in local time — the format the
+    """``YYYY-MM-DD HH:MM:SS.mmm`` in local time - the format the
     Messages-tab Time column shows. Centralised so the table cells and
     any export path agree. Full date included so sessions that span
     midnight (or that pull in records from a prior process via the
@@ -144,6 +144,6 @@ def format_timestamp(ts: float) -> str:
 
 
 def _suppressed_in_tests() -> Iterable[str]:
-    """Reserved — kept for future use if tests want to silence noisy
+    """Reserved - kept for future use if tests want to silence noisy
     loggers without dropping them from the file log."""
     return ()

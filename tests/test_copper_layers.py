@@ -1,13 +1,13 @@
 """The per-layer all-copper view (the Physical layers control's second eye).
 
 On a large board every toggle used to rebuild and re-upload one buffer holding
-all the visible layers' copper — seconds per click. Each layer now owns a GPU
+all the visible layers' copper - seconds per click. Each layer now owns a GPU
 buffer that is uploaded once and then only drawn or skipped, so these tests
 pin the properties that make a toggle free:
 
 * a layer's geometry is handed to the GL viewer exactly once, however often
   its eye, colour, transparency or selection changes;
-* what is drawn still follows the old rules — copper on a visible rail is
+* what is drawn still follows the old rules - copper on a visible rail is
   left to the heatmap, net focus removes the other nets, a selection
   highlight dims them;
 * a layer whose triangles are still being prepared in the background shows
@@ -423,7 +423,7 @@ def test_a_chunk_matches_the_in_process_builders():
 def test_a_layer_still_being_prepared_appears_when_it_is_ready(qapp):
     """End to end through real worker processes: the layer is not drawn
     while its triangles are outstanding, says so in the status bar, and is
-    drawn — with the same triangles the in-process path makes — once the
+    drawn - with the same triangles the in-process path makes - once the
     workers deliver."""
     host = _host(qapp)
     host._COPPER_BG_MIN_POLYGONS = 1
@@ -453,7 +453,7 @@ def test_a_layer_still_being_prepared_appears_when_it_is_ready(qapp):
                 assert np.array_equal(poly["_tris_cache"], want)
 
         # A transparent solid fill needs the layer's copper merged into one
-        # shape — slow on a real board, so it is handed to the workers too.
+        # shape - slow on a real board, so it is handed to the workers too.
         # Until it arrives the layer is drawn from its ordinary buffer
         # rather than disappearing.
         dict(host._layer_transparency_buttons)["Top"].a = 0.5

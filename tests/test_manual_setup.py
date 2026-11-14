@@ -24,6 +24,25 @@ def test_parts_on_net_busiest_first_with_value_and_pad_count() -> None:
     assert any(des == "U1" and "TPS62130RGTR" in label for des, label in rows)
 
 
+def test_parts_already_a_load_on_the_net_go_last_and_are_marked() -> None:
+    rows = M.parts_on_net(_board(), "+3V3", prefer="load", taken={"u2"})
+    assert rows[0][0] == "U4"
+    assert rows[-1][0] == "U2" and rows[-1][1].endswith("already a load here")
+    assert not any("already" in label for des, label in rows if des != "U2")
+
+
+def test_autofill_never_picks_a_part_already_loading_the_net() -> None:
+    view = _board()
+    d = M.new_load()
+    d.p_net = "+3V3"
+    M.autofill(d, view)
+    assert d.designator == "U2"                       # busiest IC first
+    d = M.new_load()
+    d.p_net = "+3V3"
+    M.autofill(d, view, taken={"U2"})
+    assert d.designator == "U4"
+
+
 def test_autofill_supply_from_net_and_part() -> None:
     view = _board()
     d = M.new_supply()

@@ -137,7 +137,7 @@ def test_second_tab_adds_visible_layers_only(spy):
 
 
 def test_rail_eyes_do_not_count_without_rails(spy):
-    """Open heatmap eyes with nothing solved draw nothing — the bottom
+    """Open heatmap eyes with nothing solved draw nothing - the bottom
     layer stays out; only the all-copper eyes decide."""
     v = spy
     v._copper_selection = _hit(GND_L1_A, 1)

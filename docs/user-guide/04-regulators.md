@@ -1,8 +1,8 @@
-# 4. Regulators — LDOs and buck converters
+# 4. Regulators - LDOs and buck converters
 
 A `REGULATOR` directive models an on-board voltage regulator: an LDO,
 a buck converter, a boost, a switching module. Unlike a `SOURCE`
-(which is a supply *edge* — what is upstream of it is assumed to be
+(which is a supply *edge* - what is upstream of it is assumed to be
 infinite), a `REGULATOR` models **both rails it touches**:
 
 - It pins its **output** net at the configured voltage.
@@ -15,11 +15,11 @@ upstream source and the regulator's input pin. With a `SOURCE` on the
 regulator's output, that input-side copper carries no current in the
 solve and the input rail looks artificially clean.
 
-> Read [Section 1](01-sources-and-sinks.md) first if you have not — the
+> Read [Section 1](01-sources-and-sinks.md) first if you have not - the
 > parameter mechanics (where to add them, hiding them, library-symbol
 > defaults) are the same.
 
-## 4.1 SOURCE vs REGULATOR — when to use which
+## 4.1 SOURCE vs REGULATOR - when to use which
 
 | Situation                                                                                  | Use         |
 |--------------------------------------------------------------------------------------------|-------------|
@@ -29,7 +29,7 @@ solve and the input rail looks artificially clean.
 
 If every rail on your board comes in pre-regulated and you do not have
 on-board step-up / step-down conversion, you will never need
-`REGULATOR` — `SOURCE` for inputs and `SINK` for loads is the whole
+`REGULATOR` - `SOURCE` for inputs and `SINK` for loads is the whole
 story.
 
 ## 4.2 The parameter shape
@@ -41,8 +41,8 @@ and four nets (two output, two input):
 |----------------------------|--------------------------------------------------------|-----------|
 | `PDN_ROLE`                 | `REGULATOR`                                            | `REGULATOR` |
 | `PDN_V`                    | Output voltage (volts)                                 | `3.3`     |
-| `PDN_REGULATOR_TYPE`       | `LDO` or `SMPS` — auto-computes gain when `PDN_GAIN` is omitted | `SMPS` |
-| `PDN_REGULATOR_EFFICIENCY` | 0–1; SMPS only (default `1.0`)                       | `0.9`     |
+| `PDN_REGULATOR_TYPE`       | `LDO` or `SMPS` - auto-computes gain when `PDN_GAIN` is omitted | `SMPS` |
+| `PDN_REGULATOR_EFFICIENCY` | 0-1; SMPS only (default `1.0`)                       | `0.9`     |
 | `PDN_GAIN`                 | Optional fixed override (disables auto-gain)             | `0.73`    |
 | `PDN_QUIESCENT`            | Optional constant input current (Eigenverbrauch / Iq)    | `5mA`     |
 | `PDN_OUT_P_NET`            | Output supply net                                      | `+3V3`    |
@@ -50,7 +50,7 @@ and four nets (two output, two input):
 | `PDN_IN_P_NET`             | Input supply net                                       | `+5V`     |
 | `PDN_IN_N_NET`             | Input return net                                       | `0V`      |
 
-There is no auto-inference for REGULATOR — a regulator IC always has
+There is no auto-inference for REGULATOR - a regulator IC always has
 more than two pads, so all four net names must be set explicitly.
 
 ### Multi-channel REGULATOR (PMIC)
@@ -60,7 +60,7 @@ multi-rail SINKs use `PDN1_I`:
 
 | Channel | Value params | Net params |
 |---------|--------------|------------|
-| legacy  | `PDN_V`, `PDN_REGULATOR_TYPE`, `PDN_REGULATOR_EFFICIENCY`, `PDN_QUIESCENT` — *or* `PDN_GAIN` | `PDN_OUT_P_NET`, `PDN_OUT_N_NET`, `PDN_IN_P_NET`, `PDN_IN_N_NET` |
+| legacy  | `PDN_V`, `PDN_REGULATOR_TYPE`, `PDN_REGULATOR_EFFICIENCY`, `PDN_QUIESCENT` - *or* `PDN_GAIN` | `PDN_OUT_P_NET`, `PDN_OUT_N_NET`, `PDN_IN_P_NET`, `PDN_IN_N_NET` |
 | 1       | `PDN1_V`, `PDN1_REGULATOR_TYPE`, `PDN1_QUIESCENT`, … | `PDN1_OUT_P_NET`, … |
 | 2       | `PDN2_V`, … | … |
 
@@ -70,11 +70,11 @@ on `PDN_*` while each output names only `PDNn_OUT_*`. When indexed
 channels exist and the unindexed form lacks its own `PDN_V` or a
 **complete** `OUT_*` pair, the legacy channel is not emitted.
 
-A regulator channel is defined by its `OUT_*` pair — `PDN_IN_*` is the side
+A regulator channel is defined by its `OUT_*` pair - `PDN_IN_*` is the side
 meant to be shared, so an indexed `PDN1_IN_P_NET` does not by itself create
 channel 1. Give each channel its `PDN<n>_OUT_*` (or `PDN<n>_V`).
 
-Example — dual LDO outputs with shared Vin / Vout / type:
+Example - dual LDO outputs with shared Vin / Vout / type:
 
 ```text
 U2:
@@ -87,7 +87,7 @@ U2:
   PDN2_OUT_P_NET     = GND        PDN2_OUT_N_NET = VOUT_N
 ```
 
-Example — 3.3 V and 1.8 V outputs, each fully specified (legacy + indexed
+Example - 3.3 V and 1.8 V outputs, each fully specified (legacy + indexed
 both real because each has its own `OUT_*`):
 
 ```text
@@ -118,14 +118,14 @@ When `PDN_GAIN` is omitted, set `PDN_REGULATOR_TYPE`:
 
 For `SMPS`, **Vin_nom** is inferred from an upstream `SOURCE` or
 `REGULATOR` whose output is declared on the same net name as
-`PDN_IN_P_NET` (exact / instance-expanded names — undirected bridge groups
+`PDN_IN_P_NET` (exact / instance-expanded names - undirected bridge groups
 are not used to expand Vin lookup). Multi-channel child sheets that share
 a local switch node name (`LX`) publish per-instance PCB nets (`LX.1`,
 `LX.2`) and filter inductors annotated as `SERIES` (`LX` → `VDD_OUT`)
 propagate voltage onto the instance rails (`VDD_5V0`, `VDD_12V`). Set
 `PDN_REGULATOR_EFFICIENCY` to the datasheet value (default `1.0` = ideal).
 
-Example — 3.3 V buck from a 5 V `SOURCE`:
+Example - 3.3 V buck from a 5 V `SOURCE`:
 
 ```text
 J1:
@@ -168,7 +168,7 @@ the OUT pins rise by the output copper's drop. See
 ### Quiescent current (`PDN_QUIESCENT`)
 
 Regulators draw a small **standby current** from their input even when the
-load is idle — LDO quiescent current (Iq) or an SMPS no-load draw. Set
+load is idle - LDO quiescent current (Iq) or an SMPS no-load draw. Set
 optional `PDN_QUIESCENT` (or `PDNn_QUIESCENT` per channel) in the same
 SI units as `PDN_I` on sinks (`5mA`, `0.005`, …). Omitted defaults to
 zero.
@@ -188,7 +188,7 @@ on the regulator topology:
 | **LDO** (linear)          | `1.0`                                            | Output current passes straight through from input. |
 | **Buck, 100% efficient**  | `Vout / Vin`                                     | Power balance: `Vin · Iin = Vout · Iout`.          |
 | **Buck, realistic**       | `(Vout / Vin) / efficiency`                      | Same, with efficiency divided in.                  |
-| **Boost, 100% efficient** | `Vout / Vin`                                     | Same identity — input current is *higher* than output. |
+| **Boost, 100% efficient** | `Vout / Vin`                                     | Same identity - input current is *higher* than output. |
 | **Boost, realistic**      | `(Vout / Vin) / efficiency`                      | Same.                                              |
 
 Worked numbers for the common cases:
@@ -200,7 +200,7 @@ Worked numbers for the common cases:
 - 85 % boost, 5 V → 12 V: `2.4 / 0.85 = 2.82`
 
 When in doubt, the regulator's datasheet typically gives a typical or
-worst-case efficiency curve — pick the operating point that matches
+worst-case efficiency curve - pick the operating point that matches
 the load current you are analysing.
 
 > `PDN_GAIN` is a **scalar**, not a function of operating point.
@@ -247,11 +247,11 @@ What the solver does with this:
   (`PDN_GAIN = 1.0` because it is an LDO). The drop on that copper is
   visible in the `+5V` rail's heatmap.
 - An additional constant **5 mA** (`PDN_QUIESCENT`) is drawn from the
-  `+5V` input regardless of load — it adds a small extra drop on the
+  `+5V` input regardless of load - it adds a small extra drop on the
   input copper even when U5 is removed from the schematic.
 
 Replacing U2's role with `SOURCE` would leave the `+5V` rail at a flat
-5 V everywhere — no current is modelled on its copper, so no drop. The
+5 V everywhere - no current is modelled on its copper, so no drop. The
 `+3V3` rail's drop would still solve correctly.
 
 ## 4.6 Multi-regulator topologies
@@ -274,7 +274,7 @@ between U2 and U3, and 250 mA on the `+12V` rail between J1 and U2
 
 An integrated SMPS can put `PDN_IN_*` / `PDN_OUT_*` on the same IC: those
 pads are the current boundaries. With **external** FETs, shunt, and
-inductor, those boundaries sit on the path parts — not on the controller.
+inductor, those boundaries sit on the path parts - not on the controller.
 A plain `SERIES` chain `VIN → HS → L → HS → VOUT` would bridge two
 voltage-forced rails and short them through RDSon.
 
@@ -294,7 +294,7 @@ stage map:
 | `PDN_SMPS_TOPOLOGY` | `BUCK`, `BOOST`, `BUCKBOOST`, or `INVERTER` |
 | `PDN_SW1_NET` / `PDN_SW2_NET` | Switch-node nets (buck-boost: both sides of L) |
 
-Do **not** put RDSon, shunt R, or DCR on the controller — those live on
+Do **not** put RDSon, shunt R, or DCR on the controller - those live on
 `PATH` parts.
 
 ### Path parts (`PDN_ROLE=PATH`)
@@ -305,19 +305,19 @@ On each FET, sense resistor, and inductor in the stage:
 |-----------|---------|
 | `PDN_ROLE` | `PATH` |
 | `PDN_R` | RDSon, shunt, or inductor DCR |
-| `PDN_P_PINS` / `PDN_N_PINS` / allowlists | Optional — drop gate or Kelvin pads |
+| `PDN_P_PINS` / `PDN_N_PINS` / allowlists | Optional - drop gate or Kelvin pads |
 
 FYPA classifies each part from pad-net intersection with the host stage
 nets. One part is the **cut**: the one joining a switch node to `OUT_P`.
 The regulator element replaces it, because it is the part that carries the
-full output current — the inductor in a buck, the high-side FET in a boost,
+full output current - the inductor in a buck, the high-side FET in a boost,
 the output-side high-side FET in a buck-boost. Parts reaching a ground net
 from a switch node become averaged current legs; everything else is an
 ordinary resistive bridge. Host binding is automatic when the part's
 non-GND pads hit exactly one REGULATOR's stage nets. Set `PDN_SMPS_HOST`
 only if that match is ambiguous.
 
-Example — buck-boost controller with external FETs (generic nets):
+Example - buck-boost controller with external FETs (generic nets):
 
 ```text
 U2 (controller):
@@ -337,7 +337,7 @@ Q_HS_IN / Q_HS_OUT / Q_LS_* / R_SHUNT / L1:
 
 Rules of thumb:
 
-- **The part between a switch node and `OUT_P`** is the cut — not a
+- **The part between a switch node and `OUT_P`** is the cut - not a
   rail-merging `SERIES`. That is the inductor in a buck, but the high-side
   FET in a boost, whose inductor carries the *input* current instead.
 - **Inductor (when it is not the cut), high-side and shunt** stay island
@@ -355,7 +355,7 @@ per phase, and a positive `PDN_V` per phase. Do not model the stage as
 `BUCKBOOST`.
 
 Internal FETs need no `PATH` parts. **External HS/LS FETs are not yet
-supported on an `INVERTER` host** — a `PATH` bound to one is an error
+supported on an `INVERTER` host** - a `PATH` bound to one is an error
 rather than a silent omission, because the phase net would otherwise solve
 with its only conductive path missing.
 
@@ -373,11 +373,11 @@ with its only conductive path missing.
 ## Next steps
 
 - For series elements (fuses, ferrites, sense resistors) on a rail,
-  see [Section 3 — Series elements](03-series-elements.md).
+  see [Section 3 - Series elements](03-series-elements.md).
 - For a full tour of the viewer panels, tables, and modes, see
-  [Section 5 — The viewer tour](05-viewer-tour.md).
+  [Section 5 - The viewer tour](05-viewer-tour.md).
 
-> Regulators are currently **schematic-only** — editor mode does not
+> Regulators are currently **schematic-only** - editor mode does not
 > offer a REGULATOR role. To model an on-board regulator that is not
 > in the schematic, place a SOURCE on the output rail and a SINK on
 > the input rail with the expected input current.

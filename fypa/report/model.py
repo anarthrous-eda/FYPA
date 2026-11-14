@@ -173,7 +173,7 @@ class DecouplingResult:
     analysed: bool
     reason: str = ""
     # True when the capacitor analysis ran but found nothing usable for this
-    # rail — worth an UNCHECKED finding. False when it never ran at all.
+    # rail - worth an UNCHECKED finding. False when it never ran at all.
     flag_missing: bool = False
     target_ohm: float | None = None
     f_max_hz: float | None = None
@@ -328,7 +328,7 @@ def worst_severity(severities) -> str:
 
 
 def report_to_json(report: Report) -> str:
-    """The report's numbers as JSON — figures and the topology SVG left out."""
+    """The report's numbers as JSON - figures and the topology SVG left out."""
     def strip(obj):
         if isinstance(obj, bytes):
             return None

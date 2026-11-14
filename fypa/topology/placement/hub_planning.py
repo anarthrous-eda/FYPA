@@ -55,7 +55,7 @@ def is_connector_hub_net(ports: list[TopologyPort]) -> bool:
 
 
 def hub_destination_anchor(ports: list[TopologyPort]) -> TopologyPort:
-    """Rightmost column, topmost port — first downstream destination."""
+    """Rightmost column, topmost port - first downstream destination."""
     max_x = max(p.x for p in ports)
     dests = [p for p in ports if abs(p.x - max_x) < WIRE_EPS]
     return min(dests, key=lambda p: (p.y, p.terminal))

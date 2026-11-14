@@ -2,14 +2,14 @@
 
 Regression coverage for a bug where a filled region (``G36`` in Gerber, a
 gerbonara ``ArcPoly``) whose boundary contained a circular arc would raise
-``TypeError`` deep in ``_arcpoly_to_polygon`` — because gerbonara stores each
+``TypeError`` deep in ``_arcpoly_to_polygon`` - because gerbonara stores each
 arc segment as ``(clockwise, (cx, cy))`` but the code unpacked it as a bare
 ``(cx, cy)``. That exception was swallowed by the per-layer guard in
 ``extract_gerber_project``, silently dropping the *entire copper layer*.
 
 These tests build ``ArcPoly`` primitives directly (no ``.gbr`` fixture needed)
 and check that (a) an arc region no longer raises, and (b) the arc direction
-(``clockwise``) is honoured — a bulge that curves outward vs inward must give
+(``clockwise``) is honoured - a bulge that curves outward vs inward must give
 the correct, distinct area rather than always taking the short way around.
 """
 import math
@@ -59,7 +59,7 @@ def test_arc_region_ccw_bulges_outward():
 def test_arc_region_cw_bulges_inward():
     """clockwise=True sweeps CW: the semicircle bulges in, area < square.
 
-    This is the case the old short-way normalisation got wrong — it ignored
+    This is the case the old short-way normalisation got wrong - it ignored
     the flag and always produced the outward (CCW) bulge.
     """
     ap = _arcpoly(clockwise=True)

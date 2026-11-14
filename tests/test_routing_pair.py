@@ -33,7 +33,7 @@ def _obstacle(node_id: str, x: float) -> TopologyNode:
 
 def test_bus_x_for_pair_forwards_reserved_verticals(monkeypatch):
     """Regression: the column-gap branch must forward already-reserved verticals
-    to the bus-x picker, not an empty list — otherwise a gutter bus can be placed
+    to the bus-x picker, not an empty list - otherwise a gutter bus can be placed
     on top of a GND trunk or another net's vertical in the same corridor."""
     captured: dict = {}
 

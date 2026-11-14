@@ -3,13 +3,13 @@
 Implements the second classic PDN parameter (after DC resistance / IR drop):
 per-capacitor mounted loop inductance, per TI SWPA222A §3. Three tiers:
 
-* Tier 1 (:mod:`fypa.caploop.tier1`) — closed-form mounted-inductance ranking
+* Tier 1 (:mod:`fypa.caploop.tier1`) - closed-form mounted-inductance ranking
   from pad geometry, escape-via spacing, and stackup heights. Pure geometry,
   no solve.
-* Tier 2 (:mod:`fypa.caploop.tier2_fem`) — plane-pair spreading inductance
+* Tier 2 (:mod:`fypa.caploop.tier2_fem`) - plane-pair spreading inductance
   solved with the existing 2-D Laplace FEM (spreading-resistance ↔
   spreading-inductance duality), honest on split/perforated planes.
-* Tier 3 (:mod:`fypa.caploop.tier3`) — full cap→plane→IC loop totals.
+* Tier 3 (:mod:`fypa.caploop.tier3`) - full cap→plane→IC loop totals.
 
 :mod:`fypa.caploop.identify` finds the decoupling caps and bundles the
 geometry each tier consumes; :mod:`fypa.caploop.constants` holds the user

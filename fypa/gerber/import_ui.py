@@ -3,15 +3,15 @@
 Two dialogs, shown in sequence after the user picks a set of Gerber +
 Excellon files:
 
-1. :class:`GerberLayerMappingDialog` — confirm / edit the auto-classified
+1. :class:`GerberLayerMappingDialog` - confirm / edit the auto-classified
    role of each picked file (Top / Inner-N / Bottom / silk / outline /
    drill / ignore).
 
-2. :class:`GerberStackupDialog` — set per-copper-layer thickness and the
+2. :class:`GerberStackupDialog` - set per-copper-layer thickness and the
    dielectric below each layer; pre-filled with sensible defaults (1 oz
    copper, 1.6 mm total board split evenly across dielectrics).
 
-The dialogs are intentionally standalone — they don't import the viewer
+The dialogs are intentionally standalone - they don't import the viewer
 module and can be exercised in isolation from a script (useful for tests
 and for the ``FYPA gerber-gui`` CLI's no-stored-config path).
 
@@ -117,7 +117,7 @@ class GerberLayerMappingDialog(QDialog):
                  initial_assignments: dict[str, int] | None = None,
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Gerber Import — Layer Mapping")
+        self.setWindowTitle("Gerber Import - Layer Mapping")
         self.resize(720, 480)
         self._files = list(picked_files)
         self._initial = dict(initial_assignments or {})
@@ -302,7 +302,7 @@ class GerberStackupDialog(QDialog):
                  initial: list[GerberStackupLayer] | None = None,
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Gerber Import — Stackup")
+        self.setWindowTitle("Gerber Import - Stackup")
         self.resize(560, 420)
         self._layer_ids = list(ordered_layer_ids)
 
@@ -316,7 +316,7 @@ class GerberStackupDialog(QDialog):
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
-        # Header row — total thickness + copper weight preset.
+        # Header row - total thickness + copper weight preset.
         header = QFormLayout()
         self._total_spin = QDoubleSpinBox(self)
         self._total_spin.setRange(0.1, 50.0)
@@ -353,7 +353,7 @@ class GerberStackupDialog(QDialog):
             item = QTableWidgetItem(label)
             item.setFlags(item.flags() & ~Qt.ItemIsEditable)
             self._table.setItem(row, 0, item)
-            # Name column — defaults to the role label uppercased.
+            # Name column - defaults to the role label uppercased.
             name = (initial_by_id[lid].name
                     if lid in initial_by_id
                     else label.upper().replace(" ", "_"))
@@ -368,7 +368,7 @@ class GerberStackupDialog(QDialog):
                         if lid in initial_by_id
                         else _DEFAULT_COPPER_WEIGHT_MM)
             self._table.setCellWidget(row, 2, cu)
-            # Dielectric spin — disabled on the last row.
+            # Dielectric spin - disabled on the last row.
             di = QDoubleSpinBox(self)
             di.setRange(0.0, 50.0)
             di.setDecimals(3)
@@ -446,7 +446,7 @@ class GerberStackupDialog(QDialog):
                 self, "Stackup doesn't sum to total",
                 f"Per-layer copper + dielectric sums to {summed:.3f} mm, "
                 f"but the stated total is {total:.3f} mm. Use the per-layer "
-                "values anyway? Asymmetric stackups are common — only "
+                "values anyway? Asymmetric stackups are common - only "
                 "click No if you'd like to fix the values first.",
             )
             if ok != QMessageBox.Yes:

@@ -146,7 +146,7 @@ def test_negative_image_plane_floods_not_tiny_discs(tmp_path):
     p = tmp_path / "plane.gp1"
     p.write_text(_NEG_PLANE)
     geom = gx.render_gerber_to_shapely(p)
-    # Flood over the artwork bbox minus the two anti-pad clears — far larger
+    # Flood over the artwork bbox minus the two anti-pad clears - far larger
     # than the ~1.57 mm² the two 1 mm discs would occupy if rendered positive.
     assert geom.area > 10.0
 
@@ -167,7 +167,7 @@ _SOLID_3MM = math.pi * 1.5 ** 2  # area of the underlying 3mm-diameter pad
 def test_aperture_hole_does_not_erase_underlying_copper(tmp_path):
     # A 3mm solid pad, then a donut aperture (1.5mm OD, 0.8mm hole) flashed on
     # top at the same centre. Per Gerber spec §4.4.6 the aperture hole is
-    # transparent to whatever sits under the flash — the 3mm pad must show
+    # transparent to whatever sits under the flash - the 3mm pad must show
     # through the hole, leaving NO interior hole in the accumulated copper.
     p = tmp_path / "hole.gtl"
     p.write_text(
@@ -224,7 +224,7 @@ def test_bbox_limited_difference_matches_full_difference():
 
 def test_x2_span_out_of_range_returns_none():
     # A 2,5 buried via imported into a Top/In4/Bottom subset (ids [1,5,32])
-    # references position 5 > 3 imported layers — must NOT clamp to a
+    # references position 5 > 3 imported layers - must NOT clamp to a
     # fabricated In4→Bottom span.
     assert gx._x2_drill_span_to_layer_ids(
         ("Plated", "2", "5", "PTH", "Drill"), [1, 5, 32]) is None

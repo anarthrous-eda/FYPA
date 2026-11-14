@@ -1,7 +1,7 @@
 """Editor-mode SERIES N-net picker (issue #58).
 
 A SERIES element bridges two of its own component's pads, so its N picker
-must offer only that component's pin nets — not every net on the board,
+must offer only that component's pin nets - not every net on the board,
 which buried the right one among unrelated and auto-minted ``$NET_xxx``
 names. SOURCE / SINK keep the full list: their N terminal can sit on
 another part (PDN_N_DES).

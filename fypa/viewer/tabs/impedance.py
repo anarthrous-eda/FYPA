@@ -70,7 +70,7 @@ def _branch_colors(n: int) -> list[str]:
     """Distinct colours for the per-capacitor traces.
 
     They were all one muted grey, which made the per-designator legend N
-    identical swatches — no way to map a designator to a trace, which is the
+    identical swatches - no way to map a designator to a trace, which is the
     whole point of the "Show individual capacitors" checkbox. tab20 reads
     acceptably on both the light and the dark theme.
     """
@@ -116,7 +116,7 @@ class _ImpedanceTabMixin:
         rail_row.addWidget(self.imp_rail_combo, 1)
         side.addLayout(rail_row)
 
-        # Target mask — Z_target = V · ripple% / I_transient (TI §4).
+        # Target mask - Z_target = V · ripple% / I_transient (TI §4).
         mask_box = QGroupBox("Target impedance (TI SWPA222A §4)")
         mask_form = QFormLayout(mask_box)
         self.imp_ripple_edit = QLineEdit()
@@ -128,7 +128,7 @@ class _ImpedanceTabMixin:
             "V · ripple% / I_transient.")
         self.imp_fmax_edit = QLineEdit()
         self.imp_fmax_edit.setToolTip(
-            "F_MAX — the frequency up to which the mask must be met. Beyond "
+            "F_MAX - the frequency up to which the mask must be met. Beyond "
             "it, plane spreading and package inductance dominate and adding "
             "capacitors no longer helps.")
         for e in (self.imp_ripple_edit, self.imp_itran_edit,
@@ -138,13 +138,13 @@ class _ImpedanceTabMixin:
         mask_form.addRow("Ripple (%)", self.imp_ripple_edit)
         mask_form.addRow("Transient current (A)", self.imp_itran_edit)
         mask_form.addRow("F_MAX (MHz)", self.imp_fmax_edit)
-        self.imp_ztarget_label = QLabel("—")
+        self.imp_ztarget_label = QLabel("-")
         self.imp_ztarget_label.setStyleSheet(
             f"QLabel {{ color: {t['fg_muted']}; }}")
         mask_form.addRow("Z_target", self.imp_ztarget_label)
         side.addWidget(mask_box)
 
-        # VRM — sets the low-frequency floor.
+        # VRM - sets the low-frequency floor.
         vrm_box = QGroupBox("Voltage regulator")
         vrm_form = QFormLayout(vrm_box)
         self.imp_vrm_r_edit = QLineEdit()
@@ -162,7 +162,7 @@ class _ImpedanceTabMixin:
         vrm_form.addRow("L (nH)", self.imp_vrm_l_edit)
         side.addWidget(vrm_box)
 
-        # Plane-pair capacitance — the only thing holding the rail down above
+        # Plane-pair capacitance - the only thing holding the rail down above
         # the last capacitor's self-resonance.
         plane_box = QGroupBox("Plane-pair capacitance")
         plane_layout = QVBoxLayout(plane_box)
@@ -173,7 +173,7 @@ class _ImpedanceTabMixin:
             "extracted Dk. Small, but it sets the high-frequency tail.")
         self.imp_plane_check.toggled.connect(self._replot_impedance)
         plane_layout.addWidget(self.imp_plane_check)
-        self.imp_plane_label = QLabel("—")
+        self.imp_plane_label = QLabel("-")
         self.imp_plane_label.setStyleSheet(
             f"QLabel {{ color: {t['fg_muted']}; }}")
         self.imp_plane_label.setWordWrap(True)
@@ -372,7 +372,7 @@ class _ImpedanceTabMixin:
             item.setText(f"{(model.esl_nh if item.column() == 1 else model.esr_mohm):.4g}")
             self._imp_pkg_populating = False
             # Reverting in silence looks like the edit simply vanished. Say
-            # what was rejected — a comma decimal is the likely cause on a
+            # what was rejected - a comma decimal is the likely cause on a
             # locale that formats numbers that way.
             QMessageBox.warning(
                 self, "Invalid value",
@@ -416,7 +416,7 @@ class _ImpedanceTabMixin:
     def _rail_plane_capacitance_f(self, rail: str) -> tuple[float, str]:
         """(C_plane, explanation) for the rail's dominant reference cavity.
 
-        Cached per rail — it needs one shapely intersection of two plane
+        Cached per rail - it needs one shapely intersection of two plane
         sheets, which is not free on a big board.
         """
         cache = getattr(self, "_imp_plane_cache", None)
@@ -471,10 +471,10 @@ class _ImpedanceTabMixin:
         area = sheet.shape.area
         c = plane_capacitance_f(area, cav.h_cav_mm, dk)
         note = (
-            f"{c * 1e9:.3g} nF — {cav.name_rail} ↔ {cav.name_return}, "
+            f"{c * 1e9:.3g} nF - {cav.name_rail} ↔ {cav.name_return}, "
             f"{area:.0f} mm² at {cav.h_cav_mm:.3f} mm, "
             f"Dk {dk:.2f}" if dk else
-            f"{c * 1e9:.3g} nF — {cav.name_rail} ↔ {cav.name_return}, "
+            f"{c * 1e9:.3g} nF - {cav.name_rail} ↔ {cav.name_return}, "
             f"{area:.0f} mm² at {cav.h_cav_mm:.3f} mm, "
             f"Dk {DEFAULT_DK} (not in the stackup)")
         cache[rail] = (c, note)
@@ -606,7 +606,7 @@ class _ImpedanceTabMixin:
         The rail list is derived from the capacitor rows, so an empty list has
         three quite different causes and only one of them is "no rail". Saying
         "no rail carries an included decoupling capacitor" to someone who
-        imported Gerbers — which carry no component data at all — sends them
+        imported Gerbers - which carry no component data at all - sends them
         looking for a capacitor that was never going to be found.
         """
         rows = getattr(self, "_caps_rows_cache", None)
@@ -615,7 +615,7 @@ class _ImpedanceTabMixin:
                     "come back to plot its impedance.")
         if not rows:
             # The Capacitors tab already worked out exactly why (no design
-            # info, a Gerber import, no capacitors detected) — reuse it rather
+            # info, a Gerber import, no capacitors detected) - reuse it rather
             # than guess.
             return (getattr(self, "_caps_empty_reason", "")
                     or "No decoupling capacitors were found on this design.")
@@ -672,7 +672,7 @@ class _ImpedanceTabMixin:
             # The nearest index within the pick radius, not the first one.
             # Near a capacitor's SRF the trace is close to vertical, so
             # contains() returns a long run of indices and ind[0] can be a
-            # decade of |Z| away — far enough for a genuinely more distant but
+            # decade of |Z| away - far enough for a genuinely more distant but
             # flatter neighbour to win and the tooltip to name the wrong part.
             for i in info.get("ind", ()):
                 if not 0 <= i < len(entry.log_f):
@@ -694,7 +694,7 @@ class _ImpedanceTabMixin:
             # Keep the branch's own colour. Recolouring to the accent made the
             # highlight indistinguishable from the |Z| total trace (also
             # accent) exactly where the two run together, and left the legend
-            # swatch — a copy taken at ax.legend() time — disagreeing with the
+            # swatch - a copy taken at ax.legend() time - disagreeing with the
             # line. Weight, opacity and z-order carry the highlight instead.
             entry.line.set_linewidth(2.4)
             entry.line.set_alpha(1.0)
@@ -717,8 +717,8 @@ class _ImpedanceTabMixin:
         """Reset when the cursor leaves the axes or the canvas.
 
         Leaving delivers a leave event, not another motion event, so without
-        this a cursor that exits over a trace — into the navigation toolbar, or
-        straight off the window — leaves the branch highlighted and the tooltip
+        this a cursor that exits over a trace - into the navigation toolbar, or
+        straight off the window - leaves the branch highlighted and the tooltip
         floating indefinitely.
         """
         if self._imp_branch_highlighted is not None:
@@ -764,14 +764,14 @@ class _ImpedanceTabMixin:
                     ha="center", va="center", transform=ax.transAxes,
                     color=t["fg"], fontsize=9, wrap=True)
             self.imp_summary_label.setText("")
-            self.imp_ztarget_label.setText("—")
-            self.imp_plane_label.setText("—")
+            self.imp_ztarget_label.setText("-")
+            self.imp_plane_label.setText("-")
             self._imp_canvas.draw_idle()
             return
 
         result = self._compute_rail_impedance(rail)
         self.imp_ztarget_label.setText(
-            "—" if not math.isfinite(result.target.z_target_ohm)
+            "-" if not math.isfinite(result.target.z_target_ohm)
             else f"{result.target.z_target_ohm * 1e3:.4g} mΩ")
         self.imp_plane_label.setText(self._rail_plane_capacitance_f(rail)[1])
 
@@ -797,7 +797,7 @@ class _ImpedanceTabMixin:
                 0, len(result.branches) - _IMP_MAX_LEGEND_BRANCHES)
 
         ax.loglog(freqs, result.z_mag, lw=1.8, color=t["accent"],
-                  label=f"|Z| — {rail}", zorder=3)
+                  label=f"|Z| - {rail}", zorder=3)
 
         z_t = result.target.z_target_ohm
         if math.isfinite(z_t):
@@ -822,9 +822,9 @@ class _ImpedanceTabMixin:
 
         ax.set_xlabel("Frequency (Hz)")
         ax.set_ylabel("|Z| (Ω)")
-        ax.set_title(f"PDN impedance — {rail}")
+        ax.set_title(f"PDN impedance - {rail}")
         # The F_MAX rule and the target mask both stop short of the sweep's
-        # ends, and matplotlib would autoscale to their extents — pin the axis
+        # ends, and matplotlib would autoscale to their extents - pin the axis
         # to the swept band instead of leaving dead space beside the trace.
         ax.set_xlim(freqs[0], freqs[-1])
         ax.grid(True, which="both", alpha=0.25)
@@ -839,7 +839,7 @@ class _ImpedanceTabMixin:
             summary += (
                 f"<br><span style='color:{t['fg_muted']};'>Legend names the "
                 f"first {_IMP_MAX_LEGEND_BRANCHES} capacitors; "
-                f"{unlabelled_branches} more are drawn unlabelled — hover any "
+                f"{unlabelled_branches} more are drawn unlabelled - hover any "
                 f"trace to identify it.</span>"
             )
         self.imp_summary_label.setText(summary)
@@ -869,14 +869,14 @@ class _ImpedanceTabMixin:
                 f"current to get a target mask.</span>")
         elif result.meets_target():
             parts.append(
-                f"<span style='color:{t['ok']};'><b>Meets target</b></span> — "
+                f"<span style='color:{t['ok']};'><b>Meets target</b></span> - "
                 f"|Z| stays below {result.target.z_target_ohm * 1e3:.3g} mΩ "
                 f"to {result.target.f_max_hz / 1e6:.3g} MHz.")
         else:
             reached = result.reached_frequency_hz()
             parts.append(
                 f"<span style='color:{t['err']};'><b>Misses target</b></span> "
-                f"— |Z| first breaches "
+                f"- |Z| first breaches "
                 f"{result.target.z_target_ohm * 1e3:.3g} mΩ at "
                 f"{reached / 1e6:.3g} MHz "
                 f"(needed to {result.target.f_max_hz / 1e6:.3g} MHz).")

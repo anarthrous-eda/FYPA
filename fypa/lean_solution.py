@@ -3,7 +3,7 @@
 padne's :class:`pdnsolver.solver.Solution` carries the full half-edge mesh
 data structure (Vertex / Face / HalfEdge objects with cross-references).
 That's exactly the right shape for the solver and the original padne UI,
-but pickling it is wildly wasteful — a 71-vertex mesh balloons to ~42 KB
+but pickling it is wildly wasteful - a 71-vertex mesh balloons to ~42 KB
 of pickle metadata when the actual data is ~2 KB of (x, y) floats and
 triangle indices.
 
@@ -48,10 +48,10 @@ class LeanLayerSolution:
     padne builds one Mesh per component). All four lists have the same
     length and the i-th entry of each describes the i-th component.
 
-    * ``vertex_xys[i]``     — ``(N_i, 2)`` float64
-    * ``triangles[i]``      — ``(M_i, 3)`` int32 (indices into vertex_xys[i])
-    * ``potentials[i]``     — ``(N_i,)`` float64 (per-vertex voltage, V)
-    * ``power_densities[i]``— ``(M_i,)`` float64 (per-face W/mm²) OR
+    * ``vertex_xys[i]``     - ``(N_i, 2)`` float64
+    * ``triangles[i]``      - ``(M_i, 3)`` int32 (indices into vertex_xys[i])
+    * ``potentials[i]``     - ``(N_i,)`` float64 (per-vertex voltage, V)
+    * ``power_densities[i]``- ``(M_i,)`` float64 (per-face W/mm²) OR
                               ``None`` if the solver didn't compute them
     """
     vertex_xys: list[np.ndarray]
@@ -63,7 +63,7 @@ class LeanLayerSolution:
     tri_conductances: list[np.ndarray] = field(default_factory=list)
     # Copper-sensitivity adjoint fields: key -> per-mesh float32 deltas plus
     # the per-mesh float64 offsets (pdnsolver.sensitivity.mesh_adjoint).
-    # Pickles from before these existed lack the attributes entirely — read
+    # Pickles from before these existed lack the attributes entirely - read
     # them with getattr(..., None).
     adjoints: dict[str, list[np.ndarray]] = field(default_factory=dict)
     adjoint_offsets: dict[str, list[float]] = field(default_factory=dict)
@@ -72,7 +72,7 @@ class LeanLayerSolution:
 @dataclass
 class LeanProblem:
     """Subset of padne's :class:`Problem` actually consumed by the viewer.
-    Networks / connections are deliberately omitted — they're solver
+    Networks / connections are deliberately omitted - they're solver
     inputs, not viewer inputs, and they pickle large."""
     layers: list[LeanLayer]
     project_name: str | None = None
@@ -93,7 +93,7 @@ def to_lean_solution(padne_solution) -> LeanSolution:
 
     Walks the half-edge structure once and packs every mesh into flat
     numpy arrays. After this returns, the padne Solution can be
-    discarded — the viewer no longer needs it.
+    discarded - the viewer no longer needs it.
     """
     # --- Lean Problem (just the per-layer descriptors) ---
     lean_layers: list[LeanLayer] = []
@@ -115,7 +115,7 @@ def to_lean_solution(padne_solution) -> LeanSolution:
     #
     # Fast path: each Mesh built by Mesher.poly_to_mesh retains the source
     # triangle-soup arrays it was constructed from (_source_xys + _source_tris)
-    # — vertex coordinates and triangle indices in the *exact* order required
+    # - vertex coordinates and triangle indices in the *exact* order required
     # by the lean format. Read them directly instead of walking the half-edge
     # graph in Python (used to be O(V + F) per mesh of pure interpreter work).
     # Slow path (legacy/handbuilt meshes without those attributes) falls back
@@ -123,7 +123,7 @@ def to_lean_solution(padne_solution) -> LeanSolution:
     lean_layer_solutions: list[LeanLayerSolution] = []
     for layer_i, ls in enumerate(padne_solution.layer_solutions):
         # Drop the GIL between layers so the GUI thread's progress-dialog
-        # timer can fire — without this, a large multi-layer board can
+        # timer can fire - without this, a large multi-layer board can
         # monopolise the GIL through the whole flatten loop and trigger
         # Windows' "Not Responding" watchdog.
         if layer_i:
@@ -149,7 +149,7 @@ def to_lean_solution(padne_solution) -> LeanSolution:
                 for vt in m.vertices:
                     xys[vt.i, 0] = vt.p.x
                     xys[vt.i, 1] = vt.p.y
-                # Triangles — skip any face that isn't a triangle (defensive;
+                # Triangles - skip any face that isn't a triangle (defensive;
                 # padne's mesher only ever emits triangles).
                 tri_rows: list[tuple[int, int, int]] = []
                 for face in m.faces:

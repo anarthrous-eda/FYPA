@@ -11,7 +11,7 @@ resistance tool), where ``L_eff = L - 2*pad`` is the copper length between the
 two ideal-conductor end pads. Because the pads are equipotential patches, they
 short out their own length, so the resistive span is ``L_eff``, not ``L``.
 
-The finite-element solve reproduces this to well under 1% — but ONLY with the
+The finite-element solve reproduces this to well under 1% - but ONLY with the
 correct *signed* cotangent stiffness weight. Taking ``|cot|`` (the historical
 bug) over-conducts obtuse triangles, so the solved resistance came out 6-12%
 low and, tellingly, drifted *further* from the analytic value as the mesh was
@@ -58,7 +58,7 @@ def _strip_resistance(width_mm: float, length_mm: float,
     return float(vals.max() - vals.min()) / current_a
 
 
-# (width, length, pad) in mm — the example-design trace geometries plus a wide one.
+# (width, length, pad) in mm - the example-design trace geometries plus a wide one.
 @pytest.mark.parametrize("width,length,pad", [
     (1.0, 100.0, 0.5),   # P1V_1W100L
     (1.0, 50.0, 0.5),    # P1V_1W50L
@@ -106,7 +106,7 @@ def test_resistance_is_mesh_convergent():
 
     coarse = solve_at(0.4)
     fine = solve_at(0.15)
-    # Both within 1% of each other — refinement doesn't move the answer.
+    # Both within 1% of each other - refinement doesn't move the answer.
     assert abs(fine - coarse) / coarse < 0.01, (
         f"resistance drifted with refinement: {coarse*1e3:.4f} -> "
         f"{fine*1e3:.4f} mohm"

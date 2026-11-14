@@ -1,8 +1,8 @@
-"""PDN_* annotation parser tests — single-net (PDN_NET) validation.
+"""PDN_* annotation parser tests - single-net (PDN_NET) validation.
 
 These exercise the parser's pure logic directly (no Altium extraction):
 ``_terminal_mode`` decides single-net vs two-terminal per channel, and
-``_validate_directive_groups`` enforces the cross-directive rules — mode
+``_validate_directive_groups`` enforces the cross-directive rules - mode
 consistency within an analysis group, the open-loop check, and return-group
 assignment. See ``fypa.altium.annotations`` for the schema.
 """
@@ -300,7 +300,7 @@ def test_flag_open_loop_sink_only_rail_excluded_and_warned():
 
 
 def test_flag_open_loop_closed_rail_not_flagged():
-    # A normal source+sink rail carries current — nothing excluded or warned.
+    # A normal source+sink rail carries current - nothing excluded or warned.
     loaded = _fake_loaded(
         [_single_source(0, "J1"), _single_sink(0, "U1")], ["+3V3"])
     warnings = _flag_open_loop_rails(loaded)
@@ -309,7 +309,7 @@ def test_flag_open_loop_closed_rail_not_flagged():
 
 
 def test_flag_open_loop_skips_one_rail_keeps_other():
-    # Net 0 is a closed rail; net 5 is a sink-only rail — only the latter is
+    # Net 0 is a closed rail; net 5 is a sink-only rail - only the latter is
     # flagged, the closed rail's directives stay solvable.
     loaded = _fake_loaded([
         _single_source(0, "J1"), _single_sink(0, "U1"),
@@ -718,7 +718,7 @@ def test_bridge_series_terminals_stay_on_distinct_nets():
 
     Topology: a rail RAIL_OUT is fed through two parallel sense resistors
     R1 (PRE_A↔RAIL_OUT) and R2 (PRE_B↔RAIL_OUT). A SOURCE U9 names RAIL_OUT
-    but only has pads on PRE_A / PRE_B — with direct-only terminal resolution
+    but only has pads on PRE_A / PRE_B - with direct-only terminal resolution
     it does not fan into the bridged PRE nets. Each resistor terminal still
     stays on its single literal net.
     """
@@ -971,7 +971,7 @@ def test_series_template_r_override_on_one_channel():
 
 
 def test_regulator_template_shared_in_and_voltage():
-    """Shared PDN_V / IN_* / TYPE with per-channel OUT_* only — no legacy channel."""
+    """Shared PDN_V / IN_* / TYPE with per-channel OUT_* only - no legacy channel."""
     # Nets: 0=GND 1=VIN 2=VOUT_P 3=VOUT_N
     proj = _minimal_proj(
         nets=(
@@ -1219,7 +1219,7 @@ def test_template_does_not_cross_a_channel_role_override():
 
     The unindexed template belongs to the part-wide PDN_ROLE. Letting the
     SERIES channel read the sink's PDN_P_NET / PDN_N_NET would silently drop
-    a 0.1 ohm resistor straight across the rail the sink sits on — so the
+    a 0.1 ohm resistor straight across the rail the sink sits on - so the
     channel keeps its own "name the nets explicitly" error instead.
     """
     proj = _minimal_proj(
@@ -1259,7 +1259,7 @@ def test_template_does_not_cross_a_channel_role_override():
 
 
 def test_indexed_only_role_still_inherits_without_part_wide_role():
-    """No part-wide PDN_ROLE — unindexed params are pure templates for all.
+    """No part-wide PDN_ROLE - unindexed params are pure templates for all.
 
     The role-scoping guard above must not break the indexed-only form: with
     no PDN_ROLE there is no unindexed channel whose role could conflict.
@@ -1298,7 +1298,7 @@ def test_indexed_only_role_still_inherits_without_part_wide_role():
 
 
 def test_stray_indexed_modifier_does_not_clone_a_channel():
-    """PDN1_MIN_V is a modifier, not a channel — it must not clone the load.
+    """PDN1_MIN_V is a modifier, not a channel - it must not clone the load.
 
     Marking a channel present off any known suffix would let one stray param
     inherit the whole unindexed directive, double-counting 100 mA as 200 mA.
@@ -1334,7 +1334,7 @@ def test_stray_indexed_modifier_does_not_clone_a_channel():
 
 
 def test_stray_indexed_quiescent_does_not_clone_a_regulator():
-    """Same rule for REGULATOR modifiers — one regulator, not two."""
+    """Same rule for REGULATOR modifiers - one regulator, not two."""
     proj = _minimal_proj(
         nets=(RawNet("GND"), RawNet("VIN"), RawNet("+3V3")),
         sch_components=(
@@ -1519,7 +1519,7 @@ def test_shared_terminal_pair_with_indexed_values_only():
     """Complete shared pair + per-channel values: no phantom legacy channel.
 
     The unindexed form has both terminals but no PDN_I of its own, so it is a
-    terminal template — keeping it would report "missing PDN_I" for a channel
+    terminal template - keeping it would report "missing PDN_I" for a channel
     the user never declared.
     """
     proj = _minimal_proj(
@@ -1693,7 +1693,7 @@ def test_sheet_map_keeps_same_named_sheets_in_different_directories_apart():
 
 def test_unmapped_physical_page_id_is_unknown_not_guessed():
     """A child page id embeds its PARENT's logical id, so scanning it for a
-    ``*.SchDoc`` token yields the root sheet — which both hides real matches
+    ``*.SchDoc`` token yields the root sheet - which both hides real matches
     and invents false ones. An unmapped id must read as unknown provenance,
     degrading to the permissive path rather than binding to a guess."""
     from fypa.altium.annotations import _logical_schdoc_name
@@ -2307,7 +2307,7 @@ def test_resolve_terminal_no_double_suffix_on_qualified_net():
 
 
 def test_resolve_terminal_degraded_suffix_guess_warns():
-    """No netlist: VCC_EFUSE on R63.4 maps to VCC_EFUSE.4 — with a warning."""
+    """No netlist: VCC_EFUSE on R63.4 maps to VCC_EFUSE.4 - with a warning."""
     proj = _minimal_proj(
         nets=(RawNet("VCC_EFUSE.4"),),
         pcb_components=(
@@ -2664,7 +2664,7 @@ def test_lookup_inferred_vin_walks_series_upstream():
     graph = _SeriesVinGraph(
         upstream={"VDD_48V_RP": "VDD_48V", "VDD_48V": "VDD_48V_IN"},
     )
-    # Two hops from the named rail — the caller warns on any non-zero hop count.
+    # Two hops from the named rail - the caller warns on any non-zero hop count.
     assert _lookup_inferred_vin(
         "VDD_48V_RP", supply_map, graph=graph,
     ) == (48.0, None, 2)
@@ -2686,7 +2686,7 @@ def test_lookup_inferred_vin_series_ambiguous_and_cycle():
 
 def test_lookup_inferred_vin_declared_rail_beats_series_ambiguity():
     """A rail whose voltage is declared resolves even when SERIES links to it
-    disagree — parallel ferrites / ORing FETs / fuse+bypass all land here."""
+    disagree - parallel ferrites / ORing FETs / fuse+bypass all land here."""
     assert _lookup_inferred_vin(
         "VDD_12V", {"VDD_12V": 12.0},
         graph=_SeriesVinGraph(ambiguous=frozenset({"VDD_12V"})),
@@ -2921,7 +2921,7 @@ def _series_vin_proj(
 
     ``series_params`` is the SERIES component's parameter dict, so each test can
     vary only how that one part declares its two nets. ``series_pads`` is its
-    ``(pin, net_index)`` list *in file order* — the order 2-pin auto-inference
+    ``(pin, net_index)`` list *in file order* - the order 2-pin auto-inference
     reads P/N off. ``in_p_pad_net`` overrides the net the regulator's IN_P pad
     sits on, modelling the state ``_apply_net_remap`` leaves behind: the pad
     carries the canonical index while the annotation still names the folded one.
@@ -3003,7 +3003,7 @@ def _series_vin_proj(
 
 def test_series_upstream_map_reads_indexed_role_only_channels():
     """A part whose SERIES channels come only from PDN<n>_ROLE overrides still
-    contributes its links — _is_pdn_annotated admits it, so the graph must too."""
+    contributes its links - _is_pdn_annotated admits it, so the graph must too."""
     proj = _series_vin_proj({
         "PDN1_ROLE": "SERIES", "PDN1_R": "50m",
         "PDN1_P_NET": "VDD_48V_IN", "PDN1_N_NET": "VDD_48V",
@@ -3046,7 +3046,7 @@ def test_series_upstream_map_auto_inferred_link_is_direction_agnostic():
         graph = _collect_series_upstream_map(
             _iter_pdn_parameter_sources(proj), proj,
         )
-        # Recorded as an undirected pair — pad order states no power flow.
+        # Recorded as an undirected pair - pad order states no power flow.
         assert not graph.upstream
         assert graph.undirected["VDD_48V"] == frozenset({"VDD_48V_IN"})
         result = parse_annotations(proj, enabled_layers=[1])
@@ -3102,7 +3102,7 @@ def test_regulator_smps_vin_resolves_under_merged_net_name():
 
 def test_regulator_smps_vin_warns_when_inferred_through_series_chain():
     """Vin taken from a walked chain is a guess about which leg is the power
-    path — a sense or bleed resistor produces a silently wrong gain, so say so."""
+    path - a sense or bleed resistor produces a silently wrong gain, so say so."""
     proj = _series_vin_proj({
         "PDN_ROLE": "SERIES", "PDN_R": "50m",
         "PDN_P_NET": "VDD_48V_IN", "PDN_N_NET": "VDD_48V",
@@ -3794,7 +3794,7 @@ def test_series_channel_on_mixed_part_registers_bridge():
 
 
 def test_indexed_roles_only_mixed_series_and_sink():
-    # SERIES on the input path plus SINK on a separate IC supply — no
+    # SERIES on the input path plus SINK on a separate IC supply - no
     # part-wide PDN_ROLE required.
     proj = _minimal_proj(
         nets=(
@@ -4222,7 +4222,7 @@ def test_sink_p_des_multi_connector():
             ),
         ),
         pads=(
-            _pad(0, "1", 1, 0),   # J1 +5V (host — NOT in P when P_DES set)
+            _pad(0, "1", 1, 0),   # J1 +5V (host - NOT in P when P_DES set)
             _pad(0, "2", 0, 1),   # J1 GND
             _pad(1, "1", 1, 5),   # J2 +5V
             _pad(1, "2", 0, 6),
@@ -4248,7 +4248,7 @@ def test_source_n_des_pins_filter_intersects_net():
     """``*_PINS`` narrows the ``*_DES`` net match; it never overrides it.
 
     Regression: the pin filter used to select pads by name alone, so naming a
-    pin that sits on the *other* rail resolved the N terminal onto that rail —
+    pin that sits on the *other* rail resolved the N terminal onto that rail -
     both terminals on VIN, a dead short across the source, reported ok.
     """
     proj = _banana_source_proj(
@@ -4520,8 +4520,8 @@ def test_harvest_is_empty_on_a_release_without_physical_documents():
 
 def test_compile_falls_back_to_to_netlist_with_the_designs_own_options():
     """Rebuilding NetlistOptions.from_prjpcb() drops the merged per-sheet
-    parameters that net labels substitute — only AltiumDesign.from_prjpcb adds
-    them — so a fallback that does so silently renames nets."""
+    parameters that net labels substitute - only AltiumDesign.from_prjpcb adds
+    them - so a fallback that does so silently renames nets."""
 
     from fypa.altium.extract import _compile_schematic_netlist
 
@@ -5212,7 +5212,7 @@ def test_indexed_sheet_override_does_not_force_sibling_channel():
     # J1.1: unindexed child I + indexed channel 2 from sheet
     assert len(by_des["J1.1"]) == 2
     assert {s.channel_index for s in by_des["J1.1"]} == {None, 2}
-    # J1.2: only unindexed (overridden to 500mA) — no channel 2
+    # J1.2: only unindexed (overridden to 500mA) - no channel 2
     assert len(by_des["J1.2"]) == 1
     assert by_des["J1.2"][0].channel_index is None
     assert by_des["J1.2"][0].current == pytest.approx(0.5)
@@ -5365,11 +5365,11 @@ def test_multi_instance_lx_supply_map_infers_downstream_smps_vin():
             # U1.2: OUT on LX.2 (net 3)
             _pad(1, "1", 3, 20), _pad(1, "2", 0, 21),
             _pad(1, "3", 1, 22), _pad(1, "4", 0, 23),
-            # L1.1: LX.1 — VDD_5V0
+            # L1.1: LX.1 - VDD_5V0
             _pad(2, "1", 2, 5), _pad(2, "2", 4, 6),
-            # L1.2: LX.2 — VDD_12V
+            # L1.2: LX.2 - VDD_12V
             _pad(3, "1", 3, 25), _pad(3, "2", 5, 26),
-            # Q1: VDD_12V — VDD_12V_S
+            # Q1: VDD_12V - VDD_12V_S
             _pad(4, "1", 5, 35), _pad(4, "2", 6, 36),
             # U2: OUT VDD_3V3, IN VDD_12V_S
             _pad(5, "1", 7, 40), _pad(5, "2", 0, 41),
@@ -5516,8 +5516,8 @@ def test_multi_instance_missing_value_reports_once():
     missing = [e for e in result.errors if "missing PDN_I" in e]
     # Reported against the logical designator, never once per placement: three
     # placements must read exactly like one. (Two distinct messages is the
-    # single-placement baseline — _resolve_channel_roles names the channel,
-    # then the role parser names the indexed alternative — so what this guards
+    # single-placement baseline - _resolve_channel_roles names the channel,
+    # then the role parser names the indexed alternative - so what this guards
     # is that neither is repeated.)
     assert len(missing) == len(set(missing)), missing
     assert all("SINK on J1:" in m for m in missing), missing
@@ -6451,7 +6451,7 @@ def test_sheet_symbol_only_partial_coverage_warns():
                 sheet_name="CON-B",
                 child_filename="Port.SchDoc",
                 unique_id="SYMB",
-                parameters={},  # no PDN — sibling uncovered
+                parameters={},  # no PDN - sibling uncovered
             ),
         ),
         pcb_components=(
@@ -6677,7 +6677,7 @@ def test_sheet_symbol_params_via_owner_index():
         _Param("PDN_J1_I", "1.5A", 42),
         _Param("PDN_J1_ROLE", "SINK", 42),
         _Param("Design Item Id", "BOM-PART", 42),  # filtered out
-        _Param("Other", "x", 99),  # different owner — ignored
+        _Param("Other", "x", 99),  # different owner - ignored
     ])
     owned = _parameters_owned_by_index(schdoc, 42)
     assert owned["PDN_J1_I"] == "1.5A"
@@ -6799,7 +6799,7 @@ def test_sheet_symbol_repeat_slot_skipped_for_non_numeric_designator():
     assert result.ok, result.errors
     sinks = [d for d in result.directives if isinstance(d, SinkSpec)]
     assert len(sinks) == 1
-    # Override not applied — falls back to child default.
+    # Override not applied - falls back to child default.
     assert sinks[0].current == pytest.approx(0.1)
     assert any(
         "PDN_J1_I.1" in w and "no numeric channel suffix" in w
@@ -6848,7 +6848,7 @@ def test_smps_vin_expands_local_in_p_net_per_instance():
                     "PDN_REGULATOR_EFFICIENCY": "0.85",
                     "PDN_OUT_P_NET": "VDD_3V3",
                     "PDN_OUT_N_NET": "GND",
-                    # Local child-sheet label — must expand to VDD_12V for Vin.
+                    # Local child-sheet label - must expand to VDD_12V for Vin.
                     "PDN_IN_P_NET": "VDD_OUT",
                     "PDN_IN_N_NET": "GND",
                 },
@@ -7210,7 +7210,7 @@ def test_child_sheet_resolves_channel_designator_without_source_designator():
             RawPcbComponent(
                 designator="R1.3", center=Pt2D(0, 0), rotation_deg=0.0,
                 layer_name="TOP", footprint="1005R",
-                source_designator="",  # missing — lookup falls back to R1.3
+                source_designator="",  # missing - lookup falls back to R1.3
             ),
         ),
         sch_components=(
@@ -7242,7 +7242,7 @@ def test_schdoc_path_key_prefers_relative_path_on_basename_collision():
     nl_b = _FakeNetlist(nets=[
         _FakeNet(name="VOUT", terminals=[_FakeTerminal("R1", "1")]),
     ])
-    # Collision: same basename, no basename alias — only relative keys.
+    # Collision: same basename, no basename alias - only relative keys.
     proj = _minimal_proj(
         schdoc_paths={
             "mod_a/child.schdoc": r"C:\proj\mod_a\Child.SchDoc",
@@ -7367,7 +7367,7 @@ def test_collect_schdoc_paths_unique_basename_alias_only():
     ])
     paths = _collect_schdoc_paths(design, root / "board.PrjPcb")
     assert paths["power.schdoc"].lower().endswith("power.schdoc")
-    assert "child.schdoc" not in paths  # basename collision — no alias
+    assert "child.schdoc" not in paths  # basename collision - no alias
     assert "mod_a/child.schdoc" in paths
     assert "mod_b/child.schdoc" in paths
 
@@ -7399,7 +7399,7 @@ def test_collect_schdoc_paths_outside_root_uses_absolute_key():
     key_b = _schdoc_storage_key(outside_b, root)
     assert key_a != key_b
     assert key_a == _schdoc_display_path(outside_a, root).lower()
-    assert "shared.schdoc" not in paths  # colliding basenames — no alias
+    assert "shared.schdoc" not in paths  # colliding basenames - no alias
     assert paths[key_a].lower().endswith("shared.schdoc")
     assert paths[key_b].lower().endswith("shared.schdoc")
 
@@ -7429,7 +7429,7 @@ def test_pin_filter_sch_with_pcb_role_emits_no_info():
                 },
                 pin_designators=("1", "2", "TP", "EP", "NC"),
             ),
-            # Multipart twin — same designator, still no INFO spam.
+            # Multipart twin - same designator, still no INFO spam.
             RawSchComponent(
                 designator="U2", schdoc_name="Mcu.SchDoc",
                 parameters={"PDN_PINS_ONLY": "1,2,TP"},
@@ -7697,8 +7697,8 @@ def test_resolve_terminal_allowlist_error_names_excluded_net_pads():
             ),
         ),
         pads=(
-            _pad(0, "1", 1, 0.0),   # on GND — in allowlist
-            _pad(0, "EN", 0, 1.0),  # on VIN — outside allowlist
+            _pad(0, "1", 1, 0.0),   # on GND - in allowlist
+            _pad(0, "EN", 0, 1.0),  # on VIN - outside allowlist
         ),
     )
     spec, errs, _tier = _resolve_terminal(
@@ -7713,7 +7713,7 @@ def test_resolve_terminal_allowlist_error_names_excluded_net_pads():
 
 
 def test_parse_sink_pins_only_partitions_multi_channel_rails():
-    # Nets: 0=GND, 1=+3V3, 2=+1V8 — EN hard-tied to +3V3 must stay off both.
+    # Nets: 0=GND, 1=+3V3, 2=+1V8 - EN hard-tied to +3V3 must stay off both.
     proj = _minimal_proj(
         nets=(RawNet("GND"), RawNet("+3V3"), RawNet("+1V8")),
         sch_components=(

@@ -1,4 +1,4 @@
-"""File > Load Tomachie pdn.json… (Ctrl+Shift+T): set up the PDN from a Tomachie file.
+"""File > Load Custom… > Tomachie pdn.json…: set up the PDN from a Tomachie file.
 
 Tomachie reads the schematic and the parts' datasheets and writes ``<design>.pdn.json``:
 sources, regulators, series parts and every load's current and minimum supply voltage.
@@ -22,7 +22,6 @@ from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
 
 log = logging.getLogger(__name__)
 
-SHORTCUT = "Ctrl+Shift+T"
 CORNERS = {"Typical currents and resistances": "typ",
            "Worst case (maximum currents and resistances)": "max"}
 
@@ -118,6 +117,18 @@ def _confirm_project(window, pdn_path: Path, pdn: dict, prjpcb: Path) -> bool:
         window, "Load Tomachie pdn.json",
         f"{pdn_path.name} was written for {other}, but the project is {prjpcb.name}."
         "\n\nApply it anyway?") == QMessageBox.Yes
+
+
+def add_load_custom_menu(window, file_menu) -> None:
+    """Add the File > Load Custom… submenu (shared by the launcher and main window)."""
+    from PySide6.QtGui import QAction
+
+    custom = file_menu.addMenu("Load C&ustom…")
+    load_pdn = QAction("&Tomachie pdn.json…", window)
+    load_pdn.setStatusTip(
+        "Set up sources, regulators, series parts and loads from a Tomachie pdn.json")
+    load_pdn.triggered.connect(lambda: on_load_tomachie_pdn(window))
+    custom.addAction(load_pdn)
 
 
 def on_load_tomachie_pdn(window) -> None:

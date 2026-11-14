@@ -5,7 +5,7 @@ This is the high-performance replacement for the pyqtgraph
 rasterising the mesh to a CPU RGBA texture and uploading it every time
 the user zooms, the triangle mesh lives in a GPU vertex buffer and the
 fragment shader interpolates the colour per pixel using a 1-D colormap
-LUT texture. Pan and zoom become single matrix updates — no resampling,
+LUT texture. Pan and zoom become single matrix updates - no resampling,
 always pixel-sharp at any zoom level.
 
 Public API
@@ -13,30 +13,30 @@ Public API
 Construction: ``GLMeshViewer(parent=None)``.
 
 Data flow:
-* :meth:`set_mesh(xs, ys, tris)` — upload vertex positions + triangle
+* :meth:`set_mesh(xs, ys, tris)` - upload vertex positions + triangle
   indices once per (layer, rail, rail-only) change.
-* :meth:`set_values(values)` — push per-vertex scalar values for the
+* :meth:`set_values(values)` - push per-vertex scalar values for the
   current mode. Cheap (one buffer upload).
-* :meth:`set_levels(vmin, vmax)` — update colormap window. Free (one
-  uniform update — no GPU work until next paint).
-* :meth:`set_colormap(lut_rgba_256)` — change the colour ramp. Rare.
+* :meth:`set_levels(vmin, vmax)` - update colormap window. Free (one
+  uniform update - no GPU work until next paint).
+* :meth:`set_colormap(lut_rgba_256)` - change the colour ramp. Rare.
 
 View interaction:
-* :meth:`fit_to_data()` — reset view so the data fills the widget.
-* :meth:`set_view_center_scale(cx, cy, mm_per_pixel)` — explicit view.
-* :meth:`view_range()` — current visible mm rectangle.
+* :meth:`fit_to_data()` - reset view so the data fills the widget.
+* :meth:`set_view_center_scale(cx, cy, mm_per_pixel)` - explicit view.
+* :meth:`view_range()` - current visible mm rectangle.
 
 Signals:
-* :attr:`viewChanged` — emitted on pan / zoom / resize.
-* :attr:`mouseHoveredAt(world_x, world_y, inside)` — every mouse move.
+* :attr:`viewChanged` - emitted on pan / zoom / resize.
+* :attr:`mouseHoveredAt(world_x, world_y, inside)` - every mouse move.
 
 Overlays (drawn via :class:`QPainter` inside ``paintGL``):
-* :meth:`set_overlay_top_left(text_html)` — title chip top-left corner.
-* :meth:`set_overlay_top_right(text_html)` — legend top-right corner.
-* :meth:`set_markers(list_of_marker_groups)` — scatter overlays.
+* :meth:`set_overlay_top_left(text_html)` - title chip top-left corner.
+* :meth:`set_overlay_top_right(text_html)` - legend top-right corner.
+* :meth:`set_markers(list_of_marker_groups)` - scatter overlays.
 
 Vector-field arrows (drawn via the line shader, in world space):
-* :meth:`set_arrows(positions, color)` — push GL_LINES vertices that
+* :meth:`set_arrows(positions, color)` - push GL_LINES vertices that
   encode arrow shafts + arrowheads.
 * :meth:`clear_arrows()`.
 """
@@ -159,7 +159,7 @@ void main() {
 }
 """
 
-# Flat-colour overlay shader — same MVP-only transform as the line shader
+# Flat-colour overlay shader - same MVP-only transform as the line shader
 # but the per-vertex colour carries a fourth alpha channel so Board
 # Features / per-layer all-copper rows can be drawn with partial
 # transparency without affecting any of the other line-shader batches.
@@ -188,7 +188,7 @@ void main() {
 # its own vertex buffer of bare xy positions; the layer's z, colour and
 # transparency are uniforms. Showing or hiding a layer is then just drawing or
 # skipping its buffer, and recolouring / dimming / fading it changes two
-# uniforms — nothing is rebuilt or re-uploaded.
+# uniforms - nothing is rebuilt or re-uploaded.
 _COPPER_VERTEX_SHADER_SRC = """
 #version 330 core
 layout(location = 0) in vec2 a_xy;
@@ -212,7 +212,7 @@ void main() {
 # stage just MVP-transforms (same inputs as the flat line shader); the
 # geometry stage widens each GL_LINES segment into a screen-space quad of
 # constant pixel width. glLineWidth past 1.0 is rejected on Core profile
-# drivers, so the width has to be real geometry — and doing it per-segment
+# drivers, so the width has to be real geometry - and doing it per-segment
 # in clip space keeps it a constant pixel width at any zoom.
 #
 # Relief view: the outlines follow the lifted copper with the same mapping as
@@ -285,8 +285,8 @@ void main() {
 """
 
 # Fullscreen-pass shader for the supersampling (SSAA) downsample. A single
-# clip-space-covering triangle is generated from gl_VertexID alone — no VBO
-# needed — and the fragment shader samples the resolved oversize colour
+# clip-space-covering triangle is generated from gl_VertexID alone - no VBO
+# needed - and the fragment shader samples the resolved oversize colour
 # buffer through hardware LINEAR filtering. At the fixed 2:1 ratio that
 # averages each 2x2 source block, i.e. an exact box downsample.
 _SS_BLIT_VERTEX_SHADER_SRC = """
@@ -310,7 +310,7 @@ void main() {
 """
 
 
-# Viewport background (clear) colour when editor mode is active — a light
+# Viewport background (clear) colour when editor mode is active - a light
 # bluish tone so it's unmistakable which mode the user is in. Coder-tunable:
 # any "#rrggbb" hex string. Viewer mode keeps the dark substrate below.
 _EDITOR_BG_HEX = "#272735"
@@ -325,7 +325,7 @@ _EDITOR_SELECTION_BOX_PX = 2.0 #3.6
 # Width (device px) of the layer / pad / stub outline overlay. glLineWidth
 # past 1.0 raises GL_INVALID_VALUE on Core profile drivers, so the width
 # is produced by the thick-line geometry shader, which expands each
-# GL_LINES segment into a screen-space quad of this constant pixel width —
+# GL_LINES segment into a screen-space quad of this constant pixel width -
 # uniform at every zoom (a world-space ribbon would turn finely
 # tessellated copper outlines spiky). Coder-tunable.
 _OUTLINE_WIDTH_PX = 2.0
@@ -401,7 +401,7 @@ def _windows_arrow_image(px: int):
             return None
         try:
             if not ii.hbmColor:
-                return None  # monochrome scheme — use the drawn arrow
+                return None  # monochrome scheme - use the drawn arrow
             hdr = BITMAPINFOHEADER()
             hdr.biSize = ctypes.sizeof(hdr)
             hdc = user32.GetDC(None)
@@ -420,7 +420,7 @@ def _windows_arrow_image(px: int):
             finally:
                 user32.ReleaseDC(None, hdc)
             if not any(buf[3::4]):
-                return None  # colour cursor without alpha — rare; fall back
+                return None  # colour cursor without alpha - rare; fall back
             # BGRA bytes == QImage.Format_ARGB32 on little-endian.
             img = QImage(bytes(buf), w, h, w * 4,
                          QImage.Format_ARGB32).copy()
@@ -445,7 +445,7 @@ def _marker_drop_cursor(color: str, up: bool, dpr: float) -> QCursor:
 
     Built at the platform pointer's *physical* size: Qt scales a cursor
     pixmap's logical size by the screen's ``dpr``, so the pixmap carries
-    that ratio to cancel it out — otherwise it comes out ``dpr`` times
+    that ratio to cancel it out - otherwise it comes out ``dpr`` times
     larger than the arrow it stands in for."""
     px = _system_cursor_px()
     key = (color, up, round(dpr, 2), px)
@@ -501,7 +501,7 @@ class LegendRow:
     row is clicked; the host uses it to identify which marker group to
     toggle. ``glyph`` is the single-character symbol drawn in ``color``
     in the swatch column. ``hidden`` styles the row as "visibility off"
-    — a diagonal slash drawn across the row, matching the off-state of
+    - a diagonal slash drawn across the row, matching the off-state of
     the eye-icon toggle elsewhere in the UI.
     """
     key: str
@@ -513,13 +513,13 @@ class LegendRow:
 
 @dataclass
 class MarkerGroup:
-    """A batch of identically-styled markers — one per directive role.
+    """A batch of identically-styled markers - one per directive role.
 
     ``xs``/``ys`` are world-space (mm). ``color`` is the fill (HTML hex).
     ``symbol`` is one of ``"o"``, ``"s"``, ``"d"``, ``"star"``. ``size``
     is the diameter in pixels at any zoom level (pxMode-equivalent).
     ``zs`` is the optional per-marker world-z (mm, pre-exaggeration);
-    only consulted in 3D mode — if None or omitted, every marker is
+    only consulted in 3D mode - if None or omitted, every marker is
     treated as z=0.
 
     ``world_diameters_mm`` opts the marker into world-space sizing:
@@ -530,7 +530,7 @@ class MarkerGroup:
     zoom-out. ``size`` is ignored in that mode.
 
     ``ring_colors`` adds a second, outer outline per marker in the given
-    HTML colour — used to show the copper layer a source / sink / series
+    HTML colour - used to show the copper layer a source / sink / series
     marker sits on. It's one entry per marker (``None``/``""`` skips that
     marker's ring); the glyph is drawn ``ring_width`` px larger behind the
     normal marker so the layer colour reads as a band hugging its edge.
@@ -549,7 +549,7 @@ class MarkerGroup:
     ring_width: float = 0.0
     # Per-marker slot override: when set, entry ``i`` is the marker's
     # ``(length_mm, width_mm, rotation_deg, rounded)`` capsule (a slotted
-    # drill) — ``rounded`` picks an obround vs a square-cornered rectangle —
+    # drill) - ``rounded`` picks an obround vs a square-cornered rectangle -
     # or ``None`` to fall back to the normal symbol. The short axis (width)
     # is still floored at ``min_pixel_diameter`` so a tiny slot stays visible.
     world_obrounds: (list[tuple[float, float, float, bool] | None]
@@ -558,7 +558,7 @@ class MarkerGroup:
 
 def _install_default_surface_format() -> None:
     """Request an OpenGL 3.3 Core context BEFORE the first QOpenGLWidget
-    is constructed. Idempotent — call from the module that creates the
+    is constructed. Idempotent - call from the module that creates the
     widget once at application startup."""
     fmt = QSurfaceFormat()
     fmt.setVersion(3, 3)
@@ -569,13 +569,13 @@ def _install_default_surface_format() -> None:
     fmt.setStencilBufferSize(0)
     # 4x MSAA. Copper is world-scaled filled triangles; zoomed far out a
     # thin trace shrinks below a pixel and a single-sample rasteriser only
-    # keeps it where a triangle happens to cover the pixel centre — the
+    # keeps it where a triangle happens to cover the pixel centre - the
     # trace breaks up / partly vanishes. Multisampling tests 4 sub-samples
     # per pixel, so sub-pixel copper renders as a (coverage-weighted)
     # antialiased fragment instead of dropping out. QOpenGLWidget honours
     # this by allocating a multisample FBO and resolving on composition.
     fmt.setSamples(4)
-    fmt.setSwapInterval(1)  # vsync on — smoother and easier on the GPU
+    fmt.setSwapInterval(1)  # vsync on - smoother and easier on the GPU
     QSurfaceFormat.setDefaultFormat(fmt)
 
 
@@ -601,10 +601,10 @@ class GLMeshViewer(QOpenGLWidget):
     """OpenGL-backed FEM mesh viewer with pan/zoom and overlays."""
 
     viewChanged = Signal()
-    # x_mm, y_mm, inside_widget — emitted on mouseMove (throttling is
+    # x_mm, y_mm, inside_widget - emitted on mouseMove (throttling is
     # the caller's responsibility; widget always emits per-event).
     mouseHoveredAt = Signal(float, float, bool)
-    # x_mm, y_mm — emitted on a left-click WITHOUT meaningful drag (i.e.
+    # x_mm, y_mm - emitted on a left-click WITHOUT meaningful drag (i.e.
     # press + release with the cursor moving < a few pixels). Useful for
     # "click empty space to clear a highlight" interactions.
     clicked = Signal(float, float)
@@ -658,11 +658,11 @@ class GLMeshViewer(QOpenGLWidget):
         self._vao: QOpenGLVertexArrayObject | None = None
         self._pos_vbo: QOpenGLBuffer | None = None
         self._val_vbo: QOpenGLBuffer | None = None
-        # Per-vertex alpha (editor-mode copper dimming). Optional — when no
+        # Per-vertex alpha (editor-mode copper dimming). Optional - when no
         # alpha array is uploaded, attribute 2 is fed a constant 1.0 so the
         # mesh draws fully opaque exactly as before.
         self._alpha_vbo: QOpenGLBuffer | None = None
-        # Per-vertex "neutral" mask (0/1). Optional — when no mask is
+        # Per-vertex "neutral" mask (0/1). Optional - when no mask is
         # uploaded, attribute 3 is fed a constant 0.0 so no copper is greyed.
         # A 1.0 entry blends that vertex toward the no-current grey (used by
         # the "Grey no current copper" toggle for solved dead-end islands).
@@ -680,7 +680,7 @@ class GLMeshViewer(QOpenGLWidget):
         # Per-vertex (value, weight) for the relief-view lift (attribute 2).
         self._line_relief_vbo: QOpenGLBuffer | None = None
         self._line_u_mvp_loc: int = -1
-        # Thick-line program — the outline batch's geometry shader widens
+        # Thick-line program - the outline batch's geometry shader widens
         # each GL_LINES segment to a constant pixel width (the _line_vao /
         # VBOs above are reused; only the shader program differs).
         self._thick_line_program: QOpenGLShaderProgram | None = None
@@ -694,13 +694,13 @@ class GLMeshViewer(QOpenGLWidget):
         self._cyl_col_vbo: QOpenGLBuffer | None = None
         # Current-arrow rendering (GL_LINES). Shares the line shader.
         # A separate batch so it doesn't collide with the layer-outline
-        # batch — they're toggled independently from the side panel.
+        # batch - they're toggled independently from the side panel.
         self._arrow_vao: QOpenGLVertexArrayObject | None = None
         self._arrow_pos_vbo: QOpenGLBuffer | None = None
         self._arrow_col_vbo: QOpenGLBuffer | None = None
         # Stub-copper rendering (GL_TRIANGLES). Shares the line shader.
         # These are flat-coloured polygons representing copper that was
-        # excluded from the FEM (dead-end stubs) — drawn so the user can
+        # excluded from the FEM (dead-end stubs) - drawn so the user can
         # still SEE the copper exists, even though no heatmap value is
         # computed for it. Drawn in both 2D and 3D modes.
         self._stub_vao: QOpenGLVertexArrayObject | None = None
@@ -715,13 +715,13 @@ class GLMeshViewer(QOpenGLWidget):
         # Board-outline rendering (GL_TRIANGLES). Shares the line shader.
         # The PCB's mechanical outline drawn as a thick ribbon of triangles
         # so it's bold and visible at any zoom (and uniformly thick across
-        # drivers — glLineWidth past 1.0 is unreliable on Core profiles).
+        # drivers - glLineWidth past 1.0 is unreliable on Core profiles).
         self._bdrl_vao: QOpenGLVertexArrayObject | None = None
         self._bdrl_pos_vbo: QOpenGLBuffer | None = None
         self._bdrl_col_vbo: QOpenGLBuffer | None = None
         # Overlay-fill rendering (GL_TRIANGLES). Shares the line shader.
         # Flat-coloured polygons for the Heatmap tab's Overlays control
-        # when an overlay is set to solid (rather than wire-mesh) fill —
+        # when an overlay is set to solid (rather than wire-mesh) fill -
         # filled pads, vias and component bodies. Drawn on top of the
         # heatmap mesh in both 2D and 3D modes.
         self._ovl_vao: QOpenGLVertexArrayObject | None = None
@@ -745,14 +745,14 @@ class GLMeshViewer(QOpenGLWidget):
         self._pending_indices: np.ndarray | None = None
         self._pending_values: np.ndarray | None = None
         self._pending_cmap: np.ndarray | None = None
-        # Per-vertex alpha batch — None means "draw fully opaque". When set,
+        # Per-vertex alpha batch - None means "draw fully opaque". When set,
         # its length matches the vertex count and _draw_mesh enables
         # blending so dimmed copper (alpha < 1) shows the background through.
         self._pending_alpha: np.ndarray | None = None
         self._n_alpha: int = 0
         self._pending_neutral: np.ndarray | None = None
         self._n_neutral: int = 0
-        # Outline batch — the layer / pad / stub outlines. Packed (N, 3)
+        # Outline batch - the layer / pad / stub outlines. Packed (N, 3)
         # positions + (N, 3) colours, vertices in pairs (GL_LINES), so
         # N == 2 * num_segments. The thick-line geometry shader widens
         # each segment at draw time (see _draw_lines).
@@ -796,7 +796,7 @@ class GLMeshViewer(QOpenGLWidget):
         # Overlay-fill batch (GL_TRIANGLES). Vertex triples; flat-coloured
         # solid-fill polygons for the Overlays control. The leading
         # ``_n_ovl_under_vertices`` are drawn BEFORE the heatmap mesh (2D
-        # mode — bottom-side board features behind the bottom copper); the
+        # mode - bottom-side board features behind the bottom copper); the
         # rest after, on top.
         self._n_ovl_vertices: int = 0
         self._n_ovl_under_vertices: int = 0
@@ -869,7 +869,7 @@ class GLMeshViewer(QOpenGLWidget):
         # separation is visually distinguishable on a 1-2 mm thick
         # stackup vs a 200+ mm wide board.
         self._vertical_exaggeration: float = 10.0
-        # Relief view: full-scale height (world mm, as displayed — i.e.
+        # Relief view: full-scale height (world mm, as displayed - i.e.
         # independent of the layer-spacing exaggeration) that the copper
         # mesh is lifted by at the top of the colour scale. 0 = flat.
         # Only applied in 3D mode; see :meth:`relief_z_span`.
@@ -892,7 +892,7 @@ class GLMeshViewer(QOpenGLWidget):
         self._press_origin: QPointF | None = None
         self._press_center: tuple[float, float] = (0.0, 0.0)
         self._is_panning: bool = False
-        # Right-button press: pan (both modes) / rotate (3D + Shift) —
+        # Right-button press: pan (both modes) / rotate (3D + Shift) -
         # snapshots the view state at press time so dx/dy are cumulative
         # from the press point rather than incremental.
         self._right_press_origin: QPointF | None = None
@@ -912,7 +912,7 @@ class GLMeshViewer(QOpenGLWidget):
         self._middle_press_world: tuple[float, float] = (0.0, 0.0)
         self._middle_press_mpp: float = 1.0
         self._middle_press_distance: float = 1.0
-        # Last hover position in widget-logical pixels — kept so the host
+        # Last hover position in widget-logical pixels - kept so the host
         # can re-unproject the cursor against an arbitrary z-plane (used
         # by the 3D-mode probe to pick the layer under the cursor without
         # round-tripping through ``screen_to_world``'s 2D-only path).
@@ -932,7 +932,7 @@ class GLMeshViewer(QOpenGLWidget):
         # Hit-test rects for the structured legend, rebuilt each paint by
         # :meth:`_draw_legend_chip`. Each entry: (widget-pixel rect, key).
         self._legend_row_rects: list[tuple[QRectF, str]] = []
-        # Set when a left press lands on a legend row — the matching
+        # Set when a left press lands on a legend row - the matching
         # release is then swallowed so the host's empty-space ``clicked``
         # handler doesn't also fire (which would e.g. clear the Vias-tab
         # jump highlight as a side effect of toggling a legend row).
@@ -948,7 +948,7 @@ class GLMeshViewer(QOpenGLWidget):
         # overlay pass as a thin white line on top of everything else.
         self._measurement_line: tuple[float, float, float, float] | None = None
 
-        # --- Background (clear) colour — dark theme to match the rest ---
+        # --- Background (clear) colour - dark theme to match the rest ---
         self._bg_r = 0x1f / 255.0
         self._bg_g = 0x1f / 255.0
         self._bg_b = 0x1f / 255.0
@@ -982,7 +982,7 @@ class GLMeshViewer(QOpenGLWidget):
         # index, so the draw projects every point in one numpy pass.
         self._primitive_selection_xy: np.ndarray | None = None
         self._primitive_selection_starts: np.ndarray | None = None
-        # Red dashed rings around copper that failed FEM meshing — set by the
+        # Red dashed rings around copper that failed FEM meshing - set by the
         # host when a solve aborts on invalid geometry.
         self._mesh_failure_rings: list[
             list[tuple[float, float]]] | None = None
@@ -999,7 +999,7 @@ class GLMeshViewer(QOpenGLWidget):
         self._editor_drag_hit_test = None
         self._editor_drag_active: bool = False
         self._editor_cursor_state: str = "default"
-        # Armed free-marker drop — ``(role, colour)`` while the host's
+        # Armed free-marker drop - ``(role, colour)`` while the host's
         # SOURCE / SINK button (or S / L hotkey) waits for a copper click,
         # else ``None``. Swaps the idle cursor for an arrow badged with the
         # role's triangle so the armed state is visible at the pointer.
@@ -1054,7 +1054,7 @@ class GLMeshViewer(QOpenGLWidget):
         # ordering changed); the host re-pushes it via set_vertex_alpha.
         self._pending_alpha = None
         self._n_alpha = 0
-        # Same for the per-vertex neutral mask — re-pushed via
+        # Same for the per-vertex neutral mask - re-pushed via
         # set_vertex_neutral after each set_mesh.
         self._pending_neutral = None
         self._n_neutral = 0
@@ -1088,7 +1088,7 @@ class GLMeshViewer(QOpenGLWidget):
         self.update()
 
     def set_mesh_extent(self, data_bounds, z_max: float) -> None:
-        """The xy bounds and top z of the part of the mesh being drawn —
+        """The xy bounds and top z of the part of the mesh being drawn -
         what fit-to-data and the 3D framing work from."""
         if data_bounds is None:
             self._data_bounds = None
@@ -1195,7 +1195,7 @@ class GLMeshViewer(QOpenGLWidget):
         """Set the relief-view height: the copper mesh vertex at the top of
         the colour scale is lifted by ``height_mm`` (displayed world mm),
         the one at the bottom by 0, linearly in between. 0 turns the
-        relief off. Cheap — one uniform, no mesh re-upload."""
+        relief off. Cheap - one uniform, no mesh re-upload."""
         h = float(height_mm)
         if not math.isfinite(h) or h < 0.0:
             h = 0.0
@@ -1260,7 +1260,7 @@ class GLMeshViewer(QOpenGLWidget):
 
     def relief_layer_z(self, layer_z: float) -> float:
         """Where the flat plane of a layer at ``layer_z`` is drawn (the
-        surface's zero-value level) — ``layer_z`` itself except in the
+        surface's zero-value level) - ``layer_z`` itself except in the
         ignoring-layers relief. A vertex of normalised value ``t`` sits at
         ``relief_layer_z(layer_z) + t * relief_z_span()``; this is the CPU
         mirror of the vertex shader."""
@@ -1308,7 +1308,7 @@ class GLMeshViewer(QOpenGLWidget):
         return self._view_center_x, self._view_center_y, 0.0
 
     def apply_navlib_pivot(self, x: float, y: float, z: float) -> None:
-        """NavLib pivot move — 3D pan is applied via :meth:`apply_navlib_3d_pose`."""
+        """NavLib pivot move - 3D pan is applied via :meth:`apply_navlib_3d_pose`."""
         return
 
     def apply_navlib_3d_pose(
@@ -1463,7 +1463,7 @@ class GLMeshViewer(QOpenGLWidget):
         wx, wy = self.screen_to_world(hx, hy)
         return wx, wy, 0.0
 
-    # SpaceMouse axis motion (Linux spnav path) — normalized device axes
+    # SpaceMouse axis motion (Linux spnav path) - normalized device axes
     # in roughly [-1, 1], integrated per frame.
     _SPACEMOUSE_PAN_SPEED_2D: float = 800.0
     _SPACEMOUSE_ZOOM_SPEED: float = 1.8
@@ -1552,7 +1552,7 @@ class GLMeshViewer(QOpenGLWidget):
         self.update()
 
     def set_levels(self, vmin: float, vmax: float) -> None:
-        """Set the colormap window. Cheap — just changes a uniform."""
+        """Set the colormap window. Cheap - just changes a uniform."""
         if vmax <= vmin:
             vmax = vmin + 1e-12
         self._levels = (float(vmin), float(vmax))
@@ -1607,7 +1607,7 @@ class GLMeshViewer(QOpenGLWidget):
         self.update()
 
     def clear_mesh(self) -> None:
-        """Drop all mesh data — the canvas paints background only."""
+        """Drop all mesh data - the canvas paints background only."""
         self._n_indices = 0
         self._n_vertices = 0
         self._mesh_ranges = None
@@ -1620,7 +1620,7 @@ class GLMeshViewer(QOpenGLWidget):
 
     def set_show_mesh_edges(self, enabled: bool) -> None:
         """Toggle drawing the FEM triangle edges on top of the filled
-        heatmap. No mesh re-upload — just flips a flag that paintGL reads
+        heatmap. No mesh re-upload - just flips a flag that paintGL reads
         to decide whether to do a second wireframe pass over the same
         index buffer."""
         flag = bool(enabled)
@@ -1636,7 +1636,7 @@ class GLMeshViewer(QOpenGLWidget):
         :data:`_SS_FACTOR` x the device resolution and box-downsampled into
         the widget, so sub-pixel copper survives zoom-out as a faint
         averaged tint instead of being dropped by the rasteriser. Costs GPU
-        memory + fill rate while enabled — hence a user-facing toggle. The
+        memory + fill rate while enabled - hence a user-facing toggle. The
         offscreen buffers are freed (on the next paint) when turned off."""
         flag = bool(enabled)
         if flag == self._supersample:
@@ -1667,7 +1667,7 @@ class GLMeshViewer(QOpenGLWidget):
         if pos2_or_3.ndim != 2 or pos2_or_3.shape[1] not in (2, 3):
             raise ValueError("positions must be (N, 2) or (N, 3)")
         if pos2_or_3.shape[1] == 2:
-            # Promote to (N, 3) with z=0 — the shader expects vec3.
+            # Promote to (N, 3) with z=0 - the shader expects vec3.
             pos = np.zeros((pos2_or_3.shape[0], 3), dtype=np.float32)
             pos[:, :2] = pos2_or_3
         else:
@@ -1691,7 +1691,7 @@ class GLMeshViewer(QOpenGLWidget):
         self.update()
 
     def clear_outlines(self) -> None:
-        """Drop all outline data — the canvas paints just the heatmap
+        """Drop all outline data - the canvas paints just the heatmap
         and any markers / overlay text."""
         self._n_line_vertices = 0
         self._pending_line_positions = None
@@ -1748,7 +1748,7 @@ class GLMeshViewer(QOpenGLWidget):
         vertices, so N must be even. Each arrow contributes 6 vertices
         (shaft + two head wings, three segments). A (N, 2) array is
         broadcast to z=0. ``color`` is a single RGB tuple in [0..1]
-        applied to every vertex — arrows are drawn flat-coloured so the
+        applied to every vertex - arrows are drawn flat-coloured so the
         underlying heatmap colour stays readable.
         """
         pos2_or_3 = np.ascontiguousarray(positions, dtype=np.float32)
@@ -1785,7 +1785,7 @@ class GLMeshViewer(QOpenGLWidget):
         of 3. ``colors`` is an (N, 3) RGB array in [0..1] matching
         ``positions`` length.
 
-        Drawn in both 2D and 3D modes — the user wants to see this
+        Drawn in both 2D and 3D modes - the user wants to see this
         copper exists even though no FEM result is computed for it.
         """
         pos = np.ascontiguousarray(positions, dtype=np.float32)
@@ -1811,16 +1811,16 @@ class GLMeshViewer(QOpenGLWidget):
         """Push a batch of solid-fill overlay triangles to the GPU.
 
         Used by the Heatmap tab's Overlays control for overlays set to
-        solid (rather than wire-mesh) fill — filled pads, vias and
+        solid (rather than wire-mesh) fill - filled pads, vias and
         component bodies. ``positions`` is an (N, 3) float array of vertex
         triples (consecutive triples form one triangle), so N must be a
         multiple of 3. ``colors`` is an (N, 4) RGBA array in [0..1] of
-        matching length — the alpha channel drives the per-row
+        matching length - the alpha channel drives the per-row
         transparency control. An (N, 3) RGB array is also accepted and
         treated as fully opaque.
 
         ``under_mesh_count`` (must be a multiple of 3) selects how many
-        leading vertices are drawn BEFORE the heatmap mesh — used in 2D
+        leading vertices are drawn BEFORE the heatmap mesh - used in 2D
         mode to push bottom-side board features behind the bottom copper.
         The remaining vertices are drawn after the mesh, on top.
         """
@@ -1934,7 +1934,7 @@ class GLMeshViewer(QOpenGLWidget):
         is (N, 3) RGB float32. Both must have matching N and N % 6 == 0.
 
         ``under_mesh_count`` (must be a multiple of 3) selects how many
-        leading vertices are drawn BEFORE the heatmap mesh — used in 2D
+        leading vertices are drawn BEFORE the heatmap mesh - used in 2D
         mode to push bottom-side bars behind the bottom copper. The
         remaining vertices are drawn after the mesh, on top.
         """
@@ -2053,9 +2053,9 @@ class GLMeshViewer(QOpenGLWidget):
 
     # --- 3D camera helpers -------------------------------------------------
 
-    # Default 3D camera angles — restored by :meth:`reset_3d_view`.
+    # Default 3D camera angles - restored by :meth:`reset_3d_view`.
     # Default 3D view = essentially top-down so it visually matches 2D
-    # mode on first entry / reset. 89° (not 90°) avoids gimbal lock —
+    # mode on first entry / reset. 89° (not 90°) avoids gimbal lock -
     # at exactly 90° the world-up (0, 0, 1) would be parallel to the
     # view direction and lookAt becomes degenerate. The 1° tilt is
     # imperceptible at typical viewer distances.
@@ -2103,7 +2103,7 @@ class GLMeshViewer(QOpenGLWidget):
         """New camera distance for a wheel/middle-drag zoom step.
 
         Naive ``base_distance * factor`` is what the old code did, and it
-        feels like the zoom slows down as the camera gets close — because
+        feels like the zoom slows down as the camera gets close - because
         the camera target sits at z=0 while the copper is some way above
         it (more so with vertical exaggeration), so the apparent
         magnification asymptotes well before the camera actually reaches
@@ -2151,7 +2151,7 @@ class GLMeshViewer(QOpenGLWidget):
             self.update()
             return
         # Compute the reset target/distance without disturbing the
-        # live camera — we'll animate towards them.
+        # live camera - we'll animate towards them.
         saved_target = self._cam_target
         saved_distance = self._cam_distance
         self._fit_3d_to_data()
@@ -2283,7 +2283,7 @@ class GLMeshViewer(QOpenGLWidget):
 
     def set_overlay_top_right(self, html: str) -> None:
         self._overlay_top_right_html = html or ""
-        # Plain-HTML and structured legend share the same corner — setting
+        # Plain-HTML and structured legend share the same corner - setting
         # one clears the other so we never render both stacked.
         self._overlay_top_right_legend = []
         self._legend_row_rects = []
@@ -2320,7 +2320,7 @@ class GLMeshViewer(QOpenGLWidget):
         self.update()
 
     def set_editor_mode(self, on: bool) -> None:
-        """Toggle the editor-mode look — bluish background + faint world-mm
+        """Toggle the editor-mode look - bluish background + faint world-mm
         grid. Pure display state; does not touch any mesh data."""
         on = bool(on)
         if on == self._editor_mode:
@@ -2350,7 +2350,7 @@ class GLMeshViewer(QOpenGLWidget):
             self._apply_editor_cursor("default")
 
     def set_editor_drag_hit_test(self, hit_test) -> None:
-        """Register the host's free-marker hit-test — a callable
+        """Register the host's free-marker hit-test - a callable
         ``(world_x, world_y) -> bool`` that reports whether a draggable
         free marker sits under the point. Pass ``None`` to disable
         editor-mode marker dragging."""
@@ -2446,7 +2446,7 @@ class GLMeshViewer(QOpenGLWidget):
         included yet, with a small ring on each of its pads and a label.
 
         Each link is ``{"a": [(x, y, z), ...], "b": [...], "label": str}`` in
-        world mm — ``a`` / ``b`` are the pads of each side. No-op when
+        world mm - ``a`` / ``b`` are the pads of each side. No-op when
         unchanged so a redundant push doesn't repaint."""
         new = None
         if links:
@@ -2506,9 +2506,9 @@ class GLMeshViewer(QOpenGLWidget):
 
     def set_roi_highlights(self, items) -> None:
         """Set (or clear, with ``None``) the Copper ROI suggestions drawn
-        over the heatmap. Each item is a dict with ``kind`` ("widen" — an
-        open polyline along the copper edge, in ``coords``; "parallel" —
-        closed outlines of a region, in ``rings``; "via" — a point),
+        over the heatmap. Each item is a dict with ``kind`` ("widen" - an
+        open polyline along the copper edge, in ``coords``; "parallel" -
+        closed outlines of a region, in ``rings``; "via" - a point),
         ``x`` / ``y`` (the label anchor), ``rank`` (1-based, drawn as the
         label), ``selected`` and ``blocked``."""
         self._roi_highlights = list(items) if items else None
@@ -2538,7 +2538,7 @@ class GLMeshViewer(QOpenGLWidget):
 
         In 2D this is the orthographic-projection inverse. In 3D, where a
         single screen pixel corresponds to a whole world-space ray, the
-        return value is the ray's intersection with the z=0 plane — use
+        return value is the ray's intersection with the z=0 plane - use
         :meth:`screen_to_world_at_z` to pick a different z (e.g. an inner
         layer's stackup height) so the cursor lands on the copper the
         user is actually looking at."""
@@ -2555,7 +2555,7 @@ class GLMeshViewer(QOpenGLWidget):
         """Unproject a widget-local pixel to the world-space (x, y) where
         the camera ray meets the plane z = ``z_world``.
 
-        In 2D mode the z plane is irrelevant — returns the same
+        In 2D mode the z plane is irrelevant - returns the same
         coordinates as :meth:`screen_to_world` would. In 3D mode the
         ray is built from the inverse MVP (so ``z_world`` is in the
         same un-exaggerated mm as the host's stackup z values; the
@@ -2613,7 +2613,7 @@ class GLMeshViewer(QOpenGLWidget):
         return self._last_hover_pixel
 
     def set_last_hover_pixel(self, x_px: float, y_px: float) -> None:
-        """Seed the last-hover pixel from outside the move-event path —
+        """Seed the last-hover pixel from outside the move-event path -
         used when the host wants to synthesize a hover without a real
         mouse event (e.g. on toggling the cursor tooltip on)."""
         self._last_hover_pixel = (float(x_px), float(y_px))
@@ -2659,8 +2659,8 @@ class GLMeshViewer(QOpenGLWidget):
     ) -> tuple[np.ndarray, np.ndarray]:
         """Vectorised :meth:`world_to_screen` for a whole point array.
 
-        Same formula per point — 2D affine, or one MVP matmul + perspective
-        divide in 3D — so results match ``world_to_screen`` element-for-element.
+        Same formula per point - 2D affine, or one MVP matmul + perspective
+        divide in 3D - so results match ``world_to_screen`` element-for-element.
         Behind-camera points (3D) get the ``-1e9`` sentinel so viewport culling
         drops them. Used by ``_draw_markers`` to project + cull thousands of
         via/PTH markers in numpy instead of a per-marker Python call (and to
@@ -2696,7 +2696,7 @@ class GLMeshViewer(QOpenGLWidget):
         # Re-entering initializeGL means Qt recreated the GL context (reparent
         # to a new top-level, driver reset, …). Every VBO/IBO/VAO built by the
         # previous context is gone, but the host-set ``_n_*`` vertex counts
-        # survive — so without this guard paintGL would draw against the fresh,
+        # survive - so without this guard paintGL would draw against the fresh,
         # never-allocated buffers built below (garbage or a crash). Drop the
         # counts whose data was already consumed by the old context's upload;
         # any batch still holding a pending array re-uploads through the normal
@@ -2705,7 +2705,7 @@ class GLMeshViewer(QOpenGLWidget):
         if self._gl_initialized:
             self._reset_gpu_state_for_new_context()
         self._max_renderbuffer_size = None
-        # Background colour — the bare-substrate look outside the mesh.
+        # Background colour - the bare-substrate look outside the mesh.
         GL.glClearColor(self._bg_r, self._bg_g, self._bg_b, 1.0)
         # Build & link the shader program.
         prog = QOpenGLShaderProgram()
@@ -2753,7 +2753,7 @@ class GLMeshViewer(QOpenGLWidget):
         self._cmap_tex.setData(0, QOpenGLTexture.RGBA, QOpenGLTexture.UInt8,
                                 placeholder.tobytes())
 
-        # Line / outline shader program — vec2 position + vec3 colour,
+        # Line / outline shader program - vec2 position + vec3 colour,
         # MVP-transformed, no texture lookup. Used for per-layer copper
         # outlines drawn on top of the heatmap mesh.
         line_prog = QOpenGLShaderProgram()
@@ -2773,7 +2773,7 @@ class GLMeshViewer(QOpenGLWidget):
         self._line_col_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
         self._line_col_vbo.create()
 
-        # Overlay shader — same MVP-only transform as the line shader, but
+        # Overlay shader - same MVP-only transform as the line shader, but
         # the per-vertex colour carries alpha so Board Features rows can
         # fade out without disturbing any other batch.
         overlay_prog = QOpenGLShaderProgram()
@@ -2788,7 +2788,7 @@ class GLMeshViewer(QOpenGLWidget):
         self._overlay_program = overlay_prog
         self._overlay_u_mvp_loc = overlay_prog.uniformLocation("u_mvp")
 
-        # Thick-line program for the outline batch — a geometry shader
+        # Thick-line program for the outline batch - a geometry shader
         # widens each GL_LINES segment into a constant-pixel-width quad.
         # Separate from the flat line program because a `layout(lines)`
         # geometry shader only accepts line primitives, while the line
@@ -2815,7 +2815,7 @@ class GLMeshViewer(QOpenGLWidget):
         self._line_relief_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
         self._line_relief_vbo.create()
 
-        # Via cylinder VAO/VBOs — share the line shader.
+        # Via cylinder VAO/VBOs - share the line shader.
         self._cyl_vao = QOpenGLVertexArrayObject()
         self._cyl_vao.create()
         self._cyl_pos_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
@@ -2823,7 +2823,7 @@ class GLMeshViewer(QOpenGLWidget):
         self._cyl_col_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
         self._cyl_col_vbo.create()
 
-        # Current-arrow VAO/VBOs — share the line shader.
+        # Current-arrow VAO/VBOs - share the line shader.
         self._arrow_vao = QOpenGLVertexArrayObject()
         self._arrow_vao.create()
         self._arrow_pos_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
@@ -2831,7 +2831,7 @@ class GLMeshViewer(QOpenGLWidget):
         self._arrow_col_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
         self._arrow_col_vbo.create()
 
-        # Stub-copper VAO/VBOs — share the line shader.
+        # Stub-copper VAO/VBOs - share the line shader.
         self._stub_vao = QOpenGLVertexArrayObject()
         self._stub_vao.create()
         self._stub_pos_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
@@ -2839,7 +2839,7 @@ class GLMeshViewer(QOpenGLWidget):
         self._stub_col_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
         self._stub_col_vbo.create()
 
-        # Series-bar VAO/VBOs — share the line shader.
+        # Series-bar VAO/VBOs - share the line shader.
         self._sbar_vao = QOpenGLVertexArrayObject()
         self._sbar_vao.create()
         self._sbar_pos_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
@@ -2847,7 +2847,7 @@ class GLMeshViewer(QOpenGLWidget):
         self._sbar_col_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
         self._sbar_col_vbo.create()
 
-        # Board-outline VAO/VBOs — share the line shader.
+        # Board-outline VAO/VBOs - share the line shader.
         self._bdrl_vao = QOpenGLVertexArrayObject()
         self._bdrl_vao.create()
         self._bdrl_pos_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
@@ -2855,7 +2855,7 @@ class GLMeshViewer(QOpenGLWidget):
         self._bdrl_col_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
         self._bdrl_col_vbo.create()
 
-        # Overlay-fill VAO/VBOs — share the line shader.
+        # Overlay-fill VAO/VBOs - share the line shader.
         self._ovl_vao = QOpenGLVertexArrayObject()
         self._ovl_vao.create()
         self._ovl_pos_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
@@ -2881,7 +2881,7 @@ class GLMeshViewer(QOpenGLWidget):
         self._copper_vao = QOpenGLVertexArrayObject()
         self._copper_vao.create()
 
-        # Supersampling (SSAA) downsample shader — a textured fullscreen
+        # Supersampling (SSAA) downsample shader - a textured fullscreen
         # triangle that resolves the oversized offscreen buffer into the
         # widget. An empty VAO satisfies the core-profile rule that a VAO
         # be bound for any draw; the triangle's three vertices come from
@@ -2910,7 +2910,7 @@ class GLMeshViewer(QOpenGLWidget):
         VBO is gone with the old context; with no pending array to re-upload,
         the only safe state is "empty" so paintGL skips it until the host
         pushes fresh geometry. Batches that still hold a pending array are left
-        untouched — the flush re-uploads them into the new context.
+        untouched - the flush re-uploads them into the new context.
 
         This makes the scene survive a context loss as *blank until the next
         push* rather than fully re-rendering the last data; full survival would
@@ -2955,7 +2955,7 @@ class GLMeshViewer(QOpenGLWidget):
         # Use device pixels for the GL viewport on Hi-DPI displays.
         dpr = self.devicePixelRatio()
         GL.glViewport(0, 0, int(w * dpr), int(h * dpr))
-        # Resize doesn't change centre/scale — that's the CAD-style fixed
+        # Resize doesn't change centre/scale - that's the CAD-style fixed
         # zoom; the visible area grows or shrinks instead. Host can call
         # fit_to_data if it wants a re-fit.
         self.viewChanged.emit()
@@ -2963,14 +2963,14 @@ class GLMeshViewer(QOpenGLWidget):
     def paintGL(self) -> None:
         # Reset the GL state the previous frame's QPainter overlay pass may
         # have left behind. QPainter on a QOpenGLWidget renders through the
-        # GL paint engine, which — on some drivers — leaves GL_SCISSOR_TEST
+        # GL paint engine, which - on some drivers - leaves GL_SCISSOR_TEST
         # enabled (clipped to the last thing it drew) and the colour/depth
         # write masks altered when it ends. That state is global to the
         # context and survives into this paintGL, so the next glClear and
         # every draw get clipped/masked to a stale rect, leaving the frame
         # partially updated ("transformed/illegible") until enough repaints
         # (e.g. dragging the mouse) happen to scrub in every region. Drivers
-        # that scrub this state on QPainter.end() never show it — hence it
+        # that scrub this state on QPainter.end() never show it - hence it
         # only reproduces on some machines. Reset before we touch the
         # framebuffer so glClear and the depth-sorted passes start clean.
         # See https://github.com/anarthrous-eda/FYPA/issues/1
@@ -2979,7 +2979,7 @@ class GLMeshViewer(QOpenGLWidget):
         GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE)
         GL.glDepthMask(GL.GL_TRUE)
         # Render straight to the widget's framebuffer, unless supersampling
-        # is enabled AND its offscreen buffers are available this frame —
+        # is enabled AND its offscreen buffers are available this frame -
         # then render oversized and downsample. The QPainter overlay pass
         # always runs last, at native resolution, so text / markers / chips
         # stay crisp regardless of the supersample factor.
@@ -2991,7 +2991,7 @@ class GLMeshViewer(QOpenGLWidget):
             if self._ss_resolve_fbo is not None:
                 self._release_ss_fbos()
             self._render_scene()
-        # Overlays (markers + text chips) drawn via QPainter — works on
+        # Overlays (markers + text chips) drawn via QPainter - works on
         # the QOpenGLWidget because QPainter uses the GL paint engine.
         # MUST be called outside the active program's bind to avoid
         # state corruption from the painter.
@@ -3020,8 +3020,8 @@ class GLMeshViewer(QOpenGLWidget):
         #    with a textured fullscreen triangle. The resolve texture is
         #    LINEAR-filtered, so sampling it at the (smaller) widget
         #    resolution averages each 2x2 oversize block. A blit can't be
-        #    used here — scaling into the widget's own multisample FBO is
-        #    a GL error — but drawing a quad into it is ordinary rendering.
+        #    used here - scaling into the widget's own multisample FBO is
+        #    a GL error - but drawing a quad into it is ordinary rendering.
         dpr = self.devicePixelRatio()
         w = max(1, int(self.width() * dpr))
         h = max(1, int(self.height() * dpr))
@@ -3096,7 +3096,7 @@ class GLMeshViewer(QOpenGLWidget):
 
     def _release_ss_fbos(self) -> None:
         """Drop the offscreen supersample FBOs, freeing their GPU memory.
-        Runs from the paint path only — releasing the last Python
+        Runs from the paint path only - releasing the last Python
         reference fires the QOpenGLFramebufferObject destructor, which
         needs a current GL context to delete its renderbuffers."""
         self._ss_ms_fbo = None
@@ -3104,19 +3104,19 @@ class GLMeshViewer(QOpenGLWidget):
         self._ss_fbo_size = (0, 0)
 
     def _render_scene(self) -> None:
-        """Draw the full GL scene — copper mesh, stubs, overlays, outlines,
-        arrows — into whichever framebuffer is currently bound. Split out
+        """Draw the full GL scene - copper mesh, stubs, overlays, outlines,
+        arrows - into whichever framebuffer is currently bound. Split out
         of :meth:`paintGL` so it can target either the widget directly or
         the oversized supersample buffer."""
-        # Clear colour follows the editor/viewer mode — set per-frame here
+        # Clear colour follows the editor/viewer mode - set per-frame here
         # (rather than once in initializeGL) so set_editor_mode takes effect
         # without needing the GL context made current off the paint path.
         bg = self._bg_editor if self._editor_mode else self._bg_normal
         GL.glClearColor(bg[0], bg[1], bg[2], 1.0)
         # In 3D every pass uses depth testing for correct front/back
         # ordering. In 2D depth testing is selectively enabled on the
-        # layered fills (the under-mesh overlay batch — which carries the
-        # all-copper geometry — plus the rail mesh itself plus the outline
+        # layered fills (the under-mesh overlay batch - which carries the
+        # all-copper geometry - plus the rail mesh itself plus the outline
         # pass) so they sort by their per-vertex layer-z: rail mesh sits
         # above same-layer all-copper, top layers sit above bottom layers
         # both for fills and for outlines. The other passes (stubs,
@@ -3130,7 +3130,7 @@ class GLMeshViewer(QOpenGLWidget):
             GL.glDisable(GL.GL_DEPTH_TEST)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
         self._flush_pending_uploads()
-        # Stubs first — flat-grey copper polygons drawn underneath the
+        # Stubs first - flat-grey copper polygons drawn underneath the
         # heatmap mesh. If a stub happens to overlap a solved layer
         # piece (unlikely after the filter, but possible), the heatmap
         # paints on top.
@@ -3144,7 +3144,7 @@ class GLMeshViewer(QOpenGLWidget):
         if (self._n_sbar_under_vertices > 0
                 and self._line_program is not None):
             self._draw_series_bars(0, self._n_sbar_under_vertices)
-        # Under-mesh overlay batch (2D) — bottom-side board features plus
+        # Under-mesh overlay batch (2D) - bottom-side board features plus
         # every layer's all-copper geometry. Enable depth test + write
         # with GL_LEQUAL so the layers sort by their per-vertex z (top
         # all-copper paints above bottom all-copper above bottom-side
@@ -3197,7 +3197,7 @@ class GLMeshViewer(QOpenGLWidget):
         # in 3D). In 2D nothing here is depth-tested, so it must come before
         # the overlay batch for the board features and markers to paint over
         # it. In 3D depth sorts the opaque geometry and the copper blends, so
-        # it comes after — otherwise a see-through layer would depth-reject
+        # it comes after - otherwise a see-through layer would depth-reject
         # the features behind it.
         if self._copper_draws and in_2d:
             self._draw_copper(under=False)
@@ -3230,7 +3230,7 @@ class GLMeshViewer(QOpenGLWidget):
                 and self._line_program is not None):
             self._draw_arrows()
         # Board outline last so it always paints on top of the heatmap,
-        # outlines, stubs, and arrows — the user uses this overlay to see
+        # outlines, stubs, and arrows - the user uses this overlay to see
         # the PCB boundary against all the other visuals.
         if (self._n_bdrl_vertices > 0
                 and self._line_program is not None):
@@ -3496,7 +3496,7 @@ class GLMeshViewer(QOpenGLWidget):
         disabled so every vertex receives the same constant colour set
         via ``glVertexAttrib3f``. ``glPolygonMode(GL_FRONT_AND_BACK,
         GL_LINE)`` plus a GL_TRIANGLES draw is the standard wireframe
-        trick — each triangle rasterises as its three edges, sharing the
+        trick - each triangle rasterises as its three edges, sharing the
         edge between adjacent triangles for free.
 
         Skipped while the relief view is on: the line shader has no value
@@ -3513,7 +3513,7 @@ class GLMeshViewer(QOpenGLWidget):
         GL.glEnableVertexAttribArray(0)
         GL.glVertexAttribPointer(0, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
         self._pos_vbo.release()
-        # Constant colour for every wireframe vertex — disable the array
+        # Constant colour for every wireframe vertex - disable the array
         # for attribute 1 and supply a generic value. Dark grey reads on
         # top of viridis without overpowering it.
         GL.glDisableVertexAttribArray(1)
@@ -3532,7 +3532,7 @@ class GLMeshViewer(QOpenGLWidget):
         """Draw the layer / pad / stub outline batch as GL_LINES.
 
         The thick-line program's geometry shader widens each segment into
-        a screen-space quad ``_OUTLINE_WIDTH_PX`` device px wide — a width
+        a screen-space quad ``_OUTLINE_WIDTH_PX`` device px wide - a width
         that stays constant in pixels at every zoom. glLineWidth past 1.0
         raises GL_INVALID_VALUE on Core profile drivers, so the width has
         to be built as geometry rather than set as line state."""
@@ -3548,7 +3548,7 @@ class GLMeshViewer(QOpenGLWidget):
         # uses a raw call too, just to keep the two together. The program
         # is bound, so the raw glUniform calls target it.
         #
-        # u_viewport is the final on-screen size — NDC is resolution
+        # u_viewport is the final on-screen size - NDC is resolution
         # independent, so the offset yields _OUTLINE_WIDTH_PX final pixels
         # whether the scene renders direct or into the supersample buffer.
         dpr = self.devicePixelRatio()
@@ -3557,7 +3557,7 @@ class GLMeshViewer(QOpenGLWidget):
                        float(max(1.0, self.height() * dpr)))
         GL.glUniform1f(self._thick_u_half_px_loc,
                        float(_OUTLINE_WIDTH_PX) * 0.5)
-        # Relief lift — the same uniforms and mapping as _draw_mesh, so the
+        # Relief lift - the same uniforms and mapping as _draw_mesh, so the
         # outline stays on the lifted copper edge (identity when off).
         GL.glUniform2f(self._thick_u_levels_loc,
                        float(self._levels[0]), float(self._levels[1]))
@@ -3839,7 +3839,7 @@ class GLMeshViewer(QOpenGLWidget):
         )
         # Top-right corner: structured legend takes precedence over the
         # plain-HTML chip so per-row click handling stays consistent.
-        # Reset the hit-test list each paint — only the chip drawn this
+        # Reset the hit-test list each paint - only the chip drawn this
         # frame contributes rects.
         self._legend_row_rects = []
         if self._overlay_top_right_legend:
@@ -3851,7 +3851,7 @@ class GLMeshViewer(QOpenGLWidget):
         painter.end()
 
     def _draw_editor_grid(self, painter: QPainter) -> None:
-        """Faint world-mm grid for editor mode. 2D only — a grid drawn over
+        """Faint world-mm grid for editor mode. 2D only - a grid drawn over
         the stacked layers in 3D would just be visual noise. The spacing
         snaps to a 1/2/5×10ⁿ mm value chosen so adjacent lines land roughly
         70 px apart at the current zoom; lines on whole-10ⁿ-mm coordinates
@@ -3983,7 +3983,7 @@ class GLMeshViewer(QOpenGLWidget):
     def _draw_roi_highlights(self, painter: QPainter) -> None:
         """Copper ROI suggestions: a solid line along an edge worth widening,
         a dashed outline round a region worth a parallel layer, a ring on a
-        via worth doubling — each tagged with its rank in the list."""
+        via worth doubling - each tagged with its rank in the list."""
         items = self._roi_highlights
         if not items:
             return
@@ -4110,7 +4110,7 @@ class GLMeshViewer(QOpenGLWidget):
         x0_px, y0_px = self.world_to_screen(x0_mm, y0_mm)
         x1_px, y1_px = self.world_to_screen(x1_mm, y1_mm)
         # world_to_screen returns -1e9 sentinels for behind-camera points
-        # in 3D — drop the line entirely if either endpoint is invalid.
+        # in 3D - drop the line entirely if either endpoint is invalid.
         if min(x0_px, x1_px) < -1e8 or min(y0_px, y1_px) < -1e8:
             return
         painter.save()
@@ -4147,7 +4147,7 @@ class GLMeshViewer(QOpenGLWidget):
         w, h = self.width(), self.height()
         painter.save()
         font = QFont(painter.font())
-        # Batch-project every anchor for this pass in one call — in 3D this
+        # Batch-project every anchor for this pass in one call - in 3D this
         # builds the MVP once instead of once per label (world_to_screen rebuilds
         # it every call). _project_points_screen matches world_to_screen element
         # for element, so culling / positioning below is unchanged; only the
@@ -4174,7 +4174,7 @@ class GLMeshViewer(QOpenGLWidget):
                 continue
             size_px = float(lab.get("height_mm", 1.0) or 1.0) / mpp
             if size_px < 5.0:
-                continue  # too small to read at this zoom — skip
+                continue  # too small to read at this zoom - skip
             font.setPixelSize(int(round(min(size_px, 48.0))))
             painter.setFont(font)
             painter.setPen(QPen(QColor(lab.get("color", "#d0d0d0"))))
@@ -4183,7 +4183,7 @@ class GLMeshViewer(QOpenGLWidget):
             if centered:
                 fm = QFontMetricsF(font)
                 tw = fm.horizontalAdvance(text)
-                # Cap-height-based vertical centre — keeps the glyph body
+                # Cap-height-based vertical centre - keeps the glyph body
                 # visually centred on the anchor instead of dropping the
                 # baseline onto it.
                 th = fm.capHeight() if fm.capHeight() > 0 else fm.ascent()
@@ -4226,7 +4226,7 @@ class GLMeshViewer(QOpenGLWidget):
             ring_colors = group.ring_colors
             ring_w = float(group.ring_width)
             rings_on = ring_w > 0.0 and ring_colors is not None
-            # Project + size + viewport-cull the whole group in numpy — one MVP
+            # Project + size + viewport-cull the whole group in numpy - one MVP
             # matmul (3D) or affine (2D) instead of a per-marker world_to_screen
             # Python call, and the QPainter loop below runs only over the
             # on-screen survivors. World-space sizing scales each marker with
@@ -4327,7 +4327,7 @@ class GLMeshViewer(QOpenGLWidget):
             ])
             painter.drawPolygon(poly)
         elif symbol == "star":
-            # 5-pointed star — outer radius r, inner radius r*0.4.
+            # 5-pointed star - outer radius r, inner radius r*0.4.
             outer = r
             inner = r * 0.4
             poly = QPolygonF()
@@ -4356,7 +4356,7 @@ class GLMeshViewer(QOpenGLWidget):
             # same `size`. The triangle is NOT centred within its `size`
             # square (apex at ±r, base at ∓0.5r), so a plain centred
             # square leaves a gap one side and clips the apex on the
-            # other — this draws the triangle's true bounding rectangle
+            # other - this draws the triangle's true bounding rectangle
             # instead, plus a hairline pad so the box stroke clears the
             # triangle's own outline.
             pad = 2.0
@@ -4367,7 +4367,7 @@ class GLMeshViewer(QOpenGLWidget):
                 y0, y1 = py - r * 0.5 - pad, py + r + pad
             painter.drawRect(QRectF(px - half_w, y0, 2.0 * half_w, y1 - y0))
         elif symbol == "bolt":
-            # Lightning bolt — 7-point concave polygon. Geometry lifted
+            # Lightning bolt - 7-point concave polygon. Geometry lifted
             # from the Material Design ``flash_on`` icon and normalised
             # to ±1 from the marker centre.
             pts = (
@@ -4383,7 +4383,7 @@ class GLMeshViewer(QOpenGLWidget):
                 QPointF(px + dx * r, py + dy * r) for dx, dy in pts
             ]))
         elif symbol == "target":
-            # Bullseye — outer filled circle in the marker's brush
+            # Bullseye - outer filled circle in the marker's brush
             # colour, with a small contrasting centre dot stamped on
             # top so it reads as a target / "here" pin at any zoom.
             painter.drawEllipse(QPointF(px, py), r, r)
@@ -4403,7 +4403,7 @@ class GLMeshViewer(QOpenGLWidget):
         # Cache the parsed + laid-out QTextDocument keyed on the HTML. The chip
         # content is static while panning/zooming (only its position moves), so
         # this skips the setHtml + adjustSize reparse every frame; only
-        # drawContents (the actual paint) runs per frame. The cache is capped —
+        # drawContents (the actual paint) runs per frame. The cache is capped -
         # the HTML changes when the probe readout does, but only a couple of
         # chips are ever live.
         cache = getattr(self, "_overlay_chip_doc_cache", None)
@@ -4413,7 +4413,7 @@ class GLMeshViewer(QOpenGLWidget):
         if entry is None:
             doc = QTextDocument()
             doc.setDefaultFont(QFont("Segoe UI", 9))
-            # Force light text — the dark chip background otherwise eats the
+            # Force light text - the dark chip background otherwise eats the
             # default near-black foreground.
             doc.setDefaultStyleSheet(
                 "body, p, table, td, span { color: #e6e6e6; }")
@@ -4432,7 +4432,7 @@ class GLMeshViewer(QOpenGLWidget):
             x = margin
         y = margin
         # Background + border in one drawRect. Setting BOTH pen and
-        # brush explicitly here is critical — _draw_markers leaves the
+        # brush explicitly here is critical - _draw_markers leaves the
         # painter's brush set to whatever the last marker group used
         # (e.g. the yellow Vias-tab "Go" highlight), and drawRect would
         # otherwise re-fill the chip interior with that leftover brush.
@@ -4445,7 +4445,7 @@ class GLMeshViewer(QOpenGLWidget):
         doc.drawContents(painter)
         painter.restore()
 
-    # Top-right legend chip — manual layout (instead of QTextDocument) so
+    # Top-right legend chip - manual layout (instead of QTextDocument) so
     # we can compute exact per-row rects for click hit-testing and draw a
     # diagonal slash across rows whose ``hidden`` flag is set. Layout
     # mirrors the table the plain-HTML legend used: glyph swatch column,
@@ -4505,7 +4505,7 @@ class GLMeshViewer(QOpenGLWidget):
                              Qt.AlignVCenter | Qt.AlignLeft, r.label)
 
             if r.hidden:
-                # Diagonal slash matching the eye-icon off-state — drawn
+                # Diagonal slash matching the eye-icon off-state - drawn
                 # across the row's interior so both the swatch and label
                 # read as "visibility off". Same bright neutral tone as
                 # the label text so it stays visible on any swatch colour.
@@ -4616,7 +4616,7 @@ class GLMeshViewer(QOpenGLWidget):
                 self._middle_press_mpp = self._mm_per_pixel
             else:
                 # 3D: dolly the camera in/out (pivots around the camera
-                # target — simplest sensible behaviour without ray-casts).
+                # target - simplest sensible behaviour without ray-casts).
                 self._middle_press_distance = self._cam_distance
             ev.accept()
             return
@@ -4624,7 +4624,7 @@ class GLMeshViewer(QOpenGLWidget):
 
     def mouseMoveEvent(self, ev) -> None:
         pos = ev.position()
-        # Editor-mode free-marker drag — report the cursor world position
+        # Editor-mode free-marker drag - report the cursor world position
         # to the host and skip every pan / hover code path below.
         if self._editor_drag_active:
             wx, wy = self.screen_to_world(pos.x(), pos.y())
@@ -4762,7 +4762,7 @@ class GLMeshViewer(QOpenGLWidget):
     def mouseReleaseEvent(self, ev) -> None:
         if ev.button() == Qt.LeftButton:
             if self._legend_press_consumed:
-                # Matching release for a legend-row click — swallow it so
+                # Matching release for a legend-row click - swallow it so
                 # the host's empty-space ``clicked`` handler doesn't fire.
                 self._legend_press_consumed = False
                 ev.accept()
@@ -4810,7 +4810,7 @@ class GLMeshViewer(QOpenGLWidget):
         super().mouseReleaseEvent(ev)
 
     def contextMenuEvent(self, ev) -> None:
-        # Swallow the default right-click context menu — right-button
+        # Swallow the default right-click context menu - right-button
         # drag is the pan gesture in both 2D and 3D modes, so a popup
         # would only get in the way.
         ev.accept()
@@ -4830,7 +4830,7 @@ class GLMeshViewer(QOpenGLWidget):
             self.update()
             ev.accept()
             return
-        # 2D: zoom around the cursor — keep the world point under the
+        # 2D: zoom around the cursor - keep the world point under the
         # mouse fixed across the scale change.
         pos = ev.position()
         wx_before, wy_before = self.screen_to_world(pos.x(), pos.y())

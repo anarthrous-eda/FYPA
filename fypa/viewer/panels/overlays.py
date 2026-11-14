@@ -45,17 +45,17 @@ class _OverlayPanelMixin:
     # --- Overlays control ----------------------------------------------------
 
     def _init_overlay_state(self) -> None:
-        """Build the Overlays control's state dict — the source of truth
+        """Build the Overlays control's state dict - the source of truth
         that :meth:`_build_overlay_list` renders rows from.
 
         One entry per overlay layer. ``split`` says whether the layer is
         shown as one merged row or separate Top / Bottom rows; each row
-        variant (``both`` / ``top`` / ``bottom``) tracks ``vis`` — one of
+        variant (``both`` / ``top`` / ``bottom``) tracks ``vis`` - one of
         ``None`` (hidden), ``"rails"`` (visible on the selected rails only)
-        or ``"all"`` (visible everywhere) — and ``solid`` (the fill style).
+        or ``"all"`` (visible everywhere) - and ``solid`` (the fill style).
 
         Draw colour lives separately. ``self._overlay_colors`` holds the
-        primary colour per layer — used by a merged row and the Top side of
+        primary colour per layer - used by a merged row and the Top side of
         a split one. ``self._overlay_bottom_colors`` holds the distinct
         colour for the layer's Bottom side (``None`` == follow the primary);
         it applies whether the layer is split or merged. Both are seeded
@@ -127,7 +127,7 @@ class _OverlayPanelMixin:
         """Override the built-in overlay colours with any saved in the open
         .fypa project (``viewer_settings["overlay_colors"]``).
 
-        Each entry is ``{"primary": [r, g, b], "bottom": [r, g, b]}`` —
+        Each entry is ``{"primary": [r, g, b], "bottom": [r, g, b]}`` -
         ``"bottom"`` present only when the user pinned a distinct Bottom
         colour. A bare ``[r, g, b]`` list is also accepted (the colours
         were stored that way before split colours existed). Unknown keys
@@ -225,7 +225,7 @@ class _OverlayPanelMixin:
         sub = self._overlay_state[key][variant]
         is_board = key == "board_outline"
         # Overlays with no per-net association get only the "show
-        # everywhere" eye — a "show on the selected rails only" eye is
+        # everywhere" eye - a "show on the selected rails only" eye is
         # meaningless when nothing ties the overlay to a rail. That covers
         # the mechanical board outline and the silkscreen "Overlay" layer
         # (graphics-only). Every other overlay keeps the rails-only eye.
@@ -236,7 +236,7 @@ class _OverlayPanelMixin:
         layout.setSpacing(4)
 
         # The "show everywhere" eye is on every row. Its companion
-        # "show on the selected rails only" eye sits to its left — except
+        # "show on the selected rails only" eye sits to its left - except
         # on rows with no per-net association (see ``has_rails_eye``), which
         # get an equal-width spacer instead, keeping the "show everywhere"
         # eye in the same column as every other row. The two eyes (when both
@@ -269,10 +269,10 @@ class _OverlayPanelMixin:
         layout.addWidget(rails_slot)
         layout.addWidget(all_eye)
 
-        # Colour swatch — opens a picker for this overlay's draw colour.
+        # Colour swatch - opens a picker for this overlay's draw colour.
         # A merged row and the Top row share the layer's primary colour;
         # the Bottom row of a split layer carries its own swatch (its own
-        # colour, or the primary while it is still following — see
+        # colour, or the primary while it is still following - see
         # _overlay_swatch_rgb / _on_overlay_color).
         colour_btn = OverlayColorButton(
             rgb=self._overlay_swatch_rgb(key, variant))
@@ -286,7 +286,7 @@ class _OverlayPanelMixin:
         layout.addWidget(name)
         layout.addStretch(1)
 
-        # Split / merge toggle — only on rows that own a Top + Bottom pair.
+        # Split / merge toggle - only on rows that own a Top + Bottom pair.
         # Sits just left of the fill toggle at the right of the row. Other
         # rows (vias, and the Bottom side of a split layer) get a spacer the
         # same width so the fill toggle still lines up across every row.
@@ -297,13 +297,13 @@ class _OverlayPanelMixin:
             )
             layout.addWidget(split_btn)
         else:
-            # Size off all_eye, not rails_eye — the board-outline row has
+            # Size off all_eye, not rails_eye - the board-outline row has
             # no rails_eye (it is None there).
             spacer = QLabel()
             spacer.setFixedSize(all_eye.width(), all_eye.height())
             layout.addWidget(spacer)
 
-        # Transparency control — sits immediately left of the wire-mesh /
+        # Transparency control - sits immediately left of the wire-mesh /
         # solid fill toggle on every row (including the board outline, which
         # still benefits from being able to fade its outline ribbon).
         transp_btn = TransparencyButton(step=int(sub.get("alpha_step", 0) or 0))
@@ -313,8 +313,8 @@ class _OverlayPanelMixin:
         layout.addWidget(transp_btn)
 
         # Wire-mesh / solid fill toggle, pinned to the far right of the row.
-        # The board outline is always a fixed-width ribbon — solid vs
-        # wire-mesh is meaningless — so that row gets an aligning spacer in
+        # The board outline is always a fixed-width ribbon - solid vs
+        # wire-mesh is meaningless - so that row gets an aligning spacer in
         # the fill toggle's place instead.
         if is_board:
             fill_slot: QWidget = QLabel()
@@ -333,7 +333,7 @@ class _OverlayPanelMixin:
                         all_eye: EyeButton) -> None:
         """One of an overlay row's eyes toggled. When the row has both
         eyes they are a mutually-exclusive pair, so turning one on turns
-        the other off — the row ends up hidden / shown-on-rails /
+        the other off - the row ends up hidden / shown-on-rails /
         shown-everywhere. The board-outline row has only the "everywhere"
         eye (``rails_eye`` is None), so there is no companion to clear."""
         sub = self._overlay_state[key][variant]
@@ -374,7 +374,7 @@ class _OverlayPanelMixin:
                            side: str) -> tuple[float, float, float]:
         """RGB an overlay's geometry on ``side`` ("top" / "bottom") is drawn
         in. The Bottom side uses its own distinct colour whenever one is set
-        — whether the layer is split or merged — so a merged row still draws
+        - whether the layer is split or merged - so a merged row still draws
         its bottom-side geometry in the Bottom colour. The Top side, and the
         Bottom side when it has no distinct colour, use the primary."""
         if side == "bottom":
@@ -400,7 +400,7 @@ class _OverlayPanelMixin:
         else:
             self._overlay_colors[key] = rgb
         # Display-only change: it needs saving to the .fypa but does NOT make
-        # the solve stale, so use _display_dirty rather than _project_dirty —
+        # the solve stale, so use _display_dirty rather than _project_dirty -
         # otherwise a cosmetic colour pick would light the ↻ Resolve button.
         self._display_dirty = True
         QTimer.singleShot(0, self._build_overlay_list)
@@ -410,7 +410,7 @@ class _OverlayPanelMixin:
         """An overlay row's split toggle flipped. Splitting seeds the fresh
         Top / Bottom rows from the merged row; merging keeps the Top row's
         state on the recombined row. The list is rebuilt so rows appear /
-        disappear — deferred to the next event-loop tick because the rebuild
+        disappear - deferred to the next event-loop tick because the rebuild
         deletes the SplitButton that is mid-emit right now."""
         st = self._overlay_state[key]
         if split == st["split"]:
@@ -429,7 +429,7 @@ class _OverlayPanelMixin:
         self._on_overlay_changed()
 
     def _overlay_visibility(self) -> dict[str, dict]:
-        """Current Overlays selection, keyed by layer then row variant —
+        """Current Overlays selection, keyed by layer then row variant -
         e.g. ``{"pads": {"top": {"vis": "rails", "solid": True}, …}}``.
 
         ``vis`` is ``None`` / ``"rails"`` / ``"all"``. For a merged layer
@@ -562,7 +562,7 @@ class _OverlayPanelMixin:
 
         Stackup / layer-z / metadata-derived inputs (``self._physicals``, the
         ``md.get(...)`` records, ``_layer_z_for``) are NOT captured field by
-        field — they only change on a solution swap, which resets
+        field - they only change on a solution swap, which resets
         ``_overlay_geom_sig`` via :meth:`_clear_solution_derived_caches`. This
         captures only the inputs that change *within* one solution.
 
@@ -600,7 +600,7 @@ class _OverlayPanelMixin:
             frozenset(self._editor_highlight_nets),
             frozenset(self._editor_highlight_polys),
             # Net focus removes copper from the batch outright, so a focus
-            # change is a geometry change — not just a colour one.
+            # change is a geometry change - not just a colour one.
             frozenset(self._editor_focus_nets),
             frozenset(self._editor_focus_polys),
             self._selected_layer,
@@ -613,8 +613,8 @@ class _OverlayPanelMixin:
     def _refresh_overlay_geometry(self, rails) -> None:
         """Rebuild and push the Overlays control's GL geometry.
 
-        Every visible overlay row contributes flat-shaded triangles — a
-        solid fill, or a thin ribbon for wire-mesh outlines — to the GL
+        Every visible overlay row contributes flat-shaded triangles - a
+        solid fill, or a thin ribbon for wire-mesh outlines - to the GL
         viewer's overlay-fill batch; visible designator rows contribute
         text labels. Independent of the FEM heatmap, so it is safe to call
         regardless of the rail / layer selection.
@@ -655,7 +655,7 @@ class _OverlayPanelMixin:
         rail_members = (set(self._effective_rail_members(rails))
                         if rails else set())
         # Per-side z for 3D placement. ``side_z`` is the outer copper plane
-        # on each side — used by vias, which span the whole board. z=0 is
+        # on each side - used by vias, which span the whole board. z=0 is
         # the top of the stackup; lower layers are negative.
         side_z = {"top": 0.0, "bottom": 0.0}
         if self._physicals:
@@ -676,15 +676,15 @@ class _OverlayPanelMixin:
         # Clamp the lift to a small offset. On a 2-layer board the "mean
         # layer pitch" is the *entire* board thickness, which would float
         # features (e.g. NPTH mounting-hole discs) a whole board-thickness
-        # off each face — they should hug the surface instead.
+        # off each face - they should hug the surface instead.
         lift = min(pitch, self._FEATURE_LIFT_MM)
         feature_z = {"top": side_z["top"] + lift,
                      "bottom": side_z["bottom"] - lift}
 
         # Triangles split into three batches: ``under_*`` draw BEFORE the
-        # heatmap mesh (2D only — bottom-side board features sit behind the
+        # heatmap mesh (2D only - bottom-side board features sit behind the
         # bottom copper), ``over_*`` draw after the mesh (vias, the per-
-        # layer all-copper overlay), and ``top_*`` draw last (2D only —
+        # layer all-copper overlay), and ``top_*`` draw last (2D only -
         # top-side board features sit in front of all top copper / rails,
         # the all-copper overlay, and every other overlay batch). In 3D the
         # per-side feature z + depth test handle ordering, so everything
@@ -746,7 +746,7 @@ class _OverlayPanelMixin:
             return bool(rail_members) and bool(set(nets) & rail_members)
 
         self._pump_busy_ui()
-        # Overlay graphics — silkscreen tracks / arcs. Each is drawn at its
+        # Overlay graphics - silkscreen tracks / arcs. Each is drawn at its
         # real track width with round end caps, so it matches Altium's
         # round-capped tracks and consecutive segments join smoothly. No
         # per-net data, so either eye ("selected rails" / "all") shows it.
@@ -755,7 +755,7 @@ class _OverlayPanelMixin:
         for rec in md.get("silkscreen", []):
             self._pump_busy_ui()
             if rec.get("kind") == "text":
-                continue  # legacy pickles only — text isn't an Overlay item
+                continue  # legacy pickles only - text isn't an Overlay item
             side = rec.get("side", "top")
             vis, solid = sides.get(side, (None, False))
             if vis is None:
@@ -775,20 +775,20 @@ class _OverlayPanelMixin:
             if solid:
                 _emit(_overlay_outline_tris(poly, half, closed=False), z,
                       rgb, alpha=a, **bucket)
-                # Round end caps — interior joins are already mitered.
+                # Round end caps - interior joins are already mitered.
                 for end in (poly[0], poly[-1]):
                     _emit(_overlay_fan_tris(_overlay_circle_ring(
                         float(end[0]), float(end[1]), half, 12)), z, rgb,
                         alpha=a, **bucket)
             else:
                 # Wire-mesh: the track's hollow perimeter. The round caps
-                # are part of the traced outline — no separate cap fills.
+                # are part of the traced outline - no separate cap fills.
                 _emit(_overlay_ribbon_outline_tris(
                     poly, half, _OVERLAY_WIRE_HALF_MM, closed=False),
                     z, rgb, alpha=a, **bucket)
 
         self._pump_busy_ui()
-        # Components — axis-aligned bounding box per component.
+        # Components - axis-aligned bounding box per component.
         sides = self._overlay_side_states("components")
         alphas = self._overlay_side_alpha("components")
         for rec in md.get("components", []):
@@ -810,10 +810,10 @@ class _OverlayPanelMixin:
                   feature_z[side], rgb, alpha=a, **_side_buckets(side))
 
         self._pump_busy_ui()
-        # Pads — outline ring per pad, drawn on whichever board side(s)
+        # Pads - outline ring per pad, drawn on whichever board side(s)
         # the pad's copper layers include (through-hole pads → both).
         # Emitted AFTER components: the 2D overlay batch has no depth test,
-        # so the last-emitted geometry wins — this puts pads visually on
+        # so the last-emitted geometry wins - this puts pads visually on
         # top of the component bodies they sit on.
         enabled = md.get("enabled_copper_layer_ids") or []
         top_lid = enabled[0] if enabled else None
@@ -846,7 +846,7 @@ class _OverlayPanelMixin:
                       alpha=a, **_side_buckets(side))
 
         self._pump_busy_ui()
-        # Designators — drawn in Altium's actual single-stroke font: the
+        # Designators - drawn in Altium's actual single-stroke font: the
         # loader lays each one out into stroke polylines, which render as
         # thin round-capped ribbons (same path as silkscreen). TrueType-
         # font designators carry no polylines and fall back to a label.
@@ -882,7 +882,7 @@ class _OverlayPanelMixin:
                 })
 
         self._pump_busy_ui()
-        # Non-plated through holes — a drilled hole through the whole board
+        # Non-plated through holes - a drilled hole through the whole board
         # (mounting / mechanical hole) with no net. Drawn on both faces as a
         # filled disc or a ring outline per the row's fill toggle, so it
         # reads regardless of which side is in view. No per-net association,
@@ -910,7 +910,7 @@ class _OverlayPanelMixin:
                         continue
                     _emit(_shape_tris(ring, solid), z, rgb, alpha=a, **bucket)
 
-        # FEM mesh failures — bright marker at the reported problem site.
+        # FEM mesh failures - bright marker at the reported problem site.
         # Drawn on top of everything so it stays visible even when the
         # solve aborted and there is no heatmap mesh (stub viewer).
         for rec in md.get("mesh_failures") or []:
@@ -954,7 +954,7 @@ class _OverlayPanelMixin:
                 )
 
         # Capacitor loop-inductance overlay (Capacitors tab → "Show on
-        # heatmap"). A feature overlay like the via cylinders — it colours
+        # heatmap"). A feature overlay like the via cylinders - it colours
         # cap footprints by their loop L and does NOT touch the heatmap's
         # own scalar field or its ScaleController.
         self._emit_cap_inductance_overlay(_emit, labels, in_2d, feature_z)
@@ -981,7 +981,7 @@ class _OverlayPanelMixin:
             gv.set_overlay_labels(labels)
         else:
             gv.clear_overlay_labels()
-        # Build succeeded and the batch is uploaded — record its signature so
+        # Build succeeded and the batch is uploaded - record its signature so
         # the next identical refresh is an identity-skip (finding 3.8).
         self._overlay_geom_sig = sig
 
@@ -998,7 +998,7 @@ class _OverlayPanelMixin:
 
     def _designator_stroke_tris(self, rec: dict, *,
                                 solid: bool = True) -> np.ndarray:
-        """Triangles for one designator's stroke-font geometry — each glyph
+        """Triangles for one designator's stroke-font geometry - each glyph
         stroke as a thin round-capped ribbon at the text's stroke width.
 
         ``solid`` draws each stroke as a filled ribbon; otherwise each

@@ -77,7 +77,7 @@ def test_merge_values_flags_a_disagreement_as_mixed():
 
 
 def test_merge_values_treats_a_shared_none_as_a_value_not_a_disagreement():
-    # Every sink leaving Min V unset is agreement — the panel shows a blank
+    # Every sink leaving Min V unset is agreement - the panel shows a blank
     # field, not ``*``.
     assert merge_values([None, None]) is None
     assert merge_values([None, 1.8]) is MIXED

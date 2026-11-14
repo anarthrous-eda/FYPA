@@ -123,7 +123,7 @@ def current_theme() -> dict[str, str]:
 
 
 def _T() -> dict[str, str]:
-    """Shortcut alias for :func:`current_theme` — handy in stylesheet f-strings."""
+    """Shortcut alias for :func:`current_theme` - handy in stylesheet f-strings."""
     return current_theme()
 
 
@@ -187,7 +187,7 @@ def _build_app_palette(mode: str):
     pal.setColor(QPalette.HighlightedText, QColor(t["fg_strong"]))
     pal.setColor(QPalette.Link,            QColor(t["accent"]))
     pal.setColor(QPalette.LinkVisited,     QColor(t["accent"]))
-    # Disabled state — derived from the active colours so disabled
+    # Disabled state - derived from the active colours so disabled
     # buttons / menu items stay readable in both themes.
     pal.setColor(QPalette.Disabled, QPalette.WindowText, QColor(t["fg_dim"]))
     pal.setColor(QPalette.Disabled, QPalette.Text,       QColor(t["fg_dim"]))
@@ -199,8 +199,8 @@ def _build_app_palette(mode: str):
 
 def _build_app_stylesheet(mode: str) -> str:
     """Application-wide QSS, applied via ``app.setStyleSheet``. Targets
-    widgets that aren't covered by an inline stylesheet — menubar,
-    scrollbars, file dialogs, the central widget background — so they
+    widgets that aren't covered by an inline stylesheet - menubar,
+    scrollbars, file dialogs, the central widget background - so they
     follow the active theme."""
     t = _THEME_PRESETS[mode]
     return (
@@ -285,7 +285,7 @@ def apply_app_theme(app, mode: str | None = None) -> None:
     # palette is installed (setColorScheme regenerates the style palette, so do
     # it first and let our explicit palette below win). Without this, Qt leaves
     # the native window title bars and native file dialogs following the OS
-    # light/dark setting — so on a light-mode machine the app comes up with a
+    # light/dark setting - so on a light-mode machine the app comes up with a
     # light title bar / light file pickers even though our content palette is
     # dark. Forcing the scheme keeps the app looking the same on every machine,
     # matching the explicit palette. Guarded: setColorScheme is Qt 6.8+.
@@ -330,7 +330,7 @@ def _file_dialog_options():
     so the file-open experience matches other Windows apps. The native dialog
     follows the OS light/dark setting rather than the app's forced theme, so on
     a machine whose OS scheme differs from the app theme the picker may look
-    light against a dark app (or vice-versa) — an accepted trade-off for the
+    light against a dark app (or vice-versa) - an accepted trade-off for the
     familiar shell dialog. :func:`_native_file_dialog_on_theme` is retained for
     callers that want to make that theme-match decision explicitly."""
     return QFileDialog.Option(0)

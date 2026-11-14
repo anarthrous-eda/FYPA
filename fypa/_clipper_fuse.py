@@ -1,9 +1,9 @@
-"""Clipper2-backed copper fuse — a fast, in-process alternative to
+"""Clipper2-backed copper fuse - a fast, in-process alternative to
 ``shapely.union_all`` for FYPA's per-(layer, net) copper union
 (see :func:`fypa.altium_geometry._parallel_union_buckets`).
 
 Backed by `pyclipr` (Clipper2 via pybind11). Unlike a subprocess CAD kernel it
-runs *in-process* and takes / returns numpy arrays — no serialization, no temp
+runs *in-process* and takes / returns numpy arrays - no serialization, no temp
 files. On real boards the raw Clipper2 union is ~16× faster than GEOS; end to
 end (including the shapely rebuild the mesher needs) it benchmarks ~2× faster
 than FYPA's threaded ``shapely.union_all`` path, with more headroom available by
@@ -11,23 +11,23 @@ feeding rings straight to the triangulator instead of rebuilding shapely.
 
 Backend chosen by ``$FYPA_FUSE_BACKEND`` (default ``"clipper"``):
 
-* ``"clipper"`` (default) — fuse with Clipper2, falling back to
+* ``"clipper"`` (default) - fuse with Clipper2, falling back to
   ``shapely.union_all`` on *any* error (and automatically falling back when
   pyclipr isn't importable), so a board can never fail to build because of this
   path. This is what a normal run uses.
-* ``"shapely"`` — force the legacy path; pyclipr is never called. The opt-out.
-* ``"verify"`` — fuse with Clipper2 **and** shapely, compare per bucket, and on
+* ``"shapely"`` - force the legacy path; pyclipr is never called. The opt-out.
+* ``"verify"`` - fuse with Clipper2 **and** shapely, compare per bucket, and on
   any area disagreement beyond :data:`_VERIFY_TOL_MM2` keep the shapely result
   and log. Use this (or ``tools/bench_fuse.py``) to re-qualify a board.
 
 The Clipper2 path falls back on *exceptions*; it does not catch a silently
-valid-but-wrong result. ``verify`` mode is the guard for that — run it
+valid-but-wrong result. ``verify`` mode is the guard for that - run it
 periodically / when geometry handling changes.
 
 Correctness recipe (validated on real boards to µm):
 
 * scale mm → integer at ``1/grid_size`` (1 µm at the usual ``grid_size=1e-3``);
-* orient exteriors CCW / holes CW — Clipper2's union respects winding, while
+* orient exteriors CCW / holes CW - Clipper2's union respects winding, while
   ``shapely.union_all`` ignores it, so FYPA's inconsistently-wound buffered
   pieces would otherwise cancel into spurious holes;
 * ``Union`` with ``FillRule.NonZero``;
@@ -46,7 +46,7 @@ from shapely.geometry.base import BaseGeometry
 
 log = logging.getLogger(__name__)
 
-try:  # optional — FYPA imports and runs fine without it (default backend)
+try:  # optional - FYPA imports and runs fine without it (default backend)
     import pyclipr
 except Exception:  # pragma: no cover - absence is the default state
     pyclipr = None
@@ -83,7 +83,7 @@ def _signed_area(pts: np.ndarray) -> float:
 
     Shapely rings are closed (last vertex == first), so the wrap-around term
     of the shoelace sum is identically zero and a plain slice-and-dot gives
-    the full sum without ``np.roll`` — which allocates two temporary copies
+    the full sum without ``np.roll`` - which allocates two temporary copies
     per call and dominated this function in profiling (~5x slower)."""
     x = pts[:, 0]
     y = pts[:, 1]

@@ -31,7 +31,7 @@ def _supply_net_key(name: str) -> str:
         stripped = key[: -len(suffix)]
         # Only strip when what is left still reads as a supply. Otherwise
         # "VDD" loses its final D to the analog/digital suffix rule and
-        # becomes "VD", which no longer matches "VDDA" -> "VDD" — so the
+        # becomes "VD", which no longer matches "VDDA" -> "VDD" - so the
         # commonest paired analog supply on any board looks like two
         # different rails and warns on a textbook ferrite.
         if not _looks_like_supply_net(stripped):

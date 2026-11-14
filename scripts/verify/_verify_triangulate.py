@@ -2,7 +2,7 @@
 
 Root cause: the solid-fill path triangulates each copper polygon with
 Shewchuk's Triangle (the C core behind the ``triangle`` package). Triangle
-segfaults — silently, no traceback, killing the whole GUI — the instant
+segfaults - silently, no traceback, killing the whole GUI - the instant
 its vertex list contains a duplicate or non-finite coordinate. Real-board
 copper pours are stored as float32 in ``all_copper`` records, which rounds
 genuinely-distinct pour vertices onto the exact same coordinate. The
@@ -81,7 +81,7 @@ def main() -> int:
         "exterior": np.array([[0, 0], [20, 0], [20, 20], [0, 20], [0, 0]],
                              dtype=np.float32), "holes": []}))
 
-    # C: two NON-ADJACENT vertices collapsed onto one coordinate — the
+    # C: two NON-ADJACENT vertices collapsed onto one coordinate - the
     #    float32-rounding case that segfaults raw Triangle (probe [1]).
     check("float32-collided vertices", s._triangulate_stub({
         "exterior": np.array([[0, 0], [20, 0], [20, 20], [0, 20], [20, 20]],

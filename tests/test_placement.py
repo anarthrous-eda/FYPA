@@ -110,7 +110,7 @@ def test_gnd_column_trunk_x_prefers_gnd_stub():
 
 def test_gutter_approach_side_mixed_falls_back_to_majority():
     """Regression: a gap group with approach ports on opposite sides must not
-    raise (which aborted the whole layout) — it now picks the majority side."""
+    raise (which aborted the whole layout) - it now picks the majority side."""
     from fypa.topology.placement.pair_slots import gutter_approach_side
 
     left = _port(side="left")

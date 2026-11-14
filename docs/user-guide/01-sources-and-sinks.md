@@ -1,22 +1,22 @@
-# 1. Sources and sinks — from Altium to FYPA
+# 1. Sources and sinks - from Altium to FYPA
 
 Before FYPA can solve your power-delivery network, it needs to know two
 things about it:
 
-- **Where the power enters the board** — the *source* (a connector,
+- **Where the power enters the board** - the *source* (a connector,
   battery, regulator output, etc.).
-- **Where the power is consumed** — the *sinks* (ICs, modules, LEDs,
+- **Where the power is consumed** - the *sinks* (ICs, modules, LEDs,
   motors).
 
 There are two ways to give FYPA this information:
 
-- **In the Altium schematic** — add `PDN_*` parameters to the relevant
+- **In the Altium schematic** - add `PDN_*` parameters to the relevant
   components. The annotations live with the design and travel with the
   project files. This is the method covered in this section.
-- **In the FYPA editor** — place sources and sinks directly on the board
+- **In the FYPA editor** - place sources and sinks directly on the board
   in the FYPA viewer, without touching the Altium schematic. The
   annotations are stored in a small `.fypa` project file beside the board.
-  Covered in [Section 2 — Sources and sinks in the FYPA editor](02-sources-and-sinks-editor.md).
+  Covered in [Section 2 - Sources and sinks in the FYPA editor](02-sources-and-sinks-editor.md).
 
 Use the schematic method when the PDN is a permanent part of the design
 intent. Use the editor when you want to experiment, run quick "what-if"
@@ -42,7 +42,7 @@ Every source or sink uses the same four parameters on one component:
 | `PDN_P_NET` | The positive / supply net name                   | `+5V`       |
 | `PDN_N_NET` | The return / ground net name                     | `0V`        |
 
-Net names must match the schematic exactly — same case, same punctuation.
+Net names must match the schematic exactly - same case, same punctuation.
 
 ### Pin overrides (single-net vs two-terminal)
 
@@ -56,7 +56,7 @@ you use a single-net check (`PDN_NET`) or a two-terminal check
 | Single-net | `PDN_NET` / `PDNn_NET` | `PDN_PINS` / `PDNn_PINS` |
 | Two-terminal | `PDN_P_NET` + `PDN_N_NET` | **`PDN_P_PINS`** / **`PDNn_P_PINS`** and **`PDN_N_PINS`** / **`PDNn_N_PINS`** |
 
-`PDNn_PINS` is **not** the same as `PDNn_P_PINS` — the former is for
+`PDNn_PINS` is **not** the same as `PDNn_P_PINS` - the former is for
 single-net mode only; for a two-terminal sink or source use `PDNn_P_PINS`
 on the P side.
 
@@ -64,7 +64,7 @@ on the P side.
 > is the right starting point. For parts you expect to reuse across
 > designs (a regulator family, a recurring connector, an MCU), it is
 > usually worth adding the `PDN_*` parameters to the **library symbol**
-> instead — every future placement then arrives pre-annotated, and only
+> instead - every future placement then arrives pre-annotated, and only
 > the per-design net names need filling in. The mechanics are the same;
 > you are just editing the part in the `.SchLib` rather than on a sheet.
 
@@ -72,18 +72,18 @@ on the P side.
 
 Example: a 5 V connector **J1**, with rails labelled `+5V` and `GND`.
 
-**Step 1 — Select J1 in the schematic.**
+**Step 1 - Select J1 in the schematic.**
 
 Open the schematic sheet containing J1 and single-click the component body.
 
-**Step 2 — Open the Parameters panel.**
+**Step 2 - Open the Parameters panel.**
 
 Press `F11` (or *View > Workspace Panels > SCH > Properties*) to open the
 **Properties** panel. Scroll to the **Parameters** section.
 
 ![Parameters panel highlighted](screenshots/01-source-params-panel.png)
 
-**Step 3 — Add the four parameters.**
+**Step 3 - Add the four parameters.**
 
 Click **Add** below the parameter list and fill in each row:
 
@@ -104,7 +104,7 @@ The parameters do not have to be visible, they will be hidden by default
 
 ![Parameters panel filled out](screenshots/02-source-params-panel_filled.png)
 
-**Step 4 — Save the schematic** (`Ctrl+S`).
+**Step 4 - Save the schematic** (`Ctrl+S`).
 
 ## 1.3 Annotating a sink
 
@@ -126,14 +126,14 @@ Save the schematic.
 > for normal-operation analysis, or the maximum current for worst-case
 > headroom.
 
-### Optional: `PDN_MIN_V` — minimum acceptable voltage at the sink
+### Optional: `PDN_MIN_V` - minimum acceptable voltage at the sink
 
 A sink can carry an extra `PDN_MIN_V` parameter giving the lowest
 voltage the part is allowed to see at its P pins. FYPA does not change
-the solve when this is set — it adds **Min V**, **Margin** and
+the solve when this is set - it adds **Min V**, **Margin** and
 **Status** columns to the viewer's *Nodes* tab and flags any pin whose
 measured voltage falls below `PDN_MIN_V` in red (`Status = FAIL`). Sinks
-without `PDN_MIN_V` show `—` in those columns.
+without `PDN_MIN_V` show `-` in those columns.
 
 Add it alongside the other four parameters:
 
@@ -146,10 +146,10 @@ Add it alongside the other four parameters:
 | `PDN_MIN_V` | `3.2`     |
 
 The example above flags any `+3V3` pin on this sink that solves below
-3.2 V. Pick the value from the part's datasheet — typically the minimum
+3.2 V. Pick the value from the part's datasheet - typically the minimum
 supply voltage in the operating-conditions table.
 
-> `PDN_MIN_V` accepts the same value forms as `PDN_V` — `3.2`, `3.2V`,
+> `PDN_MIN_V` accepts the same value forms as `PDN_V` - `3.2`, `3.2V`,
 > etc. For multi-channel sinks (an IC with several independent supply
 > rails on one part), use `PDN<n>_MIN_V` per channel, matching the
 > `PDN<n>_I` numbering.
@@ -163,7 +163,7 @@ one terminal, and every pad on `PDN_N_NET` as the other. A BGA with
 twelve `+5V` balls and twenty `0V` balls works without any pad
 enumeration.
 
-Only pads **directly** on the named net are included — FYPA does not
+Only pads **directly** on the named net are included - FYPA does not
 pull in pads from other nets on the same part because a `SERIES`
 directive bridges those nets elsewhere on the board. Name the net that
 the pad actually sits on in the PCB netlist (see 1.8 if the pin is on
@@ -178,23 +178,23 @@ in a SchLib because channel indices (`PDN` / `PDN1` / …) are board-specific.
 
 Enable pins hard-tied to a supply, or signal pins pulled to GND, sit on
 the same net as the power pads but should not carry load current. Prefer a
-**part-wide allowlist** in the library — independent of channel indices —
+**part-wide allowlist** in the library - independent of channel indices -
 then let net matching partition pins across rails:
 
-1. **`PDN_PINS_ONLY`** (preferred in the SchLib) — comma/whitespace list of
+1. **`PDN_PINS_ONLY`** (preferred in the SchLib) - comma/whitespace list of
    pin designators that may join any SOURCE/SINK/SERIES/REGULATOR terminal.
    Pads not on the list are never considered, even when they sit on
    `PDN_P_NET` / `PDN_N_NET`.
-2. **`PDN_EXTRA_PINS`** — always **unioned** into the allowlist. Typical use:
+2. **`PDN_EXTRA_PINS`** - always **unioned** into the allowlist. Typical use:
    library sets `PDN_PINS_ONLY`, the schematic instance adds one forgotten
    pin via `PDN_EXTRA_PINS` without retyping the list. If **only**
    `PDN_EXTRA_PINS` is set (no `PDN_PINS_ONLY`), that list **is** the full
-   allowlist — it does *not* mean “all pads plus these”. Because that
+   allowlist - it does *not* mean “all pads plus these”. Because that
    silently narrows a multi-pin rail to those pins alone, FYPA warns when it
    sees `PDN_EXTRA_PINS` with no `PDN_PINS_ONLY` on the part.
-3. **Per-terminal override** — `PDN[_n]_P_PINS` / `PDN[_n]_N_PINS` (or
+3. **Per-terminal override** - `PDN[_n]_P_PINS` / `PDN[_n]_N_PINS` (or
    single-net `PDN[_n]_PINS`) bypasses the allowlist for that terminal.
-4. **Exclude (fine-tuning)** — pin parameter `PDN_IGNORE` = `1` (also
+4. **Exclude (fine-tuning)** - pin parameter `PDN_IGNORE` = `1` (also
    `TRUE` / `YES` / `IGNORE`; alias name `PDN` value `IGNORE`), or
    component `PDN_IGNORE_PINS` / `PDNn_IGNORE_PINS`, removes pins after
    matching (including from an explicit include list). Prefer
@@ -211,7 +211,7 @@ ECO workflow the role and values end up on the PCB instance while the filters
 stay on the symbol; FYPA reads the symbol's filters for that PCB directive. A
 filter set on the PCB instance wins over the symbol's value for the same key.
 
-Example — multi-rail IC in the SchLib with power pins `1`–`4` and `EP`,
+Example - multi-rail IC in the SchLib with power pins `1`-`4` and `EP`,
 enable pin `EN` hard-tied to `+3V3` on the board:
 
 | Name | Value |
@@ -243,7 +243,7 @@ access is similar. Off by default.
 Marker hover text uses the same area weights as a quick estimate
 (`I · A_i / ΣA`). Areas come from each pin's pad outline polygon on its
 terminal layer (not a multi-layer copper volume). The FEM can still shift
-current when copper access to the pads differs — the hover value is not a
+current when copper access to the pads differs - the hover value is not a
 guaranteed pin current.
 
 ### Multi-connector / banana-style sources
@@ -263,10 +263,10 @@ pads from them:
 | `PDN_N_DES`  | `J3,J5,J7`   |
 
 Here J2 is the host (P pads stay on J2). The N terminal uses **only**
-pads on J3, J5, and J7 that sit on `GND` — the host is not
+pads on J3, J5, and J7 that sit on `GND` - the host is not
 auto-included. `PDN_P_DES` works the same way on the P side. Optional
 `PDN_P_PINS` / `PDN_N_PINS` still filter pad numbers across the listed
-parts — they narrow the net match rather than replace it, so a pin
+parts - they narrow the net match rather than replace it, so a pin
 number that exists on a listed part but sits on another net is reported
 as an error instead of quietly moving the terminal onto that net.
 Indexed channels use `PDNn_P_DES` / `PDNn_N_DES`. Without `*_DES`,
@@ -281,8 +281,8 @@ each channel's connector on its own component instead.
 
 ### Remote sense (`PDN_SENSE_DES`)
 
-A supply whose feedback is taken at the load — a remote-sense pair, or a
-regulator's FB divider tapped at the far end of the rail — holds its
+A supply whose feedback is taken at the load - a remote-sense pair, or a
+regulator's FB divider tapped at the far end of the rail - holds its
 voltage **at the load**, and raises its own output pins by whatever the
 copper drops on the way. Tell FYPA where the sense line lands:
 
@@ -295,7 +295,7 @@ copper drops on the way. Tell FYPA where the sense line lands:
 
 Either side may be left out; it then senses locally, at the source's own
 pins. The solve holds `V(sense+) − V(sense−) = PDN_V` exactly, so the
-sensed load reads ~0 drop and the source pins read high — compare a
+sensed load reads ~0 drop and the source pins read high - compare a
 locally-sensed source, whose pins hold `PDN_V` and whose load sees the
 drop. A sense line carries no current. Sense pads that land on no
 meshed copper fall back to local sense for that side, with a warning.
@@ -306,7 +306,7 @@ markers have *Sense DES* / *Sense N DES* fields.
 
 An IC that draws from more than one supply rail is a single part with
 several **channels**. Keep the first directive unindexed and add numbered
-channels by appending an integer to `PDN` — each channel gets its own
+channels by appending an integer to `PDN` - each channel gets its own
 value and its own P/N nets:
 
 | Name        | Value   | Name         | Value  |
@@ -324,14 +324,14 @@ Each channel becomes its own directive; the viewer labels them `U7`,
 here) or a channel-defining terminal param is set; the value may be
 inherited from the unindexed template (`PDN_I` when `PDN1_I` is omitted).
 Indices can be sparse (gaps allowed). The same scheme works for every
-role — use `PDN<n>_V` for sources/regulators, `PDN<n>_R` for series parts.
+role - use `PDN<n>_V` for sources/regulators, `PDN<n>_R` for series parts.
 See the [main README](../../README.md#multi-channel-directives) for the
 full reference.
 
 When indexed channels exist, the unindexed form stays a directive only if
 it is a channel in its own right: its **own** `PDN_I` (or `PDN_V`) *and* a
 complete terminal pair (`PDN_P_NET` **and** `PDN_N_NET`, or single-net
-`PDN_NET`). Otherwise its parameters are template-only — FYPA does not also
+`PDN_NET`). Otherwise its parameters are template-only - FYPA does not also
 emit a legacy directive. A shared return such as `PDN_N_NET = GND` alone is
 a template, and so is a complete `PDN_P_NET` + `PDN_N_NET` pair whose
 currents live on `PDN1_I` / `PDN2_I`. Keep a full unindexed value **and**
@@ -339,14 +339,14 @@ terminal pair if you want both a legacy channel and indexed ones (as in the
 table above).
 
 > Unindexed `PDN_NET` / `PDN_PINS` plus its own value counts as a complete
-> single-net channel, so that legacy directive is kept — there is no
+> single-net channel, so that legacy directive is kept - there is no
 > "shared `PDN_NET` template only" mode. Indexed channels beside it are
 > free to use either terminal form: the two forms are mutually exclusive
 > per channel, so a `PDN1_P_NET` / `PDN1_N_NET` channel never inherits the
 > shared `PDN_NET`.
 
 Inheritance follows the part-wide `PDN_ROLE`. A channel that overrides it
-with `PDN<n>_ROLE` reads nothing from the unindexed template — a SERIES
+with `PDN<n>_ROLE` reads nothing from the unindexed template - a SERIES
 channel on a SINK part has to name its own nets rather than silently
 borrowing the sink's. Modifiers like `PDN1_MIN_V` tune a channel that
 already exists; they never create one on their own.
@@ -356,7 +356,7 @@ shared values on unindexed `PDN_R` / `PDN_V` / `PDN_I`; those stay
 templates for the indexed channels.
 
 > You only need channels for **different** rails. An IC with many pins on
-> the *same* rail is still one directive — FYPA already groups every pad
+> the *same* rail is still one directive - FYPA already groups every pad
 > on `PDN_P_NET` into one terminal (see [Multi-pin parts](#14-multi-pin-parts)
 > above).
 
@@ -364,7 +364,7 @@ templates for the indexed channels.
 
 `PDN_ROLE` is the part-wide **default**, but any channel can override it
 with `PDN<n>_ROLE`. That is how one physical component can be **both a
-source and a sink** — for example a DAC whose supply pins sink current
+source and a sink** - for example a DAC whose supply pins sink current
 while its outputs source current:
 
 | Name        | Value      | Name         | Value      |
@@ -381,13 +381,13 @@ while its outputs source current:
 |             |            | `PDN3_P_NET` | `DAC_OUT1` |
 |             |            | `PDN3_N_NET` | `GND`      |
 
-Channels 0–1 inherit the default `SINK` role (the AVDD/DVDD supplies);
-channels 2–3 override to `SOURCE` (the two outputs). Only the channels
-that differ from the default carry a `PDN<n>_ROLE` — a plain two-sink part
+Channels 0-1 inherit the default `SINK` role (the AVDD/DVDD supplies);
+channels 2-3 override to `SOURCE` (the two outputs). Only the channels
+that differ from the default carry a `PDN<n>_ROLE` - a plain two-sink part
 needs no role overrides at all.
 
 When every active channel has its own role, you may omit `PDN_ROLE`
-entirely and set only `PDN<n>_ROLE` on each indexed channel — for example
+entirely and set only `PDN<n>_ROLE` on each indexed channel - for example
 a part that SERIES-bridges the input rail and SINKs quiescent current on
 a separate IC supply:
 
@@ -409,7 +409,7 @@ A few things to keep in mind:
   net of one part just feed current back into each other.
 - If the part is really an input→output **converter** (its output current
   is drawn from an input rail via a gain), model it as a single
-  `REGULATOR` instead — see [Section 4](04-regulators.md).
+  `REGULATOR` instead - see [Section 4](04-regulators.md).
 - A `SOURCE` fixes voltage, not current. To impose a known output current,
   set it on the **load** sink at the far end of the output net; the DAC
   output then supplies exactly that current through the output copper.
@@ -438,7 +438,7 @@ placing them on every symbol:
 3. **Compile the project** and **synchronise with the PCB** so Altium
    copies the parameters onto each component (`Project > Compile PCB
    Project`, then apply the ECO).
-4. Launch FYPA — it reads the `PDN_*` values from the **PCB component
+4. Launch FYPA - it reads the `PDN_*` values from the **PCB component
    parameters** (not from the blanket graphic itself).
 
 A SchLib symbol may already carry part-wide pin filters such as
@@ -453,17 +453,17 @@ applied), FYPA logs an informational note so the missing sync is visible.
 as it appears on the schematic sheet** where the directive applies
 (for example `VCC_EFUSE` on `efuse.SchDoc`, or `+3V3` on a child
 sheet). FYPA compiles the schematic netlist and maps that label to the
-correct PCB pads **per component instance** — independent of how
+correct PCB pads **per component instance** - independent of how
 Altium names channels on the PCB (`R63.4`, `J3_SL8M7`, `CAN.RX1`, …).
 
 Resolution order:
 
-1. **Direct PCB net name** — if the parameter already names a flattened
+1. **Direct PCB net name** - if the parameter already names a flattened
    PCB net (e.g. `VCC_EFUSE.4`), FYPA uses it as-is.
-2. **Local name via schematic pins** — the compiled netlist finds which
+2. **Local name via schematic pins** - the compiled netlist finds which
    pin(s) carry the local label on the inferred sheet; FYPA selects the
    matching pad(s) on that PCB instance (primary path for repeated sheets).
-3. **Netlist aliases** — when Altium compiles channel-qualified aliases
+3. **Netlist aliases** - when Altium compiles channel-qualified aliases
    (`VDD_5V0.4`, `MDI.TD_P4`, …), FYPA cross-checks pad connectivity.
 
 Physical PCB net names still work unchanged. You do **not** need to look
@@ -474,11 +474,11 @@ up flattened PCB net names when authoring on a child sheet.
 A sheet symbol placed multiple times (e.g. `vip-port.SchDoc` × 4, each
 containing `efuse.SchDoc`) creates several PCB instances of the same
 schematic designator (`R63` → `R63.1` … `R63.4`). Use the **local**
-net label from the child sheet in `PDN_*_NET` — FYPA binds each
+net label from the child sheet in `PDN_*_NET` - FYPA binds each
 instance to its own slot net (`VCC_EFUSE.1` … `VCC_EFUSE.4`) via pin
 connectivity, not by parsing your `ChannelDesignatorFormatString`.
 
-Example — a 0 Ω link `R63` on `efuse.SchDoc` inside a repeated VIP port:
+Example - a 0 Ω link `R63` on `efuse.SchDoc` inside a repeated VIP port:
 
 | Parameter      | Value        |
 |----------------|--------------|
@@ -531,7 +531,7 @@ symbol name are considered; a leading name is kept when it parents a deeper
 matched symbol (nested sheets), otherwise a root-like leading collision is
 ignored (e.g. a symbol named `main` under path `main\CON-A`). If several
 symbols share a matched name, only one is used (sorted by UniqueID) and a
-warning is emitted — prefer UniqueID binding or unique sheet-symbol names.
+warning is emitted - prefer UniqueID binding or unique sheet-symbol names.
 Deeper symbols in a nested UniqueID hierarchy win when both set the same key.
 
 | Form | Meaning |
@@ -551,7 +551,7 @@ that placement only.
 
 Sheet overrides also apply when the shared `PDN_*` parameters live only on
 the **PCB** (Blanket / ECO) and the per-instance value is on the sheet
-symbol — e.g. PCB has `PDN_ROLE=REGULATOR` and nets, sheet symbol has
+symbol - e.g. PCB has `PDN_ROLE=REGULATOR` and nets, sheet symbol has
 `PDN_U1_V=5V`. FYPA merges those into one directive per placement (it does
 not create a second source when both PCB-ECO and a full sheet-symbol
 directive target the same instance). Different `PDN_<Des>_V` values on
@@ -581,8 +581,8 @@ must differ per placement.
 | `net 'FOO' does not exist on the PCB and could not be resolved as a local schematic net` | Project does not compile / netlist unavailable | Compile the schematic; re-open the project in FYPA |
 | Same message, project compiles | Wrong local label or wrong sheet | Check the net label on the child sheet matches `PDN_*_NET` exactly |
 | `component … has no pad on net FOO` | Slot-qualified name on the wrong instance (e.g. `FOO.3` on channel 1) | Use the local name `FOO` instead of a channel suffix |
-| `resolved local net … via schematic pins` (warning) | Normal for repeated sheets | No action needed — mapping succeeded |
-| `P and N terminals both resolve to pin(s) …` | Compiled netlist aliases the same local label onto both sides of a SERIES part | Set `PDN_P_PINS` / `PDN_N_PINS` to the **pad designators** the message lists (`1`, `2` — not `R5:1`), identical on every channel instance. An explicit pin list outranks a net-name match, so naming one side is enough. Channel-qualified PCB net names also work. |
+| `resolved local net … via schematic pins` (warning) | Normal for repeated sheets | No action needed - mapping succeeded |
+| `P and N terminals both resolve to pin(s) …` | Compiled netlist aliases the same local label onto both sides of a SERIES part | Set `PDN_P_PINS` / `PDN_N_PINS` to the **pad designators** the message lists (`1`, `2` - not `R5:1`), identical on every channel instance. An explicit pin list outranks a net-name match, so naming one side is enough. Channel-qualified PCB net names also work. |
 | P-terminal resolves to both PCB nets of a two-pin SERIES | Shared bare alias across hierarchy levels (netlist lists the local label on both nets) | Prefer local labels that FYPA can rank by channel token (`VIN` vs `VIN_L`); if the warning persists, add pin overrides |
 
 > If resolution still fails, verify that the component's schematic
@@ -591,7 +591,7 @@ must differ per placement.
 
 ## 1.6 Importing into FYPA
 
-### Option A — From the terminal
+### Option A - From the terminal
 
 Open a terminal in the FYPA install directory and run:
 
@@ -616,7 +616,7 @@ the same unchanged project are served from cache in under a second.
 > from a terminal in the folder containing `FYPA.exe`, or drag the
 > `.PrjPcb` file onto `FYPA.exe` in Explorer.
 
-### Option B — From inside Altium
+### Option B - From inside Altium
 
 A DelphiScript launcher (`packaging/Run_FYPA.pas`) runs FYPA against the
 currently focused project. Setup is documented in the
@@ -628,25 +628,21 @@ window and launches the viewer on the focused `.PrjPcb`.
 
 When FYPA starts with no project, the start window has a **Recent**
 strip down its left edge. Click it to expand the list (click **«** to
-collapse it again — FYPA remembers which way you left it). Entries are
+collapse it again - FYPA remembers which way you left it). Entries are
 newest first, with a coloured tag for the type:
 
 | Tag | What it is | Icons |
 |---|---|---|
-| **Altium** | A `.PrjPcb` you imported | **Load** — import reusing the cached design info / solve; **Clean** — ignore the caches and re-extract |
-| **Gerber** | A Gerber file set you imported | **Load** — re-import with the same layer mapping and stackup (no dialogs) |
-| **Project** | A `.fypa` project file you opened | **Load** — open it |
-| **Solution** | A solution `.pkl` you loaded with **Load Solution…** | **Load** — load it |
+| **Altium** | A `.PrjPcb` you imported | **Load** - import reusing the cached design info / solve; **Clean** - ignore the caches and re-extract |
+| **Gerber** | A Gerber file set you imported | **Load** - re-import with the same layer mapping and stackup (no dialogs) |
+| **Project** | A `.fypa` project file you opened | **Load** - open it |
+| **Solution** | A solution `.pkl` you loaded with **Load Solution…** | **Load** - load it |
 
 Double-clicking a row does the same as its **Load** icon. Right-click a
 row to open its folder or remove it from the list; **Clear list**
 forgets every entry (no files are touched). An entry whose files have
 gone is shown greyed out, and is dropped from the list if you try to
 open it.
-
-This is the same list as **File → Recent Projects**. From that menu an
-Altium entry is imported clean or not according to **Settings → Load
-recent projects clean**; the two icons in the panel choose explicitly.
 
 ## 1.7 What you should see
 
@@ -684,10 +680,10 @@ resolution, and geometry extraction, then exits.
 
 The same parameter pattern extends to the other directive types:
 
-- Multiple rails — annotate a source and at least one sink per rail.
-- On-board regulators (LDO, buck) — use `PDN_ROLE=REGULATOR`.
-- Fuses, sense resistors, ferrites — use `PDN_ROLE=SERIES`.
-- "What-if" analyses without editing the schematic — use editor mode in
+- Multiple rails - annotate a source and at least one sink per rail.
+- On-board regulators (LDO, buck) - use `PDN_ROLE=REGULATOR`.
+- Fuses, sense resistors, ferrites - use `PDN_ROLE=SERIES`.
+- "What-if" analyses without editing the schematic - use editor mode in
   the viewer.
 
 Each of these is covered in a later section.

@@ -70,7 +70,7 @@ def _indexed(layers):
 
 def test_bridge_hits_bulk_matches_per_via():
     indexed = _indexed({
-        # Layer 1: two overlapping pours plus a small pad — a via in the
+        # Layer 1: two overlapping pours plus a small pad - a via in the
         # overlap must pick the same (first) one as the per-via code.
         1: [_sq(0, 0, 10), _sq(5, 5, 10), _sq(30, 30, 1)],
         2: [_sq(0, 0, 20), _sq(30, 30, 1)],

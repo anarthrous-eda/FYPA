@@ -63,7 +63,7 @@ class _LayerPanelMixin:
 
     def _layer_color_for(self, phys: str) -> str:
         # Colour is keyed purely on the layer's position in the stackup
-        # ordering — not its name or id. Board layer names vary ("Top Layer"
+        # ordering - not its name or id. Board layer names vary ("Top Layer"
         # vs "L1"), so a name check mis-colours designs like Corvette whose
         # layers are "L1".."L16". Ordering is reliable: the first layer in
         # the stackup is always red, the last always blue.
@@ -72,7 +72,7 @@ class _LayerPanelMixin:
             return self._LAYER_SWATCH_COLOURS["top"]
         if rank == len(self._physicals) - 1:
             return self._LAYER_SWATCH_COLOURS["bottom"]
-        # Inner layer — pick deterministically by stackup position so the
+        # Inner layer - pick deterministically by stackup position so the
         # same layer keeps the same colour across re-renders. The 1st inner
         # layer has rank 1; subtract 1 to map it to cycle[0] (the cyan that
         # Altium uses for Mid Layer 1).
@@ -90,13 +90,13 @@ class _LayerPanelMixin:
         """Build a single row for the layer list: eye(s) + swatch + name.
 
         ``second_eye``, when given, sits immediately right of the primary
-        eye — the Physical layers control uses it for the per-layer "show
+        eye - the Physical layers control uses it for the per-layer "show
         all copper on this layer" toggle. ``fill_btn``, when given, is
-        pinned to the far right — the wire-mesh / solid fill style for that
+        pinned to the far right - the wire-mesh / solid fill style for that
         all-copper view. ``transparency_btn``, when given, sits immediately
-        left of ``fill_btn`` — the per-row transparency cycler that fades
+        left of ``fill_btn`` - the per-row transparency cycler that fades
         the all-copper overlay. ``outline_btn``, when given, sits just left
-        of ``transparency_btn`` — the layer-outline toggle on the "All
+        of ``transparency_btn`` - the layer-outline toggle on the "All
         Rails" row (outlines only trace rail copper, so it belongs there).
         Per-rail and per-layer rows pass none of these and keep the
         original single-eye layout."""
@@ -152,7 +152,7 @@ class _LayerPanelMixin:
         self._rail_eye_buttons: list[tuple[str, EyeButton]] = []
         self._subnet_eye_buttons: dict[str, dict[str, EyeButton]] = {}
         # Hidden parent keeps subnet EyeButtons alive while their list rows
-        # are collapsed/removed — otherwise takeItem() deletes the row widget
+        # are collapsed/removed - otherwise takeItem() deletes the row widget
         # and the C++ EyeButton along with it.
         self._subnet_eye_holder = QWidget(self)
         self._subnet_eye_holder.setFixedSize(0, 0)
@@ -420,8 +420,8 @@ class _LayerPanelMixin:
 
         Serves both rail panes. The solved pane shows the rail's live per-net
         eyes; the pending pane shows a throwaway disabled eye on a muted
-        italic row. Everything else — the tree walk, the indent, the per-node
-        expand buttons, the item bookkeeping — is identical, and the two
+        italic row. Everything else - the tree walk, the indent, the per-node
+        expand buttons, the item bookkeeping - is identical, and the two
         copies this replaces had already drifted apart.
         """
         items_by_rail = (
@@ -453,9 +453,21 @@ class _LayerPanelMixin:
         items: list[QListWidgetItem] = []
         row_idx = self.rail_list.row(after_item) + 1
         indent_px = self._RAIL_SUBNET_INDENT_PX
-        for net, depth, has_children in self._subnet_rows_for_rail(
-            rail, members, trees, node_expanded=node_expanded,
-        ):
+        # The tree's root is the rail's own net, which the rail row already
+        # names, so don't repeat it: its children hang straight off the rail
+        # row (root forced open, since it has no expand button of its own).
+        # The root's eye still exists and follows the rail eye's fan-out.
+        has_tree = (trees or {}).get(rail) is not None
+        if has_tree:
+            node_expanded[(rail, rail)] = True
+        rows = [
+            (net, depth - 1 if has_tree else depth, has_children)
+            for net, depth, has_children in self._subnet_rows_for_rail(
+                rail, members, trees, node_expanded=node_expanded,
+            )
+            if net != rail
+        ]
+        for net, depth, has_children in rows:
             if pending:
                 eye = EyeButton(visible=False)
                 eye.setEnabled(False)
@@ -463,11 +475,10 @@ class _LayerPanelMixin:
                 eye = subnets.get(net)
                 if eye is None or not _qt_widget_alive(eye):
                     continue
-            is_primary = net == rail
             expand_btn = None
             if has_children:
                 key = (rail, net)
-                node_exp = node_expanded.get(key, is_primary)
+                node_exp = node_expanded.get(key, False)
                 node_expanded[key] = node_exp
                 expand_btn = self._make_expand_tool_button(
                     expanded=node_exp,
@@ -481,26 +492,23 @@ class _LayerPanelMixin:
                 eye,
                 expand_btn=expand_btn,
                 label_text=net,
-                bold=is_primary,
                 indent=indent_px * depth,
             )
             if muted_qss:
                 subnet_row.setStyleSheet(muted_qss)
             if pending:
                 tip = (
-                    f"Unsolved subnet of rail {rail} — press Resolve to "
+                    f"Unsolved subnet of rail {rail} - press Resolve to "
                     f"compute it."
                 )
-            elif is_primary:
-                tip = f"Primary net of rail {rail}"
             elif self._is_merged_section(net):
                 tip = (
-                    f"{net} — shorted into {self._merged_parent[net]} by a "
+                    f"{net} - shorted into {self._merged_parent[net]} by a "
                     f"low-Ω link and solved as part of it. This eye shows "
                     f"or hides the copper that was {net}."
                 )
             else:
-                tip = f"Subnet of rail {rail} — joined via a SERIES bridge"
+                tip = f"Subnet of rail {rail} - joined via a SERIES bridge"
             subnet_row.setToolTip(tip)
             item = QListWidgetItem()
             item.setFlags(Qt.ItemIsEnabled)
@@ -570,7 +578,7 @@ class _LayerPanelMixin:
 
         Does **not** change each node's own on/off (that is copper for that
         net). The badge means "my state does not describe this whole branch"
-        — some descendant differs from this node — and is information only:
+        - some descendant differs from this node - and is information only:
         a plain click still toggles this net, Ctrl+Click still owns the
         branch. See :func:`rail_tree_node_partial_flags`.
         """
@@ -622,7 +630,6 @@ class _LayerPanelMixin:
         self._sync_rail_tree_node_partials(rail)
         self._sync_rail_eye_from_subnets(rail)
         self._sync_all_rails_eye()
-        self._sync_rail_only_visibility()
         self._render_with_busy_popup()
 
     def _on_rail_expand_toggled(self, rail: str, expanded: bool) -> None:
@@ -664,7 +671,7 @@ class _LayerPanelMixin:
 
     def _rebuild_subnet_rows(self, rail: str, *, pending: bool = False) -> None:
         # Deferred by one event-loop turn (see the caller), so the list may
-        # already have been torn down by a viewer retire in between — the
+        # already have been torn down by a viewer retire in between - the
         # Python-side item dicts outlive the C++ widget.
         if not _qt_widget_alive(getattr(self, "rail_list", None)):
             return
@@ -690,8 +697,8 @@ class _LayerPanelMixin:
     def _on_subnet_eye_ctrl_clicked(self, rail: str, net: str) -> None:
         """Ctrl+Click: apply this net's own toggle to its SERIES subtree.
 
-        The target mirrors what a plain click on this node would do — visible
-        → hide the branch, hidden → show it — so the gesture round-trips. The
+        The target mirrors what a plain click on this node would do - visible
+        → hide the branch, hidden → show it - so the gesture round-trips. The
         alternative ("anything mixed → show all") cannot hide a partly-hidden
         branch at all without first rendering every net in it.
         """
@@ -708,7 +715,7 @@ class _LayerPanelMixin:
     def _add_layer_row(self, phys: str) -> tuple[EyeButton, EyeButton]:
         """Build, wire and append one physical-layer row. Returns (eye, eye2).
 
-        Shared by ``_build_ui`` and ``_rebuild_layer_rail_lists`` — the two
+        Shared by ``_build_ui`` and ``_rebuild_layer_rail_lists`` - the two
         used to carry byte-identical copies 400 lines apart, and had already
         drifted over the default-copper-visibility fallback.
         """
@@ -758,8 +765,8 @@ class _LayerPanelMixin:
     def _ensure_default_copper_visibility(self) -> None:
         """Keep the viewport non-empty on a board with no analysed rails.
 
-        A Gerber import before any directives are placed — or an unsolved stub
-        loaded without auto-solve — starts with every eye closed, so turn on
+        A Gerber import before any directives are placed - or an unsolved stub
+        loaded without auto-solve - starts with every eye closed, so turn on
         the top physical layer's all-copper eye. Only when nothing else is
         already showing, so a restored session keeps its own choice.
         """
@@ -794,7 +801,7 @@ class _LayerPanelMixin:
             return False
         visible = {key for key, eye in alive if eye.isVisibleState()}
         # Invert only on a repeat of the click that isolated, and only while
-        # that isolation still holds — a manual toggle in between means the
+        # that isolation still holds - a manual toggle in between means the
         # user is narrowing down again, not asking for the complement.
         invert = visible == target_keys and self._isolated_key == isolate_key
         if invert and len(target_keys) == len(alive):
@@ -833,7 +840,6 @@ class _LayerPanelMixin:
         for rail in self._subnet_eye_buttons:
             self._sync_rail_eye_from_subnets(rail)
         self._sync_all_rails_eye()
-        self._sync_rail_only_visibility()
 
     def _apply_rail_group_isolate_or_invert(self, rail: str) -> bool:
         """Isolate a rail (all its subnets) or invert when already sole group."""
@@ -910,7 +916,7 @@ class _LayerPanelMixin:
         self._on_layer_visibility_changed()
 
     def _on_all_layers_toggled(self, on: bool) -> None:
-        """The "All Layers" eye was clicked — show or hide every layer."""
+        """The "All Layers" eye was clicked - show or hide every layer."""
         for _name, eye in self._layer_eye_buttons:
             eye.setVisibleState(on, emit=False)
         self._on_layer_visibility_changed()
@@ -994,7 +1000,7 @@ class _LayerPanelMixin:
     def _on_layer_eye2_toggled(self, _on: bool) -> None:
         """A layer's 'all copper' eye was clicked. The all-copper view is
         independent of the FEM heatmap, so only the overlay geometry +
-        via overlays need rebuilding — no full re-render. Via markers
+        via overlays need rebuilding - no full re-render. Via markers
         (2D) and via cylinders (3D) gate on the second eye too (see
         :meth:`_push_via_cylinders`), so they refresh here as well."""
         self._sync_all_layers_eye2()
@@ -1003,7 +1009,7 @@ class _LayerPanelMixin:
             lambda: self._refresh_after_copper_eye(rails))
 
     def _on_all_layers_eye2_toggled(self, on: bool) -> None:
-        """The "All Layers" all-copper eye — show/hide all copper on every
+        """The "All Layers" all-copper eye - show/hide all copper on every
         layer at once."""
         for _name, eye2 in self._layer_eye2_buttons:
             eye2.setVisibleState(on, emit=False)
@@ -1037,7 +1043,7 @@ class _LayerPanelMixin:
             lambda: self._refresh_overlay_geometry(self._visible_rails()))
 
     def _on_all_layers_fill_toggled(self, solid: bool) -> None:
-        """The "All Layers" fill toggle — set every layer's all-copper fill
+        """The "All Layers" fill toggle - set every layer's all-copper fill
         style at once."""
         for _name, fill in self._layer_fill_buttons:
             fill.setSolid(solid, emit=False)
@@ -1053,7 +1059,7 @@ class _LayerPanelMixin:
         self._run_with_busy_popup(_work)
 
     def _on_all_layers_transparency_toggled(self, step: int) -> None:
-        """The "All Layers" transparency cycler — fan out to every per-
+        """The "All Layers" transparency cycler - fan out to every per-
         layer button. Updates the mesh alpha + all-copper overlay once
         after the fan-out so the GPU only sees a single re-push."""
         for _name, transp in self._layer_transparency_buttons:
@@ -1074,14 +1080,13 @@ class _LayerPanelMixin:
         self._refresh_rail_visibility_after_subnet_change(rail)
 
     def _on_all_rails_toggled(self, on: bool) -> None:
-        """The "All Rails" eye was clicked — show or hide every rail."""
+        """The "All Rails" eye was clicked - show or hide every rail."""
         for name, eye in self._rail_eye_buttons:
             if _qt_widget_alive(eye):
                 eye.setVisibleState(on, partial=False, emit=False)
             self._fan_out_rail_eye_to_subnets(name, on)
             self._sync_rail_tree_node_partials(name)
         self._sync_all_rails_eye()
-        self._sync_rail_only_visibility()
         self._render_with_busy_popup()
 
     def _sync_all_rails_eye(self) -> None:
@@ -1117,25 +1122,3 @@ class _LayerPanelMixin:
             elif _qt_widget_alive(eye) and eye.isVisibleState():
                 out.append(name)
         return out
-
-    def _rail_only_meaningful(self) -> bool:
-        """True iff any currently-visible rail has SERIES-bridged sibling
-        nets — i.e. the "Show only rail net" filter would actually hide
-        something. When no visible rail has siblings, toggling the box
-        changes nothing, so the control is hidden by
-        :meth:`_sync_rail_only_visibility`."""
-        for name in self._visible_rails():
-            if len(self._rail_to_members.get(name, [name])) > 1:
-                return True
-        return False
-
-    def _sync_rail_only_visibility(self) -> None:
-        """Show / hide the "Show only rail net" checkbox so it only appears
-        when at least one visible rail is bridged to siblings via a
-        RESISTOR / SERIES directive. The box's checked state is preserved
-        across hides, so toggling a bridged rail back on restores the
-        previous filter."""
-        box = getattr(self, "rail_only_box", None)
-        if box is None:
-            return
-        box.setVisible(self._rail_only_meaningful())

@@ -1,6 +1,6 @@
 """Impedance tab: rail setup, package library editing, and the plot.
 
-Drives the tab through Qt (offscreen) rather than testing the engine again —
+Drives the tab through Qt (offscreen) rather than testing the engine again -
 what can only break here is the wiring: which rails appear, whether the mask
 and VRM round-trip through the project file, whether a package edit reaches
 every capacitor of that case size, and whether an unmodellable part is
@@ -49,7 +49,7 @@ def qapp():
 
 def _project_with(**comp_kwargs):
     """The standard fixture board, but with a capacitance the part parser can
-    read — otherwise every capacitor is (correctly) excluded from Z(f)."""
+    read - otherwise every capacitor is (correctly) excluded from Z(f)."""
     params = {"Value": "100nF"}
     params.update(comp_kwargs.pop("params", {}))
     return _standard_cap_project(
@@ -168,7 +168,7 @@ def _type(edit, text: str) -> str:
 
 def test_dot_decimal_is_accepted_under_a_comma_locale(viewer, german_locale):
     """The reported bug: Qt gives the validator the system locale, so on a
-    German system the field rejected '0.5' — the one format the rest of the
+    German system the field rejected '0.5' - the one format the rest of the
     code can read."""
     assert _type(viewer.imp_itran_edit, "0.5") == "0.5"
     assert viewer.imp_itran_edit.hasAcceptableInput()
@@ -234,7 +234,7 @@ def test_formatter_output_is_accepted_by_its_own_validator(viewer):
 
 def test_small_value_round_trips_through_save_and_reload(viewer):
     """Type a value the formatter will render in exponent form, apply, then
-    reload the rail — the field must come back readable and committable."""
+    reload the rail - the field must come back readable and committable."""
     _type(viewer.imp_itran_edit, "0.000005")
     viewer._on_impedance_apply()
     viewer._load_impedance_rail_config("+3V3")
@@ -425,7 +425,7 @@ def test_tooltip_is_rebuilt_after_the_impedance_tab_is_recreated(viewer):
 
 def test_pick_uses_the_nearest_point_not_the_first_in_range(viewer):
     """Near an SRF the trace is near-vertical, contains() returns a long run,
-    and ind[0] can be a decade of |Z| from the cursor — enough to hand the
+    and ind[0] can be a decade of |Z| from the cursor - enough to hand the
     pick to a flatter neighbour."""
     viewer.imp_show_branches.setChecked(True)
     viewer._replot_impedance()
@@ -492,7 +492,7 @@ def test_empty_state_before_the_capacitors_tab_has_run(qapp):
 
 
 def test_empty_state_is_drawn_in_the_app_theme(qapp):
-    """An unstyled axes is white with black text — near-invisible on the dark
+    """An unstyled axes is white with black text - near-invisible on the dark
     theme, which is what makes an empty plot look like a broken one."""
     v = _Viewer()
     v._caps_rows_cache = None
@@ -504,8 +504,8 @@ def test_empty_state_is_drawn_in_the_app_theme(qapp):
     assert v._imp_figure.get_facecolor() == \
         matplotlib.colors.to_rgba(theme["bg"])
     # And the stale readouts are cleared, not left showing another rail's.
-    assert v.imp_ztarget_label.text() == "—"
-    assert v.imp_plane_label.text() == "—"
+    assert v.imp_ztarget_label.text() == "-"
+    assert v.imp_plane_label.text() == "-"
 
 
 # --- plane-pair capacitance ---------------------------------------------------
@@ -552,7 +552,7 @@ def test_editing_a_package_reaches_every_cap_of_that_size(viewer):
 
 def test_a_bad_package_edit_reverts_and_says_why(viewer, monkeypatch):
     """Reverting in silence reads as the edit having vanished, so the revert
-    has to be announced — a comma decimal is the likely cause."""
+    has to be announced - a comma decimal is the likely cause."""
     warned: list[str] = []
     monkeypatch.setattr(av.QMessageBox, "warning",
                         lambda *a, **k: warned.append(a[2]))

@@ -1,7 +1,7 @@
 """Design report: an HTML or PDF record of a PDN assessment.
 
 :func:`build_report` gathers the numbers into a :class:`Report`;
-:func:`write_report` renders it. The viewer's File > Export > Report… and the
+:func:`write_report` renders it. The viewer's Reports > Generate Report… and the
 ``FYPA report`` CLI command are both thin wrappers over these.
 """
 from __future__ import annotations

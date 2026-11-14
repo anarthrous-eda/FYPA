@@ -3,17 +3,17 @@ and the launcher's branding PNGs.
 
 Two icons are produced:
 
-* ``assets/icon.svg`` → ``assets/icon.ico`` — the full FYPA fang logo.
+* ``assets/icon.svg`` → ``assets/icon.ico`` - the full FYPA fang logo.
   Used by PyInstaller as the .exe icon, and by ``_force_native_window_icon``
   as ``ICON_BIG`` (the bitmap Windows downscales for the taskbar slot).
-* ``assets/icon_titlebar.svg`` → ``assets/icon_titlebar.ico`` — the
+* ``assets/icon_titlebar.svg`` → ``assets/icon_titlebar.ico`` - the
   text-only "FYPA" wordmark. Used as ``ICON_SMALL`` so the title bar
   shows the wordmark while the taskbar keeps the fang logo.
 
 One launcher PNG is also produced:
 
 * ``assets/fypa_text only_no_triangles.svg`` →
-  ``assets/fypa_text_only_no_triangles.png`` — the wordmark used by
+  ``assets/fypa_text_only_no_triangles.png`` - the wordmark used by
   the LauncherWindow welcome screen. Pre-rendered for the same reason
   as the icons (Qt's QSvgRenderer drops clipPaths). The no-triangles
   variant is used so the wordmark reads cleanly as plain letterforms
@@ -24,7 +24,7 @@ Run this any time any of these SVGs change.
 
 Rendering uses Inkscape, not Qt's QSvgRenderer. The current icon.svg
 uses a clipPath to shape the gradient into the FYPA fang logo, and
-Qt's SVG renderer silently drops that clip — producing a flat
+Qt's SVG renderer silently drops that clip - producing a flat
 unclipped gradient rectangle. Inkscape (which authored the file)
 renders it correctly.
 
@@ -79,7 +79,7 @@ def _render_png_inkscape(inkscape: str, svg_path: Path,
     """Render the SVG to a square PNG of ``size`` px using Inkscape.
 
     Returns the PNG bytes (suitable for embedding in a .ico). Uses a
-    temp file because Inkscape's --export-filename writes to disk —
+    temp file because Inkscape's --export-filename writes to disk -
     there's no clean stdout PNG mode that respects the export size.
     """
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
@@ -236,7 +236,7 @@ def main() -> int:
     if inkscape is None:
         print(
             "error: inkscape.exe not found on PATH or in standard install "
-            "locations. Install Inkscape (https://inkscape.org) — it's "
+            "locations. Install Inkscape (https://inkscape.org) - it's "
             "needed because Qt's SVG renderer drops the clipPath used by "
             "icon.svg, which would produce a flat unclipped gradient "
             "instead of the FYPA fang logo.",

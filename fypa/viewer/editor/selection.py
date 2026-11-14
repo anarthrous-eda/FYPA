@@ -107,7 +107,7 @@ def _bridge_polygon_hits_bulk(indexed: dict, bridges: list
     """Same result as :func:`_bridge_polygon_hits_slow`, computed per layer
     with one bulk STRtree query and one vectorised ``intersects`` against
     the *prepared* candidate polygons. The per-via form tested every via
-    against big unprepared pours one call at a time — ~30 s on a large
+    against big unprepared pours one call at a time - ~30 s on a large
     board, vs. well under a second here. Raises if any predicate fails
     (invalid geometry); the caller then falls back to the per-via form."""
     nb = len(bridges)
@@ -177,7 +177,7 @@ class _EditorSelectionMixin:
     def _editor_alpha_array(self, layer_probes: list[dict],
                             total_vertices: int) -> np.ndarray | None:
         """Per-vertex alpha for editor-mode copper dimming: 1.0 for copper
-        in the connectivity highlight, 0.1 for the rest — or a hard 0.0 for
+        in the connectivity highlight, 0.1 for the rest - or a hard 0.0 for
         everything outside the focused net while a net focus is held.
         Returns ``None`` when neither is active (the mesh then draws fully
         opaque)."""
@@ -203,7 +203,7 @@ class _EditorSelectionMixin:
             return None
         arr = np.concatenate(parts)
         if arr.size != total_vertices:
-            return None   # ordering mismatch — skip dimming, never crash
+            return None   # ordering mismatch - skip dimming, never crash
         return arr
 
     def _combined_mesh_alpha_array(self, layer_probes: list[dict],
@@ -222,7 +222,7 @@ class _EditorSelectionMixin:
         editor_hi = (self._editor_highlight_nets
                       if (self._editor_mode
                           and self._editor_highlight_nets) else None)
-        # Net focus takes the mesh to alpha 0 outside the focused net — the
+        # Net focus takes the mesh to alpha 0 outside the focused net - the
         # mesh is per-(layer, net), so the net name alone decides. A focus on
         # synthetic / unnamed copper has no real net in ``_editor_focus_nets``
         # and correctly blanks the whole mesh: none of the solved rails is the
@@ -230,7 +230,7 @@ class _EditorSelectionMixin:
         focus_nets = (self._editor_focus_nets
                       if self._editor_focus_active() else None)
 
-        # Cheap pre-check — bail out to the fast path when nothing wants a
+        # Cheap pre-check - bail out to the fast path when nothing wants a
         # non-1.0 alpha. The mesh shader's constant attribute is faster
         # than uploading + blending a per-vertex array that's all 1s.
         layer_dim = any(
@@ -262,7 +262,7 @@ class _EditorSelectionMixin:
             return None
         arr = np.concatenate(parts)
         if arr.size != total_vertices:
-            return None   # ordering mismatch — skip dimming, never crash
+            return None   # ordering mismatch - skip dimming, never crash
         return arr
 
     def _push_mesh_alpha(self) -> None:
@@ -289,14 +289,14 @@ class _EditorSelectionMixin:
                         ) -> tuple[float, float, float]:
         """Dim an all-copper overlay colour for editor-mode connectivity
         focus. With a selection highlight active, copper whose ``net`` is
-        not in the highlight is blended toward the editor background — the
+        not in the highlight is blended toward the editor background - the
         same recede the heatmap mesh gets from :meth:`_editor_alpha_array`.
         Highlighted copper, and any time no highlight is active, is
         returned unchanged.
 
         ``layer_id`` and ``poly``: when supplied, the polygon-identity
         highlight set is consulted too. This is what keeps a single
-        unnamed-copper rail lit while disjoint unnamed pieces dim — the
+        unnamed-copper rail lit while disjoint unnamed pieces dim - the
         net name alone (``"(none)"``) can't tell them apart."""
         if not self._editor_mode:
             return rgb
@@ -315,7 +315,7 @@ class _EditorSelectionMixin:
                 rgb[2] * f + bg[2] * (1.0 - f))
 
     def _connected_nets(self, net: str | None) -> set[str]:
-        """Nets electrically connected to ``net`` — the net itself plus
+        """Nets electrically connected to ``net`` - the net itself plus
         anything bridged to it by a SERIES directive. Same-net copper is
         connected by definition, including across layers through vias.
 
@@ -351,7 +351,7 @@ class _EditorSelectionMixin:
         return group
 
     def _component_side_visible(self, comp: dict) -> bool:
-        """Whether the component's side is currently drawn — i.e. the
+        """Whether the component's side is currently drawn - i.e. the
         Components overlay (Board Features) is showing that side.
 
         Editor-mode selection skips components on a hidden side: you
@@ -378,7 +378,7 @@ class _EditorSelectionMixin:
 
         With ``visible_sides_only`` (the default, used for editor-mode
         selection) a component whose side's copper layer is hidden is
-        skipped, so the pick can never land on an invisible component —
+        skipped, so the pick can never land on an invisible component -
         and still finds the smallest *visible* one when sides overlap."""
         if not self.metadata:
             return None
@@ -400,7 +400,7 @@ class _EditorSelectionMixin:
     def _all_copper_bridges(self) -> list[tuple[float, float, list[int]]]:
         """Cached list of ``(x_mm, y_mm, span_layer_ids)`` for every via
         and through-hole pad in the metadata. Used by the connected-copper
-        index — each entry is a candidate inter-layer bridge whose centre
+        index - each entry is a candidate inter-layer bridge whose centre
         may lie inside an ``all_copper`` polygon on multiple layers and
         electrically couple them."""
         cached = getattr(self, "_all_copper_bridges_cache", None)
@@ -465,7 +465,7 @@ class _EditorSelectionMixin:
             out[lid] = {
                 "tree": _st.STRtree(b["shapes"]),
                 "shapes": b["shapes"],
-                # Polygon areas in one vectorised call — the net table and
+                # Polygon areas in one vectorised call - the net table and
                 # the region auto-namer sum these over every component.
                 "areas": shapely.area(
                     np.asarray(b["shapes"], dtype=object)).tolist(),
@@ -478,7 +478,7 @@ class _EditorSelectionMixin:
     def _named_copper_hit_on_layer(self, layer_id: int, pt) -> str | None:
         """Net of the ``all_copper`` polygon on ``layer_id`` containing
         ``pt`` (a shapely ``Point``), or ``None``. STRtree-prefiltered so the
-        cost is ``O(log polys)`` per layer. Skips ``"(none)"`` copper — the
+        cost is ``O(log polys)`` per layer. Skips ``"(none)"`` copper - the
         hover / editor picks only want named nets from this helper."""
         data = self._layer_strtrees().get(int(layer_id))
         if data is None:
@@ -522,7 +522,7 @@ class _EditorSelectionMixin:
         polygons across layers. Returns ``{component_of, members_of}``:
         ``component_of[(layer, id(poly))]`` is the polygon's root key,
         and ``members_of[root]`` is the set of polygons in that root's
-        component. Built once per viewer instance — every per-click
+        component. Built once per viewer instance - every per-click
         flood-fill collapses to a dict lookup against this index.
 
         Polygons are coupled iff some via / THP centre lies inside both
@@ -648,7 +648,7 @@ class _EditorSelectionMixin:
     def _connected_copper_polys(self, seed_layer_id: int, seed_poly: dict
                                 ) -> set[tuple[int, int]]:
         """Every ``all_copper`` polygon electrically connected to
-        ``seed_poly`` on ``seed_layer_id`` — same component in the
+        ``seed_poly`` on ``seed_layer_id`` - same component in the
         cached union-find. Returns ``{(layer_id, id(poly_dict))}``,
         always including the seed key itself."""
         cc = self._connected_components_data()
@@ -693,7 +693,7 @@ class _EditorSelectionMixin:
         on copper electrically connected to (``world_x``, ``world_y``,
         ``layer_id``), or ``None`` when none of the project's renames
         apply here. "Connected" means the click polygon and the anchor
-        polygon are in the same via-coupled component — so a rename
+        polygon are in the same via-coupled component - so a rename
         placed on top-layer copper is also found when the user clicks
         the same rail's bottom-layer piece.
 
@@ -793,7 +793,7 @@ class _EditorSelectionMixin:
         ``{"net", "physical", "layer_id"}`` or ``None`` on bare substrate.
 
         The final fallback to :meth:`_copper_at_point` is what lets a
-        source / sink land on *any* copper — ``_probe_at_point`` and
+        source / sink land on *any* copper - ``_probe_at_point`` and
         ``_probe_at_stub`` only see the rail currently drawn in the
         heatmap, so without it placement is limited to that rail.
 
@@ -838,7 +838,7 @@ class _EditorSelectionMixin:
             self._all_copper_at_point(world_x, world_y), world_x, world_y)
 
     def _net_at(self, world_x: float, world_y: float) -> str | None:
-        """Copper net under the point — any copper, not just the rail in
+        """Copper net under the point - any copper, not just the rail in
         the heatmap. ``None`` on bare substrate."""
         pick = self._editor_copper_pick(world_x, world_y)
         return pick.get("net") if pick else None
@@ -867,7 +867,7 @@ class _EditorSelectionMixin:
     def _copper_at_point(self, world_x: float,
                          world_y: float) -> dict | None:
         """Copper under the point from the full per-(layer, net) copper
-        set — every net on every layer, not just the rail currently drawn
+        set - every net on every layer, not just the rail currently drawn
         in the heatmap. Returns ``{"net", "physical", "layer_id"}`` for
         the topmost layer whose copper covers the point, or ``None`` on
         bare substrate."""
@@ -880,7 +880,7 @@ class _EditorSelectionMixin:
         id_to_phys = {v: k for k, v in self._phys_name_to_layer_id.items()}
         pt = _sg.Point(world_x, world_y)
         # Walk indexed layers top-first (lowest stackup rank) and return the
-        # first STRtree hit — the topmost layer wins, so no candidate below it
+        # first STRtree hit - the topmost layer wins, so no candidate below it
         # can improve the pick. O(layers × log polys) instead of a full scan.
         for layer_id in sorted(
             indexed,
@@ -898,7 +898,7 @@ class _EditorSelectionMixin:
         """``layer_id → physical_name`` for layers whose 'all copper'
         eye2 button is currently on. The hover fallback uses this to
         restrict bare-copper lookups to copper the user can actually
-        see — reporting a net from a hidden layer would be confusing."""
+        see - reporting a net from a hidden layer would be confusing."""
         visible: dict[int, str] = {}
         for name, eye2 in getattr(self, "_layer_eye2_buttons", []) or []:
             if not eye2.isVisibleState():
@@ -910,7 +910,7 @@ class _EditorSelectionMixin:
         return visible
 
     def _visible_layer_ids(self) -> set[int]:
-        """Set of copper ``layer_id`` the user can currently see — the union
+        """Set of copper ``layer_id`` the user can currently see - the union
         of the physical-layer eyes (heatmap) and the 'all copper' eye2
         overlays. Used to gate editor-mode markers so a placed source / sink
         only draws while the copper layer it sits on is visible."""
@@ -939,13 +939,13 @@ class _EditorSelectionMixin:
             return None
         # A selected layer is painted on top (2D) and is the layer the user
         # is focused on, so it wins the pick wherever it has copper under the
-        # point — matching what's drawn above the dimmed others. The stackup
+        # point - matching what's drawn above the dimmed others. The stackup
         # rank still orders everything else, and a selected layer with no
         # copper here falls back to topmost-stackup exactly as before.
         sel = self._selected_layer
         pt = _sg.Point(x, y)
         # Only visible layers that actually have an index, ordered
-        # (selected-first, then topmost stackup) — first STRtree hit wins.
+        # (selected-first, then topmost stackup) - first STRtree hit wins.
         candidate_ids = [lid for lid in visible if lid in indexed]
         for layer_id in sorted(
             candidate_ids,

@@ -130,7 +130,7 @@ def _format_voltage_v(volts: float) -> str:
 
 
 def _format_directive_value(directive: dict) -> str:
-    """Compact value for tooltips (Ω, mA, V — no scientific notation)."""
+    """Compact value for tooltips (Ω, mA, V - no scientific notation)."""
     role = str(directive.get("role", ""))
     value = directive.get("value")
     if value is not None:

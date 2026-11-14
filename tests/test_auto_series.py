@@ -3,7 +3,7 @@
 A current-sense shunt with no PDN_* parameters used to be left open at DC,
 which split a rail at the shunt and broke regulator Vin inference across it.
 Resistors at or below ``auto_series_max_ohm`` are now modelled as SERIES with
-their own value — without merging the nets, unless the value is also under
+their own value - without merging the nets, unless the value is also under
 the loader's 0.9 mohm merge threshold.
 """
 from __future__ import annotations

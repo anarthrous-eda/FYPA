@@ -13,7 +13,7 @@ from fypa.caploop.packages import (
 
 
 @pytest.mark.parametrize("footprint,expected", [
-    # Bare imperial codes — the common Altium convention, incl. the real
+    # Bare imperial codes - the common Altium convention, incl. the real
     # footprints on ExampleDesigns/Imperial.
     ("C_0402_SL", "0402"),
     ("C_0603_SL", "0603"),
@@ -56,7 +56,7 @@ def test_detect_package_metric_convention(footprint, expected):
 def test_explicit_convention_beats_the_imperial_name_heuristic(
         footprint, expected):
     """The marker heuristic exists to GUESS which convention a library uses.
-    An explicit selection answers that, so it wins — testing the marker first
+    An explicit selection answers that, so it wins - testing the marker first
     left Metric with no effect on the commonest library name shapes."""
     assert detect_package(footprint, convention="metric") == expected
 
@@ -86,8 +86,8 @@ def test_imperial_convention_rejects_metric_only_codes(footprint):
 ])
 def test_non_chip_parts_stay_unsupported(footprint):
     """EIA tantalum A-case 3216 collides with metric chip 3216. Accepting it
-    gave the part 1206 MLCC parasitics — two orders of magnitude off its real
-    ESR — where the module contract says it must report as unsupported."""
+    gave the part 1206 MLCC parasitics - two orders of magnitude off its real
+    ESR - where the module contract says it must report as unsupported."""
     for conv in ("auto", "metric", "imperial"):
         assert detect_package(footprint, convention=conv) is None
 
@@ -135,7 +135,7 @@ def test_format_package_label():
     assert format_package_label("0402", "imperial") == "0402"
     assert format_package_label("0402", "metric") == "1005"
     assert format_package_label("0402", "auto") == "0402"
-    assert format_package_label(None, "metric") == "—"
+    assert format_package_label(None, "metric") == "-"
 
 
 def test_normalize_footprint_convention():
@@ -162,7 +162,7 @@ def test_non_smd_footprints_are_unclassified(footprint):
 
 
 def test_defaults_are_monotonic_in_body_size():
-    """ESL grows and ESR falls as the body gets longer — if a default is ever
+    """ESL grows and ESR falls as the body gets longer - if a default is ever
     edited into an implausible value this catches it."""
     order = ["01005", "0201", "0402", "0603", "0805", "1206", "1210"]
     esls = [DEFAULT_PACKAGE_MODELS[p].esl_h for p in order]

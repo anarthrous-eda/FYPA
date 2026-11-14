@@ -37,7 +37,7 @@ def poly_to_triangle_input(poly) -> tuple[
 
     # Float32-rounded pour rings can carry coincident vertices that
     # survive as zero-length PSLG edges; Triangle's C core aborts on
-    # those, so merge anything closer than this (0.1 µm — far below
+    # those, so merge anything closer than this (0.1 µm - far below
     # the finest real copper feature).
     eps = 1e-4
 
@@ -81,7 +81,7 @@ def poly_to_triangle_input(poly) -> tuple[
     # drops *consecutive* duplicates; float32-stored pour rings also
     # round genuinely-distinct, non-adjacent vertices onto the exact
     # same coordinate (within and across rings). Shewchuk's Triangle
-    # segfaults — silently, no traceback, taking the GUI with it — the
+    # segfaults - silently, no traceback, taking the GUI with it - the
     # instant its vertex list holds a duplicate or any non-finite
     # coordinate, so collapse exact duplicates and bail on NaN/Inf
     # before the PSLG ever reaches the C core.
@@ -147,12 +147,12 @@ def triangulate_simple_polygon(poly) -> np.ndarray:
     into a flat ``(N*3, 2)`` float32 GL_TRIANGLES vertex soup.
 
     Returns an empty array only when both backends decline the
-    polygon. The caller must hand in geometry that is already valid —
+    polygon. The caller must hand in geometry that is already valid -
     see :func:`triangulate_rings` for the validity repair.
 
     Primary backend is Shewchuk's Triangle (the ``triangle`` PyPI
     package); on dense Gerber-derived pour rings it occasionally
-    declines the PSLG silently (returns no triangles) — the polygon
+    declines the PSLG silently (returns no triangles) - the polygon
     would then vanish from the all-copper overlay while remaining
     pickable, since the picker tests Shapely containment. The GEOS
     ``constrained_delaunay_triangles`` fallback is the same
@@ -169,7 +169,7 @@ def triangulate_simple_polygon(poly) -> np.ndarray:
             tri_input["holes"] = hole_markers
         # ``p`` = constrained planar straight-line graph triangulation;
         # ``Q`` silences Triangle's stdout. No ``q`` / ``a`` quality
-        # switches — we just want a geometrically faithful fill, not
+        # switches - we just want a geometrically faithful fill, not
         # a FEM-quality mesh.
         out = _triangle.triangulate(tri_input, "pQ")
     except Exception:
@@ -182,7 +182,7 @@ def triangulate_simple_polygon(poly) -> np.ndarray:
     v_arr = np.asarray(out_verts, dtype=np.float32)
     t_arr = np.asarray(out_tris, dtype=np.int32)
     # Expand the index list into a flat (N*3, 2) GL_TRIANGLES vertex
-    # soup — matches the buffer layout the GL stub/overlay batch wants.
+    # soup - matches the buffer layout the GL stub/overlay batch wants.
     return v_arr[t_arr.ravel()].astype(np.float32, copy=False)
 
 
@@ -195,7 +195,7 @@ def triangulate_rings(exterior, holes) -> np.ndarray:
 
     Shewchuk's Triangle (via the ``triangle`` PyPI package) does a
     constrained Delaunay of the exterior + interior rings with one hole
-    marker per interior — fills non-convex shapes (including those with
+    marker per interior - fills non-convex shapes (including those with
     holes) exactly.
     """
     from shapely.geometry import Polygon as _Polygon
@@ -211,14 +211,14 @@ def triangulate_rings(exterior, holes) -> np.ndarray:
         return np.empty((0, 2), dtype=np.float32)
 
     # Shewchuk's Triangle (the C core behind the ``triangle`` package)
-    # aborts the whole process — uncatchably, with no Python traceback
-    # — on a degenerate PSLG: self-touching rings, zero-length edges or
+    # aborts the whole process - uncatchably, with no Python traceback
+    # - on a degenerate PSLG: self-touching rings, zero-length edges or
     # duplicate vertices. ``all_copper`` rings are stored as float32,
     # which on a dense real-board copper pour routinely rounds
     # near-coincident vertices onto each other. Repair the polygon to
     # strict OGC validity before meshing it. This is exactly why
-    # solid-fill "show all copper" crashed where wire-mesh — a
-    # pure-numpy path that never touches Triangle — did not.
+    # solid-fill "show all copper" crashed where wire-mesh - a
+    # pure-numpy path that never touches Triangle - did not.
     if not poly.is_valid:
         try:
             repaired = poly.buffer(0)
@@ -289,7 +289,7 @@ def merged_triangles(rings: list) -> np.ndarray:
     ``rings`` is a list of ``(exterior, holes)``. The source data sometimes
     carries overlapping polygons for the same layer (a GND plane plus smaller
     copper objects nominally sitting in its clearances, plus pad /
-    via-clearance fills) — each overlap adds another blend pass at the
+    via-clearance fills) - each overlap adds another blend pass at the
     layer's transparency alpha, cumulatively pushing the area to opacity.
     Merging into one non-overlapping triangulation bypasses that. Returns an
     empty array when nothing usable is left.
@@ -330,7 +330,7 @@ def merged_triangles(rings: list) -> np.ndarray:
     if merged is None or merged.is_empty:
         return np.empty((0, 2), dtype=np.float32)
 
-    # Strip the union down to its Polygon components — a
+    # Strip the union down to its Polygon components - a
     # GeometryCollection may carry lower-dim leftovers we don't want
     # to triangulate.
     if merged.geom_type == "Polygon":

@@ -202,7 +202,7 @@ def design_findings(metadata: dict, solution, solve_stale: bool
     stats = metadata.get("solver_stats") or {}
     res = stats.get("residual_norm")
     gnd = stats.get("ground_node_current_A")
-    # Same thresholds the Setup tab colours by.
+    # Same thresholds the Properties tab colours by.
     if isinstance(res, (int, float)) and math.isfinite(res) and res > 1e-3:
         out.append(Finding(
             FAIL if res > 1.0 else WARN,
@@ -228,7 +228,7 @@ def design_findings(metadata: dict, solution, solve_stale: bool
 def _msg_finding(severity: str, msg: str, short: str) -> Finding:
     """Split a loader message into a headline (first clause) and detail."""
     text = str(msg).strip()
-    m = re.search(r"(\s[—–-]\s|\.\s)", text)
+    m = re.search(r"(\s[---]\s|\.\s)", text)
     if m and m.start() <= 160:
         title, detail = text[:m.start()], text[m.end():]
         detail = detail[:1].upper() + detail[1:]
@@ -241,7 +241,7 @@ def _msg_finding(severity: str, msg: str, short: str) -> Finding:
 
 def _fmt_hz(f: float | None) -> str:
     if not f:
-        return "—"
+        return "-"
     for scale, unit in ((1e9, "GHz"), (1e6, "MHz"), (1e3, "kHz")):
         if f >= scale:
             return f"{f / scale:.3g} {unit}"

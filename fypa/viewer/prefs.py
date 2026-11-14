@@ -29,7 +29,7 @@ _SSAA_QS_KEY = "ui/supersampling"
 _AUTO_SOLVE_IMPORT_QS_KEY = "import/auto_solve_on_altium"
 
 
-# Opacity (0..1) of via-barrel sections that carry no rail current — the 3D
+# Opacity (0..1) of via-barrel sections that carry no rail current - the 3D
 # cylinder fade. Persisted so the choice survives a relaunch; defaults to 0.4.
 _VIA_NO_CURRENT_OPACITY_QS_KEY = "ui/via_no_current_opacity"
 
@@ -59,7 +59,7 @@ _MESH_WORKERS_QS_KEY = "perf/mesh_max_workers"
 _MINRES_BUDGET_QS_KEY = "perf/minres_budget_s"
 
 
-# Recent File > Recent Projects list, shared with the launcher's Recent panel.
+# Recent-projects list shown in the launcher's Recent panel.
 # Entry kinds: ``altium`` (.PrjPcb import), ``gerber`` (Gerber file set + the
 # layer mapping / stackup confirmed in the import dialogs, so it can be
 # re-imported without them), ``fypa`` (project file) and ``solution``
@@ -69,12 +69,6 @@ _RECENT_PROJECTS_QS_KEY = "projects/recent"
 
 
 _MAX_RECENT_PROJECTS = 10
-
-
-# Whether re-opening an Altium entry from Recent Projects ignores the design
-# and solve caches (a "clean" import). Off by default — recents are the fast
-# path, so reuse the caches like File > Import Altium Design does.
-_RECENT_OPEN_CLEAN_QS_KEY = "projects/recent_open_clean"
 
 
 # Whether the launcher's Recent side panel was left expanded. Collapsed until
@@ -106,7 +100,7 @@ def _normalize_recent_path(path: str | None) -> str | None:
         return str(Path(path).resolve())
     except (OSError, ValueError):
         # ValueError: malformed path from corrupt settings (e.g. embedded
-        # NUL) — keep the raw string rather than crash menu population.
+        # NUL) - keep the raw string rather than crash menu population.
         return path
 
 
@@ -114,7 +108,7 @@ def _normalize_recent_path(path: str | None) -> str | None:
 
 def _normalize_recent_gerber_entry(entry: dict) -> dict | None:
     """Validate a ``gerber`` recent entry. Any malformed field rejects the
-    whole entry — a half-valid file set can't be re-imported anyway."""
+    whole entry - a half-valid file set can't be re-imported anyway."""
     folder = _normalize_recent_path(entry.get("folder"))
     copper_raw = entry.get("copper")
     if not folder or not isinstance(copper_raw, list) or not copper_raw:
@@ -240,7 +234,7 @@ def _notify_recent_listeners() -> None:
         try:
             cb()
         except RuntimeError:
-            # The listening widget's C++ side is gone — forget it.
+            # The listening widget's C++ side is gone - forget it.
             remove_recent_projects_listener(cb)
         except Exception as e:
             logging.getLogger(__name__).debug(
@@ -364,17 +358,17 @@ def recent_project_label(entry: dict) -> str:
     if kind in ("fypa", "solution"):
         p = Path(entry["path"])
         parent = p.parent.name
-        return f"{p.name} — {parent}" if parent else p.name
+        return f"{p.name} - {parent}" if parent else p.name
     if kind == "gerber":
         folder = Path(entry["folder"])
         parent = folder.parent.name
-        label = f"{folder.name} — {parent}" if parent else folder.name
+        label = f"{folder.name} - {parent}" if parent else folder.name
         n = len(entry.get("copper", []))
         return f"{label} [Gerber, {n} layer{'s' if n != 1 else ''}]"
     if kind == "altium":
         p = Path(entry["prjpcb_path"])
         parent = p.parent.name
-        label = f"{p.name} — {parent}" if parent else p.name
+        label = f"{p.name} - {parent}" if parent else p.name
         pcbdoc = entry.get("pcbdoc_path")
         if pcbdoc:
             label += f" [{Path(pcbdoc).name}]"
@@ -491,7 +485,7 @@ def save_recent_panel_expanded(expanded: bool) -> None:
 def load_supersampling_enabled() -> bool:
     """Read the persisted high-quality-zoom (SSAA) preference.
 
-    Defaults to ``True`` — the supersampled canvas is the better
+    Defaults to ``True`` - the supersampled canvas is the better
     experience and its cost is only paid while a viewer window is open.
     QSettings round-trips a bool as a native string on some backends, so
     accept ``"true"`` / ``1`` etc. as well as a real bool."""
@@ -531,7 +525,7 @@ def save_supersampling_enabled(enabled: bool) -> None:
 def load_auto_solve_on_import() -> bool:
     """Read whether Import Altium Design should run the solver automatically.
 
-    Defaults to ``True`` — classic extract + solve (with solve-cache fast path).
+    Defaults to ``True`` - classic extract + solve (with solve-cache fast path).
     """
     try:
         from PySide6.QtCore import QSettings
@@ -664,6 +658,39 @@ def save_topology_show_bridges(enabled: bool) -> None:
         )
 
 
+_TOPOLOGY_ADD_HANDLES_QS_KEY = "ui/topology_show_add_handles"
+
+
+def load_topology_show_add_handles() -> bool:
+    """Read whether the rows layout draws "+ SINK" handles. Defaults to ``True``."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        val = qs.value(_TOPOLOGY_ADD_HANDLES_QS_KEY, True)
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            return val.strip().lower() in ("1", "true", "yes", "on")
+        return bool(int(val))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not read topology add-handles preference (%s); using default.", e,
+        )
+    return True
+
+
+def save_topology_show_add_handles(enabled: bool) -> None:
+    """Persist whether the rows layout draws "+ SINK" handles."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        qs.setValue(_TOPOLOGY_ADD_HANDLES_QS_KEY, bool(enabled))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not persist topology add-handles preference (%s); ignoring.", e,
+        )
+
+
 _AUTOSETUP_DIR_QS_KEY = "autosetup/datasheet_dir"
 
 
@@ -687,45 +714,6 @@ def save_autosetup_datasheet_dir(path: str) -> None:
     except Exception as e:
         logging.getLogger(__name__).debug(
             "Could not persist auto-setup datasheet folder (%s); ignoring.", e)
-
-
-
-def load_recent_open_clean() -> bool:
-    """Read whether Recent Projects re-imports Altium entries clean.
-
-    Defaults to ``False`` — reuse the design / solve caches so a recent
-    project opens as fast as File > Import Altium Design would."""
-    try:
-        from PySide6.QtCore import QSettings
-        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
-        val = qs.value(_RECENT_OPEN_CLEAN_QS_KEY, False)
-        if isinstance(val, bool):
-            return val
-        if isinstance(val, str):
-            return val.strip().lower() in ("1", "true", "yes", "on")
-        return bool(int(val))
-    except Exception as e:
-        logging.getLogger(__name__).debug(
-            "Could not read recent-open-clean preference (%s); using "
-            "default.", e,
-        )
-    return False
-
-
-
-
-def save_recent_open_clean(enabled: bool) -> None:
-    """Persist the recent-projects-open-clean preference for next launch."""
-    try:
-        from PySide6.QtCore import QSettings
-        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
-        qs.setValue(_RECENT_OPEN_CLEAN_QS_KEY, bool(enabled))
-    except Exception as e:
-        logging.getLogger(__name__).debug(
-            "Could not persist recent-open-clean preference (%s); ignoring.",
-            e,
-        )
-
 
 
 
@@ -850,7 +838,7 @@ _FUSE_BACKENDS = ("clipper", "shapely", "verify")
 
 # Subset offered in the Settings dialog. "verify" stays a valid backend for the
 # env var / tools/bench_fuse.py qualification path, but is not a user-facing
-# runtime choice (it runs both engines every bucket — a validation mode, not a
+# runtime choice (it runs both engines every bucket - a validation mode, not a
 # setting to leave on).
 _FUSE_BACKENDS_UI = ("clipper", "shapely")
 
@@ -971,10 +959,10 @@ def save_minres_budget_s(seconds: int) -> None:
 def _apply_performance_prefs() -> None:
     """Apply the persisted Performance preferences to both execution paths:
 
-    * ``os.environ`` — so a spawned subprocess solve (which reads these at
+    * ``os.environ`` - so a spawned subprocess solve (which reads these at
       import) inherits them; and, for the fuse backend, so ``_clipper_fuse``
       picks it up per call.
-    * pdnsolver module globals via its setters — for the in-process solve.
+    * pdnsolver module globals via its setters - for the in-process solve.
 
     Called once at startup and again whenever a Performance control changes."""
     fb = load_fuse_backend()

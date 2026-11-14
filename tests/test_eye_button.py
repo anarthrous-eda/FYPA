@@ -63,7 +63,7 @@ def test_ctrl_with_receiver_emits_ctrl_only(qapp):
 
 
 def test_shift_and_ctrl_coexist(qapp):
-    """Both gestures live on one button — neither may swallow the other."""
+    """Both gestures live on one button - neither may swallow the other."""
     eye = EyeButton(visible=True, shift_isolatable=True)
     ctrls: list[int] = []
     shifts: list[int] = []
@@ -91,7 +91,7 @@ def test_badge_partial_click_still_toggles_own_state(qapp):
     """A tree-node eye owns copper: the badge must not hijack the toggle.
 
     With partial meaning "show the whole subtree", a node with mixed
-    descendants could never be hidden — every click fanned the branch on.
+    descendants could never be hidden - every click fanned the branch on.
     """
     eye = EyeButton(visible=True, partial_is_badge=True)
     eye.setVisibleState(True, partial=True, emit=False)
@@ -135,9 +135,9 @@ def test_badge_tooltip_says_what_a_click_does(qapp):
 
 def test_custom_tooltip_survives_state_changes(qapp):
     eye = EyeButton(visible=False)
-    eye.setToolTip("Unsolved rail — press Resolve to compute it.")
+    eye.setToolTip("Unsolved rail - press Resolve to compute it.")
     eye.setVisibleState(True, emit=False)
-    assert eye.toolTip() == "Unsolved rail — press Resolve to compute it."
+    assert eye.toolTip() == "Unsolved rail - press Resolve to compute it."
 
 
 def test_press_without_click_does_not_arm_next_activation(qapp):

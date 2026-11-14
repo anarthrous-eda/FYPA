@@ -4,11 +4,19 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap, QPolygonF
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import (
+    QColor,
+    QIcon,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+    QPolygonF,
+)
 
 
-# Application icon — shown in the title bar AND Windows taskbar.
+# Application icon - shown in the title bar AND Windows taskbar.
 #
 # Two source files live in ``assets/``: ``icon.svg`` (master, scalable)
 # and ``icon.ico`` (pre-rendered multi-resolution Windows-native, built
@@ -16,8 +24,8 @@ from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap, QPolygonF
 # Windows because Qt's setWindowIcon → WM_SETICON path uses native
 # Windows icon resources to populate the taskbar; an SVG-derived
 # QPixmap doesn't always make that round-trip reliably.
-# assets/ sits at the repo root — and at the bundle root when frozen by
-# PyInstaller (the spec maps it there) — i.e. one level up from the fypa/
+# assets/ sits at the repo root - and at the bundle root when frozen by
+# PyInstaller (the spec maps it there) - i.e. one level up from the fypa/
 # package this fypa/viewer/ module sits in, hence ``.parents[2]``.
 _ICON_DIR: Path = Path(__file__).resolve().parents[2] / "assets"
 
@@ -28,7 +36,7 @@ _ICON_PATH_ICO: Path = _ICON_DIR / "icon.ico"
 _ICON_PATH_SVG: Path = _ICON_DIR / "icon.svg"
 
 
-# Title-bar variant — text-only "FYPA" wordmark. Used as ICON_SMALL so the
+# Title-bar variant - text-only "FYPA" wordmark. Used as ICON_SMALL so the
 # title bar shows the wordmark while the taskbar (ICON_BIG) keeps the
 # full fang logo. Optional: if missing we fall back to icon.ico for both.
 _ICON_PATH_ICO_TITLE: Path = _ICON_DIR / "icon_titlebar.ico"
@@ -45,8 +53,8 @@ def _load_app_icon() -> QIcon | None:
     ``QApplication.setWindowIcon`` / ``QMainWindow.setWindowIcon``.
 
     Prefers ``assets/icon_titlebar.ico`` (text-only "FYPA" wordmark) so
-    that QDialog / QMessageBox popups — which aren't routed through
-    :func:`_force_native_window_icon` — inherit the wordmark in their
+    that QDialog / QMessageBox popups - which aren't routed through
+    :func:`_force_native_window_icon` - inherit the wordmark in their
     title bar instead of the fang logo. Falls back to ``icon.ico`` if
     the title-bar variant is missing, then to rendering ``icon.svg``
     directly when running an unbuilt working tree.
@@ -54,7 +62,7 @@ def _load_app_icon() -> QIcon | None:
     global _ICON_CACHE
     if _ICON_CACHE is not None:
         return _ICON_CACHE
-    # Preferred: text-only wordmark — covers all dialogs and the main
+    # Preferred: text-only wordmark - covers all dialogs and the main
     # window's Qt-side icon. Main windows additionally call
     # _force_native_window_icon to set ICON_BIG to the full fang logo.
     for candidate in (_ICON_PATH_ICO_TITLE, _ICON_PATH_ICO):
@@ -91,7 +99,7 @@ _EDITMODE_ICON_CACHE: dict[str, QIcon] = {}
 
 
 
-# Tint for the editor-mode toggle icon when the button is CHECKED — the
+# Tint for the editor-mode toggle icon when the button is CHECKED - the
 # checked state shows a light accent background that washes a light glyph
 # out, so the checked (On) state uses a near-black glyph instead.
 _EDITMODE_ICON_CHECKED_COLOR = "#101010"
@@ -147,8 +155,8 @@ def _load_editmode_icon(color: str = "#d8dee9") -> QIcon | None:
 
 
 def _triangle_icon(color: str, up: bool = True) -> QIcon:
-    """A small filled-triangle :class:`QIcon` — an up triangle for SOURCE,
-    a down triangle for SINK — tinted to ``color`` to match the viewport's
+    """A small filled-triangle :class:`QIcon` - an up triangle for SOURCE,
+    a down triangle for SINK - tinted to ``color`` to match the viewport's
     directive markers (see ``PdnViewer._ROLE_MARKER_STYLE``)."""
     pm = QPixmap(20, 20)
     pm.fill(Qt.transparent)
@@ -167,7 +175,178 @@ def _triangle_icon(color: str, up: bool = True) -> QIcon:
 
 
 
-# FYPA branding assets — stacked above the H2 on the welcome window.
+def _question_badge_pixmap(badge: str, mark: str) -> QPixmap:
+    """A filled circle with a question mark knocked out of it, drawn as
+    strokes (no font needed) at 2x for crisp HiDPI rendering. 20 x 20
+    logical px."""
+    scale = 2
+    pm = QPixmap(20 * scale, 20 * scale)
+    pm.setDevicePixelRatio(scale)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(badge))
+    p.drawEllipse(QRectF(1.5, 1.5, 17.0, 17.0))
+    # The hook: an arc over the top and down the right, then the stem.
+    hook = QPainterPath()
+    oval = QRectF(6.6, 4.6, 6.8, 6.0)
+    hook.arcMoveTo(oval, 165.0)
+    hook.arcTo(oval, 165.0, -255.0)
+    hook.lineTo(10.0, 11.9)
+    pen = QPen(QColor(mark), 2.1)
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.NoBrush)
+    p.drawPath(hook)
+    # The dot.
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(mark))
+    p.drawEllipse(QPointF(10.0, 14.9), 1.35, 1.35)
+    p.end()
+    return pm
+
+
+def _refresh_badge_pixmap(badge: str, mark: str) -> QPixmap:
+    """A filled circle with a clockwise circular arrow knocked out of it -
+    the Resolve / Solve icon, drawn in the same style as the What-If
+    question badge. 20 x 20 logical px at 2x."""
+    import math
+    scale = 2
+    pm = QPixmap(20 * scale, 20 * scale)
+    pm.setDevicePixelRatio(scale)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(badge))
+    p.drawEllipse(QRectF(1.5, 1.5, 17.0, 17.0))
+    # Arc: from 20 deg, clockwise 280 deg round to the top (100 deg), leaving
+    # a gap at the top-right that the arrowhead points into.
+    cx, cy, r = 10.0, 10.0, 4.4
+    start, sweep = 20.0, -280.0
+    arc = QPainterPath()
+    oval = QRectF(cx - r, cy - r, 2 * r, 2 * r)
+    arc.arcMoveTo(oval, start)
+    arc.arcTo(oval, start, sweep)
+    pen = QPen(QColor(mark), 1.8)
+    pen.setCapStyle(Qt.FlatCap)
+    p.setPen(pen)
+    p.setBrush(Qt.NoBrush)
+    p.drawPath(arc)
+    # Arrowhead at the arc's end, pointing along the clockwise direction.
+    end = math.radians(start + sweep)
+    ex, ey = cx + r * math.cos(end), cy - r * math.sin(end)
+    dx, dy = math.sin(end), math.cos(end)        # clockwise tangent (screen)
+    nx, ny = -dy, dx                             # normal to it
+    tip = QPointF(ex + dx * 3.3, ey + dy * 3.3)
+    w = 3.0
+    head = QPolygonF([tip,
+                      QPointF(ex + nx * w, ey + ny * w),
+                      QPointF(ex - nx * w, ey - ny * w)])
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(mark))
+    p.drawPolygon(head)
+    p.end()
+    return pm
+
+
+def _resolve_icon(green: str, bg: str, dim: str) -> QIcon:
+    """Icon for the Resolve / Solve buttons: a green refresh badge, grey
+    when the button is disabled."""
+    icon = QIcon()
+    icon.addPixmap(_refresh_badge_pixmap(green, bg), QIcon.Normal)
+    icon.addPixmap(_refresh_badge_pixmap(dim, bg), QIcon.Disabled)
+    return icon
+
+
+def _sparkle_badge_pixmap(badge: str, mark: str) -> QPixmap:
+    """A filled circle with a four-point sparkle (plus a small one) knocked
+    out of it - the Auto setup icon, drawn in the same style as the
+    Resolve / What-If badges. 20 x 20 logical px at 2x."""
+    scale = 2
+    pm = QPixmap(20 * scale, 20 * scale)
+    pm.setDevicePixelRatio(scale)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(badge))
+    p.drawEllipse(QRectF(1.5, 1.5, 17.0, 17.0))
+
+    def star(cx: float, cy: float, r: float, w: float) -> QPolygonF:
+        return QPolygonF([
+            QPointF(cx, cy - r), QPointF(cx + w, cy - w),
+            QPointF(cx + r, cy), QPointF(cx + w, cy + w),
+            QPointF(cx, cy + r), QPointF(cx - w, cy + w),
+            QPointF(cx - r, cy), QPointF(cx - w, cy - w),
+        ])
+
+    p.setBrush(QColor(mark))
+    p.drawPolygon(star(9.0, 11.0, 5.2, 1.3))
+    p.drawPolygon(star(13.6, 6.4, 2.4, 0.7))
+    p.end()
+    return pm
+
+
+def _spanner_badge_pixmap(badge: str, mark: str) -> QPixmap:
+    """A filled circle with a diagonal open-ended spanner knocked out of
+    it - the Manual setup icon, in the Resolve / What-If badge style.
+    20 x 20 logical px at 2x."""
+    scale = 2
+    pm = QPixmap(20 * scale, 20 * scale)
+    pm.setDevicePixelRatio(scale)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(badge))
+    p.drawEllipse(QRectF(1.5, 1.5, 17.0, 17.0))
+    # Drawn along the x axis (head to the right), then rotated so the
+    # head sits top-right.
+    p.translate(10.0, 10.0)
+    p.rotate(-45.0)
+    p.setBrush(QColor(mark))
+    # Handle with a rounded tail, and the round head.
+    p.drawRoundedRect(QRectF(-6.0, -1.25, 9.0, 2.5), 1.25, 1.25)
+    p.drawEllipse(QPointF(3.6, 0.0), 2.9, 2.9)
+    # Jaw opening: cut back out of the head in the badge colour.
+    p.setBrush(QColor(badge))
+    p.drawRect(QRectF(3.7, -1.2, 3.5, 2.4))
+    p.end()
+    return pm
+
+
+def _autosetup_icon(accent: str, bg: str) -> QIcon:
+    """Icon for the Topology tab's Auto setup button: an accent sparkle
+    badge."""
+    icon = QIcon()
+    icon.addPixmap(_sparkle_badge_pixmap(accent, bg), QIcon.Normal)
+    return icon
+
+
+def _manual_setup_icon(accent: str, bg: str) -> QIcon:
+    """Icon for the Topology tab's Manual setup button: an accent spanner
+    badge."""
+    icon = QIcon()
+    icon.addPixmap(_spanner_badge_pixmap(accent, bg), QIcon.Normal)
+    return icon
+
+
+def _whatif_icon(accent: str, bg: str) -> QIcon:
+    """Icon for the viewport's What-If button: an accent badge with the
+    question mark in the background colour, inverted for the checked
+    (panel open) state, when the button itself turns accent."""
+    icon = QIcon()
+    icon.addPixmap(_question_badge_pixmap(accent, bg), QIcon.Normal, QIcon.Off)
+    icon.addPixmap(_question_badge_pixmap(bg, accent), QIcon.Normal, QIcon.On)
+    return icon
+
+
+
+
+# FYPA branding assets - stacked above the H2 on the welcome window.
 # Both are pre-rendered PNGs because Qt's QSvgRenderer can't handle the
 # clipPaths in the master SVGs (the red/blue arrow triangles are
 # supposed to be clipped to inside the FYPA letters). The PNGs are
@@ -211,7 +390,7 @@ def _load_fypa_text_pixmap(height: int) -> QPixmap | None:
     file is missing.
 
     The PNG is the Inkscape-rendered, alpha-cropped form of
-    ``fypa_text only_no_triangles.svg`` — see ``tools/build_icon_ico.py``.
+    ``fypa_text only_no_triangles.svg`` - see ``tools/build_icon_ico.py``.
     We don't render the SVG at runtime because Qt's QSvgRenderer
     silently drops clipPaths.
     """
@@ -261,7 +440,7 @@ def _set_windows_app_user_model_id() -> None:
 
 def _force_native_window_icon(window) -> None:
     """Push the ``assets/icon.ico`` file straight into the window via
-    Win32 ``WM_SETICON`` — bypasses Qt's ``setWindowIcon`` path entirely.
+    Win32 ``WM_SETICON`` - bypasses Qt's ``setWindowIcon`` path entirely.
 
     Qt's setWindowIcon does the equivalent on most setups, but in some
     Python-host configurations it ends up sending an empty/wrong icon
@@ -272,7 +451,7 @@ def _force_native_window_icon(window) -> None:
     Sizing strategy: load *larger* frames than the bare system metrics
     suggest (256×256 for ICON_BIG, 64×64 for ICON_SMALL by default).
     The taskbar in Windows 10/11 paints icons in slots that are bigger
-    than the legacy ICON_SMALL metric (~16px) — pulling a 256/64 frame
+    than the legacy ICON_SMALL metric (~16px) - pulling a 256/64 frame
     from our multi-res .ico lets Windows scale **down** (sharp) instead
     of scaling our 32/16 frame up (blurry). Override with the env var
     ``FYPA_ICON_BIG`` / ``FYPA_ICON_SMALL`` if needed.
@@ -355,7 +534,7 @@ def _set_window_aumid(window) -> None:
     AUMID for taskbar grouping; some Windows versions need this for the
     icon override to take effect for non-pinned launches.
 
-    Must run AFTER ``window.show()`` — needs a valid HWND.
+    Must run AFTER ``window.show()`` - needs a valid HWND.
     """
     if sys.platform != "win32":
         return

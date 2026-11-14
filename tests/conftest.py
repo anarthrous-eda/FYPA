@@ -32,7 +32,7 @@ def _isolate_qsettings(tmp_path_factory, monkeypatch):
     """Keep every test off the developer's real FYPA preferences.
 
     The app builds its settings as ``QSettings(org, app)``, and that
-    constructor always uses the native format (the registry on Windows) —
+    constructor always uses the native format (the registry on Windows) -
     ``QSettings.setDefaultFormat`` does NOT apply to it. So swap the class the
     app's lazy ``from PySide6.QtCore import QSettings`` imports pick up for one
     that sends any ``(org, app)`` construction to a per-test INI file.
@@ -174,6 +174,6 @@ def strip_solver():
 
 @pytest.fixture(scope="session")
 def solved_strip() -> SolvedStrip:
-    """A solved 40 x 6 mm copper strip — reused across tests (solve is not free)."""
+    """A solved 40 x 6 mm copper strip - reused across tests (solve is not free)."""
     problem, expected = _make_strip_problem()
     return _solve_strip(problem, expected)

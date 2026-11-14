@@ -1,4 +1,4 @@
-"""Rail list naming — canonical top-level net names in hierarchical designs."""
+"""Rail list naming - canonical top-level net names in hierarchical designs."""
 
 from fypa.altium.loader import build_net_canonical_map
 from fypa.rail_groups import compute_rail_groups
@@ -73,7 +73,7 @@ def test_build_net_canonical_map_folds_alias_of_merged_away_pcb_net():
     m = build_net_canonical_map(_Netlist(), pcb_net_names={"VDD_5V"})
     assert m["VDD_5V_F"] == "VDD_5V"
 
-    # Left in, the stale name blocks the fold — the behaviour being fixed.
+    # Left in, the stale name blocks the fold - the behaviour being fixed.
     stale = build_net_canonical_map(
         _Netlist(), pcb_net_names={"VDD_5V", "VDD_5V_F"},
     )

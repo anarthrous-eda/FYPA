@@ -120,7 +120,7 @@ def test_stacked_column_taps_and_corners():
     ) is None
     assert find_junctions([stub_h, own_v]) == []
 
-    # A drop turning onto the end of a bus is a corner — two directions only.
+    # A drop turning onto the end of a bus is a corner - two directions only.
     bus_h = WireSeg(net, "H", 16.0, 1200.0, 384.0, 1200.0, wire_index=0)
     drop_v = WireSeg(net, "V", 384.0, 195.0, 384.0, 1200.0, wire_index=1)
     assert classify_hv_intersection(

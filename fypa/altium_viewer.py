@@ -3,21 +3,21 @@
 This is the user-facing visualisation layer. The heatmap canvas is a
 purpose-built :class:`gl_mesh_viewer.GLMeshViewer` (a ``QOpenGLWidget``
 subclass) that renders the FEM triangle mesh directly on the GPU via
-shaders — colours interpolate per-vertex through a 1-D LUT texture, and
+shaders - colours interpolate per-vertex through a 1-D LUT texture, and
 pan / zoom are single matrix-uniform updates. No rasterise step, no
 texture re-upload, always pixel-sharp at any zoom level.
 
 Layout
 ------
 * Side panel (left): **Physical layers** eye-icon list (Top/Bottom/...),
-  **Rails** eye-icon list (active PDN nets only — tick one or more at once),
+  **Rails** eye-icon list (active PDN nets only - tick one or more at once),
   **Mode** dropdown (Voltage / Voltage Drop / Current Density / Power Density),
   display checkboxes, summary stats, and a :class:`ScaleController`
   (colour scheme, linear/log, Min/Max entry boxes).
 * Plot area (right): :class:`gl_mesh_viewer.GLMeshViewer` rendering the
   mesh natively in OpenGL plus QPainter overlays for the title chip,
   legend chip, and directive-pin markers, with the heatmap colour-scale
-  strip (:class:`_GradientBar` — gradient, draggable Min/Max handles,
+  strip (:class:`_GradientBar` - gradient, draggable Min/Max handles,
   value ticks) overlaid on the bottom-left corner. A probe label across
   the bottom shows x / y / value / net under cursor.
 
@@ -25,7 +25,7 @@ The viewer reads :class:`pdnsolver.solver.Solution` objects produced by
 ``FYPA.py solve``. Each padne ``Layer`` in the solution is expected
 to be named ``"<physical>|<rail>"`` (the convention
 :func:`altium_geometry.build_per_net_geometry_layers` follows). Layers
-without a ``|`` still work — they appear with a ``(none)`` rail.
+without a ``|`` still work - they appear with a ``(none)`` rail.
 """
 from __future__ import annotations
 
@@ -147,7 +147,6 @@ from fypa.viewer.prefs import (
     _normalize_recent_path,
     _recent_entry_exists,
     _recent_entry_key,
-    _RECENT_OPEN_CLEAN_QS_KEY,
     _RECENT_PROJECTS_QS_KEY,
     _recent_settings,
     _record_recent_altium_from_metadata,
@@ -166,7 +165,6 @@ from fypa.viewer.prefs import (
     load_fuse_backend,
     load_mesh_max_workers,
     load_minres_budget_s,
-    load_recent_open_clean,
     load_recent_projects,
     load_solve_in_subprocess,
     load_supersampling_enabled,
@@ -180,7 +178,6 @@ from fypa.viewer.prefs import (
     save_fuse_backend,
     save_mesh_max_workers,
     save_minres_budget_s,
-    save_recent_open_clean,
     save_solve_in_subprocess,
     save_supersampling_enabled,
     save_via_no_current_opacity,
@@ -420,7 +417,7 @@ from fypa.viewer.tabs.impedance import (
     _ImpBranch,
     _ImpedanceTabMixin,
 )
-from fypa.viewer.tabs.setup import _format_setup_html, _SetupTabMixin
+from fypa.viewer.tabs.properties import _format_properties_html, _PropertiesTabMixin
 from fypa.viewer.tabs.nodes import _NodesTabMixin
 from fypa.viewer.tabs.vias import _ViasTabMixin
 from fypa.viewer.tabs.bridges import _BridgesTabMixin
@@ -467,7 +464,6 @@ from fypa.viewer.gerber_import import (
 )
 from fypa.viewer.app_menus import (
     _build_help_menu,
-    _build_recent_projects_menu,
     _GITHUB_URL,
     _open_log_file,
     _show_about_dialog,

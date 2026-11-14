@@ -17,6 +17,8 @@ Series elements stay on the Bridges tab.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
@@ -39,11 +41,12 @@ from PySide6.QtWidgets import (
 )
 
 from fypa.autosetup import manual as M
+from fypa.project_file import EditorDirective
 from fypa.viewer.autosetup_dialog import format_value, parse_value
 from fypa.viewer.theme import _T
 from fypa.viewer.widgets import _esc
 
-_TOPOLOGIES = ("—", "BUCK", "BOOST", "BUCKBOOST", "INVERTER")
+_TOPOLOGIES = ("-", "BUCK", "BOOST", "BUCKBOOST", "INVERTER")
 
 
 class _NetCombo(QComboBox):
@@ -93,7 +96,7 @@ class _NetCombo(QComboBox):
 class _PinPicker(QWidget):
     """"All of its pins on the net", or a hand-picked subset of them.
 
-    Ticking *All* stores ``None`` (every pin of the part on the net — also
+    Ticking *All* stores ``None`` (every pin of the part on the net - also
     what you get if the part's pinout changes). Unticking it lists that
     part's pins on that net, pad and pin name, all ticked to start with;
     untick the ones the current shouldn't use. ``value()`` is ``None`` for
@@ -167,6 +170,8 @@ class _Editor(QWidget):
         self.mode = mode                    # "supply" | "load"
         self.view = view
         self.entry: M.Entry | None = None
+        # Designators already a load on a directive's net (set by the page).
+        self.taken: Callable[[EditorDirective], set[str]] = lambda _d: set()
         t = _T()
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 0, 0, 0)
@@ -174,7 +179,7 @@ class _Editor(QWidget):
         self._banner.setWordWrap(True)
         self._banner.setTextFormat(Qt.RichText)
         lay.addWidget(self._banner)
-        self._override_btn = QPushButton("🔓  Override — edit in FYPA")
+        self._override_btn = QPushButton("🔓  Override - edit in FYPA")
         self._override_btn.setToolTip(
             "Copy this schematic directive into an editable FYPA one that "
             "replaces it on the next resolve.")
@@ -213,7 +218,7 @@ class _Editor(QWidget):
         self.gnd.setToolTip(f"The return path. {M.IDEAL_RETURN}: an ideal 0 V "
                             "return instead of copper (sources and loads only).")
         form.addRow("Ground", self.gnd)
-        # The input net is one of the regulator's own nets — filled per part
+        # The input net is one of the regulator's own nets - filled per part
         # in load(), so it can't be pointed at a net the part isn't on.
         self.in_net = _NetCombo([])
         self.in_net.setToolTip("The regulator's input: one of the selected "
@@ -236,7 +241,7 @@ class _Editor(QWidget):
         self.topo_label = QLabel("Topology")
         form.addRow(self.topo_label, self.topo)
         self.min_v = QLineEdit()
-        self.min_v.setPlaceholderText("optional — flags the load if its pins sag below")
+        self.min_v.setPlaceholderText("optional - flags the load if its pins sag below")
         self.min_v.editingFinished.connect(self._on_min_v)
         self.min_v_label = QLabel("Min voltage")
         if mode == "load":
@@ -262,7 +267,7 @@ class _Editor(QWidget):
         self._override_btn.setVisible(bool(entry and entry.locked))
         if entry is None:
             self._banner.setText(f"<span style='color:{t['fg_muted']};'>Nothing "
-                                 "selected — use Add.</span>")
+                                 "selected - use Add.</span>")
             self._filled.setText("")
             return
         self._banner.setText(
@@ -286,7 +291,7 @@ class _Editor(QWidget):
         self.in_pins.set_pins(M.pins_of(part, d.in_p_net), d.in_p_pins, d.in_p_net)
         self.eff.setText(f"{d.efficiency * 100:g}" if d.efficiency else "")
         with QSignalBlocker(self.topo):
-            self.topo.setCurrentText(d.smps_topology or "—")
+            self.topo.setCurrentText(d.smps_topology or "-")
         self.min_v.setText(format_value(d.min_voltage, "voltage")
                            if d.min_voltage is not None else "")
         self._sync_visibility()
@@ -298,13 +303,14 @@ class _Editor(QWidget):
             self.part.clear()
             if d.p_net:
                 prefer = "supply" if self.mode == "supply" else "load"
-                for des, label in M.parts_on_net(self.view, d.p_net, prefer=prefer):
+                for des, label in M.parts_on_net(self.view, d.p_net, prefer=prefer,
+                                                 taken=self.taken(d)):
                     self.part.addItem(label, des)
             if d.designator and self.part.findData(d.designator) < 0:
                 self.part.addItem(f"{d.designator}  (not on this net)", d.designator)
             idx = self.part.findData(d.designator) if d.designator else -1
             if idx < 0 and self.part.count():
-                self.part.insertItem(0, "— pick the part —", None)
+                self.part.insertItem(0, "- pick the part -", None)
                 idx = 0
             self.part.setCurrentIndex(idx)
 
@@ -340,7 +346,8 @@ class _Editor(QWidget):
     def _edited(self, *, reload: bool = False) -> None:
         if self.entry is None:
             return
-        filled = M.autofill(self.entry.directive, self.view)
+        d = self.entry.directive
+        filled = M.autofill(d, self.view, taken=self.taken(d))
         if reload or filled:
             self.load(self.entry, filled)
         else:
@@ -427,7 +434,7 @@ class _Editor(QWidget):
     def _on_topo(self, _i: int) -> None:
         if (d := self._d()) is not None:
             t = self.topo.currentText()
-            d.smps_topology = None if t == "—" else t
+            d.smps_topology = None if t == "-" else t
             self._edited()
 
     def _on_min_v(self) -> None:
@@ -475,12 +482,23 @@ class _RolePage(QWidget):
             ll.addWidget(split_btn)
         split.addWidget(left)
         self.editor = _Editor(mode, view)
+        if mode == "load":
+            self.editor.taken = self._loads_on_net
         self.editor.changed.connect(self._on_edit)
         self.editor.override.connect(self._override)
         split.addWidget(self.editor)
         split.setSizes([330, 520])
         lay.addWidget(split)
         self.refresh()
+
+    def _loads_on_net(self, d: EditorDirective) -> set[str]:
+        """Parts of the *other* loads on ``d``'s net (the same part twice on
+        one rail is almost always a slip; a channel on another rail is fine)."""
+        if not d.p_net:
+            return set()
+        return {x.directive.designator.upper() for x in self.entries
+                if x.directive is not d and x.directive.role == "SINK"
+                and x.directive.p_net == d.p_net and x.directive.designator}
 
     def mine(self) -> list[M.Entry]:
         want_supply = self.mode == "supply"
@@ -496,7 +514,7 @@ class _RolePage(QWidget):
                 it.setData(Qt.UserRole, e.directive.id)
                 if e.locked:
                     it.setForeground(Qt.gray)
-                    it.setToolTip("Defined in the Altium schematic — select and "
+                    it.setToolTip("Defined in the Altium schematic - select and "
                                   "Override to edit it here")
                 self.list.addItem(it)
         idx = next((i for i, e in enumerate(rows) if e.directive.id == cur), 0)
@@ -615,9 +633,9 @@ class ManualSetupDialog(QDialog):
     def __init__(self, parent, *, view, editor_directives, metadata,
                  preset=None) -> None:
         """``preset`` is a new directive (see :func:`M.preset`) to add and
-        open straight away — the Topology tab's click-to-add on a tag."""
+        open straight away - the Topology tab's click-to-add on a tag."""
         super().__init__(parent)
-        self.setWindowTitle("Manual setup — sources, regulators and loads")
+        self.setWindowTitle("Manual setup - sources, regulators and loads")
         self.resize(1040, 680)
         self.view = view
         # Working copies: nothing in the project changes until Apply.

@@ -18,7 +18,7 @@ class _ViasTabMixin:
         ("X (mm)",           True),
         ("Y (mm)",           True),
         ("Diameter (mm)",    True),
-        # IPC-4761 protection / fill — e.g. "—" (none / unprotected),
+        # IPC-4761 protection / fill - e.g. "-" (none / unprotected),
         # "V (fill) · Copper", "VII (fill + cap) · Silver Epoxy".
         # A "·" suffix marks vias treated as conductively filled (their
         # per-hop R uses the parallel wall+fill model).
@@ -45,7 +45,7 @@ class _ViasTabMixin:
                          row.get("layer_ids"))
 
     def _jump_to_node(self, row: dict) -> None:
-        """Nodes-tab "Go" action — same as :meth:`_jump_to_via` but for a
+        """Nodes-tab "Go" action - same as :meth:`_jump_to_via` but for a
         directive pin, which sits on a single physical layer."""
         lid = row.get("layer_id")
         self._jump_to_xy(row.get("x_mm"), row.get("y_mm"),
@@ -72,7 +72,7 @@ class _ViasTabMixin:
                 visible = set(self._visible_layers())
                 if not (visible & set(phys_in_span)):
                     # Topmost in stackup wins (lowest rank). emit=False to
-                    # suppress the eye's signal — we render explicitly below.
+                    # suppress the eye's signal - we render explicitly below.
                     choice = min(phys_in_span,
                                   key=lambda p: self._phys_stackup_rank.get(p, 0))
                     self._set_layer_visible(choice, True, emit=False)

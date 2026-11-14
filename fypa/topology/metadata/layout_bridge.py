@@ -56,7 +56,7 @@ class ParsedLayoutInput:
 def _column_flow_net(term: TerminalDict | None) -> str | None:
     """Physical net for column placement (GND collapsed; no rail-group merge).
 
-    Rail merging is for the solver/viewer dropdown — using it here creates
+    Rail merging is for the solver/viewer dropdown - using it here creates
     feedback cycles when SERIES bridges join upstream and downstream nets
     (e.g. VDD_3V3 ↔ VDD_IMU) onto one canonical name.
     """
@@ -437,7 +437,7 @@ def _column_net(
     on a shared rail stay aligned.
 
     Port labels use :func:`~fypa.topology.metadata.nets.port_display_net`
-    (physical names) — not this function.
+    (physical names) - not this function.
     """
     if not term or is_ideal_return(term):
         return None
@@ -524,8 +524,8 @@ def _detect_propagation_back_edges(
     """DFS back-edges whose removal makes the propagation graph acyclic.
 
     Passive SERIES/RESISTOR loops are already broken via ``loop_parent``, but a
-    non-passive cycle — e.g. two REGULATORs feeding each other on an ORing
-    power-path — has no such handling: the relaxation loops would ping-pong,
+    non-passive cycle - e.g. two REGULATORs feeding each other on an ORing
+    power-path - has no such handling: the relaxation loops would ping-pong,
     bumping each other's column until the iteration guard trips, so the final
     order depended on the guard count rather than topology. Breaking these edges
     turns the graph into a DAG and makes the longest-path relaxation converge to
@@ -779,7 +779,7 @@ def assign_columns(
 
     # Orient each SERIES/RESISTOR so the terminal carrying the downstream loads
     # faces right. Peers are keyed by *resolved physical net* (not the canonical
-    # rail — 0-Ω bridges merge a resistor's two nets onto one rail, which would
+    # rail - 0-Ω bridges merge a resistor's two nets onto one rail, which would
     # make both terminals look identical). Flip P→right / N→left only when P has
     # downstream nodes and NO upstream driver (a mid-rail tap keeps its driver on
     # the P side, so the default P-left is correct and must stay).
@@ -871,7 +871,7 @@ def _enrich_resolved_ports(
 
     ``wnet`` always comes from :func:`terminal_net` (first pin when pads
     disagree) so routing stays on one gutter/bus per connector row.
-    ``plabel`` may list every pad net on multi-pin terminals — see
+    ``plabel`` may list every pad net on multi-pin terminals - see
     :func:`port_display_net`. The tooltip keeps the full list even when the
     drawn label is truncated to fit.
     """

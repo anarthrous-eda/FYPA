@@ -48,7 +48,7 @@ def test_port_display_net_lists_multi_pin_nets():
 
 
 def test_port_display_net_channel_row_keeps_one_net():
-    """A channel row shows its own net — the pad set spans the whole part."""
+    """A channel row shows its own net - the pad set spans the whole part."""
     term = {
         "requested_net": "LED_R",
         "pins": [
@@ -233,7 +233,7 @@ def test_topology_hub_channel_labels_survive_role_stacking():
 
 
 def test_topology_multi_channel_sink_rows_keep_one_net():
-    """Channel rows label their own net whatever the role — label matches wire."""
+    """Channel rows label their own net whatever the role - label matches wire."""
     def channel(idx, pins):
         return {
             "role": "SINK",
@@ -274,7 +274,7 @@ def test_topology_multi_channel_sink_rows_keep_one_net():
 
 
 def test_topology_single_channel_regulator_input_lists_all_pin_nets():
-    """No sibling rows — the port is the only place the pad tie is visible."""
+    """No sibling rows - the port is the only place the pad tie is visible."""
     meta = {
         "directives": [
             {
@@ -313,7 +313,7 @@ def test_topology_single_channel_regulator_input_lists_all_pin_nets():
 
 
 def test_topology_tooltip_keeps_full_net_list_when_label_truncated():
-    """A truncated label must not truncate the tooltip — it is the only escape hatch."""
+    """A truncated label must not truncate the tooltip - it is the only escape hatch."""
     meta = {
         "directives": [
             {

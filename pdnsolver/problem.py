@@ -75,7 +75,7 @@ class Connection:
 # keyed by identity (e.g. NodeIndexer.extra_source_to_global_index), never
 # compared or hashed by value. The default eq=True would make two identical
 # parallel elements (e.g. two VRM phases with the same voltage across the same
-# nodes) collide as one dict key — under-sizing the MNA system by a variable
+# nodes) collide as one dict key - under-sizing the MNA system by a variable
 # and doubling that element's constraint row. eq=False restores identity
 # semantics (and identity hash) so duplicates stay distinct.
 @dataclass(frozen=True, eq=False)
@@ -135,8 +135,8 @@ class Resistor(BaseLumped):
     a: NodeID
     b: NodeID
     resistance: float
-    # True for a resistor that is a real dissipating part — a via barrel
-    # hop, a series part (shunt, ferrite, fuse) — whose I²R the board
+    # True for a resistor that is a real dissipating part - a via barrel
+    # hop, a series part (shunt, ferrite, fuse) - whose I²R the board
     # thermal model heats the board with at its pads. False (the default)
     # for modelling artefacts such as a multi-pin terminal's star-coupling
     # resistors, whose loss is fictitious.
@@ -158,7 +158,7 @@ class VoltageSource(BaseLumped):
 
     With remote sense (``sense_p`` and/or ``sense_n`` set) the source holds
     ``V(sense_p) - V(sense_n) = voltage`` instead, still delivering its
-    current at p/n — so the output pins rise by whatever the copper drops
+    current at p/n - so the output pins rise by whatever the copper drops
     between them and the sense point, as a regulator's feedback loop does.
     A sense node carries no current; an unset one falls back to p / n
     (local sense). The constraint row then differs from the current
@@ -220,7 +220,7 @@ class VoltageRegulator(BaseLumped):
     # case: the element spans IN↔OUT and converts, so the input draws
     # ``gain * i_v``. An external-FET stage instead cuts at the part that
     # carries the full output current, so the element is a plain conductor
-    # there and ``input_gain`` is 1.0 — the switching ratio is carried by
+    # there and ``input_gain`` is 1.0 - the switching ratio is carried by
     # :attr:`switch_legs` instead.
     input_gain: float | None = None
     # Averaged switch legs for external-FET stages (LS FETs): each entry is

@@ -3,7 +3,7 @@
 ``apply_editor_directives`` turns the ``.fypa`` project's hand-placed
 editor directives into real ``SourceSpec`` / ``SinkSpec`` / ``ResistorSpec``
 entries before a re-solve. These exercise the SERIES path with lightweight
-stand-ins for the Altium extraction — a free marker anchors directly on a
+stand-ins for the Altium extraction - a free marker anchors directly on a
 named net, so no real board / pad geometry is needed.
 """
 from __future__ import annotations
@@ -141,7 +141,7 @@ def test_series_bridge_unions_single_net_source_and_sink_return_groups():
     snk = next(s for s in specs if isinstance(s, SinkSpec))
     assert src.return_group is not None
     assert src.return_group == snk.return_group
-    # The bridge closed the loop — no open-loop warning for either rail.
+    # The bridge closed the loop - no open-loop warning for either rail.
     assert not any("open loop" in w for w in warnings)
 
 
@@ -230,7 +230,7 @@ def _loaded_with_single_pin_jacks():
     """Lab bench stand-in: banana jacks whose one and only pad is named "1".
 
     J2 is the source jack (VIN), J3/J5 the return jacks (GND), U1 the load.
-    Every jack reuses pad designator "1" — the shape that made the short
+    Every jack reuses pad designator "1" - the shape that made the short
     check compare P's "1" against N's "1" and refuse the directive.
     """
     from fypa.altium.extract import Pt2D
@@ -260,7 +260,7 @@ def test_editor_n_des_single_pin_jacks_is_not_a_short():
     """Same pad name on different jacks is not a short.
 
     Regression: the overlap check compared bare pad designators, so a source
-    on J2 pin 1 returning through J3/J5 pin 1 — the feature's whole point —
+    on J2 pin 1 returning through J3/J5 pin 1 - the feature's whole point -
     was refused as "both resolve to pad(s) 1".
     """
     loaded = _loaded_with_single_pin_jacks()
@@ -306,7 +306,7 @@ def test_editor_n_des_missing_designator_skipped():
 def test_editor_n_des_no_pad_on_net_skipped():
     loaded = _loaded_with_connectors()
     # J7 has only a GND pad in the fixture; point N_DES at a designator
-    # whose pads are all on VIN instead — drop J3's GND by renaming net.
+    # whose pads are all on VIN instead - drop J3's GND by renaming net.
     loaded.extracted.pads[2].net_index = 1  # J3 pad now on VIN, not GND
     eds = [EditorDirective(
         kind="component", role="SOURCE", designator="J2",
@@ -464,7 +464,7 @@ def test_unlock_strips_legacy_compound_pad():
     assert PdnViewer._terminal_pin_pads(term) == ["1"]
 
 # ---------------------------------------------------------------------------
-# has_closed_pdn_loop — the read-only "would the solver accept this?" check
+# has_closed_pdn_loop - the read-only "would the solver accept this?" check
 # behind the viewer's greyed-out ↻ Solve button.
 # ---------------------------------------------------------------------------
 
@@ -569,7 +569,7 @@ def test_schematic_source_and_sink_alone_close_the_loop():
 def test_schematic_directive_overridden_by_editor_is_dropped():
     loaded = _loaded(["+5V"])
     loaded.annotations.directives += [_sch_source(0, "J1"), _sch_sink(0)]
-    # Editor SINK takes over J1 — the schematic SOURCE on J1 no longer counts,
+    # Editor SINK takes over J1 - the schematic SOURCE on J1 no longer counts,
     # leaving two sinks and no source.
     eds = [EditorDirective(kind="component", role="SINK", designator="J1",
                            p_net="+5V", current=1.0,

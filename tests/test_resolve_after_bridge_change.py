@@ -3,7 +3,7 @@
 Disabling an auto-bridge (or changing the auto-SERIES limit) changes which
 nets exist, and only a rebuild of the design applies it. Resolve used to stay
 greyed out whenever the design had no SOURCE + SINK rail, so the Bridges tab
-said "press Resolve" while offering no way to — and a transistor whose drain
+said "press Resolve" while offering no way to - and a transistor whose drain
 had been merged into its source could never be set up. Now:
 
 * Resolve is enabled while such a change is pending, solveable or not;

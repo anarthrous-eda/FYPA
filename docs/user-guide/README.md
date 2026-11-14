@@ -8,12 +8,13 @@ material (every parameter, every CLI flag), see the
 
 1. [Setting up sources and sinks in Altium, and importing into FYPA](01-sources-and-sinks.md)
 2. [Sources and sinks in the FYPA editor](02-sources-and-sinks-editor.md)
-3. [Series elements — fuses, ferrites, sense resistors](03-series-elements.md)
-4. [Regulators — LDOs and buck converters](04-regulators.md)
+3. [Series elements - fuses, ferrites, sense resistors](03-series-elements.md)
+4. [Regulators - LDOs and buck converters](04-regulators.md)
 5. [The viewer tour](05-viewer-tour.md)
 6. [Exporting to ParaView](06-paraview-export.md)
 7. [Importing a board from Gerber files](07-gerber-import.md)
 8. [Generating a design report](08-design-report.md)
+9. [What-If scenarios - try a change, compare it with the base](09-what-if-scenarios.md)
 
 ## Conventions
 

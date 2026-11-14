@@ -40,7 +40,7 @@ def _png(fig: Figure) -> bytes:
 
 
 def _fmt_v(v: float | None) -> str:
-    return "—" if v is None else f"{v:.3f} V"
+    return "-" if v is None else f"{v:.3f} V"
 
 
 # --- power path ---------------------------------------------------------------

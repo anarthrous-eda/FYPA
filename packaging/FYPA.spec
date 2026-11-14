@@ -32,7 +32,7 @@ a = Analysis(
     ],
     hiddenimports=[
         # PyOpenGL resolves its platform backend and array handlers at runtime
-        # via string-based imports — static analysis cannot see them.
+        # via string-based imports - static analysis cannot see them.
         'OpenGL.platform.win32',
         'OpenGL.arrays.numpymodule',
         'OpenGL.arrays.ctypespointers',
@@ -46,9 +46,9 @@ a = Analysis(
         'matplotlib.backends.backend_agg',
         # Clipper2 fuse backend (compiled pybind11 ext) is imported behind a
         # try/except in fypa/_clipper_fuse.py, which PyInstaller's analysis can
-        # skip — name it explicitly so the default fuse backend ships.
+        # skip - name it explicitly so the default fuse backend ships.
         'pyclipr',
-        # Datasheet text for the Topology tab's Auto setup — imported behind a
+        # Datasheet text for the Topology tab's Auto setup - imported behind a
         # try/except in fypa/autosetup/datasheets.py, like pyclipr above.
         'pypdf',
         # 3Dconnexion SpaceMouse (optional extra: uv sync --extra spacemouse)
@@ -102,7 +102,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    # GUI launcher — no terminal window. CLI subcommands still run but their
+    # GUI launcher - no terminal window. CLI subcommands still run but their
     # stdout/stderr is discarded; rely on the file logger for diagnostics.
     console=False,
     icon=os.path.join(_REPO_ROOT, 'assets', 'icon_titlebar.ico'),

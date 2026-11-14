@@ -296,7 +296,7 @@ def test_buckboost_path_binds_and_cuts_at_output_fet():
 
 
 def test_buckboost_auto_host_without_smps_host():
-    """PATH parts bind via shared nets — no PDN_SMPS_HOST required."""
+    """PATH parts bind via shared nets - no PDN_SMPS_HOST required."""
     result = parse_annotations(_buckboost_proj(include_ls=False), enabled_layers=[1])
     assert result.ok, result.errors
     reg = next(d for d in result.directives if isinstance(d, RegulatorSpec))
@@ -440,7 +440,7 @@ def test_inverter_topology_gain_without_upstream_vin():
 
 def test_path_ambiguous_host_requires_smps_host():
     """Two BUCKBOOST stages sharing a net name force PDN_SMPS_HOST."""
-    # Minimal: two regulators both claiming SW1=SWA — PATH on SWA is ambiguous.
+    # Minimal: two regulators both claiming SW1=SWA - PATH on SWA is ambiguous.
     proj = _minimal_proj(
         nets=(
             RawNet("GND"),
@@ -517,7 +517,7 @@ def test_path_ambiguous_host_requires_smps_host():
             _pad(2, "3", 6),
             _pad(2, "4", 0),
             _pad(3, "1", 2),
-            _pad(3, "2", 3),  # SWA ↔ SWB1 — still touches SWA
+            _pad(3, "2", 3),  # SWA ↔ SWB1 - still touches SWA
         ),
     )
     result = parse_annotations(proj, enabled_layers=[1])

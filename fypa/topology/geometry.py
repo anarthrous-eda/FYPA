@@ -99,7 +99,7 @@ def _parse_wire_path(path_d: str) -> list[tuple[float, float]]:
             i += 2
         else:
             log.warning(
-                "Unknown wire path token %r in %r — skipping it "
+                "Unknown wire path token %r in %r - skipping it "
                 "(only M/H/V orthogonal paths are supported).",
                 cmd, path_d,
             )
@@ -311,7 +311,7 @@ def _same_net_needs_junction_dot(
 ) -> bool:
     """Junction dot when three or more same-net directions meet (T or ``+``).
 
-    Two directions are either a straight pass-through or a 90° corner — no dot.
+    Two directions are either a straight pass-through or a 90° corner - no dot.
     """
     return _same_net_branch_count(segments, x, y, net) >= 3
 

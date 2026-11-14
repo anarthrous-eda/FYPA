@@ -16,7 +16,7 @@
 [project]
 name = "fypa"
 version = "0.0.0"
-description = "FEM Y-parameter Power Analyser — PDN analysis for Altium and Gerber PCB designs."
+description = "FEM Y-parameter Power Analyser - PDN analysis for Altium and Gerber PCB designs."
 # altium_monkey pins `>=3.12,<3.13`; FYPA tracks the same window.
 requires-python = ">=3.12,<3.13"
 dependencies = [
@@ -36,14 +36,14 @@ dependencies = [
     "shapely==2.1.2",
     "triangle==20250106",
 
-    # In-process Clipper2 polygon engine — the default copper-fuse backend
+    # In-process Clipper2 polygon engine - the default copper-fuse backend
     # (fypa._clipper_fuse), ~2x faster than the threaded shapely union on large
     # boards. shapely stays as the automatic fallback (on error or if this is
     # ever absent), and FYPA_FUSE_BACKEND=shapely forces the legacy path.
     "pyclipr==0.1.8",
 
     # Fast direct linear solver (MKL PARDISO). Optional but strongly
-    # recommended — several times faster than scipy's SuperLU on large boards.
+    # recommended - several times faster than scipy's SuperLU on large boards.
     # pdnsolver.solver falls back to SuperLU automatically if it is absent.
     # Pulls in Intel MKL (~180 MB).
     "pypardiso==0.4.7",
@@ -61,7 +61,7 @@ dependencies = [
     # packaging/FYPA.spec).
     "gerbonara==1.5.0",
 
-    # --- Design report PDF (File > Export > Report…, and `FYPA report` CLI) ---
+    # --- Design report PDF (Reports > Generate Report…, and `FYPA report` CLI) ---
     # Pure-Python PDF layout engine: page headers / footers, table headers
     # that repeat across page breaks, keep-together blocks. The HTML report
     # needs nothing extra.
@@ -70,7 +70,7 @@ dependencies = [
     # --- Datasheet text for the Topology tab's Auto setup wizard ---
     # Pure-Python PDF text extraction: identifies regulators / sources /
     # sinks and their ratings from the user's datasheet folder. Optional at
-    # runtime — without it the wizard uses the design data alone.
+    # runtime - without it the wizard uses the design data alone.
     "pypdf==5.4.0",
     # AES decryption for pypdf: many vendor datasheets are encrypted against
     # editing / printing only (readable by anyone), and pypdf can't open
@@ -79,7 +79,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# 3Dconnexion SpaceMouse — official NavLib on Windows/macOS (requires 3DxWare).
+# 3Dconnexion SpaceMouse - official NavLib on Windows/macOS (requires 3DxWare).
 # Linux uses system libspnav/spacenavd only; no pip package needed there.
 spacemouse = [
     "pynavlib==0.9.4; sys_platform == 'win32' or sys_platform == 'darwin'",
@@ -99,7 +99,7 @@ build = [
 ]
 
 [tool.uv]
-# FYPA itself is not a wheel-installable package — it's a set of scripts
+# FYPA itself is not a wheel-installable package - it's a set of scripts
 # (FYPA.py + sibling modules) run directly out of the working copy. Skip the
 # project build step; uv still resolves and installs all dependencies.
 package = false
@@ -121,18 +121,18 @@ line-length = 100
 target-version = "py311"
 # altium_monkey is a vendored git submodule with its own tooling.
 # _verify_*.py are local hand-driven debug drivers (hardcoded user paths,
-# ad-hoc throwaway code) — not production source, so they're outside lint.
+# ad-hoc throwaway code) - not production source, so they're outside lint.
 extend-exclude = ["altium_monkey", ".venv", "build", "dist", "_verify_*.py"]
 
 [tool.ruff.lint]
-# Conservative first adoption: real bug-class checks only — pyflakes (`F`:
+# Conservative first adoption: real bug-class checks only - pyflakes (`F`:
 # unused/undefined names, bad imports), syntax/import errors (`E4`/`E9`),
 # and comprehension / string-format / misc hygiene (`C4`, `UP`, `PIE`).
 #
 # Deliberately NOT enabled yet (the codebase predates linting; each is a
 # separate, larger cleanup, not a low-risk first step):
-#   * pycodestyle style rules (`E1`/`E2`/`E5`/`E7`) — cosmetic only here.
-#   * flake8-bugbear (`B`) — ~70 hits, mostly intentional abstract-base-class
+#   * pycodestyle style rules (`E1`/`E2`/`E5`/`E7`) - cosmetic only here.
+#   * flake8-bugbear (`B`) - ~70 hits, mostly intentional abstract-base-class
 #     patterns and loop-variable closures. Add `"B"` to `select` when that
 #     review is scheduled.
 select = ["F", "E4", "E9", "C4", "UP", "PIE"]
@@ -162,7 +162,7 @@ exclude = [
     # Fixture helpers build ExtractedProject via **dict; type those tests
     # in a dedicated pass rather than blocking the library gate.
     "tests/**",
-    # Qt enum stubs / optional SpaceMouse bindings — separate cleanup.
+    # Qt enum stubs / optional SpaceMouse bindings - separate cleanup.
     "fypa/gerber/import_ui.py",
     "fypa/spacemouse_nav.py",
     # Pre-existing untyped surfaces outside External-FET SMPS. Narrow later.

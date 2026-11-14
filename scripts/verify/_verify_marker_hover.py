@@ -6,7 +6,7 @@ showing the *old* solved value until a Resolve. Builds the real PdnViewer
 from a cached solve, applies an editor override exactly as the Apply button
 does, then hit-tests the hover index the bottom bar uses.
 
-Not a unit test — the QApplication, the viewer and _update_markers_and_legend
+Not a unit test - the QApplication, the viewer and _update_markers_and_legend
 all run for real.
 """
 import os
@@ -77,7 +77,7 @@ def n_net_of(d):
     return None
 
 def pad_centroid(designator, net):
-    """Centre of the named component's pad on ``net`` — matches the point
+    """Centre of the named component's pad on ``net`` - matches the point
     _component_pad_points / _editor_marker_hover_rows resolve to."""
     import numpy as np
     prefix = f"{designator}-"

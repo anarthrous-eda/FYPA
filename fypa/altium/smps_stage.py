@@ -1,4 +1,4 @@
-"""SMPS stage binding — connect PATH and FREEWHEEL elements to REGULATOR hosts.
+"""SMPS stage binding - connect PATH and FREEWHEEL elements to REGULATOR hosts.
 
 Called by :func:`fypa.altium.annotations.parse_annotations` after the main
 parse loop to replace :class:`PathSpec` directives with :class:`ResistorSpec`
@@ -154,14 +154,14 @@ def _find_host_regulator(
             _append_error_once(
                 result,
                 f"{diag}: PDN_SMPS_HOST={path.smps_host!r} matches multiple "
-                f"REGULATOR channels — use a unique designator",
+                f"REGULATOR channels - use a unique designator",
             )
             return None
         return candidates[0]
 
     # Only a regulator that declares a switch stage can host a PATH part.
-    # Without this, any second regulator hanging off the same input rail —
-    # an LDO, an internal-FET SMPS — matches on VIN alone and makes every
+    # Without this, any second regulator hanging off the same input rail -
+    # an LDO, an internal-FET SMPS - matches on VIN alone and makes every
     # high-side part "ambiguous", which is most boards.
     hosts = [
         r for r in regulators
@@ -170,7 +170,7 @@ def _find_host_regulator(
     if not hosts:
         _append_error_once(
             result,
-            f"{diag}: could not bind to a REGULATOR host — no REGULATOR "
+            f"{diag}: could not bind to a REGULATOR host - no REGULATOR "
             f"declares a switch stage (set PDN_SW1_NET and "
             f"PDN_SMPS_TOPOLOGY on the controller)",
         )
@@ -190,7 +190,7 @@ def _find_host_regulator(
     if not matches:
         _append_error_once(
             result,
-            f"{diag}: could not bind to a REGULATOR host — none of the "
+            f"{diag}: could not bind to a REGULATOR host - none of the "
             f"declared regulators share a non-GND net with this part's pads",
         )
         return None
@@ -198,7 +198,7 @@ def _find_host_regulator(
         host_names = ", ".join(m.designator for m in matches)
         _append_error_once(
             result,
-            f"{diag}: ambiguous host — pads touch nets from multiple "
+            f"{diag}: ambiguous host - pads touch nets from multiple "
             f"regulators ({host_names}); set PDN_SMPS_HOST to disambiguate",
         )
         return None
@@ -223,16 +223,16 @@ def _classify_path(
     """Classify a bound PATH element's role in the stage.
 
     The regulator element replaces the one PATH part that carries the full
-    output current *and* blocks the DC path from IN to OUT — the **cut**. That
+    output current *and* blocks the DC path from IN to OUT - the **cut**. That
     is always the part with a terminal on OUT_P: the inductor in a buck, the
     high-side FET in a boost, the output-side high-side FET in a buck-boost.
     Picking it this way is what lets the element be a plain conductor there
     (it draws ``i_v``, not ``gain·i_v``), with the conversion ratio carried by
     the low-side legs instead.
 
-    Everything else is either a **low-side leg** — it reaches a ground net
+    Everything else is either a **low-side leg** - it reaches a ground net
     from a switch node, and carries a topology-dependent fraction of ``i_v``
-    — or a plain resistive **bridge** whose current KCL settles on its own.
+    - or a plain resistive **bridge** whose current KCL settles on its own.
     A boost's inductor and a sense shunt in the inductor chain are both just
     bridges; nothing needs to tell them apart.
 
@@ -261,7 +261,7 @@ def _classify_path(
     # A switch node down to a ground net. Which side of the inductor that
     # switch node sits on decides the coefficient, and with only one switch
     # node the net names cannot say: a buck switches on the input side
-    # (VIN–HS–SW–L–OUT) and a boost on the output side (VIN–L–SW–HS–OUT).
+    # (VIN-HS-SW-L-OUT) and a boost on the output side (VIN-L-SW-HS-OUT).
     # Only the topology distinguishes them. A SW2_NET aliased onto OUT_P or
     # IN_P is an annotation convenience, not a second switch node.
     real_sw2 = sw2_nets - out_p_nets - in_p_nets
@@ -294,7 +294,7 @@ def _orient_leg(
 
     A buck's low-side FET freewheels: current flows out of the ground plane,
     through the FET, into the switch node (``from_ground=True``). A boost's
-    low-side FET is the opposite — it pulls the inductor current down into
+    low-side FET is the opposite - it pulls the inductor current down into
     the ground plane.
     """
     p_on_gnd = bool(_terminal_net_indices(path.p, net_remap) & gnd_nets)
@@ -337,7 +337,7 @@ def finalize_smps_stages(
 ) -> None:
     """Bind PATH elements to REGULATOR hosts, mutating *result.directives*.
 
-    * The **cut** — the PATH part joining a switch node to OUT_P — is
+    * The **cut** - the PATH part joining a switch node to OUT_P - is
       replaced by the regulator element itself: its resistance becomes
       ``cut_resistance`` and its two pads become the host's in_p / out_p.
       Because that part carries the full output current, the element is a
@@ -361,7 +361,7 @@ def finalize_smps_stages(
             _append_error_once(
                 result,
                 f"PATH on {p.designator}: could not bind to a REGULATOR host "
-                f"— no REGULATOR directives found",
+                f"- no REGULATOR directives found",
             )
         return
 
@@ -379,7 +379,7 @@ def finalize_smps_stages(
             _append_error_once(
                 result,
                 f"PATH on {p.designator}: host {host.designator} has no "
-                f"PDN_SMPS_TOPOLOGY and no SW nets — cannot bind",
+                f"PDN_SMPS_TOPOLOGY and no SW nets - cannot bind",
             )
             continue
         if topo and topo == "INVERTER":
@@ -389,7 +389,7 @@ def finalize_smps_stages(
             _append_error_once(
                 result,
                 f"PATH on {p.designator}: host {host.designator} uses INVERTER "
-                f"topology — external-FET binding is not supported for "
+                f"topology - external-FET binding is not supported for "
                 f"INVERTER, so this part cannot be modelled; remove the PATH "
                 f"annotation or model the stage as BUCK / BOOST / BUCKBOOST",
             )
@@ -418,7 +418,7 @@ def finalize_smps_stages(
                     result,
                     f"PATH on {path.designator}: could not classify pad nets "
                     f"against host {host.designator}'s stage nets "
-                    f"(IN/OUT/SW) — check net names or set PDN_P_NET / "
+                    f"(IN/OUT/SW) - check net names or set PDN_P_NET / "
                     f"PDN_N_NET explicitly",
                 )
                 bound_path_ids.discard(id(path))
@@ -440,7 +440,7 @@ def finalize_smps_stages(
             _append_error_once(
                 result,
                 f"REGULATOR on {host.designator}: PATH parts are bound to it "
-                f"but PDN_SMPS_TOPOLOGY is not set — set it to one of "
+                f"but PDN_SMPS_TOPOLOGY is not set - set it to one of "
                 f"{', '.join(sorted(_BINDABLE_TOPOLOGIES))} so the switch-leg "
                 f"currents can be derived",
             )
@@ -465,7 +465,7 @@ def finalize_smps_stages(
                         result,
                         f"PATH on {path.designator}: host {host.designator} "
                         f"already has {cut_path.designator} between a switch "
-                        f"node and OUT_P — only one output-side part per "
+                        f"node and OUT_P - only one output-side part per "
                         f"stage is supported",
                     )
                     continue
@@ -477,7 +477,7 @@ def finalize_smps_stages(
                         f"PATH on {path.designator}: {role} leg coefficient is "
                         f"zero for {topo} at gain {host.gain:.3f}, so the part "
                         f"carries no averaged current and is left out of the "
-                        f"model entirely — its copper is not solved and any "
+                        f"model entirely - its copper is not solved and any "
                         f"PDN_R on it is ignored"
                     )
                     continue
@@ -519,7 +519,7 @@ def finalize_smps_stages(
                 result,
                 f"REGULATOR on {host.designator}: no PATH part joins a switch "
                 f"node to OUT_P, so nothing cuts the DC path from IN to OUT "
-                f"— annotate the inductor (buck) or the output-side high-side "
+                f"- annotate the inductor (buck) or the output-side high-side "
                 f"FET (boost) with PDN_ROLE=PATH",
             )
             continue
@@ -564,7 +564,7 @@ def finalize_smps_stages(
         if isinstance(d, PathSpec):
             if id(d) in bound_path_ids:
                 continue  # consumed by binding
-            # Unbound PATH — already errored; drop from directives.
+            # Unbound PATH - already errored; drop from directives.
             continue
         if isinstance(d, RegulatorSpec) and id(d) in replaced_reg_ids:
             continue  # replaced by updated version in new_directives
@@ -603,7 +603,7 @@ def _freewheel_host(
             _append_error_once(
                 result,
                 f"{diag}: PDN_SMPS_HOST={fw.smps_host!r} does not match any "
-                f"REGULATOR designator — the diode is left out and the "
+                f"REGULATOR designator - the diode is left out and the "
                 f"regulator's switch pins carry the whole output current",
             )
             return None
@@ -616,7 +616,7 @@ def _freewheel_host(
             "channels (" + ", ".join(m.designator for m in matches) + ")")
         _append_error_once(
             result,
-            f"{diag}: {why} — the diode is left out and the regulator's "
+            f"{diag}: {why} - the diode is left out and the regulator's "
             f"switch pins carry the whole output current",
         )
         return None
@@ -658,7 +658,7 @@ def finalize_freewheel_diodes(
             _append_error_once(
                 result,
                 f"{diag}: host {host.designator} is not a switching "
-                f"regulator (PDN_REGULATOR_TYPE=SMPS) — the diode is left out",
+                f"regulator (PDN_REGULATOR_TYPE=SMPS) - the diode is left out",
             )
             continue
         if host.cut_resistance is not None or any(
@@ -666,7 +666,7 @@ def finalize_freewheel_diodes(
             _append_error_once(
                 result,
                 f"{diag}: host {host.designator} is an external-FET stage "
-                f"(PDN_ROLE=PATH parts), which models its own low side — "
+                f"(PDN_ROLE=PATH parts), which models its own low side - "
                 f"the diode is left out",
             )
             continue
@@ -674,7 +674,7 @@ def finalize_freewheel_diodes(
             _append_error_once(
                 result,
                 f"{diag}: host {host.designator} already has a freewheel "
-                f"diode — only one per regulator is supported; this one is "
+                f"diode - only one per regulator is supported; this one is "
                 f"left out",
             )
             continue

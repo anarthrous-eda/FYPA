@@ -94,7 +94,7 @@ if ($LaunchGui -and (Test-Path -LiteralPath $LaunchGui)) {
 }
 else {
     if ($LaunchGui) {
-        Write-Warning "Launch_GUI.py missing at $LaunchGui — falling back to FYPA.py gui"
+        Write-Warning "Launch_GUI.py missing at $LaunchGui - falling back to FYPA.py gui"
     }
     & uv run --extra spacemouse FYPA.py gui $PrjPcbPath
 }

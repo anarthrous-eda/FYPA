@@ -1,4 +1,4 @@
-"""Rail-pane subnet row building — one implementation, two panes."""
+"""Rail-pane subnet row building - one implementation, two panes."""
 from __future__ import annotations
 
 import os
@@ -32,7 +32,7 @@ _TREE = RailTreeNode(
         RailTreeNode(name="B"),
     ),
 )
-_MEMBERS = ["VIN", "A", "A1", "B"]
+_MEMBERS = ["A", "A1", "B"]
 
 
 def _viewer_stub(*, pending: bool):
@@ -93,17 +93,18 @@ def _labels(v) -> list[str]:
 
 @pytest.mark.parametrize("pending", [False, True])
 def test_insert_shows_expanded_nodes_only(qapp, pending):
-    """Both panes walk the same tree: primary open, deeper nodes collapsed."""
+    """Both panes walk the same tree: the root (the rail's own net, already
+    named by the rail row) is skipped, its children shown, deeper collapsed."""
     v, parent = _viewer_stub(pending=pending)
     v._insert_subnet_rows("VIN", after_item=parent, pending=pending)
-    assert _labels(v) == ["VIN", "A", "B"]
+    assert _labels(v) == ["A", "B"]
 
     expanded = (
         v._pending_subnet_node_expanded if pending else v._subnet_node_expanded
     )
     expanded[("VIN", "A")] = True
     v._rebuild_subnet_rows("VIN", pending=pending)
-    assert _labels(v) == ["VIN", "A", "A1", "B"]
+    assert _labels(v) == ["A", "A1", "B"]
 
 
 @pytest.mark.parametrize("pending", [False, True])
@@ -134,7 +135,7 @@ def test_solved_rows_reuse_the_rails_own_eyes(qapp):
     v, parent = _viewer_stub(pending=False)
     v._insert_subnet_rows("VIN", after_item=parent)
     widget = v.rail_list.itemWidget(v.rail_list.item(1))
-    assert widget.findChildren(EyeButton)[0] is v._subnet_eye_buttons["VIN"]["VIN"]
+    assert widget.findChildren(EyeButton)[0] is v._subnet_eye_buttons["VIN"]["A"]
     assert widget.styleSheet() == ""
 
 
@@ -145,9 +146,9 @@ def test_expand_toggle_defers_the_rebuild(qapp):
     btn = v._subnet_expand_buttons[("VIN", "A")]
     btn.setChecked(True)  # fires _on_subnet_node_expand_toggled
     assert v._subnet_node_expanded[("VIN", "A")] is True
-    assert _labels(v) == ["VIN", "A", "B"]  # not rebuilt yet
+    assert _labels(v) == ["A", "B"]  # not rebuilt yet
     qapp.processEvents()
-    assert _labels(v) == ["VIN", "A", "A1", "B"]
+    assert _labels(v) == ["A", "A1", "B"]
 
 
 def test_rebuild_after_teardown_is_a_no_op(qapp):
@@ -157,3 +158,12 @@ def test_rebuild_after_teardown_is_a_no_op(qapp):
     v.rail_list.deleteLater()
     v.rail_list = None
     v._rebuild_subnet_rows("VIN")  # must not raise
+
+
+def test_root_collapsed_in_saved_state_still_shows_children(qapp):
+    """The root row is gone, so nothing could re-expand it: a saved
+    collapsed root must not hide the rail's children."""
+    v, parent = _viewer_stub(pending=False)
+    v._subnet_node_expanded[("VIN", "VIN")] = False
+    v._insert_subnet_rows("VIN", after_item=parent)
+    assert _labels(v) == ["A", "B"]

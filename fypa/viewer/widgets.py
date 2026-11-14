@@ -24,7 +24,7 @@ HOVER_THROTTLE_S: float = 0.033
 
 
 # Faster throttle used ONLY while the "Show cursor tooltip" option is
-# on — the tooltip follows the cursor visibly, so the eye notices any
+# on - the tooltip follows the cursor visibly, so the eye notices any
 # stutter the bottom probe-label hides. Lower = smoother but more CPU
 # spent on shapely.contains + _FastTriSampler query per move event.
 # Set to 0.0 to disable throttling entirely (re-probe on every event).
@@ -69,7 +69,7 @@ def _make_eye_pixmap(open_: bool, *, partial: bool = False, size: int = 16) -> Q
 
     ``open_`` drives the silhouette: an open eye, or a slashed one when this
     item's own copper is hidden. ``partial`` only mutes the colour, so all
-    four combinations stay distinguishable — in particular hidden-with-
+    four combinations stay distinguishable - in particular hidden-with-
     visible-descendants keeps its slash instead of reading as visible.
     """
     px = QPixmap(size, size)
@@ -134,10 +134,10 @@ _FOCUS_PIXMAP_CACHE: dict[tuple[str, bool, int], QPixmap] = {}
 
 
 def _make_focus_pixmap(on: bool, *, size: int = 16) -> QPixmap:
-    """Draw the net-table focus toggle — a crosshair / target glyph.
+    """Draw the net-table focus toggle - a crosshair / target glyph.
 
     Deliberately NOT an eye. The layer eyes are additive, per-layer and
-    independent of each other; this control is exclusive and sticky — while
+    independent of each other; this control is exclusive and sticky - while
     it is on, every net but its own is gone from the viewport and no click
     in the canvas can release it. A different silhouette keeps the two from
     reading as the same kind of switch.
@@ -219,7 +219,7 @@ def _make_floating_tooltip(parent, *, font_family: str | None = None,
     the cursor also sidesteps two traps in putting a label over a matplotlib
     canvas: mpl mouse events are bottom-origin where ``QWidget.move`` is
     top-origin, and they carry physical device pixels where ``move`` takes
-    logical ones — so using ``event.x``/``event.y`` directly mirrors the label
+    logical ones - so using ``event.x``/``event.y`` directly mirrors the label
     about the canvas midline and displaces it by the device-pixel ratio.
 
     ``WA_TransparentForMouseEvents`` stops the label stealing the very hover
@@ -271,7 +271,7 @@ class EyeButton(QToolButton):
 
     toggled_visible = Signal(bool)
     shift_clicked = Signal()
-    # Ctrl+Click — the rail-tree subnet eyes use this for SERIES-subtree
+    # Ctrl+Click - the rail-tree subnet eyes use this for SERIES-subtree
     # fan-out. Opt-in like Shift: an eye whose owner never connects it keeps
     # the plain toggle rather than turning Ctrl+Click into a dead click.
     ctrl_clicked = Signal()
@@ -301,16 +301,16 @@ class EyeButton(QToolButton):
         shift_tip = self._SHIFT_TIP if self._shift_isolatable else ""
         # Two kinds of eye share this class:
         #
-        # * Aggregate ("All layers", a rail row) — owns no copper of its own,
+        # * Aggregate ("All layers", a rail row) - owns no copper of its own,
         #   so partial means "some children on" and a click means "show them
         #   all".
-        # * Badge (a rail-tree subnet node) — owns this net's copper. Partial
+        # * Badge (a rail-tree subnet node) - owns this net's copper. Partial
         #   is information *about its descendants*; it must never veto the
         #   plain toggle, or the node's own copper cannot be hidden while any
         #   descendant differs. Subtree fan-out is Ctrl+Click's job.
         self._partial_is_badge = bool(partial_is_badge)
         self._tip_partial = (
-            "Some subnet nets visible — click to show all" + shift_tip
+            "Some subnet nets visible - click to show all" + shift_tip
         )
         self._shift_tip = shift_tip
         # Set by the owner after construction (an unsolved rail explaining why
@@ -337,7 +337,7 @@ class EyeButton(QToolButton):
     ) -> None:
         on = bool(on)
         # Partial may sit on an off badge eye (this net hidden, descendants
-        # shown). An aggregate eye has no such state — its owner only ever
+        # shown). An aggregate eye has no such state - its owner only ever
         # passes partial together with on.
         partial = bool(partial)
         if on == self._visible and partial == self._partial:
@@ -379,7 +379,7 @@ class EyeButton(QToolButton):
         self._set_own_tooltip(base + self._shift_tip)
 
     def mousePressEvent(self, event) -> None:
-        # Capture modifiers at press time — clicked fires on release and
+        # Capture modifiers at press time - clicked fires on release and
         # QApplication.keyboardModifiers() may already be cleared.
         self._press_mods = event.modifiers()
         super().mousePressEvent(event)
@@ -388,7 +388,7 @@ class EyeButton(QToolButton):
         # ``clicked`` is emitted from inside the base implementation, so
         # ``_on_clicked`` still sees the press modifiers. Clearing afterwards
         # stops a press that never produced a click (drag off the button, a
-        # cancelled press) from leaking Shift/Ctrl into the next click —
+        # cancelled press) from leaking Shift/Ctrl into the next click -
         # including programmatic ``click()`` and accessibility activation,
         # which never go through ``mousePressEvent`` at all.
         try:
@@ -470,7 +470,7 @@ def _fill_pixmap(solid: bool, size: int = 16) -> QPixmap:
 class FillToggleButton(QToolButton):
     """Outline-vs-solid fill toggle for an overlay row.
 
-    Mirrors :class:`EyeButton` — a small auto-raise tool button whose icon
+    Mirrors :class:`EyeButton` - a small auto-raise tool button whose icon
     flips between an outlined square (wire mesh) and a solid square."""
 
     toggled_fill = Signal(bool)  # True == solid fill
@@ -503,8 +503,8 @@ class FillToggleButton(QToolButton):
     def _apply_icon(self) -> None:
         self.setIcon(QIcon(_fill_pixmap(self._solid, self._icon_size)))
         self.setToolTip(
-            "Solid fill — click for wire mesh" if self._solid
-            else "Wire mesh — click for solid fill"
+            "Solid fill - click for wire mesh" if self._solid
+            else "Wire mesh - click for solid fill"
         )
 
     def _on_clicked(self) -> None:
@@ -537,14 +537,14 @@ def _make_outline_pixmap(on: bool, *, size: int = 16) -> QPixmap:
     body = QColor(t["eye_closed"])
     trace = QColor(t["eye_open"] if on else t["eye_closed"])
 
-    # Inner filled square — the copper polygon being traced.
+    # Inner filled square - the copper polygon being traced.
     inset = size * 0.32
     inner = QRectF(inset, inset, size - 2 * inset, size - 2 * inset)
     p.setPen(Qt.NoPen)
     p.setBrush(body)
     p.drawRect(inner)
 
-    # Outer square outline — the traced layer boundary.
+    # Outer square outline - the traced layer boundary.
     o = size * 0.14
     outer = QRectF(o, o, size - 2 * o, size - 2 * o)
     pen = QPen(trace)
@@ -578,7 +578,7 @@ def _outline_pixmap(on: bool, size: int = 16) -> QPixmap:
 class OutlineToggleButton(QToolButton):
     """Layer-outline visibility toggle for the "All Rails" row.
 
-    Mirrors :class:`FillToggleButton` — a small auto-raise tool button,
+    Mirrors :class:`FillToggleButton` - a small auto-raise tool button,
     the same size as the wire-mesh / solid toggle. Its icon flips between
     a bright traced contour (outlines shown) and a faint dotted one
     (outlines hidden). Drives the same state the old "Show layer
@@ -618,8 +618,8 @@ class OutlineToggleButton(QToolButton):
     def _apply_icon(self) -> None:
         self.setIcon(QIcon(_outline_pixmap(self._on, self._icon_size)))
         self.setToolTip(
-            "Layer outlines shown (O) — click to hide" if self._on
-            else "Layer outlines hidden (O) — click to show"
+            "Layer outlines shown (O) - click to hide" if self._on
+            else "Layer outlines hidden (O) - click to show"
         )
 
     def _on_clicked(self) -> None:
@@ -656,7 +656,7 @@ def _make_split_pixmap(split: bool, *, size: int = 16) -> QPixmap:
     inset = size * 0.20
     w = size - 2 * inset
     if split:
-        # Two separate halves with a clear gap — the result of a split.
+        # Two separate halves with a clear gap - the result of a split.
         gap = size * 0.14
         h = (w - gap) / 2.0
         p.drawRect(QRectF(inset, inset, w, h))
@@ -734,7 +734,7 @@ class SplitButton(QToolButton):
 # --- Transparency control --------------------------------------------------
 
 # Nine-step transparency grid (12.5% per step): 0, 12.5, 25, 37.5, 50, 62.5,
-# 75, 87.5, 100 %. Stored as an integer step count [0..8] on the button —
+# 75, 87.5, 100 %. Stored as an integer step count [0..8] on the button -
 # the alpha applied to the row's geometry is (8 - step) / 8 (0%
 # transparency == fully opaque == step 0). A plain click moves by the
 # coarse delta (two steps == 25 %) and wraps around; an alt-click moves by
@@ -760,7 +760,7 @@ def _make_transparency_pixmap(step: int, *, size: int = 16) -> QPixmap:
     ``step`` is the number of eighth-slices removed from a white disc;
     coarse clicks remove two eighths (a quarter) at a time, alt-clicks
     remove one eighth (12.5 %). 0 = full disc (0% transparent), 8 = empty
-    (100% transparent — only the faint reference outline remains so the
+    (100% transparent - only the faint reference outline remains so the
     button stays visible)."""
     px = QPixmap(size, size)
     px.fill(Qt.transparent)
@@ -835,12 +835,12 @@ class TransparencyButton(QToolButton):
 
     Click behaviour
     ---------------
-    * Plain click       — +25 % (coarse), wraps 100 % → 0 %.
-    * Shift+click       — -25 % (coarse), wraps 0 % → 100 %.
-    * Right-click       — -25 % (coarse), wraps 0 % → 100 %.
-    * Alt+click         — +12.5 % (fine), clamped at 100 %.
-    * Alt+Shift+click   — -12.5 % (fine), clamped at 0 %.
-    * Alt+Right-click   — -12.5 % (fine), clamped at 0 %.
+    * Plain click       - +25 % (coarse), wraps 100 % → 0 %.
+    * Shift+click       - -25 % (coarse), wraps 0 % → 100 %.
+    * Right-click       - -25 % (coarse), wraps 0 % → 100 %.
+    * Alt+click         - +12.5 % (fine), clamped at 100 %.
+    * Alt+Shift+click   - -12.5 % (fine), clamped at 0 %.
+    * Alt+Right-click   - -12.5 % (fine), clamped at 0 %.
     """
 
     toggled_transparency = Signal(int)  # 0..(_TRANSPARENCY_STEPS-1)
@@ -890,7 +890,7 @@ class TransparencyButton(QToolButton):
         )
 
     def mousePressEvent(self, event) -> None:
-        # Capture the modifiers at press time — QToolButton.clicked fires
+        # Capture the modifiers at press time - QToolButton.clicked fires
         # on release, and QApplication.keyboardModifiers() at that moment
         # would race the user lifting Alt / Shift before the mouse button.
         self._press_mods = event.modifiers()
@@ -968,7 +968,7 @@ _OVERLAY_SWATCH_PX = 14
 
 def _make_swatch_pixmap(rgb: tuple[float, float, float], *,
                         size: int = _OVERLAY_SWATCH_PX) -> QPixmap:
-    """A flat, solid-filled colour square — drawn exactly like the physical-
+    """A flat, solid-filled colour square - drawn exactly like the physical-
     layer list's swatch (a plain ``QPixmap.fill``: no border, no rounding,
     no antialiasing) so a Board Features row reads identically."""
     px = QPixmap(size, size)
@@ -981,8 +981,8 @@ def _make_swatch_pixmap(rgb: tuple[float, float, float], *,
 class OverlayColorButton(QToolButton):
     """Colour-swatch button for a Board Features row.
 
-    Looks identical to the physical-layer list's colour box — a flat solid
-    square, borderless and the same size — but is clickable: clicking opens
+    Looks identical to the physical-layer list's colour box - a flat solid
+    square, borderless and the same size - but is clickable: clicking opens
     a colour picker; choosing a colour repaints the swatch and emits
     :attr:`colorChanged` so the viewer can recolour the overlay and mark
     the project dirty."""
@@ -999,7 +999,7 @@ class OverlayColorButton(QToolButton):
         self.setFocusPolicy(Qt.NoFocus)
         self.setIconSize(QSize(size, size))
         self.setFixedSize(size, size)
-        # Borderless / transparent so only the solid swatch shows — no
+        # Borderless / transparent so only the solid swatch shows - no
         # tool-button frame or hover tint, matching the plain QLabel swatch.
         self.setStyleSheet(
             "QToolButton { border: none; padding: 0px; margin: 0px;"
@@ -1039,8 +1039,8 @@ class OverlayColorButton(QToolButton):
 class SidebarToggleButton(QToolButton):
     """Slim vertical splitter between the heatmap side panel and the plot.
 
-    * **Click** — collapse / expand the side panel (hotkey ``B``).
-    * **Drag horizontally** — resize the side panel width.
+    * **Click** - collapse / expand the side panel (hotkey ``B``).
+    * **Drag horizontally** - resize the side panel width.
     """
 
     # Delta (px) from the press position while dragging; positive = wider panel.
@@ -1055,7 +1055,9 @@ class SidebarToggleButton(QToolButton):
         self._dragging = False
         self.setAutoRaise(True)
         self.setFocusPolicy(Qt.NoFocus)
-        self.setCursor(Qt.SizeHorCursor)
+        # Pointing hand whether collapsed or expanded, matching every other
+        # collapse / expand control; dragging still resizes when expanded.
+        self.setCursor(Qt.PointingHandCursor)
         self.setFixedWidth(14)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
 
@@ -1064,9 +1066,6 @@ class SidebarToggleButton(QToolButton):
         if collapsed == self._collapsed:
             return
         self._collapsed = collapsed
-        self.setCursor(
-            Qt.PointingHandCursor if collapsed else Qt.SizeHorCursor,
-        )
         self.update()
 
     def isCollapsed(self) -> bool:
@@ -1165,12 +1164,12 @@ class _ClickAbsorbingPanel(QWidget):
     Why: the editor / copper-properties side panel is parented onto the
     GL viewer so it floats over the viewport. Qt's default
     QWidget.mousePressEvent ignores the event, which propagates up to
-    the GL viewer and fires its empty-space click handler — deselecting
+    the GL viewer and fires its empty-space click handler - deselecting
     the current copper. Absorbing the events here keeps clicks on the
     panel's blank areas from reaching the viewport.
 
     WA_StyledBackground is required so the panel's stylesheet
-    ``background-color`` actually paints — without it, QWidget subclasses
+    ``background-color`` actually paints - without it, QWidget subclasses
     leave their background transparent and the GL viewport shows
     through.
     """
@@ -1258,7 +1257,7 @@ class _ClickAbsorbingPanel(QWidget):
 
 
 def _esc(s) -> str:
-    """Minimal HTML escape for user-supplied strings going into the Setup tab."""
+    """Minimal HTML escape for user-supplied strings going into the Properties tab."""
     return (str(s)
             .replace("&", "&amp;")
             .replace("<", "&lt;")
@@ -1269,7 +1268,7 @@ def _esc(s) -> str:
 
 
 def _contrasting_text_color(hex_color: str) -> str:
-    """Return ``#000000`` or ``#ffffff`` — whichever gives better contrast
+    """Return ``#000000`` or ``#ffffff`` - whichever gives better contrast
     against ``hex_color`` (#RRGGBB). Uses the YIQ luma approximation
     (0.299 R + 0.587 G + 0.114 B); threshold 0.5 puts mid-grey on black."""
     h = hex_color.lstrip("#")

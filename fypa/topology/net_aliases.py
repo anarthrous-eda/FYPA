@@ -1,4 +1,4 @@
-"""GND net name aliases — import-light (no pipeline dependencies)."""
+"""GND net name aliases - import-light (no pipeline dependencies)."""
 
 from __future__ import annotations
 

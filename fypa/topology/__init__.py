@@ -1,4 +1,4 @@
-"""PDN topology schematic — public API.
+"""PDN topology schematic - public API.
 
 See ``README.md`` in this package for architecture, routing, validation, and tests.
 

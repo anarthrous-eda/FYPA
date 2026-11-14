@@ -1,4 +1,4 @@
-"""ParaView VTU export — scalar fields, vias, and voltage_drop reference."""
+"""ParaView VTU export - scalar fields, vias, and voltage_drop reference."""
 from __future__ import annotations
 
 import base64
@@ -47,7 +47,7 @@ def _read_field(vtu_text: str, name: str) -> list[float]:
 
     The writers emit VTK's base64 ``binary`` encoding (an 8-char base64
     UInt32 byte-count header followed by the base64 payload, each block
-    encoded independently), which is both far faster to write and exact —
+    encoded independently), which is both far faster to write and exact -
     no decimal round trip. Plain ASCII arrays are still accepted so this
     helper keeps working against a hand-written or legacy file.
     """

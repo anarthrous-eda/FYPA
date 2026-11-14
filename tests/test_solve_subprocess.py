@@ -1,7 +1,7 @@
 """The out-of-process solve path (fypa.solve_subprocess).
 
 Qt-free, so it runs headless in CI. Covers the opt-in flag, error marshaling
-across the process boundary, and — when the Sandbox example is present — a full
+across the process boundary, and - when the Sandbox example is present - a full
 child solve whose result must match an in-process solve.
 """
 from __future__ import annotations
@@ -33,7 +33,7 @@ def test_flag_env_parsing(monkeypatch, val, expected):
 
 def test_child_failure_surfaces_as_error():
     """A job that blows up inside the child comes back as a
-    SolveSubprocessError carrying the child's traceback — never a hang."""
+    SolveSubprocessError carrying the child's traceback - never a hang."""
     from pdnsolver import mesh as _pdn_mesh
     from fypa.altium.loader import SolveSettings
     # loaded=None makes solve_problem_adaptive raise in the child.

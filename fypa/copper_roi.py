@@ -7,16 +7,16 @@ report and a future CLI check can share it.
 Three kinds of fix are ranked, matching how PDN problems are fixed in
 practice (widen first, add layers and vias, thicken last):
 
-* **widen** — push a copper edge outward. The value density at the edge
+* **widen** - push a copper edge outward. The value density at the edge
   times the edge length is the gain per mm of widening; runs of high-value
   edge are reported per :data:`WIDEN_STEP_MM` of widening, small enough for
   the first-order estimate to hold.
-* **parallel** — a stitched copy of the copper, same weight, on another
+* **parallel** - a stitched copy of the copper, same weight, on another
   layer over a region. The first-order value of doubling a region's
   conductance overstates the gain by 2x on a series path (halving a
-  resistance saves half its drop, not all of it), so it is halved — exact
+  resistance saves half its drop, not all of it), so it is halved - exact
   for a series path, conservative-to-fair for spreading.
-* **via** — one more via beside an existing one, halved the same way.
+* **via** - one more via beside an existing one, halved the same way.
 
 The target load is ranked by how much of its drop budget it uses: the drop
 from the rail's setpoint over ``nominal - PDN_MIN_V`` when PDN_MIN_V is set,
@@ -128,7 +128,7 @@ def _mesh_sigma(ls, layer, mesh_i: int) -> float | np.ndarray:
 
 def value_density(solution, key: str) -> dict[int, list[np.ndarray | None]]:
     """Per layer index, per mesh: each triangle's value density (V/mm²) for
-    ``key`` — the load-voltage gain per mm² of parallel copper. Layers with
+    ``key`` - the load-voltage gain per mm² of parallel copper. Layers with
     no field for ``key`` are absent."""
     out: dict[int, list[np.ndarray | None]] = {}
     for li, ls in enumerate(solution.layer_solutions):
@@ -230,7 +230,7 @@ class _Copper:
     a parallel region, a ray's reach), so each lookup takes the layer's
     polygons that touch that area from an STRtree, clips them to it and
     unions the pieces. Unioning a whole layer instead costs seconds per
-    (layer, net) on a large board — minutes in all with every net's copper.
+    (layer, net) on a large board - minutes in all with every net's copper.
     """
 
     def __init__(self, by_layer: dict[str, list[tuple[str, Any]]]):
@@ -440,7 +440,7 @@ def _widen_runs(solution, density, copper) -> list[Opportunity]:
         # First order is linear in the step; the copper's own width w sets
         # how far that holds. Widening by δ scales a series path's
         # conductance by (1 + δ/w), which saves 1/(1 + δ/w) of the linear
-        # estimate — ~1 for a plane, ½ when the step doubles a trace.
+        # estimate - ~1 for a plane, ½ when the step doubles a trace.
         width = _local_width(copper, phys, net, line)
         gain = value_per_mm * WIDEN_STEP_MM / (1.0 + WIDEN_STEP_MM / width)
         blocked = _widen_blocked(copper, phys, net, line)
@@ -469,7 +469,7 @@ def _widen_runs(solution, density, copper) -> list[Opportunity]:
             title=f"Widen {e['net']} on {e['phys']} by {WIDEN_STEP_MM:g} mm",
             detail=(f"est. +{_fmt_mv(gain)} pushing out {line.length:.0f} mm "
                     f"of edge{where}"
-                    + (" — blocked by other copper" if e["blocked"] else "")),
+                    + (" - blocked by other copper" if e["blocked"] else "")),
             coords=[(float(x), float(y)) for x, y in e["pts"]],
             blocked=e["blocked"]))
     return out
@@ -505,7 +505,7 @@ def _weighted_percentile(values: np.ndarray, weights: np.ndarray,
 
 def _same_stretch(a, b, width: float, samples: int = 16) -> bool:
     """Run ``a`` faces the already-listed run ``b`` across one stretch of
-    copper ``width`` wide — the other side of the same trace: every point of
+    copper ``width`` wide - the other side of the same trace: every point of
     ``a`` is within about a width of ``b``. One-directional, so a piece of
     the far side still matches a whole near side."""
     if not math.isfinite(width):

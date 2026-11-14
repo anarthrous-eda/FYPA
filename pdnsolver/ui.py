@@ -198,7 +198,7 @@ class BaseSpatialIndex:
     tree: cKDTree | None
     values: np.ndarray
     shape: shapely.geometry.MultiPolygon
-    # Prepared copy of ``shape`` — its edge RTree makes the per-hover
+    # Prepared copy of ``shape`` - its edge RTree makes the per-hover
     # point-in-polygon test O(log n) instead of O(boundary_vertices), which on a
     # big GND plane (thousands of boundary vertices) was milliseconds per mouse
     # move on the UI thread.
@@ -243,7 +243,7 @@ class BaseSpatialIndex:
 
 
 def _mesh_vertex_xys(msh) -> np.ndarray:
-    """(N, 2) vertex coordinates for a mesh — from the retained triangle-soup
+    """(N, 2) vertex coordinates for a mesh - from the retained triangle-soup
     array when present (no per-vertex Python loop), else the half-edge form."""
     xys = getattr(msh, "_source_xys", None)
     n = len(msh.vertices)
@@ -261,7 +261,7 @@ class VertexSpatialIndex(BaseSpatialIndex):
         cls, layer_solution: solver.LayerSolution,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Vertex coordinates + potential values, straight from the meshes'
-        flat arrays (``_source_xys`` / ``ZeroForm.values``) — no per-vertex
+        flat arrays (``_source_xys`` / ``ZeroForm.values``) - no per-vertex
         Python loop or stub materialisation."""
         pts_chunks: list[np.ndarray] = []
         val_chunks: list[np.ndarray] = []
@@ -281,7 +281,7 @@ class FaceSpatialIndex(BaseSpatialIndex):
         cls, layer_solution: solver.LayerSolution,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Face centroids + power-density values from the flat triangle-soup
-        arrays (centroid = mean of the triangle's 3 vertices) — no per-face
+        arrays (centroid = mean of the triangle's 3 vertices) - no per-face
         centroid walk."""
         pts_chunks: list[np.ndarray] = []
         val_chunks: list[np.ndarray] = []
@@ -547,10 +547,10 @@ class AppToolBar(QToolBar):
         self.mesh_viewer.visibilityChanged.connect(self._syncViewMenuCheckboxes)
 
     def _setupLayersButton(self):
-        """Two toolbar dropdowns — Physical Layer (Top/Bottom/...) and
+        """Two toolbar dropdowns - Physical Layer (Top/Bottom/...) and
         Rail (+3V3/+5V/0V/...). FYPA names padne Layers
         ``"physical|net"`` so they can be re-split here. Layers without a
-        ``|`` (single-layer naming) still work — they show up under an
+        ``|`` (single-layer naming) still work - they show up under an
         empty rail entry."""
         self.physical_layer_button = QToolButton(self)
         self.physical_layer_button.setText("Layer")
@@ -564,7 +564,7 @@ class AppToolBar(QToolBar):
 
         self.rail_button = QToolButton(self)
         self.rail_button.setText("Rail")
-        self.rail_button.setToolTip("Select PDN rail (power net) — only nets with PDN_* directives are listed")
+        self.rail_button.setToolTip("Select PDN rail (power net) - only nets with PDN_* directives are listed")
         self.rail_button.setPopupMode(QToolButton.InstantPopup)
         self.rail_menu = QMenu(self.rail_button)
         self.rail_group = QActionGroup(self)
@@ -677,7 +677,7 @@ class AppToolBar(QToolBar):
             self.rail_menu.addAction(action)
             self.rail_group.addAction(action)
 
-        # Default selection — pick the currently active layer if any,
+        # Default selection - pick the currently active layer if any,
         # otherwise the first valid composite.
         active = None
         if (self.mesh_viewer.visible_layers
@@ -706,7 +706,7 @@ class AppToolBar(QToolBar):
         name = self._composite_by_pair.get((self._selected_physical, self._selected_rail))
         if name:
             self.mesh_viewer.setCurrentLayerByName(name)
-        # else: no padne Layer for this (physical, rail) combination —
+        # else: no padne Layer for this (physical, rail) combination -
         # silently do nothing; the user just sees the previous view.
 
     @Slot(str)
@@ -774,7 +774,7 @@ class RenderedMesh:
     def release(self) -> None:
         """Delete this mesh's GL objects. Must be called with the owning
         GL context current (QOpenGLWidget.makeCurrent()). Safe to call more
-        than once — ids are zeroed after deletion."""
+        than once - ids are zeroed after deletion."""
         vaos = [v for v in (self.vao_triangles, self.vao_edges,
                             self.vao_boundary) if v]
         if vaos:
@@ -1014,14 +1014,14 @@ class RenderedPoints:
     vao_points: int
     point_count: int
     # VBO ids backing the VAO (coords + colors). Retained so release() can
-    # free them — deleting a VAO does not delete the buffers bound into it, so
+    # free them - deleting a VAO does not delete the buffers bound into it, so
     # without these ids the buffer memory leaks on every re-solve (which
     # rebuilds all connection points). Empty when there were no points.
     vbos: tuple[int, ...] = ()
 
     def release(self) -> None:
         """Delete this batch's GL objects. Must be called with the owning GL
-        context current. Safe to call more than once — ids are zeroed after
+        context current. Safe to call more than once - ids are zeroed after
         deletion."""
         if self.vao_points:
             gl.glDeleteVertexArrays(1, [self.vao_points])
@@ -1619,7 +1619,7 @@ class MeshViewer(QOpenGLWidget):
     def setupConnectionPointsData(self) -> None:
         """Set up the connection points data for rendering.
 
-        Callers must ensure this widget's GL context is current — it both
+        Callers must ensure this widget's GL context is current - it both
         deletes the previous batches' GL objects and builds new ones."""
         # Free the previous batches' VAOs/VBOs before dropping the Python refs;
         # clearing the dict alone leaks the GL buffers on every re-solve.
@@ -2163,7 +2163,7 @@ class MeshViewer(QOpenGLWidget):
                 return
 
             # Update shader color map for new mode. This binds the shader and
-            # uploads 256 uniforms, so the GL context must be current — unlike
+            # uploads 256 uniforms, so the GL context must be current - unlike
             # the initializeGL call site, this slot fires from the UI with no
             # context bound, so make it current for the upload.
             if self.mesh_shader is not None:

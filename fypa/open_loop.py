@@ -4,7 +4,7 @@ A rail is a set of nets joined by series elements (sense resistors,
 ferrites, links). Current only flows on a rail that has both a supply and a
 load:
 
-* a SINK needs a supply on its rail, traced back to a real SOURCE — through
+* a SINK needs a supply on its rail, traced back to a real SOURCE - through
   any regulators in between, each of which needs its own input supplied;
 * a SOURCE needs something drawing from its rail (a sink, a regulator's
   input, or a series element to ground);

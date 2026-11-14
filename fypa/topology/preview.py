@@ -1,4 +1,4 @@
-"""Live topology preview — merge solve metadata with pending editor edits."""
+"""Live topology preview - merge solve metadata with pending editor edits."""
 
 from __future__ import annotations
 

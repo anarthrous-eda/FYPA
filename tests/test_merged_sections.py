@@ -86,7 +86,7 @@ def test_overlapping_outlines_go_to_the_first_shape_in_record_order():
     polys = [("A", [_sq(0, 0, 2, 2)]), ("B", [_sq(1, 0, 3, 2)])]
     labels = ms.label_points(np.array([0.5, 1.5, 2.5]), np.array([1.0] * 3),
                              names, polys, None)
-    # 1.5 lies in both — A comes first, so A owns it.
+    # 1.5 lies in both - A comes first, so A owns it.
     assert labels.tolist() == [1, 1, 2]
     # Same overlap, B listed first: B owns the shared strip.
     labels = ms.label_points(np.array([0.5, 1.5, 2.5]), np.array([1.0] * 3),
@@ -131,7 +131,7 @@ def qapp():
 
 @pytest.fixture
 def viewer(qapp):
-    from PySide6.QtWidgets import QCheckBox, QMainWindow
+    from PySide6.QtWidgets import QMainWindow
     import fypa.altium_viewer as V
     from fypa.viewer.widgets import EyeButton
     v = V.PdnViewer.__new__(V.PdnViewer)
@@ -141,7 +141,6 @@ def viewer(qapp):
     v._merged_parent = {"+12V_IN": "+12V", "HS_SNS": "+12V"}
     v._subnet_eye_buttons = {"+12V": {
         n: EyeButton(visible=True) for n in ("+12V", "+12V_IN", "HS_SNS")}}
-    v.rail_only_box = QCheckBox()
     return v
 
 
@@ -162,7 +161,7 @@ def test_everything_on_hides_nothing(viewer):
 def test_only_hs_sns(viewer):
     _set(viewer, "+12V", False)
     _set(viewer, "+12V_IN", False)
-    # The +12V mesh still draws — it carries HS_SNS's copper — with
+    # The +12V mesh still draws - it carries HS_SNS's copper - with
     # everything but the HS_SNS section masked off.
     assert viewer._effective_rail_members(["+12V"]) == ["+12V"]
     assert viewer._merged_hidden_sections() == {

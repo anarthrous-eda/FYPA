@@ -103,7 +103,7 @@ MONITOR = """INAX 85V Power Monitor With I2C Interface
 SWITCH = """TPSX 5.5-V, 2-A, 52-mΩ On-Resistance Load Switch
 1 Features
 • Integrated Single Channel Load Switch
-• On-Resistance (RON) – RON = 52 mΩ (typical)"""
+• On-Resistance (RON) - RON = 52 mΩ (typical)"""
 
 BEAD = """BLMX Chip Ferrite Bead
 Impedance 120 Ω at 100 MHz, DC resistance (max.) 25 mΩ, rated current 3 A"""
@@ -252,7 +252,7 @@ def test_wizard_formats_values_round_trip() -> None:
     assert format_value(640e-6, "current") == "640 µA"
     assert format_value(0.01, "resistance") == "10 mΩ"
     assert format_value(3.3, "voltage") == "3.3 V"
-    assert format_value(None, "voltage") == "—"
+    assert format_value(None, "voltage") == "-"
     for v, f in ((640e-6, "current"), (0.01, "resistance"), (1.8, "voltage")):
         assert parse_value(format_value(v, f)) == pytest.approx(v)
 

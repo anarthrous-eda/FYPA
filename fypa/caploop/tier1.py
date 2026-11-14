@@ -1,24 +1,24 @@
-"""Tier 1 — closed-form mounted-inductance model.
+"""Tier 1 - closed-form mounted-inductance model.
 
 Pure geometry over :class:`~fypa.caploop.identify.CapInstance`; no solve, so
 the Capacitors tab can populate on project load. The mounted loop decomposes
 per TI SWPA222A §3 / Fig. 6:
 
-* **escape** — each pad's run to its escape vias, modelled as a trace over
+* **escape** - each pad's run to its escape vias, modelled as a trace over
   the nearest reference plane: ``L ≈ μ0 · h_d · len / w``.
-* **via pair** — the anti-parallel barrel pair down to the reference cavity:
+* **via pair** - the anti-parallel barrel pair down to the reference cavity:
   ``L = (μ0/π) · h · acosh(s / 2r)``, derated for N parallel pairs by
   ``k_mutual / N`` (fully independent pairs would be ``1/N``; real adjacent
   pairs share flux).
-* **spreading** — a radial closed-form stand-in for the plane-pair term,
+* **spreading** - a radial closed-form stand-in for the plane-pair term,
   ``L = (μ0 · h_cav / π) · ln(r_far / r_port)``, replaced by the FEM value
   when Tier 2 has run (the closed form knows nothing about splits or
-  perforations — that's the whole point of Tier 2).
+  perforations - that's the whole point of Tier 2).
 
   Note the ``1/π``, not ``1/2π``: current spreads radially *out* of the cap
   port and converges radially *into* the IC port, so both ports contribute a
   ``ln`` term. This makes the two-port cavity term share the via-pair's
-  functional form, as it must — both are the same 2-D Laplace problem with
+  functional form, as it must - both are the same 2-D Laplace problem with
   two line sources. Validated against the Tier-2 FEM to within 0.5 % on an
   unbroken plane (see tests/test_caploop_tier2.py).
 
@@ -34,7 +34,7 @@ from fypa.caploop.constants import MU0_H_PER_MM, CapLoopSettings
 from fypa.caploop.identify import CapInstance, EscapeVia
 
 # acosh(s/2r) needs s > 2r; overlapping barrels are a geometry error, so the
-# argument is clamped just above 1 (log-slow region — the exact clamp barely
+# argument is clamped just above 1 (log-slow region - the exact clamp barely
 # moves the result) rather than allowed to NaN.
 _MIN_ACOSH_ARG = 1.02
 
@@ -47,7 +47,7 @@ class Tier1Result:
     escape_return_h: float
     via_loop_h: float
     spread_cf_h: float
-    # Effective geometry the terms were evaluated with — surfaced in the
+    # Effective geometry the terms were evaluated with - surfaced in the
     # table so a surprising L can be traced to its inputs.
     s_mm: float               # rail↔return escape-cluster centroid spacing
     r_eff_mm: float           # mean escape drill radius
@@ -81,7 +81,7 @@ def spreading_closed_form_h(h_cav_mm: float, r_port_mm: float,
                             r_far_mm: float) -> float:
     """Radial spreading between two ports in an unbroken plane-pair cavity.
 
-    Both ports spread radially, hence ``1/π`` rather than ``1/2π`` — see the
+    Both ports spread radially, hence ``1/π`` rather than ``1/2π`` - see the
     module docstring. Only valid on continuous planes; Tier 2 replaces it.
     """
     if h_cav_mm <= 0.0 or r_port_mm <= 0.0 or r_far_mm <= r_port_mm:
@@ -109,7 +109,7 @@ def mounted_inductance(
     *pad-edge* distance to its nearest via, over that side's own pad width,
     so a via-in-pad contributes no escape term at all. Degenerate geometry (a
     side with no escape at all, or no reference cavity) can't be modelled by
-    the closed forms — those caps get the settings fallback value and
+    the closed forms - those caps get the settings fallback value and
     ``is_fallback`` so the table shows an estimate, not a confident number.
     """
     settings = settings or CapLoopSettings()

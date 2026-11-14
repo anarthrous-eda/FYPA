@@ -14,7 +14,7 @@ Daily development can use `team/local` or feature branches. **Do not merge `team
 
 ## Combined test (`test/combined`)
 
-Feature branches listed in `team/test-combined.json` on `team/local` are merged into the shared `test/combined` branch and pushed to GitHub. Machines only fetch and check out that tip — they do not merge at Altium/FYPA start.
+Feature branches listed in `team/test-combined.json` on `team/local` are merged into the shared `test/combined` branch and pushed to GitHub. Machines only fetch and check out that tip - they do not merge at Altium/FYPA start.
 
 Config on `team/local`:
 
@@ -39,7 +39,7 @@ pwsh scripts/maintain-test-combined.ps1 -Abort         # escape stuck merge
 
 Omit `-Push` while resolving conflicts locally, then `-Push` when clean.
 
-**Conflicts:** only `.gitignore` / `FYPA.code-workspace` auto-resolve. On a real conflict the script stays on `test/combined` — do not `git switch` away. Either finish (`git add` + `git commit`, then `-Push`) or run `-Abort` to hard-reset to `origin/test/combined` and return to the branch that run started from (recorded in `.git/fypa-test-combined-return`). `-Abort` also works from a detached HEAD, which is where an interrupted rebase leaves you.
+**Conflicts:** only `.gitignore` / `FYPA.code-workspace` auto-resolve. On a real conflict the script stays on `test/combined` - do not `git switch` away. Either finish (`git add` + `git commit`, then `-Push`) or run `-Abort` to hard-reset to `origin/test/combined` and return to the branch that run started from (recorded in `.git/fypa-test-combined-return`). `-Abort` also works from a detached HEAD, which is where an interrupted rebase leaves you.
 
 **Local edits to `.gitignore` / `FYPA.code-workspace`** do not block a run, and are copied aside before the hard reset and put back when you land on your own branch again. Everything else must be committed or stashed first.
 
@@ -51,7 +51,7 @@ Config resolution: `scripts/test-combined.json` (gitignored) → `team/test-comb
 
 ### GitHub Action (fork only)
 
-`.github/workflows/maintain-test-combined.yml` lives **only on `team/local`** — never commit it to `main` or upstream PR branches.
+`.github/workflows/maintain-test-combined.yml` lives **only on `team/local`** - never commit it to `main` or upstream PR branches.
 
 Triggers: `workflow_dispatch` (`--ref team/local`) and pushes to `team/local` that touch `team/test-combined.json`.
 
@@ -62,11 +62,11 @@ pwsh scripts/test-combined.ps1
 pwsh scripts/test-combined.ps1 -SkipTests -PrjPcb path\to\Board.PrjPcb
 ```
 
-Checks out `origin/test/combined`, runs `uv sync` (the combined branch can carry a feature branch's dependency change — pass `-SkipSync` to skip), then the topology tests and FYPA. `-Rebuild` is not supported — use maintain.
+Checks out `origin/test/combined`, runs `uv sync` (the combined branch can carry a feature branch's dependency change - pass `-SkipSync` to skip), then the topology tests and FYPA. `-Rebuild` is not supported - use maintain.
 
 Altium (`Run_FYPA.ps1`) calls `scripts/launch-combined-gui.ps1`.
 
-All three scripts share `scripts/_git-helpers.ps1` (dot-sourced) for the git wrapper, the dirty-worktree gate and the checkout/reset step. They run under both `pwsh` (PowerShell 7) and Windows PowerShell 5.1 — the wrapper normalises the two hosts' argument binding and keeps git's stderr from aborting a successful run.
+All three scripts share `scripts/_git-helpers.ps1` (dot-sourced) for the git wrapper, the dirty-worktree gate and the checkout/reset step. They run under both `pwsh` (PowerShell 7) and Windows PowerShell 5.1 - the wrapper normalises the two hosts' argument binding and keeps git's stderr from aborting a successful run.
 
 ### Typical flow
 

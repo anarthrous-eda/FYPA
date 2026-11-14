@@ -83,7 +83,7 @@ def test_hotkey_is_a_noop_outside_editor_mode(viewer):
 
 
 def test_hotkey_does_not_arm_without_named_copper(viewer):
-    """Same guard the disabled button carries — nothing to anchor to."""
+    """Same guard the disabled button carries - nothing to anchor to."""
     viewer.metadata = {"all_copper": [{"net": "(none)"}]}
     viewer._editor_mode = True
     viewer._hotkey_arm_source_marker()

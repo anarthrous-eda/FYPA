@@ -35,8 +35,8 @@ class _BridgesTabMixin:
     #
     # Every part that joins two nets, and what FYPA did with it. Bridging was
     # previously spread across four mechanisms with no single view of the
-    # result — Altium PDN_ROLE=SERIES, the Net Tie / 0 Ω auto-bridge, the
-    # low-Ω net merge that absorbs those, and editor-mode SERIES — which is
+    # result - Altium PDN_ROLE=SERIES, the Net Tie / 0 Ω auto-bridge, the
+    # low-Ω net merge that absorbs those, and editor-mode SERIES - which is
     # why a board could be silently shorted in five places with nothing on
     # screen to say so. This tab is that single view, and the only place an
     # auto-bridge can be turned off.
@@ -47,19 +47,21 @@ class _BridgesTabMixin:
         ("Kind", "Inferred from the designator prefix."),
         ("Value", "The part's Altium value / comment."),
         ("Pins", "Pad count. The filter below keys on distinct NETS, not "
-                 "pins — a 4-pad Kelvin shunt bridges two nets and matters, "
+                 "pins - a 4-pad Kelvin shunt bridges two nets and matters, "
                  "a 2-pin part with both pads on one net does not."),
         ("Nets", "The two nets this part joins."),
         ("State", "series = you annotated it · auto = FYPA shorted it on "
                   "its own · off = auto-bridge disabled · not modelled = "
-                  "open at DC, its far-side copper is absent from the FEM."),
+                  "open at DC, its far-side copper is absent from the FEM · "
+                  "ignored (high Ω) = 100 Ω or more, too little current to "
+                  "matter."),
         ("R", "DC resistance in ohms. Editable. Blank = not modelled."),
         ("Why / impact", "Why FYPA treated it this way, and what it costs "
                          "the result if it is wrong."),
     )
 
     # Below this, FYPA merges the two nets into one rail instead of keeping a
-    # lumped resistor — mirrors loader.NET_MERGE_RESISTANCE_THRESHOLD_OHM.
+    # lumped resistor - mirrors loader.NET_MERGE_RESISTANCE_THRESHOLD_OHM.
     # Surfaced in the UI because the merge renames nets, which is startling
     # if you typed a small number and watched a rail disappear.
     _BRIDGE_MERGE_THRESHOLD_OHM: float = 0.9e-3
@@ -88,9 +90,10 @@ class _BridgesTabMixin:
         ])
         self.bridges_state_combo.setToolTip(
             "'Affects a solved rail' is the one to watch: those parts join a "
-            "rail being solved to copper no directive touches, so that copper "
-            "is missing from the FEM and the rail's return resistance reads "
-            "high."
+            "rail being solved to copper that is not in the solve, and are "
+            "below 100 Ω (or of unknown value), so they can carry current "
+            "the solve misses and the rail's resistance can read high. "
+            "Pull-ups, dividers and other parts of 100 Ω or more are ignored."
         )
         self.bridges_state_combo.currentTextChanged.connect(
             self._apply_bridges_filter)
@@ -104,7 +107,7 @@ class _BridgesTabMixin:
         self.bridges_auto_series_edit.setFixedWidth(80)
         self.bridges_auto_series_edit.setToolTip(
             "Resistors with no PDN_* parameters whose value is at or below "
-            "this (ohms) are modelled as SERIES with their own value — "
+            "this (ohms) are modelled as SERIES with their own value - "
             "current-sense shunts, mostly. 0 turns it off. Values under "
             f"{self._BRIDGE_MERGE_THRESHOLD_OHM * 1e3:g} mΩ merge the two "
             "nets like a 0 Ω link. Applied on the next Resolve.")
@@ -180,9 +183,9 @@ class _BridgesTabMixin:
                 "Pad designator on the footprint.",
                 "The pad's net. A net the low-Ω merge folded into another is "
                 "shown as 'original → now'.",
-                "A or B: the two sides of the switch (drain and source — the "
+                "A or B: the two sides of the switch (drain and source - the "
                 "order does not matter for a resistance). Leave the gate, and "
-                "anything else, as —.")):
+                "anything else, as -.")):
             hdr = self.bridges_pin_table.horizontalHeaderItem(i)
             if hdr is not None:
                 hdr.setToolTip(tip)
@@ -207,8 +210,8 @@ class _BridgesTabMixin:
         self.bridges_r_edit.setValidator(_numeric_validator(self, top=1e12))
         self.bridges_r_edit.setFixedWidth(180)
         self.bridges_r_edit.setToolTip(
-            "Use the part's real DC resistance, not its nominal value — a "
-            "ferrite's datasheet '0 Ω' is 20–200 mΩ of DCR, a fuse 10–100 mΩ."
+            "Use the part's real DC resistance, not its nominal value - a "
+            "ferrite's datasheet '0 Ω' is 20-200 mΩ of DCR, a fuse 10-100 mΩ."
         )
         self.bridges_r_edit.textChanged.connect(self._on_bridge_r_text_changed)
         edit_row.addWidget(self.bridges_r_edit)
@@ -229,7 +232,7 @@ class _BridgesTabMixin:
 
         self.bridges_disable_btn = QPushButton("Disable auto-bridge")
         self.bridges_disable_btn.setToolTip(
-            "Stop FYPA shorting this part automatically — it is left open at "
+            "Stop FYPA shorting this part automatically - it is left open at "
             "DC. The only way to veto an auto-bridge: the short (and the net "
             "merge that absorbs it) happens while annotations are parsed, "
             "long before editor directives are applied.")
@@ -299,6 +302,7 @@ class _BridgesTabMixin:
         "auto": "auto",
         "off": "off",
         "unmodelled": "not modelled",
+        "high_ohm": "ignored (high Ω)",
         "annotated": "annotated",
         "open": "open (off)",
     }
@@ -323,7 +327,7 @@ class _BridgesTabMixin:
                 others = [n for n in (r.get("nets") or [])
                           if n not in (r.get("net_a"), r.get("net_b"))]
                 if others:
-                    # The gate (and any other net a transistor touches) \u2014
+                    # The gate (and any other net a transistor touches) -
                     # shown so the row is recognisable, never bridged.
                     nets += f"  (+ {', '.join(others)})"
                 why = r.get("impact") or r.get("why") or ""
@@ -339,7 +343,7 @@ class _BridgesTabMixin:
                 ]
                 for c, text in enumerate(cells):
                     item = QTableWidgetItem(text)
-                    # Only the R column is editable — everything else is
+                    # Only the R column is editable - everything else is
                     # extracted fact, not a user choice.
                     if c == 6:
                         item.setFlags(item.flags() | Qt.ItemIsEditable)
@@ -389,7 +393,7 @@ class _BridgesTabMixin:
             elif mode == "Auto-bridged":
                 keep = state == "auto"
             elif mode == "Not modelled":
-                keep = state in ("unmodelled", "off")
+                keep = state in ("unmodelled", "high_ohm", "off")
             elif mode == "Affects a solved rail":
                 keep = bool(r.get("impact"))
             elif mode == "Transistors":
@@ -456,7 +460,7 @@ class _BridgesTabMixin:
         self._apply_bridge_series(r, value)
 
     def _on_bridge_r_text_changed(self, text: str) -> None:
-        """Live warning about the merge cliff — below the threshold the two
+        """Live warning about the merge cliff - below the threshold the two
         nets stop existing separately, which renames rails."""
         label = getattr(self, "bridges_hint_label", None)
         if label is None:
@@ -495,7 +499,7 @@ class _BridgesTabMixin:
 
     # --- Bridges tab: transistor pin picker ---------------------------------
 
-    _PIN_SIDES = ("—", "A", "B")
+    _PIN_SIDES = ("-", "A", "B")
 
     def _sync_bridge_pin_picker(self) -> None:
         """Show the picker for a selected transistor row, hide it otherwise.
@@ -556,7 +560,7 @@ class _BridgesTabMixin:
             f"<b>{_esc(rec.get('designator', '?'))}</b> pins: choose which "
             f"pads form each side of the switch (drain and source). Every pad "
             f"on a side must be on the same net; leave the gate as "
-            f"—. Then enter its on-resistance and press "
+            f"-. Then enter its on-resistance and press "
             f"<i>Model as SERIES</i>.")
         self.bridges_pin_box.setVisible(True)
         self._refresh_bridge_pin_status()
@@ -582,7 +586,7 @@ class _BridgesTabMixin:
         self._refresh_bridge_pin_status()
 
     def _set_bridge_pin_side(self, pad: str, side: str) -> None:
-        """Set one pad's side ("A", "B" or "") — the combo and the model."""
+        """Set one pad's side ("A", "B" or "") - the combo and the model."""
         table = self.bridges_pin_table
         for i in range(table.rowCount()):
             item = table.item(i, 0)
@@ -615,7 +619,7 @@ class _BridgesTabMixin:
         """``(net_a, net_b, None)`` for a usable pin choice, else
         ``(None, None, reason)``.
 
-        Nets are the pads' *current* nets — the names the solve resolves.
+        Nets are the pads' *current* nets - the names the solve resolves.
         A net the merge folded away still has a name but owns no copper, so
         a directive naming it would quietly attach to nothing.
         """
@@ -638,7 +642,7 @@ class _BridgesTabMixin:
             if len(nets) != 1:
                 return None, (
                     f"Side {label} spans {', '.join(nets)}. Each side of the "
-                    f"switch is a single net — all the drain pads on one, "
+                    f"switch is a single net - all the drain pads on one, "
                     f"all the source pads on the other.")
             return nets[0], None
 
@@ -693,7 +697,7 @@ class _BridgesTabMixin:
 
     def _pending_bridge_changes(self, links: list[str]) -> list[str]:
         """Which of ``links`` the user has opted out of, or given its own
-        resistance, in this tab — changes that are saved in the project but
+        resistance, in this tab - changes that are saved in the project but
         only reach the nets on the next rebuild of the design."""
         project = getattr(self, "_project", None)
         if project is None or not links:
@@ -837,8 +841,8 @@ class _BridgesTabMixin:
     def _apply_bridge_series(self, rec: dict, resistance: float | None) -> None:
         """Write (or drop) an editor SERIES directive for this part.
 
-        Edits go into the ``.fypa`` as ordinary editor directives — the same
-        store and the same undo path as Edit mode — so there is one source of
+        Edits go into the ``.fypa`` as ordinary editor directives - the same
+        store and the same undo path as Edit mode - so there is one source of
         truth rather than a parallel one owned by this tab.
         """
         from fypa.project_file import EditorDirective
@@ -911,7 +915,7 @@ class _BridgesTabMixin:
         pads the user put on side A and those on side B.
 
         Validated and confirmed before the project is touched, like the
-        two-pin path. No auto-bridge opt-out is written \u2014 transistors are
+        two-pin path. No auto-bridge opt-out is written - transistors are
         never auto-bridged, so there is nothing to suppress.
         """
         from fypa.project_file import EditorDirective
@@ -975,7 +979,7 @@ class _BridgesTabMixin:
 
 
     def _build_vias_tab(self) -> QWidget:
-        """Build the Vias tab — a sortable table of every via's worst-segment
+        """Build the Vias tab - a sortable table of every via's worst-segment
         current + power dissipation. Rows over the warning threshold get a
         red highlight on the current and power columns so high-current vias
         jump out even on a 100+ row table."""
@@ -983,7 +987,7 @@ class _BridgesTabMixin:
         outer = QVBoxLayout(widget)
         outer.setContentsMargins(8, 8, 8, 8)
 
-        # Filter bar — rail combo + "warnings only" toggle + summary.
+        # Filter bar - rail combo + "warnings only" toggle + summary.
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel("Rail:"))
         self.vias_rail_combo = QComboBox()
@@ -1040,7 +1044,7 @@ class _BridgesTabMixin:
         # ``resizeColumnsToContents``.
         self.vias_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.Interactive)
-        # Theme-driven styling — matches the Nodes table.
+        # Theme-driven styling - matches the Nodes table.
         _t = _T()
         self.vias_table.setStyleSheet(
             f"QTableWidget {{ background-color: {_t['bg']}; color: {_t['fg']};"
@@ -1051,7 +1055,7 @@ class _BridgesTabMixin:
             f"QTableWidget::item:selected {{ background-color: {_t['bg_selection']}; }}"
         )
         outer.addWidget(self.vias_table, 1)
-        # Deliberately NOT calling _populate_vias_table() here — the row build
+        # Deliberately NOT calling _populate_vias_table() here - the row build
         # is deferred to first tab activation (see __init__ + _on_tabs_current_changed).
         # _compute_via_report + the ~7 000 QTableWidgetItem creations took 35 s
         # on a big board, blocking the whole viewer open. Tab title's warning
@@ -1065,7 +1069,7 @@ class _BridgesTabMixin:
         cache the result. Used both by the deferred warning-count
         initialiser (so the tab title shows "Vias ⚠ N" before the user
         ever opens the tab) and by :meth:`_populate_vias_table` (so the
-        first table populate skips the compute cost — it's already done).
+        first table populate skips the compute cost - it's already done).
         """
         cached = getattr(self, "_vias_rows_cache", None)
         if cached is None:
@@ -1095,7 +1099,7 @@ class _BridgesTabMixin:
         """Fill the Vias table from the cached via report.
 
         The action column is a plain clickable text cell ("Go ▶"), not an
-        embedded QPushButton — embedded widgets via ``setCellWidget`` cost
+        embedded QPushButton - embedded widgets via ``setCellWidget`` cost
         ~5-10 ms each in Qt due to event-loop wiring, hover handling, and
         layout participation, and on a 3 000-row table that alone was ~25 s
         of the original 35 s tab-build freeze. Clicks are dispatched
@@ -1139,7 +1143,7 @@ class _BridgesTabMixin:
             action_item.setForeground(action_fg)
             action_item.setTextAlignment(action_align)
             action_item.setToolTip(
-                "Click to jump to this via in the Heatmap tab — zooms "
+                "Click to jump to this via in the Heatmap tab - zooms "
                 "in, enables the via's physical layer if needed, and "
                 "drops a yellow highlight ring."
             )
@@ -1152,7 +1156,7 @@ class _BridgesTabMixin:
                 row.get("x_mm"),
                 row.get("y_mm"),
                 row.get("diameter_mm"),
-                row.get("ipc4761_label", "—") or "—",
+                row.get("ipc4761_label", "-") or "-",
                 row.get("v_top"),
                 row.get("v_bottom"),
                 # delta_v is V → display in mV for readability
@@ -1166,7 +1170,7 @@ class _BridgesTabMixin:
                     continue
                 value = cells[c]
                 if value is None:
-                    item = QTableWidgetItem("—")
+                    item = QTableWidgetItem("-")
                 elif is_numeric and isinstance(value, (int, float)):
                     if isinstance(value, int):
                         text = f"{value:d}"
@@ -1216,7 +1220,7 @@ class _BridgesTabMixin:
 
     def _on_vias_cell_clicked(self, row: int, col: int) -> None:
         """Single-click on the action column (col 0) → jump to that via in
-        the Heatmap tab. Replaces the old per-row QPushButton — see
+        the Heatmap tab. Replaces the old per-row QPushButton - see
         :meth:`_populate_vias_table` for the perf motivation."""
         if col != 0:
             return
@@ -1274,7 +1278,7 @@ class _BridgesTabMixin:
                 if abs(cur) >= self._via_current_warn_a:
                     warn_visible += 1
         self.vias_summary_label.setText(
-            f"{visible} via(s) shown of {self.vias_table.rowCount()} total — "
+            f"{visible} via(s) shown of {self.vias_table.rowCount()} total - "
             f"{warn_visible} at or above {self._via_current_warn_a:g} A"
         )
 

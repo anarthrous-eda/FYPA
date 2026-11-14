@@ -12,8 +12,8 @@ Behavioural differences from upstream
   mesh, then pass 2 refines it with per-triangle area caps graded by each
   triangle's distance to the nearest feature (copper boundary or seed point),
   so the Steiner points Triangle inserts are pre-seeded where the field
-  actually varies. It is **off by default** — ``variable_size_maximum_factor``
-  defaults to ``1.0``, which means uniform meshing at ``maximum_size`` — and is
+  actually varies. It is **off by default** - ``variable_size_maximum_factor``
+  defaults to ``1.0``, which means uniform meshing at ``maximum_size`` - and is
   enabled by setting that factor > 1 (the interior may then coarsen up to
   ``factor`` × the fine size). The ``variable_density_*`` fields control the
   grading ramp and are multiples of the local fine element size, not mm; see
@@ -164,7 +164,7 @@ class HalfEdge:
         cot θ = (vi·vk) / |vi×vk|; the SIGN comes from the dot product, so an
         obtuse apex (vi·vk < 0) correctly contributes a NEGATIVE cotangent.
         Taking ``abs`` of the whole ratio (the previous behaviour) over-conducts
-        obtuse triangles and breaks convergence under mesh refinement — see
+        obtuse triangles and breaks convergence under mesh refinement - see
         ``solver._half_cotangent``, which carries the correct sign. This legacy
         half-edge path is not used by the solve path (which reads the flat
         triangle arrays) but is kept correct for tools that walk the graph.
@@ -181,7 +181,7 @@ class HalfEdge:
             vk = vertex_k.p - other.origin.p
             cross = vi ^ vk
             if cross == 0:
-                continue  # degenerate (collinear) apex — no finite cotangent
+                continue  # degenerate (collinear) apex - no finite cotangent
             ratio += (vi.dot(vk) / abs(cross)) / 2
         return ratio
 
@@ -244,7 +244,7 @@ class IndexStore(Generic[_IS_T]):
     Supports a *lazy* mode (see :meth:`init_lazy`): the store is pre-sized to
     a known element count but the per-element objects are constructed only on
     first access. Mesh vertex/face stubs are expensive to materialise in bulk
-    — millions of tiny Python objects on a large board — yet the solver
+    - millions of tiny Python objects on a large board - yet the solver
     pipeline only ever needs the element *count* (it reads geometry from the
     flat triangle-soup arrays). Lazy mode skips that cost entirely for the
     solve path; consumers that genuinely walk the stubs (ParaView export,
@@ -335,7 +335,7 @@ class Mesh:
         self._source_tris: np.ndarray = np.empty((0, 3), dtype=np.int64)
         # Bool-per-vertex mask: True iff the vertex appears in any triangle.
         # Replaces the ``vertex.out is None`` orphan test the solver used to
-        # do — that test only worked because the half-edge build set
+        # do - that test only worked because the half-edge build set
         # ``vertex.out`` for every vertex incident to a triangle, but
         # from_triangle_soup no longer builds half-edges by default.
         self._in_triangle_mask: np.ndarray = np.empty(0, dtype=bool)
@@ -430,7 +430,7 @@ class Mesh:
             mask[tris.ravel()] = True
         mesh._in_triangle_mask = mask
 
-        # Vertex/Face stubs are populated lazily — the solver pipeline only
+        # Vertex/Face stubs are populated lazily - the solver pipeline only
         # needs the element counts (it reads geometry from the flat
         # _source_xys / _source_tris arrays), so materialising millions of
         # tiny Python objects up front is pure waste. Consumers that do walk
@@ -456,7 +456,7 @@ class Mesh:
         so ``ZeroForm`` / ``TwoForm`` allocate correctly). The full
         half-edge graph (``halfedges`` + ``boundaries``, plus
         ``vertex.out`` / ``face.edge`` cross-references) is NOT built by
-        default — every solver hot path now reads the flat arrays
+        default - every solver hot path now reads the flat arrays
         directly, which is dramatically faster and uses much less memory.
 
         Pass ``build_halfedges=True`` to opt into the legacy half-edge
@@ -466,7 +466,7 @@ class Mesh:
         """
         mesh = cls()
 
-        # Stash the flat numpy form of the input first — downstream code
+        # Stash the flat numpy form of the input first - downstream code
         # (vectorised laplace_operator, compute_power_density,
         # lean_solution conversion) reads these directly. Vertex order
         # matches ``mesh.vertices`` exactly; triangle order matches
@@ -482,7 +482,7 @@ class Mesh:
         else:
             mesh._source_tris = np.empty((0, 3), dtype=np.int64)
 
-        # Membership mask — True iff the vertex appears in any triangle.
+        # Membership mask - True iff the vertex appears in any triangle.
         # Replaces the old ``vertex.out is None`` orphan check.
         n_v = len(points)
         mask = np.zeros(n_v, dtype=bool)
@@ -490,12 +490,12 @@ class Mesh:
             mask[mesh._source_tris.ravel()] = True
         mesh._in_triangle_mask = mask
 
-        # Lightweight stubs — one Vertex per input point, one Face per
+        # Lightweight stubs - one Vertex per input point, one Face per
         # triangle. We populate the IndexStores directly (bypassing
         # ``make_vertex`` / ``faces.add``) so the per-element overhead
         # is one Python object allocation + one .i set, not a function
         # call. Crucially, vertex.out stays None for every vertex (no
-        # half-edges to point at) — the solver consults
+        # half-edges to point at) - the solver consults
         # ``_in_triangle_mask`` instead.
         v_list = mesh.vertices._idx_to_obj
         for i, p in enumerate(points):
@@ -517,7 +517,7 @@ class Mesh:
     def _build_halfedges(self) -> None:
         """Construct the full half-edge graph from the flat triangle soup.
 
-        Idempotent — does nothing if half-edges already exist. The solver
+        Idempotent - does nothing if half-edges already exist. The solver
         no longer needs this (every hot path reads ``_source_xys`` +
         ``_source_tris`` directly), so it's only useful for tools that
         genuinely require the half-edge connectivity such as the
@@ -537,7 +537,7 @@ class Mesh:
         vertices = list(self.vertices)
         faces = list(self.faces)
         triangles = [tuple(int(i) for i in t) for t in self._source_tris]
-        # Reset face stubs so connect_vertices can attach them as it goes —
+        # Reset face stubs so connect_vertices can attach them as it goes -
         # they're already in self.faces with the right .i, we just need
         # the edge pointers set.
         for face_idx, tri in enumerate(triangles):
@@ -557,7 +557,7 @@ class Mesh:
                               current_hedges[1:] + [current_hedges[0]]):
                 HalfEdge.connect(h1, h2)
 
-        # Boundary face construction — identical to the upstream
+        # Boundary face construction - identical to the upstream
         # construction logic, just lifted out so it doesn't run in the
         # default path.
         boundary_hedges = set()
@@ -853,7 +853,7 @@ class TwoForm:
         return result
 
 
-# Weld sub-precision vertex clusters before Triangle sees the PSLG — matches
+# Weld sub-precision vertex clusters before Triangle sees the PSLG - matches
 # the viewer's all-copper / stub triangulation repair in altium_viewer.
 _MESH_VERTEX_SIMPLIFY_TOL_MM = 1e-4
 
@@ -947,7 +947,7 @@ class MeshingException(RuntimeError):
         if self.bounds is not None:
             x0, y0, x1, y1 = self.bounds
             details.append(
-                f"bounds ({x0:.3f}, {y0:.3f}) – ({x1:.3f}, {y1:.3f}) mm"
+                f"bounds ({x0:.3f}, {y0:.3f}) - ({x1:.3f}, {y1:.3f}) mm"
             )
         if details:
             lines.append("  " + ", ".join(details) + ".")
@@ -983,23 +983,23 @@ def _humanize_triangle_error(message: str) -> str:
     low = message.lower()
     if "ran out of precision" in low:
         return (
-            "Triangle ran out of floating-point precision — the boundary "
+            "Triangle ran out of floating-point precision - the boundary "
             "has edges or vertices that are too close together for reliable "
             "triangulation."
         )
     if "topological inconsistency" in low:
         return (
-            "Triangle detected a topological inconsistency — the polygon "
+            "Triangle detected a topological inconsistency - the polygon "
             "boundary likely self-intersects or has overlapping segments."
         )
     if "invalid geometry on input" in low:
         return (
-            "Triangle rejected the polygon as invalid — typically a "
+            "Triangle rejected the polygon as invalid - typically a "
             "self-intersecting, degenerate, or near-zero-area copper shape."
         )
     if "segmentintersection" in low:
         return (
-            "Triangle's segment intersection routine failed — the "
+            "Triangle's segment intersection routine failed - the "
             "constrained boundary is probably self-touching."
         )
     return message.splitlines()[0] if message else "Triangulation failed."
@@ -1039,7 +1039,7 @@ def _dedupe_ring_coords(coords: np.ndarray, tol: float) -> np.ndarray:
     """Collapse consecutive ring vertices closer than *tol*.
 
     Triangle treats near-coincident boundary vertices as a degenerate PSLG
-    and may abort the process uncatchably — especially in parallel workers.
+    and may abort the process uncatchably - especially in parallel workers.
     """
     if coords.shape[0] == 0:
         return coords
@@ -1069,7 +1069,7 @@ def _weld_shared_ring_vertices(
     """Give every boundary point Triangle sees exactly one vertex index.
 
     A valid Shapely polygon may have a hole that touches the exterior (or
-    another hole) at a single point — copper that pinches to zero width
+    another hole) at a single point - copper that pinches to zero width
     between two clearances, as ``buffer(0)`` produces when it repairs a
     self-touching pour outline. Each ring then lists that point as its own
     vertex, so the PSLG carries two coincident input vertices. Triangle
@@ -1080,7 +1080,7 @@ def _weld_shared_ring_vertices(
     Coincident vertices (closer than *tol*) are merged onto the first
     occurrence and the segments remapped; segments that collapse to a
     point or repeat an existing segment are dropped. The copper outline is
-    unchanged — only its vertex numbering is.
+    unchanged - only its vertex numbering is.
     """
     n = vertices.shape[0]
     if n < 2:
@@ -1156,7 +1156,7 @@ class Mesher:
         **Units: multiples of the local fine element size, not millimetres.**
         The fine size is per-polygon (see
         :meth:`Mesher.polygon_adaptive_max_size`), so absolute mm distances
-        mis-scale — at ``maximum_size=0.1`` a 0.5 mm band is 5+ elements wide
+        mis-scale - at ``maximum_size=0.1`` a 0.5 mm band is 5+ elements wide
         (wasteful) while at ``maximum_size=1.0`` it is under one element, so
         the ramp has no room to work. Expressing them as multiples makes the
         graded band a fixed number of elements wide at every scale. The
@@ -1165,12 +1165,12 @@ class Mesher:
         """
         minimum_angle: float = 20.0
         maximum_size: float = 0.6
-        # Variable density parameters — in units of the local fine element
+        # Variable density parameters - in units of the local fine element
         # size (see the class docstring), NOT millimetres.
         variable_density_min_distance: float = 0.75
         variable_density_max_distance: float = 5.0
         # 1.0 == uniform meshing (the default). Set > 1 to enable adaptive
-        # variable-density meshing — triangles in plane interiors may grow
+        # variable-density meshing - triangles in plane interiors may grow
         # up to this factor larger than the fine size near features.
         variable_size_maximum_factor: float = 1.0
         distance_map_quantization: float = 1.0
@@ -1220,7 +1220,7 @@ class Mesher:
 
         ``seed_points`` are user-provided locations (typically lumped-element
         attachment points). Triangle preserves all input vertices in its output,
-        so we simply append them — no constraint segments needed.
+        so we simply append them - no constraint segments needed.
         """
         vertices: list[tuple[float, float]] = []
         segments: list[tuple[int, int]] = []
@@ -1259,7 +1259,7 @@ class Mesher:
 
         ``p`` enables planar straight-line graph input (use ``segments``).
         ``q<angle>`` enforces a minimum angle (quality refinement).
-        ``a<area>`` caps triangle area — derived from ``maximum_size`` assuming
+        ``a<area>`` caps triangle area - derived from ``maximum_size`` assuming
         equilateral triangles (area = √3/4 · size²).
         ``Q`` quiets Triangle's stdout noise.
 
@@ -1305,24 +1305,24 @@ class Mesher:
         it returns ~25 mm.
 
         Only the **exterior** ring contributes to the perimeter, while the
-        area stays the true hole-subtracted one — see the Limitation note.
+        area stays the true hole-subtracted one - see the Limitation note.
 
         The width estimate is divided by ``width_refinement_factor`` (5 by
-        default — i.e. aim for ~5 triangles across the width) and clamped
+        default - i.e. aim for ~5 triangles across the width) and clamped
         to ``config_max_size`` so the adaptive value never coarsens beyond
         what the user asked for.
 
         Limitation: composite polygons (e.g. a big pour with a thin spur)
         get the pour's averaged estimator and the spur is still under-
         refined. Fixing that requires local-width sampling (medial axis)
-        or per-region max-area attributes — deferred until profile-level
+        or per-region max-area attributes - deferred until profile-level
         accuracy on mixed geometry actually matters.
 
         Holes are excluded from the perimeter (``exterior.length`` rather
         than ``length``). ``polygon.length`` sums *every* ring, so a
         via-perforated ground plane with thousands of clearance holes has an
         enormous perimeter, the estimated width collapses toward zero and the
-        mesher over-refines the whole plane — the pathological slowdown this
+        mesher over-refines the whole plane - the pathological slowdown this
         docstring used to merely warn about. The exterior ring alone measures
         the outline the "thin shape" approximation is actually about, and
         keeping ``polygon.area`` hole-subtracted still lets perforation pull
@@ -1334,7 +1334,7 @@ class Mesher:
         survives the loader's stub filter because it's electrically
         connected) drives ``width_based`` toward zero, and the √3/4·size²
         area cap then implies hundreds of thousands of triangles for one
-        dust piece — millions of DOF and a possible meshing stall / OOM.
+        dust piece - millions of DOF and a possible meshing stall / OOM.
         The size is floored at ``config_max_size / min_size_divisor`` so a
         single sliver can't explode the mesh; it stays coarse but present.
         """
@@ -1349,7 +1349,7 @@ class Mesher:
         characteristic_width = 2.0 * polygon.area / perimeter
         width_based = characteristic_width / width_refinement_factor
         if config_max_size <= 0:
-            return width_based  # no global cap — just use the width-based size
+            return width_based  # no global cap - just use the width-based size
         size = min(config_max_size, width_based)
         if min_size_divisor > 0:
             size = max(size, config_max_size / min_size_divisor)
@@ -1394,7 +1394,7 @@ class Mesher:
         return Mesh.from_triangle_arrays(out_vertices, out_triangles)
 
 
-# Disconnected copper is display-only — never solved, only drawn — so it needs
+# Disconnected copper is display-only - never solved, only drawn - so it needs
 # no quality refinement. minimum_angle=0 drops Triangle's ``q`` switch, giving a
 # plain constrained Delaunay triangulation (no Ruppert refinement / Steiner
 # insertion). Measurably cheaper on pour-heavy boards, visually identical.
@@ -1409,7 +1409,7 @@ Mesher.Config.RELAXED = Mesher.Config(
 #
 # Module-level (NOT instance-method) so they can be pickled across the
 # ProcessPoolExecutor boundary. The solver runs Triangle for each (layer,
-# net) copper piece in parallel — each call is independent, no shared
+# net) copper piece in parallel - each call is independent, no shared
 # state, so we feed each polygon into a worker and collect the raw
 # (vertices, triangles) numpy arrays back. The Mesh stub assembly
 # (Vertex/Face objects) stays in the parent process so we don't pay to
@@ -1424,7 +1424,7 @@ def _prepare_polygon_for_triangle_arrays(
 
     Same semantics, but builds the per-ring vertex / segment arrays with
     numpy instead of Python lists + tuple appends. The Python-loop
-    version costs ~5–15 % on polygons with thousands of boundary vertices
+    version costs ~5-15 % on polygons with thousands of boundary vertices
     (large GND copper); the numpy build is a single C-loop per ring.
 
     Returns ``(vertices, segments, holes)`` where
@@ -1445,7 +1445,7 @@ def _prepare_polygon_for_triangle_arrays(
         )
     if repaired.geom_type == "MultiPolygon":
         # buffer(0) can split one invalid island into several valid pieces.
-        # Mesh the largest surviving fragment — the others are usually
+        # Mesh the largest surviving fragment - the others are usually
         # noise slivers that Triangle cannot handle anyway.
         parts = [g for g in repaired.geoms if g.geom_type == "Polygon"]
         if not parts:
@@ -1457,7 +1457,7 @@ def _prepare_polygon_for_triangle_arrays(
         poly = max(parts, key=lambda g: g.area)
         # Only the largest fragment is meshed, so any comparably-sized dropped
         # fragment is real copper vanishing from the FEM (a bowtie / figure-8
-        # pour outline can repair into two genuine halves — the smaller may
+        # pour outline can repair into two genuine halves - the smaller may
         # carry the return path). Warn when the dropped area isn't negligible
         # so the loss is visible instead of silent.
         dropped_area = sum(g.area for g in parts) - poly.area
@@ -1466,7 +1466,7 @@ def _prepare_polygon_for_triangle_arrays(
                 "Polygon repair split an invalid copper region into %d pieces; "
                 "meshing only the largest (%.4g mm²) and dropping %.4g mm² of "
                 "copper (%.1f%% of the kept piece) near %s. Reported IR drop "
-                "for this net may be wrong — check the source geometry.",
+                "for this net may be wrong - check the source geometry.",
                 len(parts), poly.area, dropped_area,
                 100.0 * dropped_area / poly.area, poly.bounds,
             )
@@ -1502,7 +1502,7 @@ def _prepare_polygon_for_triangle_arrays(
     for hole_ring in poly.interiors:
         insert_ring(hole_ring)
         # representative_point() guarantees a point strictly inside the
-        # hole — that's what Triangle's "holes" array means.
+        # hole - that's what Triangle's "holes" array means.
         hp = shapely.geometry.Polygon(hole_ring).representative_point()
         holes_list.append((float(hp.x), float(hp.y)))
 
@@ -1538,7 +1538,7 @@ def _triangulate_arrays(
     holes: np.ndarray,
     switches: str,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Single Triangle call — given prepped arrays, return raw output
+    """Single Triangle call - given prepped arrays, return raw output
     ``(vertices, triangles)``. Raises :class:`MeshingException` on
     failure. The output vertex array may be larger than the input (Steiner
     points added by quality refinement).
@@ -1581,7 +1581,7 @@ def _boundary_distance(boundary, centroids: np.ndarray) -> np.ndarray:
     """Distance from each centroid to the polygon boundary.
 
     For large boundaries, index the boundary *segments* in an STRtree and take
-    the nearest-segment distance — O(M log S) rather than the unindexed
+    the nearest-segment distance - O(M log S) rather than the unindexed
     ``shapely.distance``'s O(M·S), which on a big GND pour (tens of thousands of
     boundary vertices × thousands of pass-1 triangles) is the dominant cost of
     adaptive meshing (measured ~5× at 50 k boundary vertices). Bit-identical to
@@ -1620,18 +1620,18 @@ def _triangulate_adaptive(
     seed_xy: np.ndarray | None,
     adaptive: tuple,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Variable-density triangulation — fine near features, coarse in the
+    """Variable-density triangulation - fine near features, coarse in the
     interior of large copper.
 
     Two Triangle passes. Pass 1 builds a uniform *coarse* mesh (refinement
     can only subdivide, so the first pass must be at the coarsest size).
     Pass 2 refines it with a per-triangle area cap that grades from the
-    fine size — within ``min_dist`` of a feature — to the coarse size,
+    fine size - within ``min_dist`` of a feature - to the coarse size,
     beyond ``max_dist``; a "feature" is a seed point (directive pin / via
     touchdown) or the copper boundary. PDN potential fields concentrate at
     terminals and geometric features and are near-flat in plane interiors,
     so this keeps full resolution where it matters and far fewer unknowns
-    where it doesn't — as accurate as the uniform mesh, far smaller.
+    where it doesn't - as accurate as the uniform mesh, far smaller.
 
     ``adaptive`` = ``(minimum_angle, maximum_size, factor, min_mult,
     max_mult)``. The fine size is the width-aware per-polygon value; the
@@ -1702,7 +1702,7 @@ def _triangulate_adaptive(
     size = fine_size + frac * (coarse_size - fine_size)
     target_area = _AREA * size * size
 
-    # Pass 2 — refine the coarse mesh down to the graded per-triangle caps.
+    # Pass 2 - refine the coarse mesh down to the graded per-triangle caps.
     p2_in: dict = {
         "vertices": p1_v,
         "triangles": p1_t,
@@ -1734,7 +1734,7 @@ def triangulate_worker(
     pool can pickle the function reference. Receives polygon + seeds in
     cheap-to-pickle forms (WKB bytes + numpy array), runs Triangle, and
     returns raw numpy arrays. The parent process rebuilds the
-    :class:`Mesh` stubs from these arrays — pickling the full Mesh would
+    :class:`Mesh` stubs from these arrays - pickling the full Mesh would
     drag tens of thousands of Vertex / Face Python objects back across
     the boundary and erase the parallelism win.
 
@@ -1750,7 +1750,7 @@ def triangulate_worker(
     return _triangulate_arrays(vertices, segments, holes, switches)
 
 
-# shapely.wkb isn't pulled in by ``import shapely.geometry`` — touch it
+# shapely.wkb isn't pulled in by ``import shapely.geometry`` - touch it
 # at module load so the lazy import doesn't fire inside every worker
 # (which would defeat much of the spawn-once amortisation).
 import shapely.wkb  # noqa: E402

@@ -113,7 +113,7 @@ def test_return_terminal_is_listed_on_the_ground_net():
 
 
 def test_single_net_editor_sink_does_not_appear_on_ground():
-    """Its return is an ideal 0 V node, not copper — GND owns nothing."""
+    """Its return is an ideal 0 V node, not copper - GND owns nothing."""
     ed = _editor("SINK", designator="U7", current=0.25, single_net=True)
     v = _SummaryViewerStub([], [ed])
     assert v._net_attachment_rows("+12V")

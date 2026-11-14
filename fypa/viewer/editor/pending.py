@@ -8,6 +8,14 @@ from PySide6.QtWidgets import QListWidgetItem, QMessageBox
 from fypa.viewer.theme import _T
 from fypa.viewer.widgets import _qt_widget_alive, EyeButton
 
+
+# The Resolve progress pop-up's message. The What-If runner sizes its own
+# pop-up from it too, so the two come up the same width.
+RESOLVE_DIALOG_TEXT = (
+    "Re-solving with your editor changes…\n"
+    "Reusing the cached design info (no re-extraction)."
+)
+
 
 class _PendingRailsMixin:
     """Editor-mode pending rails and re-solve."""
@@ -15,7 +23,7 @@ class _PendingRailsMixin:
     # --- Editor mode: pending rails + resolve -------------------------------
 
     def _rail_name_for(self, nets) -> str:
-        """Pick a display name for a rail group — prefer a '+'-prefixed
+        """Pick a display name for a rail group - prefer a '+'-prefixed
         net, then a non-ground net, alphabetical within each tier."""
         def rank(n: str) -> tuple[int, str]:
             if n.startswith("+"):
@@ -28,7 +36,7 @@ class _PendingRailsMixin:
 
     def _editor_pending_rails(self) -> dict[str, list[str]]:
         """Connected-copper groups carrying at least one editor SOURCE and
-        one editor SINK that the current solution has not solved — i.e.
+        one editor SINK that the current solution has not solved - i.e.
         rails the user has defined but not yet resolved. Returns
         ``{rail_name: [member nets]}``."""
         if self._project is None:
@@ -75,7 +83,7 @@ class _PendingRailsMixin:
     def _update_pending_rails(self) -> None:
         """Rebuild the pending-rail rows in the Rails list. Pending rails
         are styled distinctly (italic, greyed, '(unsolved)') with a
-        disabled eye — not viewable until a resolve has run."""
+        disabled eye - not viewable until a resolve has run."""
         if not hasattr(self, "rail_list"):
             return
         for item in getattr(self, "_pending_rail_items", []):
@@ -96,7 +104,7 @@ class _PendingRailsMixin:
         # Drop expansion state for rails that are no longer pending. Without
         # this the dicts grow for the process lifetime and a node collapsed
         # in one project reopens collapsed in the next project that happens
-        # to reuse the rail and subnet names — the solved list prunes the
+        # to reuse the rail and subnet names - the solved list prunes the
         # same way in _populate_rail_list.
         self._pending_rail_expanded = {
             r: v for r, v in self._pending_rail_expanded.items()
@@ -117,7 +125,7 @@ class _PendingRailsMixin:
             has_subnets = len(members) > 1
             eye = EyeButton(visible=False)
             eye.setEnabled(False)
-            eye.setToolTip("Unsolved rail — press Resolve to compute it.")
+            eye.setToolTip("Unsolved rail - press Resolve to compute it.")
             expand_btn = None
             expanded = bool(self._pending_rail_expanded.get(name, False))
             if has_subnets:
@@ -170,7 +178,7 @@ class _PendingRailsMixin:
 
     def _unnamed_copper_directives(self) -> list:
         """Editor directives whose ``p_net`` / ``n_net`` is still the
-        ``"(none)"`` sentinel at resolve time — and which the user has
+        ``"(none)"`` sentinel at resolve time - and which the user has
         NOT covered with an editor-mode :class:`CopperName` rename. The
         solver has no rail for ``"(none)"`` (and even if it did, every
         electrically-disjoint unnamed copper piece would collapse onto
@@ -179,7 +187,7 @@ class _PendingRailsMixin:
 
         Before flagging, this method promotes any free-marker directive
         whose anchor lands on a polygon that now carries a
-        :class:`CopperName` — the user effectively named the copper but
+        :class:`CopperName` - the user effectively named the copper but
         the placement-time override missed it for some reason (marker
         placed before the rename, or the rename was applied to a
         slightly different click point on the piece). The promoted
@@ -216,7 +224,7 @@ class _PendingRailsMixin:
         pickle).
 
         Resolve is also reachable when only the Settings tab is dirty (no
-        editor directives) — in that case the editor-directive list is
+        editor directives) - in that case the editor-directive list is
         simply empty and the solve runs with the new parameters."""
         if not self._resolve_button_enabled():
             if not self._has_solveable_directives():
@@ -280,7 +288,7 @@ class _PendingRailsMixin:
                 "net name:\n\n"
                 + "\n".join(lines)
                 + "\n\nThe solver can't include an unnamed net in the "
-                "result — and any other unnamed copper on the board would "
+                "result - and any other unnamed copper on the board would "
                 "be lumped onto the same rail.\n\n"
                 + fix_text,
             )
@@ -295,7 +303,7 @@ class _PendingRailsMixin:
             return
         pcbdoc = self.metadata.get("pcbdoc_path") if self.metadata else None
         # Pick up any Settings-tab edits the user made before clicking Resolve
-        # — mirrors the Re-run Solver path so the post-resolve viewer reflects
+        # - mirrors the Re-run Solver path so the post-resolve viewer reflects
         # exactly what was solved.
         try:
             (new_settings, warn_a, pct,
@@ -304,7 +312,7 @@ class _PendingRailsMixin:
             QMessageBox.warning(
                 self, "Invalid solve parameter",
                 f"Can't resolve: {e}\n\n"
-                "Fix the highlighted field on the Settings tab and try again.",
+                "Fix the highlighted field on the Properties tab and try again.",
             )
             return
         new_settings.apply_to_modules()
@@ -317,16 +325,13 @@ class _PendingRailsMixin:
             dialog_title = "Running solver"
             dialog_text = (
                 f"Solving {Path(prjpcb).name}…\n"
-                "This can take 10–60 s depending on board size and "
+                "This can take 10-60 s depending on board size and "
                 "mesh density."
             )
             dialog_width_scale = 1.44
         else:
             dialog_title = "Resolving with editor changes"
-            dialog_text = (
-                "Re-solving with your editor changes…\n"
-                "Reusing the cached design info (no re-extraction)."
-            )
+            dialog_text = RESOLVE_DIALOG_TEXT
             # ~3.20x Qt's auto-sized width: the standard solve dialog's 1.44x,
             # widened for the longer editor-changes message and then another
             # 15% on top of that (1.44 * 1.93 * 1.15 ≈ 3.199).
@@ -367,7 +372,7 @@ class _PendingRailsMixin:
         """Left-click in the viewport (no drag). In editor mode this drives
         component / copper selection and free-marker placement; in viewer
         mode it clears the Vias-tab jump highlight and runs the
-        copper-primitive picker — a hit opens the properties panel, a
+        copper-primitive picker - a hit opens the properties panel, a
         miss closes any open one."""
         if self._editor_mode:
             self._on_editor_click(_world_x, _world_y)
@@ -383,7 +388,7 @@ class _PendingRailsMixin:
 
     def _on_legend_row_clicked(self, key: str) -> None:
         """Toggle visibility of the marker category whose legend row was
-        clicked. The legend row itself stays in the chip — it just flips
+        clicked. The legend row itself stays in the chip - it just flips
         between normal and slashed (matching the off-state of the eye
         icons used elsewhere). A full re-render rebuilds the marker
         groups with the updated hidden set."""

@@ -1,4 +1,4 @@
-"""About dialog, log-file access, and the Help / recent-projects menus."""
+"""About dialog, log-file access, and the Help menu."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -15,13 +15,6 @@ from PySide6.QtWidgets import (
 )
 
 from fypa.viewer.assets import _load_app_icon, _load_fypa_fangs_pixmap
-from fypa.viewer.prefs import (
-    clear_recent_projects,
-    load_recent_projects,
-    recent_project_label,
-    recent_project_tooltip,
-)
-from fypa.viewer.project_open import _open_recent_project
 from fypa.viewer.theme import _T
 
 
@@ -39,11 +32,11 @@ _GITHUB_URL: str = "https://github.com/anarthrous-eda/FYPA"
 
 
 def _open_log_file(parent: QWidget) -> None:
-    """Help > Open Log — open FYPA's log file with the OS default handler.
+    """Help > Open Log - open FYPA's log file with the OS default handler.
 
     The path comes from :data:`fypa.cli._LOG_FILE`, which is anchored next to
     FYPA.exe in a PyInstaller build and in the source tree's ``log/`` folder
-    in a dev checkout — so this works identically either way."""
+    in a dev checkout - so this works identically either way."""
     try:
         from fypa.cli import _LOG_FILE
         log_path = Path(_LOG_FILE)
@@ -69,7 +62,7 @@ def _open_log_file(parent: QWidget) -> None:
 
 
 def _show_about_dialog(parent: QWidget) -> None:
-    """Help > About — a small themed dialog showing the version and a
+    """Help > About - a small themed dialog showing the version and a
     clickable link to the project's GitHub page."""
     try:
         from fypa.cli import __version__ as fypa_version
@@ -125,40 +118,6 @@ def _show_about_dialog(parent: QWidget) -> None:
     hint = dlg.sizeHint()
     dlg.resize(hint.width() * 2, hint.height())
     dlg.exec()
-
-
-
-
-def _build_recent_projects_menu(file_menu, window) -> None:
-    """Add File > Recent Projects to *file_menu* (shared by launcher + viewer)."""
-    recent_menu = file_menu.addMenu("Recent &Projects")
-
-    def _populate() -> None:
-        recent_menu.clear()
-        # No existence pruning here: Path.exists() on a dead network share
-        # can block for seconds, and this runs on the GUI thread every time
-        # the menu opens. Stale entries are dropped when opening them fails.
-        entries = load_recent_projects()
-        if not entries:
-            empty = recent_menu.addAction("(none)")
-            empty.setEnabled(False)
-            return
-        for entry in entries:
-            # Parent to the menu, not the window — QMenu.clear() only
-            # deletes actions it owns, so window-parented actions would
-            # accumulate on every menu open.
-            act = QAction(recent_project_label(entry), recent_menu)
-            act.setStatusTip(recent_project_tooltip(entry))
-            act.triggered.connect(
-                lambda checked=False, e=entry: _open_recent_project(window, e)
-            )
-            recent_menu.addAction(act)
-        recent_menu.addSeparator()
-        clear_act = QAction("Clear Recent Projects", recent_menu)
-        clear_act.triggered.connect(lambda: (clear_recent_projects(), _populate()))
-        recent_menu.addAction(clear_act)
-
-    recent_menu.aboutToShow.connect(_populate)
 
 
 

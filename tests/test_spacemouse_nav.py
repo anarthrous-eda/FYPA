@@ -54,7 +54,7 @@ class TestNavlibCamera2D:
         assert cy2 == pytest.approx(cy)
 
     def test_ortho_navlib_split_pan_and_zoom(self):
-        """Pan via camera matrix, zoom via view extents — must not overwrite."""
+        """Pan via camera matrix, zoom via view extents - must not overwrite."""
         from unittest.mock import MagicMock
 
         from fypa.gl_mesh_viewer import GLMeshViewer
@@ -192,7 +192,7 @@ class TestSpaceMouseController:
         client.enable_navigation.assert_not_called()
 
     def test_a_missing_native_call_falls_back_to_the_wrapper(self):
-        """A future pynavlib without the private name must still work — the
+        """A future pynavlib without the private name must still work - the
         console just goes back to being noisy."""
         client = MagicMock(spec=["enable_navigation"])
         ctrl = self._bare_controller(client)

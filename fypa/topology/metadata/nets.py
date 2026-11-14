@@ -112,11 +112,11 @@ def port_display_net(
     *,
     channel_row: bool = False,
 ) -> str:
-    """Label text for a topology port — physical PCB net name(s).
+    """Label text for a topology port - physical PCB net name(s).
 
     ``physical_net`` is normally :func:`terminal_net` (first pin when pads
     disagree). Rail grouping (:func:`canonical_net`, :func:`_column_net`) is
-    used only for column placement and wire grouping — not for labels — so
+    used only for column placement and wire grouping - not for labels - so
     rail members keep distinct names (e.g. ``VDD_48V_PORT.1`` vs
     ``VDD_48V_RP``).
 
@@ -137,7 +137,7 @@ def port_display_net(
     pin_nets = terminal_pin_nets(term)
     if len(pin_nets) > 1 and not channel_row:
         return ", ".join(pin_nets)
-    # terminal_net() only when pads exist — an ideal return has none and would
+    # terminal_net() only when pads exist - an ideal return has none and would
     # yield the IDEAL_RETURN_RAIL sentinel rather than a name.
     return _port_display_single_net(
         term,

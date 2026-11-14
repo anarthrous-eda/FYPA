@@ -3,7 +3,7 @@
 * Nodes / Vias: every value is sampled from the FEM, so on a stub (no solve)
   they say "Run a solve first" instead of showing a table of blank cells.
 * Capacitors / Impedance: grouped by rail, and rails come from SOURCE / SINK
-  directives — not from the solve. They show a placeholder only while no
+  directives - not from the solve. They show a placeholder only while no
   rail exists.
 * Topology: shows a message instead of a diagram while no source or sink
   has been set up.

@@ -6,7 +6,7 @@ fabrication package, runs a 2-D FEM Laplace solver per copper layer to compute
 voltage drop and current density across power rails, and visualises the result
 in a custom OpenGL viewer with per-vertex shading.
 
-**Name:** *FYPA* stands for **F**EM **Y**-parameter **P**ower **A**nalyser —
+**Name:** *FYPA* stands for **F**EM **Y**-parameter **P**ower **A**nalyser -
 the tool extracts the admittance (Y-parameter) matrix of each copper layer
 via a finite-element solve, then uses it to compute steady-state voltage,
 current density, and power dissipation across the PDN.
@@ -25,7 +25,7 @@ Altium project files.
 
 You annotate components in your Altium schematic with a small set of
 `PDN_*` parameters (which net is the input, which is the output, the current
-or voltage), either manually or using the Altium script provided (OR setup this information within FYPA using the built in editor mode) then point this tool at the `.PrjPcb`,  and it:
+or voltage), either manually or using the Altium script provided (OR setup this information within FYPA using the built in editor mode or topology tab) then point this tool at the `.PrjPcb`,  and it:
 
 1. Extracts every copper feature (tracks, arcs, regions, pads, vias) along
    with the net assignments.
@@ -44,10 +44,13 @@ or voltage), either manually or using the Altium script provided (OR setup this 
    - Cross-check per-pin voltages and per-via currents in sortable tables
    - Switch to **editor mode** to place sources / sinks and re-solve
      without editing the Altium schematic (see below)
+   - Run **What-If scenarios** - change copper weight, temperature, via
+     plating and so on, re-solve, and see whether each change helps or
+     hurts compared with the base design (see below)
 
 ## Download (prebuilt Windows binary)
 
-If you just want to run the tool — no Python install, no git clone — grab the
+If you just want to run the tool - no Python install, no git clone - grab the
 latest packaged build from the
 [Releases page](https://github.com/anarthrous-eda/FYPA/releases/latest):
 
@@ -55,11 +58,11 @@ latest packaged build from the
 2. Extract it anywhere permanent (e.g. `C:\Tools\FYPA\`).
 3. Double-click `FYPA.exe` inside the extracted folder.
 
-On first launch Windows SmartScreen will show a blue warning — click
+On first launch Windows SmartScreen will show a blue warning - click
 **"More info"** then **"Run anyway"** (the exe is unsigned; this is a
 one-time prompt per machine).
 
-> **Keep `FYPA.exe` and the `_internal\` folder together** — moving the exe
+> **Keep `FYPA.exe` and the `_internal\` folder together** - moving the exe
 > alone will break it. Create a desktop shortcut rather than moving the exe.
 
 To build the executable yourself, see
@@ -75,7 +78,7 @@ winget install astral-sh.uv          # or: pip install uv
 ```
 
 > **First-time install: restart your terminal.** The installer adds `uv` to
-> your `PATH`, but shells that are already open don't see the change — you'll
+> your `PATH`, but shells that are already open don't see the change - you'll
 > get `uv : The term 'uv' is not recognized`. Close and reopen the terminal.
 > If you ran the install from the VS Code terminal, close and reopen **VS Code
 > itself** (it caches the environment it was launched with; a new terminal tab
@@ -92,7 +95,7 @@ uv sync
 That's it. `uv sync` reads `pyproject.toml` + `uv.lock`, fetches Python 3.12
 if it isn't already available (the version is pinned in `.python-version`),
 creates a `.venv\` inside the repo, and installs every runtime + dev
-dependency — including `altium_monkey`, which uv pulls from PyPI at the
+dependency - including `altium_monkey`, which uv pulls from PyPI at the
 version pinned in `pyproject.toml`.
 
 > **Python version: 3.12 only.** Both FYPA and `altium_monkey` pin
@@ -120,11 +123,11 @@ define the power-delivery topology:
 
 | Role         | Required parameters                                                                                     | What it means                                                         |
 |--------------|---------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------|
-| `SOURCE`     | `PDN_V`, `PDN_P_NET`, `PDN_N_NET` — *or* `PDN_V`, `PDN_NET`                                              | Voltage source (e.g. a connector pin or regulator)            |
-| `SINK`       | `PDN_I`, `PDN_P_NET`, `PDN_N_NET` — *or* `PDN_I`, `PDN_NET`                                              | Current sink  (e.g. an IC load)                   |
+| `SOURCE`     | `PDN_V`, `PDN_P_NET`, `PDN_N_NET` - *or* `PDN_V`, `PDN_NET`                                              | Voltage source (e.g. a connector pin or regulator)            |
+| `SINK`       | `PDN_I`, `PDN_P_NET`, `PDN_N_NET` - *or* `PDN_I`, `PDN_NET`                                              | Current sink  (e.g. an IC load)                   |
 | `SERIES`     | `PDN_R`, `PDN_P_NET`\*, `PDN_N_NET`\*                                                                   | Series resistance / fuse / ferrite / inductor DCR (rail bridge)       |
-| `PATH`       | `PDN_R`; optional pin filters; optional `PDN_SMPS_HOST`                                               | External-FET SMPS path (HS/LS/shunt/L) — bound to a REGULATOR stage   |
-| `REGULATOR`  | `PDN_V`, `PDN_REGULATOR_TYPE`, `PDN_REGULATOR_EFFICIENCY`, optional `PDN_QUIESCENT` — *or* `PDN_GAIN`, plus `PDN_OUT_*` / `PDN_IN_*` nets; for external FETs also `PDN_SMPS_TOPOLOGY` and `PDN_SW1_NET` / `PDN_SW2_NET` | On-board regulator (LDO / buck / boost / inverter) — models BOTH input and output rails  |
+| `PATH`       | `PDN_R`; optional pin filters; optional `PDN_SMPS_HOST`                                               | External-FET SMPS path (HS/LS/shunt/L) - bound to a REGULATOR stage   |
+| `REGULATOR`  | `PDN_V`, `PDN_REGULATOR_TYPE`, `PDN_REGULATOR_EFFICIENCY`, optional `PDN_QUIESCENT` - *or* `PDN_GAIN`, plus `PDN_OUT_*` / `PDN_IN_*` nets; for external FETs also `PDN_SMPS_TOPOLOGY` and `PDN_SW1_NET` / `PDN_SW2_NET` | On-board regulator (LDO / buck / boost / inverter) - models BOTH input and output rails  |
 
 Optional two-terminal helpers (SOURCE / SINK):
 
@@ -133,9 +136,9 @@ Optional two-terminal helpers (SOURCE / SINK):
 | `PDN_P_PINS` / `PDN_N_PINS` | Restrict which pads on the host (or DES-listed parts) couple |
 | `PDN_P_DES` / `PDN_N_DES` | Pull that terminal's pads from other designators only (host not auto-included); for multi-connector / banana-style sources |
 | `PDN_SENSE_DES` / `PDN_SENSE_N_DES` (`SOURCE`, `REGULATOR`) | Remote sense: the part(s) whose pads on the output P / N net the supply regulates at (usually the load); optional `PDN_SENSE_PINS` / `PDN_SENSE_N_PINS`. The output pins then rise by the copper's drop. See [Remote sense](docs/user-guide/01-sources-and-sinks.md#remote-sense-pdn_sense_des). |
-| `PDN_PIN_R` (`SINK`) | Package pin-to-pin resistance in ohms, used to share current between a multi-pin terminal's pads. Defaults to 100 mΩ — see *Settings → Multi-pin coupling resistance*. Set it per part when you know the package: a large BGA's supply grid is far lower than a leadframe's. |
+| `PDN_PIN_R` (`SINK`) | Package pin-to-pin resistance in ohms, used to share current between a multi-pin terminal's pads. Defaults to 100 mΩ - see *Settings → Multi-pin coupling resistance*. Set it per part when you know the package: a large BGA's supply grid is far lower than a leadframe's. |
 
-\* `PDN_P_NET` and `PDN_N_NET` are optional for `SERIES` on a 2-pin part — the
+\* `PDN_P_NET` and `PDN_N_NET` are optional for `SERIES` on a 2-pin part - the
 tool auto-infers them from the component's pad connectivity.
 
 Add `PDN_ROLE` on the component (e.g. `PDN_ROLE=SOURCE`) and the required parameters for that role. 
@@ -143,7 +146,7 @@ For 2-pin parts the tool can auto-infer `PDN_P_NET` /
 `PDN_N_NET` from connectivity; for ICs you'll need to set them explicitly.
 
 Pads on a rail net are collected automatically. To keep enable/signal ties
-off the terminal — especially on multi-rail ICs in a SchLib — set part-wide
+off the terminal - especially on multi-rail ICs in a SchLib - set part-wide
 `PDN_PINS_ONLY` (optional `PDN_EXTRA_PINS` adds to that list on the instance;
 EXTRA alone is the full allowlist). Per-terminal `PDN_P_PINS` / `PDN_N_PINS`
 still override one terminal; `PDN_IGNORE` / `PDN_IGNORE_PINS` fine-tune
@@ -151,13 +154,13 @@ exclusions. See
 [Restricting which pins may join](docs/user-guide/01-sources-and-sinks.md#restricting-which-pins-may-join-allowlist)
 in the user guide.
 
-### `SINK` — minimum-voltage check (`PDN_MIN_V`)
+### `SINK` - minimum-voltage check (`PDN_MIN_V`)
 
 A `SINK` can carry an optional `PDN_MIN_V` parameter giving the **minimum
 acceptable rail voltage at the part's P pins**. The viewer's *Nodes* tab adds
 *Min V*, *Margin* and *Status* columns: margin is the per-pin measured voltage
 minus `PDN_MIN_V`, and rows with a negative margin are highlighted in red
-(`Status = FAIL`). Sinks without `PDN_MIN_V` show `—` in those columns; the
+(`Status = FAIL`). Sinks without `PDN_MIN_V` show `-` in those columns; the
 check is purely a post-solve report, it doesn't change what the solver does.
 
 ```text
@@ -172,9 +175,9 @@ U5 (3V3 load):
 Indexed multi-channel sinks support `PDN<n>_MIN_V` per channel, the same way
 `PDN<n>_I` works.
 
-### Single-net (point-to-point) check — `PDN_NET`
+### Single-net (point-to-point) check - `PDN_NET`
 
-Sometimes a net has no return reference at all — tracing power from a
+Sometimes a net has no return reference at all - tracing power from a
 connector to a high-side switch, say, where the switch has only a supply
 pin. For that case give a `SOURCE`/`SINK` a single `PDN_NET` instead of the
 `PDN_P_NET` / `PDN_N_NET` pair:
@@ -188,16 +191,16 @@ J1 (connector feeding VBATT):     U3 (high-side switch input):
 
 The directive then has one terminal on PCB copper; its other terminal is an
 ideal 0 Ω return, so the result reflects only that net's copper voltage drop
-— the point-to-point IR drop you're after. (`PDN_PINS` overrides the pad set,
+- the point-to-point IR drop you're after. (`PDN_PINS` overrides the pad set,
 the way `PDN_P_PINS` / `PDN_N_PINS` do for two-terminal directives.)
 
 Rules:
 
 - `PDN_NET` and `PDN_P_NET` / `PDN_N_NET` are mutually exclusive on one
-  directive — giving both, or neither, is an error.
+  directive - giving both, or neither, is an error.
 - A single-net analysis still needs a closed loop: at least one `SOURCE`
   **and** one `SINK` on the same net (a lone one is an "open loop" error).
-- Single-net mode is `SOURCE` / `SINK` only — `SERIES` bridges two nets and
+- Single-net mode is `SOURCE` / `SINK` only - `SERIES` bridges two nets and
   `REGULATOR` has four terminals.
 - Every `SOURCE` and `SINK` that shares a net must use the same mode; a group
   can't mix single-net and two-terminal directives. Independent groups may
@@ -223,15 +226,15 @@ REGULATOR channels also require the four `PDN<n>_OUT_*` / `PDN<n>_IN_*` net
 
 The legacy unindexed channel and any number of indexed channels can coexist
 as independent directives when the unindexed form has its own terminals.
-Indices are sparse — gaps are allowed (e.g. just `PDN_V` + `PDN2_V`). A
+Indices are sparse - gaps are allowed (e.g. just `PDN_V` + `PDN2_V`). A
 channel is present when its value parameter or a channel-defining terminal
 is set; unset indexed params inherit from the matching unindexed
 `PDN_*` template. The part-wide `PDN_ROLE` is the **default** role for every
-channel — a channel can override it with `PDN<n>_ROLE` (see [Mixed-role
+channel - a channel can override it with `PDN<n>_ROLE` (see [Mixed-role
 parts](#mixed-role-parts-a-source-and-a-sink-on-one-component) below).
 
 **Templates:** the unindexed form stays a real directive alongside indexed
-channels only when it is a channel in its own right — its **own** value
+channels only when it is a channel in its own right - its **own** value
 parameter *and* a *complete* terminal set (both P and N for
 SOURCE/SINK/SERIES; both `OUT_*` sides for REGULATOR). Otherwise unindexed
 `PDN_*` values are defaults only and no legacy directive is emitted. A
@@ -245,8 +248,8 @@ values as templates when indexed channels exist.
 Inheritance is scoped to the part-wide role: a channel that overrides it
 with `PDN<n>_ROLE` reads nothing from the template, so a SERIES channel on
 a SINK part cannot pick up the sink's nets. The two terminal forms are also
-atomic — a channel that names `PDN1_P_NET` / `PDN1_N_NET` never inherits a
-shared `PDN_NET`, and vice versa. Example — shared SERIES resistance:
+atomic - a channel that names `PDN1_P_NET` / `PDN1_N_NET` never inherits a
+shared `PDN_NET`, and vice versa. Example - shared SERIES resistance:
 
 ```text
 SW1:
@@ -256,7 +259,7 @@ SW1:
   PDN2_P_NET = VIN_B     PDN2_N_NET = VOUT_B
 ```
 
-Example — a SINK with three independent supply rails:
+Example - a SINK with three independent supply rails:
 
 ```text
 U7 (multi-rail IC load):
@@ -266,7 +269,7 @@ U7 (multi-rail IC load):
   PDN2_I     = 50mA      PDN2_P_NET = +5V    PDN2_N_NET = GND
 ```
 
-Example — a PMIC with two regulator outputs on one symbol:
+Example - a PMIC with two regulator outputs on one symbol:
 
 ```text
 U4:
@@ -279,7 +282,7 @@ U4:
   PDN1_IN_P_NET  = +5V       PDN1_IN_N_NET  = GND
 ```
 
-The Setup tab and the Nodes-tab table label indexed channels as
+The Properties tab and the Nodes-tab table label indexed channels as
 `U7#1`, `U7#2` so they're easy to tell apart from the legacy `U7` channel.
 
 For `SERIES`, auto-inferred P/N nets (2-pin parts) apply only when the
@@ -289,9 +292,9 @@ part carries a single channel; multi-channel SERIES requires explicit
 On **repeated schematic sheets** (Altium `REPEAT`), `PDN_*_NET` may use
 the local child-sheet net label; FYPA maps each PCB instance to its slot
 net via pin connectivity (not via `ChannelDesignatorFormatString`). See
-[User guide — Local net names](docs/user-guide/01-sources-and-sinks.md#local-net-names-hierarchical--reused-sheets).
+[User guide - Local net names](docs/user-guide/01-sources-and-sinks.md#local-net-names-hierarchical--reused-sheets).
 Different values per placement use sheet-symbol parameters
-`PDN_<Designator>_*` (e.g. `PDN_J1_I`) — see
+`PDN_<Designator>_*` (e.g. `PDN_J1_I`) - see
 [Per-instance overrides on sheet symbols](docs/user-guide/01-sources-and-sinks.md#per-instance-overrides-on-sheet-symbols).
 The same overrides apply when the shared role/nets live only on the PCB
 (Blanket / ECO) and the per-instance value is on the sheet symbol.
@@ -300,7 +303,7 @@ The same overrides apply when the shared role/nets live only on the PCB
 
 `PDN_ROLE` is the part-wide **default** role, but any channel may override
 it with `PDN<n>_ROLE`. That lets a single physical part carry channels of
-different roles — the case where **one component is both a source and a
+different roles - the case where **one component is both a source and a
 sink**.
 
 The motivating example is a DAC: its supply pins **sink** current from the
@@ -319,7 +322,7 @@ U7 (DAC):
   PDN3_V     = 1.8     PDN3_P_NET = DAC_OUT1  PDN3_N_NET = GND
 ```
 
-Here channels 0–1 are sinks (AVDD, DVDD supplies) and channels 2–3 are
+Here channels 0-1 are sinks (AVDD, DVDD supplies) and channels 2-3 are
 sources (the two DAC outputs). Each channel's effective role decides which
 value parameter marks it present (`PDN<n>_V` for a SOURCE/REGULATOR channel,
 `PDN<n>_I` for SINK, `PDN<n>_R` for SERIES) and which net/pin parameters it
@@ -328,7 +331,7 @@ reads. `PDN<n>_ROLE` must be one of `SOURCE`, `SINK`, `SERIES`, `REGULATOR`.
 Notes and pitfalls:
 
 - **Uniform parts need nothing new.** Two sinks are still just
-  `PDN_ROLE = SINK` + `PDN_I` / `PDN1_I` — you only write `PDN<n>_ROLE` for
+  `PDN_ROLE = SINK` + `PDN_I` / `PDN1_I` - you only write `PDN<n>_ROLE` for
   the channels that diverge from the default. Existing designs are
   unaffected.
 - **Mix roles across *different* nets.** A SOURCE and a SINK on the *same*
@@ -338,21 +341,21 @@ Notes and pitfalls:
 - **A genuine input→output converter is a `REGULATOR`, not a mixed part.**
   If the part draws on an input rail and supplies a *derived* output rail
   (with a current gain between them), model it with a single `REGULATOR`
-  channel — see below — rather than a hand-paired SOURCE + SINK.
+  channel - see below - rather than a hand-paired SOURCE + SINK.
 - **Current-output loads:** a `SOURCE` fixes voltage, not current. To impose
   a known DAC output current, set it on the **load** `SINK` at the far end
   of the output net; the DAC-output SOURCE then supplies exactly that
   current through the output copper, and the trace IR drop shows on that
   rail.
 
-### `SOURCE` vs `REGULATOR` — when to use which
+### `SOURCE` vs `REGULATOR` - when to use which
 
-A `SOURCE` represents a supply *edge* — the voltage just appears on the
+A `SOURCE` represents a supply *edge* - the voltage just appears on the
 specified net and the solver assumes whatever is upstream of it is infinite.
 Use it for a connector pin, a battery terminal, or any spot where you don't
 care what's upstream.
 
-A `REGULATOR` represents an *on-board regulator* (LDO, buck, etc.) — it
+A `REGULATOR` represents an *on-board regulator* (LDO, buck, etc.) - it
 pins its output net at `PDN_V` AND pulls current from its input net
 proportional to the output current. Use it when both the input AND the
 output rail are part of the PDN you're analyzing, so you can see the
@@ -363,7 +366,7 @@ Set `PDN_REGULATOR_TYPE` (`LDO` or `SMPS`) and optionally
 Use **Adaptive SMPS gain** in the viewer (or `--adaptive-regulator-gain` on
 the CLI) to refine SMPS gain from the solved input voltage.
 
-External FETs: put `PDN_SMPS_TOPOLOGY` (`BUCK` / `BOOST` / `BUCKBOOST` —
+External FETs: put `PDN_SMPS_TOPOLOGY` (`BUCK` / `BOOST` / `BUCKBOOST` -
 not `INVERTER`, which is internal-FET only) and switch-node nets on the
 controller; mark FETs / shunt / L as `PDN_ROLE=PATH` with `PDN_R`. Host
 binding is automatic among controllers that declare a switch stage;
@@ -376,7 +379,7 @@ binding is automatic among controllers that declare a switch stage;
 | SMPS (initial)            | `Vout / (Vin_nom × efficiency)`                   |
 | SMPS (adaptive re-solve)  | `Vout / (Vin_solved × efficiency)`                |
 
-Worked example — a board with a 5V connector input feeding a 3V3 LDO:
+Worked example - a board with a 5V connector input feeding a 3V3 LDO:
 
 ```text
 J1 (input connector):
@@ -394,7 +397,7 @@ U2 (3V3 LDO):
   PDN_IN_P_NET  = +5V
   PDN_IN_N_NET  = 0V
 
-U5 (3V3 load — your IC):
+U5 (3V3 load - your IC):
   PDN_ROLE  = SINK
   PDN_I     = 500mA
   PDN_P_NET = +3V3
@@ -408,7 +411,7 @@ and U2). Replacing U2 with a `SOURCE` would zero out that second drop
 because no current would flow through the +5V copper.
 
 If every rail on your board comes in pre-regulated (no on-board
-regulators), you'll never need `REGULATOR` — `SOURCE` for inputs and
+regulators), you'll never need `REGULATOR` - `SOURCE` for inputs and
 `SINK` for loads is the whole story.
 
 Then run the all-in-one solve + viewer:
@@ -431,7 +434,7 @@ python FYPA.py report      out.pkl report.pdf         # design report (.html or 
 python FYPA.py gerber-gui  path\to\gerber_folder      # import a board from Gerber + Excellon files
 ```
 
-### Editor mode — sources / sinks without touching the schematic
+### Editor mode - sources / sinks without touching the schematic
 
 You don't have to round-trip through the Altium schematic to set up an
 analysis. The viewer has an **editor mode** for placing the PDN directly on
@@ -439,18 +442,62 @@ the board:
 
 - Click a component to attach a `SOURCE` or `SINK` to it, or drop a *free
   marker* on any copper to load a net with no component in the way.
-- Set the role, voltage / current, and net(s) in the side panel — single-net
+- Set the role, voltage / current, and net(s) in the side panel - single-net
   or two-net, the same choices the `PDN_*` parameters give you.
 - A component that already carries schematic `PDN_*` directives can be
   *unlocked* and overridden, for quick "what-if" values without editing
   Altium.
-- Hit **Resolve** to re-run the solver with your edits applied — it reuses
+- Hit **Resolve** to re-run the solver with your edits applied - it reuses
   the cached design extraction, so it's far quicker than a cold load.
 
 Editor edits are stored in a small `.fypa` project file beside the board, so
 they (and the linked solve) survive a save / reopen and never modify the
 Altium source files. A step-by-step walkthrough will follow in a separate
 user guide.
+
+### What-If scenarios - try a change, compare it with the base
+
+Once a design is solved, a What-If lets you ask "what happens if…" without
+losing that result. Typical questions:
+
+- **Cost-down:** do 1 oz inner layers instead of 2 oz still meet every
+  load's `PDN_MIN_V`?
+- **Margin:** how much does heavier outer copper buy on the worst rail?
+- **Environment:** what does a hot enclosure, or self-heating
+  (electro-thermal model), do to the drop?
+- **Fabrication:** IPC Class 2 instead of Class 3 via plating, or vias
+  filled with conductive paste?
+
+Press **What-If** on the heatmap (next to Resolve) to open the panel, then
+**New…** to make one. A What-If can change any of:
+
+- board temperature, copper resistivity and its temperature coefficient;
+- via plating thickness (through, blind, buried, micro), via fill mode and
+  fill resistivity;
+- the coupled electro-thermal model and its heat transfer coefficient;
+- each copper layer's thickness (with ½-3 oz quick picks) and resistivity.
+
+It is solved with the same design, directives and mesh as the base, so any
+difference comes from your change alone. Every What-If is compared only
+with the base design, never with another What-If. Three views:
+
+| View | Shows |
+|------|-------|
+| **Base** | The design's own result. |
+| **What-if** | The What-If's result; every tab follows it, and a banner says so. |
+| **Difference** | *What-if − base* per mesh vertex for the current heatmap mode (voltage, drop, current density, power density): red where it got worse, blue where it got better. |
+
+The panel also lists the headline changes, each with the rail it applies
+to: worst sink drop, worst margin to `PDN_MIN_V`, min-V failures, copper
+I²R loss and, with the thermal model, temperature rise. Below that is a
+per-pin table marked ▲ better / ▼ worse. **Make this the base** adopts a
+What-If's values (and, when its result is current, its result) as the
+design's own **Base properties**. What-Ifs and their results are saved in
+the `.fypa` project.
+
+The base design's own physical properties are set on the **Properties**
+tab; What-Ifs never change them. See the
+[What-If guide](docs/user-guide/09-what-if-scenarios.md) for the details.
 
 ### Solve cache
 
@@ -464,11 +511,11 @@ along with a fingerprint of every input that affects the solve:
   `fypa/altium/annotations.py`, `fypa/altium/loader.py`,
   `fypa/gerber/extract.py`, `fypa/gerber/loader.py`,
   `fypa/altium_geometry.py`, `fypa/cli.py`, `fypa/lean_solution.py`, and the
-  modified `pdnsolver/` modules — `problem.py`, `mesh.py`, `solver.py`)
+  modified `pdnsolver/` modules - `problem.py`, `mesh.py`, `solver.py`)
 
 On subsequent runs the fingerprint is recomputed and compared. If
-nothing has changed the cached solution is reused — typical startup
-drops from ~10–60 s (full solve) to under a second. Editing any
+nothing has changed the cached solution is reused - typical startup
+drops from ~10-60 s (full solve) to under a second. Editing any
 referenced PCB / Sch file or any of the tool's source files
 automatically invalidates the cache.
 
@@ -479,12 +526,12 @@ python FYPA.py gui YourBoard.PrjPcb --no-cache
 ```
 
 To clear all cached solutions, delete the `.cache/` directory inside
-the tool folder — they'll regenerate on the next run.
+the tool folder - they'll regenerate on the next run.
 
 ### Launching directly from Altium
 
 A small DelphiScript ([Run_FYPA.pas](packaging/Run_FYPA.pas)) is bundled
-that fires the tool against whichever `.PrjPcb` is focused in Altium —
+that fires the tool against whichever `.PrjPcb` is focused in Altium -
 no need to copy paths to a console. One-time setup:
 
 1. **Point the script at this directory.** Open `packaging/Run_FYPA.pas`
@@ -516,14 +563,14 @@ no need to copy paths to a console. One-time setup:
    tracebacks are readable. Close the console window when you're done.
 
 The script will surface a clear `ShowError` dialog if any prerequisite
-is missing — wrong path, no project open, project unsaved, or the
+is missing - wrong path, no project open, project unsaved, or the
 focused project isn't a `.PrjPcb`.
 
 ## Building a standalone executable
 
 The project can be packaged into a self-contained Windows folder using
 [PyInstaller](https://pyinstaller.org). The recipient needs no Python
-installation — they just extract a zip and double-click the `.exe`.
+installation - they just extract a zip and double-click the `.exe`.
 
 ### Prerequisites
 
@@ -549,7 +596,7 @@ it from a terminal). It will:
 7. Zip the staged `dist\FYPA\` folder into a single distributable archive
 8. Delete the unzipped staging folder so only the zip remains in `dist\`
 
-The first build takes 3–5 minutes while PyInstaller scans all packages.
+The first build takes 3-5 minutes while PyInstaller scans all packages.
 Subsequent builds are quicker. The final artefact is:
 
 ```
@@ -571,7 +618,7 @@ FYPA\
 ### Distributing
 
 The standard distribution channel is **GitHub Releases**, and publishing one
-is automated — pushing a version tag runs
+is automated - pushing a version tag runs
 [`.github/workflows/release.yml`](.github/workflows/release.yml), which lints,
 tests, stamps the tag into `__version__`, builds the PyInstaller bundle, and
 uploads `FYPA_v<version>.zip` with auto-generated release notes:
@@ -581,7 +628,7 @@ git tag -a v1.7.0 -m "FYPA v1.7.0"
 git push origin v1.7.0
 ```
 
-Run `uv run ruff check .` and `uv run pytest` **before** tagging — the
+Run `uv run ruff check .` and `uv run pytest` **before** tagging - the
 workflow runs the same gate, and a failure there means no release is created
 and the tag has to be deleted locally and on GitHub before the version number
 can be reused. Everything in the release must already be merged to `main`;
@@ -592,9 +639,9 @@ Users follow the
 [Download (prebuilt Windows binary)](#download-prebuilt-windows-binary)
 instructions above.
 
-For the step-by-step version of this — the pre-tag checklist, TortoiseGit
+For the step-by-step version of this - the pre-tag checklist, TortoiseGit
 steps for creating and pushing the tag, and how to recover from a failed
-run — see [docs/release-process.md](docs/release-process.md).
+run - see [docs/release-process.md](docs/release-process.md).
 
 To build and share a zip without publishing a release, run
 `packaging\build_dist.bat` and send `dist\FYPA.zip` directly.
@@ -608,9 +655,9 @@ All PyInstaller settings live in **`packaging\FYPA.spec`**. Notable options:
 
 | Setting | Default | Notes |
 |---|---|---|
-| `console=True` | `True` | Shows a terminal window — keeps CLI subcommands usable and errors visible on crash. Set to `False` for a GUI-only distribution with no console. |
+| `console=True` | `True` | Shows a terminal window - keeps CLI subcommands usable and errors visible on crash. Set to `False` for a GUI-only distribution with no console. |
 | `datas` | `assets` | Add extra data files/folders here if needed. |
-| `hiddenimports` | PyOpenGL, PySide6 GL, scipy, matplotlib | Extend if the app crashes on launch with `ModuleNotFoundError` — add the missing module name here. |
+| `hiddenimports` | PyOpenGL, PySide6 GL, scipy, matplotlib | Extend if the app crashes on launch with `ModuleNotFoundError` - add the missing module name here. |
 | `excludes` | `tkinter`, `cadquery`/`OCP`/`vtk`/`casadi`, unused PySide6 modules | Trims ~400 MB by dropping the `altium_monkey` STEP-bounds 3D stack (only used by write-side helpers FYPA never calls) and QML/PDF Qt modules. Extend if you find more bloat. |
 
 After editing the spec, re-run `packaging\build_dist.bat` to rebuild.
@@ -644,26 +691,30 @@ fypa/                    Application package:
     probes.py              Voltage-difference tool and hover probes
     copper_pick.py         Copper click-select and Tab expansion
     editor/                Editor mode: form, selection, marquee, net focus, ...
-    tabs/                  One module per tab (setup, nodes, vias, bridges, ...)
+    tabs/                  One module per tab (properties, nodes, vias, ...)
     file_menu.py           File menu and project save / open
-    report_export.py       File > Export > Report… dialog and export flow
-    settings_tab.py        Settings tab (shared with the launcher)
+    report_export.py       Reports > Generate Report… dialog and export flow
+    settings_tab.py        Settings tab (shared with the launcher) and the
+                           Properties tab's editable solve inputs
+    whatif_panel.py        What-If panel: run, show, difference, compare
     launcher.py, app.py    Launcher window and the main() entry point
     project_open.py        Opening projects / solutions / Altium imports
     solve_worker.py        Background solve + cap-loop workers, solve cache
     session.py             Window registry, background loaders, replace guards
     theme.py, prefs.py     Dark / light theme; persisted preferences
     widgets.py, ...        Shared widgets and helpers (display, overlays, ...)
-  gl_mesh_viewer.py      Custom QOpenGLWidget — mesh-on-GPU heatmap canvas
+  gl_mesh_viewer.py      Custom QOpenGLWidget - mesh-on-GPU heatmap canvas
   paraview_export.py     ParaView VTU export
   report/                Design report: model, pass/fail rules, figures,
-                         HTML and PDF renderers (File > Export > Report…)
+                         HTML and PDF renderers (Reports > Generate Report…)
   solution_sampling.py   Pin / via voltage sampling shared by the Nodes and
                          Vias tabs and the report
   spacemouse_nav.py      3Dconnexion SpaceMouse integration
   navlib_camera.py       NavLib camera adapter for the SpaceMouse
   log_buffer.py          In-memory log capture for the Messages tab
   lean_solution.py       Compact numeric solution (cache / pickle payload)
+  whatif.py              What-If scenario model, merge onto the base,
+                         mesh-to-mesh mapping and row comparison (Qt-free)
 pdnsolver/               Vendored fork of padne (FEM solver + mesher)
 packaging/               PyInstaller spec, build script, Altium launcher
 ```
@@ -692,7 +743,7 @@ window is open so 3Dconnexion Settings keeps the FYPA profile selected.
 
 Marker overlays (SOURCE / SINK / SERIES / REGULATOR / VIA) and the title /
 legend chips are drawn via `QPainter` inside `paintGL` so they share the
-GL paint engine — no Qt raster-fallback compositor.
+GL paint engine - no Qt raster-fallback compositor.
 
 ## License
 

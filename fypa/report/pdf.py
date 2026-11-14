@@ -62,7 +62,7 @@ STATUS = {
 }
 EDGE = {FAIL: colors.HexColor("#b3261e"), WARN: colors.HexColor("#e0a400"),
         PASS: colors.HexColor("#1e6b3a"), UNCHECKED: MUTED}
-GLYPH = {FAIL: "✖", WARN: "▲", PASS: "✔", UNCHECKED: "–"}
+GLYPH = {FAIL: "✖", WARN: "▲", PASS: "✔", UNCHECKED: "-"}
 
 PAGE_W, PAGE_H = A4
 MARGIN = 16 * mm
@@ -185,7 +185,7 @@ def render_pdf(report: Report) -> bytes:
     doc = SimpleDocTemplate(
         buf, pagesize=A4, leftMargin=MARGIN, rightMargin=MARGIN,
         topMargin=15 * mm, bottomMargin=15 * mm,
-        title=f"PDN Report — {report.project_name}", author=report.settings.author
+        title=f"PDN Report - {report.project_name}", author=report.settings.author
         or "FYPA", subject="Power delivery network assessment")
     b = _Builder(report, st)
     story = b.build()
@@ -326,7 +326,7 @@ class _Builder:
         rows += [("Generated", r.generated), ("FYPA", r.fypa_version)]
         if r.settings.revision:
             rows.append(("Revision", r.settings.revision))
-        rows.append(("Prepared by", r.settings.author or "—"))
+        rows.append(("Prepared by", r.settings.author or "-"))
         sub = r.analyses[:1].upper() + r.analyses[1:] if r.analyses else ""
         out = [self.P("FYPA · POWER DELIVERY NETWORK ASSESSMENT", "kicker"),
                self.P(e(r.project_name), "h1"),
@@ -395,8 +395,8 @@ class _Builder:
         for i, rail in enumerate(self.r.rails):
             codes = {f.code for f in rail.findings}
             if rail.kind == "return":
-                row = [e(rail.name), "return", "—", "—",
-                       f"rise {H.fmt_mv(rail.ground_rise_v)}", "—"]
+                row = [e(rail.name), "return", "-", "-",
+                       f"rise {H.fmt_mv(rail.ground_rise_v)}", "-"]
             else:
                 drop = H.fmt_mv(rail.worst_drop_v)
                 if rail.worst_drop_pct is not None:
@@ -414,7 +414,7 @@ class _Builder:
                     cells.append((4, i, FAIL))
             dec = rail.decoupling
             if rail.kind == "return" or dec is None:
-                imp = "—"
+                imp = "-"
             elif not dec.analysed:
                 imp = "Not analysed"
             elif dec.meets_target:
@@ -429,7 +429,7 @@ class _Builder:
             status = _status_text(rail.status)
             unchecked = rail.count(UNCHECKED)
             if unchecked:
-                status += (f'<br/><font color="#5f6670">– {unchecked}'
+                status += (f'<br/><font color="#5f6670">- {unchecked}'
                            ' unchecked</font>')
             row += [H.fmt_a(rail.max_via_a), H.fmt_j(rail.peak_j_a_per_mm2),
                     e(imp), status]
@@ -475,7 +475,7 @@ class _Builder:
             sub.append("copper on " + ", ".join(lr.layer for lr in rail.layers))
         unchecked = rail.count(UNCHECKED)
         head = (f"{n} · {e(rail.name)}   " + _status_text(rail.status)
-                + (f'  <font color="#5f6670" size="8">– {unchecked} '
+                + (f'  <font color="#5f6670" size="8">- {unchecked} '
                    "unchecked</font>" if unchecked else ""))
         t = Table([[self.P(head, "h2")], [self.P(e(" · ".join(sub)), "muted")]],
                   colWidths=[FRAME_W])
@@ -627,7 +627,7 @@ class _Builder:
             return [self.na("No vias carry this rail's current.")]
         rows, cells, row_status = [], [], []
         for i, v in enumerate(rail.vias):
-            drill = "—" if v.drill_mm is None else f"{v.drill_mm:.2f} mm"
+            drill = "-" if v.drill_mm is None else f"{v.drill_mm:.2f} mm"
             rows.append([H.fmt_xy((v.x_mm, v.y_mm)), e(v.span),
                          f"{drill} · {e(v.fill)}", H.fmt_a(v.current_a),
                          H.fmt_mv(abs(v.delta_v)), H.fmt_w(v.power_w),
@@ -658,7 +658,7 @@ class _Builder:
                 ["Regulator", "Kind", "Rails", "V out", "V in", "I out",
                  "I in (est.)", "Loss"],
                 [[e(g.designator), e(g.kind),
-                  f"{e(g.input_rail or '—')} → {e(g.output_rail)}",
+                  f"{e(g.input_rail or '-')} → {e(g.output_rail)}",
                   H.fmt_v(g.v_out_set), H.fmt_v(g.v_in), H.fmt_a(g.i_out),
                   H.fmt_a(g.i_in), H.fmt_w(g.loss_w)] for g in rail.regulators],
                 [12, 12, 22, 10, 10, 10, 11, 10], right={3, 4, 5, 6, 7}))
@@ -730,7 +730,7 @@ class _Builder:
                 ["Load", "Pin", "Net", "Layer", "Location (mm)", "V at pin"],
                 [[e(p["load"]), e(p["pad"]), e(p["net"]), e(p["layer"]),
                   (H.fmt_xy((p["x_mm"], p["y_mm"]))
-                   if p["x_mm"] is not None else "—"),
+                   if p["x_mm"] is not None else "-"),
                   H.fmt_v(p["v_load"])] for p in rail.pin_rows],
                 [20, 14, 20, 16, 18, 12], right={4, 5}))
         for rail in r.rails:
@@ -741,7 +741,7 @@ class _Builder:
             out.append(self.table(
                 ["Part", "C", "Package", "Loop L", "From", "Flags"],
                 [[e(c.get("designator")), H._fmt_cap(c.get("capacitance_f")),
-                  e(c.get("package") or "—"), H._num(c.get("l_nh"), ".3g",
+                  e(c.get("package") or "-"), H._num(c.get("l_nh"), ".3g",
                                                      " nH"),
                   e(c.get("tier") or ""), e(", ".join(c.get("flags") or []))]
                  for c in dec.cap_rows],

@@ -12,7 +12,7 @@ jobs:
     # regression files were generated on (Triangle meshing is deterministic
     # across machines; MKL PARDISO results can vary slightly by MKL version,
     # so if the Sandbox regression test ever mismatches here, regenerate the
-    # golden — see tests/test_regression.py).
+    # golden - see tests/test_regression.py).
     runs-on: windows-latest
 
     steps:
@@ -31,7 +31,7 @@ jobs:
       - name: Sync dependencies (runtime + dev)
         # `uv sync` reads pyproject.toml + uv.lock, fetches Python 3.12 per
         # .python-version, creates .venv, installs runtime + dev groups.
-        # The `build` group (PyInstaller) is intentionally excluded — CI
+        # The `build` group (PyInstaller) is intentionally excluded - CI
         # doesn't package, only lints and tests.
         run: uv sync
 

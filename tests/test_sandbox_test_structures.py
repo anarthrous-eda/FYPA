@@ -14,11 +14,11 @@ expectation with it instead of failing these tests.
 Two kinds of check live here, for the same reason ``test_analytical.py``
 splits them:
 
-* **Absolute** — measured span against ``R_sq * L / W``. The ideal formula
+* **Absolute** - measured span against ``R_sq * L / W``. The ideal formula
   assumes current crosses the full width uniformly, which is untrue near the
   pads, so each structure carries its own tolerance and a note on why it
   deviates.
-* **Differential** — the *difference* between two structures of equal width.
+* **Differential** - the *difference* between two structures of equal width.
   The end effects are then an additive constant common to both and cancel
   exactly, leaving pure sheet resistance. These hold to a few parts in 10^5
   and are the real regression gate on the solver's bulk physics.
@@ -106,7 +106,7 @@ def test_sheet_resistance_is_one_ounce_copper(sandbox):
     """
     _drops, r_sq = sandbox
     assert r_sq == pytest.approx(0.4726, rel=0.02), (
-        f"sheet resistance {r_sq:.5f} mOhm/sq is not 1 oz copper — the "
+        f"sheet resistance {r_sq:.5f} mOhm/sq is not 1 oz copper - the "
         "structure expectations below are derived from it"
     )
 
@@ -145,7 +145,7 @@ def test_incremental_length_is_pure_sheet_resistance(
     whatever end effect inflates or deflates their absolute drop is the same
     additive term in each and cancels here. What remains is the sheet
     resistance of the extra squares, which the solver gets right to a few
-    parts in 10^5 — far tighter than any absolute check can be.
+    parts in 10^5 - far tighter than any absolute check can be.
     """
     drops, r_sq = sandbox
     measured_mv = drops[longer] - drops[shorter]
@@ -164,8 +164,8 @@ def test_wide_pour_reads_above_the_ideal_sheet_value(sandbox):
     P1V_1W10L and P1V_10W100L are both 10 squares, so the ideal formula gives
     them the same resistance. They do not measure the same: the 10 mm pour
     makes the current spread out from the pad and converge again, and that
-    constriction resistance is real. A regression that erased it — say, by
-    treating a pad as spanning the full pour width — would show up as these
+    constriction resistance is real. A regression that erased it - say, by
+    treating a pad as spanning the full pour width - would show up as these
     two converging.
     """
     drops, r_sq = sandbox

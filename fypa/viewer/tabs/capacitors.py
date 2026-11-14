@@ -34,14 +34,14 @@ from fypa.viewer.theme import _T
 
 # Item-data role carrying the Capacitors table's original row index. It can't
 # live on Qt.UserRole because :class:`_MessagesSortItem` reads that role as
-# the numeric sort key — the Go / Use cells need both a sort key and a row
+# the numeric sort key - the Go / Use cells need both a sort key and a row
 # identity that survives the user re-sorting the table.
 _CAPS_TABLE_ROW_ROLE = int(Qt.UserRole) + 2
 
 
 
 # Canonical imperial package key on the Impedance-tab package table's name
-# cell — the visible text may be a metric label when that convention is on.
+# cell - the visible text may be a metric label when that convention is on.
 _PKG_CANONICAL_ROLE = int(Qt.UserRole) + 3
 
 
@@ -88,7 +88,7 @@ class _CapacitorsTabMixin:
     # Columns of the Capacitors-tab table. (display label, numeric?)
     # Column 0 is the per-row "Go" jump cell, column 1 the include
     # checkbox; the rest are data. Same no-setCellWidget discipline as the
-    # Vias tab — see _populate_vias_table for the perf rationale.
+    # Vias tab - see _populate_vias_table for the perf rationale.
     _CAPS_TABLE_COLUMNS: tuple[tuple[str, bool], ...] = _CAPS_TABLE_COLUMNS
     # Column indexes, derived from the labels above rather than hand-counted,
     # so inserting a column can't silently mis-address the click dispatcher.
@@ -103,7 +103,7 @@ class _CapacitorsTabMixin:
     _CAPS_FLAGS_COL = _CAPS_COL["Flags"]
 
     def _caploop_settings(self):
-        """The active :class:`~fypa.caploop.constants.CapLoopSettings` —
+        """The active :class:`~fypa.caploop.constants.CapLoopSettings` -
         project-file values when present, defaults otherwise. Cached;
         cleared by the Settings-tab apply (_on_rerun_cap_check)."""
         obj = getattr(self, "_caploop_settings_obj", None)
@@ -135,7 +135,7 @@ class _CapacitorsTabMixin:
         self._display_dirty = True
 
     def _build_footprint_convention_combo(self) -> QComboBox:
-        """Case-size naming convention — shared by Capacitors and Impedance tabs."""
+        """Case-size naming convention - shared by Capacitors and Impedance tabs."""
         combo = QComboBox()
         for value, label in (
             ("auto", "Auto"),
@@ -169,11 +169,11 @@ class _CapacitorsTabMixin:
             self._populate_package_table()
 
     def _build_capacitors_tab(self) -> QWidget:
-        """Build the Capacitors tab — a sortable table of every decoupling
+        """Build the Capacitors tab - a sortable table of every decoupling
         capacitor with its Tier-1 mounted loop inductance, informational
         part values, and per-cap include / target overrides. Rows populate
         on first tab activation (identification walks the whole extracted
-        design and builds per-net copper shapes — seconds on a big board)."""
+        design and builds per-net copper shapes - seconds on a big board)."""
         widget = QWidget(self.tabs)
         outer = QVBoxLayout(widget)
         outer.setContentsMargins(8, 8, 8, 8)
@@ -333,13 +333,13 @@ class _CapacitorsTabMixin:
         """Per-(layer, net) copper shapes for the capacitor analysis, cached
         for the lifetime of one extracted design.
 
-        This union is the expensive part of the whole feature — 5–11 s on a
-        real board — and both the Capacitors table and the Tier-2/3 solve need
+        This union is the expensive part of the whole feature - 5-11 s on a
+        real board - and both the Capacitors table and the Tier-2/3 solve need
         exactly the same shapes. Keying the cache on the extracted project
         object (held by reference, so its identity can't be recycled by the
         GC) means a Reload Design Info / re-solve naturally misses, while a
-        settings or override change — which invalidates the *rows*, not the
-        geometry — reuses it. Qt-free, so it is safe to call from a worker
+        settings or override change - which invalidates the *rows*, not the
+        geometry - reuses it. Qt-free, so it is safe to call from a worker
         thread.
         """
         from fypa.altium_geometry import build_net_layer_shapes
@@ -359,7 +359,7 @@ class _CapacitorsTabMixin:
     def _compute_cap_report(self) -> list[dict]:
         """One row dict per detected decoupling capacitor: identification
         bundle + Tier-1 mounted inductance. Pure geometry over the loaded
-        design — no solve needed, so this works right after Reload Design
+        design - no solve needed, so this works right after Reload Design
         Info. Returns [] (with an explanatory summary message stashed on
         ``self._caps_empty_reason``) when the design data isn't available.
 
@@ -372,13 +372,13 @@ class _CapacitorsTabMixin:
         extracted = getattr(loaded, "extracted", None)
         if extracted is None:
             self._caps_empty_reason = (
-                "Capacitor analysis needs the design info — use "
+                "Capacitor analysis needs the design info - use "
                 "Reload Design Info, then reopen this tab.")
             return []
         if not extracted.pcb_components:
             self._caps_empty_reason = (
                 "Capacitor analysis needs component data, which Gerber "
-                "imports don't carry — import the Altium design instead.")
+                "imports don't carry - import the Altium design instead.")
             return []
 
         from fypa.caploop.identify import (
@@ -402,7 +402,7 @@ class _CapacitorsTabMixin:
 
         # Identification is the slow half (copper-coverage tests per cap), and
         # it depends only on the board, the analysis settings, and which caps
-        # are force-included — never on an exclude or a retargeting. Cache it
+        # are force-included - never on an exclude or a retargeting. Cache it
         # so toggling a checkbox is a millisecond, not a five-second freeze.
         _t1 = time.monotonic()
         forced = frozenset(d for d, v in includes.items() if v)
@@ -433,7 +433,7 @@ class _CapacitorsTabMixin:
             # Case size: detected from the footprint name unless the user has
             # pinned one. The override is applied *here* rather than inside
             # identification because it only selects a library entry and a
-            # label — it changes no geometry, so the identity cache (which a
+            # label - it changes no geometry, so the identity cache (which a
             # package override does not key) stays valid.
             package = pkg_over.get(cap.designator, cap.package)
             # Part parasitics: the package library supplies the default, an
@@ -454,7 +454,7 @@ class _CapacitorsTabMixin:
                                               cap.capacitance_f),
                 "package": package,
                 # What extraction found, kept beside the effective value so a
-                # tooltip can say what the override is overriding — and so
+                # tooltip can say what the override is overriding - and so
                 # picking the detected case size can be stored as "no
                 # override" rather than as a redundant one.
                 "capacitance_parsed_f": cap.capacitance_f,
@@ -472,7 +472,7 @@ class _CapacitorsTabMixin:
                 "target_pin_count": len(cap.target_pins),
                 "vias_str": f"{len(cap.vias_rail)}+{len(cap.vias_return)}",
                 "s_mm": t1.s_mm if not t1.is_fallback else None,
-                # The worse of the two sides' shortest pad-edge→via runs —
+                # The worse of the two sides' shortest pad-edge→via runs -
                 # the same measure the long-escape flag uses, so the column
                 # and the flag can never disagree.
                 "escape_mm": max(
@@ -498,7 +498,7 @@ class _CapacitorsTabMixin:
                  time.monotonic() - _t1, len(rows))
         if not rows:
             self._caps_empty_reason = (
-                "No decoupling capacitors found — detection needs "
+                "No decoupling capacitors found - detection needs "
                 "C-designator two-pin parts across annotated power rails "
                 "(GND counts as a rail).")
         return rows
@@ -525,7 +525,7 @@ class _CapacitorsTabMixin:
         """Make sure the capacitor rows exist, then call ``then()``.
 
         The first build unions every (layer, net) copper shape and walks every
-        component — seconds on a real board, and previously all of it on the
+        component - seconds on a real board, and previously all of it on the
         GUI thread, which is what made the tab look hung. Run it on a worker
         behind a modal busy dialog instead; the event loop keeps turning so
         the window repaints. Already-cached rows skip the thread entirely and
@@ -580,7 +580,7 @@ class _CapacitorsTabMixin:
     def _invalidate_caps_cache(self, *, repopulate: bool = True,
                               heavy: bool = False) -> None:
         """Drop the cached cap rows and re-populate the table if it was
-        already built. Tier-2/3 results living in the rows are dropped too —
+        already built. Tier-2/3 results living in the rows are dropped too -
         they were computed against the old geometry/overrides and would be
         stale.
 
@@ -640,7 +640,7 @@ class _CapacitorsTabMixin:
                 self._caploop_settings_obj.to_dict()
             self._display_dirty = True
         # Settings feed escape-via clustering and cavity selection, so the
-        # identification itself has to be redone — that's the slow path.
+        # identification itself has to be redone - that's the slow path.
         self._invalidate_caps_cache(heavy=True)
         self._settings_status_label.setText(
             f"<span style='color:{_T()['accent']};'>Capacitor check "
@@ -655,7 +655,7 @@ class _CapacitorsTabMixin:
             "net is the pad with no via.",
         "single-via":
             "Only one escape via on the named pad. Halving the via count "
-            "roughly doubles that side's loop inductance — usually the "
+            "roughly doubles that side's loop inductance - usually the "
             "cheapest thing to fix.",
         "long-escape":
             "The run from the named pad's edge to its nearest via exceeds "
@@ -725,7 +725,7 @@ class _CapacitorsTabMixin:
         muted_fg = QBrush(QColor(_t["fg_muted"]))
         footprint_convention = self._footprint_convention()
 
-        # itemChanged fires for every setItem during populate — guard the
+        # itemChanged fires for every setItem during populate - guard the
         # include-toggle handler with a populating flag.
         self._caps_populating = True
         self.caps_table.setSortingEnabled(False)
@@ -771,9 +771,9 @@ class _CapacitorsTabMixin:
                 f"  spreading (closed form): {t1.spread_cf_h * 1e9:.3g} nH"
                 if not t1.is_fallback else
                 "Geometry too degenerate for the closed forms (no escape "
-                "via or no reference cavity) — settings fallback value.")
+                "via or no reference cavity) - settings fallback value.")
 
-            target_text = row.get("target_label") or "—"
+            target_text = row.get("target_label") or "-"
             if row.get("target_is_override"):
                 target_text += " ✎"
 
@@ -782,12 +782,12 @@ class _CapacitorsTabMixin:
 
             cells = (
                 None,  # action
-                None,  # use checkbox — set above
+                None,  # use checkbox - set above
                 row["designator"],
                 row["rail"],
                 None if row.get("capacitance_f") is None
                 else row["capacitance_f"] * 1e6,
-                package_label,   # already "—" when the package is unknown
+                package_label,   # already "-" when the package is unknown
                 None if row.get("esl_h") is None else row["esl_h"] * 1e9,
                 None if row.get("esr_ohm") is None else row["esr_ohm"] * 1e3,
                 row.get("voltage_rating_v"),
@@ -797,18 +797,18 @@ class _CapacitorsTabMixin:
                 row.get("vias_str", ""),
                 row.get("s_mm"),
                 row.get("escape_mm"),
-                row.get("cavity_str") or "—",
+                row.get("cavity_str") or "-",
                 row.get("l1_nh"),
                 row.get("l2_nh"),
                 row.get("l3_nh"),
-                ", ".join(row.get("flags", ())) or "—",
+                ", ".join(row.get("flags", ())) or "-",
             )
             for c, (col_label, is_numeric) in enumerate(cols):
                 if c in (self._CAPS_ACTION_COL, self._CAPS_USE_COL):
                     continue
                 value = cells[c]
                 if value is None:
-                    item = QTableWidgetItem("—")
+                    item = QTableWidgetItem("-")
                 elif is_numeric and isinstance(value, (int, float)):
                     item = _MessagesSortItem(
                         f"{value:d}" if isinstance(value, int)
@@ -828,7 +828,7 @@ class _CapacitorsTabMixin:
                     else:
                         tip = ("FEM plane-pair spreading inductance between "
                                "this capacitor's vias and its target's vias.")
-                        # A solved value can still come with a caveat — e.g. a
+                        # A solved value can still come with a caveat - e.g. a
                         # zero because the cap sits on the target's own via.
                         if row.get("l2_reason"):
                             tip += f"\n\n{row['l2_reason']}"
@@ -843,7 +843,7 @@ class _CapacitorsTabMixin:
                             f"  cavity spreading (FEM): {t3.spread_h * 1e9:.3g} nH\n"
                             f"  IC via pair ×{t3.ic_pairs}: "
                             f"{t3.via_loop_ic_h * 1e9:.3g} nH"
-                            + (f"\n\nPartial: {t3.reason} — the total is a "
+                            + (f"\n\nPartial: {t3.reason} - the total is a "
                                "lower bound." if t3.is_partial else ""))
                         if t3.is_partial:
                             item.setText(f"≥{item.text()}")
@@ -853,7 +853,7 @@ class _CapacitorsTabMixin:
                         item.setToolTip(
                             f"No cap→plane→IC total: {row['l2_reason']}"
                             if row.get("l2_reason") else
-                            "Needs a Tier-2 spreading term — "
+                            "Needs a Tier-2 spreading term - "
                             "press Compute Tier 2/3.")
                 if col_label == "Flags":
                     item.setToolTip(self._cap_flags_tooltip(row))
@@ -877,7 +877,7 @@ class _CapacitorsTabMixin:
                     what = "inductance" if is_esl else "resistance"
                     if row.get("esl_h" if is_esl else "esr_ohm") is None:
                         item.setToolTip(
-                            f"No equivalent series {what} — the package is "
+                            f"No equivalent series {what} - the package is "
                             "unrecognised. Double-click to set it, or "
                             "double-click the Pkg cell to name the case "
                             "size and take the library default.")
@@ -917,7 +917,7 @@ class _CapacitorsTabMixin:
                     item.setForeground(muted_fg)
                 self.caps_table.setItem(r, c, item)
         self.caps_table.setSortingEnabled(True)
-        # Default sort: L1 descending — worst mounts on top.
+        # Default sort: L1 descending - worst mounts on top.
         l1_col = next(i for i, (n, _) in enumerate(cols) if n == "L1 (nH)")
         self.caps_table.sortByColumn(l1_col, Qt.DescendingOrder)
         self.caps_table.resizeColumnsToContents()
@@ -939,11 +939,11 @@ class _CapacitorsTabMixin:
 
         The value is not decoration: :func:`fypa.caploop.impedance.cap_branch`
         feeds it straight into the branch impedance, and a capacitor without
-        one is dropped from the model — so the cell has to say where the
+        one is dropped from the model - so the cell has to say where the
         number came from and how to correct it.
         """
         parsed = row.get("capacitance_parsed_f")
-        parsed_txt = ("—" if parsed is None
+        parsed_txt = ("-" if parsed is None
                       else f"{parsed * 1e6:.4g} µF")
         if row.get("capacitance_is_override"):
             return (
@@ -957,7 +957,7 @@ class _CapacitorsTabMixin:
                 "excluded from the impedance model. Double-click to set it.")
         return (
             "Read from the part's Altium parameters. Double-click to "
-            "override — for a value no heuristic can parse, or for the "
+            "override - for a value no heuristic can parse, or for the "
             "effective capacitance after DC-bias and temperature derating.")
 
     def _cap_package_tooltip(self, row: dict, package_label: str,
@@ -997,7 +997,7 @@ class _CapacitorsTabMixin:
         include = item.checkState() == Qt.Checked
         # Persist only a *deviation* from auto-detection: re-checking a cap
         # that detection found on its own clears the override. A cap that
-        # only a force-include admitted must keep ``include=True`` — clearing
+        # only a force-include admitted must keep ``include=True`` - clearing
         # it there would drop the cap from the list entirely.
         if include:
             new_include = None if row.get("auto_detected", True) else True
@@ -1028,7 +1028,7 @@ class _CapacitorsTabMixin:
                 self._show_cap_target_menu(self._caps_rows[orig_idx])
 
     def _caps_row_at(self, table_row: int) -> dict | None:
-        """The row dict behind a visual table row — recovered through the
+        """The row dict behind a visual table row - recovered through the
         action cell's stashed index, so it survives re-sorting."""
         action_item = self.caps_table.item(table_row, self._CAPS_ACTION_COL)
         orig_idx = (action_item.data(_CAPS_TABLE_ROW_ROLE)
@@ -1043,7 +1043,7 @@ class _CapacitorsTabMixin:
         the capacitance, the case size, and the part's own ESL / ESR.
 
         An empty input clears the override, falling back to the parsed part
-        value or the package library — the only way back for a part the user
+        value or the package library - the only way back for a part the user
         has pinned.
         """
         if col not in (self._CAPS_C_COL, self._CAPS_PKG_COL,
@@ -1080,7 +1080,7 @@ class _CapacitorsTabMixin:
             "This part's package is unrecognised, so there is no default to "
             "fall back on.")
         text, ok = QInputDialog.getText(
-            self, f"{title} — {data['designator']}",
+            self, f"{title} - {data['designator']}",
             f"{title} ({unit}):\n{default_note}",
             text="" if current is None else f"{current / scale:.4g}")
         if not ok:
@@ -1113,7 +1113,7 @@ class _CapacitorsTabMixin:
             "Nothing could be read from this part's parameters, so leaving "
             "it empty keeps the capacitor out of the impedance model.")
         text, ok = QInputDialog.getText(
-            self, f"Capacitance — {data['designator']}",
+            self, f"Capacitance - {data['designator']}",
             f"Capacitance (µF, or a unit suffix such as 100n):\n{note}",
             text="" if current is None else f"{current * 1e6:.4g}")
         if not ok:
@@ -1153,9 +1153,9 @@ class _CapacitorsTabMixin:
         detected = row.get("package_detected")
         menu = QMenu(self)
         auto = menu.addAction(
-            "(automatic — from the footprint: "
+            "(automatic - from the footprint: "
             f"{format_package_label(detected, convention)})" if detected else
-            "(automatic — the footprint names no case size)")
+            "(automatic - the footprint names no case size)")
         auto.setCheckable(True)
         auto.setChecked(not row.get("package_is_override"))
         menu.addSeparator()
@@ -1186,7 +1186,7 @@ class _CapacitorsTabMixin:
         members = set(self._rail_to_members.get(row["rail"], [row["rail"]]))
         labels = eligible_target_labels(members, directives)
         menu = QMenu(self)
-        auto = menu.addAction("(automatic — largest-current sink)")
+        auto = menu.addAction("(automatic - largest-current sink)")
         auto.setCheckable(True)
         auto.setChecked(not row.get("target_is_override"))
         menu.addSeparator()
@@ -1208,7 +1208,7 @@ class _CapacitorsTabMixin:
                           target_label=..., esl_h=..., esr_ohm=...,
                           capacitance_f=..., package=...) -> None:
         """Write one override into the project file (created on first edit),
-        mark the display dirty (no re-solve — analysis state only), and
+        mark the display dirty (no re-solve - analysis state only), and
         rebuild the cap rows so every derived value reflects the change."""
         proj = self._ensure_project()
         proj.upsert_cap_override(designator, include=include,
@@ -1222,7 +1222,7 @@ class _CapacitorsTabMixin:
         self._invalidate_caps_cache()
         # Every one of these overrides is an input to the impedance model --
         # C and the parasitics directly, include/target through which branches
-        # exist and how long their mounting loop is — so a plot already on
+        # exist and how long their mounting loop is - so a plot already on
         # screen is now stale. Same guard the package-library editor uses.
         if getattr(self, "_impedance_populated", False):
             self._replot_impedance()
@@ -1237,7 +1237,7 @@ class _CapacitorsTabMixin:
 
     def _on_caps_overlay_toggled(self, checked: bool) -> None:
         """Re-render the heatmap so the cap overlay appears / clears. The
-        rows must exist first — the overlay reads the same cache the table
+        rows must exist first - the overlay reads the same cache the table
         does, and the tab may never have been opened, so this can be the
         build that pays for the geometry."""
         if checked:
@@ -1279,7 +1279,7 @@ class _CapacitorsTabMixin:
         from pdnsolver import mesh as _pdn_mesh
 
         # Already unioned by the row build (same cache), so this is a lookup,
-        # not the 5–11 s geometry pass it used to be on the GUI thread.
+        # not the 5-11 s geometry pass it used to be on the GUI thread.
         shapes = self._cap_net_layer_shapes(extracted)
 
         # Cavity domains are a single layer, so the board's mesh size is
@@ -1294,7 +1294,7 @@ class _CapacitorsTabMixin:
         self.caps_tier23_btn.setEnabled(False)
         self.caps_progress_label.setText("Starting cavity solve…")
         # Only the *included* capacitors are handed to the worker, so the
-        # completion handler must not report the excluded ones as "skipped" —
+        # completion handler must not report the excluded ones as "skipped" -
         # they were never asked for.
         self._caploop_requested = {c.designator for c in caps}
 
@@ -1321,7 +1321,7 @@ class _CapacitorsTabMixin:
         def _on_progress(message: str) -> None:
             self.caps_progress_label.setText(message)
             dlg.setLabelText(message)
-            # Worker messages read "Cavity solve 3/12: C41" — advance the bar
+            # Worker messages read "Cavity solve 3/12: C41" - advance the bar
             # on the cap index rather than inventing a second counter.
             m = re.match(r"Cavity solve (\d+)/", message)
             if m:
@@ -1340,7 +1340,7 @@ class _CapacitorsTabMixin:
         Every row ends up with an ``l2_reason``, because the progress line
         tells the user to hover the L2 cell for it. A row the worker was never
         given (an excluded capacitor) says so, rather than falling through to
-        the pre-solve "press Compute Tier 2/3" hint — and is not counted as
+        the pre-solve "press Compute Tier 2/3" hint - and is not counted as
         skipped, because nothing was skipped: it wasn't asked for.
 
         The matrices are kept whole (not just their diagonals): a later
@@ -1358,7 +1358,7 @@ class _CapacitorsTabMixin:
                 row["tier3"] = None
                 row["l3_is_partial"] = False
                 row["l2_reason"] = (
-                    "Excluded from the analysis — tick Use to include this "
+                    "Excluded from the analysis - tick Use to include this "
                     "capacitor, then compute again.")
                 continue
 
@@ -1387,7 +1387,7 @@ class _CapacitorsTabMixin:
             if r.get("included", True) and r.get("l3_nh")
         ])
 
-        msg = f"Tier 2/3 complete — {solved} capacitor(s) solved"
+        msg = f"Tier 2/3 complete - {solved} capacitor(s) solved"
         if skipped:
             # Name the reasons here rather than only in a tooltip: a user
             # reading "N skipped" shouldn't have to go hunting for why.
@@ -1408,7 +1408,7 @@ class _CapacitorsTabMixin:
                 and self.caps_overlay_box.isChecked():
             self._render()
         # Every capacitor's series resonance moves with its mounted L, so the
-        # impedance plot is now stale — redraw it if it has ever been built.
+        # impedance plot is now stale - redraw it if it has ever been built.
         if getattr(self, "_impedance_populated", False):
             self._replot_impedance()
 
@@ -1482,11 +1482,11 @@ class _CapacitorsTabMixin:
                 if is_warn:
                     warn_visible += 1
         included_total = sum(1 for r in rows if r.get("included", True))
-        text = (f"{visible} of {len(rows)} capacitor(s) shown — "
+        text = (f"{visible} of {len(rows)} capacitor(s) shown - "
                 f"{included_total} included, {warn_visible} flagged")
         # Once Tier 3 has run, append what the IC actually sees: every
         # included cap's loop, in parallel. This is the headline number, so
-        # it must not hide behind the rail filter — with "All rails" selected
+        # it must not hide behind the rail filter - with "All rails" selected
         # we list the rails compactly rather than showing nothing.
         rollup = getattr(self, "_caploop_rollup", None)
         if rollup:

@@ -1,8 +1,8 @@
 # 7. Importing a board from Gerber files
 
 FYPA can analyse boards that did not originate in Altium. If all you have
-is a fabrication Gerber set — RS-274X copper layers plus an Excellon
-drill file — you can import them directly. The rest of FYPA (meshing,
+is a fabrication Gerber set - RS-274X copper layers plus an Excellon
+drill file - you can import them directly. The rest of FYPA (meshing,
 solver, viewer, editor mode, project file) works exactly the same; only
 the input changes.
 
@@ -16,7 +16,7 @@ the input changes.
 
 If you do have an Altium project, prefer [Section 1](01-sources-and-sinks.md).
 The Altium path carries net names, pads, components, and any schematic
-`PDN_*` directives — Gerber carries none of those.
+`PDN_*` directives - Gerber carries none of those.
 
 ## 7.2 What you need
 
@@ -37,19 +37,19 @@ miscategorised file in the layer-mapping dialog.
 1. **File → Import Gerber Files…** (`Ctrl+G`) in either the launcher
    window or an already-open viewer.
 2. **File picker.** Multi-select every Gerber and drill file in one go.
-   Files outside the recognised extensions can still be picked — they
+   Files outside the recognised extensions can still be picked - they
    will appear as "Ignore" in the next dialog and you can re-assign
    them.
 3. **Layer-mapping dialog.** One row per picked file. Adjust any rows
    that came out wrong:
-   - **Top** / **Inner 1..N** / **Bottom** — copper layers (must have
+   - **Top** / **Inner 1..N** / **Bottom** - copper layers (must have
      exactly one Top and one Bottom; inner layers must be assigned
      contiguously from Inner 1).
-   - **Top Silk** / **Bottom Silk** — accepted but currently unused.
-   - **Outline** — the board boundary (only the first such file is
+   - **Top Silk** / **Bottom Silk** - accepted but currently unused.
+   - **Outline** - the board boundary (only the first such file is
      used).
-   - **Drill (Excellon)** — every Excellon file is parsed.
-   - **Ignore** — file is dropped from the import.
+   - **Drill (Excellon)** - every Excellon file is parsed.
+   - **Ignore** - file is dropped from the import.
 4. **Stackup dialog.** Pre-filled defaults:
    - 1.6 mm total board thickness.
    - 1 oz copper (0.035 mm per layer).
@@ -57,15 +57,15 @@ miscategorised file in the layer-mapping dialog.
    Edit the per-layer copper / dielectric thicknesses; click
    **"Apply weight + re-distribute dielectric"** to reset after a
    change. The values feed directly into the FEM conductance for each
-   layer, so they don't have to be exact — they just have to be in the
+   layer, so they don't have to be exact - they just have to be in the
    right ballpark.
 5. **Viewer opens** with a blank heatmap (no solve has run yet) and
    the copper visible on every layer.
 
 FYPA remembers the files, layer mapping and stackup of each successful
 import. To re-import the same set later (for example after re-exporting
-the Gerbers), pick it from **File → Recent Projects** or the start
-window's **Recent** panel: the import re-runs straight away without the
+the Gerbers), pick it from the start window's **Recent** panel: the
+import re-runs straight away without the
 picker, mapping or stackup dialogs. If any copper, drill or outline file
 has gone, FYPA lists the missing files and drops the entry. To change
 the mapping or stackup, use **File → Import Gerber Files…** again.
@@ -83,7 +83,7 @@ Gerber-imported board are:
   net name) before dropping a SOURCE / SINK / SERIES on it. A directive
   on un-named copper is silently dropped at solve time.
 - **No "component-bound" directives.** The component picker in the
-  editor panel is empty because Gerber has no PCB components — use
+  editor panel is empty because Gerber has no PCB components - use
   free markers (the red SOURCE / blue SINK triangles) on copper islands
   instead.
 - **Vias are reconstructed from the Excellon drill data only.**
@@ -105,7 +105,7 @@ records:
 - Every editor directive and copper-name rename you placed.
 
 Opening the `.fypa` later via **File → Open Project File…** re-imports
-the Gerbers using the saved settings — the layer-mapping and stackup
+the Gerbers using the saved settings - the layer-mapping and stackup
 dialogs are skipped.
 
 ## 7.6 Limitations
@@ -119,7 +119,7 @@ dialogs are skipped.
   the Altium path can detect and model) are not available here.
 - **No automatic SERIES element detection.** Without a schematic,
   there's no way to know that two named copper islands are connected
-  through a ferrite or sense resistor — you must place a SERIES editor
+  through a ferrite or sense resistor - you must place a SERIES editor
   directive between them explicitly.
 - **No component-bound directives.** As above, every editor directive
   on a Gerber project is a free marker.

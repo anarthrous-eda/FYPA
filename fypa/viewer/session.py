@@ -48,7 +48,7 @@ def _viewer_has_adaptive_smps(
 
 # Strong-ref list of every viewer window we hand off to the user. Without
 # this, freshly-created QMainWindows can be garbage-collected the moment
-# the spawning function returns — PySide6's ``QApplication.setProperty``
+# the spawning function returns - PySide6's ``QApplication.setProperty``
 # does NOT hold a reliable Python reference across signal boundaries, so
 # we anchor at module scope instead. Dead entries are pruned each append.
 _LIVE_VIEWERS: list[QMainWindow] = []
@@ -65,7 +65,7 @@ def _restore_bundled_design_info(proj) -> None:
     A saved ``.fypa`` references its design-info pickle by path, but the
     editor's re-solve loads design info from the per-machine design cache
     (keyed to the original ``.PrjPcb`` location), never from the project's
-    own pickle — so on another machine that pickle would go unused. Seeding
+    own pickle - so on another machine that pickle would go unused. Seeding
     the cache from it bridges the gap. Best-effort; failures are ignored.
     """
     di = getattr(proj, "design_info_pickle", None)
@@ -91,7 +91,7 @@ def _restore_bundled_design_info(proj) -> None:
 # Strong references to QThreads that outlived their dialog (e.g. a Gerber
 # import cancelled mid-render, whose ProcessPoolExecutor phase can't be
 # interrupted cooperatively and so runs to completion in the background). We
-# keep them referenced until they emit ``finished`` — dropping the last Python
+# keep them referenced until they emit ``finished`` - dropping the last Python
 # reference to a still-running QThread destroys the C++ object and triggers
 # ``qFatal("QThread: Destroyed while thread is still running")``.
 _ORPHANED_THREADS: set = set()
@@ -122,8 +122,8 @@ def _retire_thread(worker) -> None:
         pass
     # Detach from the Qt parent. A worker constructed with ``parent=self`` (the
     # solve / Gerber-import workers are) would otherwise be destroyed by Qt's
-    # parent teardown when that parent dies — e.g. at app exit or when the
-    # owning window closes — and ``~QThread`` on a still-running thread calls
+    # parent teardown when that parent dies - e.g. at app exit or when the
+    # owning window closes - and ``~QThread`` on a still-running thread calls
     # qFatal. The _ORPHANED_THREADS strong ref only stops Python GC; it can't
     # stop C++ parent teardown, so we must reparent to None.
     try:
@@ -163,14 +163,14 @@ class _BackgroundLoadWorker(QThread):
     """Run a blocking, Qt-free load callable off the GUI thread.
 
     ``work`` runs in :meth:`run` (the worker thread) and must touch no Qt
-    widgets — file I/O and unpickling only. Its return value / exception are
+    widgets - file I/O and unpickling only. Its return value / exception are
     stashed on the instance and delivered by :meth:`_deliver`, which runs back
     on the GUI thread because ``finished`` is a queued cross-thread signal (the
     worker object's affinity is the GUI thread that created it). Exactly one of
     ``on_success(result)`` / ``on_error(exc_type_name, message)`` then fires.
 
     Note: unpickling is largely GIL-bound, so this doesn't make the load itself
-    faster — but it keeps the Qt event loop serviced (the GIL is released
+    faster - but it keeps the Qt event loop serviced (the GIL is released
     periodically), so the window keeps repainting the busy dialog instead of
     going "Not Responding". The fully-robust option is a subprocess load; see
     the §3 "Move the solve to a subprocess" note in the perf review.
@@ -188,7 +188,7 @@ class _BackgroundLoadWorker(QThread):
     def run(self) -> None:
         try:
             self._result = self._work()
-        except Exception as e:  # noqa: BLE001 — surfaced on the GUI thread
+        except Exception as e:  # noqa: BLE001 - surfaced on the GUI thread
             self._error = (type(e).__name__, str(e))
 
     def _deliver(self) -> None:
@@ -206,13 +206,13 @@ def _run_background_load(parent, work, on_success, on_error, *,
     modal busy dialog, then call ``on_success(result)`` or
     ``on_error(exc_type_name, message)`` back on the GUI thread.
 
-    The dialog is application-modal with no cancel button — the load is one
-    synchronous unpickle that can't be interrupted mid-flight — but the event
+    The dialog is application-modal with no cancel button - the load is one
+    synchronous unpickle that can't be interrupted mid-flight - but the event
     loop keeps running, so the window stays responsive (marquee animating)
-    instead of freezing for the 5 s–1 min a large solution pickle takes.
+    instead of freezing for the 5 s-1 min a large solution pickle takes.
 
     Callers that must not overlap another load are responsible for checking
-    :func:`_reject_if_background_load_running` *before* calling this — the
+    :func:`_reject_if_background_load_running` *before* calling this - the
     check must NOT live here, because :meth:`PdnViewer._ensure_caps_rows`
     relies on its continuation always running (a dropped continuation leaves
     ``_caps_rows_pending`` stuck and the Capacitors tab permanently blank)."""
@@ -383,7 +383,7 @@ def _stash_pending_altium_recent(
     """Remember which Altium project is being opened.
 
     ``from_recent`` gates whether a later solve failure should drop the
-    matching File > Recent Projects entry (menu imports must not)."""
+    matching recent-list entry (menu imports must not)."""
     prjpcb_s = _normalize_recent_path(str(prjpcb_path)) or str(prjpcb_path)
     entry: dict[str, str] = {
         "kind": "altium", "prjpcb_path": prjpcb_s,
@@ -442,18 +442,18 @@ def _retire_viewer(win: QMainWindow) -> None:
 
     Without this every reload leaks: ``_register_viewer`` only prunes
     viewers whose C++ object is *already* destroyed, and a plain
-    ``close()`` merely hides the window — so the previous PdnViewer stays
+    ``close()`` merely hides the window - so the previous PdnViewer stays
     pinned in ``_LIVE_VIEWERS`` with its full (gigabyte-scale, on a large
     board) ``Solution`` still in RAM. A long session then accumulates one
     Solution per load until the next solve runs short of memory and PARDISO
-    pages to disk — which is what turns an ~8 s linear solve into ~50 s.
+    pages to disk - which is what turns an ~8 s linear solve into ~50 s.
     """
     global _LIVE_VIEWERS
     _LIVE_VIEWERS = [w for w in _LIVE_VIEWERS if w is not win]
     try:
         win.close()
     except RuntimeError:
-        return  # C++ object already gone — nothing left to release.
+        return  # C++ object already gone - nothing left to release.
     # Drop the heavy payload explicitly so it's freed now, rather than
     # whenever the window wrapper happens to be garbage-collected.
     for attr in ("solution", "metadata"):
@@ -462,7 +462,7 @@ def _retire_viewer(win: QMainWindow) -> None:
         except Exception:
             pass
     # Free the process-global solver caches too. These are freed on solve-cancel
-    # but otherwise live for the process — the mesh + Laplacian assembly is
+    # but otherwise live for the process - the mesh + Laplacian assembly is
     # hundreds of MB and the PARDISO factorisation can be gigabytes. Retiring a
     # viewer means a full reload/replacement (value-only re-solves refresh in
     # place and keep the caches warm), so the cached assembly/factorisation for

@@ -31,7 +31,7 @@ def _help_tab_style() -> str:
 
 
 # Top-level sections, one per viewer tab in tab-strip order. Each renders
-# as a collapsible heading — see :func:`_help_tab_html`.
+# as a collapsible heading - see :func:`_help_tab_html`.
 _HELP_SECTIONS: tuple[tuple[str, str], ...] = (
     ("Heatmap", """
 <p>The interactive viewport.</p>
@@ -43,20 +43,19 @@ _HELP_SECTIONS: tuple[tuple[str, str], ...] = (
   <tr><td><kbd>3</kbd></td><td>Switch to 3D mode <span class='muted'>(re-fits to data)</span></td></tr>
   <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>2</kbd></td><td>Switch to 2D <i>keeping the current view</i></td></tr>
   <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>3</kbd></td><td>Switch to 3D <i>keeping the current view</i> (top-down entry)</td></tr>
-  <tr><td><kbd>0</kbd></td><td>Reset the 3D view (top-down, refit to data) <span class='muted'>— 3D mode only</span></td></tr>
+  <tr><td><kbd>0</kbd></td><td>Reset the 3D view (top-down, refit to data) <span class='muted'>- 3D mode only</span></td></tr>
   <tr><td><kbd>Z</kbd></td><td>Cycle <i>Relief view</i>: off &rarr; per layer &rarr; ignoring layers <span class='muted'>(from 2D, switches to 3D with per-layer relief)</span></td></tr>
   <tr><td><kbd>O</kbd></td><td>Toggle <i>Show layer outlines</i></td></tr>
-  <tr><td><kbd>R</kbd></td><td>Toggle <i>Show only rail net</i></td></tr>
   <tr><td><kbd>T</kbd></td><td>Toggle <i>Show cursor tooltip</i></td></tr>
   <tr><td><kbd>A</kbd></td><td>Toggle <i>Show current arrows</i></td></tr>
-  <tr><td><kbd>V</kbd></td><td>Toggle <i>Heatmap vias/PTH</i> <span class='muted'>— 3D mode only</span></td></tr>
+  <tr><td><kbd>V</kbd></td><td>Toggle <i>Heatmap vias/PTH</i> <span class='muted'>- 3D mode only</span></td></tr>
   <tr><td><kbd>M</kbd></td><td>Cycle <i>Mode</i> forward (Voltage &rarr; Voltage Drop &rarr; &hellip;)</td></tr>
   <tr><td><kbd>Shift</kbd>+<kbd>M</kbd></td><td>Cycle <i>Mode</i> backward</td></tr>
   <tr><td><kbd>H</kbd></td><td>Cycle <i>colour scheme</i> forward (Viridis &rarr; Blue&nbsp;&rarr;&nbsp;Red &rarr; &hellip;)</td></tr>
   <tr><td><kbd>Shift</kbd>+<kbd>H</kbd></td><td>Cycle <i>colour scheme</i> backward</td></tr>
   <tr><td><kbd>B</kbd></td><td>Collapse / expand the side panel</td></tr>
 </table>
-<p class='muted'>Shortcuts are window-scoped — they fire when the viewer
+<p class='muted'>Shortcuts are window-scoped - they fire when the viewer
 window has focus but defer to text inputs (e.g. the Min/Max boxes)
 when one of those has focus. The editor-mode keys
 (<kbd>E</kbd>, <kbd>S</kbd>, <kbd>L</kbd>, <kbd>Delete</kbd>, undo / redo)
@@ -67,7 +66,7 @@ are listed under <i>Editor mode</i> below.</p>
   <tr><th>Gesture</th><th>Action</th></tr>
   <tr><td>Right-button drag</td><td>Pan the view</td></tr>
   <tr><td>Mouse wheel</td><td>Zoom in / out (around cursor in 2D, dolly camera in 3D)</td></tr>
-  <tr><td>Middle-button drag &uarr;/&darr;</td><td>Exponential zoom — drag up = zoom in, down = zoom out</td></tr>
+  <tr><td>Middle-button drag &uarr;/&darr;</td><td>Exponential zoom - drag up = zoom in, down = zoom out</td></tr>
   <tr><td>Left click</td><td>Clear the yellow jump highlight (from a Vias/Nodes-tab Go)</td></tr>
 </table>
 
@@ -76,7 +75,7 @@ are listed under <i>Editor mode</i> below.</p>
   <tr><th>Gesture</th><th>Action</th></tr>
   <tr><td>Hold <kbd>Shift</kbd></td><td>Anchor a voltage probe at the cursor and draw a thin white
     line from there to the live mouse position. The probe bar gains a
-    <code>Difference = X V</code> readout — the live cursor's voltage
+    <code>Difference = X V</code> readout - the live cursor's voltage
     minus the anchor's. Press only takes effect when the cursor is
     over copper that has a voltage value; release <kbd>Shift</kbd> to
     clear the line.</td></tr>
@@ -92,10 +91,10 @@ are listed under <i>Editor mode</i> below.</p>
 <table>
   <tr><th>Gesture / key</th><th>Action</th></tr>
   <tr><td><kbd>E</kbd></td><td>Enter / leave editor mode</td></tr>
-  <tr><td><kbd>S</kbd></td><td>Drop a free <b>SOURCE</b> &mdash; same as the red triangle
+  <tr><td><kbd>S</kbd></td><td>Drop a free <b>SOURCE</b> - same as the red triangle
       button at the top-left of the viewport. Then click copper to place it;
       press <kbd>S</kbd> again or <kbd>Esc</kbd> to cancel.</td></tr>
-  <tr><td><kbd>L</kbd></td><td>Drop a free <b>SINK</b> &mdash; same as the blue triangle
+  <tr><td><kbd>L</kbd></td><td>Drop a free <b>SINK</b> - same as the blue triangle
       button at the top-left of the viewport. Then click copper to place it;
       press <kbd>L</kbd> again or <kbd>Esc</kbd> to cancel.</td></tr>
   <tr><td>Left click</td><td>Select the component, marker or copper under the cursor</td></tr>
@@ -109,17 +108,17 @@ are listed under <i>Editor mode</i> below.</p>
 <p class='muted'>Select two or more markers that are all SINKs and the
 side panel shows the ordinary sink form, with <b>*</b> in every row the
 selected sinks disagree on. Apply writes only the rows you edit, to all
-of them &mdash; rows left showing <b>*</b> keep their per-sink values.
+of them - rows left showing <b>*</b> keep their per-sink values.
 Current is per sink, so 2 A applied to four sinks adds 8 A of load. A
 selection holding anything other than sinks offers no controls, because
 no one set of properties applies across roles.</p>
 
 <h3>3Dconnexion SpaceMouse</h3>
 <ul>
-  <li><b>Translation</b> &mdash; pan the view (2D and 3D)</li>
-  <li><b>Translation Z</b> &mdash; zoom in / out</li>
-  <li><b>Rotation</b> &mdash; orbit the camera (3D mode only)</li>
-  <li><b>Menu / fit button</b> &mdash; fit board (2D) or reset 3D view</li>
+  <li><b>Translation</b> - pan the view (2D and 3D)</li>
+  <li><b>Translation Z</b> - zoom in / out</li>
+  <li><b>Rotation</b> - orbit the camera (3D mode only)</li>
+  <li><b>Menu / fit button</b> - fit board (2D) or reset 3D view</li>
   <li>Requires <b>3DxWare</b> on Windows/macOS
     (<code>uv sync --extra spacemouse</code>) or <b>spacenavd</b> on Linux
     (<code>sudo apt install spacenavd libspnav0</code>)</li>
@@ -129,21 +128,19 @@ no one set of properties applies across roles.</p>
 
 <h3>Side-panel controls</h3>
 <ul>
-  <li><b>Physical layers</b> &mdash; tick checkboxes to stack multiple
+  <li><b>Physical layers</b> - tick checkboxes to stack multiple
     copper layers in the view. Each layer has its own swatch colour
     used by the outline overlay.</li>
-  <li><b>Rails</b> &mdash; tick one or more bridged rail groups to
+  <li><b>Rails</b> - tick one or more bridged rail groups to
     show their copper (e.g. <code>+3V3</code> bundles <code>+3V3</code>
     + <code>3V3_SW</code> if a series resistor / inductor links them).
     Use the <i>All Rails</i> row to toggle every rail at once.</li>
-  <li><b>Mode</b> &mdash; Voltage / Voltage Drop / Current Density /
+  <li><b>Mode</b> - Voltage / Voltage Drop / Current Density /
     Power Density.</li>
-  <li><b>Show only rail net</b> &mdash; hide bridged sibling nets so
-    you see just each selected rail's primary net.</li>
-  <li><b>Layer outlines</b> &mdash; the contour button on the
+  <li><b>Layer outlines</b> - the contour button on the
     <i>All Rails</i> row (hotkey <kbd>O</kbd>) traces each visible rail's
     copper polygons in the owning layer's swatch colour.</li>
-  <li><b>Transparency control</b> &mdash; the white-disc icon sits on
+  <li><b>Transparency control</b> - the white-disc icon sits on
     every Physical layers row and every Board Features row; the
     <i>All Layers</i> row carries a master copy that fans its setting
     out to every physical layer at once. Each click removes a
@@ -163,29 +160,29 @@ no one set of properties applies across roles.</p>
       <tr><td><kbd>Alt</kbd>+<kbd>Shift</kbd>+click <i>or</i> <kbd>Alt</kbd>+right-click</td>
           <td>&minus;12.5 %  <span class='muted'>(fine reverse, stops at 0&nbsp;%)</span></td></tr>
     </table></li>
-  <li><b>Show cursor tooltip</b> &mdash; a small tooltip follows the
+  <li><b>Show cursor tooltip</b> - a small tooltip follows the
     mouse, showing the value of the current mode at that point along
     with the net and layer. Same info as the probe bar under the plot.</li>
-  <li><b>3D view</b> &mdash; perspective view of the stacked layers
+  <li><b>3D view</b> - perspective view of the stacked layers
     with via cylinders.</li>
-  <li><b>Heatmap vias/PTH</b> &mdash; colour via and plated-through-hole
+  <li><b>Heatmap vias/PTH</b> - colour via and plated-through-hole
     cylinders by the active mode instead of solid orange / light grey.
     Voltage / Voltage Drop interpolate along the barrel's length; Current
     Density and Power Density are constant per inter-layer segment. 3D
     mode only.</li>
-  <li><b>Layer spacing slider</b> &mdash; 3D only. Scales both the
+  <li><b>Layer spacing slider</b> - 3D only. Scales both the
     inter-layer separation and the via cylinder length.</li>
-  <li><b>Relief view</b> &mdash; 3D only. Raises each point of the copper
+  <li><b>Relief view</b> - 3D only. Raises each point of the copper
     by its value on the colour scale, so the higher the voltage the
     higher it is drawn and voltage drop reads as a slope. The height
     follows the colour bar, so clamping Min / Max clamps it too. The
     <i>Relief height</i> slider sets the full-scale height as a percentage
     of the board's larger side. Two variants:
     <ul>
-      <li><b>Per layer</b> &mdash; each layer rises from its own plane, so
+      <li><b>Per layer</b> - each layer rises from its own plane, so
         layers keep their stackup order.</li>
       <li><b>Ignoring layers</b> (relief view ignoring layer positions)
-        &mdash; every layer rises from one base at the top copper layer, so
+        - every layer rises from one base at the top copper layer, so
         a higher voltage is always drawn higher whatever layer it is on.
         Layers at the same value keep a tiny stackup-order offset so they
         don't flicker through each other. <i>Layer spacing</i> is hidden in
@@ -194,26 +191,34 @@ no one set of properties applies across roles.</p>
     </ul>
     Layer outlines (<kbd>O</kbd>) follow the raised copper edge, so the
     outline colour still shows which layer each piece of copper is on
-    &mdash; the main cue in the ignoring-layers variant. Via barrels,
+    - the main cue in the ignoring-layers variant. Via barrels,
     current arrows and the mesh wireframe are hidden while relief is on
     (they sit on the flat layer planes); not available in Via Current
     mode.</li>
-  <li><b>Show current arrows</b> &mdash; white arrows on a regular
+  <li><b>Show current arrows</b> - white arrows on a regular
     pixel-spaced grid showing the direction of current flow; shaft
     length scales with &radic;|J| so weak and strong currents are
     both visible. Re-sampled on zoom / rotate. Works in 2D and 3D
     (in 3D each arrow rides the top face of its layer).</li>
-  <li><b>Arrow spacing (px)</b> &mdash; pixels between adjacent
+  <li><b>Arrow spacing (px)</b> - pixels between adjacent
     arrows on screen. Smaller = denser arrows.</li>
-  <li><b>Colour scale</b> &mdash; the gradient strip is overlaid on the
+  <li><b>Colour scale</b> - the gradient strip is overlaid on the
     viewer's bottom-left corner (with value ticks); drag its Min / Max
     handles, type exact values in the side-panel boxes, or click the
     <b>&#8634;</b> reset button to restore the data range.</li>
 </ul>
 """),
-    ("Setup", """
-<p>HTML report of the solved problem: stackup,
-physics constants, parsed PDN_* directives (collapsible), solver
+    ("Properties", """
+<p>Everything that defines this design's solve. <b>Left - Base
+properties:</b> what the real board is - physics (temperature, copper
+resistivity, via plating, electro-thermal), conductive via fill and
+per-layer copper thickness and resistivity, with mesh accuracy and the
+capacitor loop-inductance knobs under a collapsed <b>Advanced</b> section.
+Edited fields are outlined; <b>Re-run Solver</b> (or Resolve) replaces the
+base result with one solved from the new values. To try alternatives
+without changing the base, use What-Ifs. <b>Right:</b> a read-only
+report of what the solver was given: extracted records, stackup, physics
+constants, parsed PDN_* directives (collapsible), active nets, solver
 diagnostics, warnings / errors.</p>
 """),
     ("Topology", """
@@ -221,7 +226,7 @@ diagnostics, warnings / errors.</p>
 source starts a row; each regulator gets its own row under the row that
 feeds it, indented one step per conversion stage. Within a row power flows
 left to right. A rail that continues on another row ends in a <b>tag</b>
-instead of a long wire &mdash; click a tag to jump to the other end. Dashed
+instead of a long wire - click a tag to jump to the other end. Dashed
 amber tags mark rails nothing drives; grey tags mark rails with no loads.
 Each part has its own ground symbol.</p>
 <p><b>Bridges</b> lists 0&nbsp;&Omega; auto-bridges on nets no source, sink
@@ -261,20 +266,20 @@ edit by hand: pick the net, the part on it and its pins.
   <tr><td>Left click on an amber / grey tag</td><td>Add a source, regulator or sink on that rail</td></tr>
 </table>
 <p class='muted'>Topology shortcuts require the Topology tab to be
-focused. The diagram is vector-rendered — zoom stays sharp.</p>
+focused. The diagram is vector-rendered - zoom stays sharp.</p>
 """),
     ("Nodes", """
 <p>Sortable table of every directive node with
 its voltage, drop, current density, and power density. Filter by
 role or rail. The <b>Go &#9654;</b> button jumps to that node in
 the Heatmap tab (enables its layer, zooms in, drops a yellow
-highlight ring &mdash; left-click anywhere to clear).</p>
+highlight ring - left-click anywhere to clear).</p>
 """),
     ("Vias", """
 <p>Sortable table of every via with worst-segment
 current + power dissipation. The <b>Go &#9654;</b> button jumps to
 that via in the Heatmap tab (enables its layer, zooms in, drops a
-yellow highlight ring &mdash; left-click anywhere to clear).
+yellow highlight ring - left-click anywhere to clear).
 The tab title also shows a warning count if any via current
 reaches the threshold.</p>
 <p class='muted'>Click a column heading to sort. Click the funnel at the
@@ -293,9 +298,12 @@ resistance into <i>Selected part</i>, and click <b>Model as SERIES</b>.
 <b>Disable auto-bridge</b> leaves an automatically shorted part open at DC;
 <b>Remove</b> undoes either. Changes are saved to the .fypa and take effect
 on the next Resolve.</p>
-<p class='muted'>Filter to <i>Affects a solved rail</i> first &mdash; those
-parts join a solved rail to copper no directive touches, so that copper is
-missing from the solve and the rail's resistance reads high.</p>
+<p class='muted'>Filter to <i>Affects a solved rail</i> first - those
+parts join a solved rail to copper that is not in the solve and are under
+100&nbsp;&Omega; (or of unknown value), so they can carry current the solve
+misses and the rail's resistance can read high. Parts of 100&nbsp;&Omega; or
+more (pull-ups, dividers) show as <i>ignored (high &Omega;)</i>: the current
+they carry is too small to matter.</p>
 """),
     ("Capacitors", """
 <p>Every decoupling capacitor with its mounted loop inductance,
@@ -322,8 +330,8 @@ inductance (L2) and assembles the full capacitor &rarr; plane &rarr; IC loop
 is not.</p>
 """),
     ("Impedance", """
-<p>A rail's |Z(f)| &mdash; regulator, decoupling capacitors and
-plane-pair capacitance in parallel &mdash; plotted against a target mask of
+<p>A rail's |Z(f)| - regulator, decoupling capacitors and
+plane-pair capacitance in parallel - plotted against a target mask of
 Z<sub>target</sub> = V &middot; ripple&nbsp;% / I<sub>transient</sub> up to
 F_MAX. Set the ripple, transient current, F_MAX and regulator R / L in the
 left panel, then click <b>Apply &amp; Recompute</b>; the values are saved in
@@ -339,10 +347,40 @@ filterable by level. <b>Clear</b> empties the list without touching
 <code>fypa.log</code>.</p>
 """),
     ("Settings", """
-<p>Tunable physics, meshing, and display
-options, plus per-layer copper thicknesses. Edits apply on the next
-solve: <b>Re-run Solver</b> re-solves with the new settings and
-opens a fresh viewer.</p>
+<p>Application preferences - how FYPA looks and behaves: appearance,
+display options, general behaviour, performance and experimental options.
+They persist across launches and never change a solve result. The design's
+base properties are on the Properties tab.</p>
+"""),
+    ("What-Ifs", """
+<p>Try a change and see whether it helps or hurts, without losing the
+current (base) result. The <b>What-If</b> button at the top-left of the
+heatmap, next to Resolve, shows and hides the panel on the right (<b>W</b>
+does the same). It is not available in editor mode: the button is hidden
+there, and entering editor mode closes the panel. Drag the panel's left
+edge to make it wider if the tables don't fit.</p>
+<ul>
+<li><b>New…</b> makes a what-if: change any of board temperature, copper
+resistivity, via plating, via fill, the electro-thermal model, or a layer's
+copper thickness (with ½-3 oz quick picks) or resistivity. Blank fields keep
+the base value.</li>
+<li><b>Run</b> solves the design with those changes. The base result is
+untouched; each what-if keeps its own result.</li>
+<li><b>Show:</b> <i>Base</i>, <i>What-if</i> (every tab then shows the
+what-if, with a banner on the heatmap) or <i>Difference</i> - a per-vertex
+map of what-if minus base for the current mode, red where it got worse and
+blue where it got better.</li>
+<li>The table compares each node (drop, voltage, margin, |J|, power) and the
+headline numbers (worst drop, failures, copper I&sup2;R loss) against base,
+marked better / worse.</li>
+<li>Only one what-if is compared with the base at a time. A what-if run
+against an older base (the design, directives or base inputs changed since)
+is marked <i>out of date</i>; Run it again to refresh.</li>
+<li><b>Make this the base</b> copies a what-if's changes into the Properties
+tab's Base properties and makes its result the base result (re-solving if
+the result is missing or out of date).</li>
+<li>What-ifs and their results are saved with the project (.fypa).</li>
+</ul>
 """),
 )
 
@@ -350,7 +388,7 @@ opens a fresh viewer.</p>
 
 
 def _help_tab_html(expanded: set[str]) -> str:
-    """Render the Help tab — theme-aware <style> block + one collapsible
+    """Render the Help tab - theme-aware <style> block + one collapsible
     section per tab. Only the titles in *expanded* show their body; each
     heading is a ``toggle:<title>`` anchor the browser's anchorClicked
     handler flips. ``toggle:*`` expands everything, ``toggle:-`` collapses it."""

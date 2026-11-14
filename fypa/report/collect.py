@@ -6,12 +6,12 @@ log, whether the solve is stale) through keyword arguments.
 
 Definitions used throughout the report
 --------------------------------------
-* **Setpoint** — the voltage of the rail's SOURCE directive, or the output
+* **Setpoint** - the voltage of the rail's SOURCE directive, or the output
   voltage of the REGULATOR that drives it. With several, the highest.
-* **Voltage at a load** — the load's lowest supply (P) pin minus its highest
+* **Voltage at a load** - the load's lowest supply (P) pin minus its highest
   return (N) pin: the worst differential voltage the part can see. A load on
   an ideal return (single-net directive) is referenced to its source return.
-* **Drop** — setpoint minus the voltage at the load, so it includes both the
+* **Drop** - setpoint minus the voltage at the load, so it includes both the
   supply and the return path; the return path's share is reported alongside.
 """
 from __future__ import annotations
@@ -361,7 +361,7 @@ class _Context:
         oz = _float(row.get("copper_thickness_oz"))
         if oz is None:
             um = _float(row.get("copper_thickness_mm"))
-            return f"{um * 1000:.0f} µm" if um else "—"
+            return f"{um * 1000:.0f} µm" if um else "-"
         return f"{oz:.2g} oz"
 
     # --- rail assembly --------------------------------------------------------
@@ -585,7 +585,7 @@ class _Context:
         rail.vias = [ViaResult(
             x_mm=r["x_mm"], y_mm=r["y_mm"], net=r["net"], span=r["layer_span"],
             drill_mm=r.get("hole_diameter_mm"),
-            fill=(r.get("ipc4761_label") or "—"),
+            fill=(r.get("ipc4761_label") or "-"),
             current_a=r["current"], delta_v=r["delta_v"], power_w=r["power"],
             over_limit=r["current"] > over) for r in rows[:n]]
 
@@ -631,7 +631,7 @@ class _Context:
                                 and not s.nets.startswith(ld.net))
                 loads.append({
                     "label": ld.label,
-                    "value": ("—" if ld.v_load is None
+                    "value": ("-" if ld.v_load is None
                               else f"{ld.v_load:.3f} V"),
                     "status": ld.status, "via": via,
                 })
@@ -792,7 +792,7 @@ def _setup_rows(metadata: dict, solution, settings: ReportSettings,
     return rows
 
 
-# Colours for the embedded topology diagram — a light variant of the viewer's
+# Colours for the embedded topology diagram - a light variant of the viewer's
 # palette, matching the report page.
 _TOPOLOGY_THEME = {
     "bg": "#ffffff", "bg_alt": "#f6f7f9", "fg": "#1d1d1f",

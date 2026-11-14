@@ -15,7 +15,7 @@ import pickle
 import sys
 from pathlib import Path
 
-# Allow `python tools/dump_topology_wiring.py` from anywhere — repo root on path.
+# Allow `python tools/dump_topology_wiring.py` from anywhere - repo root on path.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from fypa.topology import build_topology_model, topology_wiring_report  # noqa: E402
@@ -32,7 +32,7 @@ def _extract_metadata(data: object, path: str | None) -> dict | None:
     ):
         return None
     if isinstance(data, dict) and "solution" in data:
-        # Wrapped solve output — needs the CLI loader, not the bare dict.
+        # Wrapped solve output - needs the CLI loader, not the bare dict.
         data = None
     # Split-cache / solution-wrapped solve pickles: defer to the CLI loader,
     # which understands every on-disk solve format. Only metadata is needed.

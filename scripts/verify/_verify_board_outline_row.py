@@ -27,7 +27,7 @@ def main() -> int:
     s = _Stub()
     PdnViewer._init_overlay_state(s)
 
-    # Keep the row QWidgets alive for the whole check — dropping them
+    # Keep the row QWidgets alive for the whole check - dropping them
     # deletes their children out from under us.
     rows = {}
 

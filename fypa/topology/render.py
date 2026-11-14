@@ -342,7 +342,7 @@ def _fit_header_texts(role_title: str, label: str | None, w: float) -> _HeaderTe
     Nodes are a fixed width, so a long designator would otherwise run straight
     through the role word. Both texts shrink together (keeping the band's text
     one size) until that would make them too small to read; past that point the
-    designator wins, taking the whole band on its own — the band colour still
+    designator wins, taking the whole band on its own - the band colour still
     names the role via the legend. Only a designator too long for the full band
     is truncated, and the hover tooltip always carries the untruncated name.
     """
@@ -387,7 +387,7 @@ def _draw_section_header(
     color: str,
     round_top: bool,
 ) -> None:
-    """Draw one role header band — square bottom, optional rounded top.
+    """Draw one role header band - square bottom, optional rounded top.
 
     Used for every band of a composite symbol and (with ``round_top=True``)
     for a single-role node's header.
@@ -553,7 +553,9 @@ TAG_COLORS: dict[str, str] = {
     "ref": ROLE_COLORS["REGULATOR"],
     "undriven": "#e0a030",
     "end": "#8a8f98",
+    "add": ROLE_COLORS["SINK"],   # "+ SINK (n)" handle (viewer only)
 }
+_DASHED_TAGS = ("undriven", "add")
 
 
 def _draw_chip(
@@ -611,7 +613,7 @@ def _tag_path(tag: TopologyTag) -> str:
 
 def _draw_tag(parts: list[str], tag: TopologyTag, *, bg_alt: str, fg: str) -> None:
     color = TAG_COLORS.get(tag.kind, fg)
-    dash = ' stroke-dasharray="3 2"' if tag.kind == "undriven" else ""
+    dash = ' stroke-dasharray="3 2"' if tag.kind in _DASHED_TAGS else ""
     parts.append(
         f'<path class="topo-tag" d="{_tag_path(tag)}" fill="{esc(bg_alt)}"'
         f' stroke="{esc(color)}" stroke-width="1.5" stroke-linejoin="round"{dash}/>'

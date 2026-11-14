@@ -2,7 +2,7 @@
 and the geometry-free diagnostic summary.
 
 A large board (a 238 MB PcbDoc) spent ~5 min parsing the PcbDoc, ~2 min on a
-per-layer union built only for a log line, and ~1.5 min on per-net unions —
+per-layer union built only for a log line, and ~1.5 min on per-net unions -
 redone on every schematic save, because the design-info cache is keyed on
 every project file. These tests pin the caches that avoid that work.
 """

@@ -5,12 +5,12 @@ the solution to a compact numeric *fingerprint* (mesh counts + potential-field
 statistics + solver diagnostics), and compares it against a committed golden
 file under ``tests/golden/``.
 
-The fingerprint — rather than the full multi-megabyte field — keeps the golden
+The fingerprint - rather than the full multi-megabyte field - keeps the golden
 files small enough to commit while still catching real drift: a mesher change
 moves the vertex/triangle counts, and a solver change moves the field stats.
 
 On the first run for a design (no golden yet) the fingerprint is written and
-the test is skipped — commit the generated file to lock the baseline in.
+the test is skipped - commit the generated file to lock the baseline in.
 
 ``Sandbox`` runs by default (~5 s).
 """
@@ -32,7 +32,7 @@ GOLDEN_DIR = Path(__file__).resolve().parent / "golden"
 # Potential-field statistics must match the golden to this relative tolerance.
 FIELD_REL_TOL = 1e-6
 # Near-zero solver diagnostics are compared against an absolute ceiling, not
-# the golden value — their last digits are run-to-run noise.
+# the golden value - their last digits are run-to-run noise.
 GROUND_CURRENT_CEILING = 1e-3
 RESIDUAL_CEILING = 1e-4
 
@@ -95,7 +95,7 @@ def _compare_to_golden(design: str, current: dict) -> None:
         GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
         golden_path.write_text(json.dumps(current, indent=2, sort_keys=True))
         pytest.skip(
-            f"no golden for '{design}' — wrote {golden_path.name}; "
+            f"no golden for '{design}' - wrote {golden_path.name}; "
             "review and commit it to lock the baseline"
         )
 

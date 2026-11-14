@@ -17,7 +17,7 @@ class _GerberImportCancelled(Exception):
     boundary. Raised from :func:`_finish_gerber_import` when the worker's
     ``cancel_cb`` reports an interruption request, and caught in
     :meth:`_GerberImportWorker.run` so the thread unwinds without emitting a
-    result — mirroring :meth:`_SolveWorker._cancel_requested`. The packaging
+    result - mirroring :meth:`_SolveWorker._cancel_requested`. The packaging
     phase (all-copper / primitives records) is pure Python holding the GIL,
     so a hard ``terminate()`` there could deadlock the app; the cooperative
     checkpoint avoids that."""
@@ -43,7 +43,7 @@ class _GerberImportWorker(QThread):
     finished_ok = Signal(object)   # the (stub_sol, metadata, loaded, pf) tuple
     failed = Signal(str)
 
-    # The Gerber import always emits the same nine stages — four from
+    # The Gerber import always emits the same nine stages - four from
     # extract_gerber_project (render layers, build SBR records, read drills,
     # build outline) and five from _finish_gerber_import (load project,
     # build geometry, build all-copper records, build primitives index,
@@ -71,7 +71,7 @@ class _GerberImportWorker(QThread):
                 cancel_cb=self.isInterruptionRequested,
             )
         except _GerberImportCancelled:
-            # Cancelled at a stage boundary — the GUI already tore down its
+            # Cancelled at a stage boundary - the GUI already tore down its
             # dialog and dropped our signals, so just unwind silently.
             logging.getLogger(__name__).info(
                 "Gerber import cancelled cooperatively.",
@@ -116,7 +116,7 @@ def _pick_gerber_inputs(parent_window):
     result = run_gerber_import_dialogs(picked, parent=parent_window)
     if result is None:
         return None
-    # Synthesise a pseudo-PrjPcb path next to the gerbers — the cache
+    # Synthesise a pseudo-PrjPcb path next to the gerbers - the cache
     # key + project identity rely on having a stable Path, but no file
     # of that name needs to exist on disk.
     folder = picked[0].parent.resolve()
@@ -184,11 +184,11 @@ def _finish_gerber_import(result, pseudo, progress_cb=None,
     _imp_log.info("Gerber import: build_stub_lean_solution took %.2fs",
                   time.monotonic() - _t)
 
-    # all_copper records — the per-layer "all copper" overlay (second eye
+    # all_copper records - the per-layer "all copper" overlay (second eye
     # icon on each physical layer in the side panel) is driven by this
     # metadata key. Without it, toggling the eye on a Gerber import would
     # have no geometry to draw. Each Gerber-derived geometry layer
-    # becomes one record with the NO_NET sentinel as the net name —
+    # becomes one record with the NO_NET sentinel as the net name -
     # exactly the format build_solve_metadata produces for the Altium
     # path.
     _progress(stage="Building all-copper outline records…", substage="")
@@ -230,12 +230,12 @@ def _finish_gerber_import(result, pseudo, progress_cb=None,
     _imp_log.info("Gerber import: all_copper records built in %.2fs (%d layer(s))",
                   time.monotonic() - _t, len(all_copper))
 
-    # Stackup rows — the viewer reads ``layer_id`` + ``name`` to map
+    # Stackup rows - the viewer reads ``layer_id`` + ``name`` to map
     # physical-layer display names to the layer ids used by all_copper /
     # editor directives, and ``copper_thickness_mm`` +
     # ``dielectric_thickness_mm`` to position layers in 3D view. The
     # mil / oz / sheet_conductance / sheet_resistance derivatives are
-    # what the Setup tab's stackup table renders; mirror the format
+    # what the Properties tab's stackup table renders; mirror the format
     # build_solve_metadata produces for the Altium path.
     stackup_rows: list[dict] = []
     for s in extracted.stackup:
@@ -257,10 +257,10 @@ def _finish_gerber_import(result, pseudo, progress_cb=None,
             "next_layer_id": int(s.next_layer_id),
         })
 
-    # primitives — what the viewer's click-to-select walks. Each
+    # primitives - what the viewer's click-to-select walks. Each
     # RawShapeBasedRegion from the extract becomes one record;
     # vias/pads/tracks/arcs/fills stay empty (Gerber doesn't have them
-    # as distinct primitives — everything is a polygon by the time it
+    # as distinct primitives - everything is a polygon by the time it
     # reaches us). Format matches what altium.loader.build_solve_metadata
     # produces for the Altium path so _primitives_index walks them the
     # same way.
@@ -290,10 +290,10 @@ def _finish_gerber_import(result, pseudo, progress_cb=None,
     _imp_log.info("Gerber import: sbr_records built in %.2fs (%d record(s))",
                   time.monotonic() - _t, len(sbr_records))
 
-    # Via records — what the 2D via markers and the 3D via-cylinder pass
+    # Via records - what the 2D via markers and the 3D via-cylinder pass
     # both iterate. Mirrors the shape build_solve_metadata
     # emits for the Altium path (loader.py), minus solve-only fields like
-    # ``segments`` (no FEM has run yet). Empty ``segments`` is fine — the
+    # ``segments`` (no FEM has run yet). Empty ``segments`` is fine - the
     # rendering paths gate per-segment styling on the list being non-empty.
     vias_records: list[dict] = []
     for v in extracted.vias:
@@ -307,12 +307,12 @@ def _finish_gerber_import(result, pseudo, progress_cb=None,
             "layer_end": int(v.layer_end),
             "segments": [],
             "ipc4761_via_type": 0,
-            "ipc4761_label": "—",
+            "ipc4761_label": "-",
             "fill_material": "",
             "is_conductive_fill": False,
         })
 
-    # Non-plated through holes (mounting / mechanical holes) — drawn as the
+    # Non-plated through holes (mounting / mechanical holes) - drawn as the
     # "Non Plated TH" Board Features overlay, never meshed. NonPlated drill
     # files contribute these (see _gerber_drill_to_vias).
     npth_records: list[dict] = [
@@ -336,7 +336,7 @@ def _finish_gerber_import(result, pseudo, progress_cb=None,
         # viewer code that iterates ``metadata['pths']`` doesn't have to
         # special-case the source kind.
         "pths": [],
-        # Help the Setup tab show something meaningful.
+        # Help the Properties tab show something meaningful.
         "gerber_files": [str(p) for p in result.copper_files.values()],
         "drill_files": [str(p) for p in result.drill_files],
         "outline_file": (str(result.outline_file)

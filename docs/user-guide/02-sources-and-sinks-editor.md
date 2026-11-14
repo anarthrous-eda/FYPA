@@ -15,10 +15,10 @@ Editor edits are stored in a small JSON project file (`.fypa`) that sits
 beside the board. The Altium source files are never written to.
 
 > Read [Section 1](01-sources-and-sinks.md) first if you have not. The
-> underlying concepts — sources, sinks, P / N nets, single-net vs two-net
-> — are the same. Only the entry method differs.
+> underlying concepts - sources, sinks, P / N nets, single-net vs two-net
+> - are the same. Only the entry method differs.
 
-## 2.1 Schematic or editor — which to use
+## 2.1 Schematic or editor - which to use
 
 Both methods produce identical solver inputs. Choose by intent:
 
@@ -28,7 +28,7 @@ Both methods produce identical solver inputs. Choose by intent:
 | The same annotations to apply on every future build of this board | Schematic  |
 | Quick "what-if" sweeps without touching the schematic             | Editor     |
 | To annotate someone else's board (read-only schematic)            | Editor     |
-| To override one schematic directive for a single analysis         | Editor (unlock — see 2.5) |
+| To override one schematic directive for a single analysis         | Editor (unlock - see 2.5) |
 
 The two can also be mixed: a board can carry schematic `PDN_*` on most
 parts and editor directives on a few extras, and the solver will treat
@@ -48,16 +48,16 @@ command), then either:
 Three things change when editor mode is active:
 
 1. The viewport background dims slightly, and copper not connected to
-   the current selection is shown faded — so the rail you are about to
+   the current selection is shown faded - so the rail you are about to
    touch is the visible one.
 2. Two extra buttons appear next to the toggle: a red up-triangle
    (**SOURCE**) and a blue down-triangle (**SINK**). These are the free
    marker buttons, covered in 2.4.
 3. The **PDN Editor** panel slides in on the right-hand side.
 4. Left-drag on empty board sweeps a selection box, for editing several
-   sinks in one go — see 2.6.
+   sinks in one go - see 2.6.
 
-Press `E` again — or click the toggle off — to leave editor mode. Any
+Press `E` again - or click the toggle off - to leave editor mode. Any
 edits you applied remain in the project; only the transient selection
 is cleared.
 
@@ -66,7 +66,7 @@ is cleared.
 This is the most common path: pick a real PCB component, choose its
 role, and fill in the form.
 
-**Step 1 — Click the component on the board.**
+**Step 1 - Click the component on the board.**
 
 In editor mode, single-click the component's footprint in the viewport.
 The form on the right populates with the component designator at the
@@ -78,7 +78,7 @@ top.
 > schematic, the form opens in read-only mode with an **🔓 Unlock to
 > edit** button instead. Jump to 2.5 for that flow.
 
-**Step 2 — Pick the role.**
+**Step 2 - Pick the role.**
 
 The **PDN role** dropdown offers `SOURCE`, `SINK`, `SERIES` and
 `REGULATOR`. The last two are only available when a component is
@@ -93,7 +93,7 @@ optionally, the topology. Its gain is worked out from the voltage of
 whatever drives the IN net when you re-solve, as for a schematic
 `PDN_REGULATOR_TYPE=SMPS` regulator, including adaptive gain.
 
-**Step 3 — Enter the value.**
+**Step 3 - Enter the value.**
 
 The value field's label changes with the role:
 
@@ -104,26 +104,26 @@ The value field's label changes with the role:
 | `SERIES` | Resistance (Ω)    | `0.01`    |
 | `REGULATOR` | Output (V)     | `1.8`     |
 
-Values are plain numbers in SI units — no suffixes (`mA`, `kΩ`) here, in
+Values are plain numbers in SI units - no suffixes (`mA`, `kΩ`) here, in
 contrast to the schematic parameters. Use `0.5` for 500 mA, `0.01` for
 10 mΩ.
 
-**Step 4 — Choose the current model.**
+**Step 4 - Choose the current model.**
 
 Two radio buttons control how the directive closes its current loop:
 
-- **Single net (point-to-point)** — the directive's return is an
+- **Single net (point-to-point)** - the directive's return is an
   ideal 0 V node, so the solve reports only the IR drop on the chosen
   net. Use this when there is no real return reference on the board
   (e.g. tracing power on a single rail to a high-side switch).
-- **Two nets (full current-path loop)** — current flows through real
+- **Two nets (full current-path loop)** - current flows through real
   copper on both the supply net and the return net. Use this for a
   normal supply-rail analysis.
 
 `SERIES` always bridges two real nets, so its model is locked to
 two-net.
 
-**Step 5 — Pick the net(s).**
+**Step 5 - Pick the net(s).**
 
 - In two-net mode, both **P net** and **N net** dropdowns are shown.
   P net lists the nets this component is connected to (when bound to a
@@ -135,17 +135,17 @@ two-net.
 - In single-net mode, the second dropdown is hidden and the remaining
   one is just labelled **Net**.
 
-**Step 6 — (SINK only) Optional Min V.**
+**Step 6 - (SINK only) Optional Min V.**
 
 If the role is `SINK`, a **Min V (V)** field appears. This is the
-editor-mode equivalent of the schematic `PDN_MIN_V` parameter — the
+editor-mode equivalent of the schematic `PDN_MIN_V` parameter - the
 minimum acceptable rail voltage at this sink's P pins. Leave it blank
 to skip the check; fill it in to have the Nodes table flag any pin
 below this voltage in red after the solve.
 
-**Step 7 — Click Apply.**
+**Step 7 - Click Apply.**
 
-The status line at the bottom of the form turns green: *Applied — press
+The status line at the bottom of the form turns green: *Applied - press
 Resolve to re-solve.* A marker appears on the viewport showing the new
 directive, the connected copper is highlighted, and the project is
 marked dirty.
@@ -160,7 +160,7 @@ When the rail you want to load has no convenient component to anchor to
 instead. A free marker is a SOURCE or SINK that lives at a specific
 (x, y) point on a specific layer, not attached to any component.
 
-**Step 1 — Click the red triangle (SOURCE) or blue triangle (SINK)
+**Step 1 - Click the red triangle (SOURCE) or blue triangle (SINK)
 button.**
 
 The button highlights to show it is armed, and the viewport cursor
@@ -171,20 +171,20 @@ press **Esc**, to cancel.
 
 ![Free marker buttons in the toolbar](screenshots/02-free-marker-buttons.png)
 
-**Step 2 — Click any copper area in the viewport.**
+**Step 2 - Click any copper area in the viewport.**
 
 A marker is placed at the click point. The right-hand form populates
 the same way as for a component selection.
 
-**Step 3 — Fill in the form and Apply.**
+**Step 3 - Fill in the form and Apply.**
 
 The flow is identical to 2.3, with two differences:
 
-- **SERIES is not offered** — a free marker is a single point on one
+- **SERIES is not offered** - a free marker is a single point on one
   net, which cannot express a two-net bridge. Use a component for
   SERIES.
 - A **location** sub-form appears at the top of the panel with the
-  marker's layer (read-only) and editable X / Y boxes — you can also
+  marker's layer (read-only) and editable X / Y boxes - you can also
   drag the marker on the board with the mouse, and undo / redo the
   most recent moves with the buttons there.
 
@@ -198,7 +198,7 @@ Selecting a component that already has `PDN_*` parameters from the
 schematic opens the form in read-only mode with a summary of the
 schematic values and an **🔓 Unlock to edit** button. You can select
 the component either by clicking its footprint or by clicking the
-SOURCE / SINK marker the schematic directive draws on the board — the
+SOURCE / SINK marker the schematic directive draws on the board - the
 marker is the easier target, and it works even when the footprint sits
 on a side whose copper is hidden.
 
@@ -206,16 +206,16 @@ on a side whose copper is hidden.
 
 Clicking **Unlock** swaps the read-only view for the editable form,
 pre-populated from the schematic values. From here it behaves like a
-fresh editor directive — change whatever you need, click **Apply**,
+fresh editor directive - change whatever you need, click **Apply**,
 then **Resolve**.
 
-A status line in the form turns orange while unlocked: *Unlocked —
+A status line in the form turns orange while unlocked: *Unlocked -
 Apply replaces the schematic directive on the next resolve.* After
 Apply it changes to: *Overrides the schematic directive.*
 
 > The schematic file on disk is **never modified**. The override lives
 > only in the `.fypa` project file. To revert to the schematic value,
-> select the component and click **Remove** — the schematic directive
+> select the component and click **Remove** - the schematic directive
 > takes over again on the next resolve.
 
 ## 2.6 Editing several sinks at once
@@ -224,17 +224,17 @@ Setting the same current on twelve DDR loads one form at a time is the
 kind of job that invites a typo. Editor mode borrows Altium's selection
 convention so you can do the whole group in one Apply.
 
-**Step 1 — Drag a box on empty viewport.**
+**Step 1 - Drag a box on empty viewport.**
 
 Press the left button on bare board (not on a marker) and drag. A dashed
 yellow rubber band follows the cursor. Release to select.
 
 A marker joins the selection only when **every one of its pins is inside
-the box**. That matters for parts that glyph at several pads — a big
+the box**. That matters for parts that glyph at several pads - a big
 connector clipped at one corner is not selected, so you never edit
 something you only half-caught.
 
-The box picks up **PDN markers only** — sources, sinks and series
+The box picks up **PDN markers only** - sources, sinks and series
 elements. Copper and components with no PDN role are ignored on purpose:
 the board is wall-to-wall copper and passives, so counting them would
 make every drag a mixed bag.
@@ -242,7 +242,7 @@ make every drag a mixed bag.
 > The marquee is 2D only. In the 3D view a swept box would not mean what
 > it looks like, so left-drag stays inert there.
 
-**Step 2 — Adjust the selection if you need to.**
+**Step 2 - Adjust the selection if you need to.**
 
 | Gesture              | Effect                                  |
 |----------------------|-----------------------------------------|
@@ -258,7 +258,7 @@ selected component gets one round its footprint, so you can see exactly
 what an Apply would write to before you press it. Copper stays lit for
 the union of every selected sink's nets.
 
-**Step 3 — Read the form.**
+**Step 3 - Read the form.**
 
 With two or more markers selected, and **every one of them a SINK**, the
 panel shows the same form a single sink gives, headed `4 SINKs selected`
@@ -268,32 +268,32 @@ with the designators listed below it:
 - A row they **disagree** on shows **`*`**. For the current-model radios
   that means neither button is checked.
 - A row every sink leaves unset (typically Min V) shows **blank**, not
-  `*` — blank is agreement.
+  `*` - blank is agreement.
 
 Four rows are editable together: **Current (A)**, **Min V (V)**, the
-current model, and **P net** / **N net**. The per-part fields — Pins, N
-pins, P DES, N DES — are deliberately absent: pushing one pad list
+current model, and **P net** / **N net**. The per-part fields - Pins, N
+pins, P DES, N DES - are deliberately absent: pushing one pad list
 across several different footprints is never what you mean. Role is
 shown but not offered, because re-pointing a batch of sinks at SOURCE
 would silently reinterpret every Current as a Voltage.
 
-**Step 4 — Edit the rows you care about and Apply.**
+**Step 4 - Edit the rows you care about and Apply.**
 
-**Apply writes only the rows you touched.** A row still showing `*` — or
-a shared value you did not retype — is left exactly as it is on every
+**Apply writes only the rows you touched.** A row still showing `*` - or
+a shared value you did not retype - is left exactly as it is on every
 sink. So you can set one common current across a group whose Min V
 limits all differ, without flattening those limits.
 
 > **Current is per sink, not shared between them.** Applying 2 A to four
 > sinks adds 8 A of load to the rail, not 2 A split four ways.
 
-To **clear** Min V across the group, empty the field and Apply — an
+To **clear** Min V across the group, empty the field and Apply - an
 edited-but-empty Min V writes "no check" to all of them. To leave it
 alone, do not touch it.
 
 Two things Apply refuses rather than half-doing:
 
-- A non-numeric Current or Min V — nothing is written.
+- A non-numeric Current or Min V - nothing is written.
 - Switching to **Two nets** when some selected sink would end up with no
   N net. The whole batch rolls back and the status line names the
   offenders, rather than leaving half the selection unsolvable. Set N
@@ -301,11 +301,11 @@ Two things Apply refuses rather than half-doing:
 
 Sinks whose values still come from the Altium schematic can be selected
 too. The panel warns you how many, and Apply unlocks them in the same
-step — each override is seeded from its own schematic values, so rows
+step - each override is seeded from its own schematic values, so rows
 you did not touch keep what the schematic said for that part. The
 schematic file is never modified.
 
-**Step 5 — One undo step.**
+**Step 5 - One undo step.**
 
 A batch Apply or Remove is a **single** entry on the undo stack:
 `Ctrl+Z` puts all of them back at once, and `Ctrl+Shift+Z` / `Ctrl+Y`
@@ -318,8 +318,8 @@ says how many). `Delete` / `Backspace` does the same thing.
 
 ### When the selection is not all sinks
 
-If the box catches anything other than sinks — a source, a series
-element, or a mix — the panel shows just:
+If the box catches anything other than sinks - a source, a series
+element, or a mix - the panel shows just:
 
 > **Multiple objects selected**
 
@@ -330,14 +330,14 @@ click a single object to edit it.
 
 ## 2.7 Re-solving and saving
 
-Editor edits do not run the solver themselves — they queue up changes
+Editor edits do not run the solver themselves - they queue up changes
 that the **Resolve** button then applies.
 
 **Resolve.** A green **↻ Resolve** button appears at the top-left of
 the viewport whenever there are unsolved edits. Click it to re-run the
 solver with the current editor directives applied. The resolve reuses
 the cached design extraction (geometry, net lookup, mesh) so it is
-significantly faster than a cold load — typically a few seconds rather
+significantly faster than a cold load - typically a few seconds rather
 than the tens of seconds of the first launch.
 
 ![Resolve button visible after an edit](screenshots/02-resolve-button.png)
@@ -345,9 +345,9 @@ than the tens of seconds of the first launch.
 **Save.** Editor edits and the resolved solution are not written to
 disk until you save. Press **`Ctrl+S`** to bring up the save dialog:
 
-- **Project only** (`S`) — writes the `.fypa` file with your editor
+- **Project only** (`S`) - writes the `.fypa` file with your editor
   directives.
-- **Project + solution** (`A`) — also writes the latest solver run as
+- **Project + solution** (`A`) - also writes the latest solver run as
   a sibling pickle, so reopening the project will skip the re-solve.
 
 The first time you save, a file picker asks where to put the `.fypa`.
@@ -355,7 +355,7 @@ On subsequent saves it overwrites the existing file silently. *File >
 Save Project As…* writes to a new location.
 
 > Closing the viewer with unsaved edits prompts before discarding
-> them. The Resolve action itself does not save — you can resolve as
+> them. The Resolve action itself does not save - you can resolve as
 > many times as you like during one session and only save when you
 > are happy with the result.
 
@@ -367,15 +367,15 @@ The `.fypa` is a small human-readable JSON document. It contains:
 - Paths to the design-info and solution pickles (stored relative to
   the `.fypa` when they share its drive, so a project folder is
   portable).
-- The list of editor directives — one entry per source / sink /
+- The list of editor directives - one entry per source / sink /
   series element you placed.
 - Viewer settings (current layer, rail, display mode, overlay
   colours).
 
 Opening a `.fypa` from *File > Open Project File…* (or by passing it
 on the command line in place of a `.PrjPcb`) restores the viewer
-exactly as you left it, including all editor edits and — if you saved
-"Project + solution" — the most recent solved result, without
+exactly as you left it, including all editor edits and - if you saved
+"Project + solution" - the most recent solved result, without
 re-running the FEM.
 
 > The pickles are referenced, not embedded. If you move a `.fypa` to
@@ -390,9 +390,9 @@ re-running the FEM.
 | Message or symptom                                                           | Likely cause                                                                 | Fix                                                                          |
 |------------------------------------------------------------------------------|------------------------------------------------------------------------------|------------------------------------------------------------------------------|
 | Resolve button never appears                                                  | No editor edits are pending, or none have been Applied yet.                  | Edits must be **Applied** (not just typed into the form) to mark the project dirty. |
-| `Editor rail '+5V': single-net SINK(s) with no SOURCE — no current can flow` | A single-net sink was placed on a rail with no single-net source.            | Add a single-net SOURCE on the same rail, or switch the sink to two-net mode. |
-| `P net '+5V' not found on the board; skipped`                                | The chosen net name does not exist in the current PCB extraction.            | Re-check the net name against the dropdown options — only nets present on the PCB are listed. |
-| Form opens read-only with an Unlock button even though I want a fresh directive | The component already has a schematic `PDN_*` directive.                   | Click **Unlock** — see 2.5.                                                  |
+| `Editor rail '+5V': single-net SINK(s) with no SOURCE - no current can flow` | A single-net sink was placed on a rail with no single-net source.            | Add a single-net SOURCE on the same rail, or switch the sink to two-net mode. |
+| `P net '+5V' not found on the board; skipped`                                | The chosen net name does not exist in the current PCB extraction.            | Re-check the net name against the dropdown options - only nets present on the PCB are listed. |
+| Form opens read-only with an Unlock button even though I want a fresh directive | The component already has a schematic `PDN_*` directive.                   | Click **Unlock** - see 2.5.                                                  |
 | `SERIES` option missing from the role dropdown                                | A free marker is selected (SERIES is component-bound only).                  | Click the component instead, or pick a different role.                       |
 | My drag box selected nothing                                                  | A marker counts only when *every* one of its pins is inside the box, and copper / roleless parts are never selected. | Draw the box wider so it fully encloses each marker you want. |
 | Panel says *Multiple objects selected* with no controls                       | The box caught something other than sinks (a source, a series element, or a mix). | Drag a box round sinks alone, or click one object to edit it. |
@@ -403,10 +403,10 @@ re-running the FEM.
 
 The editor covers SOURCE, SINK and SERIES directives. REGULATOR
 directives, with their four terminals and gain factor, are still
-schematic-only — see the [main README](../../README.md#source-vs-regulator--when-to-use-which)
+schematic-only - see the [main README](../../README.md#source-vs-regulator--when-to-use-which)
 for that flow.
 
-Once you have the PDN set up — schematic, editor, or a mix — the rest
+Once you have the PDN set up - schematic, editor, or a mix - the rest
 of the workflow is reading and acting on the results in the viewer.
 The viewer tour (layers, rails, display modes, the Nodes and Vias
 tables, colour-scale clamping, hover probes) is covered in a later

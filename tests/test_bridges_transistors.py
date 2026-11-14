@@ -5,10 +5,10 @@ bridges one on its own. The Bridges tab lists them so the user can say "this
 one is on", choose which pads form each side (a power FET's drain and source
 are usually several pads each) and give it Rds(on). These tests pin:
 
-* the candidate record — default sides, Rds(on) pre-fill, pre-merge nets;
-* the saved editor directive — pins, nets, and that it resolves to a real
+* the candidate record - default sides, Rds(on) pre-fill, pre-merge nets;
+* the saved editor directive - pins, nets, and that it resolves to a real
   two-net SERIES element that is never merged;
-* the tab — the picker, and the choices it refuses.
+* the tab - the picker, and the choices it refuses.
 """
 from __future__ import annotations
 
@@ -60,7 +60,7 @@ def _pad(pin: str, net: int, x: float, w: float = 0.7, h: float = 1.0,
 def _fet_proj(*, params=None, drain_net=SNS) -> ExtractedProject:
     """An LFPAK-style FET: source pins 1-3, gate pin 4, a big drain tab 5.
 
-    The drain tab is one pad and so is the gate — only pad *area* tells
+    The drain tab is one pad and so is the gate - only pad *area* tells
     them apart, which is what the default-side guess has to get right.
     """
     params = {"Comment": "PSMNR67-30YLEX"} if params is None else params
@@ -120,7 +120,7 @@ def test_default_sides_are_drain_tab_and_source_pins_not_the_gate():
 def test_no_guess_when_the_gate_cannot_be_named():
     """SOT-23 on nets named nothing like a gate (Mangala's Q1: NetQ1_3,
     GPIO1, GND). Equal pads give no clue either, and a wrong guess would
-    offer to short the drain to the gate — so no guess."""
+    offer to short the drain to the gate - so no guess."""
     import dataclasses
     proj = _fet_proj()
     sot23 = (_pad("1", GND, 0.0), _pad("2", P12, 1.0), _pad("3", SNS, 2.0))

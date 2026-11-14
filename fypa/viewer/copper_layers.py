@@ -3,7 +3,7 @@
 Each physical layer's copper is triangulated once and kept in its own GPU
 buffer (:class:`fypa.gl_mesh_viewer.CopperDraw`). Showing, hiding, recolouring,
 dimming or fading a layer then only changes the list of buffers drawn and a
-few uniforms — no geometry is rebuilt or re-uploaded — which is what makes
+few uniforms - no geometry is rebuilt or re-uploaded - which is what makes
 toggling a layer instant on a large board.
 
 The triangulation itself runs in worker processes after the board opens
@@ -392,8 +392,8 @@ class _CopperLayersMixin:
         # already draws them. Outside editor mode the selected rail IS
         # the heatmap, so its copper is excluded to avoid double-drawing.
         # In editor mode the user wants the second eye to show ALL of a
-        # layer's physical copper — including nets belonging to a
-        # previously-solved rail — so we drop the filter entirely. The
+        # layer's physical copper - including nets belonging to a
+        # previously-solved rail - so we drop the filter entirely. The
         # solved-rail heatmap / geometry still paints on top: opaque
         # all-copper is drawn before the mesh in 2D, and depth ordering
         # handles it in 3D.
@@ -408,7 +408,7 @@ class _CopperLayersMixin:
         waiting: list[str] = []
         # Bottom-up: ``_layer_eye2_buttons`` is in panel order (topmost
         # first); sort by stackup rank descending so the topmost layer is
-        # drawn last, mirroring the heatmap mesh's draw order — that matches
+        # drawn last, mirroring the heatmap mesh's draw order - that matches
         # the GL_LEQUAL depth test the before-mesh pass uses in 2D (same z →
         # later draw wins).
         #
@@ -444,15 +444,15 @@ class _CopperLayersMixin:
             if layer_alpha <= 0.0:
                 continue
             # In 2D opaque all-copper draws BEFORE the heatmap mesh with
-            # depth on — the rail mesh (drawn next, same per-layer z)
+            # depth on - the rail mesh (drawn next, same per-layer z)
             # paints over its own layer's all-copper, and bottom rail
             # triangles are depth-rejected where a higher layer's
             # all-copper has already written a closer z. That would
             # equally depth-reject the rail mesh underneath a partially-
-            # transparent layer — turning it into a tinted hole instead of
-            # letting the heatmap show through — so a layer at alpha < 1.0
+            # transparent layer - turning it into a tinted hole instead of
+            # letting the heatmap show through - so a layer at alpha < 1.0
             # draws AFTER the mesh instead, free to blend with whatever is
-            # below. 3D always draws after — per-layer z + depth handle
+            # below. 3D always draws after - per-layer z + depth handle
             # ordering there.
             under = in_2d and layer_alpha >= 1.0
             qc = QColor(self._layer_color_for(name))

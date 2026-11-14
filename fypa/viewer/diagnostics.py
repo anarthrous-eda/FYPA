@@ -23,7 +23,7 @@ def _maybe_warn_needs_directives(parent_win, solution) -> None:
         "No PDN settings found",
         "No predefined PDN parameters (SOURCE / REGULATOR) were found in "
         "this design, so there's nothing to solve yet.\n\n"
-        "The design has loaded — switch on Edit to place sources / sinks "
+        "The design has loaded - switch on Edit to place sources / sinks "
         "manually, then press Resolve.",
     )
 
@@ -36,7 +36,7 @@ _MESH_FAILURE_MARKER_RADIUS_MM = 3.0
 _MESH_FAILURE_RING_RADIUS_MM = 5.0
 
 
-# Only trace the full failing polygon when it is a local feature — large
+# Only trace the full failing polygon when it is a local feature - large
 # pours would otherwise look like "the whole layer is highlighted".
 _MESH_FAILURE_LOCAL_OUTLINE_MAX_SPAN_MM = 25.0
 
@@ -64,7 +64,7 @@ def _mesh_failure_marker_xy(rec: dict) -> tuple[float, float] | None:
 
 
 def _mesh_failure_outline_rings(rec: dict) -> list[list[tuple[float, float]]]:
-    """Rings for the dashed GL overlay — local marker, not whole pours."""
+    """Rings for the dashed GL overlay - local marker, not whole pours."""
     center = _mesh_failure_marker_xy(rec)
     if center is None:
         return []
@@ -112,14 +112,14 @@ def _maybe_show_mesh_failures(parent_win, metadata) -> None:
     box.setWindowTitle("Meshing failed")
     if failures:
         box.setText(
-            "Look for the yellow ring and red disc on the board — that marks "
+            "Look for the yellow ring and red disc on the board - that marks "
             "where the mesh failed. (The red Top-layer copper overlay is "
             "normal; it is not the error marker.) Fix the geometry there in "
             "Altium, then press ↻ Solve."
         )
     else:
         # Nothing survived _build_stub_record, so there is no marker to look
-        # for — say that rather than send the user hunting for one.
+        # for - say that rather than send the user hunting for one.
         box.setText(
             "FEM meshing failed, but the offending copper could not be "
             "localised, so there is no marker on the board. This usually "
@@ -224,8 +224,8 @@ def _maybe_show_annotation_errors(parent_win, metadata) -> None:
     skipped.
 
     Fired after a viewer opens with ``metadata['annotation_errors']``. These
-    no longer block the solve — the offending directive (a mistyped net, a
-    missing pad) is dropped and every valid rail is still solved — so the
+    no longer block the solve - the offending directive (a mistyped net, a
+    missing pad) is dropped and every valid rail is still solved - so the
     notice reports what was left out rather than what blocked the run.
     """
     if not isinstance(metadata, dict):
@@ -235,11 +235,11 @@ def _maybe_show_annotation_errors(parent_win, metadata) -> None:
         return
     show_list_notice(
         parent_win, "Some directives were skipped",
-        "These PDN directives could not be resolved and were skipped — the "
+        "These PDN directives could not be resolved and were skipped - the "
         "other valid rails were still solved:",
         list(errors),
         "Fix them (usually a net-name typo) to include these directives in "
-        "the analysis. Details also in Setup → Annotation log.",
+        "the analysis. Details also in Properties → Annotation log.",
         warning=True)
 
 
@@ -248,7 +248,7 @@ def _maybe_show_annotation_errors(parent_win, metadata) -> None:
 def _maybe_warn_open_loop_rails(parent_win, metadata) -> None:
     """Pop a notice listing rails that were NOT solved because they hold only
     sources or only sinks (no current can flow). Fired on load and after
-    Resolve. The directives' markers are kept on the design — the rail is
+    Resolve. The directives' markers are kept on the design - the rail is
     simply left out of the FEM. No-op when there are no such rails.
 
     Reads ``metadata['open_loop_rails']`` (a list of human-readable per-rail
@@ -309,9 +309,9 @@ def _maybe_warn_unannotated_bridges(parent_win, metadata) -> None:
     The solve only meshes nets a PDN directive touches. A ferrite, fuse,
     shunt or connector joining such a rail to an un-annotated net is a real
     parallel current path the model cannot see, so the reported return-path
-    resistance is an over-estimate. Nothing is bridged automatically here —
+    resistance is an over-estimate. Nothing is bridged automatically here -
     only the user knows the part's DC resistance (a ferrite's "0 Ω" is
-    20-200 mΩ of DCR) — so this is advisory.
+    20-200 mΩ of DCR) - so this is advisory.
 
     Information, not a warning: the solve is still valid for the copper it
     does model, and on many boards these parts genuinely are open at DC.
@@ -330,7 +330,7 @@ def _maybe_warn_unannotated_bridges(parent_win, metadata) -> None:
         "current it really carries is missing (the return-path resistance "
         "reads high):",
         list(bridges),
-        "This is advisory \u2014 nothing was changed. If a part conducts "
+        "This is advisory - nothing was changed. If a part conducts "
         "at DC, annotate it in Altium with PDN_ROLE=SERIES and PDN_R set to "
         "its real DC resistance, then re-import. Genuine 0 \u03a9 links and "
         "Net Ties are already bridged automatically.",
