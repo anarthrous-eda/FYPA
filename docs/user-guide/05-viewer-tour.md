@@ -15,7 +15,7 @@ you work:
 
 - **Heatmap** - the viewer.
 - **SETUP** - Topology, Properties and Bridges: what goes into the solve.
-- **RESULTS** - Nodes, Fixes, Vias, Capacitors and Impedance: what comes
+- **RESULTS** - Nodes, Vias, Fixes, Capacitors and Impedance: what comes
   out of it. The caption is green while the results are current, and
   reads *OUT OF DATE* once the setup has changed since the last solve,
   or *NOT SOLVED YET* before the first one. **Capacitors** and **Fixes**

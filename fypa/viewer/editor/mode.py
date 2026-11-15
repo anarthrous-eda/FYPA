@@ -342,7 +342,7 @@ class _EditorModeMixin:
 
     def _position_editor_overlays(self) -> None:
         """Pin the overlay buttons to the GL viewer's top-left corner, as a
-        column: Edit, then Resolve, then What-If (viewer mode). In editor
+        column: Edit, then What-If (viewer mode), then Resolve. In editor
         mode the top row is the square edit toggle plus the SOURCE / SINK
         marker buttons, with Resolve still directly beneath it and What-If
         hidden. Safe before the widgets exist (no-op); wired to every
@@ -358,10 +358,10 @@ class _EditorModeMixin:
         wbtn = getattr(self, "_whatif_btn", None)
         if wbtn is not None:
             wbtn.setVisible(not editing)
-        # The labelled buttons in the column (viewer mode: Edit, Resolve,
-        # What-If; editor mode: just Resolve, under the square toggle) share
+        # The labelled buttons in the column (viewer mode: Edit, What-If,
+        # Resolve; editor mode: just Resolve, under the square toggle) share
         # the largest one's size so the column reads as one block.
-        column = [b for b in (rbtn, wbtn) if b is not None and not b.isHidden()]
+        column = [b for b in (wbtn, rbtn) if b is not None and not b.isHidden()]
         if not editing:
             column.insert(0, btn)
         if column:
@@ -382,7 +382,7 @@ class _EditorModeMixin:
                 x += b.width() + gap
         # In editor mode, clear the backdrop that wraps the top row too.
         y = margin + btn.height() + gap + (6 if editing else 0)
-        for b in (rbtn, wbtn):
+        for b in (wbtn, rbtn):
             if b is not None and not b.isHidden():
                 b.move(margin, y)
                 b.raise_()

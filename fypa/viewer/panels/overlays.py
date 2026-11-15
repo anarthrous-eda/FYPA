@@ -6,10 +6,10 @@ import matplotlib
 import matplotlib.colors
 import numpy as np
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QListWidgetItem, QWidget
 
 from fypa.viewer import copper_tris as _copper_tris
+from fypa.viewer import truetype_text as _truetype_text
 from fypa.viewer.diagnostics import (
     _MESH_FAILURE_MARKER_RADIUS_MM,
     _mesh_failure_marker_xy,
@@ -754,8 +754,11 @@ class _OverlayPanelMixin:
         alphas = self._overlay_side_alpha("silkscreen")
         for rec in md.get("silkscreen", []):
             self._pump_busy_ui()
-            if rec.get("kind") == "text":
-                continue  # legacy pickles only - text isn't an Overlay item
+            is_text = rec.get("kind") == "text"
+            # Legacy pickles carried text records without the "polylines"
+            # key (component comments included) - keep skipping those.
+            if is_text and "polylines" not in rec:
+                continue
             side = rec.get("side", "top")
             vis, solid = sides.get(side, (None, False))
             if vis is None:
@@ -764,6 +767,25 @@ class _OverlayPanelMixin:
             if a <= 0.0:
                 continue
             rgb = self._overlay_color_for("silkscreen", side)
+            if rec.get("kind") == "region":
+                # Filled overlay shape (Place > Region / Fill). Triangles
+                # are cached on the record per fill style.
+                style = _copper_tris.SOLID if solid else _copper_tris.WIRE
+                key = _copper_tris.CACHE_KEY[style]
+                tris = rec.get(key)
+                if tris is None:
+                    tris = _copper_tris.build_polygon(
+                        style, rec.get("exterior"), rec.get("holes"))
+                    rec[key] = tris
+                _emit(tris, feature_z.get(side, 0.0), rgb, alpha=a,
+                      **_side_buckets(side))
+                continue
+            if is_text:
+                # Free overlay text: Altium stroke-font geometry, or the
+                # outlined TrueType face (same scheme as designators).
+                _emit(self._text_tris(rec, solid), feature_z.get(side, 0.0),
+                      rgb, alpha=a, **_side_buckets(side))
+                continue
             poly = rec.get("polyline") or []
             if len(poly) < 2:
                 continue
@@ -849,7 +871,7 @@ class _OverlayPanelMixin:
         # Designators - drawn in Altium's actual single-stroke font: the
         # loader lays each one out into stroke polylines, which render as
         # thin round-capped ribbons (same path as silkscreen). TrueType-
-        # font designators carry no polylines and fall back to a label.
+        # font designators are outlined in their real face (truetype_text).
         sides = self._overlay_side_states("designators")
         alphas = self._overlay_side_alpha("designators")
         for rec in md.get("designators", []):
@@ -864,22 +886,8 @@ class _OverlayPanelMixin:
             if a <= 0.0:
                 continue
             rgb = self._overlay_color_for("designators", side)
-            if rec.get("polylines"):
-                _emit(self._designator_stroke_tris(rec, solid=solid),
-                      feature_z[side], rgb, alpha=a, **_side_buckets(side))
-            else:
-                # Text labels honour the row's transparency by riding the
-                # colour's alpha channel through #rrggbbaa.
-                qc = QColor.fromRgbF(rgb[0], rgb[1], rgb[2], a)
-                labels.append({
-                    "x": float(rec.get("x_mm", 0.0)),
-                    "y": float(rec.get("y_mm", 0.0)),
-                    "z": feature_z[side],
-                    "text": rec.get("text", ""),
-                    "color": qc.name(QColor.HexArgb),
-                    "height_mm": float(rec.get("height_mm", 1.0) or 1.0),
-                    "rotation_deg": float(rec.get("rotation_deg", 0.0) or 0.0),
-                })
+            _emit(self._text_tris(rec, solid), feature_z[side], rgb,
+                  alpha=a, **_side_buckets(side))
 
         self._pump_busy_ui()
         # Non-plated through holes - a drilled hole through the whole board
@@ -995,6 +1003,16 @@ class _OverlayPanelMixin:
         arr = _copper_tris.wire_rings(poly.get("exterior"), poly.get("holes"))
         poly["_wire_cache"] = arr
         return arr
+
+    def _text_tris(self, rec: dict, solid: bool) -> np.ndarray:
+        """Board-space triangles for one overlay text record: Altium's
+        stroke-font polylines when present, else the TrueType outline in
+        the record's real face (old caches without font fields fall back
+        to Arial). Never a screen-space label - the text must scale, sit
+        and mirror like the manufactured silkscreen."""
+        if rec.get("polylines"):
+            return self._designator_stroke_tris(rec, solid=solid)
+        return _truetype_text.truetype_text_tris(rec, solid=solid)
 
     def _designator_stroke_tris(self, rec: dict, *,
                                 solid: bool = True) -> np.ndarray:

@@ -368,6 +368,12 @@ class RawText:
     font_name: str = ""
     is_bold: bool = False
     is_italic: bool = False
+    # Altium's text-box placement (AD19+, ``is_justification_valid``): when
+    # True, ``center`` is the bottom-left corner of the drawn glyphs' box in
+    # the text's own (rotated) frame - whatever the justification - rather
+    # than a baseline origin. Verified on TrueType text, whose ink extents
+    # match ``textbox_rect`` to 0.2 %.
+    box_anchor: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -843,6 +849,7 @@ def _extract_texts(pcb, ox_mm: float, oy_mm: float) -> tuple[RawText, ...]:
             font_name=str(getattr(t, "font_name", "") or ""),
             is_bold=bool(getattr(t, "is_bold", False)),
             is_italic=bool(getattr(t, "is_italic", False)),
+            box_anchor=bool(getattr(t, "is_justification_valid", False)),
         ))
     return tuple(out)
 

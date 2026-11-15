@@ -54,6 +54,7 @@ _THEME_PRESETS: dict[str, dict[str, str]] = {
         "dielectric":      "#9090c0",   # stackup dielectric label
         "dielectric_dim":  "#a0a0a0",
         "separator":       "#707070",
+        "tab_bar_neutral": "#d8d8d8",   # open-tab bar outside setup/results
         "eye_open":        "#f0f0f0",
         "eye_closed":      "#7a7a7a",
         "eye_partial":     "#b8b8b8",
@@ -92,6 +93,7 @@ _THEME_PRESETS: dict[str, dict[str, str]] = {
         "dielectric":      "#5a5aa0",
         "dielectric_dim":  "#666688",
         "separator":       "#9a9a9a",
+        "tab_bar_neutral": "#a8a8a8",
         "eye_open":        "#2d2d2d",
         "eye_closed":      "#9a9a9a",
         "eye_partial":     "#5c5c5c",

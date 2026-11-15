@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -235,9 +236,35 @@ class _ImpedanceTabMixin:
             Qt.TextSelectableByMouse)
         right.addWidget(self.imp_summary_label)
         outer.addLayout(right, 1)
-        self._impedance_stack = self._wrap_placeholder(widget)
+        # Page 0 runs the capacitor check, page 1 is the plot. The plot is
+        # built on the check's per-capacitor inductances, so - as on the
+        # Capacitors tab - nothing heavy starts until the user asks.
+        self._impedance_pages = QStackedWidget(self.tabs)
+        self._impedance_pages.addWidget(self._build_cap_check_run_page(
+            "Each rail's impedance is built from the mounted loop inductance "
+            "of its decoupling capacitors, which comes from the capacitor "
+            "check. It hasn't run for this design yet - run it here and the "
+            "Capacitors tab fills in at the same time.",
+            self._run_impedance_cap_check))
+        self._impedance_pages.addWidget(widget)
+        self._sync_impedance_page()
+        self._impedance_stack = self._wrap_placeholder(self._impedance_pages)
         self._sync_placeholder_tabs()
         return self._impedance_stack
+
+    def _sync_impedance_page(self) -> None:
+        """Show the plot once the capacitor rows exist, else the Run
+        button."""
+        pages = getattr(self, "_impedance_pages", None)
+        if pages is not None and _qt_widget_alive(pages):
+            pages.setCurrentIndex(
+                0 if getattr(self, "_caps_rows_cache", None) is None else 1)
+
+    def _run_impedance_cap_check(self) -> None:
+        if self._placeholder_text("_impedance_stack"):
+            return
+        self._impedance_populated = True
+        self._populate_impedance_tab()
 
     def _build_package_library_box(self) -> QWidget:
         """The editable SMD case-size table: typical ESL / ESR per package.

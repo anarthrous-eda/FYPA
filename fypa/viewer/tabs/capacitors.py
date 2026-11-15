@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressDialog,
     QPushButton,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -30,6 +31,7 @@ from fypa.viewer.solve_worker import _CapLoopWorker
 from fypa.viewer.table_filter import TableColumnFilter
 from fypa.viewer.tabs.messages import _MessagesSortItem
 from fypa.viewer.theme import _T
+from fypa.viewer.widgets import _qt_widget_alive
 
 
 # Item-data role carrying the Capacitors table's original row index. It can't
@@ -171,9 +173,10 @@ class _CapacitorsTabMixin:
     def _build_capacitors_tab(self) -> QWidget:
         """Build the Capacitors tab - a sortable table of every decoupling
         capacitor with its Tier-1 mounted loop inductance, informational
-        part values, and per-cap include / target overrides. Rows populate
-        on first tab activation (identification walks the whole extracted
-        design and builds per-net copper shapes - seconds on a big board)."""
+        part values, and per-cap include / target overrides. The check runs
+        when the user presses Run on the tab's first page, as on the Fixes
+        tab (identification walks the whole extracted design and builds
+        per-net copper shapes - seconds on a big board)."""
         widget = QWidget(self.tabs)
         outer = QVBoxLayout(widget)
         outer.setContentsMargins(8, 8, 8, 8)
@@ -279,9 +282,61 @@ class _CapacitorsTabMixin:
             f"QTableWidget::item:selected {{ background-color: {_t['bg_selection']}; }}"
         )
         outer.addWidget(self.caps_table, 1)
-        self._caps_stack = self._wrap_placeholder(widget)
+        # Page 0 asks for the check, page 1 shows it - the same pattern as
+        # the Fixes tab. Opening the tab doesn't start seconds of geometry
+        # work; pressing Run does.
+        self._caps_pages = QStackedWidget(self.tabs)
+        self._caps_pages.addWidget(self._build_cap_check_run_page(
+            "Work out each decoupling capacitor's mounted loop inductance "
+            "and flag the ones that are poorly placed. Builds the board's "
+            "copper geometry, so it can take a few seconds on a large board.",
+            self._run_caps_check))
+        self._caps_pages.addWidget(widget)
+        self._sync_caps_page()
+        self._caps_stack = self._wrap_placeholder(self._caps_pages)
         self._sync_placeholder_tabs()
         return self._caps_stack
+
+    def _build_cap_check_run_page(self, message: str, run) -> QWidget:
+        """The page a tab shows until the capacitor check has run: what
+        the check is for, and a button that runs it. Shared by the
+        Capacitors and Impedance tabs, which both need its rows."""
+        t = _T()
+        page = QWidget(self.tabs)
+        lay = QVBoxLayout(page)
+        lay.addStretch(1)
+        text = QLabel(message)
+        text.setWordWrap(True)
+        text.setAlignment(Qt.AlignCenter)
+        text.setStyleSheet(f"QLabel {{ color: {t['fg_muted']}; }}")
+        lay.addWidget(text)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        btn = QPushButton("Run capacitor check")
+        btn.clicked.connect(run)
+        row.addWidget(btn)
+        row.addStretch(1)
+        lay.addLayout(row)
+        lay.addStretch(1)
+        return page
+
+    def _sync_caps_page(self) -> None:
+        """Show the table once the rows exist for this design, else the
+        Run button."""
+        pages = getattr(self, "_caps_pages", None)
+        if pages is not None and _qt_widget_alive(pages):
+            pages.setCurrentIndex(
+                0 if getattr(self, "_caps_rows_cache", None) is None else 1)
+
+    def _run_caps_check(self) -> None:
+        """Build the rows (behind the busy dialog) and fill the table."""
+        if self._placeholder_text("_caps_stack"):
+            return
+
+        def _populate() -> None:
+            self._caps_table_populated = True
+            self._populate_caps_table()
+        self._ensure_cap_rows_async(_populate)
 
     def _caploop_package_library(self):
         """The editable SMD package library (typical ESL / ESR per case size),
@@ -579,6 +634,7 @@ class _CapacitorsTabMixin:
 
         def _ok(rows) -> None:
             self._caps_rows_cache = rows
+            self._on_cap_rows_built(rows)
             _flush()
 
         def _fail(exc_type: str, message: str) -> None:
@@ -587,6 +643,7 @@ class _CapacitorsTabMixin:
                 f"Capacitor analysis failed: {exc_type}: {message}")
             logging.getLogger(__name__).error(
                 "Capacitor report failed: %s: %s", exc_type, message)
+            self._on_cap_rows_built([])
             _flush()
 
         _run_background_load(
@@ -595,6 +652,21 @@ class _CapacitorsTabMixin:
             label="Analysing decoupling capacitors…\n"
                   "Building copper geometry and finding escape vias.",
         )
+
+    def _on_cap_rows_built(self, rows: list[dict]) -> None:
+        """The rows exist now, whichever tab asked for them - the
+        Impedance tab builds them too. Badge the Capacitors tab with its
+        warning count straight away, rather than leaving it pending until
+        that tab's table is next filled."""
+        try:
+            count = sum(1 for r in rows if self._cap_row_is_warn(r))
+        except Exception:  # noqa: BLE001 - the table fill recounts
+            logging.getLogger(__name__).debug(
+                "Capacitor warning count failed", exc_info=True)
+            count = 0
+        update_title = getattr(self, "_update_caps_tab_title", None)
+        if update_title is not None:
+            update_title(count)
 
     def _invalidate_caps_cache(self, *, repopulate: bool = True,
                               heavy: bool = False) -> None:
@@ -1283,6 +1355,10 @@ class _CapacitorsTabMixin:
         else:
             title = "Capacitors"
         self.tabs.setTabText(idx, title)
+        self._sync_caps_page()
+        sync_impedance = getattr(self, "_sync_impedance_page", None)
+        if sync_impedance is not None:
+            sync_impedance()
         refresh_strip = getattr(self, "_refresh_tab_strip_state", None)
         if refresh_strip is not None:
             refresh_strip()

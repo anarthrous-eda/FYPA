@@ -447,6 +447,8 @@ class _UiBuildMixin:
         )
         side.addWidget(self.relief_height_slider)
         self.relief_row.setVisible(False)
+        self.layer_spacing_label.setVisible(False)
+        self.layer_spacing_slider.setVisible(False)
         self.relief_height_label.setVisible(False)
         self.relief_height_slider.setVisible(False)
 
@@ -786,8 +788,8 @@ class _UiBuildMixin:
     # (tab-index attribute, placeholder-stack attribute) for each results tab.
     _RESULT_TABS: tuple[tuple[str, str], ...] = (
         ("_nodes_tab_index", "_nodes_stack"),
-        ("_fixes_tab_index", "_fixes_stack"),
         ("_vias_tab_index", "_vias_stack"),
+        ("_fixes_tab_index", "_fixes_stack"),
         ("_caps_tab_index", "_caps_stack"),
         ("_impedance_tab_index", "_impedance_stack"),
     )
@@ -799,6 +801,9 @@ class _UiBuildMixin:
         as "no warnings"."""
         if stack_attr == "_caps_stack" and self._caps_unchecked():
             return self._CAPS_UNCHECKED_TIP
+        if stack_attr == "_impedance_stack" and self._caps_unchecked():
+            return ("Needs the capacitor check, which hasn't run for this "
+                    "design yet - open the tab to run it.")
         if stack_attr == "_fixes_stack" and self._fixes_unrun():
             return ("Not run for this solve yet - open the tab and press "
                     "Run fixes report.")
@@ -815,7 +820,10 @@ class _UiBuildMixin:
             return getattr(self, attr, -1)
 
         strip.rebuild([
-            TabGroup([idx("_heatmap_tab_index")]),
+            # Outside setup / results: a light grey bar on the open tab (the
+            # Heatmap's own bar follows the colour scale - see
+            # _sync_heatmap_tab_bar).
+            TabGroup([idx("_heatmap_tab_index")], tone="neutral"),
             TabGroup([idx("_topology_tab_index"),
                       idx("_properties_tab_index"),
                       idx("_bridges_tab_index")],
@@ -826,7 +834,7 @@ class _UiBuildMixin:
             # to the far right, where they were easy to miss.
             TabGroup([idx("_messages_tab_index"),
                       idx("_settings_tab_index"),
-                      idx("_help_tab_index")]),
+                      idx("_help_tab_index")], tone="neutral"),
         ])
         self._refresh_tab_strip_state()
         self._sync_heatmap_tab_bar()

@@ -4,7 +4,9 @@
   they say "Run a solve first" instead of showing a table of blank cells.
 * Capacitors / Impedance: grouped by rail, and rails come from SOURCE / SINK
   directives - not from the solve. They show a placeholder only while no
-  rail exists.
+  rail exists. Capacitors and Impedance, like Fixes, then wait for a Run
+  button: opening them only fills in from capacitor rows that already
+  exist.
 * Topology: shows a message instead of a diagram while no source or sink
   has been set up.
 
@@ -112,7 +114,7 @@ def test_stub_with_rails_hides_only_nodes_and_vias(qapp):
     assert _text(v._caps_stack) == ""
     assert _text(v._impedance_stack) == ""
     v.open_all()
-    assert v.populated == ["caps", "impedance"]
+    assert v.populated == []
     assert v._nodes_table_populated is False
     assert v._vias_table_populated is False
 
@@ -141,7 +143,29 @@ def test_solved_shows_everything(qapp):
                   v._caps_stack, v._impedance_stack):
         assert stack.currentIndex() == 0
     v.open_all()
-    assert v.populated == ["nodes", "vias", "caps", "impedance"]
+    assert v.populated == ["nodes", "vias"]
+
+
+def test_capacitors_fill_from_rows_built_elsewhere(qapp):
+    """Opening Capacitors doesn't run the check; rows the Impedance tab
+    already built go straight into the table."""
+    v = _Viewer(stub=False)
+    v._on_tabs_current_changed(v._caps_tab_index)
+    assert v.populated == []
+    v._caps_rows_cache = []
+    v._on_tabs_current_changed(v._caps_tab_index)
+    assert v.populated == ["caps"]
+
+
+def test_impedance_waits_for_the_capacitor_check(qapp):
+    """Impedance is built on the capacitor rows: opening it doesn't run
+    the check, but rows built on the Capacitors tab plot straight away."""
+    v = _Viewer(stub=False)
+    v._on_tabs_current_changed(v._impedance_tab_index)
+    assert v.populated == []
+    v._caps_rows_cache = []
+    v._on_tabs_current_changed(v._impedance_tab_index)
+    assert v.populated == ["impedance"]
 
 
 def test_solve_landing_swaps_placeholders_out(qapp):

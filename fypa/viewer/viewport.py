@@ -632,9 +632,10 @@ class _ViewportMixin:
         return self._relief_mode() != self._RELIEF_OFF
 
     def _sync_relief_controls(self) -> None:
-        """Relief selector shows only in 3D; its height slider only while a
-        relief mode is on. Layer spacing has nothing to separate in the
-        ignoring-layers relief, so it is hidden there."""
+        """Relief selector and layer spacing show only in 3D; the relief
+        height slider only while a relief mode is on. Layer spacing has
+        nothing to separate in the ignoring-layers relief, so it is hidden
+        there too."""
         if getattr(self, "relief_combo", None) is None:
             return
         in_3d = self.view_3d_box.isChecked()
@@ -643,7 +644,7 @@ class _ViewportMixin:
         show_height = mode != self._RELIEF_OFF
         self.relief_height_label.setVisible(show_height)
         self.relief_height_slider.setVisible(show_height)
-        show_spacing = mode != self._RELIEF_IGNORE_LAYERS
+        show_spacing = in_3d and mode != self._RELIEF_IGNORE_LAYERS
         self.layer_spacing_label.setVisible(show_spacing)
         self.layer_spacing_slider.setVisible(show_spacing)
         if hasattr(self, "_act_relief"):

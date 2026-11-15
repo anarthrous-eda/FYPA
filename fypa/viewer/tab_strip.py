@@ -73,6 +73,7 @@ _TONES = {
     "warn": "warn",
     "err": "err",
     "dim": "fg_dim",
+    "neutral": "tab_bar_neutral",
 }
 
 
@@ -346,7 +347,7 @@ class TabStrip(QWidget):
             btn.setLayoutDirection(Qt.RightToLeft)
             btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
             btn.setIconSize(QSize(_PENDING_ICON_PX, _PENDING_ICON_PX))
-            btn.setProperty("barTone", group.tone if group.caption else "")
+            btn.setProperty("barTone", group.tone)
             if group.key:
                 self._group_buttons.setdefault(group.key, []).append(btn)
             btn.setCheckable(True)

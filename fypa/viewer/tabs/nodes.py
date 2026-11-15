@@ -304,22 +304,26 @@ class _NodesTabMixin:
                 and not getattr(self, "_bridges_table_populated", True)):
             self._bridges_table_populated = True
             self._populate_bridges_table()
-        elif (index == getattr(self, "_caps_tab_index", -1)
-                and not self._placeholder_text("_caps_stack")
-                and not getattr(self, "_caps_table_populated", True)):
-            # The row build is seconds of geometry work - run it behind a busy
-            # dialog rather than freezing on the GUI thread. The populated flag
-            # is set by the continuation, so a build that fails or is re-entered
-            # doesn't leave the tab permanently blank.
-            def _populate() -> None:
+        elif index == getattr(self, "_caps_tab_index", -1):
+            # Not run on open - like Fixes, the tab shows a Run button until
+            # the check has run for this design (_run_caps_check). Rows built
+            # elsewhere (the Impedance tab needs them too) fill the table
+            # straight away.
+            self._sync_caps_page()
+            if (not self._placeholder_text("_caps_stack")
+                    and getattr(self, "_caps_rows_cache", None) is not None
+                    and not getattr(self, "_caps_table_populated", True)):
                 self._caps_table_populated = True
                 self._populate_caps_table()
-            self._ensure_cap_rows_async(_populate)
-        elif (index == getattr(self, "_impedance_tab_index", -1)
-                and not self._placeholder_text("_impedance_stack")
-                and not getattr(self, "_impedance_populated", True)):
-            self._impedance_populated = True
-            self._populate_impedance_tab()
+        elif index == getattr(self, "_impedance_tab_index", -1):
+            # Like Capacitors: the capacitor check runs from the tab's Run
+            # button, not on open. Rows already built fill the plot at once.
+            self._sync_impedance_page()
+            if (not self._placeholder_text("_impedance_stack")
+                    and getattr(self, "_caps_rows_cache", None) is not None
+                    and not getattr(self, "_impedance_populated", True)):
+                self._impedance_populated = True
+                self._populate_impedance_tab()
         elif index == getattr(self, "_topology_tab_index", -1):
             if not getattr(self, "_topology_populated", True):
                 self._topology_populated = True

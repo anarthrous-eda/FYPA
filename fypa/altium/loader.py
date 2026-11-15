@@ -2083,6 +2083,191 @@ def _stroke_text_polylines(text: str, stroke_kind: int, height_mm: float,
     return out
 
 
+def _windows_short_date(ts: float) -> str:
+    """``ts`` in the user's Windows short-date format (what Altium prints
+    for date special strings); ISO ``YYYY-MM-DD`` off Windows or on error."""
+    import datetime
+    d = datetime.datetime.fromtimestamp(ts)
+    try:
+        import ctypes
+        import ctypes.wintypes as wt
+        st = (wt.WORD * 8)(d.year, d.month, (d.weekday() + 1) % 7, d.day,
+                            0, 0, 0, 0)
+        buf = ctypes.create_unicode_buffer(80)
+        if ctypes.windll.kernel32.GetDateFormatEx(  # type: ignore[attr-defined]
+                None, 1, st, None, buf, len(buf), None):  # 1 = DATE_SHORTDATE
+            return buf.value
+    except Exception:
+        pass
+    return d.strftime("%Y-%m-%d")
+
+
+def _windows_short_time(ts: float) -> str:
+    import datetime
+    return datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S")
+
+
+def _prjpcb_parameters(prjpcb_path) -> dict[str, str]:
+    """Project parameters from the ``.PrjPcb`` (``[ParameterN]`` sections
+    with ``Name=`` / ``Value=``), keyed by lower-cased name. Empty on any
+    read error."""
+    out: dict[str, str] = {}
+    try:
+        text = Path(prjpcb_path).read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return out
+    name = None
+    in_param = False
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("["):
+            in_param = s.lower().startswith("[parameter")
+            name = None
+            continue
+        if not in_param or "=" not in s:
+            continue
+        k, v = s.split("=", 1)
+        if k.lower() == "name":
+            name = v.strip()
+        elif k.lower() == "value" and name:
+            out[name.lower()] = v
+    return out
+
+
+def _special_string_resolver(proj: ExtractedProject):
+    """Return ``resolve(text, layer_id) -> str`` that expands Altium PCB
+    special strings in free overlay text.
+
+    Handles the classic whole-string form (``.ModifiedDate``) and the
+    ``=`` expression form (``='REV ' + Revision``). Names resolve against
+    the project parameters first, then the built-ins below; an unknown
+    name is left as written so nothing silently disappears."""
+    import time as _time
+    params = _prjpcb_parameters(proj.prjpcb_path)
+    pcb = Path(proj.pcbdoc_path)
+    try:
+        mtime = pcb.stat().st_mtime
+    except Exception:
+        mtime = None
+    now = _time.time()
+    builtins = {
+        "pcb_file_name": str(pcb),
+        "pcb_file_name_no_path": pcb.name,
+        "print_date": _windows_short_date(now),
+        "print_time": _windows_short_time(now),
+        "component_count": str(len(proj.pcb_components)),
+        "via_count": str(len(proj.vias)),
+        "pad_count": str(len(proj.pads)),
+        "net_count": str(len(proj.nets)),
+    }
+    if mtime is not None:
+        for k in ("modifieddate", "modified_date"):
+            builtins[k] = _windows_short_date(mtime)
+        for k in ("modifiedtime", "modified_time"):
+            builtins[k] = _windows_short_time(mtime)
+    layer_names = {_TOP_OVERLAY_LAYER_ID: "Top Overlay",
+                   _BOT_OVERLAY_LAYER_ID: "Bottom Overlay"}
+
+    def _lookup(name: str, layer_id: int) -> str | None:
+        key = name.lower()
+        if key in params:
+            return params[key]
+        if key == "layer_name":
+            return layer_names.get(layer_id)
+        return builtins.get(key)
+
+    def resolve(text: str, layer_id: int) -> str:
+        s = text.strip()
+        if s.startswith(".") and re.fullmatch(r"\.[A-Za-z_]\w*", s):
+            val = _lookup(s[1:], layer_id)
+            return text if val is None else val
+        if s.startswith("="):
+            # Tokens: 'quoted literal' or identifier, joined by '+'.
+            parts = []
+            for tok in re.findall(r"'[^']*'|\"[^\"]*\"|[^+\s'\"]+", s[1:]):
+                if tok[0] in "'\"":
+                    parts.append(tok[1:-1])
+                    continue
+                val = _lookup(tok.lstrip("."), layer_id)
+                if val is None:
+                    return text
+                parts.append(val)
+            return "".join(parts)
+        return text
+
+    return resolve
+
+
+def _overlay_region_records(proj: ExtractedProject) -> list[dict]:
+    """Filled shapes on the Top / Bottom Overlay layers - ``Place > Region``
+    / ``Place > Fill`` logos, polarity blocks, white-ink panels - as ring
+    records ``{kind: "region", side, exterior, holes}``.
+
+    Altium dual-stores standalone regions in both ``Regions6`` and
+    ``ShapeBasedRegions6`` with no polygon link to dedupe on, so per layer
+    the shape-based copy (true arc edges) wins and the legacy stream is
+    only used when the layer has none. Each side is then unioned so a
+    semi-transparent Overlay row blends every pixel once."""
+    import fypa.altium_geometry as _g
+    from shapely.ops import unary_union
+
+    def _usable(r) -> bool:
+        return (r.layer_id in _OVERLAY_LAYER_IDS and not r.is_keepout
+                and not r.is_board_cutout and not r.is_polygon_outline
+                and len(r.outline) >= 3)
+
+    sbr_layers = {r.layer_id for r in proj.shape_based_regions if _usable(r)}
+    geoms: dict[int, list] = {lid: [] for lid in _OVERLAY_LAYER_IDS}
+    for r in proj.shape_based_regions:
+        if _usable(r):
+            geoms[r.layer_id].append(_g._shape_based_region_polygon(r))
+    for r in proj.regions:
+        if _usable(r) and r.layer_id not in sbr_layers:
+            geoms[r.layer_id].append(_g._region_polygon(r))
+    for f in proj.fills:
+        if f.layer_id in _OVERLAY_LAYER_IDS and not f.is_keepout:
+            geoms[f.layer_id].append(_g._fill_polygon(f))
+
+    out: list[dict] = []
+    for lid, polys in geoms.items():
+        polys = [p for p in polys if p is not None and not p.is_empty]
+        if not polys:
+            continue
+        try:
+            merged = unary_union(polys)
+        except Exception:
+            continue
+        parts = (list(merged.geoms) if hasattr(merged, "geoms")
+                 else [merged])
+        side = "bottom" if lid == _BOT_OVERLAY_LAYER_ID else "top"
+        for p in parts:
+            if p.geom_type != "Polygon" or p.is_empty:
+                continue
+            out.append({
+                "kind": "region",
+                "side": side,
+                "exterior": np.asarray(p.exterior.coords, dtype=np.float32),
+                "holes": [np.asarray(h.coords, dtype=np.float32)
+                          for h in p.interiors],
+            })
+    return out
+
+
+def _truetype_fields(t) -> dict:
+    """Font fields the viewer needs to outline TrueType text in its real
+    face, at its real size, mirrored like the manufactured silkscreen.
+    Empty for stroke-font text (that ships as polylines)."""
+    if t.is_stroke:
+        return {}
+    return {
+        "font_name": t.font_name or "Arial",
+        "bold": bool(t.is_bold),
+        "italic": bool(t.is_italic),
+        "mirrored": bool(t.is_mirrored),
+        "box_anchor": bool(getattr(t, "box_anchor", False)),
+    }
+
+
 def _build_overlay_records(proj: ExtractedProject, net_name_fn) -> dict:
     """Build the silkscreen / component-body / designator overlay records
     consumed by the viewer's Overlays control.
@@ -2097,9 +2282,11 @@ def _build_overlay_records(proj: ExtractedProject, net_name_fn) -> dict:
 
     # Overlay graphics - the tracks and (tessellated) arcs on the Top /
     # Bottom Overlay layers: component silkscreen outlines, polarity marks,
-    # board markings. Text is deliberately excluded - reference designators
-    # are their own overlay, and component comment / value strings are a
-    # component property Altium hides on the overlay by default.
+    # board markings - plus free-standing overlay text (board name, revision,
+    # connector labels). Reference designators are their own overlay row,
+    # and component comment / value strings are excluded because Altium
+    # hides them on the overlay by default (their per-component visibility
+    # flag isn't extracted).
     silkscreen: list[dict] = []
     for t in proj.tracks:
         if t.layer_id in _OVERLAY_LAYER_IDS:
@@ -2117,6 +2304,35 @@ def _build_overlay_records(proj: ExtractedProject, net_name_fn) -> dict:
                 "width_mm": float(a.width_mm),
                 "polyline": _arc_polyline(a),
             })
+    # Filled overlay shapes (regions / fills) - logos, white-ink blocks.
+    silkscreen.extend(_overlay_region_records(proj))
+    resolve = _special_string_resolver(proj)
+    for t in proj.texts:
+        if (t.layer_id not in _OVERLAY_LAYER_IDS or t.is_designator
+                or t.is_comment or not t.text):
+            continue
+        # Special strings (.ModifiedDate, ='REV ' + Revision, ...) are
+        # expanded first so the drawn text matches Altium's.
+        text = resolve(t.text, t.layer_id)
+        if not text:
+            continue
+        # Stroke-font text is laid out into Altium's own single-stroke
+        # geometry (same path as designators); TrueType text ships with
+        # empty polylines and the viewer falls back to a label.
+        silkscreen.append({
+            "kind": "text",
+            "side": _side(t.layer_id),
+            "text": text,
+            "x_mm": t.center.x,
+            "y_mm": t.center.y,
+            "height_mm": t.height_mm,
+            "rotation_deg": t.rotation_deg,
+            "stroke_width_mm": t.stroke_width_mm,
+            "polylines": (_stroke_text_polylines(
+                text, t.stroke_kind, t.height_mm, t.center.x, t.center.y,
+                t.rotation_deg, t.is_mirrored) if t.is_stroke else []),
+            **_truetype_fields(t),
+        })
 
     # Per-component net set + pad-extent points (for the body bounding box).
     # The half-diagonal extent guarantees the box contains each pad even
@@ -2179,6 +2395,7 @@ def _build_overlay_records(proj: ExtractedProject, net_name_fn) -> dict:
             "nets": sorted(comp_nets.get(ci, set())) if ci >= 0 else [],
             "stroke_width_mm": t.stroke_width_mm,
             "polylines": polylines,
+            **_truetype_fields(t),
         })
 
     return {

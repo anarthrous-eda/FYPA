@@ -172,7 +172,7 @@ no one set of properties applies across roles.</p>
     Voltage / Voltage Drop interpolate along the barrel's length; Current
     Density and Power Density are constant per inter-layer segment. 3D
     mode only.</li>
-  <li><b>Layer spacing slider</b> - 3D only. Scales both the
+  <li><b>Layer spacing slider</b> - 3D only (hidden in 2D). Scales both the
     inter-layer separation and the via cylinder length.</li>
   <li><b>Relief view</b> - 3D only. Raises each point of the copper
     by its value on the colour scale, so the higher the voltage the

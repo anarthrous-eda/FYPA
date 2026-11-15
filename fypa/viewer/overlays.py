@@ -68,7 +68,7 @@ _OVERLAY_DEFAULT_COLORS: dict[str, tuple[float, float, float]] = {
     "silkscreen":    (1.00, 1.00, 0.00),   # yellow (#ffff00)
     "pads":          (1.00, 0.82, 0.29),   # amber
     "components":    (0.00, 0.50, 0.00),   # green (#008000)
-    "designators":   (1.00, 1.00, 0.00),   # yellow (#ffff00)
+    "designators":   (1.00, 1.00, 1.00),   # white (#ffffff)
     "npth":          (0.00, 0x91 / 255, 0x90 / 255),  # teal (#009190)
     "board_outline": (0.50, 0.00, 0.00),   # dark red / maroon (#800000)
 }
@@ -85,6 +85,7 @@ _OVERLAY_DEFAULT_BOTTOM_COLORS: dict[str, tuple[float, float, float]] = {
     "silkscreen": (0.50, 0.50, 0.00),               # olive (#808000)
     "components": (0.0, 0x57 / 255, 0.0),           # dark green (#005700)
     "pads":       (0xb0 / 255, 0x89 / 255, 0x16 / 255),  # brass (#b08916)
+    "designators": (0xc0 / 255, 0xc0 / 255, 0xc0 / 255),  # light grey (#c0c0c0)
 }
 
 
