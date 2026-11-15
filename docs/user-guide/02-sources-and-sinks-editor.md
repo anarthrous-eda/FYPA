@@ -218,6 +218,30 @@ Apply it changes to: *Overrides the schematic directive.*
 > select the component and click **Remove** - the schematic directive
 > takes over again on the next resolve.
 
+### Series elements
+
+The green SERIES and dimmer SERIES (auto) squares are click targets
+too: clicking either one selects its part, even when the Components
+overlay is off. The form opens with a series block above the usual
+fields:
+
+- **Where the model came from** - the Altium schematic, an editor
+  SERIES, an auto-SERIES low-value resistor, or an auto-bridged 0 Ω
+  link / Net Tie (nets merged). FYPA's own models give the reason.
+- **What the solve found** - current and its direction, drop (with its
+  share of the rail's set voltage), and loss. For a chip resistor the
+  loss is compared with the typical rating for its size (e.g. 63 mW for
+  an 0402). Values go italic and are marked out of date after an edit,
+  until you Resolve.
+- **A merged link** has no current or drop of its own, because its two
+  nets were joined into one. The block says so.
+
+Buttons, depending on the part: **Disable auto-SERIES**, **Make it an
+editor SERIES** (pins the part so changing the auto-SERIES limit can't
+drop it; a 0 Ω link asks for a resistance), **Re-enable auto-SERIES**,
+**Show in Bridges tab**, and **Focus both nets**. A schematic SERIES
+keeps its **🔓 Unlock to edit** button.
+
 ## 2.6 Editing several sinks at once
 
 Setting the same current on twelve DDR loads one form at a time is the

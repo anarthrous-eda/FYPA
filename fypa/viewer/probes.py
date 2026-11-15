@@ -1436,6 +1436,29 @@ class _ProbeMixin:
         best = int(candidates[np.argmin(d2[candidates])])
         return rows[best]
 
+    def _pick_series_marker(self, world_x: float,
+                            world_y: float) -> str | None:
+        """Designator of the SERIES / SERIES (auto) square under the click,
+        or ``None``. Same hit radius as :meth:`_pick_hovered_marker`; the
+        nearest square wins. Covers the solved squares and, in editor
+        mode, the editor SERIES ones."""
+        mpp = self._mm_per_pixel
+        if mpp <= 0.0:
+            return None
+        rows = (list(getattr(self, "_solved_series_click_rows", None) or [])
+                + list(getattr(self, "_editor_series_click_rows", None)
+                       or []))
+        best: str | None = None
+        best_d2: float | None = None
+        for r in rows:
+            if not r.get("designator"):
+                continue
+            radius = (r["size_px"] * 0.5 + 2.0) * mpp
+            d2 = (r["x_mm"] - world_x) ** 2 + (r["y_mm"] - world_y) ** 2
+            if d2 <= radius * radius and (best_d2 is None or d2 < best_d2):
+                best, best_d2 = r["designator"], d2
+        return best
+
     def _marker_hover_info(self, world_x: float, world_y: float) -> str:
         """Bottom-bar suffix for the SOURCE/SINK marker under the cursor,
         or ``""``. Thin wrapper over :meth:`_pick_hovered_marker` + the

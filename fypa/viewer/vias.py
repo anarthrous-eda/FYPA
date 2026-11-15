@@ -18,9 +18,29 @@ from fypa.viewer.overlays import (
     _MARKER_LAYER_RING_W,
     _N_NET_MARKER_EDGE,
     _N_SIDE_TERMINALS,
+    _OVERLAY_DEFAULT_COLORS,
+    _OVERLAY_DEFAULT_VIS,
     _rec_slot_tuple,
 )
 from fypa.viewer.prefs import _VIA_NO_CURRENT_OPACITY_DEFAULT
+from fypa.viewer.widgets import _transparency_alpha
+
+
+def _rgba_hex(rgb: tuple[float, float, float], alpha: float = 1.0) -> str:
+    """``#AARRGGBB`` (Qt's alpha-first form, which QColor parses) for a 0..1
+    RGB triple and alpha - the 2D markers are painted with QPainter."""
+    r, g, b = (max(0, min(255, int(round(c * 255.0)))) for c in rgb)
+    a = max(0, min(255, int(round(alpha * 255.0))))
+    return f"#{a:02x}{r:02x}{g:02x}{b:02x}"
+
+
+def _fade_chunk(col: np.ndarray, alpha: float) -> np.ndarray:
+    """Copy of a cylinder colour chunk (RGB or RGBA rows) with its alpha
+    scaled by ``alpha``. Returns RGBA. Never mutates ``col`` - solid chunks
+    are cached and reused across pushes."""
+    out = col.copy() if col.shape[1] == 4 else _apply_alpha(col, 1.0)
+    out[:, 3] = out[:, 3] * alpha
+    return out
 
 
 def _centroid3(pts) -> tuple[float, float, float]:
@@ -51,10 +71,6 @@ class _ViaRenderMixin:
     # Minimum world-mm radius for vias whose ``diameter_mm`` is missing
     # or oddly small (we still want them to be visible cylinders).
     _VIA_CYL_MIN_RADIUS_MM: float = 0.2
-    # RGB colour of the via cylinders (matches the 2D orange via marker).
-    _VIA_CYL_COLOR_RGB: tuple[float, float, float] = (
-        0xff / 255.0, 0x8c / 255.0, 0x00 / 255.0,
-    )
     # Alpha applied to barrel sections that carry no rail current - the metal
     # stub ends outside the via's outermost current-carrying copper
     # connection, where the solved section current goes to zero (the same
@@ -67,14 +83,48 @@ class _ViaRenderMixin:
     # decided in :meth:`_hop_live_flags`, reusing the plane classifier's
     # ``_NO_CURRENT_PD_*`` power floor.
     _VIA_DEAD_SECTION_ALPHA: float = _VIA_NO_CURRENT_OPACITY_DEFAULT
-    # Plated-through-hole pad styling - light grey so PTHs are visually
-    # distinct from the orange vias in both the 2D marker overlay and the
-    # 3D cylinder view. PTHs span every enabled copper layer (Altium pads
-    # have no blind/buried span) so their cylinders run the full stack.
-    _PTH_COLOR_HEX: str = "#b8b8b8"
-    _PTH_CYL_COLOR_RGB: tuple[float, float, float] = (
-        0xb8 / 255.0, 0xb8 / 255.0, 0xb8 / 255.0,
-    )
+    # Via and plated-through-hole draw colours, visibility and transparency
+    # come from their Board Features rows ("vias" / "pths", see
+    # :meth:`_via_row_state`); the defaults are orange vias and light-grey
+    # PTHs (_OVERLAY_DEFAULT_COLORS). PTHs span every enabled copper layer
+    # (Altium pads have no blind/buried span) so their cylinders run the
+    # full stack.
+
+    def _via_row_state(self, key: str
+                       ) -> tuple[str | None, float,
+                                  tuple[float, float, float]]:
+        """``(vis, alpha, rgb)`` of the Vias (``"vias"``) or Plated TH
+        (``"pths"``) Board Features row.
+
+        ``vis`` is ``None`` (hidden), ``"rails"`` (layer-driven: a visible
+        layer it crosses with its net on a visible rail, or a crossed layer
+        with its all-copper eye on) or ``"all"`` (every one on the board).
+        Falls back to the built-in defaults when the overlay state isn't
+        built (a bare viewer in tests)."""
+        default_rgb = _OVERLAY_DEFAULT_COLORS[key]
+        st = (getattr(self, "_overlay_state", None) or {}).get(key)
+        if not st:
+            return _OVERLAY_DEFAULT_VIS.get(key), 1.0, default_rgb
+        both = st.get("both") or {}
+        rgb = (getattr(self, "_overlay_colors", None) or {}).get(
+            key, default_rgb)
+        return (both.get("vis"),
+                _transparency_alpha(both.get("alpha_step", 0) or 0),
+                rgb)
+
+    def _via_span_layer_ids(self, key: str) -> set[int]:
+        """The distinct top-of-span layer ids of ``metadata[key]`` (``"vias"``
+        / ``"pths"``). Asking the per-layer position collectors once per id
+        with the rail filter off visits every site, since each site's span
+        holds its own top layer - that is how a row's show-everywhere eye
+        reaches every via / PTH regardless of the layer eyes."""
+        out: set[int] = set()
+        for rec in (self.metadata or {}).get(key) or []:
+            ls = rec.get("layer_start")
+            le = rec.get("layer_end")
+            if ls is not None and le is not None:
+                out.add(min(ls, le))
+        return out
 
     def _push_via_cylinders(self, phys_list: list[str],
                             rail_names: list[str] | str,
@@ -102,6 +152,17 @@ class _ViaRenderMixin:
         if self.metadata is None or self._gl_viewer.relief_z_span() > 0.0:
             self._gl_viewer.clear_cylinders()
             return
+        # Board Features rows: visibility, transparency and plain colour of
+        # the via and PTH barrels.
+        via_vis, via_alpha, via_rgb = self._via_row_state("vias")
+        pth_vis, pth_alpha, pth_rgb = self._via_row_state("pths")
+        if via_alpha <= 0.0:
+            via_vis = None
+        if pth_alpha <= 0.0:
+            pth_vis = None
+        if via_vis is None and pth_vis is None:
+            self._gl_viewer.clear_cylinders()
+            return
         # Map layer_id → physical name → rank → z. Use the same rank-
         # based z as the heatmap meshes so cylinders connect cleanly.
         id_to_phys = {v: k for k, v in self._phys_name_to_layer_id.items()}
@@ -114,7 +175,8 @@ class _ViaRenderMixin:
         # bypasses the rail filter since all-copper itself shows every
         # net on the layer, not just rail members.
         copper_visible_ids = set(self._visible_all_copper_layer_ids().keys())
-        if not visible_ids and not copper_visible_ids:
+        if (not visible_ids and not copper_visible_ids
+                and "all" not in (via_vis, pth_vis)):
             self._gl_viewer.clear_cylinders()
             return
         rail_members = set(self._effective_rail_members(rail_names))
@@ -161,6 +223,7 @@ class _ViaRenderMixin:
             self._via_dead_section_alpha, self._VIA_CYL_SEGMENTS,
             self._VIA_CYL_MIN_RADIUS_MM,
             tuple((p, self._layer_z_for(p)) for p in id_to_phys.values()),
+            tuple(via_rgb), tuple(pth_rgb),
         )
         solid_cached = getattr(self, "_via_cyl_cache", None)
         if solid_cached is None or solid_cached[0] != solid_sig:
@@ -169,29 +232,40 @@ class _ViaRenderMixin:
 
         pos_chunks: list[np.ndarray] = []
         col_chunks: list[np.ndarray] = []
-        # The 2D legend's VIA row also gates the 3D cylinders, so the
-        # user can hide vias from the 3D view by clicking the legend
-        # entry the same way they do in 2D. PTHs aren't affected.
-        vias_hidden = "VIA" in self._hidden_legend_keys
-        for v in (self.metadata.get("vias", []) if not vias_hidden else []):
+
+        def _take(chunks, alpha: float) -> None:
+            for pos, col in chunks:
+                pos_chunks.append(pos)
+                col_chunks.append(col if alpha >= 1.0
+                                  else _fade_chunk(col, alpha))
+
+        def _site_shown(rec: dict, vis: str | None,
+                        lo_id: int, hi_id: int) -> bool:
+            # "all" (the row's show-everywhere eye): every site, whatever
+            # its net or the layer eyes. "rails": any layer the site crosses
+            # (full span, not just endpoints) being visible via either layer
+            # eye lets it show. Primary eye (rail/heatmap) requires the
+            # site's net to be on a rail member; second eye (all-copper)
+            # bypasses that filter.
+            if vis == "all":
+                return True
+            if vis != "rails":
+                return False
+            rail_ok = (
+                bool(rail_members) and rec.get("net", "") in rail_members
+                and any(lo_id <= lid <= hi_id for lid in visible_ids)
+            )
+            return rail_ok or any(lo_id <= lid <= hi_id
+                                  for lid in copper_visible_ids)
+
+        for v in (self.metadata.get("vias", []) if via_vis else []):
             ls_id = v.get("layer_start")
             le_id = v.get("layer_end")
             if ls_id is None or le_id is None:
                 continue
             lo_id = min(ls_id, le_id)
             hi_id = max(ls_id, le_id)
-            # Visibility: any layer the via crosses (full span, not just
-            # endpoints) being visible via either eye lets the via show.
-            # Primary eye (rail/heatmap) requires the via to be on a rail
-            # member; second eye (all-copper) bypasses that filter.
-            net = v.get("net", "")
-            rail_ok = (
-                bool(rail_members) and net in rail_members
-                and any(lo_id <= lid <= hi_id for lid in visible_ids)
-            )
-            copper_ok = any(lo_id <= lid <= hi_id
-                            for lid in copper_visible_ids)
-            if not (rail_ok or copper_ok):
+            if not _site_shown(v, via_vis, lo_id, hi_id):
                 continue
             phys_top = id_to_phys.get(lo_id)
             phys_bot = id_to_phys.get(hi_id)
@@ -238,48 +312,32 @@ class _ViaRenderMixin:
                 )
 
             if heatmap_chunks:
-                for pos, col in heatmap_chunks:
-                    pos_chunks.append(pos)
-                    col_chunks.append(col)
+                _take(heatmap_chunks, via_alpha)
             else:
-                # Default (no heatmap) view: solid orange, but with the
-                # no-current barrel sections faded.
+                # Default (no heatmap) view: the row colour (orange unless
+                # changed), with the no-current barrel sections faded.
                 solid = solid_cache.get(id(v))
                 if solid is None:
                     solid = solid_cache[id(v)] = self._solid_via_chunks(
                         v, x, y, radius, lo_id, hi_id, z_top, z_bot,
-                        stackup_ids, id_to_phys, self._VIA_CYL_COLOR_RGB,
+                        stackup_ids, id_to_phys, via_rgb,
                         fallback_r_seg,
                     )
-                for pos, col in solid:
-                    pos_chunks.append(pos)
-                    col_chunks.append(col)
+                _take(solid, via_alpha)
 
-        # Plated through-hole pads - same per-site gating as vias (visible
-        # layer ∩ rail). Default to light grey; when the heatmap-vias/PTH
-        # toggle is on they're coloured the same way as via cylinders via
-        # the shared :meth:`_heatmap_via_chunks` helper (PTH dicts carry
-        # the same ``net`` + ``segments`` keys vias do).
-        for p in self.metadata.get("pths", []):
+        # Plated through-hole pads - same per-site gating as vias, from the
+        # Plated TH row. Default to the row colour (light grey); when the
+        # heatmap-vias/PTH toggle is on they're coloured the same way as via
+        # cylinders via the shared :meth:`_heatmap_via_chunks` helper (PTH
+        # dicts carry the same ``net`` + ``segments`` keys vias do).
+        for p in (self.metadata.get("pths", []) if pth_vis else []):
             ls_id = p.get("layer_start")
             le_id = p.get("layer_end")
             if ls_id is None or le_id is None:
                 continue
             lo_id = min(ls_id, le_id)
             hi_id = max(ls_id, le_id)
-            # Visibility: any layer the PTH crosses (full span, not just
-            # endpoints) being visible lets it show - matching the via
-            # rule above. Primary eye (rail/heatmap) requires the PTH's
-            # net to be on a visible rail; the second eye (all-copper)
-            # bypasses that filter.
-            net = p.get("net", "")
-            rail_ok = (
-                bool(rail_members) and net in rail_members
-                and any(lo_id <= lid <= hi_id for lid in visible_ids)
-            )
-            copper_ok = any(lo_id <= lid <= hi_id
-                            for lid in copper_visible_ids)
-            if not (rail_ok or copper_ok):
+            if not _site_shown(p, pth_vis, lo_id, hi_id):
                 continue
             phys_top = id_to_phys.get(lo_id)
             phys_bot = id_to_phys.get(hi_id)
@@ -318,24 +376,21 @@ class _ViaRenderMixin:
                 )
 
             if heatmap_chunks:
-                for pos, col in heatmap_chunks:
-                    pos_chunks.append(pos)
-                    col_chunks.append(col)
+                _take(heatmap_chunks, pth_alpha)
             else:
-                # Default / Via-Current view: light grey, with no-current
-                # barrel sections faded. PTHs on the active net (their
-                # ``segments`` carry per-hop R the same as vias) fade; those
-                # off the solution can't be sampled and stay fully opaque.
+                # Default / Via-Current view: the row colour (light grey
+                # unless changed), with no-current barrel sections faded.
+                # PTHs on the active net (their ``segments`` carry per-hop R
+                # the same as vias) fade; those off the solution can't be
+                # sampled and stay fully opaque.
                 solid = solid_cache.get(id(p))
                 if solid is None:
                     solid = solid_cache[id(p)] = self._solid_via_chunks(
                         p, x, y, radius, lo_id, hi_id, z_top, z_bot,
-                        stackup_ids, id_to_phys, self._PTH_CYL_COLOR_RGB,
+                        stackup_ids, id_to_phys, pth_rgb,
                         fallback_r_seg, slot=slot,
                     )
-                for pos, col in solid:
-                    pos_chunks.append(pos)
-                    col_chunks.append(col)
+                _take(solid, pth_alpha)
 
         if pos_chunks:
             # Chunks mix RGB (opaque, current-carrying / unsampled) and RGBA
@@ -779,6 +834,7 @@ class _ViaRenderMixin:
 
     def _build_via_current_marker_groups(
         self, target_layer_ids: set[int], rail_members: set[str],
+        *, show_all: bool = False, alpha: float = 1.0,
     ) -> list[MarkerGroup]:
         """Build a list of MarkerGroups for the 2D Via Current overlay.
 
@@ -792,6 +848,9 @@ class _ViaRenderMixin:
         zooming in reveals the real footprint), floored at
         :data:`_VIA_MARKER_MIN_PX` (so zooming out doesn't collapse
         vias into invisible dots).
+
+        ``show_all`` (the Vias row's show-everywhere eye) skips the rail and
+        layer filters; ``alpha`` is the row's transparency.
         """
         if not self._via_current_lookup or self.metadata is None:
             return []
@@ -805,14 +864,15 @@ class _ViaRenderMixin:
         buckets: dict[int, list[tuple[float, float, float]]] = {}
         for v in self.metadata.get("vias", []):
             net = v.get("net", "")
-            if rail_members and net not in rail_members:
+            if not show_all and rail_members and net not in rail_members:
                 continue
             ls_id = v.get("layer_start")
             le_id = v.get("layer_end")
             if ls_id is None or le_id is None:
                 continue
             lo, hi = (ls_id, le_id) if ls_id <= le_id else (le_id, ls_id)
-            if not any(lo <= lid <= hi for lid in target_layer_ids):
+            if not show_all and not any(lo <= lid <= hi
+                                        for lid in target_layer_ids):
                 continue
             x = float(v.get("x_mm", 0.0))
             y = float(v.get("y_mm", 0.0))
@@ -842,7 +902,7 @@ class _ViaRenderMixin:
         for bucket, items in buckets.items():
             lut_idx = int(round(bucket / bucket_div * lut_max))
             r, g, b = int(lut[lut_idx, 0]), int(lut[lut_idx, 1]), int(lut[lut_idx, 2])
-            hex_color = f"#{r:02x}{g:02x}{b:02x}"
+            hex_color = _rgba_hex((r / 255.0, g / 255.0, b / 255.0), alpha)
             n = len(items)
             xs_arr = np.fromiter((it[0] for it in items), dtype=np.float64,
                                   count=n)
@@ -856,7 +916,7 @@ class _ViaRenderMixin:
                 color=hex_color,
                 symbol="o",
                 size=8,  # ignored when world_diameters_mm is set
-                edge_color="#000000",
+                edge_color=_rgba_hex((0.0, 0.0, 0.0), alpha),
                 edge_width=0.4,
                 world_diameters_mm=diam_arr,
                 min_pixel_diameter=self._VIA_MARKER_MIN_PX,
@@ -907,6 +967,10 @@ class _ViaRenderMixin:
         hover_rows: list[dict] = []
         # Dashed P-to-N links of solved series parts (set_series_links).
         series_links: list[tuple] = []
+        # Click targets for the SERIES / SERIES (auto) squares. Kept apart
+        # from ``hover_rows``: those feed the SOURCE / SINK current
+        # tooltip, which has nothing to say about a series part.
+        series_click_rows: list[dict] = []
 
         target_layer_ids: set[int] = set()
         for phys in phys_list:
@@ -927,8 +991,17 @@ class _ViaRenderMixin:
         # emitted. The pin walk naturally produces nothing in that case
         # because every pin's layer_id falls outside ``target_layer_ids``.
         copper_layer_ids = set(self._visible_all_copper_layer_ids().keys())
+        # Vias / Plated TH Board Features rows (visibility, alpha, colour).
+        # A row on its show-everywhere eye draws even with no layer eye on.
+        via_vis, via_alpha, via_rgb = self._via_row_state("vias")
+        pth_vis, pth_alpha, pth_rgb = self._via_row_state("pths")
+        if via_alpha <= 0.0:
+            via_vis = None
+        if pth_alpha <= 0.0:
+            pth_vis = None
+        any_all = "all" in (via_vis, pth_vis)
         if (self.metadata is not None
-                and (target_layer_ids or copper_layer_ids)):
+                and (target_layer_ids or copper_layer_ids or any_all)):
             rail_members = set(self._effective_rail_members(rail_names))
             # Solved SOURCE / SINK / SERIES markers follow the net focus the
             # same way the editor-directive ones do (see
@@ -1058,6 +1131,15 @@ class _ViaRenderMixin:
                         if link_sides is not None:
                             link_sides[1 if is_n_side else 0].append(
                                 (px, py, zs[-1]))
+                            series_click_rows.append({
+                                "x_mm": float(px),
+                                "y_mm": float(py),
+                                "designator": d.get("designator"),
+                                "legend_key":
+                                    self._ROLE_MARKER_STYLE[role]["label"],
+                                "size_px": int(
+                                    self._ROLE_MARKER_STYLE[role]["size"]),
+                            })
                         if role in ("SOURCE", "SINK") and not directive_overridden:
                             hover_rows.append({
                                 "x_mm": float(px),
@@ -1109,66 +1191,76 @@ class _ViaRenderMixin:
                     ring_width=_MARKER_LAYER_RING_W,
                 ))
 
-            # Via *markers* (orange dots) - the MarkerGroup is 2D-only
-            # (in 3D the cylinders drawn natively in GL take over the
-            # same role), but the VIA legend row is registered in both
-            # modes so the user can hide vias from the 3D view too.
-            # :meth:`_push_via_cylinders` gates on the same hidden key.
-            # Skipped entirely in Via Current mode - those vias come via
-            # the per-bucket coloured marker batch below so the 2D view
-            # shows the same heatmap the cylinders show in 3D.
-            if not is_via_current:
+            # Via *markers* (dots in the Vias row colour) - 2D only; in 3D
+            # the cylinders drawn natively in GL take over the same role
+            # (:meth:`_push_via_cylinders` reads the same row). Visibility,
+            # transparency and colour come from the Vias / Plated TH Board
+            # Features rows. Skipped entirely in Via Current mode - those
+            # vias come via the per-bucket coloured marker batch below so
+            # the 2D view shows the same heatmap the cylinders show in 3D.
+            if not is_via_current and not in_3d:
                 # (x, y) -> diameter_mm: dedup across visible layers while
-                # keeping each via's physical diameter so the orange dot
-                # is sized to the real footprint. The GL viewer floors the
-                # drawn size at _VIA_MARKER_MIN_PX so vias stay visible
-                # when zoomed out.
+                # keeping each via's physical diameter so the dot is sized
+                # to the real footprint. The GL viewer floors the drawn
+                # size at _VIA_MARKER_MIN_PX so vias stay visible when
+                # zoomed out.
                 via_pts: dict[tuple[float, float], float] = {}
-                for lid in target_layer_ids:
-                    vxs, vys, vds = self._collect_via_positions(
-                        lid, rail_members)
-                    for vx, vy, vd in zip(vxs, vys, vds):
-                        via_pts[(vx, vy)] = vd
-                # All-copper (second eye) layers add their own vias
-                # without the rail filter - same rule as the 3D cylinder
-                # path in :meth:`_push_via_cylinders`.
-                for lid in copper_layer_ids:
-                    vxs, vys, vds = self._collect_via_positions(
-                        lid, set(), rail_scoped=False)
-                    for vx, vy, vd in zip(vxs, vys, vds):
-                        via_pts[(vx, vy)] = vd
+                if via_vis == "all":
+                    # Every via on the board: ask once per span end with
+                    # the rail filter off (a via's span always holds its
+                    # own start layer).
+                    for lid in self._via_span_layer_ids("vias"):
+                        vxs, vys, vds = self._collect_via_positions(
+                            lid, set(), rail_scoped=False)
+                        for vx, vy, vd in zip(vxs, vys, vds):
+                            via_pts[(vx, vy)] = vd
+                elif via_vis == "rails":
+                    for lid in target_layer_ids:
+                        vxs, vys, vds = self._collect_via_positions(
+                            lid, rail_members)
+                        for vx, vy, vd in zip(vxs, vys, vds):
+                            via_pts[(vx, vy)] = vd
+                    # All-copper (second eye) layers add their own vias
+                    # without the rail filter - same rule as the 3D
+                    # cylinder path in :meth:`_push_via_cylinders`.
+                    for lid in copper_layer_ids:
+                        vxs, vys, vds = self._collect_via_positions(
+                            lid, set(), rail_scoped=False)
+                        for vx, vy, vd in zip(vxs, vys, vds):
+                            via_pts[(vx, vy)] = vd
                 if via_pts:
-                    _add_legend("VIA", "o", "#ff8c00")
-                    if (not in_3d
-                            and "VIA" not in self._hidden_legend_keys):
-                        n_via = len(via_pts)
-                        via_xs = np.fromiter((p[0] for p in via_pts),
-                                             dtype=np.float64, count=n_via)
-                        via_ys = np.fromiter((p[1] for p in via_pts),
-                                             dtype=np.float64, count=n_via)
-                        via_ds = np.fromiter(via_pts.values(),
-                                             dtype=np.float64, count=n_via)
-                        groups.append(MarkerGroup(
-                            xs=via_xs,
-                            ys=via_ys,
-                            color="#ff8c00",
-                            symbol="o",
-                            size=6,  # ignored when world_diameters_mm set
-                            edge_color="#000000",
-                            edge_width=0.4,
-                            world_diameters_mm=via_ds,
-                            min_pixel_diameter=self._VIA_MARKER_MIN_PX,
-                        ))
+                    n_via = len(via_pts)
+                    via_xs = np.fromiter((p[0] for p in via_pts),
+                                         dtype=np.float64, count=n_via)
+                    via_ys = np.fromiter((p[1] for p in via_pts),
+                                         dtype=np.float64, count=n_via)
+                    via_ds = np.fromiter(via_pts.values(),
+                                         dtype=np.float64, count=n_via)
+                    groups.append(MarkerGroup(
+                        xs=via_xs,
+                        ys=via_ys,
+                        color=_rgba_hex(via_rgb, via_alpha),
+                        symbol="o",
+                        size=6,  # ignored when world_diameters_mm set
+                        edge_color=_rgba_hex((0.0, 0.0, 0.0), via_alpha),
+                        edge_width=0.4,
+                        world_diameters_mm=via_ds,
+                        min_pixel_diameter=self._VIA_MARKER_MIN_PX,
+                    ))
 
-                # PTH (plated through-hole) markers - 2D only; the 3D
-                # path uses the cylinder batch instead and has no legend
-                # toggle for PTHs.
+                # PTH (plated through-hole) markers - 2D only, like vias.
                 # (x, y) -> (diameter_mm, slot) so a slotted PTH draws as a
                 # capsule sized to its bore while round PTHs stay dots.
                 pth_pts: dict[tuple[float, float],
                               tuple[float, tuple[float, float, float, bool]
                                     | None]] = {}
-                if not in_3d:
+                if pth_vis == "all":
+                    for lid in self._via_span_layer_ids("pths"):
+                        pxs, pys, pds, psl = self._collect_pth_positions(
+                            lid, set(), rail_scoped=False)
+                        for px, py, pd, ps in zip(pxs, pys, pds, psl):
+                            pth_pts[(px, py)] = (pd, ps)
+                elif pth_vis == "rails":
                     for lid in target_layer_ids:
                         pxs, pys, pds, psl = self._collect_pth_positions(
                             lid, rail_members)
@@ -1184,46 +1276,50 @@ class _ViaRenderMixin:
                         for px, py, pd, ps in zip(pxs, pys, pds, psl):
                             pth_pts[(px, py)] = (pd, ps)
                 if pth_pts:
-                    _add_legend("PTH", "o", self._PTH_COLOR_HEX)
-                    if "PTH" not in self._hidden_legend_keys:
-                        n_pth = len(pth_pts)
-                        pth_xs = np.fromiter((p[0] for p in pth_pts),
-                                             dtype=np.float64, count=n_pth)
-                        pth_ys = np.fromiter((p[1] for p in pth_pts),
-                                             dtype=np.float64, count=n_pth)
-                        pth_ds = np.fromiter(
-                            (v[0] for v in pth_pts.values()),
-                            dtype=np.float64, count=n_pth)
-                        pth_slots = [v[1] for v in pth_pts.values()]
-                        # Only attach the obround list when at least one PTH
-                        # is slotted - keeps the common all-round board on the
-                        # plain circular-marker path.
-                        world_obrounds = (pth_slots
-                                          if any(s is not None
-                                                 for s in pth_slots)
-                                          else None)
-                        groups.append(MarkerGroup(
-                            xs=pth_xs,
-                            ys=pth_ys,
-                            color=self._PTH_COLOR_HEX,
-                            symbol="o",
-                            size=6,  # ignored when world_diameters_mm set
-                            edge_color="#000000",
-                            edge_width=0.4,
-                            world_diameters_mm=pth_ds,
-                            min_pixel_diameter=self._VIA_MARKER_MIN_PX,
-                            world_obrounds=world_obrounds,
-                        ))
+                    n_pth = len(pth_pts)
+                    pth_xs = np.fromiter((p[0] for p in pth_pts),
+                                         dtype=np.float64, count=n_pth)
+                    pth_ys = np.fromiter((p[1] for p in pth_pts),
+                                         dtype=np.float64, count=n_pth)
+                    pth_ds = np.fromiter(
+                        (v[0] for v in pth_pts.values()),
+                        dtype=np.float64, count=n_pth)
+                    pth_slots = [v[1] for v in pth_pts.values()]
+                    # Only attach the obround list when at least one PTH
+                    # is slotted - keeps the common all-round board on the
+                    # plain circular-marker path.
+                    world_obrounds = (pth_slots
+                                      if any(s is not None
+                                             for s in pth_slots)
+                                      else None)
+                    groups.append(MarkerGroup(
+                        xs=pth_xs,
+                        ys=pth_ys,
+                        color=_rgba_hex(pth_rgb, pth_alpha),
+                        symbol="o",
+                        size=6,  # ignored when world_diameters_mm set
+                        edge_color=_rgba_hex((0.0, 0.0, 0.0), pth_alpha),
+                        edge_width=0.4,
+                        world_diameters_mm=pth_ds,
+                        min_pixel_diameter=self._VIA_MARKER_MIN_PX,
+                        world_obrounds=world_obrounds,
+                    ))
 
         # Via Current mode (2D fallback): emit one MarkerGroup per
         # colour bucket so each via shows its current value. The
         # scale controller already explains the ramp, so we don't add
         # legend rows for the bucketed groups.
-        if (is_via_current and not in_3d
-                and target_layer_ids and self.metadata is not None):
+        # The Vias row gates it the same way: hidden hides them, the
+        # show-everywhere eye drops the rail / layer filter (vias the solve
+        # has no current for still have no reading, so they stay off) and
+        # the row's transparency fades them.
+        if (is_via_current and not in_3d and via_vis is not None
+                and (target_layer_ids or via_vis == "all")
+                and self.metadata is not None):
             rail_members = set(self._effective_rail_members(rail_names))
             groups.extend(self._build_via_current_marker_groups(
                 target_layer_ids, rail_members,
+                show_all=(via_vis == "all"), alpha=via_alpha,
             ))
 
         # Jump-highlight ring - always shown, drawn last so it sits on
@@ -1251,6 +1347,11 @@ class _ViaRenderMixin:
 
         self._gl_viewer.set_markers(groups)
         self._solved_series_links = series_links
+        # A legend row the user switched off hides its squares, so they
+        # must stop being click targets too.
+        self._solved_series_click_rows = [
+            r for r in series_click_rows
+            if r["legend_key"] not in self._hidden_legend_keys]
         self._push_series_links()
         # Parts set up as SERIES that no solve has included yet (a FET
         # modelled as switched on): a dashed link, so the connection is

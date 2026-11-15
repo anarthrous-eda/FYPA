@@ -350,7 +350,14 @@ class _EditorFormMixin:
         des = sel.get("designator")
         bbox = sel.get("bbox")
         out: list[dict] = []
+        # Nobody wrote an auto-bridge or an auto-SERIES - they are FYPA's,
+        # shown by the series block instead of as schematic directives.
+        auto = self._auto_series_designators()
         for d in self.metadata.get("directives", []):
+            if (d.get("role") == "AUTO_BRIDGE"
+                    or str(d.get("designator") or "").strip().upper()
+                    in auto):
+                continue
             # Skip directives the editor itself synthesised: a free marker's
             # solved directive carries a synthetic pin at the marker's anchor,
             # which can land inside some component's bbox and would otherwise
@@ -849,9 +856,20 @@ class _EditorFormMixin:
         # (or an editor override already exists), no editable form appears.
         sch_unlock: dict | None = None
         if sel["kind"] == "component":
+            series = self._series_info(sel.get("designator"))
             sch = self._schematic_directives_for(sel)
-            if sch and existing is None and not sel.get("unlocked"):
+            locked = bool(sch) and existing is None and not sel.get("unlocked")
+            if series is not None:
+                # The schematic box below repeats the value and nets.
+                self._build_series_block(lay, series, show_terms=not locked)
+            if locked:
                 self._build_schematic_info(lay, sch)
+                self._update_editor_panel()
+                return
+            if (series is not None and existing is None
+                    and series["source"] in ("auto", "merged")):
+                # FYPA's own model - the buttons above are the way to change
+                # it, so no blank SOURCE form under them.
                 self._update_editor_panel()
                 return
             sch_unlock = self._unlockable_schematic_directive(sel)
@@ -2103,6 +2121,7 @@ class _EditorFormMixin:
         source / sink / return markers."""
         if not self._editor_mode or self._project is None:
             self._editor_series_links = []
+            self._editor_series_click_rows = []
             return []
         selected = self._directive_for_selection()
         # Emphasise every directive in the selection - one for a click, all
@@ -2134,6 +2153,10 @@ class _EditorFormMixin:
         # solved ones by _push_series_links.
         series_links: list[tuple] = []
         self._editor_series_links = series_links
+        # Click targets for the SERIES squares (see _pick_series_marker).
+        series_clicks: list[dict] = []
+        self._editor_series_click_rows = series_clicks
+        series_size = int(self._ROLE_MARKER_STYLE["SERIES"]["size"]) + 4
         for d in self._project.editor_directives:
             if not self._directive_rail_visible(d):
                 continue   # marker's rail is hidden
@@ -2147,6 +2170,11 @@ class _EditorFormMixin:
                     _centroid3([(p[0], p[1], p[3]) for p in p_pts]),
                     _centroid3([(p[0], p[1], p[3]) for p in n_pts]),
                     self._ROLE_MARKER_STYLE["SERIES"]["color"]))
+            if d.role == "SERIES" and d.designator:
+                series_clicks.extend(
+                    {"x_mm": float(p[0]), "y_mm": float(p[1]),
+                     "designator": d.designator, "size_px": series_size}
+                    for p in (*p_pts, *n_pts))
             is_sel = d.id in sel_ids
             for is_n_side, pts in ((False, p_pts), (True, n_pts)):
                 if pts:

@@ -140,6 +140,15 @@ no one set of properties applies across roles.</p>
   <li><b>Layer outlines</b> - the contour button on the
     <i>All Rails</i> row (hotkey <kbd>O</kbd>) traces each visible rail's
     copper polygons in the owning layer's swatch colour.</li>
+  <li><b>Vias / Plated TH</b> - Board Features rows for via and
+    plated-through-hole markers (2D dots, 3D barrels). The left eye
+    follows the layer eyes: a via or PTH shows where a visible layer it
+    passes through has its net on a selected rail, or where a layer it
+    passes through has its all-copper eye on. The right eye shows every
+    one on the board, whatever its net. The swatch sets the plain colour
+    (the heatmap colours replace it when <i>Heatmap vias/PTH</i> or Via
+    Current is on), and the transparency control fades them. Gerber
+    imports have no pads, so only the Vias row appears there.</li>
   <li><b>Transparency control</b> - the white-disc icon sits on
     every Physical layers row and every Board Features row; the
     <i>All Layers</i> row carries a master copy that fans its setting
@@ -148,7 +157,8 @@ no one set of properties applies across roles.</p>
     rises. For a physical layer the transparency fades both the rail
     heatmap mesh AND the per-layer all-copper overlay; for a Board
     Features row it fades that overlay (silkscreen / pads / components
-    / vias / designators / board outline).
+    / vias / plated through holes / non-plated through holes / designators
+    / board outline).
     <table>
       <tr><th>Click</th><th>Effect</th></tr>
       <tr><td>Click</td>

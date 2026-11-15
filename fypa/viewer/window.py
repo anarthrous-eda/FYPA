@@ -34,6 +34,7 @@ from fypa.viewer.editor.mode import _EditorModeMixin
 from fypa.viewer.editor.nets import _EditorNetsMixin
 from fypa.viewer.editor.pending import _PendingRailsMixin
 from fypa.viewer.editor.selection import _EditorSelectionMixin
+from fypa.viewer.editor.series_info import _SeriesInfoMixin
 from fypa.viewer.file_menu import _FileMenuMixin
 from fypa.viewer.markers import _MarkerOverlayMixin
 from fypa.viewer.copper_layers import _CopperLayersMixin
@@ -86,6 +87,7 @@ class PdnViewer(
     _CopperPickMixin,
     _EditorNetsMixin,
     _EditorFormMixin,
+    _SeriesInfoMixin,
     _MarqueeMixin,
     _PendingRailsMixin,
     _ProbeMixin,

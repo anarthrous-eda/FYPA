@@ -21,12 +21,14 @@ from fypa.viewer.overlays import (
     _OVERLAY_DEFAULT_BOTTOM_COLORS,
     _OVERLAY_DEFAULT_COLORS,
     _overlay_default_solid,
+    _OVERLAY_DEFAULT_VIS,
     _overlay_fan_tris,
     _overlay_hole_ring,
     _OVERLAY_LAYERS,
     _overlay_outline_tris,
     _overlay_ribbon_outline_tris,
     _OVERLAY_WIRE_HALF_MM,
+    _VIA_OVERLAY_KEYS,
 )
 from fypa.viewer.theme import _T
 from fypa.viewer.widgets import (
@@ -66,11 +68,12 @@ class _OverlayPanelMixin:
         self._overlay_state: dict[str, dict] = {}
         for key, _label, has_sides in _OVERLAY_LAYERS:
             solid0 = _overlay_default_solid(key)
+            vis0 = _OVERLAY_DEFAULT_VIS.get(key)
             # ``alpha_step`` is the TransparencyButton's step count (0..4);
             # 0 == 0% transparent == fully opaque. New rows start opaque.
             st: dict = {
                 "split": False,
-                "both": {"vis": None, "solid": solid0, "alpha_step": 0},
+                "both": {"vis": vis0, "solid": solid0, "alpha_step": 0},
             }
             if has_sides:
                 st["top"] = {"vis": None, "solid": solid0, "alpha_step": 0}
@@ -176,15 +179,17 @@ class _OverlayPanelMixin:
         flips, so the list re-sizes to whatever the current state needs.
 
         Gerber-sourced designs have no component/pad/overlay/designator
-        geometry, so only the "Board outline" row is shown for them."""
+        geometry, so only the rows derivable from copper + drill data are
+        shown for them (vias, NPTH, board outline)."""
         self.overlay_list.clear()
         n_rows = 0
         gerber_only = self._is_gerber_source()
         for key, label, has_sides in _OVERLAY_LAYERS:
             # Gerber imports carry no component/pad/overlay/designator data,
-            # so only rows derivable from copper + drill data are shown: the
-            # board outline and non-plated through holes.
-            if gerber_only and key not in ("board_outline", "npth"):
+            # so only rows derivable from copper + drill data are shown: vias,
+            # non-plated through holes and the board outline. Plated drill
+            # hits become vias there (no pads), so there is no PTH row.
+            if gerber_only and key not in ("vias", "board_outline", "npth"):
                 continue
             if has_sides and self._overlay_state[key]["split"]:
                 self._add_overlay_row(key, "top", f"Top {label}",
@@ -313,10 +318,11 @@ class _OverlayPanelMixin:
         layout.addWidget(transp_btn)
 
         # Wire-mesh / solid fill toggle, pinned to the far right of the row.
-        # The board outline is always a fixed-width ribbon - solid vs
-        # wire-mesh is meaningless - so that row gets an aligning spacer in
-        # the fill toggle's place instead.
-        if is_board:
+        # The board outline is always a fixed-width ribbon, and via / PTH
+        # markers and barrels are always solid - solid vs wire-mesh is
+        # meaningless for them - so those rows get an aligning spacer in the
+        # fill toggle's place instead.
+        if is_board or key in _VIA_OVERLAY_KEYS:
             fill_slot: QWidget = QLabel()
             fill_slot.setFixedSize(all_eye.width(), all_eye.height())
             layout.addWidget(fill_slot)
@@ -344,18 +350,18 @@ class _OverlayPanelMixin:
                 other.setVisibleState(False, emit=False)
         elif sub["vis"] == scope:
             sub["vis"] = None
-        self._on_overlay_changed()
+        self._on_overlay_changed(key)
 
     def _on_overlay_fill(self, key: str, variant: str, solid: bool) -> None:
         """An overlay row's wire-mesh / solid fill toggle flipped."""
         self._overlay_state[key][variant]["solid"] = bool(solid)
-        self._on_overlay_changed()
+        self._on_overlay_changed(key)
 
     def _on_overlay_transparency(self, key: str, variant: str,
                                   step: int) -> None:
         """An overlay row's transparency control cycled."""
         self._overlay_state[key][variant]["alpha_step"] = int(step)
-        self._on_overlay_changed()
+        self._on_overlay_changed(key)
 
     def _overlay_swatch_rgb(self, key: str,
                             variant: str) -> tuple[float, float, float]:
@@ -404,7 +410,7 @@ class _OverlayPanelMixin:
         # otherwise a cosmetic colour pick would light the ↻ Resolve button.
         self._display_dirty = True
         QTimer.singleShot(0, self._build_overlay_list)
-        self._on_overlay_changed()
+        self._on_overlay_changed(key)
 
     def _on_overlay_split(self, key: str, split: bool) -> None:
         """An overlay row's split toggle flipped. Splitting seeds the fresh
@@ -426,7 +432,7 @@ class _OverlayPanelMixin:
             st["both"]["solid"] = st["top"]["solid"]
             st["both"]["alpha_step"] = st["top"].get("alpha_step", 0)
         QTimer.singleShot(0, self._build_overlay_list)
-        self._on_overlay_changed()
+        self._on_overlay_changed(key)
 
     def _overlay_visibility(self) -> dict[str, dict]:
         """Current Overlays selection, keyed by layer then row variant -
@@ -443,15 +449,34 @@ class _OverlayPanelMixin:
             out[key] = {v: dict(st[v]) for v in variants}
         return out
 
-    def _on_overlay_changed(self) -> None:
+    def _on_overlay_changed(self, key: str | None = None) -> None:
         """An overlay row's visibility, fill style or split state changed.
 
         Overlays are independent of the FEM heatmap, so this rebuilds just
         the overlay geometry rather than triggering a full :meth:`_render`.
         The board outline lives in its own GL batch, so it is refreshed
-        alongside (its row is part of the same Overlays control)."""
-        self._refresh_overlay_geometry(self._visible_rails())
+        alongside (its row is part of the same Overlays control).
+
+        The Vias / Plated TH rows (``key`` in :data:`_VIA_OVERLAY_KEYS`)
+        are drawn by the via marker / cylinder path instead, so a change to
+        one of them refreshes those and leaves the overlay batch alone."""
+        rails = self._visible_rails()
+        if key in _VIA_OVERLAY_KEYS:
+            self._refresh_via_overlays(rails)
+            return
+        self._refresh_overlay_geometry(rails)
         self._refresh_board_outline()
+
+    def _refresh_via_overlays(self, rails) -> None:
+        """Rebuild the via / PTH markers (2D) and cylinders (3D) after a
+        Vias or Plated TH row changed. Same pair of calls the all-copper
+        eye makes (see ``_refresh_after_copper_eye``), minus the overlay
+        batch, which these rows don't touch."""
+        phys_list = self._visible_layers()
+        self._update_markers_and_legend(phys_list, rails)
+        if self.view_3d_box.isChecked():
+            self._push_via_cylinders(phys_list, rails,
+                                     mode=self.mode_combo.currentText())
 
     def _overlay_side_states(self, key: str) -> dict:
         """Return ``{"top": (vis, solid), "bottom": (vis, solid)}`` for an

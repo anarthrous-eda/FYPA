@@ -926,6 +926,15 @@ class _CopperPickMixin:
             if owner is not None:
                 self._select_component(owner)
                 return
+        # SERIES / SERIES (auto) squares likewise select their part. The
+        # square sits on a pad, so the owner comes from the designator the
+        # marker carries rather than from the box under the click.
+        series_des = self._pick_series_marker(world_x, world_y)
+        if series_des is not None:
+            owner = self._component_record(series_des)
+            if owner is not None:
+                self._select_component(owner)
+                return
         # A component may sit here but on a hidden side - it can't be
         # selected. Say why, then fall through to the marker / copper
         # underneath (whatever the user can actually see).

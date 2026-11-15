@@ -1330,7 +1330,14 @@ class _RenderMixin:
                 self._clear_gl_mesh()
             self._gl_viewer.set_relief_height(0.0)
             self._gl_viewer.clear_outlines()
-            self._gl_viewer.clear_cylinders()
+            # Via / PTH barrels can still be wanted here: a Vias or Plated
+            # TH row on its show-everywhere eye, or a layer's all-copper eye
+            # with no rail selected. No heatmap without rails, so mode=None
+            # draws them in their plain row colours (an empty result clears).
+            if self.view_3d_box.isChecked():
+                self._push_via_cylinders(phys_list, rails, mode=None)
+            else:
+                self._gl_viewer.clear_cylinders()
             self._gl_viewer.clear_arrows()
             self._gl_viewer.clear_series_bars()
             self._gl_viewer.clear_stub_triangles()

@@ -9,9 +9,7 @@ import numpy as np
 # top-to-bottom row order. Each is (key, label, has_sides). A ``has_sides``
 # row carries a split button that breaks the row into separate Top / Bottom
 # rows. This list drives only the UI row order - the draw order is fixed
-# independently in _refresh_overlay_geometry. Vias are handled by the
-# layer-based via cylinder / marker path (see :meth:`_push_via_cylinders`)
-# rather than as a Board Features overlay row.
+# independently in _refresh_overlay_geometry.
 _OVERLAY_LAYERS: list[tuple[str, str, bool]] = [
     ("components", "Components", True),
     ("pads", "Pads", True),
@@ -19,6 +17,14 @@ _OVERLAY_LAYERS: list[tuple[str, str, bool]] = [
     # Altium's layer name (splits into Top Overlay / Bottom Overlay).
     ("silkscreen", "Overlay", True),
     ("designators", "Designators", True),
+    # Vias and plated through holes. Both are through features (no Top /
+    # Bottom split) drawn by the via marker / cylinder path, not the
+    # overlay-fill batch (see _VIA_OVERLAY_KEYS). Their rails eye keeps the
+    # layer-driven behaviour: shown where a layer they cross is visible and
+    # their net is on a visible rail, or where a layer they cross has its
+    # all-copper eye on. The all eye shows every one on the board.
+    ("vias", "Vias", False),
+    ("pths", "Plated TH", False),
     # Non-plated through holes (mounting / mechanical holes). A through
     # feature with no side and no per-net association, so its row carries
     # only the "show everywhere" eye (no rails-only eye), like the board
@@ -29,6 +35,19 @@ _OVERLAY_LAYERS: list[tuple[str, str, bool]] = [
     # no fill toggle - see _build_overlay_row_widget.
     ("board_outline", "Board outline", False),
 ]
+
+
+# Board Features rows drawn by the via marker (2D) / cylinder (3D) path in
+# fypa/viewer/vias.py rather than the overlay-fill batch. A change to one of
+# these rows refreshes the via markers + cylinders, not the overlay batch.
+# They carry no fill toggle (markers and barrels are always solid).
+_VIA_OVERLAY_KEYS: frozenset[str] = frozenset({"vias", "pths"})
+
+
+# Visibility a fresh row starts in when the project saved none. Rows absent
+# here start hidden. Vias and PTHs start on the rails eye, which is how they
+# showed before they had a row.
+_OVERLAY_DEFAULT_VIS: dict[str, str] = {"vias": "rails", "pths": "rails"}
 
 
 
@@ -69,7 +88,9 @@ _OVERLAY_DEFAULT_COLORS: dict[str, tuple[float, float, float]] = {
     "pads":          (1.00, 0.82, 0.29),   # amber
     "components":    (0.00, 0.50, 0.00),   # green (#008000)
     "designators":   (1.00, 1.00, 1.00),   # white (#ffffff)
-    "npth":          (0.00, 0x91 / 255, 0x90 / 255),  # teal (#009190)
+    "vias":          (1.00, 0x8c / 255, 0.00),        # orange (#ff8c00)
+    "pths":          (0xb8 / 255, 0xb8 / 255, 0xb8 / 255),  # light grey (#b8b8b8)
+    "npth":         (0.00, 0x91 / 255, 0x90 / 255),  # teal (#009190)
     "board_outline": (0.50, 0.00, 0.00),   # dark red / maroon (#800000)
 }
 

@@ -826,8 +826,12 @@ class _BridgesTabMixin:
         rec = self._selected_bridge_row()
         if not rec:
             return
+        self._disable_auto_bridge(rec["designator"])
+
+    def _disable_auto_bridge(self, des: str) -> None:
+        """Opt ``des`` out of auto-bridging / auto-SERIES. Shared by this
+        tab's Disable button and the editor's series block."""
         project = self._ensure_project()
-        des = rec["designator"]
         existing = {d.strip().upper()
                     for d in getattr(project, "no_auto_bridge", []) or []}
         if des.strip().upper() in existing:
