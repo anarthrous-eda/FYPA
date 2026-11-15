@@ -80,13 +80,12 @@ def viewer(qapp):
     v._highlight_via_xy = None
     v._editor_mode = False
     v._copper_eye = set()
-    v._visible_all_copper_layer_ids = lambda: {
-        lid: None for lid in v._copper_eye}
+    v._visible_all_copper_layer_ids = lambda: dict.fromkeys(v._copper_eye)
     v._effective_rail_members = lambda rails: list(rails)
     v._editor_focus_active = lambda: False
     v._overridden_designators = lambda: set()
-    v._editor_marker_groups = lambda: []
-    v._editor_marker_hover_rows = lambda: []
+    v._editor_marker_groups = list
+    v._editor_marker_hover_rows = list
     v._set_marker_hover_rows = lambda rows: None
     v._refresh_pending_links = lambda: None
     v._init_overlay_state()

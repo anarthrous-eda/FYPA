@@ -1809,8 +1809,8 @@ def extract_gerber_project(
             "to bridge layers."
         )
     if vias:
-        vias = _mark_unconnected_via_layers(
-            list(vias), geom_by_layer, ordered_ids)
+        vias = tuple(_mark_unconnected_via_layers(
+            list(vias), geom_by_layer, ordered_ids))
     log.info("Gerber: drill/vias took %.2fs (%d via(s))",
              time.monotonic() - t_drill0, len(vias))
 
