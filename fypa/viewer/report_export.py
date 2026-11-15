@@ -253,13 +253,14 @@ class _ReportExportMixin:
             self._write_report(path, fmt, settings, decoupling, note,
                                json_sidecar, open_after)
 
-        if "decoupling" in settings.sections \
-                and getattr(self, "_loaded_project", None) is not None:
+        if "decoupling" in settings.sections:
+            # Loads the design first when this viewer came from the solve
+            # cache and holds none; if that fails the rows come back empty
+            # and _report_decoupling carries the reason into the report.
             self._ensure_cap_rows_async(
                 lambda: _with_decoupling(*self._report_decoupling()))
         else:
-            _with_decoupling(None, "Capacitor analysis needs the design info "
-                             "(Reload Design Info) and was not run.")
+            _with_decoupling(None, "")
 
     def _report_decoupling(self):
         """``(results by rail, note)`` from the Capacitors / Impedance tabs'

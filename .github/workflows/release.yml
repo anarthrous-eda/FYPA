@@ -50,7 +50,7 @@ jobs:
         run: uv run pytest
 
       - name: Stamp version from tag
-        # The built exe reports the release version instead of "0.1.0-dev".
+        # The built exe reports the release version instead of the source-tree value.
         # Build-time only - nothing is committed back to the repo.
         run: |
           $tag = "${{ github.ref_name }}"

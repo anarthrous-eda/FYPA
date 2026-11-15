@@ -8,6 +8,7 @@ pattern silently replaces "Go ▶" with "0" and "0.5295" with
 """
 from __future__ import annotations
 
+import gc
 import os
 import time
 import types
@@ -75,8 +76,7 @@ class _Viewer(av.PdnViewer):
 
 @pytest.fixture
 def viewer(qapp):
-    v = _Viewer()
-    v._caps_tab_index = v.tabs.addTab(v._build_capacitors_tab(), "Capacitors")
+    v = _worker_viewer()
     v._populate_caps_table()
     return v
 
@@ -387,9 +387,20 @@ def _pump(qapp, predicate, timeout_s=30.0):
     return predicate()
 
 
-def test_cold_row_build_runs_off_the_gui_thread(qapp):
+def _worker_viewer() -> _Viewer:
+    """A fresh viewer for a test that starts the background row build.
+
+    Collect the earlier tests' viewers first: left to the cyclic GC, one can
+    be torn down mid-build, and destroying a Qt window while the worker
+    thread runs aborts the process."""
+    gc.collect()
     v = _Viewer()
     v._caps_tab_index = v.tabs.addTab(v._build_capacitors_tab(), "Capacitors")
+    return v
+
+
+def test_cold_row_build_runs_off_the_gui_thread(qapp):
+    v = _worker_viewer()
     done: list[bool] = []
 
     v._ensure_cap_rows_async(lambda: done.append(True))
@@ -400,6 +411,43 @@ def test_cold_row_build_runs_off_the_gui_thread(qapp):
     assert _pump(qapp, lambda: bool(done)), "worker never finished"
     assert not v._caps_rows_pending
     assert v._caps_rows_cache is not None and len(v._caps_rows_cache) == 1
+
+
+def test_cold_build_loads_the_design_when_the_viewer_holds_none(qapp,
+                                                                monkeypatch):
+    """A non-clean import that hits the solve cache opens the viewer with no
+    design in memory. The first row build must load it (design-info cache,
+    else extract) instead of showing an empty tab."""
+    v = _worker_viewer()
+    v._loaded_project = None
+    fetched: list[str] = []
+
+    def _fake_fetch(self, title, purpose):
+        fetched.append(title)
+        self._loaded_project = types.SimpleNamespace(
+            extracted=_standard_cap_project())
+        return self._loaded_project
+
+    monkeypatch.setattr(av.PdnViewer, "_fetch_design_info", _fake_fetch)
+    done: list[bool] = []
+    v._ensure_cap_rows_async(lambda: done.append(True))
+
+    assert _pump(qapp, lambda: bool(done)), "worker never finished"
+    assert fetched == ["Capacitors"]
+    assert len(v._caps_rows_cache) == 1
+
+
+def test_failed_design_load_points_at_the_settings_tab(qapp, monkeypatch):
+    v = _worker_viewer()
+    v._loaded_project = None
+    monkeypatch.setattr(av.PdnViewer, "_fetch_design_info",
+                        lambda self, title, purpose: None)
+    done: list[bool] = []
+    v._ensure_cap_rows_async(lambda: done.append(True))
+
+    assert _pump(qapp, lambda: bool(done)), "worker never finished"
+    assert v._caps_rows_cache == []
+    assert "Settings tab" in v._caps_empty_reason
 
 
 def test_warm_rows_skip_the_worker_entirely(viewer):
@@ -415,8 +463,7 @@ def test_a_request_arriving_mid_build_is_queued_not_dropped(qapp,
     """The Capacitors tab, the overlay and the Impedance tab all want the same
     rows. Whoever asks while a build is running must still get its callback -
     dropping it leaves that view blank forever."""
-    v = _Viewer()
-    v._caps_tab_index = v.tabs.addTab(v._build_capacitors_tab(), "Capacitors")
+    v = _worker_viewer()
 
     builds: list[int] = []
     real = av.PdnViewer._compute_cap_report

@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 
 from fypa.viewer.assets import _load_app_icon
 from fypa.viewer.copper_pick import _CopperPickMixin
+from fypa.viewer.design_fetch import _DesignFetchMixin
 from fypa.viewer.diagnostics import (
     _activate_mesh_failure_layer,
     _maybe_show_annotation_errors,
@@ -90,6 +91,7 @@ class PdnViewer(
     _ProbeMixin,
     _FileMenuMixin,
     _ReportExportMixin,
+    _DesignFetchMixin,
     _PropertiesTabMixin,
     _TopologyTabMixin,
     _NodesTabMixin,

@@ -106,7 +106,7 @@ else:
 # normally is correct and fast enough.
 
 
-__version__ = "0.1.0-dev"
+__version__ = "2.1.0"
 
 
 # --- argparse setup -----------------------------------------------------------

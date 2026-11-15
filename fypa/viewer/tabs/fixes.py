@@ -164,6 +164,15 @@ class _FixesTabMixin:
         if pages is not None and _qt_widget_alive(pages):
             pages.setCurrentIndex(
                 1 if getattr(self, "_fixes_populated", False) else 0)
+        refresh_strip = getattr(self, "_refresh_tab_strip_state", None)
+        if refresh_strip is not None:
+            refresh_strip()
+
+    def _fixes_unrun(self) -> bool:
+        """True while there is a solve to rank but the report hasn't run
+        for it - the tab shows its Run button."""
+        return (not getattr(self, "_fixes_populated", False)
+                and not self._placeholder_text("_fixes_stack"))
 
     def _run_fixes_report(self) -> None:
         if self._placeholder_text("_fixes_stack"):

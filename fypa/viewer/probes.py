@@ -114,6 +114,7 @@ class _ProbeMixin:
             self._position_editor_overlays()
             self._position_editor_panel()
             self._position_whatif_banner()
+            self._position_view_mode_tag()
         return False
 
     def _position_scale_overlay(self) -> None:
@@ -129,6 +130,45 @@ class _ProbeMixin:
         y = gl.height() - bar.height() - margin
         bar.move(margin, max(margin, y))
         bar.raise_()
+
+    def _apply_view_mode_tag_theme(self) -> None:
+        """Pin the 3D view tag's colours to the active theme (re-run on a
+        theme switch by :meth:`_refresh_inline_theme`)."""
+        tag = getattr(self, "_view_mode_tag", None)
+        if tag is None:
+            return
+        t = _T()
+        tag.setStyleSheet(
+            f"QLabel {{ color: {t['fg']}; background-color: {t['bg']};"
+            f" border: 1px solid {t['accent']}; border-radius: 4px;"
+            f" padding: 3px 8px; font-size: 8pt; }}"
+        )
+        tag.adjustSize()
+        self._position_view_mode_tag()
+
+    def _position_view_mode_tag(self) -> None:
+        """Show the 3D view tag in 3D mode only, pinned to the GL viewer's
+        bottom-right corner and kept left of the right-hand panel while
+        that is open. Safe before the widgets exist (no-op); wired to every
+        GL-viewer resize via :meth:`eventFilter` and to the 2D / 3D
+        toggle."""
+        tag = getattr(self, "_view_mode_tag", None)
+        gl = getattr(self, "_gl_viewer", None)
+        box = getattr(self, "view_3d_box", None)
+        if tag is None or gl is None or box is None:
+            return
+        if not box.isChecked():
+            tag.hide()
+            return
+        margin = 12
+        panel = getattr(self, "_editor_panel", None)
+        right = gl.width()
+        if panel is not None and panel.isVisible():
+            right -= panel.width()
+        tag.move(max(margin, right - tag.width() - margin),
+                 max(margin, gl.height() - tag.height() - margin))
+        tag.show()
+        tag.raise_()
 
     def _position_editor_panel(self) -> None:
         """Pin the right-hand editor / copper-properties panel to the GL
@@ -163,6 +203,7 @@ class _ProbeMixin:
         panel.move(gl.width() - w - margin, margin)
         panel.raise_()
         gl.set_legend_right_inset(float(w) if panel.isVisible() else 0.0)
+        self._position_view_mode_tag()
 
     def _on_spacemouse_fit(self) -> None:
         """SpaceMouse menu / fit button - frame board or reset 3D view."""
@@ -1701,6 +1742,7 @@ class _ProbeMixin:
                 _floating_tooltip_qss("Consolas, monospace"))
         if getattr(self, "scale_controller", None) is not None:
             self.scale_controller.apply_theme()
+        self._apply_view_mode_tag_theme()
         if getattr(self, "_sidebar_toggle_btn", None) is not None:
             self._sidebar_toggle_btn.update()
 
@@ -1730,26 +1772,32 @@ class _ProbeMixin:
             if w is not None:
                 w.setParent(None)
                 w.deleteLater()
-        # Re-add in the original order. _nodes_tab_index / _vias_tab_index
-        # need refreshing because both tabs are re-inserted after the others.
+        # Re-add in strip order (setup, results, then the rest) - the same
+        # order _build_ui uses. Every stored tab index is refreshed here.
         self._topology_tab_index = self.tabs.addTab(
             self._build_topology_tab(), "Topology",
         )
         self._topology_populated = False
-        self.tabs.addTab(self._build_properties_tab(), "Properties")
-        self._nodes_tab_index = self.tabs.addTab(
-            self._build_nodes_tab(), "Nodes",
-        )
-        self._update_nodes_tab_title(getattr(self, "_nodes_warn_count", 0))
-        self._vias_tab_index = self.tabs.addTab(
-            self._build_vias_tab(), "Vias",
-        )
-        self._update_vias_tab_title(getattr(self, "_vias_warn_count", 0))
+        self._properties_tab_index = self.tabs.addTab(
+            self._build_properties_tab(), "Properties")
         self._bridges_table_populated = False
         self._bridges_tab_index = self.tabs.addTab(
             self._build_bridges_tab(), "Bridges",
         )
         self._update_bridges_tab_title()
+        self._nodes_tab_index = self.tabs.addTab(
+            self._build_nodes_tab(), "Nodes",
+        )
+        self._update_nodes_tab_title(getattr(self, "_nodes_warn_count", 0))
+        # The report's tables went with the old tab - back to the Run page.
+        self._fixes_populated = False
+        self._fixes_tab_index = self.tabs.addTab(
+            self._build_fixes_tab(), "Fixes",
+        )
+        self._vias_tab_index = self.tabs.addTab(
+            self._build_vias_tab(), "Vias",
+        )
+        self._update_vias_tab_title(getattr(self, "_vias_warn_count", 0))
         self._caps_tab_index = self.tabs.addTab(
             self._build_capacitors_tab(), "Capacitors",
         )
@@ -1772,8 +1820,10 @@ class _ProbeMixin:
         self._messages_tab_index = self.tabs.addTab(
             self._build_messages_tab(), "Messages",
         )
-        self.tabs.addTab(self._build_settings_tab(), "Settings")
-        self.tabs.addTab(self._build_help_tab(), "Help")
+        self._settings_tab_index = self.tabs.addTab(
+            self._build_settings_tab(), "Settings")
+        self._help_tab_index = self.tabs.addTab(self._build_help_tab(), "Help")
+        self._rebuild_tab_strip()
         # Restore tab selection. "Nodes" and "Vias" both get a warning
         # suffix appended on failures, so match by prefix.
         for i in range(self.tabs.count()):

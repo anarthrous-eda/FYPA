@@ -1921,6 +1921,7 @@ class _RenderMixin:
         """
         self._cmap_name = cmap_name
         self.scale_controller.setColormap(cmap_name)
+        self._sync_heatmap_tab_bar()
         self.scale_controller.setLogActive(log_active)
         self.scale_controller.setLabelUnit(label, unit)
         self.scale_controller.setRange(data_min, data_max,

@@ -370,10 +370,16 @@ class _CapacitorsTabMixin:
         self._caps_empty_reason = ""
         loaded = getattr(self, "_loaded_project", None)
         extracted = getattr(loaded, "extracted", None)
+        if extracted is None and (getattr(self, "metadata", None) or {}).get(
+                "source_kind") == "gerber":
+            self._caps_empty_reason = (
+                "Capacitor analysis needs component data, which Gerber "
+                "imports don't carry - import the Altium design instead.")
+            return []
         if extracted is None:
             self._caps_empty_reason = (
-                "Capacitor analysis needs the design info - use "
-                "Reload Design Info, then reopen this tab.")
+                "Capacitor analysis needs the design info, which could not "
+                "be loaded - press Reload Design Info on the Settings tab.")
             return []
         if not extracted.pcb_components:
             self._caps_empty_reason = (
@@ -548,6 +554,19 @@ class _CapacitorsTabMixin:
             return
         self._caps_rows_pending = True
 
+        # A viewer opened from the solve cache (a non-clean import of a
+        # project solved before) never ran the extract, so there is no design
+        # in memory. Load it now - design-info cache, else a fresh extract -
+        # rather than leaving the tab empty. Callers arriving during this
+        # load queue on the pending flag above.
+        if self._design_in_memory() is None:
+            try:
+                self._fetch_design_info(
+                    "Capacitors", "the board's capacitors, copper and vias")
+            except Exception:  # noqa: BLE001 - the row build explains why
+                logging.getLogger(__name__).exception(
+                    "Loading the design for the capacitor analysis failed")
+
         def _work():
             # Worker thread: _compute_cap_report touches no Qt.
             return self._compute_cap_report()
@@ -603,6 +622,12 @@ class _CapacitorsTabMixin:
         if hasattr(self, "caps_progress_label"):
             self.caps_progress_label.setText("")
         if not (repopulate and getattr(self, "_caps_table_populated", False)):
+            # Nothing rebuilds the rows until the tab is next opened, so the
+            # old warning count no longer stands - the pending icon shows.
+            self._caps_warn_count = 0
+            update_title = getattr(self, "_update_caps_tab_title", None)
+            if update_title is not None:
+                update_title()
             return
         if heavy:
             self._ensure_cap_rows_async(self._populate_caps_table)
@@ -1227,13 +1252,40 @@ class _CapacitorsTabMixin:
         if getattr(self, "_impedance_populated", False):
             self._replot_impedance()
 
-    def _update_caps_tab_title(self, warn_count: int) -> None:
+    def _caps_unchecked(self) -> bool:
+        """True while the capacitor check hasn't run for the loaded design.
+
+        The rows are built on first opening the tab (seconds of copper
+        geometry, so never at load), which means until then the tab can't
+        know its warning count - a bare "Capacitors" would read as "no
+        warnings". Not while the tab shows a placeholder: then there is
+        nothing to check yet."""
+        return (getattr(self, "_caps_rows_cache", None) is None
+                and not self._placeholder_text("_caps_stack"))
+
+    _CAPS_UNCHECKED_TIP = (
+        "Not checked for this design yet - open the tab to run the "
+        "capacitor check and show its warnings.")
+
+    def _update_caps_tab_title(self, warn_count: int | None = None) -> None:
+        """Badge the tab with the number of flagged capacitors (``None``
+        keeps the last count). Until the check has run the count isn't
+        known, so the tab strip shows the pending icon instead - see
+        :meth:`_refresh_tab_strip_state`."""
+        if warn_count is not None:
+            self._caps_warn_count = warn_count
         idx = getattr(self, "_caps_tab_index", -1)
         if idx < 0:
             return
-        title = ("Capacitors" if warn_count == 0
-                 else f"Capacitors ⚠ {warn_count}")
+        count = getattr(self, "_caps_warn_count", 0)
+        if count and not self._caps_unchecked():
+            title = f"Capacitors ⚠ {count}"
+        else:
+            title = "Capacitors"
         self.tabs.setTabText(idx, title)
+        refresh_strip = getattr(self, "_refresh_tab_strip_state", None)
+        if refresh_strip is not None:
+            refresh_strip()
 
     def _on_caps_overlay_toggled(self, checked: bool) -> None:
         """Re-render the heatmap so the cap overlay appears / clears. The

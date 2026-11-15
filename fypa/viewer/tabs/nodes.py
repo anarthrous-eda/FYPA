@@ -247,6 +247,9 @@ class _NodesTabMixin:
             text = self._placeholder_text(attr)
             stack.widget(1).setText(text)
             stack.setCurrentIndex(1 if text else 0)
+        refresh_strip = getattr(self, "_refresh_tab_strip_state", None)
+        if refresh_strip is not None:
+            refresh_strip()
 
     def _update_bridges_tab_title(self) -> None:
         """Badge the tab with the number of parts that affect a solved rail.

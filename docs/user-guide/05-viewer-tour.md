@@ -10,9 +10,24 @@ side panel, the display modes, and the interactions worth knowing.
 
 ## 5.1 Layout overview
 
-A row of tabs runs across the top - **Heatmap**, Topology, Properties,
-Nodes, Vias, Messages, Settings and Help. The **Heatmap** tab, where
-you spend most of your time, is itself split into three areas:
+A row of tabs runs across the top, laid out left to right in the order
+you work:
+
+- **Heatmap** - the viewer.
+- **SETUP** - Topology, Properties and Bridges: what goes into the solve.
+- **RESULTS** - Nodes, Fixes, Vias, Capacitors and Impedance: what comes
+  out of it. The caption is green while the results are current, and
+  reads *OUT OF DATE* once the setup has changed since the last solve,
+  or *NOT SOLVED YET* before the first one. **Capacitors** and **Fixes**
+  run their analysis only when you open them; until they have run for the
+  loaded design they carry a small pending icon (a ring with three dots)
+  after their name, because until then they can't show a warning count. A results tab is greyed while it has nothing to show, and
+  in italics while its numbers are from before a setup change.
+- **Messages**, **Settings** and **Help** after the results. Settings holds
+  application preferences only; they never change a solve result.
+
+The **Heatmap** tab, where you spend most of your time, is itself split
+into three areas:
 
 - **Control panel (left)** - the Heatmap tab's controls, top to bottom:
   the **Physical layers** list, the **Rails** list, the **Mode**

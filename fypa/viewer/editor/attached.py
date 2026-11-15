@@ -501,6 +501,9 @@ class _AttachedPdnMixin:
                             "directives / settings"
                         )
             self._position_editor_overlays()
+        refresh_strip = getattr(self, "_refresh_tab_strip_state", None)
+        if refresh_strip is not None:
+            refresh_strip()
 
     def _mark_project_dirty(self) -> None:
         """Record that an editor edit happened: the project file is now

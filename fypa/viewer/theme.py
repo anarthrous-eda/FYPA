@@ -220,8 +220,13 @@ def _build_app_stylesheet(mode: str) -> str:
         f"QTabBar::tab {{ background-color: {t['bg_alt']}; color: {t['fg']};"
         f"                padding: 6px 12px; border: 1px solid {t['border']};"
         f"                border-bottom: none; }}"
+        # The open tab carries a 2px accent bar along its top, the same mark
+        # the main window's grouped strip uses (fypa.viewer.tab_strip); the
+        # padding gives back the extra border pixel so the text doesn't jump.
         f"QTabBar::tab:selected {{ background-color: {t['bg']};"
-        f"                         color: {t['fg_strong']}; }}"
+        f"                         color: {t['fg_strong']};"
+        f"                         border-top: 2px solid {t['accent']};"
+        f"                         padding-top: 5px; }}"
         f"QTabBar::tab:hover {{ background-color: {t['bg_hover']}; }}"
         f"QComboBox {{ background-color: {t['bg_input']}; color: {t['fg']};"
         f"             border: 1px solid {t['border']}; padding: 3px 6px; }}"

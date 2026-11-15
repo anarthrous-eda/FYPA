@@ -164,7 +164,9 @@ no one set of properties applies across roles.</p>
     mouse, showing the value of the current mode at that point along
     with the net and layer. Same info as the probe bar under the plot.</li>
   <li><b>3D view</b> - perspective view of the stacked layers
-    with via cylinders.</li>
+    with via cylinders. A <i>3D view</i> tag in the bottom-right corner
+    of the plot shows while it is on, since 3D opens looking straight
+    down and can otherwise look the same as 2D.</li>
   <li><b>Heatmap vias/PTH</b> - colour via and plated-through-hole
     cylinders by the active mode instead of solid orange / light grey.
     Voltage / Voltage Drop interpolate along the barrel's length; Current

@@ -400,6 +400,7 @@ class _ViewportMixin:
         if cmap_name == self._cmap_name:
             return
         self._cmap_name = cmap_name
+        self._sync_heatmap_tab_bar()
         # Re-push the copper-mesh LUT when the data ramp is the live one.
         # _ensure_gl_cmap would no-op here (kind unchanged), so push direct.
         if self._gl_cmap_kind == "data" and self._gl_viewer is not None:
@@ -585,6 +586,7 @@ class _ViewportMixin:
         if not getattr(self, "_preserve_view_on_toggle", False):
             self._gl_viewer.set_view_mode("3d" if checked else "2d")
         self._sync_relief_controls()
+        self._position_view_mode_tag()
         # _render rebuilds arrows internally so they get re-emitted with
         # (N, 3) z-lifted vertices in 3D or flat (N, 2) in 2D.
         self._render_with_busy_popup()

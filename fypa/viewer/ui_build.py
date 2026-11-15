@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+import matplotlib as _mpl
 from fypa.gl_mesh_viewer import GLMeshViewer
 from fypa.spacemouse_nav import SpaceMouseController
 from PySide6.QtCore import Qt
@@ -17,13 +18,17 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSlider,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from fypa.viewer.display import _build_cmap_lut, _MODES
 from fypa.viewer.scale_controls import ScaleController
+from fypa.viewer.tab_strip import (
+    GroupedTabWidget,
+    TabGroup,
+    TabStrip,
+)
 from fypa.viewer.theme import _T
 from fypa.viewer.widgets import (
     EyeButton,
@@ -44,8 +49,19 @@ class _UiBuildMixin:
         # (everything that used to be the whole window); the Properties tab
         # holds the base properties and a report of what the FEM was given.
         self._build_menubar()
-        self.tabs = QTabWidget(self)
-        self.setCentralWidget(self.tabs)
+        # The pages live in a QTabWidget whose own bar is hidden; the grouped
+        # strip above it (setup | results) does the navigating - see
+        # fypa.viewer.tab_strip.
+        shell = QWidget(self)
+        shell_lay = QVBoxLayout(shell)
+        shell_lay.setContentsMargins(0, 0, 0, 0)
+        shell_lay.setSpacing(0)
+        self.tabs = GroupedTabWidget(shell)
+        self._tab_strip = TabStrip(self.tabs, shell)
+        self.tabs.strip = self._tab_strip
+        shell_lay.addWidget(self._tab_strip)
+        shell_lay.addWidget(self.tabs, 1)
+        self.setCentralWidget(shell)
 
         heatmap_tab = QWidget(self.tabs)
         self._heatmap_tab_index = self.tabs.addTab(heatmap_tab, "Heatmap")
@@ -548,6 +564,22 @@ class _UiBuildMixin:
         self._scale_overlay.setVisible(bool(self._rails))
         self._position_scale_overlay()
 
+        # "3D" mode tag - pinned bottom-right (the only free corner: the
+        # editor buttons own top-left, the legend top-right, the scale
+        # strip bottom-left). 3D enters top-down at the 2D framing, so
+        # without it the switch is barely visible. Shown in 3D only; mouse
+        # events pass through to the viewport. _position_view_mode_tag
+        # keeps it pinned (and clear of the right-hand panel).
+        tag = QLabel(self._gl_viewer)
+        tag.setTextFormat(Qt.RichText)
+        tag.setText(
+            "<b>3D view</b>&nbsp;&nbsp;Shift + right-drag to orbit"
+            " &middot; 0 to reset &middot; 2 for 2D")
+        tag.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        tag.hide()
+        self._view_mode_tag = tag
+        self._apply_view_mode_tag_theme()
+
         # Probe label: updated on every mouse move over the plot. Colours
         # pinned so the text stays readable under any system / Qt theme
         # (otherwise white-on-light-grey from the inherited dark theme).
@@ -610,8 +642,21 @@ class _UiBuildMixin:
         # the metadata bundle that ships with the solve pickle. Built once at
         # construction; refreshed on each new result.
         _t = time.monotonic()
-        self.tabs.addTab(self._build_properties_tab(), "Properties")
+        self._properties_tab_index = self.tabs.addTab(
+            self._build_properties_tab(), "Properties")
         self._init_log.info("PdnViewer init: Properties tab (%.2fs)", time.monotonic() - _t)
+
+        # Bridges - every part that joins two nets, and what FYPA did with
+        # it. Cheap to build (the candidate scan already ran during the
+        # solve), but populated lazily like its neighbours for consistency.
+        # Last of the setup tabs: everything after it reports a result.
+        _t = time.monotonic()
+        self._bridges_table_populated = False
+        self._bridges_tab_index = self.tabs.addTab(
+            self._build_bridges_tab(), "Bridges")
+        self._update_bridges_tab_title()
+        self._init_log.info("PdnViewer init: Bridges tab (%.2fs)",
+                            time.monotonic() - _t)
 
         # Nodes tab - sortable, filterable table of every directive node's
         # voltage / drop / current density / power density. The empty
@@ -642,27 +687,17 @@ class _UiBuildMixin:
         self._vias_tab_index = self.tabs.addTab(self._build_vias_tab(), "Vias")
         self._init_log.info("PdnViewer init: Vias tab (%.2fs)", time.monotonic() - _t)
 
-        # Bridges - every part that joins two nets, and what FYPA did with
-        # it. Cheap to build (the candidate scan already ran during the
-        # solve), but populated lazily like its neighbours for consistency.
-        _t = time.monotonic()
-        self._bridges_table_populated = False
-        self._bridges_tab_index = self.tabs.addTab(
-            self._build_bridges_tab(), "Bridges")
-        self._update_bridges_tab_title()
-        self._init_log.info("PdnViewer init: Bridges tab (%.2fs)",
-                            time.monotonic() - _t)
-
         # Capacitors tab - decoupling-cap loop-inductance analysis. Same
         # lazy-populate treatment; unlike Nodes/Vias there's no deferred
         # warning-count init either, because the row build includes a
         # per-net copper-shape union (seconds on a big board) that we don't
-        # want to pay invisibly at startup - the ⚠ badge appears after the
-        # first tab open.
+        # want to pay invisibly at startup - the tab reads "Capacitors ?"
+        # until the first open, then carries the ⚠ count.
         _t = time.monotonic()
         self._caps_table_populated = False
         self._caps_tab_index = self.tabs.addTab(
             self._build_capacitors_tab(), "Capacitors")
+        self._update_caps_tab_title()
         self._init_log.info("PdnViewer init: Capacitors tab (%.2fs)",
                             time.monotonic() - _t)
 
@@ -691,14 +726,16 @@ class _UiBuildMixin:
         # Re-run button. Changes apply on the next solve (Re-run opens a
         # fresh viewer with the new solution).
         _t = time.monotonic()
-        self.tabs.addTab(self._build_settings_tab(), "Settings")
+        self._settings_tab_index = self.tabs.addTab(
+            self._build_settings_tab(), "Settings")
         self._init_log.info("PdnViewer init: Settings tab (%.2fs)", time.monotonic() - _t)
 
         # Help tab - static reference for hotkeys + mouse controls. Built
         # once at construction; never updates.
         _t = time.monotonic()
-        self.tabs.addTab(self._build_help_tab(), "Help")
+        self._help_tab_index = self.tabs.addTab(self._build_help_tab(), "Help")
         self._init_log.info("PdnViewer init: Help tab (%.2fs)", time.monotonic() - _t)
+        self._rebuild_tab_strip()
         self._init_log.info(
             "PdnViewer init: all tabs done (total %.2fs)",
             time.monotonic() - self._init_t0,
@@ -743,3 +780,117 @@ class _UiBuildMixin:
         self._refresh_view_menu_labels()
         # Pan, wheel zoom, and resize handlers are wired to the GL viewer
         # via signals connected when the viewer was created.
+
+    # --- Grouped tab strip ---------------------------------------------------
+
+    # (tab-index attribute, placeholder-stack attribute) for each results tab.
+    _RESULT_TABS: tuple[tuple[str, str], ...] = (
+        ("_nodes_tab_index", "_nodes_stack"),
+        ("_fixes_tab_index", "_fixes_stack"),
+        ("_vias_tab_index", "_vias_stack"),
+        ("_caps_tab_index", "_caps_stack"),
+        ("_impedance_tab_index", "_impedance_stack"),
+    )
+
+    def _tab_pending_tip(self, stack_attr: str) -> str:
+        """Tooltip for a results tab whose analysis runs on demand and
+        hasn't run for the loaded design yet, else "". Those tabs carry the
+        pending icon: until they run, a tab with no warning badge would read
+        as "no warnings"."""
+        if stack_attr == "_caps_stack" and self._caps_unchecked():
+            return self._CAPS_UNCHECKED_TIP
+        if stack_attr == "_fixes_stack" and self._fixes_unrun():
+            return ("Not run for this solve yet - open the tab and press "
+                    "Run fixes report.")
+        return ""
+
+    def _rebuild_tab_strip(self) -> None:
+        """Lay the strip out over the current tab indices. Run after the tabs
+        are built, and again whenever they are re-created (theme switch)."""
+        strip = getattr(self, "_tab_strip", None)
+        if strip is None:
+            return
+
+        def idx(attr: str) -> int:
+            return getattr(self, attr, -1)
+
+        strip.rebuild([
+            TabGroup([idx("_heatmap_tab_index")]),
+            TabGroup([idx("_topology_tab_index"),
+                      idx("_properties_tab_index"),
+                      idx("_bridges_tab_index")],
+                     caption="SETUP", key="setup", tone="accent"),
+            TabGroup([idx(attr) for attr, _stack in self._RESULT_TABS],
+                     caption="RESULTS", key="results", tone="dim"),
+            # Straight after the results, one group gap along - not pushed
+            # to the far right, where they were easy to miss.
+            TabGroup([idx("_messages_tab_index"),
+                      idx("_settings_tab_index"),
+                      idx("_help_tab_index")]),
+        ])
+        self._refresh_tab_strip_state()
+        self._sync_heatmap_tab_bar()
+
+    def _sync_heatmap_tab_bar(self) -> None:
+        """Draw the open Heatmap tab's top bar in the active colour scale
+        (e.g. viridis) rather than a flat accent colour."""
+        strip = getattr(self, "_tab_strip", None)
+        index = getattr(self, "_heatmap_tab_index", -1)
+        if strip is None or index < 0:
+            return
+        cmap_name = getattr(self, "_cmap_name", None) or "viridis"
+        try:
+            cmap = _mpl.colormaps[cmap_name]
+        except KeyError:
+            strip.set_tab_bar_gradient(index, None)
+            return
+        n = 12
+        colors = []
+        for i in range(n):
+            r, g, b, _a = cmap(i / (n - 1))
+            colors.append(
+                f"#{round(r * 255):02x}{round(g * 255):02x}"
+                f"{round(b * 255):02x}")
+        strip.set_tab_bar_gradient(index, colors)
+
+    def _refresh_tab_strip_state(self) -> None:
+        """Bring the strip's results caption and results-tab marks in line
+        with the viewer. Cheap; run on every staleness change and tab
+        switch."""
+        strip = getattr(self, "_tab_strip", None)
+        if strip is None:
+            return
+        has_results = self._has_solve_results()
+        stale = has_results and bool(getattr(self, "_solve_stale", False))
+        if not has_results:
+            failed = bool(
+                (getattr(self, "metadata", None) or {}).get("mesh_failed"))
+            caption = (("RESULTS - SOLVE FAILED", "err") if failed
+                       else ("RESULTS - NOT SOLVED YET", "dim"))
+        elif stale:
+            caption = ("RESULTS - OUT OF DATE", "warn")
+        else:
+            caption = ("RESULTS", "ok")
+        strip.set_group_caption("results", *caption)
+
+        for idx_attr, stack_attr in self._RESULT_TABS:
+            index = getattr(self, idx_attr, -1)
+            if index < 0:
+                continue
+            pending_tip = self._tab_pending_tip(stack_attr)
+            strip.set_tab_pending(index, bool(pending_tip))
+            if self._placeholder_text(stack_attr):
+                strip.set_tab_state(
+                    index, "empty",
+                    "Nothing to show yet - open the tab to see what it needs.")
+            elif pending_tip:
+                strip.set_tab_state(index, "stale" if stale else "",
+                                    pending_tip)
+            elif stale:
+                strip.set_tab_state(
+                    index, "stale",
+                    "From the last solve. The setup has changed since - "
+                    "resolve to bring this up to date.")
+            else:
+                strip.set_tab_state(index, "")
+
