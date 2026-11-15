@@ -136,6 +136,24 @@ class RawVia:
     # in parallel with the plated wall.
     ipc4761_via_type: int = 0
     fill_material: str = ""
+    # Layers inside the barrel's span that the hole does NOT connect to: no
+    # copper reaches the drill wall there (the layer's copper is cleared
+    # back from the hole). Set by the Gerber importer, whose drill hits carry
+    # no pad data; the Altium path leaves it empty. Such a layer gets no pad
+    # disc and no barrel coupling - see :func:`via_connected_layers`.
+    unconnected_layer_ids: tuple[int, ...] = ()
+
+
+def via_connected_layers(v, span) -> list[int]:
+    """``span`` (layer ids the via barrel passes through) minus the layers
+    the via doesn't connect to (``RawVia.unconnected_layer_ids``, or the
+    ``"unconnected_layer_ids"`` key of a metadata via dict)."""
+    skip = (v.get("unconnected_layer_ids") if isinstance(v, dict)
+            else getattr(v, "unconnected_layer_ids", None))
+    if not skip:
+        return list(span)
+    skip = {int(i) for i in skip}
+    return [lid for lid in span if int(lid) not in skip]
 
 
 @dataclass(frozen=True, slots=True)

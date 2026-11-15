@@ -763,15 +763,17 @@ class _ProbeMixin:
                     continue
             except Exception:
                 continue
+            # Built (and cached) before the hidden-section test, which
+            # reuses it to find the triangle under the cursor.
+            interp = self._ensure_interpolator(lp)
+            if interp is None:
+                continue
             if self._in_hidden_section(lp, x, y):
                 continue
             # Editor net focus draws this rail at alpha 0 - it must not
             # catch the click / hover meant for the focused net below.
             if self._focus_blocks_pick(lp.get("net"), x, y,
                                        lp.get("layer_id")):
-                continue
-            interp = self._ensure_interpolator(lp)
-            if interp is None:
                 continue
             sample = interp(x, y)
             try:
@@ -845,13 +847,30 @@ class _ProbeMixin:
     def _in_hidden_section(lp: dict, x: float, y: float) -> bool:
         """True when (x, y) is on a triangle of a shorted section that the
         Rails control has switched off (see ``tri_keep`` in
-        ``_build_rail_arrays``) - the copper there is not drawn."""
+        ``_build_rail_arrays``) - the copper there is not drawn.
+
+        The triangle is found with the layer's :class:`_FastTriSampler`
+        (built by :meth:`_ensure_interpolator`, normally before this is
+        called), never ``Triangulation.get_trifinder()``: matplotlib's
+        trapezoid map takes seconds per large plane, and the first hover
+        after hiding part of a merged rail froze the GUI building one per
+        layer."""
         keep = lp.get("tri_keep")
         tri = lp.get("triangulation")
         if keep is None or tri is None:
             return False
         try:
-            ti = int(tri.get_trifinder()(x, y))
+            finder = lp.get("interpolator")
+            if not hasattr(finder, "locate"):
+                values = lp.get("values")
+                if values is None:
+                    # Location only - don't cache a zero field as the
+                    # layer's sampler.
+                    finder = _FastTriSampler(tri, np.zeros(len(tri.x)))
+                else:
+                    finder = lp["interpolator"] = _FastTriSampler(
+                        tri, values)
+            ti = int(finder.locate(x, y))
         except Exception:
             return False
         return 0 <= ti < keep.size and not bool(keep[ti])
@@ -869,10 +888,10 @@ class _ProbeMixin:
                 return None
         except Exception:
             return None
-        if self._in_hidden_section(lp, x, y):
-            return None
         interp = self._ensure_interpolator(lp)
         if interp is None:
+            return None
+        if self._in_hidden_section(lp, x, y):
             return None
         sample = interp(x, y)
         try:

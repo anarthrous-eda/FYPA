@@ -8,6 +8,7 @@ import shapely
 import shapely.geometry as _sg
 import shapely.prepared as _sp
 
+from fypa.altium.extract import via_connected_layers
 from fypa.viewer.overlays import _EDITOR_OVERLAY_DIM_ALPHA, _EDITOR_OVERLAY_DIM_BG
 
 
@@ -416,7 +417,8 @@ class _EditorSelectionMixin:
                 if ls is None or le is None:
                     continue
                 lo, hi = (ls, le) if ls <= le else (le, ls)
-                span = [lid for lid in enabled_ids if lo <= lid <= hi]
+                span = via_connected_layers(
+                    rec, [lid for lid in enabled_ids if lo <= lid <= hi])
                 if len(span) <= 1:
                     continue
                 cx = rec.get("x_mm")

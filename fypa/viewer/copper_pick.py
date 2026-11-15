@@ -1,6 +1,7 @@
 """Click-to-select copper primitives and Tab-expansion along the net."""
 from __future__ import annotations
 
+import logging
 import math
 import shapely.geometry as _sg
 import shapely.prepared as _sp
@@ -246,6 +247,7 @@ class _CopperPickMixin:
         hit = self._via_or_pad_at_point(
             world_x, world_y, require_pad_visible=require_pad_visible)
         if hit is not None:
+            hit["click_xy"] = (float(world_x), float(world_y))
             return hit
         cover = self._all_copper_at_point(world_x, world_y)
         if cover is None:
@@ -266,7 +268,8 @@ class _CopperPickMixin:
                 continue
             hit = {"kind": prim["kind"], "record": prim,
                    "layer_id": int(cover["layer_id"]),
-                   "net": str(prim["net"])}
+                   "net": str(prim["net"]),
+                   "click_xy": (float(world_x), float(world_y))}
             if self._is_pour_fragment(prim):
                 # Altium stores a poured polygon as thousands of region
                 # fragments (up to ~9k on a big board); remember the click so
@@ -425,6 +428,36 @@ class _CopperPickMixin:
                 return name
         return f"layer {lid}"
 
+    def _display_net_for_hit(self, hit: dict) -> str:
+        """Net label for the properties form. Unnamed copper (net
+        ``"(none)"`` / empty) that the user has named in editor mode via a
+        :class:`~fypa.project_file.CopperName` - or that touches a real
+        net - shows that name instead, with "[pending resolve]" on a rename
+        the solution hasn't been rebuilt against yet (matching the hover
+        probe). Lookup failures fall back to the raw net."""
+        rec = hit.get("record") or {}
+        net = str(hit.get("net") or rec.get("net") or "")
+        if net and net != "(none)":
+            return net
+        xy = hit.get("click_xy") or hit.get("pour_xy")
+        lid = hit.get("layer_id")
+        if xy is None or lid is None:
+            return net
+        x, y = float(xy[0]), float(xy[1])
+        try:
+            real = self._connected_real_net(x, y, int(lid))
+            if real:
+                return str(real)
+            c = self._copper_name_at(x, y, int(lid))
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "copper-name lookup for properties form failed",
+                exc_info=True)
+            return net
+        if c is not None and c.name:
+            return f"{c.name}  [pending resolve]"
+        return net
+
     def _populate_copper_props_form(self, hit: dict) -> None:
         """(Re)build the right-panel form describing the selected copper
         primitive. Rows are kind-specific; the common header lists shape,
@@ -436,7 +469,7 @@ class _CopperPickMixin:
 
         kind = hit.get("kind") or "?"
         rec = hit.get("record") or {}
-        net = str(hit.get("net") or rec.get("net") or "")
+        net = self._display_net_for_hit(hit)
 
         kind_label = {
             "track": "Track",

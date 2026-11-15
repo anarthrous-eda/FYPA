@@ -405,10 +405,9 @@ class _FastTriSampler:
                              compact_nodes=False)
         self._k = int(min(self._K, max(1, tris.shape[0])))
 
-    def __call__(self, x: float, y: float):
-        """Sample the field at world coords (x, y). Returns a 0-d
-        ``numpy`` masked array - the same type ``LinearTriInterpolator``
-        returns - masked when the point is off the mesh."""
+    def _best_candidate(self, x: float, y: float):
+        """``(triangle index, (t, u, w), min weight)`` of the candidate
+        triangle (x, y) is most inside; ``min weight >= 0`` means inside."""
         _d, idx = self._tree.query((x, y), k=self._k)
         idx = np.atleast_1d(idx)
         px = x - self._ax[idx]
@@ -416,22 +415,50 @@ class _FastTriSampler:
         v0x, v0y = self._v0x[idx], self._v0y[idx]
         v1x, v1y = self._v1x[idx], self._v1y[idx]
         inv = self._inv_det[idx]
-        # Barycentric weights of (x, y) for each candidate triangle:
-        # p - a = u*(b - a) + w*(c - a); the third weight is 1 - u - w.
         u = (px * v1y - v1x * py) * inv
         w = (v0x * py - px * v0y) * inv
         t = 1.0 - u - w
         min_w = np.minimum(np.minimum(t, u), w)
-        min_w[inv == 0.0] = -np.inf          # never pick a degenerate tri
-        j = int(np.argmax(min_w))            # triangle the point is "most inside"
-        if min_w[j] < -0.5:
+        min_w[inv == 0.0] = -np.inf
+        j = int(np.argmax(min_w))
+        return int(idx[j]), (t[j], u[j], w[j]), float(min_w[j])
+
+    # Barycentric slack for :meth:`locate` - a point on a shared edge or a
+    # vertex still counts as inside despite float round-off.
+    _LOCATE_EPS: float = 1e-9
+
+    def locate(self, x: float, y: float) -> int:
+        """Index of the triangle containing (x, y), or ``-1`` off the mesh -
+        what ``Triangulation.get_trifinder()(x, y)`` returns, without
+        building matplotlib's trapezoid map (seconds on a large plane)."""
+        ti, _w, min_w = self._best_candidate(x, y)
+        if min_w >= -self._LOCATE_EPS:
+            return ti
+        # None of the nearest centroids' triangles holds the point - off the
+        # mesh, or a long sliver whose centroid is far away. Settle it
+        # exactly with one vectorised pass over every triangle (a few ms
+        # even on a 300k-triangle plane, and only near the mesh edge).
+        px = x - self._ax
+        py = y - self._ay
+        u = (px * self._v1y - self._v1x * py) * self._inv_det
+        w = (self._v0x * py - px * self._v0y) * self._inv_det
+        inside = ((u >= -self._LOCATE_EPS) & (w >= -self._LOCATE_EPS)
+                  & (1.0 - u - w >= -self._LOCATE_EPS)
+                  & (self._inv_det != 0.0))
+        hits = np.flatnonzero(inside)
+        return int(hits[0]) if hits.size else -1
+
+    def __call__(self, x: float, y: float):
+        """Sample the field at world coords (x, y). Returns a 0-d
+        ``numpy`` masked array - the same type ``LinearTriInterpolator``
+        returns - masked when the point is off the mesh."""
+        ti, (t, u, w), min_w = self._best_candidate(x, y)
+        if min_w < -0.5:
             # Well outside every candidate triangle - a genuine off-mesh
             # point (e.g. a meshing gap inside the copper outline). Match
             # LinearTriInterpolator's masked off-mesh result.
             return np.ma.masked_array(0.0, mask=True)
-        val = (t[j] * self._va[idx[j]]
-               + u[j] * self._vb[idx[j]]
-               + w[j] * self._vc[idx[j]])
+        val = t * self._va[ti] + u * self._vb[ti] + w * self._vc[ti]
         return np.ma.masked_array(float(val), mask=False)
 
 

@@ -20,6 +20,7 @@ Drive the full flow with :func:`run_gerber_import_dialogs`.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,7 +31,9 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
+    QHBoxLayout,
     QHeaderView,
     QLabel,
     QMessageBox,
@@ -70,6 +73,28 @@ _LAYER_ROLE_LABELS: list[tuple[int, str]] = (
         (LAYER_ID_DRILL, "Drill (Excellon or Gerber X2)"),
     ]
 )
+
+
+# File-picker filter shared by File > Import Gerbers and the mapping
+# dialog's Add Files button.
+GERBER_FILE_FILTER: str = (
+    "Gerber / Excellon ("
+    "*.gbr *.GBR *.gtl *.GTL *.gbl *.GBL *.g* *.G* "
+    "*.cmp *.CMP *.sol *.SOL *.gko *.GKO *.gm1 *.GM1 "
+    "*.gto *.GTO *.gbo *.GBO "
+    "*.drl *.DRL *.xln *.XLN *.txt *.TXT *.tap *.TAP *.nc *.NC);;"
+    "All files (*)"
+)
+
+
+def _path_key(path: Path) -> str:
+    """Identity for de-duplicating picked files (case-insensitive on
+    Windows, tolerant of paths that can't be resolved)."""
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path.absolute()
+    return os.path.normcase(str(resolved))
 
 
 def _role_label(layer_id: int) -> str:
@@ -123,14 +148,24 @@ class GerberLayerMappingDialog(QDialog):
         self._initial = dict(initial_assignments or {})
 
         layout = QVBoxLayout(self)
+        header = QHBoxLayout()
         intro = QLabel(
             "FYPA auto-detected the role of each file from its filename.\n"
-            "Adjust any rows that came out wrong, then click OK."
+            "Adjust any rows that came out wrong, then click OK. Use Add "
+            "Files to bring in files from another folder."
         )
         intro.setWordWrap(True)
-        layout.addWidget(intro)
+        header.addWidget(intro, 1)
+        self._add_btn = QPushButton("Add Files...", self)
+        self._add_btn.setToolTip(
+            "Pick more Gerber / drill files (from any folder) and add them "
+            "to this list. Files already listed are skipped."
+        )
+        self._add_btn.clicked.connect(self._on_add_files)
+        header.addWidget(self._add_btn, 0, Qt.AlignTop | Qt.AlignRight)
+        layout.addLayout(header)
 
-        self._table = QTableWidget(len(self._files), 2, self)
+        self._table = QTableWidget(0, 2, self)
         self._table.setHorizontalHeaderLabels(["File", "Role"])
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -142,22 +177,8 @@ class GerberLayerMappingDialog(QDialog):
             1, QHeaderView.ResizeToContents,
         )
         self._combos: list[QComboBox] = []
-        for row, path in enumerate(self._files):
-            initial = self._initial.get(path.name, classify_file(path))
-            item = QTableWidgetItem(path.name)
-            item.setToolTip(str(path))
-            self._table.setItem(row, 0, item)
-            combo = QComboBox(self)
-            for lid, label in self._ROLES:
-                combo.addItem(label, lid)
-            # Select the matching role.
-            idx = next(
-                (i for i, (lid, _) in enumerate(self._ROLES) if lid == initial),
-                0,
-            )
-            combo.setCurrentIndex(idx)
-            self._combos.append(combo)
-            self._table.setCellWidget(row, 1, combo)
+        initial_files, self._files = self._files, []
+        self._add_files(initial_files)
         layout.addWidget(self._table)
 
         buttons = QDialogButtonBox(
@@ -166,6 +187,60 @@ class GerberLayerMappingDialog(QDialog):
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _add_files(self, paths: list[Path]) -> int:
+        """Append one row per path not already listed. Returns how many
+        rows were added (duplicates, compared by resolved path, are
+        skipped so the same file can't be mapped twice)."""
+        seen = {_path_key(p) for p in self._files}
+        added = 0
+        for path in paths:
+            key = _path_key(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            self._append_row(path)
+            added += 1
+        return added
+
+    def _append_row(self, path: Path) -> None:
+        row = self._table.rowCount()
+        self._table.insertRow(row)
+        self._files.append(path)
+        initial = self._initial.get(path.name, classify_file(path))
+        item = QTableWidgetItem(path.name)
+        item.setToolTip(str(path))
+        self._table.setItem(row, 0, item)
+        combo = QComboBox(self)
+        for lid, label in self._ROLES:
+            combo.addItem(label, lid)
+        # Select the matching role.
+        idx = next(
+            (i for i, (lid, _) in enumerate(self._ROLES) if lid == initial),
+            0,
+        )
+        combo.setCurrentIndex(idx)
+        self._combos.append(combo)
+        self._table.setCellWidget(row, 1, combo)
+
+    def _on_add_files(self) -> None:
+        start_dir = str(self._files[-1].parent) if self._files else ""
+        paths_str, _ = QFileDialog.getOpenFileNames(
+            self, "Add Gerber + drill files", start_dir, GERBER_FILE_FILTER,
+        )
+        if not paths_str:
+            return
+        picked = [Path(p) for p in paths_str]
+        added = self._add_files(picked)
+        if added:
+            self._table.scrollToBottom()
+        skipped = len(picked) - added
+        if skipped:
+            QMessageBox.information(
+                self, "Files already listed",
+                f"{skipped} of the picked file(s) were already in the list "
+                "and were not added again.",
+            )
 
     def _current_assignments(self) -> list[tuple[Path, int]]:
         return [(self._files[i], cb.currentData())

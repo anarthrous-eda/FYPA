@@ -50,6 +50,11 @@ miscategorised file in the layer-mapping dialog.
      used).
    - **Drill (Excellon)** - every Excellon file is parsed.
    - **Ignore** - file is dropped from the import.
+
+   If your files are spread across several folders, click **Add Files...**
+   (top right) to pick more files from another folder. They are added as
+   new rows with their roles auto-detected; files already in the list are
+   skipped.
 4. **Stackup dialog.** Pre-filled defaults:
    - 1.6 mm total board thickness.
    - 1 oz copper (0.035 mm per layer).

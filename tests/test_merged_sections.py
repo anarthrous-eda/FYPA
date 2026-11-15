@@ -208,3 +208,39 @@ def test_hover_skips_a_hidden_section():
     assert V.PdnViewer._in_hidden_section(lp, 5.2, 0.2)
     lp["tri_keep"] = None
     assert not V.PdnViewer._in_hidden_section(lp, 5.2, 0.2)
+
+
+def test_hidden_section_hover_never_builds_a_trapezoid_map(monkeypatch):
+    """Regression: the hidden-section check used ``get_trifinder()``, whose
+    trapezoid map takes seconds per large plane - showing only a merged
+    section (all rails hidden, then one subnet shown) froze the first hover
+    while one was built per layer. It must locate triangles with the
+    hover's own sampler, and agree with matplotlib on which one."""
+    from matplotlib.tri import Triangulation
+    import fypa.altium_viewer as V
+    from fypa.viewer.mesh_geometry import _FastTriSampler
+
+    rng = np.random.default_rng(7)
+    pts = rng.uniform(0.0, 10.0, size=(400, 2))
+    tri = Triangulation(pts[:, 0], pts[:, 1])
+    finder = tri.get_trifinder()
+    sampler = _FastTriSampler(tri, np.zeros(len(pts)))
+    q = rng.uniform(-1.0, 11.0, size=(500, 2))
+    expected = finder(q[:, 0], q[:, 1])
+    got = np.array([sampler.locate(x, y) for x, y in q])
+    assert (got == expected).all()
+
+    tri2 = Triangulation(pts[:, 0], pts[:, 1])
+
+    def _boom(*_a, **_k):
+        raise AssertionError("get_trifinder() called on the hover path")
+
+    monkeypatch.setattr(tri2, "get_trifinder", _boom)
+    keep = np.ones(len(tri2.triangles), dtype=bool)
+    on_mesh = int(np.flatnonzero(expected >= 0)[0])
+    keep[expected[on_mesh]] = False
+    lp = {"triangulation": tri2, "tri_keep": keep,
+          "values": np.zeros(len(pts)), "interpolator": None}
+    assert V.PdnViewer._in_hidden_section(lp, *q[on_mesh])
+    # The sampler it built is kept for the probe that follows.
+    assert isinstance(lp["interpolator"], _FastTriSampler)

@@ -39,6 +39,7 @@ import re
 import time
 from collections.abc import Iterable
 from concurrent.futures import ProcessPoolExecutor
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -1556,6 +1557,81 @@ def _outline_points(outline_geom: shapely.geometry.base.BaseGeometry
                  for x, y in biggest.exterior.coords[:-1])
 
 
+# How far past the drill wall copper may stop and still count as touching
+# the hole. Covers arc tessellation (``ARC_CHORD_TOLERANCE_MM``) of a pad
+# flashed at exactly the drill size, while staying well inside the smallest
+# real pour clearance around a hole (~0.1 mm).
+VIA_WALL_CONTACT_TOLERANCE_MM: float = 0.025
+
+
+def _mark_unconnected_via_layers(
+    vias: list[RawVia],
+    geom_by_layer: dict[int, shapely.geometry.base.BaseGeometry],
+    ordered_layer_ids: list[int],
+) -> list[RawVia]:
+    """Record, per plated drill hit, the layers in its span where no copper
+    reaches the drill wall (``RawVia.unconnected_layer_ids``).
+
+    A drill file has no pad data, so every hit would otherwise get a
+    heuristic pad disc (drill + ``VIA_ANNULAR_RING_HEURISTIC_MM``) on every
+    layer it passes through. Where the layer's copper is cleared back from
+    the hole - a mounting hole through a pour of another net, a via through
+    a plane it doesn't belong to - that disc reaches across the clearance
+    and shorts the hole to the surrounding pour (Hermes Mezz: a 2.7 mm
+    no-net mounting hole with 0.1 mm pour clearances tied GND on seven
+    layers to the +3V3D pour on G5). The Gerber artwork says what the
+    plating actually touches: the hole connects a layer only if that
+    layer's rendered copper reaches within
+    ``VIA_WALL_CONTACT_TOLERANCE_MM`` of the drill wall."""
+    pos = {lid: i for i, lid in enumerate(ordered_layer_ids)}
+    n = len(vias)
+    xs = np.fromiter((v.center.x for v in vias), dtype=np.float64, count=n)
+    ys = np.fromiter((v.center.y for v in vias), dtype=np.float64, count=n)
+    radii = np.fromiter(
+        (0.5 * max(float(v.hole_diameter_mm), 0.0)
+         + VIA_WALL_CONTACT_TOLERANCE_MM for v in vias),
+        dtype=np.float64, count=n)
+    walls = shapely.buffer(shapely.points(xs, ys), radii, quad_segs=8)
+    # touches[lid][i]: copper on layer ``lid`` reaches via ``i``'s wall.
+    touches: dict[int, np.ndarray] = {}
+    for lid in ordered_layer_ids:
+        geom = geom_by_layer.get(lid)
+        if geom is None or geom.is_empty:
+            touches[lid] = np.zeros(n, dtype=bool)
+            continue
+        try:
+            shapely.prepare(geom)
+            touches[lid] = np.asarray(shapely.intersects(geom, walls),
+                                      dtype=bool)
+        except Exception:
+            # Invalid geometry: keep the old behaviour (connected) on this
+            # layer rather than dropping every via's connection to it.
+            log.warning("Gerber: via/copper contact test failed on layer %d; "
+                        "treating every hole as connected there.", lid,
+                        exc_info=True)
+            touches[lid] = np.ones(n, dtype=bool)
+    out: list[RawVia] = []
+    n_pairs = 0
+    n_vias = 0
+    for i, v in enumerate(vias):
+        a, b = pos.get(v.layer_start), pos.get(v.layer_end)
+        if a is None or b is None:
+            out.append(v)
+            continue
+        lo, hi = (a, b) if a <= b else (b, a)
+        skip = tuple(lid for lid in ordered_layer_ids[lo:hi + 1]
+                     if not touches[lid][i])
+        if skip:
+            n_pairs += len(skip)
+            n_vias += 1
+            v = dataclasses.replace(v, unconnected_layer_ids=skip)
+        out.append(v)
+    log.info("Gerber: %d of %d plated hole(s) have no copper at the drill "
+             "wall on some layer (%d hole/layer pair(s) left unconnected).",
+             n_vias, n, n_pairs)
+    return out
+
+
 def extract_gerber_project(
     *,
     copper_files: dict[int, Path],
@@ -1732,6 +1808,9 @@ def extract_gerber_project(
             "multi-layer rails will need editor directives or copper names "
             "to bridge layers."
         )
+    if vias:
+        vias = _mark_unconnected_via_layers(
+            list(vias), geom_by_layer, ordered_ids)
     log.info("Gerber: drill/vias took %.2fs (%d via(s))",
              time.monotonic() - t_drill0, len(vias))
 

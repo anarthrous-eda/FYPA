@@ -3327,6 +3327,8 @@ def build_solve_metadata(
             "hole_diameter_mm": v.hole_diameter_mm,
             "layer_start": v.layer_start,
             "layer_end": v.layer_end,
+            "unconnected_layer_ids": [
+                int(i) for i in getattr(v, "unconnected_layer_ids", ())],
             "segments": site_segments,
             "ipc4761_via_type": ipc_type,
             "ipc4761_label": ipc4761_label(ipc_type, fill_mat),

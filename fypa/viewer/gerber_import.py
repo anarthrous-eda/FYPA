@@ -96,18 +96,16 @@ def _pick_gerber_inputs(parent_window):
     user cancelled at any point. The caller then hands ``result`` to a
     :class:`_GerberImportWorker` for the heavy off-thread work.
     """
-    from fypa.gerber.import_ui import run_gerber_import_dialogs
+    from fypa.gerber.import_ui import (
+        GERBER_FILE_FILTER,
+        run_gerber_import_dialogs,
+    )
 
     paths_str, _ = QFileDialog.getOpenFileNames(
         parent_window,
         "Pick Gerber + drill files to import",
         "",
-        "Gerber / Excellon ("
-        "*.gbr *.GBR *.gtl *.GTL *.gbl *.GBL *.g* *.G* "
-        "*.cmp *.CMP *.sol *.SOL *.gko *.GKO *.gm1 *.GM1 "
-        "*.gto *.GTO *.gbo *.GBO "
-        "*.drl *.DRL *.xln *.XLN *.txt *.TXT *.tap *.TAP *.nc *.NC);;"
-        "All files (*)",
+        GERBER_FILE_FILTER,
         options=_file_dialog_options(),
     )
     if not paths_str:
@@ -305,6 +303,8 @@ def _finish_gerber_import(result, pseudo, progress_cb=None,
             "hole_diameter_mm": float(v.hole_diameter_mm),
             "layer_start": int(v.layer_start),
             "layer_end": int(v.layer_end),
+            "unconnected_layer_ids": [
+                int(i) for i in v.unconnected_layer_ids],
             "segments": [],
             "ipc4761_via_type": 0,
             "ipc4761_label": "-",

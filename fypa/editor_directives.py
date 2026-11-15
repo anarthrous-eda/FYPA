@@ -905,12 +905,14 @@ def apply_copper_names(loaded, copper_names) -> list[str]:
     matches: list[tuple[int, _sg.base.BaseGeometry, int]] = []
     enabled = extracted.enabled_copper_layer_ids()
 
+    from fypa.altium.extract import via_connected_layers
     from fypa.altium_geometry import MULTI_LAYER_PAD_LAYER_ID
 
     def _bridge_layers_for_via(v) -> list[int]:
         lo = min(v.layer_start, v.layer_end)
         hi = max(v.layer_start, v.layer_end)
-        return [lid for lid in enabled if lo <= lid <= hi]
+        return via_connected_layers(
+            v, [lid for lid in enabled if lo <= lid <= hi])
 
     def _bridge_layers_for_pad(p) -> list[int]:
         if p.is_through_hole or p.layer_id == MULTI_LAYER_PAD_LAYER_ID:

@@ -859,7 +859,8 @@ def _fill_is_copper(f: RawFill, plane_layer_ids: set[int]) -> bool:
 
 def _via_on_layer(v: RawVia, layer_id: int, enabled: list[int],
                   pos: dict[int, int] | None = None) -> bool:
-    """Whether via ``v``'s barrel spans ``layer_id`` in the enabled stack.
+    """Whether via ``v``'s barrel spans ``layer_id`` in the enabled stack
+    and connects to it (``layer_id`` not in ``v.unconnected_layer_ids``).
 
     ``pos`` is an optional ``{layer_id: position}`` map; pass it (built once by
     the caller) to avoid three O(L) ``enabled.index(...)`` scans per via - this
@@ -872,7 +873,11 @@ def _via_on_layer(v: RawVia, layer_id: int, enabled: list[int],
     if i_layer is None or i_a is None or i_b is None:
         return False
     lo, hi = (i_a, i_b) if i_a <= i_b else (i_b, i_a)
-    return lo <= i_layer <= hi
+    if not lo <= i_layer <= hi:
+        return False
+    # A layer whose copper is cleared back from the hole (Gerber import:
+    # no copper at the drill wall) isn't connected - no pad disc there.
+    return layer_id not in getattr(v, "unconnected_layer_ids", ())
 
 
 def _ensure_multipolygon(geom) -> shapely.geometry.MultiPolygon:
