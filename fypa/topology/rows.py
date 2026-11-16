@@ -57,6 +57,8 @@ from fypa.topology.types import (
     TopologyWire,
 )
 from fypa.topology.util import (
+    CHIP_MIN_W,
+    chip_width,
     estimate_text_width,
     format_directive_value,
     truncate_label,
@@ -81,7 +83,7 @@ VALUE_ROW_H = 14.0       # extra body line showing the directive value
 GND_STUB = 8.0           # wire from a bottom GND port down to the symbol
 GND_GLYPH_H = 14.0       # height of the three-bar ground symbol
 GND_PORT_SPACING = 28.0
-CHIP_W = 124.0
+CHIP_W = CHIP_MIN_W      # narrowest chip; wider when the designator needs it
 CHIP_H = 20.0
 CHIP_GAP = 10.0
 BRIDGE_WRAP_W = 700.0    # min wrap width of the off-tree bridges list
@@ -214,6 +216,14 @@ class _Split:
     roots: set[str]                  # the driver's pre-merge net(s), upper
     side: dict[str, str]             # designator -> pre-merge net it hangs on
     far: dict[str, tuple[str, str]]  # link node_id -> (far net upper, label)
+    names: dict[str, str] = field(default_factory=dict)  # upper -> as written
+
+    def root_label(self) -> str:
+        """The driver's own pre-merge net name, when it sits on exactly one."""
+        if len(self.roots) != 1:
+            return ""
+        (root,) = self.roots
+        return self.names.get(root, "")
 
 
 def _designator(part: _Part) -> str:
@@ -309,6 +319,7 @@ class _TreeBuilder:
             return None
         links.sort(key=lambda lp: natural_sort_key(lp[0].node_id))
         nets = {x.upper() for _, pair in links for x in pair}
+        names = {x.upper(): x for _, pair in links for x in pair}
         roots = {n for n in nets if driver in self.premerge[n]}
         if not roots:
             return None
@@ -337,7 +348,7 @@ class _TreeBuilder:
         for n, _ in sorted(depth.items(), key=lambda kv: -kv[1]):
             for des in self.premerge[n]:
                 side[des] = n
-        return _Split(roots=roots, side=side, far=far)
+        return _Split(roots=roots, side=side, far=far, names=names)
 
     def _far_port(self, part: _Part, near: list[str], label: str, net: str) -> str:
         """The port a link's far side is drawn from. The two ends of a link
@@ -361,6 +372,11 @@ class _TreeBuilder:
             branch = queue.pop(0)
             if branch.split is None and not branch.pnet:
                 branch.split = self._plan_split(branch.net, branch.driver)
+                # The driver's side of a merged rail goes by its own
+                # pre-merge name (J4 → +12V_MEZZ → R80 → +12V_IN), not the
+                # name the merge kept.
+                if branch.split is not None and (own := branch.split.root_label()):
+                    branch.label = own
             seen_ref: set[str] = set()
             for part, port in sorted(
                 self.by_net.get(branch.net, []),
@@ -543,15 +559,16 @@ def _node_shape(child: _Child, builder: _TreeBuilder) -> _Shape:
         w = tag_width(part.spec["label"])
         return _Shape(w, TAG_H, TAG_H, {"in": (0.0, TAG_H / 2)}, {"in": "left"})
     if child.kind == "chip":
+        chip_w = _chip_w(part)
         port_xy = {}
         sides = {}
         if child.in_ports:
             port_xy[child.in_ports[0]] = (0.0, CHIP_H / 2)
             sides[child.in_ports[0]] = "left"
         for name in child.branches:  # a link's far side (see _plan_split)
-            port_xy[name] = (CHIP_W, CHIP_H / 2)
+            port_xy[name] = (chip_w, CHIP_H / 2)
             sides[name] = "right"
-        shape = _Shape(CHIP_W, CHIP_H, CHIP_H, port_xy, sides)
+        shape = _Shape(chip_w, CHIP_H, CHIP_H, port_xy, sides)
         shape.right_tags = _empty_branch_reach(child, builder)
         return shape
 
@@ -632,6 +649,15 @@ def _port_order(child: _Child):
         return (2, p.sort_key, 0)
 
     return key
+
+
+def _chip_w(part: _Part) -> float:
+    """Chip width that fits this part's designator and value side by side."""
+    s = part.spec
+    return chip_width(
+        s["label"], _value_text(part),
+        has_icon=bool(jump_row_for_directive(s["directive"])),
+    )
 
 
 def _value_text(part: _Part) -> str:
@@ -991,7 +1017,9 @@ class _Placer:
                 for name, (ox, oy) in shape.port_xy.items() if name != p.name
             )
             far = child.branches.get(p.name)
-            plabel = far.label if far is not None and far.pnet else p.label
+            own = far is not None and (
+                far.pnet or (far.split is not None and far.split.root_label()))
+            plabel = far.label if own else p.label
             node.ports.append(TopologyPort(
                 terminal=p.name,
                 net=p.net,
@@ -1169,26 +1197,41 @@ def _node_tooltip(part: _Part) -> str:
 
 
 def _band_text(row: _Row) -> tuple[str, str]:
+    """Row header: the rail it puts out (the role is the accent colour), then
+    the part and its value in the dimmer subtitle."""
     if row.kind in ("source", "regulator") and row.root is not None:
         part = row.root.part
         value = _value_text(part)
-        outs = ", ".join(truncate_label(p.net) for p in part.output_ports())
-        role = "Source" if row.kind == "source" else "Regulator"
-        title = f"{role} {part.spec['label']}"
-        bits = [value, outs]
+        outs = ", ".join(
+            truncate_label(b.label if (b := row.root.branches.get(p.name)) else p.net)
+            for p in part.output_ports()
+        )
+        title = outs or part.spec["label"]
+        bits = [value]
         if row.kind == "regulator":
             ins = sorted({
                 truncate_label(p.net) for p in part.power_ports
                 if p not in part.output_ports() and p.role == "REGULATOR"
             })
             bits.insert(0, ", ".join(ins))
-        return title, "  →  ".join(b for b in bits if b)
+        flow = "  →  ".join(b for b in bits if b)
+        sub = part.spec["label"] if outs else ""
+        return title, "  ·  ".join(b for b in (sub, flow) if b)
     if row.kind == "undriven" and row.root_branch is not None:
         return (
             f"Undriven rail {truncate_label(row.root_branch.label)}",
             "no source or regulator feeds this rail",
         )
     return "Unconnected", "parts with no rail to hang off"
+
+
+def _band_key(row: _Row) -> str:
+    """Stable row id across rebuilds, for remembering collapsed rows."""
+    if row.root is not None:
+        return f"{row.kind}:{row.root.part.node_id}"
+    if row.root_branch is not None:
+        return f"{row.kind}:{row.root_branch.label}"
+    return row.kind
 
 
 def _place_hidden_bridges(
@@ -1205,7 +1248,9 @@ def _place_hidden_bridges(
         nets = {p.net for p in part.power_ports} or {"GND"}
         by_net[", ".join(sorted(nets))].append(part)
     bands: list[TopologyBand] = []
-    per_line = max(1, int((wrap_w + CHIP_GAP) // (CHIP_W + CHIP_GAP)))
+    # One column width for the whole list, so the chips line up in a grid.
+    col_w = max((_chip_w(p) for p in hidden), default=CHIP_W)
+    per_line = max(1, int((wrap_w + CHIP_GAP) // (col_w + CHIP_GAP)))
     group_gap = 2 * CHIP_GAP
     line_top = top
     cx = x
@@ -1216,7 +1261,7 @@ def _place_hidden_bridges(
         n_lines = -(-len(parts) // per_line)
         title = truncate_label(net)
         g_w = max(
-            n_cols * (CHIP_W + CHIP_GAP) - CHIP_GAP,
+            n_cols * (col_w + CHIP_GAP) - CHIP_GAP,
             estimate_text_width(title, 9) + 4,
         )
         g_h = 18.0 + n_lines * (CHIP_H + CHIP_GAP) - CHIP_GAP
@@ -1228,15 +1273,53 @@ def _place_hidden_bridges(
             title=title, subtitle="", x=cx, y=line_top, width=0.0, kind="bridge_group",
         ))
         for i, part in enumerate(parts):
-            px = cx + (i % per_line) * (CHIP_W + CHIP_GAP)
+            px = cx + (i % per_line) * (col_w + CHIP_GAP)
             py = line_top + 18.0 + (i // per_line) * (CHIP_H + CHIP_GAP)
             child = _Child(kind="chip", part=part)
-            shape = _Shape(CHIP_W, CHIP_H, CHIP_H, {}, {})
+            shape = _Shape(col_w, CHIP_H, CHIP_H, {}, {})
             placer.nodes.append(placer._make_node(child, shape, px, py))
-            placer._grow_x(px + CHIP_W)
+            placer._grow_x(px + col_w)
         cx += g_w + group_gap
         line_h = max(line_h, g_h)
     return line_top + line_h + 14.0, bands
+
+
+_STASH_Y = 1.0e6   # collapsed rows are laid out from here, then dropped
+
+
+def _drop_stashed(
+    placer: _Placer, stashed: list[tuple[float, float, TopologyBand]],
+) -> None:
+    """Remove what collapsed rows placed (everything below ``_STASH_Y``) and
+    send tags that jumped into one of them to its header instead."""
+    limit = _STASH_Y / 2
+
+    def header_of(py: float) -> TopologyBand | None:
+        for top, bottom, band in stashed:
+            if top - 1.0 <= py <= bottom + 1.0:
+                return band
+        return None
+
+    def wire_y(w: TopologyWire) -> float:
+        try:
+            return float(w.path_d.split(None, 2)[1].split(",")[1])
+        except (IndexError, ValueError):
+            return 0.0
+
+    placer.nodes[:] = [n for n in placer.nodes if n.y < limit]
+    placer.wires[:] = [w for w in placer.wires if wire_y(w) < limit]
+    placer.gnd_glyphs[:] = [g for g in placer.gnd_glyphs if g[1] < limit]
+    placer.tags[:] = [t for t in placer.tags if t.y < limit]
+    for tag in placer.tags:
+        if tag.target is None or tag.target[1] < limit:
+            continue
+        band = header_of(tag.target[1])
+        if band is None:
+            tag.target = None
+            continue
+        tag.target = (band.x + 60.0, band.y + BAND_H / 2)
+        tag.tooltip = (tag.tooltip.replace("Click to jump there.", "").rstrip()
+                       + f" (in collapsed row {band.title}; click to jump there)")
 
 
 def build_rows_model(
@@ -1245,6 +1328,7 @@ def build_rows_model(
     show_bridges: bool = False,
     add_candidates: Mapping[str, Collection[str]] | None = None,
     premerge_parts: Mapping[str, Collection[str]] | None = None,
+    collapsed: Collection[str] = (),
 ) -> TopologyModel:
     """Build the rows-layout topology model (see module docstring).
 
@@ -1258,9 +1342,13 @@ def build_rows_model(
     far side as a branch of its own - ``R106 → +ETH_2V5`` - and hangs the
     parts on that side (and its "+ SINK" handle) there. Without it a link is
     a one-port chip on the merged rail.
+
+    ``collapsed`` (row keys, :attr:`TopologyBand.key`) draws those rows as
+    their header alone; the rows below close up.
     """
     if metadata is None:
         return TopologyModel(layout="rows")
+    collapsed = set(collapsed)
     parsed = parse_topology_directives(metadata)
     parts = _parts_from_specs(parsed.node_specs)
     premerge = None if premerge_parts is None else {
@@ -1271,22 +1359,36 @@ def build_rows_model(
 
     bands: list[TopologyBand] = []
     y = MARGIN
+    # Collapsed rows are still laid out (cross-row tags need their ports),
+    # but far below the diagram; everything placed there is dropped after
+    # the tags resolve, and tags pointing into one point at its header.
+    stash_y = _STASH_Y
+    stashed: list[tuple[float, float, TopologyBand]] = []
     for row in rows:
         x = MARGIN + row.depth * DEPTH_INDENT
         title, subtitle = _band_text(row)
-        bands.append(TopologyBand(
+        key = _band_key(row)
+        band = TopologyBand(
             title=title, subtitle=subtitle, x=x, y=y, width=0.0,
-            kind=row.kind, depth=row.depth,
-        ))
-        top = y + BAND_H
+            kind=row.kind, depth=row.depth, key=key, collapsed=key in collapsed,
+        )
+        bands.append(band)
+        top = stash_y if band.collapsed else y + BAND_H
         if row.kind in ("source", "regulator"):
             bottom = placer.place_origin_row(row, x, top)
         elif row.kind == "undriven":
             bottom = placer.place_undriven_row(row, x, top)
         else:
             bottom = placer.place_other_row(row, x, top)
-        y = bottom + ROW_GAP
+        if band.collapsed:
+            stashed.append((top, bottom, band))
+            stash_y = bottom + ROW_GAP
+            y += BAND_H + ROW_GAP / 2
+        else:
+            y = bottom + ROW_GAP
     placer.resolve_tags()
+    if stashed:
+        _drop_stashed(placer, stashed)
 
     notes: list[str] = []
     if hidden:

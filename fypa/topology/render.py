@@ -56,6 +56,11 @@ from fypa.topology.types import (
     TopologyWire,
 )
 from fypa.topology.util import (
+    CHIP_LABEL_FONT,
+    CHIP_LABEL_X,
+    CHIP_TEXT_GAP,
+    CHIP_VALUE_FONT,
+    chip_right_pad,
     esc,
     estimate_text_width,
     truncate_label,
@@ -579,20 +584,27 @@ def _draw_chip(
         f'<rect x="{x:.1f}" y="{y:.1f}" width="6" height="{h:.1f}" rx="2"'
         f' fill="{esc(color)}"/>'
     )
-    parts.append(
-        f'<text x="{x + 12:.1f}" y="{y + h / 2 + 3.5:.1f}" fill="{esc(fg)}"'
-        f' font-family="Segoe UI,sans-serif" font-size="9" font-weight="600">'
-        f"{esc(truncate_label(node.label, max_len=12))}</text>"
-    )
     icon = jump_icon_center(node)
+    # The layout sizes the chip to fit both texts (chip_width); only past
+    # CHIP_MAX_W does the designator get cut, never the value.
+    value = node.value_str or ""
+    value_end = x + w - chip_right_pad(icon is not None)
+    label_room = value_end - (x + CHIP_LABEL_X)
+    if value:
+        label_room -= CHIP_TEXT_GAP + estimate_text_width(value, CHIP_VALUE_FONT)
+    label = truncate_text_to_width(node.label, label_room, CHIP_LABEL_FONT)
+    parts.append(
+        f'<text x="{x + CHIP_LABEL_X:.1f}" y="{y + h / 2 + 3.5:.1f}" fill="{esc(fg)}"'
+        f' font-family="Segoe UI,sans-serif" font-size="{CHIP_LABEL_FONT:g}"'
+        f' font-weight="600">{esc(label)}</text>'
+    )
     if icon is not None:
         _draw_jump_icon(parts, icon, color=fg_dim)
-    if node.value_str:
-        vx = x + w - (20 if icon is not None else 8)
+    if value:
         parts.append(
-            f'<text x="{vx:.1f}" y="{y + h / 2 + 3.5:.1f}" text-anchor="end"'
+            f'<text x="{value_end:.1f}" y="{y + h / 2 + 3.5:.1f}" text-anchor="end"'
             f' fill="{esc(fg_dim)}" font-family="Segoe UI,sans-serif"'
-            f' font-size="8">{esc(truncate_label(node.value_str, max_len=12))}</text>'
+            f' font-size="{CHIP_VALUE_FONT:g}">{esc(value)}</text>'
         )
     for port in node.ports:
         parts.append(
@@ -661,17 +673,28 @@ def _draw_band(
         f' fill="{esc(accent)}"/>'
     )
     title_x = band.x + 9
+    if band.key:
+        # Collapse toggle: ▾ open, ▸ collapsed (the viewer's header click).
+        cx, cy = title_x + 4.0, y + 11.5
+        tri = (
+            f"{cx - 2.5:.1f},{cy - 4:.1f} {cx + 2.5:.1f},{cy:.1f} {cx - 2.5:.1f},{cy + 4:.1f}"
+            if band.collapsed else
+            f"{cx - 4:.1f},{cy - 2.5:.1f} {cx + 4:.1f},{cy - 2.5:.1f} {cx:.1f},{cy + 2.5:.1f}"
+        )
+        parts.append(f'<polygon points="{tri}" fill="{esc(fg_dim)}"/>')
+        title_x += 13
     parts.append(
         f'<text x="{title_x:.1f}" y="{y + 15.5:.1f}" fill="{esc(fg)}"'
         f' font-family="Segoe UI,sans-serif" font-size="11" font-weight="600">'
         f"{esc(band.title)}</text>"
     )
-    if band.subtitle:
+    if band.subtitle or band.collapsed:
+        sub = band.subtitle + ("   (collapsed)" if band.collapsed else "")
         sub_x = title_x + estimate_text_width(band.title, 11) + 12
         parts.append(
             f'<text x="{sub_x:.1f}" y="{y + 15.5:.1f}" fill="{esc(fg_dim)}"'
             f' font-family="Segoe UI,sans-serif" font-size="10">'
-            f"{esc(band.subtitle)}</text>"
+            f"{esc(sub.strip())}</text>"
         )
 
 

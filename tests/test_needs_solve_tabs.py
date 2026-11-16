@@ -191,8 +191,9 @@ class _TopologyView:
     def set_empty_message(self, message):
         self.empty_message = message
 
-    def set_diagram_svg(self, svg):
+    def set_diagram_svg(self, svg, *, keep_view=False):
         self.svg = svg
+        self.keep_view = keep_view
 
 
 class _TopologyViewer(av.PdnViewer):
@@ -224,3 +225,32 @@ def test_topology_live_preview_covers_saved_unsolved_edits(qapp):
     assert v._topology_live_preview_needed() is False
     v._initial_solve_stale = True
     assert v._topology_live_preview_needed() is True
+
+
+def test_topology_row_toggle_reuses_the_preview_metadata(qapp):
+    """Collapsing a row only changes the drawing: it must not re-run the
+    (seconds-long, with pending edits) preview-metadata rebuild."""
+    v = _TopologyViewer([
+        {"role": "SOURCE", "designator": "J1", "value": 5.0,
+         "terminals": {"P": {"net": "V5"}, "N": {"net": "GND"}}},
+        {"role": "SINK", "designator": "U1", "value": 1.0,
+         "terminals": {"P": {"net": "V5"}, "N": {"net": "GND"}}},
+    ])
+    calls = []
+    real = v._topology_preview_metadata
+
+    def counting():
+        calls.append(1)
+        return real()
+
+    v._topology_preview_metadata = counting
+    v._populate_topology()
+    assert len(calls) == 1 and v._topology_view.svg is not None
+    band = next(b for b in v._topology_model.bands if b.key)
+    v._topology_toggle_row(band.key)
+    assert len(calls) == 1
+    assert v._topology_view.keep_view is True
+    assert next(b for b in v._topology_model.bands if b.key == band.key).collapsed
+    # A real refresh (an edit) still rebuilds it.
+    v._refresh_topology_live()
+    assert len(calls) == 2

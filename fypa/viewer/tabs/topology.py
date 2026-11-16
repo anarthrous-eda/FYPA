@@ -117,9 +117,15 @@ class _TopologyView(QGraphicsView):
         else:
             self._scene.setSceneRect(QRectF(0, 0, 1, 1))
 
-    def set_diagram_svg(self, svg_data: QByteArray) -> None:
+    def set_diagram_svg(self, svg_data: QByteArray, *, keep_view: bool = False) -> None:
+        """Show a new diagram, fitted to the view - or, with ``keep_view``
+        (a row collapsed/expanded), at the current zoom and scroll."""
         from PySide6.QtSvg import QSvgRenderer
 
+        kept = None
+        if keep_view and self._diagram_loaded:
+            kept = (self.transform(), self.horizontalScrollBar().value(),
+                    self.verticalScrollBar().value())
         self.resetTransform()
         self._clear_net_highlight()
         self._svg_renderer = QSvgRenderer(svg_data)
@@ -134,6 +140,11 @@ class _TopologyView(QGraphicsView):
         if bounds.width() < 1 or bounds.height() < 1:
             bounds = self._svg_item.boundingRect()
         self._scene.setSceneRect(bounds)
+        if kept is not None:
+            self.setTransform(kept[0])
+            self.horizontalScrollBar().setValue(kept[1])
+            self.verticalScrollBar().setValue(kept[2])
+            return
         QTimer.singleShot(0, self._deferred_fit_in_view)
 
     def _deferred_fit_in_view(self) -> None:
@@ -413,6 +424,12 @@ class _TopologyView(QGraphicsView):
         if model is not None and self._diagram_loaded:
             x, y = self.diagram_pos(event.position())
             tip = topology_tooltip_at(model, x, y)
+            from fypa.topology.hit_test import find_band_header_at
+
+            band = None if tip else find_band_header_at(model, x, y)
+            if band is not None:
+                tip = ("Click to expand this row" if band.collapsed
+                       else "Click to collapse this row")
             if tip:
                 QToolTip.showText(event.globalPosition().toPoint(), tip, self)
             else:
@@ -430,6 +447,7 @@ class _TopologyView(QGraphicsView):
                                           or tag.kind in ("undriven", "end", "add")))
                     or find_jump_icon_at(model, x, y) is not None
                     or find_component_at(model, x, y) is not None
+                    or band is not None
                 )
                 if clickable:
                     self.setCursor(Qt.PointingHandCursor)
@@ -493,6 +511,8 @@ class _TopologyTabMixin:
         # A rebuild (theme switch) deletes the old sidebar: hand the editor
         # form back to the Heatmap panel before its host disappears.
         self._topology_form_release()
+        # Rows always open expanded (on start, on a design load, on a rebuild).
+        self._topology_collapsed: set[str] = set()
         widget = QWidget(self.tabs)
         outer = QVBoxLayout(widget)
         outer.setContentsMargins(8, 8, 8, 8)
@@ -1083,21 +1103,21 @@ class _TopologyTabMixin:
         save_topology_layout(self._topology_layout)
         self._topology_bridges_btn.setEnabled(not checked)
         self._topology_add_btn.setEnabled(not checked)
-        self._refresh_topology_live()
+        self._refresh_topology_live(reuse_metadata=True)
 
     def _on_topology_bridges_toggled(self, checked: bool) -> None:
         from fypa.viewer.prefs import save_topology_show_bridges
 
         self._topology_show_bridges = bool(checked)
         save_topology_show_bridges(self._topology_show_bridges)
-        self._refresh_topology_live()
+        self._refresh_topology_live(reuse_metadata=True)
 
     def _on_topology_add_handles_toggled(self, checked: bool) -> None:
         from fypa.viewer.prefs import save_topology_show_add_handles
 
         self._topology_show_add_handles = bool(checked)
         save_topology_show_add_handles(self._topology_show_add_handles)
-        self._refresh_topology_live()
+        self._refresh_topology_live(reuse_metadata=True)
 
     def _topology_view_in_memory(self):
         """Design view for the "+ SINK" handles, without prompting or loading
@@ -1234,11 +1254,25 @@ class _TopologyTabMixin:
             live_preview=self._topology_live_preview_needed(),
         )
 
-    def _populate_topology(self) -> None:
-        """Render the topology SVG from setup metadata."""
+    def _populate_topology(self, *, reuse_metadata: bool = False) -> None:
+        """Render the topology SVG from setup metadata.
+
+        ``reuse_metadata``: only a view setting changed (a row collapsed,
+        Bridges / + SINK / classic toggled), not the setup - reuse the last
+        preview metadata rather than rebuild it. With pending edits that
+        rebuild re-applies every editor directive to a copy of the design and
+        re-derives the solve metadata, which takes seconds on a large board,
+        while the diagram itself builds and renders in milliseconds."""
         from fypa.topology import build_topology_model, render_topology_svg
 
-        preview_md = self._topology_preview_metadata()
+        preview_md = None
+        cached = getattr(self, "_topology_md_cache", None)
+        key = (id(self.metadata), id(self._loaded_project), id(self._project))
+        if reuse_metadata and cached is not None and cached[0] == key:
+            preview_md = cached[1]
+        else:
+            preview_md = self._topology_preview_metadata()
+            self._topology_md_cache = (key, preview_md)
         if preview_md is None:
             self._topology_view.set_empty_message("No setup metadata available.")
             self._topology_hint.setText("")
@@ -1267,10 +1301,14 @@ class _TopologyTabMixin:
             show_bridges=getattr(self, "_topology_show_bridges", False),
             add_candidates=self._topology_add_candidates(),
             premerge_parts=self._topology_premerge_parts(),
+            collapsed=getattr(self, "_topology_collapsed", ()),
         )
         self._topology_model = model
         svg = render_topology_svg(model, theme=current_theme())
-        self._topology_view.set_diagram_svg(QByteArray(svg.encode("utf-8")))
+        keep = getattr(self, "_topology_keep_view_once", False)
+        self._topology_keep_view_once = False
+        self._topology_view.set_diagram_svg(
+            QByteArray(svg.encode("utf-8")), keep_view=keep)
         n_dir = len((preview_md or {}).get("directives") or [])
         n_nodes = sum(1 for n in model.nodes if n.role != "GND")
         n_wires = len(model.wires)
@@ -1333,12 +1371,13 @@ class _TopologyTabMixin:
             self._topology_refresh_timer = timer
         timer.start(50)
 
-    def _refresh_topology_live(self) -> None:
-        """Rebuild the topology diagram from current editor + metadata state."""
+    def _refresh_topology_live(self, *, reuse_metadata: bool = False) -> None:
+        """Rebuild the topology diagram from current editor + metadata state
+        (``reuse_metadata``: see :meth:`_populate_topology`)."""
         if getattr(self, "_topology_view", None) is None:
             return
         self._topology_populated = True
-        self._populate_topology()
+        self._populate_topology(reuse_metadata=reuse_metadata)
 
     def _topology_dump_debug(self) -> None:
         """Write topology.pkl, wiring.json, and topology.svg for offline debug."""
@@ -1412,6 +1451,7 @@ class _TopologyTabMixin:
         * a tag that continues elsewhere → pan to the other end;
         * an undriven / no-load tag → menu to add a source, regulator or sink;
         * a "+ SINK (n)" handle → Manual setup on a new load for that rail;
+        * a row's header → collapse / expand that row;
         * a part → its PDN properties in the sidebar (the editor form);
         * empty space → close the sidebar."""
         from fypa.topology import find_component_at
@@ -1441,7 +1481,22 @@ class _TopologyTabMixin:
         if comp is not None:
             self._topology_open_sidebar(comp)
             return
+        from fypa.topology.hit_test import find_band_header_at
+
+        band = find_band_header_at(model, x, y)
+        if band is not None:
+            self._topology_toggle_row(band.key)
+            return
         self._topology_close_sidebar()
+
+    def _topology_toggle_row(self, key: str) -> None:
+        """Collapse / expand one row, keeping the current zoom and scroll."""
+        collapsed = getattr(self, "_topology_collapsed", None)
+        if collapsed is None:
+            collapsed = self._topology_collapsed = set()
+        collapsed.symmetric_difference_update({key})
+        self._topology_keep_view_once = True
+        self._populate_topology(reuse_metadata=True)
 
     def _on_properties_anchor_clicked(self, url) -> None:
         """Handle clicks on toggle-anchors in the Properties tab."""

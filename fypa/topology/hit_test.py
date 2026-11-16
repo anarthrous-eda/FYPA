@@ -8,6 +8,7 @@ from fypa.topology.constants import GND_NET, PORT_R, WIRE_EPS, WIRE_HIT_RADIUS
 from fypa.topology.geometry import parse_wire_path
 from fypa.topology.labels import label_hit_bounds
 from fypa.topology.types import (
+    TopologyBand,
     TopologyModel,
     TopologyNode,
     TopologyPort,
@@ -28,6 +29,18 @@ def find_component_at(
         bx, by, bw, bh = node.bounds
         if bx <= x <= bx + bw and by <= y <= by + bh:
             return node
+    return None
+
+
+_BAND_HEADER_H = 24.0   # rows layout: header text line above each row
+
+
+def find_band_header_at(model: TopologyModel, x: float, y: float) -> TopologyBand | None:
+    """The collapsible row whose header line is under ``(x, y)``."""
+    for band in model.bands:
+        if (band.key and band.x <= x <= band.x + band.width
+                and band.y <= y <= band.y + _BAND_HEADER_H):
+            return band
     return None
 
 

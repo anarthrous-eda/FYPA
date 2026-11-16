@@ -80,6 +80,33 @@ def truncate_text_to_width(text: str, max_width: float, font_size: float) -> str
     return text[: max(kept, 1)] + _ELLIPSIS
 
 
+# One-line series chip (0 Ω links, series resistors): colour bar, designator
+# (bold, CHIP_LABEL_FONT) on the left, value (CHIP_VALUE_FONT) right-aligned
+# before the optional jump icon. Shared by the layout (chip width) and the
+# renderer (where the text goes) so the two always agree.
+CHIP_MIN_W = 124.0
+CHIP_MAX_W = 320.0
+CHIP_LABEL_X = 12.0       # designator start, from the chip's left edge
+CHIP_LABEL_FONT = 9.0
+CHIP_VALUE_FONT = 8.0
+CHIP_TEXT_GAP = 10.0      # between designator and value
+CHIP_PAD_ICON = 20.0      # value end to right edge, jump icon present
+CHIP_PAD_PLAIN = 8.0      # value end to right edge, no icon
+
+
+def chip_right_pad(has_icon: bool) -> float:
+    return CHIP_PAD_ICON if has_icon else CHIP_PAD_PLAIN
+
+
+def chip_width(label: str, value: str, *, has_icon: bool) -> float:
+    """Width that shows ``label`` and ``value`` in full without overlapping,
+    between CHIP_MIN_W and CHIP_MAX_W (past that the designator is cut)."""
+    w = CHIP_LABEL_X + estimate_text_width(label, CHIP_LABEL_FONT) + chip_right_pad(has_icon)
+    if value:
+        w += CHIP_TEXT_GAP + estimate_text_width(value, CHIP_VALUE_FONT)
+    return min(CHIP_MAX_W, max(CHIP_MIN_W, float(int(w + 0.999))))
+
+
 def _fmt_compact(value: float) -> str:
     """Decimal string without scientific notation; trim trailing zeros."""
     if value == 0:

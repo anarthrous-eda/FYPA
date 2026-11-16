@@ -64,8 +64,8 @@ def test_one_row_per_origin_regulator_under_its_feed() -> None:
     model = build_topology_model(TREE, layout="rows")
     rows = _rows(model)
     assert [(b.kind, b.title) for b in rows] == [
-        ("source", "Source J2"),
-        ("regulator", "Regulator U6"),
+        ("source", "12P0V"),
+        ("regulator", "+VDD"),
         ("undriven", "Undriven rail +1V8A_O"),
     ]
     assert rows[1].depth == 1 and rows[1].x > rows[0].x
@@ -414,3 +414,72 @@ def test_classic_layout_is_still_the_api_default() -> None:
     model = build_topology_model(TREE)
     assert model.layout == "columns"
     assert not model.tags and not model.bands
+
+
+def test_row_header_names_the_output_rail_then_the_part() -> None:
+    rows = _rows(build_topology_model(TREE, layout="rows"))
+    assert rows[0].subtitle.startswith("J2")
+    assert rows[1].subtitle.startswith("U6") and "+12V" in rows[1].subtitle
+
+
+def test_collapsed_row_is_header_only_and_rows_below_close_up() -> None:
+    full = build_topology_model(TREE, layout="rows")
+    key = _rows(full)[0].key
+    folded = build_topology_model(TREE, layout="rows", collapsed={key})
+    src, reg = _rows(folded)[:2]
+    assert src.collapsed and not reg.collapsed
+    ids = {n.node_id for n in folded.nodes}
+    assert "J2" not in ids and "R18" not in ids and "U6" in ids
+    assert reg.y < _rows(full)[1].y
+    assert folded.height < full.height
+    # Nothing is left stranded off the canvas.
+    assert all(n.y < folded.height for n in folded.nodes)
+    assert all(t.y < folded.height for t in folded.tags)
+    # U6's feed tag now jumps to the collapsed source's header.
+    feed = next(t for t in folded.tags if t.net == "+12V" and t.target)
+    assert src.y <= feed.target[1] <= src.y + 26
+
+
+def test_series_chip_widens_to_fit_a_long_designator() -> None:
+    from fypa.topology.rows import CHIP_W
+    from fypa.topology.util import estimate_text_width
+
+    md = _md(
+        _d("SOURCE", "J2", "12 V", P="+12V", N="GND"),
+        _bridge("R101_VCC_HDIO_SENSE", "+12V"),
+        _d("SINK", "J1", "1 A", P="+12V", N="GND"),
+    )
+    model = build_topology_model(md, layout="rows")
+    chip = _node(model, "R101_VCC_HDIO_SENSE")
+    assert chip.compact and chip.width > CHIP_W
+    need = (estimate_text_width(chip.label, 9)
+            + estimate_text_width(chip.value_str, 8) + 12 + 10 + 8)
+    assert chip.width >= need
+    svg = render_topology_svg(model)
+    assert "R101_VCC_HDIO_SENSE<" in svg
+
+
+def test_merged_rail_driver_side_uses_its_own_premerge_name() -> None:
+    # J4 → +12V_MEZZ → R80 → +12V_IN → U31, merged under the name +12V_IN:
+    # the source's side is labelled +12V_MEZZ, the far side +12V_IN.
+    link = _bridge("R80", "+12V_IN")
+    link["shorted_nets"] = "+12V_IN ↔ +12V_MEZZ"
+    md = _md(
+        _d("SOURCE", "J4", "12 V", P="+12V_IN", N="GND"),
+        link,
+        _d("SINK", "U31", "10 mA", P="+12V_IN", N="GND"),
+    )
+    sides = {"+12V_IN": {"R80", "U31"}, "+12V_MEZZ": {"J4", "R80"}}
+    model = build_topology_model(md, layout="rows", premerge_parts=sides)
+    j4, r80 = _node(model, "J4"), _node(model, "R80")
+    assert [p.label for p in j4.ports if p.net != GND_NET] == ["+12V_MEZZ"]
+    near = next(w for w in model.wires if w.src_node == "J4" and w.label)
+    far_port = next(p for p in r80.ports if p.side == "right")
+    far = next(w for w in model.wires
+               if w.src_node == "R80" and w.src_terminal == far_port.terminal)
+    assert near.label == "+12V_MEZZ" and near.net == "+12V_IN"
+    assert far.label == "+12V_IN"
+    assert _rows(model)[0].title == "+12V_MEZZ"
+    # Without the pre-merge map nothing is renamed.
+    plain = build_topology_model(md, layout="rows")
+    assert _rows(plain)[0].title == "+12V_IN"

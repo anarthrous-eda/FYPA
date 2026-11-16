@@ -89,6 +89,10 @@ class TopologyBand:
     width: float
     kind: str  # "source" | "regulator" | "undriven" | "bridges"
     depth: int = 0
+    # Rows only: stable id across rebuilds (what the viewer remembers as
+    # collapsed), and whether this row is drawn as its header alone.
+    key: str = ""
+    collapsed: bool = False
 
 
 @dataclass
