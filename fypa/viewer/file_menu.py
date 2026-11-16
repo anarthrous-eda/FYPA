@@ -1250,6 +1250,8 @@ class _FileMenuMixin:
             auto_series_max_ohm=getattr(
                 getattr(self, "_project", None), "auto_series_max_ohm", None),
             write_solve_cache=write_solve_cache,
+            # Assembly variant (Properties tab); None follows Altium.
+            variant=getattr(getattr(self, "_project", None), "variant", None),
             parent=self,
         )
         if is_import:

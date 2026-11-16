@@ -135,6 +135,17 @@ def _build_parser() -> argparse.ArgumentParser:
             help="With --pdn-json: solve each load at its typical (default) or "
                  "maximum current, each series part at its typical or maximum "
                  "resistance.")
+        # Assembly variant - every subcommand that loads a design with
+        # --pdn-json loads a .PrjPcb, so the variant flags ride along.
+        grp = sp_.add_mutually_exclusive_group()
+        grp.add_argument(
+            "--variant", default=None, metavar="NAME",
+            help="Altium assembly variant to load (its Not Fitted parts are "
+                 "left open, never bridged). Default: the project's current "
+                 "variant, as last selected in Altium.")
+        grp.add_argument(
+            "--no-variant", dest="variant", action="store_const", const="",
+            help="Load the base design with every part fitted ([No Variations]).")
 
     def _add_pcbdoc_arg(sp_: argparse.ArgumentParser) -> None:
         sp_.add_argument(
@@ -389,7 +400,8 @@ def do_annotations(args: argparse.Namespace) -> int:
 def do_load(args: argparse.Namespace) -> int:
     loaded = load_project(args.prjpcb, pcbdoc_selector=args.pcbdoc,
                           pdn_json=getattr(args, "pdn_json", None),
-                          pdn_corner=getattr(args, "pdn_corner", "typ"))
+                          pdn_corner=getattr(args, "pdn_corner", "typ"),
+                          variant=getattr(args, "variant", None))
     print(loaded.diagnostic_summary())
     if args.png:
         args.png.parent.mkdir(parents=True, exist_ok=True)
@@ -590,6 +602,7 @@ _DESIGN_TOOL_SOURCES: tuple[Path, ...] = (
     _PKG_DIR / "altium" / "annotations.py",
     _PKG_DIR / "altium_geometry.py",
     _PKG_DIR / "altium" / "loader.py",
+    _PKG_DIR / "altium" / "variants.py",
     _PKG_DIR / "gerber" / "extract.py",
     _PKG_DIR / "gerber" / "loader.py",
 )
@@ -832,13 +845,27 @@ def _project_fingerprint(prjpcb_path: Path,
                          pcbdoc_path: Path | None = None,
                          settings=None,
                          pdn_json=None,
-                         pdn_corner: str | None = None) -> dict:
+                         pdn_corner: str | None = None,
+                         variant_name: str | None = None) -> dict:
     """Fingerprint for the cached solve (solve.pkl).
 
     Includes everything: project files + all tool source hashes + the
     solve-affecting settings. Any semantic edit to the toolchain - or a change
     in mesh/physics settings - invalidates this layer.
+
+    ``variant_name`` is the assembly variant the solve used (resolved, not
+    the request). Only a named variant adds a key, so a base-design solve
+    keys the same as one cached before variants were supported.
     """
+    fp = _project_fingerprint_base(prjpcb_path, pcbdoc_path, settings,
+                                   pdn_json, pdn_corner)
+    if variant_name:
+        fp["variant"] = variant_name
+    return fp
+
+
+def _project_fingerprint_base(prjpcb_path, pcbdoc_path, settings, pdn_json,
+                              pdn_corner) -> dict:
     return {
         "schema_version": _CACHE_SCHEMA_VERSION,
         "solve_schema_version": _SOLVE_SCHEMA_VERSION,
@@ -1830,7 +1857,8 @@ def save_solution_file(path: Path, solution, metadata: dict | None,
 def do_solve(args: argparse.Namespace) -> int:
     loaded = load_project(args.prjpcb, pcbdoc_selector=args.pcbdoc,
                           pdn_json=getattr(args, "pdn_json", None),
-                          pdn_corner=getattr(args, "pdn_corner", "typ"))
+                          pdn_corner=getattr(args, "pdn_corner", "typ"),
+                          variant=getattr(args, "variant", None))
     solution, metadata = _solve_loaded(loaded, args)
     # ``mesh_failed``, not the records list: a failure whose geometry was too
     # degenerate to record leaves the list empty, and testing that would pickle
@@ -1902,6 +1930,8 @@ def do_gui(args: argparse.Namespace) -> int:
         "adaptive_regulator_gain": adaptive,
         "pdn_json": getattr(args, "pdn_json", None),
         "pdn_corner": getattr(args, "pdn_corner", "typ"),
+        # None = follow Altium; "" = --no-variant; else --variant NAME.
+        "variant": getattr(args, "variant", None),
     }
     # Only override Settings-tab mesh values when the user passed the flags.
     if getattr(args, "mesh_angle", None) is not None:

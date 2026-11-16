@@ -357,6 +357,9 @@ def _start_launcher_altium_solve(
         adaptive_regulator_gain=bool(adaptive),
         pdn_json=pdn_json,
         pdn_corner=pdn_corner,
+        # A fresh import follows Altium's current variant unless the command
+        # line picked one; never the previous project's choice.
+        variant=window.__dict__.pop("_cli_variant", None),
         parent=window,
     )
     _stash_pending_altium_recent(
@@ -415,6 +418,10 @@ def _schedule_cli_altium_import(window, target: dict) -> None:
     adaptive = target.get("adaptive_regulator_gain")
     if adaptive is not None:
         window._cli_adaptive_regulator_gain = bool(adaptive)
+    if target.get("variant") is not None:
+        # --variant / --no-variant: the build the import loads. The solve
+        # metadata records it, and the project is seeded from that.
+        window._cli_variant = target["variant"]
     if target.get("pdn_json"):
         # The power tree the import loads (what Tomachie > Use pdn.json would set).
         window._tomachie_pdn = (Path(target["pdn_json"]).resolve(),

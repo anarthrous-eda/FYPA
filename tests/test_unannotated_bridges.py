@@ -562,3 +562,28 @@ def test_two_resistors_from_one_node_to_the_same_ground_are_a_dead_end():
     recs = [_rec("R33", 5, 0, active), _rec("R34", 5, 0, active)]
     _clear_dead_end_impacts(recs, active)
     assert not recs[0]["impact"] and not recs[1]["impact"]
+
+
+def test_multi_channel_absorbed_link_keeps_its_row():
+    """A 0 Ω link in a multi-channel sheet (schematic R101, placed as
+    R101_VCC_HDIO) is absorbed under its PHYSICAL designator. Looked up by
+    the schematic one it was missed; both pads then read the merged net and
+    the row vanished from the Bridges table."""
+    import dataclasses
+    proj = _bridge_proj("R101", {}, value="0R", footprint="R0603")
+    comp = dataclasses.replace(proj.pcb_components[0], designator="R101_VCC_HDIO",
+                               source_designator="R101")
+    proj = dataclasses.replace(
+        proj, pcb_components=(comp,) + proj.pcb_components[1:],
+        # After the merge both pads sit on the surviving net.
+        pads=(_pad(0, "1", 2, 0.0), _pad(0, "2", 2, 1.0)) + proj.pads[2:])
+    absorbed = _AbsorbedBridge(
+        designator="R101_VCC_HDIO", resistance=0.0005,
+        p_layer_id=1, p_x_mm=0.0, p_y_mm=0.0,
+        n_layer_id=1, n_x_mm=1.0, n_y_mm=0.0,
+        canonical_net_index=2, p_net_index=1, n_net_index=2,
+    )
+    _loaded, rec = _one_candidate(proj, "R101_VCC_HDIO", skip={"R101_VCC_HDIO"},
+                                  absorbed_bridges=[absorbed])
+    assert rec["state"] == "auto"
+    assert (rec["net_a"], rec["net_b"]) == ("SHIELD", "VBUS")

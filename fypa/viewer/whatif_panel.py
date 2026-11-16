@@ -792,6 +792,7 @@ class _WhatIfMixin:
             "pdn_json": str(getattr(proj, "pdn_json", "") or ""),
             "pdn_corner": str(getattr(proj, "pdn_corner", "typ") or "typ"),
             "auto_series": getattr(proj, "auto_series_max_ohm", None),
+            "variant": getattr(proj, "variant", None),
         }
         return W.base_fingerprint(
             SolveSettings.from_metadata(meta),

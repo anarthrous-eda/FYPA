@@ -47,6 +47,11 @@ class _EditorFormMixin:
             if self.metadata:
                 self._project.prjpcb_path = self.metadata.get("prjpcb_path")
                 self._project.pcbdoc_path = self.metadata.get("pcbdoc_path")
+                # Keep the variant the design was loaded with, so the next
+                # Resolve doesn't switch builds behind the user's back.
+                var = self.metadata.get("variant")
+                if isinstance(var, dict):
+                    self._project.variant = var.get("requested")
         return self._project
 
     def _all_net_names(self) -> list[str]:

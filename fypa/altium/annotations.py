@@ -6120,7 +6120,7 @@ def _synth_low_ohm_series_sources(
             continue
         schdoc = (getattr(sch, "schdoc_name", None)
                   or _schdoc_for_pcb_instance(proj, pcb_idx, lookup_des))
-        if key in no_auto_bridge:
+        if key in no_auto_bridge or pcb.designator.upper() in no_auto_bridge:
             result.note_absorbed(
                 f"{pcb.designator}: auto-SERIES disabled by the user "
                 f"(Bridges tab) - left open at DC."
@@ -6192,7 +6192,10 @@ def _synth_nettie_directives(
         if _has_any_pdn_params(pcb.parameters):
             return False
         des_u = (pcb.source_designator or pcb.designator).upper()
-        if no_auto_bridge and des_u in no_auto_bridge:
+        # The schematic designator opts out every channel of a multi-channel
+        # part; the physical one (R101_VCC_HDIO) just that placement.
+        if no_auto_bridge and (des_u in no_auto_bridge
+                               or pcb.designator.upper() in no_auto_bridge):
             result.note_absorbed(
                 f"{pcb.designator}: auto-bridge disabled by the user "
                 f"(Bridges tab) - left open at DC. Give it a resistance "

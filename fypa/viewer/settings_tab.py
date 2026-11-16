@@ -511,6 +511,76 @@ class _SettingsTabMixin:
         outer.addStretch(1)
         return self._settings_page(inner)
 
+    # --- Assembly variant picker ------------------------------------------------
+
+    def _build_variant_picker(self) -> QGroupBox:
+        """Which Altium assembly variant the design loads. Its Not Fitted
+        parts are left open - never bridged or merged - and its alternate
+        parts' values replace the base ones. Saved in the project; applied
+        on the next Resolve (it acts while the design is read, so the
+        design reloads)."""
+        t = _T()
+        box = QGroupBox("Assembly variant")
+        form = QFormLayout(box)
+        self.variant_combo = QComboBox()
+        self.variant_combo.setToolTip(
+            "The Altium assembly variant to analyse. 'Altium default' uses "
+            "whichever variant was last selected in Altium (the project's "
+            "CurrentVariant). Not Fitted parts are left open - a 0 Ω link "
+            "or option strap that isn't fitted never joins two nets. "
+            "Applied on the next Resolve.")
+        self.variant_combo.activated.connect(self._on_variant_chosen)
+        form.addRow("Variant:", self.variant_combo)
+        self.variant_status_label = QLabel("")
+        self.variant_status_label.setWordWrap(True)
+        self.variant_status_label.setStyleSheet(f"QLabel {{ color: {t['fg']}; }}")
+        form.addRow(self.variant_status_label)
+        self._refresh_variant_picker()
+        return box
+
+    def _refresh_variant_picker(self) -> None:
+        """Fill the picker from the loaded metadata and the project's
+        request. Called on build and whenever new metadata arrives."""
+        combo = getattr(self, "variant_combo", None)
+        if combo is None:
+            return
+        from fypa.viewer import variant_ui as V
+
+        var = V.loaded_variant(self.metadata)
+        request = V.requested_variant(getattr(self, "_project", None), self.metadata)
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            for label, data in V.combo_entries(var):
+                combo.addItem(label, data)
+            want = V.request_to_data(request)
+            idx = combo.findData(want)
+            if idx < 0 and want not in (V.FOLLOW_ALTIUM, ""):
+                # A saved name the project no longer defines: show it, so the
+                # user can see why the load fell back.
+                combo.addItem(f"{want} (not in project)", want)
+                idx = combo.count() - 1
+            combo.setCurrentIndex(max(idx, 0))
+        finally:
+            combo.blockSignals(False)
+        combo.setEnabled(var is not None)
+        self.variant_status_label.setText(
+            V.picker_status_html(var, request, _T()))
+
+    def _on_variant_chosen(self, index: int) -> None:
+        from fypa.viewer import variant_ui as V
+
+        request = V.data_to_request(self.variant_combo.itemData(index))
+        project = self._ensure_project()
+        if getattr(project, "variant", None) == request:
+            return
+        project.variant = request
+        self._mark_project_dirty()
+        self._refresh_variant_picker()
+        refresh = getattr(self, "_refresh_bridges_variant_banner", None)
+        if refresh is not None:
+            refresh()
+
     def _build_design_inputs_widget(self) -> QWidget:
         """The Properties tab's editable half: every input that changes the
         solve result for THIS design - physics, mesh, via fill, stackup and
@@ -558,6 +628,9 @@ class _SettingsTabMixin:
             lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
             lbl.setWordWrap(True)
             outer.addWidget(lbl)
+
+        # ----- Assembly variant (Altium) -----
+        outer.addWidget(self._build_variant_picker())
 
         # ----- Physics group -----
         solve_box = self._make_settings_group(

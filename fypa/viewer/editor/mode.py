@@ -286,6 +286,9 @@ class _EditorModeMixin:
         have = set(getattr(loaded, "no_auto_bridge_applied", None) or ())
         if want != have:
             return True
+        from fypa.altium.variants import variant_reload_needed
+        if variant_reload_needed(loaded, getattr(project, "variant", None)):
+            return True
         limit = getattr(loaded, "auto_series_max_ohm_applied", None)
         return (limit is not None
                 and float(getattr(project, "auto_series_max_ohm", limit))

@@ -81,12 +81,28 @@ class _BridgesTabMixin:
         blurb.setStyleSheet(f"QLabel {{ color: {_T()['fg_muted']}; }}")
         outer.addWidget(blurb)
 
+        # Which assembly variant these rows describe. Framed with the accent
+        # colour: a Not Fitted strap is the difference between two rails and
+        # one, so the active build has to be impossible to miss.
+        _tv = _T()
+        self.bridges_variant_banner = QLabel("")
+        self.bridges_variant_banner.setObjectName("bridgesVariantBanner")
+        self.bridges_variant_banner.setWordWrap(True)
+        self.bridges_variant_banner.setTextFormat(Qt.RichText)
+        self.bridges_variant_banner.setStyleSheet(
+            f"QLabel#bridgesVariantBanner {{ color: {_tv['fg']};"
+            f" background-color: {_tv['bg_alt']};"
+            f" border-left: 4px solid {_tv['accent']};"
+            f" padding: 6px 8px; }}")
+        outer.addWidget(self.bridges_variant_banner)
+        self._refresh_bridges_variant_banner()
+
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel("Show:"))
         self.bridges_state_combo = QComboBox()
         self.bridges_state_combo.addItems([
             "All parts", "Modelled as SERIES", "Auto-bridged",
-            "Not modelled", "Affects a solved rail", "Transistors",
+            "Not modelled", "Not fitted", "Affects a solved rail", "Transistors",
         ])
         self.bridges_state_combo.setToolTip(
             "'Affects a solved rail' is the one to watch: those parts join a "
@@ -305,9 +321,21 @@ class _BridgesTabMixin:
         "high_ohm": "ignored (high Ω)",
         "annotated": "annotated",
         "open": "open (off)",
+        "not_fitted": "not fitted",
     }
 
+    def _refresh_bridges_variant_banner(self) -> None:
+        label = getattr(self, "bridges_variant_banner", None)
+        if label is None:
+            return
+        from fypa.viewer import variant_ui as V
+
+        var = V.loaded_variant(self.metadata)
+        request = V.requested_variant(getattr(self, "_project", None), self.metadata)
+        label.setText(V.banner_html(var, request, _T()))
+
     def _populate_bridges_table(self) -> None:
+        self._refresh_bridges_variant_banner()
         table = getattr(self, "bridges_table", None)
         if table is None:
             return
@@ -363,6 +391,12 @@ class _BridgesTabMixin:
                         item.setForeground(QColor("#ffb300"))
                     elif state == "auto":
                         item.setForeground(QColor("#1f9c5a"))
+                    elif state == "not_fitted":
+                        item.setForeground(QColor(_T()['fg_muted']))
+                        if c == 0:
+                            font = item.font()
+                            font.setStrikeOut(True)
+                            item.setFont(font)
                     table.setItem(i, c, item)
         finally:
             self._bridges_populating = False
@@ -394,6 +428,8 @@ class _BridgesTabMixin:
                 keep = state == "auto"
             elif mode == "Not modelled":
                 keep = state in ("unmodelled", "high_ohm", "off")
+            elif mode == "Not fitted":
+                keep = state == "not_fitted"
             elif mode == "Affects a solved rail":
                 keep = bool(r.get("impact"))
             elif mode == "Transistors":

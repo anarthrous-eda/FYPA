@@ -81,6 +81,13 @@ def _format_properties_html(solution, metadata: dict | None,
     parts.append("<h2>Project</h2>")
     parts.append(f"<p><b>{_esc(metadata.get('project_name', '?'))}</b><br>"
                  f"<span class='muted'>{_esc(metadata.get('prjpcb_path', ''))}</span></p>")
+    var = metadata.get("variant")
+    if isinstance(var, dict):
+        from fypa.viewer.variant_ui import loaded_summary
+        parts.append(f"<p>Assembly variant: <b>{_esc(loaded_summary(var))}</b></p>")
+        if var.get("not_fitted"):
+            parts.append(f"<p class='muted'>Not fitted (left open): "
+                         f"{_esc(', '.join(var['not_fitted']))}</p>")
 
     ex = metadata.get("extraction_summary", {})
     if ex:
@@ -464,3 +471,8 @@ class _PropertiesTabMixin:
             phys_color_fn=self._layer_color_for,
         ))
         scroll_bar.setValue(scroll_pos)
+        # The variant picker sits in the editable half; new metadata can
+        # change both its choices and what was loaded.
+        refresh = getattr(self, "_refresh_variant_picker", None)
+        if refresh is not None:
+            refresh()

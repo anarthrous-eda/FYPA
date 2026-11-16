@@ -352,6 +352,13 @@ class ProjectFile:
     # it off. Mirrors fypa.altium.annotations.DEFAULT_AUTO_SERIES_MAX_OHM -
     # not imported, so loading a .fypa never pulls in the Altium parser.
     auto_series_max_ohm: float = 0.1
+    # Altium assembly variant to load (Properties tab). ``None`` follows the
+    # .PrjPcb's own CurrentVariant (what the designer last had selected in
+    # Altium); ``""`` is the base design with every part fitted; a name picks
+    # that variant. Not Fitted parts are never bridged or merged - see
+    # fypa.altium.variants. Acts while annotations are parsed, like
+    # no_auto_bridge, so changing it needs a design reload.
+    variant: str | None = None
     # Settings-tab copper-thickness overrides, keyed by copper layer id:
     # ``{layer_id: {"thickness_mm": t, "extracted_thickness_mm": t0}}``.
     # ``extracted_thickness_mm`` is the thickness the design itself states
@@ -407,6 +414,7 @@ class ProjectFile:
             "pdn_json": _rel(self.pdn_json, base),
             "pdn_corner": self.pdn_corner,
             "auto_series_max_ohm": float(self.auto_series_max_ohm),
+            "variant": self.variant,
             # JSON object keys are strings; load() turns them back to ints.
             "stackup_overrides": {
                 str(int(lid)): dict(entry)
@@ -468,6 +476,8 @@ class ProjectFile:
             pdn_corner=str(doc.get("pdn_corner", "typ")),
             # Additive like cap_overrides; older files get the default.
             auto_series_max_ohm=float(doc.get("auto_series_max_ohm", 0.1)),
+            # Additive; absent or null = follow Altium's current variant.
+            variant=(None if doc.get("variant") is None else str(doc.get("variant"))),
             stackup_overrides=_load_stackup_overrides(
                 doc.get("stackup_overrides")),
             net_renames=dict(doc.get("net_renames", {})),

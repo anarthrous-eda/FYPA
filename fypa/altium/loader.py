@@ -797,6 +797,15 @@ def replace_loaded(
     if geometry is _UNSET:
         geometry = (loaded.__dict__.get("geometry")
                     if extracted is None else None)
+    out = _new_loaded_project(loaded, extracted, annotations, geometry)
+    # Plain attributes load_project sets after construction.
+    for attr in ("variant_applied", "variant_choice"):
+        if attr in loaded.__dict__:
+            setattr(out, attr, loaded.__dict__[attr])
+    return out
+
+
+def _new_loaded_project(loaded, extracted, annotations, geometry) -> LoadedProject:
     return LoadedProject(
         extracted=loaded.extracted if extracted is None else extracted,
         annotations=loaded.annotations if annotations is None else annotations,
@@ -3717,10 +3726,15 @@ def build_solve_metadata(
             },
         })
 
+    from fypa.altium.variants import variant_metadata
+
     return {
         "project_name": proj.prjpcb_path.stem,
         "prjpcb_path": str(proj.prjpcb_path),
         "pcbdoc_path": str(proj.pcbdoc_path),
+        # Assembly variant this design was loaded with (Properties picker,
+        # Bridges banner); None for designs without Altium variants.
+        "variant": variant_metadata(loaded),
         # Altium user-origin (Board6/ORIGINX,ORIGINY) in mm. Every x_mm/y_mm
         # in this metadata - and the mesh vertices in the bundled solution -
         # has already had this subtracted, so coordinates are in Altium's
@@ -4887,6 +4901,11 @@ def collect_bridge_candidates(loaded: LoadedProject) -> list[dict]:
         return (proj.nets[idx].name
                 if 0 <= idx < len(proj.nets) else "(none)")
 
+    # Parts the assembly variant leaves off (physical designators).
+    _vc = getattr(loaded, "variant_choice", None)
+    not_fitted = set(_vc.not_fitted) if _vc is not None else set()
+    variant_label = _vc.label if _vc is not None else ""
+
     out: list[dict] = []
     for comp_idx, pads in pads_by_comp.items():
         if not (0 <= comp_idx < len(proj.pcb_components)):
@@ -4897,8 +4916,20 @@ def collect_bridge_candidates(loaded: LoadedProject) -> list[dict]:
             continue
         key = des.upper()
         kind = _bridge_part_kind(des)
-        absorbed = absorbed_by_des.get(key)
-        series = series_by_des.get(key)
+        # A multi-channel placement (R101_VCC_HDIO, schematic R101) is
+        # recorded under its PHYSICAL designator by the merge and the
+        # directives. Look that up first: keyed only by the schematic one,
+        # an absorbed link misses, both its pads then read the merged net,
+        # and the row silently drops out of the table.
+        phys = (comp.designator or des).strip()
+        phys_key = phys.upper()
+        absorbed = absorbed_by_des.get(phys_key) or absorbed_by_des.get(key)
+        series = series_by_des.get(phys_key) or series_by_des.get(key)
+        if phys_key != key and (phys_key in absorbed_by_des
+                                or phys_key in series_by_des):
+            # One row per placement, named so the user can find it - and so
+            # the tab's edits (opt-out, SERIES) apply to this channel only.
+            des, key = phys, phys_key
         if (kind is None and absorbed is None
                 and _is_transistor_designator(des)):
             # The PHYSICAL designator: in a multi-channel design every
@@ -4935,11 +4966,21 @@ def collect_bridge_candidates(loaded: LoadedProject) -> list[dict]:
         if len(pair) != 2:
             continue
 
-        sch = sch_by_des.get(key)
+        sch = (sch_by_des.get(key)
+               or sch_by_des.get((comp.source_designator or "").strip().upper()))
         params = getattr(sch, "parameters", None) or comp.parameters
         value = _component_value_text(params)
 
-        if (series is not None and absorbed is None
+        if (comp.designator or "").strip().upper() in not_fitted:
+            # Left off this build: open at DC whatever its value, and never
+            # bridged, merged or given a directive (load_project skips it).
+            # Shown by its PHYSICAL designator - the variant lists each
+            # channel's placement (R101_VCC_HDIOC) on its own.
+            des = (comp.designator or des).strip()
+            state = "not_fitted"
+            resistance = None
+            why = f"not fitted in variant {variant_label!r} - left open"
+        elif (series is not None and absorbed is None
                 and getattr(series, "auto_reason", None)):
             # A low-value resistor FYPA modelled on its own: "auto", so the
             # Bridges tab offers "Disable auto-bridge" for it like a 0 Ω link.
@@ -6454,6 +6495,7 @@ def load_project(prjpcb_path: str | Path,
                  auto_series_max_ohm: float | None = DEFAULT_AUTO_SERIES_MAX_OHM,
                  cache_dir: str | Path | None = None,
                  read_cache: bool = True,
+                 variant: str | None = None,
                  ) -> LoadedProject:
     """Load and prepare an Altium project for PDN analysis.
 
@@ -6481,6 +6523,14 @@ def load_project(prjpcb_path: str | Path,
 
     ``cache_dir`` / ``read_cache`` - the PCB- and schematic-side extract caches, see
     :func:`fypa.altium.extract.extract_project`.
+
+    ``variant`` picks the Altium assembly variant (the ``.fypa``'s
+    ``variant``): ``None`` follows the ``.PrjPcb``'s ``CurrentVariant``,
+    ``""`` is the base design with every part fitted, a name picks that
+    variant. Its Not Fitted parts are skipped while annotations are parsed -
+    never bridged, merged or given a directive - and its alternate parts'
+    parameters replace the base ones. Like ``no_auto_bridge`` it has to act
+    here, before the net merge. See :mod:`fypa.altium.variants`.
 
     Auto-merge pass: SERIES directives below
     :data:`NET_MERGE_RESISTANCE_THRESHOLD_OHM` are detected as electrical
@@ -6523,11 +6573,42 @@ def load_project(prjpcb_path: str | Path,
             log.info("  %s: PDN_* parameters for %d component(s), %s corner",
                      Path(pdn_json).name, len(params), pdn_corner)
 
+    # Assembly variant: alternate-part parameters in, Not Fitted parts out.
+    from dataclasses import replace as _dc_replace
+
+    from fypa.altium.variants import (apply_param_overrides, bind_to_board,
+                                      read_variants, resolve_variant)
+    variant_choice = resolve_variant(read_variants(prjpcb_path), variant)
+    # Point each entry at the part Altium means (by UniqueId), not the
+    # designator the variant was written with - see bind_to_board.
+    variant_choice = _dc_replace(variant_choice, variant=bind_to_board(
+        variant_choice.variant, getattr(extracted, "pcb_components", ())))
+    extracted = apply_param_overrides(extracted, variant_choice.variant)
+    on_board = {c.designator.upper()
+                for c in getattr(extracted, "pcb_components", ()) or ()}
+    not_fitted = set(variant_choice.not_fitted) & on_board
+    variant_notes: list[str] = []
+    if variant_choice.note:
+        variant_notes.append(f"Variant: {variant_choice.note}")
+    if variant_choice.variant is not None:
+        log.info("  assembly variant %r: %d part(s) not fitted, %d alternate(s)",
+                 variant_choice.name, len(not_fitted),
+                 len(variant_choice.variant.alternates))
+        renamed = variant_choice.variant.renamed
+        if renamed:
+            shown = ", ".join(f"{a}→{b}" for a, b in renamed[:6])
+            more = f" and {len(renamed) - 6} more" if len(renamed) > 6 else ""
+            variant_notes.append(
+                f"Variant {variant_choice.name!r}: {len(renamed)} entr(ies) carry "
+                f"a designator from before the board was re-annotated; matched by "
+                f"Altium's unique ID as Altium does ({shown}{more})")
+
     log.info("Stage 2/2: parsing PDN_* annotations (pass 1: discover merges)")
     _t = time.monotonic()
     initial_annotations = parse_annotations(
         extracted, enabled_layers=enabled, no_auto_bridge=no_auto_bridge,
-        auto_series_max_ohm=auto_series_max_ohm)
+        auto_series_max_ohm=auto_series_max_ohm,
+        skip_designators=not_fitted or None)
     log.info("Stage 2/2: annotations (pass 1) done in %.2fs",
              time.monotonic() - _t)
 
@@ -6559,7 +6640,7 @@ def load_project(prjpcb_path: str | Path,
         _t = time.monotonic()
         annotations = parse_annotations(
             extracted, enabled_layers=enabled,
-            skip_designators=skipped_designators,
+            skip_designators=set(skipped_designators) | not_fitted,
             net_remap=net_remap,
             no_auto_bridge=no_auto_bridge,
             auto_series_max_ohm=auto_series_max_ohm,
@@ -6578,6 +6659,7 @@ def load_project(prjpcb_path: str | Path,
     # particularly important: a component accidentally bridging two wrong
     # nets (e.g. +3V3L → GND) shows up here and causes large phantom currents.
     annotations.warnings.extend(pdn_notes)
+    annotations.warnings.extend(variant_notes)
     for w in annotations.warnings:
         log.warning("Annotation: %s", w)
     for e in annotations.errors:
@@ -6608,6 +6690,10 @@ def load_project(prjpcb_path: str | Path,
     # Designators whose directives came from the Tomachie file, so the Setup tab
     # says where they came from instead of naming a schematic sheet.
     loaded.pdn_designators = frozenset(pdn_designators)
+    # The variant request this load honoured (compared on every reuse, like
+    # no_auto_bridge_applied) and what it resolved to (Properties / Bridges).
+    loaded.variant_applied = variant
+    loaded.variant_choice = variant_choice
     return loaded
 
 

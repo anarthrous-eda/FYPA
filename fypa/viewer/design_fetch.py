@@ -97,6 +97,7 @@ class _DesignFetchMixin:
         busy dialog. Returns ``(loaded | None, error text)``."""
         project = getattr(self, "_project", None)
         no_bridge = set(getattr(project, "no_auto_bridge", None) or ()) or None
+        variant = getattr(project, "variant", None)
         out: dict = {}
 
         def work() -> None:
@@ -112,6 +113,10 @@ class _DesignFetchMixin:
                         {d.upper() for d in no_bridge}
                         != set(getattr(loaded, "no_auto_bridge_applied", ()) or ())):
                     loaded = None
+                if loaded is not None:
+                    from fypa.altium.variants import variant_reload_needed
+                    if variant_reload_needed(loaded, variant):
+                        loaded = None
                 if loaded is None:
                     from fypa.altium.loader import load_project
 
@@ -120,7 +125,8 @@ class _DesignFetchMixin:
                                  else None)
                     loaded = load_project(prj, pcbdoc_selector=pcb,
                                           no_auto_bridge=no_bridge,
-                                          cache_dir=cache_dir)
+                                          cache_dir=cache_dir,
+                                          variant=variant)
                 out["loaded"] = loaded
             except Exception as e:  # noqa: BLE001 - reported to the user
                 log.exception("Loading %s failed", prj)

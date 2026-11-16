@@ -232,6 +232,12 @@ without changing the base, use What-Ifs. <b>Right:</b> a read-only
 report of what the solver was given: extracted records, stackup, physics
 constants, parsed PDN_* directives (collapsible), active nets, solver
 diagnostics, warnings / errors.</p>
+<p><b>Assembly variant</b> (under the PcbDoc path) picks which Altium build
+to analyse. <i>Altium default</i> uses the variant last selected in Altium;
+<i>[No Variations]</i> is the base design with every part fitted. A variant's
+Not Fitted parts are left open - a 0&nbsp;&Omega; link or option strap that
+isn't fitted never joins two nets - and its alternate parts' values replace
+the base ones. Saved in the .fypa; applied on the next Resolve.</p>
 """),
     ("Topology", """
 <p>The power tree of the PDN simulation model (not the PCB layout). Each
@@ -310,6 +316,10 @@ resistance into <i>Selected part</i>, and click <b>Model as SERIES</b>.
 <b>Disable auto-bridge</b> leaves an automatically shorted part open at DC;
 <b>Remove</b> undoes either. Changes are saved to the .fypa and take effect
 on the next Resolve.</p>
+<p>The banner at the top names the active <b>assembly variant</b>. Parts it
+leaves off show as <i>not fitted</i> (struck through, filter <i>Not
+fitted</i>) and are never bridged. Change the variant in the Properties
+tab.</p>
 <p class='muted'>Filter to <i>Affects a solved rail</i> first - those
 parts join a solved rail to copper that is not in the solve and are under
 100&nbsp;&Omega; (or of unknown value), so they can carry current the solve
