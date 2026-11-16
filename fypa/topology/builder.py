@@ -29,20 +29,23 @@ def build_topology_model(
     layout: str = "columns",
     show_bridges: bool = False,
     add_candidates: Mapping[str, Collection[str]] | None = None,
+    premerge_parts: Mapping[str, Collection[str]] | None = None,
 ) -> TopologyModel:
     """Build a Flow diagram layout model for the PDN simulation schematic.
 
     ``layout="rows"`` gives one row per power origin with power-port tags
     between rows (:mod:`fypa.topology.rows`); ``"columns"`` is the classic
-    single-chain column layout. ``show_bridges`` and ``add_candidates`` (the
-    viewer's "+ SINK" handles, see :func:`~fypa.topology.rows.build_rows_model`)
-    only affect the rows layout.
+    single-chain column layout. ``show_bridges``, ``add_candidates`` (the
+    viewer's "+ SINK" handles) and ``premerge_parts`` (the far side of 0 Ω
+    links), see :func:`~fypa.topology.rows.build_rows_model`, only affect
+    the rows layout.
     """
     if layout == "rows":
         from fypa.topology.rows import build_rows_model
 
         return build_rows_model(
             metadata, show_bridges=show_bridges, add_candidates=add_candidates,
+            premerge_parts=premerge_parts,
         )
     if metadata is None:
         return TopologyModel()

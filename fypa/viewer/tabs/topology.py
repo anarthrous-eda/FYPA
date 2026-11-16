@@ -1129,14 +1129,27 @@ class _TopologyTabMixin:
 
     def _topology_add_candidates(self) -> dict[str, set[str]] | None:
         """net (upper) -> ICs / connectors with a pin on it, for the rows
-        layout's "+ SINK (n)" handles; ``None`` turns the handles off.
+        layout's "+ SINK (n)" handles; ``None`` turns the handles off."""
+        if not getattr(self, "_topology_show_add_handles", False):
+            return None
+        maps = self._topology_design_maps()
+        return None if maps is None else maps[0]
+
+    def _topology_premerge_parts(self) -> dict[str, set[str]] | None:
+        """Pre-merge net -> parts on it, for rails merged through 0 Ω links:
+        lets the rows layout draw a link's far side (``R106 → +ETH_2V5``)."""
+        maps = self._topology_design_maps()
+        return None if maps is None else maps[1]
+
+    def _topology_design_maps(
+        self,
+    ) -> tuple[dict[str, set[str]] | None, dict[str, set[str]] | None] | None:
+        """(load candidates, pre-merge parts) for the rows layout.
 
         From the design in memory when there is one (and saved beside the
         project's cache); otherwise - a project reopened from its solve
-        cache - from that saved copy, so the handles don't depend on how
+        cache - from that saved copy, so the diagram doesn't depend on how
         the project was opened."""
-        if not getattr(self, "_topology_show_add_handles", False):
-            return None
         if getattr(self, "_topology_layout", "rows") != "rows":
             return None
         from fypa.autosetup import manual as M
@@ -1149,12 +1162,12 @@ class _TopologyTabMixin:
             return cache[1]
         # Same "likely load" rule as Manual setup's load picker, so the
         # handle's n is the number of parts that picker lists.
-        out = M.likely_loads_by_net(view)
+        out = (M.likely_loads_by_net(view), M.premerge_parts_by_net(view))
         self._topology_cands_cache = (view, out)
         path = self._topology_cands_sidecar_path()
         if path is not None:
             try:
-                M.save_load_candidates(path, out)
+                M.save_load_candidates(path, out[0], out[1])
             except OSError:
                 import logging
 
@@ -1178,9 +1191,12 @@ class _TopologyTabMixin:
         except Exception:  # noqa: BLE001 - handles are optional
             return None
 
-    def _topology_read_cands_sidecar(self) -> dict[str, set[str]] | None:
-        """The saved candidate map (cached on path + mtime); ``None`` if this
-        project has never been opened with its design in memory."""
+    def _topology_read_cands_sidecar(
+        self,
+    ) -> tuple[dict[str, set[str]] | None, dict[str, set[str]] | None] | None:
+        """The saved (candidates, pre-merge parts) maps (cached on path +
+        mtime); ``None`` if this project has never been opened with its
+        design in memory."""
         path = self._topology_cands_sidecar_path()
         if path is None:
             return None
@@ -1191,9 +1207,10 @@ class _TopologyTabMixin:
         cache = getattr(self, "_topology_sidecar_cache", None)
         if cache is not None and cache[0] == (path, mtime):
             return cache[1]
-        from fypa.autosetup.manual import read_load_candidates
+        from fypa.autosetup.manual import read_load_candidates, read_premerge_parts
 
-        out = read_load_candidates(path)
+        cands = read_load_candidates(path)
+        out = None if cands is None else (cands, read_premerge_parts(path))
         self._topology_sidecar_cache = ((path, mtime), out)
         return out
 
@@ -1249,6 +1266,7 @@ class _TopologyTabMixin:
             layout=getattr(self, "_topology_layout", "rows"),
             show_bridges=getattr(self, "_topology_show_bridges", False),
             add_candidates=self._topology_add_candidates(),
+            premerge_parts=self._topology_premerge_parts(),
         )
         self._topology_model = model
         svg = render_topology_svg(model, theme=current_theme())

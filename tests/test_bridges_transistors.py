@@ -321,6 +321,26 @@ def test_multichannel_fets_are_one_row_per_placement():
     assert states == {"Q4_CH0": "open", "Q4_CH1": "series"}
 
 
+def test_editor_directive_on_a_merged_away_net_couples_at_its_pre_merge_pads():
+    """Auto setup names nets as drawn. HS_SNS was merged into +12V, so it
+    still resolves by name but owns no copper: a load on it has to land on
+    +12V, at the pad that was on HS_SNS (the drain tab), not at an anchor
+    on the empty net."""
+    from fypa.editor_directives import apply_editor_directives, merged_net_targets
+    from fypa.project_file import EditorDirective
+    from fypa.altium.annotations import SinkSpec
+
+    loaded = _loaded(_fet_proj(drain_net=P12), premerge_pad_nets={(0, "5"): SNS})
+    assert merged_net_targets(loaded) == {SNS: P12}
+    warnings = apply_editor_directives(loaded, [EditorDirective(
+        kind="component", role="SINK", designator="Q4", p_net="HS_SNS",
+        single_net=True, current=1.0)])
+    assert warnings == []
+    spec = next(d for d in loaded.annotations.directives
+                if isinstance(d, SinkSpec) and d.designator == "Q4")
+    assert [(p.pad_designator, p.net_index) for p in spec.p.pins] == [("5", P12)]
+
+
 def test_old_cached_project_without_the_field_still_lists_fets():
     loaded = _loaded(_fet_proj())
     del loaded.premerge_pad_nets       # an older design-info pickle

@@ -34,6 +34,37 @@ _EDITOR_SCHDOC = "(editor)"
 _ANCHOR_PAD = "(editor)"
 
 
+def merged_net_targets(loaded) -> dict[int, int]:
+    """``{merged-away net index: the net index its copper carries now}``.
+
+    The loader's low-Ω merge rewrites every primitive onto the surviving net
+    but leaves ``extracted.nets`` alone, so the old index still resolves by
+    name while owning nothing. Read back from the pre-merge records the
+    loader keeps (pads, then the other primitives); a merged-away net with
+    neither (an old design-info pickle) is left out."""
+    ex = loaded.extracted
+    out: dict[int, int] = {}
+    pre_pads = getattr(loaded, "premerge_pad_nets", None) or {}
+    if pre_pads:
+        now = {(int(p.component_index), (p.designator or "").strip().upper()):
+               int(p.net_index)
+               for p in ex.pads if getattr(p, "component_index", -1) >= 0}
+        for key, old in pre_pads.items():
+            new = now.get(key)
+            if new is not None and new != old:
+                out.setdefault(int(old), new)
+    for kind, moved in (getattr(loaded, "premerge_primitive_nets", None) or {}).items():
+        items = getattr(ex, kind, None)
+        if kind == "planes" or not items:
+            continue
+        for i, old in moved.items():
+            if 0 <= i < len(items):
+                new = int(items[i].net_index)
+                if new != old:
+                    out.setdefault(int(old), new)
+    return out
+
+
 def apply_editor_directives(loaded, editor_directives) -> list[str]:
     """Append synthetic SourceSpec / SinkSpec / ResistorSpec specs to
     ``loaded.annotations.directives`` - one per editor directive.
@@ -66,6 +97,16 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
         nm = getattr(net, "name", None)
         if nm:
             net_index.setdefault(nm.upper(), i)
+
+    # Nets the low-Ω merge folded away keep their names (and indices) in
+    # ``extracted.nets`` but own no copper: their pads and primitives now
+    # carry the surviving net. Auto setup names nets as drawn (a module's
+    # ``VOUT_PS1V8``, not the ``+PS_1V8`` a 0 Ω link merged it into), so a
+    # directive on a merged-away name has to land on the surviving net - at
+    # the pads that were on the named net before the merge.
+    premerge_pads: dict[tuple[int, str], int] = (
+        getattr(loaded, "premerge_pad_nets", None) or {})
+    merged_to = merged_net_targets(loaded)
 
     def _comp_indices(designator: str | None) -> list[int]:
         """All PCB placements matching ``designator``.
@@ -142,6 +183,11 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
                 and _ed.p_net and _ed.n_net:
             _uf_union(_ed.p_net.upper(), _ed.n_net.upper())
 
+    # A merged-away net is the same copper as the net it was merged into.
+    for _old, _new in merged_to.items():
+        _uf_union(extracted.nets[_new].name.upper(),
+                  extracted.nets[_old].name.upper())
+
     _rail_return_group: dict[str, int] = {}
 
     def _return_group_for(net_name: str) -> int:
@@ -165,11 +211,21 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
                 sum(p.y for p in pts) / len(pts))
 
     def _pads_on_component(ci: int, nidx: int, wanted_pins):
-        """Pads of component ``ci`` on net ``nidx``, optionally pin-filtered."""
+        """Pads of component ``ci`` on net ``nidx``, optionally pin-filtered.
+
+        For a merged-away ``nidx`` these are the pads that were on it before
+        the merge, on the net they carry now."""
         out: list = []
         pcb_des = extracted.pcb_components[ci].designator or None
+        merged = nidx in merged_to
         for p in extracted.pads:
-            if p.component_index != ci or p.net_index != nidx:
+            if p.component_index != ci:
+                continue
+            if merged:
+                key = (ci, (p.designator or "").strip().upper())
+                if premerge_pads.get(key) != nidx:
+                    continue
+            elif p.net_index != nidx:
                 continue
             if wanted_pins is not None and \
                     (p.designator or "").upper() not in wanted_pins:
@@ -179,7 +235,7 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
             out.append(TerminalPin(
                 pad_designator=p.designator or _ANCHOR_PAD,
                 layer_id=lid,
-                net_index=nidx,
+                net_index=p.net_index,
                 point=p.center,
                 pad_polygon=None,
                 component_designator=pcb_des,
@@ -215,7 +271,7 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
             pins.append(TerminalPin(
                 pad_designator=_ANCHOR_PAD,
                 layer_id=fallback_layer_id or top_layer,
-                net_index=nidx,
+                net_index=merged_to.get(nidx, nidx),
                 point=Pt2D(float(fx), float(fy)),
                 pad_polygon=None,
                 component_designator=designator or None,

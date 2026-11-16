@@ -114,12 +114,18 @@ This is **not** the PCB layout; for spatial placement use the Heatmap tab.
 - **Ground** - every part with a return gets its own ground symbol under
   it; there is no shared return rail.
 - **Bridges** - 0 Ω auto-bridges on a powered rail show as one-line chips
-  on that rail. Auto-bridges on nets no source, sink or regulator uses
+  on that rail. FYPA merges the two nets a link joins into one, but the
+  chip still shows the far side: `VOUT_2V5 → R106 → +ETH_2V5`, with the
+  parts on `+ETH_2V5` (and its `+ SINK` handle) hanging off the chip
+  rather than the regulator. This needs the design in memory, or a
+  project opened before with it. Auto-bridges on nets no source, sink or regulator uses
   (pull-up links, signal jumpers) are hidden; toggle **Bridges** on the
   toolbar to list them, grouped by net.
 - **Add handles** - a dashed blue `+ SINK (n)` tap under each rail's last
   load, where *n* more parts on the rail (ICs, connectors) aren't set up on
-  it yet. See *Adding sources, regulators and sinks* below. Toggle it off
+  it yet. A rail with nothing on it yet - typically the far side of a
+  SERIES part on a regulator's output - ends in the handle itself instead
+  of a grey "no loads" tag. See *Adding sources, regulators and sinks* below. Toggle it off
   on the toolbar for a tighter diagram. The parts per rail are saved in
   the project's cache folder whenever the design is loaded, so a project
   reopened from its cache shows the same handles. A Gerber import shows

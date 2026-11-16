@@ -17,6 +17,7 @@ Series elements stay on the Bridges tab.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable
 
 from PySide6.QtCore import QSignalBlocker, Qt, Signal
@@ -33,8 +34,10 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QProxyStyle,
     QPushButton,
     QSplitter,
+    QStyle,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -47,6 +50,16 @@ from fypa.viewer.theme import _T
 from fypa.viewer.widgets import _esc
 
 _TOPOLOGIES = ("-", "BUCK", "BOOST", "BUCKBOOST", "INVERTER")
+
+
+class _ListPopupStyle(QProxyStyle):
+    """App style, but combo popups are scrolling lists that honour
+    ``maxVisibleItems`` instead of Fusion's show-every-item menu."""
+
+    def styleHint(self, hint, option=None, widget=None, returnData=None):
+        if hint == QStyle.SH_ComboBox_Popup:
+            return 0
+        return super().styleHint(hint, option, widget, returnData)
 
 
 class _NetCombo(QComboBox):
@@ -204,6 +217,15 @@ class _Editor(QWidget):
         self.net.picked.connect(self._on_net)
         form.addRow("Output net" if mode == "supply" else "Supply net", self.net)
         self.part = QComboBox()
+        # Cap the popup at 20 rows with a scroll bar. Fusion ignores
+        # maxVisibleItems for non-editable combos (it shows every item and
+        # runs off screen), so give this combo the plain list popup the
+        # editable net combos get. (A "combobox-popup: 0" stylesheet does
+        # the same but draws the popup without a visible scroll bar.)
+        self._part_style = _ListPopupStyle()
+        self._part_style.setParent(self)
+        self.part.setStyle(self._part_style)
+        self.part.setMaxVisibleItems(20)
         self.part.activated.connect(self._on_part)
         # Loads: only the likely loads still free on the net (the Topology
         # tab's "+ SINK (n)" parts) unless "Show all parts" is ticked.
@@ -335,7 +357,11 @@ class _Editor(QWidget):
                 for des, label in rows:
                     self.part.addItem(label, des)
             if d.designator and self.part.findData(d.designator) < 0:
-                self.part.addItem(f"{d.designator}  (not on this net)", d.designator)
+                part = self.view.part(d.designator)
+                via = (M.reach_through_series(self.view, part, d.p_net)
+                       if part is not None and d.p_net else None)
+                note = f"through {via}" if via else "not on this net"
+                self.part.addItem(f"{d.designator}  ({note})", d.designator)
             idx = self.part.findData(d.designator) if d.designator else -1
             if idx < 0 and self.part.count():
                 self.part.insertItem(0, pick, None)
@@ -686,6 +712,18 @@ class ManualSetupDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Manual setup - sources, regulators and loads")
         self.resize(1040, 680)
+        # Work on the nets as drawn, like the auto-setup classifier: after the
+        # loader's 0 Ω merge a module's output (VOUT_PS1V8) and the rail it
+        # feeds (+PS_1V8) are one net, so the directives auto setup wrote
+        # would read as "no pin on VOUT_PS1V8". The absorbed links come back
+        # as bridges, and so do the project's SERIES elements (auto setup's
+        # accepted ferrites / sense resistors, the Bridges tab's) - the view
+        # may predate them.
+        view = view.schematic_view()
+        series = [(d.p_net.upper(), d.n_net.upper()) for d in editor_directives
+                  if d.role == "SERIES" and d.p_net and d.n_net]
+        if series:
+            view = dataclasses.replace(view, bridges=list(view.bridges) + series)
         self.view = view
         # Working copies: nothing in the project changes until Apply.
         self.entries: list[M.Entry] = [

@@ -220,10 +220,11 @@ def test_add_sink_handle_counts_parts_not_already_on_the_rail() -> None:
     cands = {
         "+vdd": {"J1", "U9", "u10"},   # J1 is already the sink: 2 left
         "+12V": {"U6"},                # U6 is drawn there (fed regulator)
-        "+1V8A": {"U9"},               # no loads: the end tag offers it
+        "+1V8A": {"R24"},              # only the resistor itself: no handle
         "12P0V": {"J2"},               # J2 is the source on it
     }
     model = build_topology_model(TREE, layout="rows", add_candidates=cands)
+    assert [t.net for t in model.tags if t.kind == "end"] == ["+1V8A"]
     (add,) = [t for t in model.tags if t.kind == "add"]
     assert (add.net, add.text) == ("+VDD", "+ SINK (2)")
     # One tap below the sink, in the sink's column, wired dashed off its bus.
@@ -249,6 +250,88 @@ def test_add_sink_handle_counts_parts_not_already_on_the_rail() -> None:
     assert 'stroke-dasharray="3 2"' in render_topology_svg(model)
 
 
+def test_add_sink_handle_on_the_far_side_of_a_series_part() -> None:
+    # A regulator feeding its loads through a series resistor: the rail past
+    # the resistor has nothing on it yet, so it ends in a "+ SINK" handle
+    # (not a grey "no loads" tag), wired and labelled off the resistor.
+    md = _md(
+        _d("SOURCE", "J2", "12 V", P="+12V", N="GND"),
+        _d("REGULATOR", "U6", "V=1 V", IN_P="+12V", IN_N="GND", OUT_P="VREG", OUT_N="GND"),
+        _d("SERIES", "R5", "0 mOhm", P="VREG", N="+VDD"),
+    )
+    cands = {"VREG": {"U6", "R5"}, "+VDD": {"R5", "U2", "U3"}}
+    model = build_topology_model(md, layout="rows", add_candidates=cands)
+    assert not any(t.kind == "end" for t in model.tags)
+    (add,) = [t for t in model.tags if t.kind == "add"]
+    assert (add.net, add.text) == ("+VDD", "+ SINK (2)")
+    r5 = _node(model, "R5")
+    out = next(p for p in r5.ports if p.net == "+VDD")
+    assert out.side == "right" and add.y == pytest.approx(out.y) and add.x > out.x
+    stub = next(w for w in model.wires
+                if w.net == "+VDD" and w.src_node == "R5" and w.src_terminal == out.terminal)
+    assert stub.label == "+VDD" and not stub.dashed
+    assert parse_wire_path(stub.path_d)[-1] == pytest.approx((add.x, add.y))
+    assert find_tag_at(model, add.x + add.width / 2, add.y) is add
+    # Handles off: back to the end tag.
+    plain = build_topology_model(md, layout="rows")
+    assert [t.net for t in plain.tags if t.kind == "end"] == ["+VDD"]
+
+
+def _linked_rail(*extra: dict) -> dict:
+    # U10 → VOUT_2V5 → 0 Ω R106 → +ETH_2V5 (merged into VOUT_2V5 by the
+    # loader, so the link is an auto-bridge on one net).
+    link = _bridge("R106", "VOUT_2V5")
+    link["shorted_nets"] = "VOUT_2V5 ↔ +ETH_2V5"
+    return _md(
+        _d("SOURCE", "J1", "12 V", P="+12V", N="GND"),
+        _d("REGULATOR", "U10", "V=2.5 V", IN_P="+12V", IN_N="GND",
+           OUT_P="VOUT_2V5", OUT_N="GND"),
+        link, *extra,
+    )
+
+
+_LINK_SIDES = {"VOUT_2V5": {"U10", "R106", "C52"}, "+ETH_2V5": {"R106", "J9", "TP11"}}
+
+
+def test_merged_link_draws_its_far_side_with_the_parts_past_it() -> None:
+    md = _linked_rail(
+        _d("SINK", "J9", "1 A", P="VOUT_2V5", N="GND"),
+        _d("SINK", "U7", "1 A", P="VOUT_2V5", N="GND"),   # not in the map: near side
+    )
+    model = build_topology_model(md, layout="rows", premerge_parts=_LINK_SIDES)
+    r106, j9, u7 = _node(model, "R106"), _node(model, "J9"), _node(model, "U7")
+    assert r106.compact
+    assert [(p.side, p.label) for p in r106.ports] == [
+        ("left", "VOUT_2V5"), ("right", "+ETH_2V5")]
+    far = next(p for p in r106.ports if p.side == "right")
+    # J9 hangs off R106's far side; U7 stays on the regulator's side.
+    assert j9.x > r106.x + r106.width and u7.x <= r106.x
+    trunk = next(w for w in model.wires
+                 if w.src_node == "R106" and w.src_terminal == far.terminal)
+    assert trunk.label == "+ETH_2V5" and trunk.net == "VOUT_2V5"
+    # Without the map (e.g. the report): a one-port chip, as before.
+    plain = build_topology_model(md, layout="rows")
+    assert [p.side for p in _node(plain, "R106").ports] == ["left"]
+
+
+def test_merged_link_far_side_gets_its_own_add_handle() -> None:
+    cands = {"VOUT_2V5": {"U10", "J9", "TP11", "U8"}}
+    model = build_topology_model(
+        _linked_rail(), layout="rows", add_candidates=cands, premerge_parts=_LINK_SIDES)
+    adds = sorted((t.x, t.text) for t in model.tags if t.kind == "add")
+    r106 = _node(model, "R106")
+    far = next(p for p in r106.ports if p.side == "right")
+    # U8 (unknown side) on the regulator's side; J9 and TP11 past R106.
+    assert [text for _, text in adds] == ["+ SINK (1)", "+ SINK (2)"]
+    (far_add,) = [t for t in model.tags if t.kind == "add" and t.text == "+ SINK (2)"]
+    assert far_add.y == pytest.approx(far.y) and far_add.x > far.x
+    assert far_add.net == "VOUT_2V5" and "+ETH_2V5" in far_add.tooltip
+    # Handles off: the far side ends in a "no loads" tag named for its side.
+    plain = build_topology_model(_linked_rail(), layout="rows", premerge_parts=_LINK_SIDES)
+    assert [(t.text, t.net) for t in plain.tags if t.kind == "end"] == [
+        ("+ETH_2V5", "VOUT_2V5")]
+
+
 def test_no_add_handle_when_every_candidate_is_already_on_the_rail() -> None:
     model = build_topology_model(TREE, layout="rows", add_candidates={"+VDD": {"J1"}})
     assert not any(t.kind == "add" for t in model.tags)
@@ -262,7 +345,10 @@ def test_fixture_layout_is_clean_with_add_handles(name: str) -> None:
     model = build_topology_model(md, layout="rows", add_candidates=cands)
     adds = [t for t in model.tags if t.kind == "add"]
     taps = [w for w in model.wires if w.routing_kind == "add_tap"]
-    assert len(adds) == len(taps)
+    # Under a rail's last load (dashed tap), or at a load-less rail's port
+    # in place of its "no loads" end tag.
+    assert not any(t.kind == "end" for t in model.tags), name
+    assert len(adds) >= len(taps)
     geo = compute_schematic_geometry(model.wires)
     assert not any(geo.vert_crossings.values()), name
 

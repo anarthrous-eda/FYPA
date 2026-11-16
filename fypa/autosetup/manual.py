@@ -184,6 +184,23 @@ def likely_loads_by_net(view: DesignView) -> dict[str, set[str]]:
     return out
 
 
+def premerge_parts_by_net(view: DesignView) -> dict[str, set[str]]:
+    """Pre-merge net (upper) -> designators (upper) with a pin on it, for
+    nets the loader merged through a 0 Ω link - both the absorbed side and
+    the side that kept its name. Lets the Topology tab draw a link's far
+    side (``+ETH_2V5`` past ``R106``) and hang its parts there, though both
+    sides are one net after the merge. Nets nothing was merged into are
+    left out."""
+    merged = {pin.net.upper() for p in view.parts for pin in p.pins
+              if pin.net and pin.sch_net and pin.sch_net.upper() != pin.net.upper()}
+    out: dict[str, set[str]] = {}
+    for part in view.parts:
+        for pin in part.pins:
+            if pin.net and pin.net.upper() in merged and pin.sch_net:
+                out.setdefault(pin.sch_net.upper(), set()).add(part.designator.upper())
+    return out
+
+
 # Small sidecar in the project's cache folder so a project reopened from its
 # solve cache (no design in memory) still gets its "+ SINK" handles without
 # unpickling the whole design-info cache.
@@ -191,15 +208,19 @@ LOAD_CANDIDATES_FILE = "load-candidates.json"
 _LOAD_CANDIDATES_FORMAT = "fypa-load-candidates/1"
 
 
-def save_load_candidates(path, by_net: dict[str, set[str]]) -> None:
-    """Write :func:`likely_loads_by_net` output to ``path`` (JSON)."""
+def save_load_candidates(path, by_net: dict[str, set[str]],
+                         premerge: dict[str, set[str]] | None = None) -> None:
+    """Write :func:`likely_loads_by_net` output (and optionally
+    :func:`premerge_parts_by_net`'s) to ``path`` (JSON)."""
     import json
     from pathlib import Path
 
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    data = {"format": _LOAD_CANDIDATES_FORMAT,
-            "nets": {n: sorted(d) for n, d in sorted(by_net.items())}}
+    data: dict = {"format": _LOAD_CANDIDATES_FORMAT,
+                  "nets": {n: sorted(d) for n, d in sorted(by_net.items())}}
+    if premerge is not None:
+        data["premerge"] = {n: sorted(d) for n, d in sorted(premerge.items())}
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
     tmp.replace(p)
@@ -208,6 +229,16 @@ def save_load_candidates(path, by_net: dict[str, set[str]]) -> None:
 def read_load_candidates(path) -> dict[str, set[str]] | None:
     """The map :func:`save_load_candidates` wrote; ``None`` if missing,
     unreadable or another format."""
+    return _read_sidecar_map(path, "nets")
+
+
+def read_premerge_parts(path) -> dict[str, set[str]] | None:
+    """The :func:`premerge_parts_by_net` map :func:`save_load_candidates`
+    wrote; ``None`` if missing (an older sidecar) or unreadable."""
+    return _read_sidecar_map(path, "premerge")
+
+
+def _read_sidecar_map(path, key: str) -> dict[str, set[str]] | None:
     import json
     from pathlib import Path
 
@@ -217,7 +248,7 @@ def read_load_candidates(path) -> dict[str, set[str]] | None:
         return None
     if not isinstance(data, dict) or data.get("format") != _LOAD_CANDIDATES_FORMAT:
         return None
-    nets = data.get("nets")
+    nets = data.get(key)
     if not isinstance(nets, dict):
         return None
     return {str(n).upper(): {str(d).upper() for d in ds}
@@ -520,6 +551,54 @@ class Issue:
     text: str
 
 
+def _bridge_groups(view: DesignView, bridges: Sequence[tuple[str, str]] = ()):
+    """``find(net) -> group root`` over the view's bridges (SERIES directives,
+    0 Ω links) plus ``bridges``; case-insensitive."""
+    parent: dict[str, str] = {}
+
+    def find(n: str) -> str:
+        n = n.upper()
+        parent.setdefault(n, n)
+        while parent[n] != n:
+            parent[n] = parent[parent[n]]
+            n = parent[n]
+        return n
+
+    for a, b in list(bridges) + list(view.bridges):
+        parent[find(a)] = find(b)
+    return find
+
+
+# Two-pin parts a supply reaches its rail through without a pin on it: a
+# buck's inductor (SW pin -> L -> VOUT), an output ferrite.
+SERIES_PART_PREFIXES = ("L", "FB", "FL")
+
+
+def reach_through_series(view: DesignView, part: Part, net: str,
+                         bridges: Sequence[tuple[str, str]] = ()) -> str | None:
+    """How ``part`` reaches ``net`` with no pin on it, or ``None``.
+
+    ``"L5"`` when one of its nets is the far end of a two-pin inductor /
+    ferrite on ``net`` (the classifier puts a buck's output past its
+    inductor); ``"a series link"`` when one of its nets is bridged to
+    ``net`` by a SERIES directive or a 0 Ω link."""
+    find = _bridge_groups(view, bridges)
+    target = find(net)
+    mine = {find(n) for n in part.nets() if not view.is_gnd(n)}
+    if target in mine:
+        return "a series link"
+    for other in view.parts:
+        if other is part or other.prefix not in SERIES_PART_PREFIXES:
+            continue
+        ends = other.nets()
+        if len(ends) != 2:
+            continue
+        a, b = (find(n) for n in ends)
+        if (a == target and b in mine) or (b == target and a in mine):
+            return other.designator
+    return None
+
+
 def validate(entries: list[Entry], view: DesignView,
              bridges: Sequence[tuple[str, str]] = ()) -> list[Issue]:
     issues: list[Issue] = []
@@ -544,8 +623,20 @@ def validate(entries: list[Entry], view: DesignView,
             err(f"{d.designator} isn't on the board")
             continue
         if not part.pins_on(d.p_net):
-            err(f"has no pin on {d.p_net}")
-        _check_pins(err, part, d.p_net, d.p_pins, "pins")
+            via = reach_through_series(view, part, d.p_net, bridges)
+            if via is None:
+                err(f"has no pin on {d.p_net}")
+            elif d.role != "REGULATOR":
+                # Solvable (it couples at the part's centre on the net), but
+                # the series part between them is then left out of the path.
+                issues.append(Issue(
+                    "warning", d.id,
+                    f"{name}: reaches {d.p_net} through {via}, not a pin of "
+                    f"its own - set it on the net its pins are on so {via} "
+                    "stays in the current path"))
+            # A regulator's output past its inductor is how it's built.
+        if part.pins_on(d.p_net):
+            _check_pins(err, part, d.p_net, d.p_pins, "pins")
         if d.role in SUPPLY_ROLES:
             if d.voltage is None or d.voltage == 0:
                 err("enter the output voltage")
@@ -567,8 +658,9 @@ def validate(entries: list[Entry], view: DesignView,
             elif d.in_p_net == d.p_net:
                 err("input and output are the same net")
             else:
-                _check_pins(err, part, d.in_p_net, d.in_p_pins, "input pins")
-                if not part.pins_on(d.in_p_net):
+                if part.pins_on(d.in_p_net):
+                    _check_pins(err, part, d.in_p_net, d.in_p_pins, "input pins")
+                elif reach_through_series(view, part, d.in_p_net, bridges) is None:
                     err(f"has no pin on its input {d.in_p_net}")
             if (d.regulator_type or "") == "SMPS" and d.efficiency is not None \
                     and not (0 < d.efficiency <= 1):
@@ -579,18 +671,7 @@ def validate(entries: list[Entry], view: DesignView,
         seen[key] = d.id
 
     # Loads on rails nothing supplies (warning: the solve skips open rails).
-    parent: dict[str, str] = {}
-
-    def find(n: str) -> str:
-        n = n.upper()
-        parent.setdefault(n, n)
-        while parent[n] != n:
-            parent[n] = parent[parent[n]]
-            n = parent[n]
-        return n
-
-    for a, b in list(bridges) + list(view.bridges):
-        parent[find(a)] = find(b)
+    find = _bridge_groups(view, bridges)
     # The rows (locked schematic ones included) are the whole supply side -
     # not view.driven, which still counts editor supplies being removed here.
     supplied = {find(e.directive.p_net) for e in entries

@@ -98,6 +98,15 @@ def _label_width(text: str) -> float:
     return estimate_text_width(text, LABEL_FONT) + 2 * LABEL_PAD
 
 
+def add_sink_text(n: int) -> str:
+    return f"+ SINK ({n})"
+
+
+def add_stub_len(net: str) -> float:
+    """Labelled wire from a load-less driver port to its "+ SINK" handle."""
+    return max(MIN_TRUNK, _label_width(truncate_label(net)))
+
+
 # --- parsed parts -----------------------------------------------------------
 
 
@@ -183,11 +192,43 @@ def _parts_from_specs(specs: list[NodeSpec]) -> list[_Part]:
 
 @dataclass
 class _Branch:
-    """One net fanning out from a driver to the parts it feeds."""
+    """One net fanning out from a driver to the parts it feeds.
+
+    On a rail the loader merged through 0 Ω links, a branch may cover just
+    one of its pre-merge nets (``pnet``; "" = the driver's own side): the
+    links are drawn with their far side as a branch of its own, so parts
+    past ``R106`` hang off ``R106`` even though both sides are one net."""
 
     net: str
     label: str
     children: list[_Child] = field(default_factory=list)
+    driver: str = ""                 # designator (upper) of the driving part
+    split: _Split | None = None
+    pnet: str = ""                   # pre-merge net (upper) this branch draws
+
+
+@dataclass
+class _Split:
+    """How a merged rail divides into its pre-merge nets, from its driver."""
+
+    roots: set[str]                  # the driver's pre-merge net(s), upper
+    side: dict[str, str]             # designator -> pre-merge net it hangs on
+    far: dict[str, tuple[str, str]]  # link node_id -> (far net upper, label)
+
+
+def _designator(part: _Part) -> str:
+    return str(part.spec.get("designator") or "").split("#")[0].upper()
+
+
+def _shorted_pair(part: _Part) -> tuple[str, str] | None:
+    """The two pre-merge nets an auto-bridge shorted (``A ↔ B``), if any."""
+    text = str((part.spec.get("directive") or {}).get("shorted_nets") or "")
+    if "\u2194" not in text:
+        return None
+    a, b = (x.strip() for x in text.split("\u2194", 1))
+    if not a or not b or a.upper() == b.upper():
+        return None
+    return a, b
 
 
 @dataclass
@@ -224,17 +265,109 @@ class _TreeBuilder:
         # regulator node_id -> list of nets on which a "→ U6" ref was placed
         self.refs: dict[str, list[str]] = defaultdict(list)
         self.ref_order: list[str] = []
+        # net (upper) -> designators (upper) that could be added as a SINK;
+        # None = no "+ SINK" handles at all. Set by build_rows_model.
+        self.add_candidates: dict[str, set[str]] | None = None
+        # pre-merge net (upper) -> designators (upper) with a pin on it, for
+        # rails merged through 0 Ω links; None = draw links as plain chips.
+        self.premerge: dict[str, set[str]] | None = None
+
+    def add_sink_count(self, net: str, branch: _Branch | None = None) -> int:
+        """Candidate loads on ``net`` not already drawn on it (any role) -
+        only those on ``branch``'s side of a merged rail's links."""
+        if self.add_candidates is None or not net or net == GND_NET:
+            return 0
+        cands = self.add_candidates.get(net.upper())
+        if not cands:
+            return 0
+        if branch is not None and branch.split is not None:
+            cands = {d for d in cands if self._on_side(branch, d)}
+        drawn = {_designator(part) for part, _ in self.by_net.get(net, [])}
+        return len(cands - drawn)
+
+    def _on_side(self, branch: _Branch, designator: str) -> bool:
+        sp = branch.split
+        if sp is None:
+            return True
+        where = sp.side.get(designator)
+        if where is None or where in sp.roots:
+            return not branch.pnet
+        return where == branch.pnet
+
+    def _plan_split(self, net: str, driver: str) -> _Split | None:
+        """Pre-merge structure of ``net`` seen from ``driver``: each 0 Ω link
+        oriented away from the driver's own net, each part on the side
+        nearest the driver. ``None`` when nothing is known or nothing splits."""
+        if not self.premerge or not driver:
+            return None
+        links = []
+        for part, _ in self.by_net.get(net, []):
+            pair = _shorted_pair(part) if part.self_bridge else None
+            if pair and all(x.upper() in self.premerge for x in pair):
+                links.append((part, pair))
+        if not links:
+            return None
+        links.sort(key=lambda lp: natural_sort_key(lp[0].node_id))
+        nets = {x.upper() for _, pair in links for x in pair}
+        roots = {n for n in nets if driver in self.premerge[n]}
+        if not roots:
+            return None
+        depth = dict.fromkeys(roots, 0)
+        far: dict[str, tuple[str, str]] = {}
+        used: set[str] = set()
+        frontier = sorted(roots)
+        while frontier:
+            nxt: list[str] = []
+            for n in frontier:
+                for part, (a, b) in links:
+                    if part.node_id in used or n not in (a.upper(), b.upper()):
+                        continue
+                    used.add(part.node_id)
+                    other, label = (b.upper(), b) if n == a.upper() else (a.upper(), a)
+                    if other in depth:
+                        continue  # a loop of links: drawn as a plain chip
+                    depth[other] = depth[n] + 1
+                    far[part.node_id] = (other, label)
+                    nxt.append(other)
+            frontier = nxt
+        if not far:
+            return None
+        side: dict[str, str] = {}
+        # Deepest first, so a part on several sides keeps the nearest one.
+        for n, _ in sorted(depth.items(), key=lambda kv: -kv[1]):
+            for des in self.premerge[n]:
+                side[des] = n
+        return _Split(roots=roots, side=side, far=far)
+
+    def _far_port(self, part: _Part, near: list[str], label: str, net: str) -> str:
+        """The port a link's far side is drawn from. The two ends of a link
+        on one net are usually one port, so add the other end back."""
+        rail = [p for p in part.power_ports if p.name not in near]
+        if rail:
+            return rail[0].name
+        names = {p.name for p in part.ports}
+        name = next(n for n in ("N", "P", "N2", "P2") if n not in names)
+        part.ports.append(_Port(
+            name=name, net=net, label=label,
+            tooltip=f"{label} (merged into {net} through {part.spec['label']})",
+            side="right", sort_key=len(part.ports), role="AUTO_BRIDGE",
+        ))
+        return name
 
     def grow(self, branches: list[_Branch]) -> None:
         """Fill ``branches`` (nets already marked done) breadth-first."""
         queue = list(branches)
         while queue:
             branch = queue.pop(0)
+            if branch.split is None and not branch.pnet:
+                branch.split = self._plan_split(branch.net, branch.driver)
             seen_ref: set[str] = set()
             for part, port in sorted(
                 self.by_net.get(branch.net, []),
                 key=lambda pp: natural_sort_key(pp[0].node_id),
             ):
+                if not self._on_side(branch, _designator(part)):
+                    continue  # past one of this rail's links: drawn there
                 if part.kind == "origin":
                     if port in part.output_ports():
                         continue  # a parallel driver: tagged on its own row
@@ -251,9 +384,16 @@ class _TreeBuilder:
                 self.placed.add(part.node_id)
                 in_ports = [p.name for p in part.power_ports if p.net == branch.net]
                 if part.self_bridge:
-                    branch.children.append(
-                        _Child(kind="chip", part=part, in_ports=in_ports[:1]),
-                    )
+                    chip = _Child(kind="chip", part=part, in_ports=in_ports[:1])
+                    sp = branch.split
+                    if sp is not None and part.node_id in sp.far:
+                        fnet, flabel = sp.far[part.node_id]
+                        name = self._far_port(part, chip.in_ports, flabel, branch.net)
+                        nb = _Branch(net=branch.net, label=flabel,
+                                     driver=_designator(part), split=sp, pnet=fnet)
+                        chip.branches[name] = nb
+                        queue.append(nb)
+                    branch.children.append(chip)
                     continue
                 child = _Child(kind="node", part=part, in_ports=in_ports)
                 for p in part.power_ports:
@@ -262,7 +402,7 @@ class _TreeBuilder:
                     if p.net in self.net_done:
                         continue  # loop / already drawn: tagged later
                     self.net_done.add(p.net)
-                    nb = _Branch(net=p.net, label=p.net)
+                    nb = _Branch(net=p.net, label=p.net, driver=_designator(part))
                     child.branches[p.name] = nb
                     queue.append(nb)
                 branch.children.append(child)
@@ -277,7 +417,7 @@ class _TreeBuilder:
             if p.net in self.net_done:
                 continue
             self.net_done.add(p.net)
-            nb = _Branch(net=p.net, label=p.net)
+            nb = _Branch(net=p.net, label=p.net, driver=_designator(part))
             child.branches[p.name] = nb
             new.append(nb)
         self.grow(new)
@@ -325,8 +465,11 @@ def _pick_undriven_root(parts: list[_Part], builder: _TreeBuilder) -> str | None
     )
 
 
-def _plan_rows(parts: list[_Part]) -> tuple[list[_Row], list[_Part], _TreeBuilder]:
+def _plan_rows(
+    parts: list[_Part], premerge: dict[str, set[str]] | None = None,
+) -> tuple[list[_Row], list[_Part], _TreeBuilder]:
     builder = _TreeBuilder(parts)
+    builder.premerge = premerge
     rows: list[_Row] = []
     origins = sorted(
         (p for p in parts if p.kind == "origin"),
@@ -405,7 +548,12 @@ def _node_shape(child: _Child, builder: _TreeBuilder) -> _Shape:
         if child.in_ports:
             port_xy[child.in_ports[0]] = (0.0, CHIP_H / 2)
             sides[child.in_ports[0]] = "left"
-        return _Shape(CHIP_W, CHIP_H, CHIP_H, port_xy, sides)
+        for name in child.branches:  # a link's far side (see _plan_split)
+            port_xy[name] = (CHIP_W, CHIP_H / 2)
+            sides[name] = "right"
+        shape = _Shape(CHIP_W, CHIP_H, CHIP_H, port_xy, sides)
+        shape.right_tags = _empty_branch_reach(child, builder)
+        return shape
 
     branch_ports = set(child.branches)
     sides: dict[str, str] = {}
@@ -452,11 +600,24 @@ def _node_shape(child: _Child, builder: _TreeBuilder) -> _Shape:
             shape.right_tags = max(shape.right_tags, reach)
     # Branches with nothing on them are tagged once placement is done; keep
     # room for those tags too so wire labels don't land on them.
-    for name, branch in child.branches.items():
-        if not branch.children:
-            reach = TAG_STUB + tag_width(truncate_label(branch.net))
-            shape.right_tags = max(shape.right_tags, reach)
+    shape.right_tags = max(shape.right_tags, _empty_branch_reach(child, builder))
     return shape
+
+
+def _empty_branch_reach(child: _Child, builder: _TreeBuilder) -> float:
+    """How far right the end tag / "+ SINK" handle of ``child``'s load-less
+    branches reach past its body."""
+    reach = 0.0
+    for branch in child.branches.values():
+        if branch.children:
+            continue
+        n_add = builder.add_sink_count(branch.net, branch)
+        if n_add:
+            r = add_stub_len(branch.label) + tag_width(add_sink_text(n_add))
+        else:
+            r = TAG_STUB + tag_width(truncate_label(branch.label))
+        reach = max(reach, r)
+    return reach
 
 
 def _port_order(child: _Child):
@@ -498,13 +659,10 @@ class _Placer:
         add_candidates: Mapping[str, Collection[str]] | None = None,
     ) -> None:
         self.builder = builder
-        # net (upper) -> designators (upper) that could be added as a SINK;
-        # None = no "+ SINK" handles at all.
-        self.add_candidates = (
-            None if add_candidates is None else {
+        if add_candidates is not None:
+            builder.add_candidates = {
                 k.upper(): {d.upper() for d in v} for k, v in add_candidates.items()
             }
-        )
         self.nodes: list[TopologyNode] = []
         self.wires: list[TopologyWire] = []
         self.tags: list[TopologyTag] = []
@@ -519,7 +677,7 @@ class _Placer:
         self.pending_tags: list[tuple[TopologyNode, TopologyPort, _Part]] = []
         self.feed_tags: list[tuple[TopologyTag, str, str]] = []
         # driver ports whose net has nothing hanging off it in this row
-        self.pending_ends: list[TopologyPort] = []
+        self.pending_ends: list[tuple[TopologyPort, _Branch | None]] = []
 
     # -- bookkeeping --------------------------------------------------------
 
@@ -659,29 +817,18 @@ class _Placer:
             cursor = c_bottom + SIBLING_GAP
             bottom = max(bottom, c_bottom)
         # "+ SINK" handle one tap below the last load. A rail with no loads
-        # gets the "no loads" end tag instead, which already offers it.
-        n_add = self._add_sink_count(net) if branch.children else 0
+        # (e.g. the far side of a SERIES part) gets it at the driver port
+        # instead of its "no loads" end tag - see resolve_tags.
+        n_add = self.builder.add_sink_count(net, branch) if branch.children else 0
         add_y = cursor + TAG_H / 2
         if n_add:
             cursor += TAG_H + SIBLING_GAP
             bottom = max(bottom, add_y + TAG_H / 2)
-        self._route_net(net, branch.label, drv, bus_x, taps, label_from=label_from)
+        self._route_net(net, branch.label, drv, bus_x, taps, label_from=label_from,
+                        branch=branch)
         if n_add:
             self._add_sink_handle(net, branch.label, drv, bus_x, cx, add_y, taps, n_add)
         return cursor, bottom
-
-    def _add_sink_count(self, net: str) -> int:
-        """Candidate loads on ``net`` not already drawn on it (any role)."""
-        if self.add_candidates is None or not net or net == GND_NET:
-            return 0
-        cands = self.add_candidates.get(net.upper())
-        if not cands:
-            return 0
-        drawn = {
-            str(part.spec.get("designator") or "").split("#")[0].upper()
-            for part, _ in self.builder.by_net.get(net, [])
-        }
-        return len(cands - drawn)
 
     def _add_sink_handle(
         self,
@@ -702,16 +849,36 @@ class _Placer:
             routing_kind="add_tap",
             dashed=True,
         ))
-        text = f"+ SINK ({n})"
+        self._add_sink_tag(net, label, cx, y, n)
+
+    def _add_sink_tag(self, net: str, label: str, x: float, y: float, n: int) -> None:
+        text = add_sink_text(n)
         w = tag_width(text)
         self.tags.append(TopologyTag(
-            net=net, text=text, kind="add", x=cx, y=y, width=w, height=TAG_H,
+            net=net, text=text, kind="add", x=x, y=y, width=w, height=TAG_H,
             tooltip=(
                 f"{label}: {n} more part(s) on this rail (ICs, connectors) "
                 "could be a load.\nClick to add a SINK on it in Manual setup."
             ),
         ))
-        self._grow_x(cx + w)
+        self._grow_x(x + w)
+
+    def _add_sink_at_port(self, drv: TopologyPort, n: int, label: str) -> None:
+        """A rail with nothing on it yet: a labelled wire out of ``drv`` to
+        its "+ SINK" handle, in place of the "no loads" end tag."""
+        text = truncate_label(label)
+        x0 = drv.x + add_stub_len(label)
+        self.wires.append(TopologyWire(
+            net=drv.net,
+            path_d=f"M {drv.x:.1f},{drv.y:.1f} H {x0:.1f}",
+            label=text,
+            label_x=(drv.x + x0) / 2,
+            label_y=drv.y - LABEL_RISE,
+            src_node=drv.node_id,
+            src_terminal=drv.terminal,
+            routing_kind="row_trunk",
+        ))
+        self._add_sink_tag(drv.net, label, x0, drv.y, n)
 
     def _route_net(
         self,
@@ -722,6 +889,7 @@ class _Placer:
         taps: list[tuple[float, float]],
         *,
         label_from: float | None = None,
+        branch: _Branch | None = None,
     ) -> None:
         text = truncate_label(label)
         straight = len(taps) == 1 and abs(taps[0][1] - drv.y) < 0.5
@@ -729,7 +897,7 @@ class _Placer:
             # Nothing hangs off this net here: tag it once every part is
             # placed - "continues at …" if the net reaches a part drawn
             # elsewhere (a loop), else "no loads".
-            self.pending_ends.append(drv)
+            self.pending_ends.append((drv, branch))
             return
         end_x = taps[0][0] if straight else bus_x
         label_x = (drv.x + min(end_x, bus_x)) / 2
@@ -822,10 +990,12 @@ class _Placer:
                 abs(oy - ly) < 0.5 and abs(ox - lx) > 0.5
                 for name, (ox, oy) in shape.port_xy.items() if name != p.name
             )
+            far = child.branches.get(p.name)
+            plabel = far.label if far is not None and far.pnet else p.label
             node.ports.append(TopologyPort(
                 terminal=p.name,
                 net=p.net,
-                label=truncate_label(p.label, max_len=10 if two_sided else 22),
+                label=truncate_label(plabel, max_len=10 if two_sided else 22),
                 side=shape.port_side.get(p.name, p.side),
                 x=x + lx,
                 y=y + ly,
@@ -901,8 +1071,12 @@ class _Placer:
 
     def resolve_tags(self) -> None:
         """Tag every port that is neither wired nor grounded."""
-        for drv in self.pending_ends:
-            others = self._others_on_net(drv.net, drv.node_id)
+        for drv, branch in self.pending_ends:
+            # A link's far side shares its net with the near side by
+            # construction: that isn't "continues elsewhere".
+            far = branch is not None and bool(branch.pnet)
+            label = branch.label if far and branch is not None else drv.net
+            others = [] if far else self._others_on_net(drv.net, drv.node_id)
             if others:
                 where = ", ".join(f"{n}.{t}" for n, t, _ in others[:4])
                 self._add_tag_at_port(
@@ -910,10 +1084,18 @@ class _Placer:
                     tooltip=f"{drv.net} - continues at {where}. Click to jump there.",
                     target=others[0][2],
                 )
+            elif n_add := self.builder.add_sink_count(drv.net, branch):
+                self._add_sink_at_port(
+                    drv, n_add, label if far else self._net_label(drv.net),
+                )
             else:
                 self._add_tag_at_port(
-                    drv, drv.net, drv.net, kind="end",
-                    tooltip=f"{drv.net} - no sink or regulator is on this rail.",
+                    drv, drv.net, label, kind="end",
+                    tooltip=(
+                        f"{label} (part of {drv.net}) - no sink or regulator "
+                        "is on this side of the link." if far else
+                        f"{drv.net} - no sink or regulator is on this rail."
+                    ),
                 )
         for node, port, part in self.pending_tags:
             if part.kind == "origin" and port.role == "REGULATOR" and not is_output_port(
@@ -1062,6 +1244,7 @@ def build_rows_model(
     *,
     show_bridges: bool = False,
     add_candidates: Mapping[str, Collection[str]] | None = None,
+    premerge_parts: Mapping[str, Collection[str]] | None = None,
 ) -> TopologyModel:
     """Build the rows-layout topology model (see module docstring).
 
@@ -1069,12 +1252,21 @@ def build_rows_model(
     it) turns on the "+ SINK (n)" handle under each rail's last load: a
     dashed tap and tag, drawn only where some candidate isn't already on
     that rail. ``None`` (the default, e.g. the design report) draws none.
+
+    ``premerge_parts`` (pre-merge net -> designators with a pin on it, for
+    rails the loader merged through 0 Ω links) draws each such link with its
+    far side as a branch of its own - ``R106 → +ETH_2V5`` - and hangs the
+    parts on that side (and its "+ SINK" handle) there. Without it a link is
+    a one-port chip on the merged rail.
     """
     if metadata is None:
         return TopologyModel(layout="rows")
     parsed = parse_topology_directives(metadata)
     parts = _parts_from_specs(parsed.node_specs)
-    rows, hidden, builder = _plan_rows(parts)
+    premerge = None if premerge_parts is None else {
+        k.upper(): {d.upper() for d in v} for k, v in premerge_parts.items()
+    }
+    rows, hidden, builder = _plan_rows(parts, premerge)
     placer = _Placer(builder, add_candidates)
 
     bands: list[TopologyBand] = []

@@ -62,6 +62,32 @@ def test_likely_loads_by_net_round_trips_through_the_sidecar(tmp_path) -> None:
     assert M.read_load_candidates(tmp_path / "missing.json") is None
     (tmp_path / "bad.json").write_text('{"format": "other"}', encoding="utf-8")
     assert M.read_load_candidates(tmp_path / "bad.json") is None
+    # An older sidecar has no pre-merge map.
+    assert M.read_premerge_parts(path) is None
+
+
+def test_premerge_parts_split_a_rail_merged_through_a_0_ohm_link(tmp_path) -> None:
+    from fypa.autosetup.design import DesignView, Part, Pin
+
+    # U10's VOUT_2V5 feeds +ETH_2V5 (J9) through 0 Ω R106; the loader merged
+    # +ETH_2V5 into VOUT_2V5, so only sch_net still tells the sides apart.
+    def part(des, *pins):
+        return Part(designator=des, logical=des, params={},
+                    pins=[Pin(pad=str(i), name=str(i), net=n, sch_net=s)
+                          for i, (n, s) in enumerate(pins, 1)])
+
+    view = DesignView(parts=[
+        part("U10", ("VOUT_2V5", "VOUT_2V5"), ("GND", "GND")),
+        part("R106", ("VOUT_2V5", "VOUT_2V5"), ("VOUT_2V5", "+ETH_2V5")),
+        part("J9", ("VOUT_2V5", "+ETH_2V5"), ("GND", "GND")),
+        part("U3", ("+3V3", "+3V3")),
+    ], net_names=["VOUT_2V5", "GND", "+3V3"])
+    pre = M.premerge_parts_by_net(view)
+    assert pre == {"VOUT_2V5": {"U10", "R106"}, "+ETH_2V5": {"R106", "J9"}}
+    path = tmp_path / M.LOAD_CANDIDATES_FILE
+    M.save_load_candidates(path, M.likely_loads_by_net(view), pre)
+    assert M.read_premerge_parts(path) == pre
+    assert M.read_load_candidates(path) == M.likely_loads_by_net(view)
 
 
 def test_autofill_load_only_guesses_a_likely_load() -> None:
@@ -204,6 +230,58 @@ def test_a_supply_through_a_bridge_feeds_the_load() -> None:
     issues = M.validate([_entry(src), _entry(load)], view,
                         bridges=[("+3V3", "+3V3_SW")])
     assert not [i for i in issues if "nothing supplies" in i.text]
+
+
+def test_buck_output_past_its_inductor_is_not_an_error() -> None:
+    """The classifier puts U1's output on +3V3, the far side of L1 from its
+    SW pin: U1 has no pin there, and that's how a buck is built."""
+    view = _board()
+    reg = M.new_supply()
+    M.set_supply_type(reg, "Switcher")
+    reg.p_net, reg.designator, reg.voltage, reg.in_p_net = "+3V3", "U1", 3.3, "+12V"
+    M.set_ground(reg, "GND")
+    issues = M.validate([_entry(reg)], view)
+    assert not [i for i in issues if i.entry_id == reg.id], issues
+    assert M.reach_through_series(view, view.part("U1"), "+3V3") == "L1"
+    # No inductor or bridge between U1 and +1V8: still an error.
+    reg.p_net = "+1V8"
+    assert any("has no pin on +1V8" in i.text
+               for i in M.validate([_entry(reg)], view) if i.level == "error")
+
+
+def test_a_load_reaching_its_net_through_a_series_link_warns_not_errors() -> None:
+    view = _board()
+    load = M.new_load()
+    load.p_net, load.designator, load.current = "+3V3", "U5", 0.05
+    M.set_ground(load, "GND")
+    issues = M.validate([_entry(load)], view, bridges=[("+3V3", "+3V3_SW")])
+    assert not [i for i in issues if i.level == "error"]
+    assert any("reaches +3V3 through a series link" in i.text for i in issues)
+
+
+def test_pre_merge_net_names_validate_on_the_schematic_view() -> None:
+    """Deimos: R1 (0 Ω) merged a module's VOUT_PS1V8 into +PS_1V8. Auto setup
+    names the module's output as drawn; on the merged view U9 has no pin on
+    VOUT_PS1V8 and nothing seems to supply J2's +PS_1V8."""
+    from fypa.autosetup.design import DesignView, Part, Pin
+
+    u9 = Part("U9", "U9", {}, pins=[
+        Pin("1", "VIN", "+12V"), Pin("2", "VOUT", "+PS_1V8", sch_net="VOUT_PS1V8"),
+        Pin("3", "GND", "GND")])
+    j2 = Part("J2", "J2", {}, pins=[Pin("1", "1", "+PS_1V8"), Pin("2", "2", "GND")])
+    view = DesignView(parts=[u9, j2], net_names=["+12V", "+PS_1V8", "VOUT_PS1V8", "GND"],
+                      merge_links=[("VOUT_PS1V8", "+PS_1V8")],
+                      merged_into={"VOUT_PS1V8": "+PS_1V8"})
+    reg = M.new_supply()
+    M.set_supply_type(reg, "Switcher")
+    reg.p_net, reg.designator, reg.voltage, reg.in_p_net = "VOUT_PS1V8", "U9", 1.8, "+12V"
+    M.set_ground(reg, "GND")
+    load = M.new_load()
+    load.p_net, load.designator, load.current = "+PS_1V8", "J2", 0.5
+    M.set_ground(load, "GND")
+    rows = [_entry(reg), _entry(load)]
+    assert any("has no pin on VOUT_PS1V8" in i.text for i in M.validate(rows, view))
+    assert M.validate(rows, view.schematic_view()) == []
 
 
 def test_duplicate_rows_are_an_error() -> None:
