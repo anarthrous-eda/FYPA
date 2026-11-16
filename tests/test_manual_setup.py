@@ -123,6 +123,20 @@ def test_input_net_choices_are_the_parts_own_nets_rails_first() -> None:
     assert M.input_net_choices(view, None, "+1V8") == []
 
 
+def test_input_net_choices_put_the_vin_pin_net_before_a_rail_named_switch_node() -> None:
+    from fypa.autosetup.design import DesignView, Part, Pin
+    # MPM3650 module (Deimos U9): the SW node is auto-named after the part
+    # (NetU9_VCC_HDIO_7 reads like a VCC rail) and has five pads to Vin's one.
+    u9 = Part(designator="U9", logical="U9", params={}, pins=[
+        Pin("22", "Vin", "+12V"), Pin("6", "VCC", "VCC_U9"),
+        *[Pin(str(n), "SW", "NetU9_VCC_HDIO_7") for n in (7, 8, 13, 14, 23)],
+        *[Pin(str(n), "OUT", "+HDIO_1V8") for n in (9, 10, 11, 12)],
+        Pin("1", "PGND", "GND")])
+    view = DesignView(parts=[u9], net_names=["+12V", "VCC_U9", "NetU9_VCC_HDIO_7",
+                                             "+HDIO_1V8", "GND"])
+    assert M.input_net_choices(view, u9, "+HDIO_1V8")[0] == "+12V"
+
+
 def test_pins_of_lists_pad_and_name_in_natural_order() -> None:
     from fypa.autosetup.design import Part, Pin
 

@@ -75,7 +75,9 @@ def candidates_for_net(view: DesignView, result: AutoSetupResult | None,
     seen: set[str] = set()
     if result is not None:
         for s in result.suggestions:
-            if s.role == role and s.p_net == net:
+            # Suggestions name the pre-merge net (VOUT_PS1V8); the click is
+            # on the merged copper (+PS_1V8).
+            if s.role == role and (s.p_net == net or view.canonical(s.p_net) == net):
                 out.append(s)
                 seen.add(s.designator.upper())
 

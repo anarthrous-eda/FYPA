@@ -405,3 +405,109 @@ def test_candidates_for_net_put_classifier_picks_first() -> None:
     assert src[0].designator == "J1" and src[0].voltage == 12.0
     reg = candidates_for_net(view, res, "+3V3", "REGULATOR")
     assert reg[0].designator == "U1" and reg[0].confidence > 0.5
+
+
+# --- merged nets (0 Ω links the loader folded together) -----------------------
+
+
+def _merged_board() -> DesignView:
+    """Modelled on a board whose power modules feed the rails through 0 Ω
+    links, and whose option straps the loader merged into ground.
+
+    J4 brings +12V_MEZZ in, linked by R81 to +12V. U10 (an MPM module, no
+    SW pin) makes VOUT_PS1V8, linked by R1 to +PS_1V8 - which also goes out
+    on connector J9. R203 / R207 are a pull-up / pull-down strap pair on
+    FAN_START (one fitted per build), and R209 / R210 pick FAN_PWR from
+    +12V or +PL_3V3. ``net`` is what the merge left; ``sch_net`` the
+    original."""
+    def pin(pad, name, net, sch=""):
+        return Pin(pad=pad, name=name, net=net, sch_net=sch or net)
+
+    def part(des, pins, **params):
+        return Part(designator=des, logical=des, params=dict(params), pins=pins)
+
+    parts = [
+        part("J4", [pin("1", "1", "GND", "+12V_MEZZ"), pin("2", "2", "GND")]),
+        part("R81", [pin("1", "1", "GND", "+12V"), pin("2", "2", "GND", "+12V_MEZZ")],
+             Value="0R"),
+        part("U10", [pin("16", "IN", "GND", "+12V"),
+                     pin("7", "OUT", "+PS_1V8", "VOUT_PS1V8"),
+                     pin("8", "OUT", "+PS_1V8", "VOUT_PS1V8"),
+                     pin("1", "FB", "FB_PS1V8"), pin("12", "PGND", "GND")],
+             Comment="MPM3606AGQV-P"),
+        part("R1", [pin("1", "1", "+PS_1V8", "VOUT_PS1V8"), pin("2", "2", "+PS_1V8")],
+             Value="0R"),
+        part("J9", [pin("C7", "C7", "+PS_1V8", "+PS_1V8_MEZZ"), pin("E15", "E15", "GND")]),
+        part("R2", [pin("1", "1", "+PS_1V8"), pin("2", "2", "+PS_1V8", "+PS_1V8_MEZZ")],
+             Value="0R"),
+        part("R203", [pin("1", "1", "GND", "+PL_3V3"), pin("2", "2", "GND", "FAN_START")],
+             Value="0R"),
+        part("R207", [pin("1", "1", "GND", "FAN_START"), pin("2", "2", "GND")], Value="0R"),
+        part("R209", [pin("1", "1", "GND", "+PL_3V3"), pin("2", "2", "GND", "FAN_PWR")],
+             Value="0R"),
+        part("R210", [pin("1", "1", "GND", "+12V"), pin("2", "2", "GND", "FAN_PWR")],
+             Value="0R"),
+        part("U3", [pin("1", "VCC", "+PS_1V8"), pin("2", "GND", "GND")], Comment="FPGA"),
+    ]
+    merged = {"+12V": "GND", "+12V_MEZZ": "GND", "VOUT_PS1V8": "+PS_1V8",
+              "+PS_1V8_MEZZ": "+PS_1V8", "+PL_3V3": "GND", "FAN_START": "GND",
+              "FAN_PWR": "GND"}
+    links = [("+12V", "+12V_MEZZ"), ("VOUT_PS1V8", "+PS_1V8"), ("+PS_1V8", "+PS_1V8_MEZZ"),
+             ("+PL_3V3", "FAN_START"), ("FAN_START", "GND"),
+             ("+PL_3V3", "FAN_PWR"), ("+12V", "FAN_PWR")]
+    return DesignView(parts=parts, net_names=["GND", "+PS_1V8", "FB_PS1V8"],
+                      merge_links=links, merged_into=merged)
+
+
+def test_regulator_found_on_pre_merge_nets_not_the_connector() -> None:
+    view = _merged_board()
+    res = suggest(view)
+    (reg,) = _by(res, "REGULATOR", "U10")
+    assert (reg.in_p_net, reg.p_net) == ("+12V", "VOUT_PS1V8")
+    # Voltage from the rail VOUT_PS1V8 feeds through its 0 Ω link.
+    assert reg.voltage == 1.8 and reg.accepted
+    assert reg.regulator_type == "SMPS"            # MPM power-module family
+    assert "regulator_type" not in reg.estimated
+    sources = {s.designator: s for s in res.suggestions if s.role == "SOURCE"}
+    assert set(sources) == {"J4"}                   # not J9: +PS_1V8 is driven by U10
+    assert sources["J4"].p_net == "+12V_MEZZ" and sources["J4"].voltage == 12.0
+    (sink,) = _by(res, "SINK", "U3")
+    assert not any("nothing drives" in r for r in sink.reasons)
+
+
+def test_option_straps_do_not_join_rails_to_ground_or_each_other() -> None:
+    res = suggest(_merged_board())
+    # +PL_3V3 is reached only through straps: a ground strap must not make
+    # it ground, and the FAN_PWR selector must not make it the 12 V rail -
+    # so it is still undriven and offered a source of its own if a
+    # connector has it (none here), and +12V keeps its J4 source.
+    assert [s.designator for s in res.suggestions if s.role == "SOURCE"] == ["J4"]
+    (reg,) = _by(res, "REGULATOR", "U10")
+    assert reg.in_p_net == "+12V"
+
+
+def test_click_to_add_matches_suggestions_on_merged_copper() -> None:
+    view = _merged_board()
+    res = suggest(view)
+    cands = candidates_for_net(view, res, "+PS_1V8", "REGULATOR")
+    assert cands[0].designator == "U10" and cands[0].p_net == "VOUT_PS1V8"
+
+
+def test_multi_pad_schematic_pins_get_their_names() -> None:
+    from types import SimpleNamespace as NS
+
+    from fypa.autosetup.design import _pin_name_map
+    netlist = NS(nets=[NS(terminals=[NS(designator="U10", pin="7,8,9", pin_name="OUT")])])
+    names = _pin_name_map(netlist)
+    assert {names[("U10", p)] for p in ("7", "8", "9")} == {"OUT"}
+
+
+@pytest.mark.parametrize("name", ["PWRGD_FPD_M2C", "VCCOEN_PL_M2C", "PWROFF_C2M_L",
+                                  "VDDIOOK"])
+def test_fused_status_names_are_control_nets(name) -> None:
+    assert not looks_like_rail(name)
+
+
+def test_rail_word_after_a_prefix_is_a_rail() -> None:
+    assert looks_like_rail("USB_VBUS") and looks_like_rail("FPGA_VCCINT")
+    assert not looks_like_rail("USB_DP")

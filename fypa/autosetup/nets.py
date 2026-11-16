@@ -34,6 +34,11 @@ def _tokens(name: str) -> list[str]:
     return [t for t in re.split(r"[_\-\s./]+", name.upper()) if t]
 
 
+# A rail word fused with a status / enable suffix: PWRGD, PWROFF, VCCOEN,
+# VDDIO_OK is two tokens but VDDIOOK is one. These are control signals.
+_FUSED_CONTROL = re.compile(r"^(?:PWR|POWER|VCC\w*|VDD\w*)(?:GD|GOOD|OK|EN|ON|OFF|FAIL|FLT)$")
+
+
 def has_control_token(name: str) -> bool:
     """True for a control / switching net. A trailing ``SW`` is the
     exception: ``+3V3_SW`` is a *switched* rail, while ``SW_P3V3`` is a
@@ -41,7 +46,7 @@ def has_control_token(name: str) -> bool:
     toks = _tokens(name)
     if len(toks) > 1 and toks[-1] == "SW":
         toks = toks[:-1]
-    return any(t in _NON_RAIL_TOKENS for t in toks)
+    return any(t in _NON_RAIL_TOKENS or _FUSED_CONTROL.match(t) for t in toks)
 
 
 _V_SPLIT = re.compile(r"(?<![A-Z0-9])P?(\d{1,3})V(\d{1,3})(?!\d)")       # 1V8, 3V3, P1V8, 12V0
@@ -87,7 +92,10 @@ def looks_like_rail(name: str) -> bool:
         return False
     if rail_voltage(name) is not None:
         return True
-    return bool(_RAILISH.match(name.strip()))
+    if _RAILISH.match(name.strip()):
+        return True
+    # A rail word as a later token: USB_VBUS, FPGA_VCCINT, MEZZ_VIN.
+    return any(_RAILISH.fullmatch(t) for t in _tokens(name)[1:])
 
 
 # --- pin names -------------------------------------------------------------

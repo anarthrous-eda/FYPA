@@ -64,6 +64,12 @@ SENSE_RESISTOR_MAX = 1.0              # Ω
 _SMPS_WORDS = ("BUCK", "BOOST", "STEP-DOWN", "STEP DOWN", "STEP-UP", "DC/DC",
                "DCDC", "DC-DC", "CONVERTER", "SWITCHING", "POWER MODULE", "SMPS")
 _LDO_WORDS = ("LDO", "LINEAR", "LOW DROPOUT", "LOW-DROPOUT")
+# Part-number families that are power modules (inductor inside, so no SW
+# pin on the footprint): MPS MPM, Analog µModule LTM, TI TPSM, Murata MYM /
+# MYR, Recom RPM / RPX, Vicor PI3, Intel/Altera EM / EN, Infineon IRM, ST
+# LDM.
+_SMPS_MODULE_PN = ("MPM", "LTM", "TPSM", "LMZ", "MYM", "MYR", "RPM", "RPX",
+                   "PI33", "EM21", "EN63", "ISL8", "MAXM", "TPS8", "IRM")
 
 
 @dataclass
@@ -161,26 +167,62 @@ class AutoSetupResult:
 
 
 class _Rails:
-    """Union of nets joined by SERIES bridges, and which groups are driven."""
+    """Union of nets joined by SERIES bridges, and which groups are driven.
+
+    A bridge is not trusted blindly: 0 Ω option straps (one of a pull-up /
+    pull-down pair fitted per build, or a "power from 12 V or 3V3" selector)
+    would otherwise join a rail to ground or two different rails into one.
+    So a bridge touching a ground net is ignored, and one that would put two
+    different named voltages in a group is refused."""
 
     def __init__(self, view: DesignView) -> None:
         self._parent: dict[str, str] = {}
+        self._volts: dict[str, float] = {}       # root → voltage of its group
+        self._vname: dict[str, str] = {}         # root → net that named it
+        self._driven: set[str] = set()
         for a, b in view.bridges:
+            if view.is_gnd(a) or view.is_gnd(b):
+                continue
             self.union(a, b)
         self._driven = {self.find(n) for n in view.driven}
 
     def find(self, n: str) -> str:
         n = n.upper()
-        self._parent.setdefault(n, n)
+        if n not in self._parent:
+            self._parent[n] = n
+            v = rail_voltage(n)
+            if v is not None:
+                self._volts[n] = v
+                self._vname[n] = n
         while self._parent[n] != n:
             self._parent[n] = self._parent[self._parent[n]]
             n = self._parent[n]
         return n
 
-    def union(self, a: str, b: str) -> None:
+    def union(self, a: str, b: str) -> bool:
+        """Join ``a``'s and ``b``'s groups; ``False`` (and no join) when
+        their names carry different voltages."""
         ra, rb = self.find(a), self.find(b)
-        if ra != rb:
-            self._parent[rb] = ra
+        if ra == rb:
+            return True
+        va, vb = self._volts.get(ra), self._volts.get(rb)
+        if va is not None and vb is not None and abs(va - vb) > 1e-6:
+            return False
+        self._parent[rb] = ra
+        if va is None and vb is not None:
+            self._volts[ra] = vb
+            self._vname[ra] = self._vname[rb]
+        if rb in self._driven:
+            self._driven.add(ra)
+        return True
+
+    def linked_voltage(self, net: str) -> tuple[float, str] | None:
+        """``(voltage, rail name)`` from a net bridged to ``net`` whose name
+        spells a voltage (``VOUT_PS1V8`` linked by 0 Ω to ``+PS_1V8``)."""
+        root = self.find(net)
+        if root in self._volts:
+            return self._volts[root], self._vname[root]
+        return None
 
     def drive(self, net: str) -> None:
         self._driven.add(self.find(net))
@@ -250,7 +292,7 @@ def _regulators(view: DesignView, lib: DatasheetLibrary | None,
         in_net = max(ins, key=lambda n: (len(part.pins_on(n)), n))
         for out_net in sorted(outs):
             sug = _regulator_suggestion(view, part, in_net, out_net, gnd, bases,
-                                        has_sw, via_inductor, facts)
+                                        has_sw, via_inductor, facts, rails)
             if sug is not None:
                 out.append(sug)
                 if sug.role == "REGULATOR":
@@ -261,11 +303,16 @@ def _regulators(view: DesignView, lib: DatasheetLibrary | None,
 
 
 def _regulator_suggestion(view, part, in_net, out_net, gnd, bases, has_sw,
-                          via_inductor, facts) -> Suggestion | None:
+                          via_inductor, facts, rails: _Rails) -> Suggestion | None:
     reasons = [f"{part.designator}: input pins on {in_net}, output on {out_net}"
                + (f" (through inductor {via_inductor})" if via_inductor else "")]
     vin = rail_voltage(in_net)
     vout = rail_voltage(out_net)
+    if vin is None and (linked := rails.linked_voltage(in_net)) is not None:
+        vin = linked[0]
+    vout_from = out_net
+    if vout is None and (linked := rails.linked_voltage(out_net)) is not None:
+        vout, vout_from = linked
     words = _words(part)
     is_switch = (facts is not None and facts.is_switch is not None
                  and facts.kind is None)
@@ -311,6 +358,11 @@ def _regulator_suggestion(view, part, in_net, out_net, gnd, bases, has_sw,
     elif any(w in words for w in _SMPS_WORDS):
         sug.regulator_type = "SMPS"
         sug.reasons.append(f"part description reads as a switcher ({part.description or part.mpn})")
+    elif part.mpn.upper().startswith(_SMPS_MODULE_PN):
+        sug.regulator_type = "SMPS"
+        sug.reasons.append(f"{part.mpn} is from a power-module family "
+                           "(inductor inside, so no switch pin)")
+        sug.confidence += 0.1
     else:
         sug.regulator_type = ("SMPS" if vin and vout and vin / max(vout, 1e-9) > 2.5
                               else "LDO")
@@ -321,7 +373,11 @@ def _regulator_suggestion(view, part, in_net, out_net, gnd, bases, has_sw,
     # Output voltage: rail name > datasheet fixed output.
     if vout is not None:
         sug.voltage = vout
-        sug.reasons.append(f"output voltage {vout:g} V from the rail name {out_net}")
+        if vout_from == out_net:
+            sug.reasons.append(f"output voltage {vout:g} V from the rail name {out_net}")
+        else:
+            sug.reasons.append(f"output voltage {vout:g} V from the rail name "
+                               f"{vout_from}, which {out_net} feeds through a link")
     elif facts is not None and facts.vout_fixed is not None:
         sug.voltage = float(facts.vout_fixed.value)
         sug.reasons.append(_fact_reason(f"fixed output {sug.voltage:g} V", facts.vout_fixed))
@@ -389,6 +445,10 @@ def _sources(view: DesignView, rails: _Rails, rail_set: set[str]) -> list[Sugges
                            "which nothing on the board drives")
         if v is not None:
             sug.reasons.append(f"{v:g} V from the rail name")
+        elif "VBUS" in net.upper().replace("-", "_").split("_"):
+            sug.voltage = 5.0
+            sug.estimated.add("voltage")
+            sug.reasons.append("5 V assumed for USB VBUS - check it")
         else:
             sug.reasons.append("no voltage in the rail name - enter it")
             sug.confidence -= 0.25
@@ -538,6 +598,9 @@ def suggest(view: DesignView, *, datasheets: DatasheetLibrary | None = None,
             progress: Callable[[float, str], None] | None = None,
             cancelled: Callable[[], bool] | None = None) -> AutoSetupResult:
     """Classify the design and return reviewed-ready suggestions."""
+    # Classify on the nets as drawn, before 0 Ω links were merged away.
+    view = view.schematic_view()
+
     def tick(frac: float, msg: str) -> None:
         if progress is not None:
             progress(frac, msg)

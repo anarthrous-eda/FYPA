@@ -39,6 +39,14 @@ class Pin:
     pad: str
     name: str
     net: str        # PCB net name; "" when the pad has no net
+    # The net before the loader's low-Ω merge folded 0 Ω links together
+    # (``VOUT_PS1V8`` where ``net`` reads ``+PS_1V8``). Same as ``net`` for a
+    # pad the merge didn't move.
+    sch_net: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.sch_net:
+            self.sch_net = self.net
 
 
 @dataclass
@@ -91,6 +99,43 @@ class DesignView:
     driven: set[str] = field(default_factory=set)
     # net pairs joined by existing SERIES directives / 0 Ω links, upper-cased
     bridges: list[tuple[str, str]] = field(default_factory=list)
+    # 0 Ω links the loader absorbed into a net merge, as (net, net) pairs of
+    # pre-merge names, upper-cased. Only the schematic view uses these.
+    merge_links: list[tuple[str, str]] = field(default_factory=list)
+    # pre-merge net name (upper) → the net it was merged into (PCB name)
+    merged_into: dict[str, str] = field(default_factory=dict)
+
+    def canonical(self, net: str | None) -> str | None:
+        """The PCB net ``net`` is on now (itself unless the merge moved it)."""
+        if not net:
+            return net
+        return self.merged_into.get(net.upper(), net)
+
+    def schematic_view(self) -> DesignView:
+        """This view with every pin on its pre-merge net.
+
+        The loader folds nets joined by 0 Ω links into one, so a module's
+        output (``VOUT_PS1V8``) and the rail it feeds through a link
+        (``+PS_1V8``, also on a connector) read as the same net - the
+        regulator then has no separate output, and the connector looks like
+        the rail's only driver. Classifying on the original nets keeps the
+        structure; the absorbed links come back as bridges, and editor
+        directives naming either side resolve to the merged net."""
+        if not self.merged_into:
+            return self
+        parts = [Part(designator=p.designator, logical=p.logical, params=p.params,
+                      pins=[Pin(pad=x.pad, name=x.name, net=x.sch_net)
+                            for x in p.pins])
+                 for p in self.parts]
+        names = list(self.net_names)
+        have = {n.upper() for n in names}
+        names += sorted({x.sch_net for p in self.parts for x in p.pins
+                         if x.sch_net and x.sch_net.upper() not in have})
+        return DesignView(parts=parts, net_names=names,
+                          power_ports=self.power_ports, configured=self.configured,
+                          driven=self.driven,
+                          bridges=list(self.bridges) + list(self.merge_links),
+                          merged_into=self.merged_into)
 
     def part(self, designator: str) -> Part | None:
         key = designator.upper()
@@ -116,10 +161,15 @@ def _pin_name_map(netlist) -> dict[tuple[str, str], str]:
     for net in getattr(netlist, "nets", None) or ():
         for t in getattr(net, "terminals", ()) or ():
             des = (getattr(t, "designator", "") or "").upper()
-            pin = (getattr(t, "pin", "") or "").upper()
+            pins = (getattr(t, "pin", "") or "").upper()
             name = getattr(t, "pin_name", "") or ""
-            if des and pin and name:
-                out.setdefault((des, pin), name)
+            if not (des and pins and name):
+                continue
+            # One schematic pin can map to several pads ("7,8,9" for a
+            # module's ganged OUT pads).
+            for pin in (p.strip() for p in pins.split(",")):
+                if pin:
+                    out.setdefault((des, pin), name)
     return out
 
 
@@ -189,6 +239,9 @@ def build_design_view(
     for sc in getattr(ex, "sch_components", ()) or ():
         sch_params.setdefault(sc.designator.upper(), dict(sc.parameters or {}))
 
+    premerge = getattr(loaded, "premerge_pad_nets", None) or {}
+    merged_into: dict[str, str] = {}
+
     parts: list[Part] = []
     by_index: dict[int, Part] = {}
     for i, pc in enumerate(getattr(ex, "pcb_components", ()) or ()):
@@ -214,7 +267,13 @@ def build_design_view(
         name = (pin_names.get((part.designator.upper(), pad_name.upper()))
                 or pin_names.get((part.logical.upper(), pad_name.upper()))
                 or pad_name)
-        part.pins.append(Pin(pad=pad_name, name=name, net=net))
+        orig = premerge.get((ci, pad_name.strip().upper()))
+        sch_net = net
+        if orig is not None and 0 <= orig < len(net_names) and net_names[orig]:
+            sch_net = net_names[orig]
+            if sch_net != net and net:
+                merged_into[sch_net.upper()] = net
+        part.pins.append(Pin(pad=pad_name, name=name, net=net, sch_net=sch_net))
 
     power_ports = _netlist_power_ports(getattr(ex, "compiled_netlist", None))
     if scan_schdocs:
@@ -222,7 +281,12 @@ def build_design_view(
                 (getattr(ex, "schdoc_paths", {}) or {}).values(), progress).items():
             power_ports.setdefault(name, set()).update(styles)
 
-    view = DesignView(parts=parts, net_names=net_names, power_ports=power_ports)
+    view = DesignView(parts=parts, net_names=net_names, power_ports=power_ports,
+                      merged_into=merged_into)
+    for b in getattr(loaded, "absorbed_bridges", ()) or ():
+        a, c = getattr(b, "p_net_index", -1), getattr(b, "n_net_index", -1)
+        if 0 <= a < len(net_names) and 0 <= c < len(net_names) and a != c:
+            view.merge_links.append((net_names[a].upper(), net_names[c].upper()))
     _record_existing_setup(view, loaded, nets, editor_directives)
     return view
 

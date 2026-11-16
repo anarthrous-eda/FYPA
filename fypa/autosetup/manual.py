@@ -287,11 +287,21 @@ def input_net_choices(view: DesignView, part: Part | None, out_net: str | None) 
     the input."""
     if part is None:
         return []
+    from fypa.autosetup.nets import REG_IN_PINS, SW_PINS, pin_base
+
     nets = [n for n in part.nets() if n != out_net and not view.is_gnd(n)]
 
     def rank(n: str) -> tuple:
-        railish = looks_like_rail(n) or n.upper() in view.power_ports
-        return (0 if railish else 1, -len(part.pins_on(n)), n)
+        pins = {pin_base(p.name) for p in part.pins_on(n)}
+        # A net on a Vin-named pin first; a switch node last of the rails
+        # (NetU9_VCC_HDIO_7 reads like a rail by name but sits on SW pins).
+        if pins & REG_IN_PINS:
+            tier = 0
+        elif pins & SW_PINS:
+            tier = 2
+        else:
+            tier = 1 if (looks_like_rail(n) or n.upper() in view.power_ports) else 2
+        return (tier, -len(part.pins_on(n)), n)
 
     return sorted(nets, key=rank)
 

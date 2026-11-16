@@ -6090,13 +6090,44 @@ def _build_net_merge_map(
         because, after merging, both pins land on the same net and
         ``_autoinfer_2pin_nets`` would correctly fail (same-net pads).
     """
+    from fypa.autosetup.nets import is_ground, looks_like_rail, rail_voltage
+
     parent: dict[int, int] = {}
+    # Per class root: does it hold a ground net / a rail, and which voltages
+    # its rail names carry. A chain of 0 Ω option straps (a pull-up and a
+    # pull-down of which only one is fitted, or a "12 V or 3V3" selector)
+    # would otherwise fold a rail into ground, or two rails into one.
+    has_gnd: dict[int, bool] = {}
+    has_rail: dict[int, bool] = {}
+    volts: dict[int, frozenset[float]] = {}
+
+    def _name(x: int) -> str:
+        return proj.nets[x].name if 0 <= x < len(proj.nets) else ""
 
     def _find(x: int) -> int:
-        while parent.setdefault(x, x) != x:
+        if x not in parent:
+            parent[x] = x
+            n = _name(x)
+            v = rail_voltage(n) if n else None
+            has_gnd[x] = bool(n) and is_ground(n)
+            has_rail[x] = bool(n) and not has_gnd[x] and (
+                v is not None or looks_like_rail(n))
+            volts[x] = frozenset({round(v, 3)}) if v is not None else frozenset()
+        while parent[x] != x:
             parent[x] = parent[parent[x]]
             x = parent[x]
         return x
+
+    def _conflict(a: int, b: int) -> str | None:
+        """Why joining ``a``'s and ``b``'s classes would short a supply."""
+        ra, rb = _find(a), _find(b)
+        if ra == rb:
+            return None
+        if (has_gnd[ra] and has_rail[rb]) or (has_gnd[rb] and has_rail[ra]):
+            return "a supply rail to ground"
+        if volts[ra] and volts[rb] and volts[ra] != volts[rb]:
+            return "two rails of different voltage"
+        return None
 
     def _union(a: int, b: int) -> None:
         ra, rb = _find(a), _find(b)
@@ -6104,10 +6135,11 @@ def _build_net_merge_map(
             return
         # Provisional canonical = smaller index. We'll re-pick the
         # canonical per equivalence class below using a smarter heuristic.
-        if ra < rb:
-            parent[rb] = ra
-        else:
-            parent[ra] = rb
+        keep, gone = (ra, rb) if ra < rb else (rb, ra)
+        parent[gone] = keep
+        has_gnd[keep] = has_gnd[keep] or has_gnd[gone]
+        has_rail[keep] = has_rail[keep] or has_rail[gone]
+        volts[keep] = volts[keep] | volts[gone]
 
     skipped: set[str] = set()
     # Stash per-directive pad info so we can re-emit the physical bridge
@@ -6120,6 +6152,24 @@ def _build_net_merge_map(
             continue
         p_nets = {pin.net_index for pin in d.p.pins if pin.net_index >= 0}
         n_nets = {pin.net_index for pin in d.n.pins if pin.net_index >= 0}
+        why = next((w for pa in p_nets for pb in n_nets
+                    if (w := _conflict(pa, pb))), None)
+        if why is not None:
+            # Neither merged nor modelled as SERIES (pass 2 skips it): a 0 Ω
+            # here would be a dead short, so it is almost certainly an
+            # option link that isn't fitted in the build being modelled.
+            skipped.add(d.designator.upper())
+            pn = ", ".join(sorted(_name(x) for x in p_nets))
+            nn = ", ".join(sorted(_name(x) for x in n_nets))
+            annotations.note_absorbed(
+                f"{d.designator}: {d.resistance:g} Ω link between {pn} and "
+                f"{nn} would short {why} through the other low-Ω links - "
+                f"left open at DC (treated as not fitted). If it really is "
+                f"fitted, give it a resistance in the Bridges tab."
+            )
+            log.warning("Low-Ω merge: %s left open - would short %s (%s / %s)",
+                        d.designator, why, pn, nn)
+            continue
         merged_any = False
         for pa in p_nets:
             for pb in n_nets:

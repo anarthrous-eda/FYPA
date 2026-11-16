@@ -630,3 +630,53 @@ def test_skip_designators_survives_the_pcb_side_sweep():
     assert not any(isinstance(d, ResistorSpec) for d in second.directives)
     assert not any("skipped auto-bridge" in w for w in second.warnings), \
         second.warnings
+
+
+def _strap_proj(links: list[tuple[str, int, int]], net_names: list[str]) -> ExtractedProject:
+    """Net Tie links ``(designator, net_a, net_b)`` over ``net_names``."""
+    return _minimal_proj(
+        nets=tuple(RawNet(n) for n in net_names),
+        sch_components=tuple(
+            RawSchComponent(designator=des, schdoc_name="Fan.SchDoc", parameters={},
+                            pin_designators=("1", "2"),
+                            component_kind=COMPONENT_KIND_NET_TIE_NO_BOM)
+            for des, _, _ in links),
+        pcb_components=tuple(
+            RawPcbComponent(designator=des, center=Pt2D(3 * i, 0), rotation_deg=0.0,
+                            layer_name="TOP", footprint="NetTie2", source_designator=des)
+            for i, (des, _, _) in enumerate(links)),
+        pads=tuple(p for i, (_, a, b) in enumerate(links)
+                   for p in (_pad(i, "1", a, 3.0 * i), _pad(i, "2", b, 3.0 * i + 1))),
+    )
+
+
+def test_net_merge_refuses_option_straps_that_short_rails():
+    # Deimos fan controller: a "12 V or 3V3" fan-power selector and a
+    # pull-up / pull-down strap pair, both halves of each drawn as 0 Ω.
+    nets = ["+12V", "FAN_PWR", "+3V3", "GND", "FAN_FSTART"]
+    proj = _strap_proj([("R10", 0, 1), ("R9", 2, 1),   # +12V / +3V3 → FAN_PWR
+                        ("R1", 3, 4), ("R2", 2, 4)],   # GND / +3V3 → FAN_FSTART
+                       nets)
+    first = parse_annotations(proj, enabled_layers=[1])
+    remap, skipped, bridges = _build_net_merge_map(first, proj)
+
+    def canon(i: int) -> str:
+        return nets[remap.get(i, i)]
+
+    assert canon(0) != canon(2)                  # +12V not joined to +3V3
+    assert canon(2) != canon(3) and canon(0) != canon(3)  # no rail into GND
+    assert canon(1) == canon(0) and canon(4) == canon(3)  # first of each pair merges
+    assert {b.designator for b in bridges} == {"R10", "R1"}
+    # The refused halves are left open, not re-modelled as SERIES in pass 2.
+    assert {"R9", "R2"} <= {d.upper() for d in skipped}
+    assert any(w.startswith("R9:") and "different voltage" in w for w in first.absorbed_notes)
+    assert any(w.startswith("R2:") and "to ground" in w for w in first.absorbed_notes)
+
+
+def test_net_merge_still_joins_same_voltage_rails_and_ground_signals():
+    nets = ["+12V", "+12V_MEZZ", "GND", "ADDR0", "VOUT_1V8", "+1V8"]
+    proj = _strap_proj([("R81", 0, 1), ("R62", 3, 2), ("R101", 4, 5)], nets)
+    first = parse_annotations(proj, enabled_layers=[1])
+    remap, _, bridges = _build_net_merge_map(first, proj)
+    assert len(bridges) == 3
+    assert len(remap) == 3
