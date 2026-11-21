@@ -700,18 +700,26 @@ class _TopologyTabMixin:
             "Re-run the solver with the current editor changes applied",
             self._on_topology_resolve)
 
-        # Setup + Resolve: a left-hand rail running the tab's full height,
-        # as wide as its widest button so all four match.
-        setup_col = QVBoxLayout()
-        setup_col.setSpacing(4)
-        setup_col.setContentsMargins(0, 0, 8, 0)
-        for b in (self._topology_autosetup_btn, self._topology_manual_btn,
-                  self._topology_whatif_btn, self._topology_resolve_btn):
-            setup_col.addWidget(b)
-        setup_col.addStretch(1)
-
         self._topology_split = QSplitter(Qt.Horizontal, widget)
         self._topology_view = _TopologyView(self, self._topology_split)
+        # Setup + Resolve: a column floating over the diagram's top-left
+        # corner (like the Board's buttons), so the diagram runs the tab's
+        # full width. All four as wide as the widest. Parented to the view,
+        # not its viewport, so they stay put while the diagram scrolls.
+        setup_overlay = QWidget(self._topology_view)
+        setup_col = QVBoxLayout(setup_overlay)
+        setup_col.setSpacing(4)
+        setup_col.setContentsMargins(0, 0, 0, 0)
+        setup_btns = (self._topology_autosetup_btn, self._topology_manual_btn,
+                      self._topology_whatif_btn, self._topology_resolve_btn)
+        col_w = max(b.sizeHint().width() for b in setup_btns)
+        for b in setup_btns:
+            b.setFixedWidth(col_w)
+            setup_col.addWidget(b)
+        setup_overlay.adjustSize()
+        setup_overlay.move(8, 8)
+        setup_overlay.raise_()
+        self._topology_setup_overlay = setup_overlay
         self._topology_view.set_background(_t["bg"])
         self._topology_split.addWidget(self._topology_view)
         self._topology_sidebar = self._build_topology_sidebar()
@@ -737,7 +745,6 @@ class _TopologyTabMixin:
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
-        body.addLayout(setup_col)
         body.addLayout(split_row, 1)
         outer.addLayout(body, 1)
         if not getattr(self, "_topology_tabs_hooked", False):

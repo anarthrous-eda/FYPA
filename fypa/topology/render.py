@@ -705,12 +705,12 @@ def _draw_band(
         )
 
 
-_ROWS_LEGEND_ROLES = ("SOURCE", "REGULATOR", "SERIES", "SINK", "BRIDGE")
+_ROWS_LEGEND_ROLES = ("REGULATOR", "SOURCE", "SINK", "SERIES", "BRIDGE")
 _LEGEND_CHIP_W = 18.0   # SERIES / BRIDGE legend swatch: a mini chip
 _ROWS_LEGEND_TAGS = (
-    ("net", "rail continues elsewhere (click)"),
-    ("ref", "feeds a regulator row (click)"),
-    ("undriven", "nothing drives it"),
+    ("net", "power port"),
+    ("ref", "regulator port"),
+    ("undriven", "undriven"),
     ("end", "no loads"),
 )
 
