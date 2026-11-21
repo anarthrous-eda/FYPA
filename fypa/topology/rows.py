@@ -14,6 +14,9 @@ breaks the PDN into rows a reader can take in one at a time:
 * A connection that leaves the row is not drawn as a wire. Both ends get a
   power-port tag instead (``→ U6`` where the regulator is fed, the input net
   on the regulator's own row), and clicking a tag pans to the other end.
+* With ``cascade`` on, regulators are not given rows of their own: each is
+  drawn inline as a child of the rail that feeds it, and its outputs carry
+  on to the right in the same row.
 * Returns get a local ground symbol on each part instead of a shared rail.
 * Rails nothing drives get their own rows, opened by a warning tag.
 * 0 Ω auto-bridges on nets no source, sink or regulator touches (I²C pull-up
@@ -281,6 +284,9 @@ class _TreeBuilder:
         # pre-merge net (upper) -> designators (upper) with a pin on it, for
         # rails merged through 0 Ω links; None = draw links as plain chips.
         self.premerge: dict[str, set[str]] | None = None
+        # Cascade: a regulator is drawn inline where its input rail first
+        # reaches it (in the feeding row) instead of on a row of its own.
+        self.cascade = False
 
     def add_sink_count(self, net: str, branch: _Branch | None = None) -> int:
         """Candidate loads on ``net`` not already drawn on it (any role) -
@@ -390,6 +396,10 @@ class _TreeBuilder:
                     if part.node_id in seen_ref:
                         continue
                     seen_ref.add(part.node_id)
+                    if self.cascade and part.node_id not in self.placed:
+                        branch.children.append(self._inline_origin(part, branch))
+                        queue.extend(branch.children[-1].branches.values())
+                        continue
                     branch.children.append(_Child(kind="ref", part=part))
                     self.refs[part.node_id].append(branch.net)
                     if part.node_id not in self.ref_order:
@@ -425,9 +435,8 @@ class _TreeBuilder:
         for b in branches:
             _sort_branch_tree(b)
 
-    def origin_child(self, part: _Part) -> _Child:
-        self.placed.add(part.node_id)
-        child = _Child(kind="node", part=part)
+    def _output_branches(self, part: _Part, child: _Child) -> list[_Branch]:
+        """Open a branch on each of ``part``'s output rails not drawn yet."""
         new: list[_Branch] = []
         for p in part.output_ports():
             if p.net in self.net_done:
@@ -436,6 +445,26 @@ class _TreeBuilder:
             nb = _Branch(net=p.net, label=p.net, driver=_designator(part))
             child.branches[p.name] = nb
             new.append(nb)
+        return new
+
+    def _inline_origin(self, part: _Part, branch: _Branch) -> _Child:
+        """Cascade: a regulator wired straight off the rail that feeds it.
+        Its output branches are returned unfilled on the child, for the
+        caller's breadth-first queue. Any other input rail it has is tagged
+        (and gets a ``→ U6`` ref where that rail is drawn)."""
+        self.placed.add(part.node_id)
+        outs = part.output_ports()
+        in_ports = [
+            p.name for p in part.power_ports if p.net == branch.net and p not in outs
+        ]
+        child = _Child(kind="node", part=part, in_ports=in_ports)
+        self._output_branches(part, child)
+        return child
+
+    def origin_child(self, part: _Part) -> _Child:
+        self.placed.add(part.node_id)
+        child = _Child(kind="node", part=part)
+        new = self._output_branches(part, child)
         self.grow(new)
         return child
 
@@ -483,9 +512,11 @@ def _pick_undriven_root(parts: list[_Part], builder: _TreeBuilder) -> str | None
 
 def _plan_rows(
     parts: list[_Part], premerge: dict[str, set[str]] | None = None,
+    *, cascade: bool = False,
 ) -> tuple[list[_Row], list[_Part], _TreeBuilder]:
     builder = _TreeBuilder(parts)
     builder.premerge = premerge
+    builder.cascade = cascade
     rows: list[_Row] = []
     origins = sorted(
         (p for p in parts if p.kind == "origin"),
@@ -1329,8 +1360,15 @@ def build_rows_model(
     add_candidates: Mapping[str, Collection[str]] | None = None,
     premerge_parts: Mapping[str, Collection[str]] | None = None,
     collapsed: Collection[str] = (),
+    cascade: bool = False,
 ) -> TopologyModel:
     """Build the rows-layout topology model (see module docstring).
+
+    ``cascade`` draws each regulator inline, wired straight off the rail that
+    feeds it (``J2 → R18 → U6 → J1`` on one row), instead of on a row of its
+    own linked by tags. Regulators fed by one rail stack in that rail's
+    column. A regulator with a second input rail keeps a tag on that port,
+    and a ``→ U6`` ref where that rail is drawn.
 
     ``add_candidates`` (net -> designators of parts that could be a load on
     it) turns on the "+ SINK (n)" handle under each rail's last load: a
@@ -1354,7 +1392,7 @@ def build_rows_model(
     premerge = None if premerge_parts is None else {
         k.upper(): {d.upper() for d in v} for k, v in premerge_parts.items()
     }
-    rows, hidden, builder = _plan_rows(parts, premerge)
+    rows, hidden, builder = _plan_rows(parts, premerge, cascade=cascade)
     placer = _Placer(builder, add_candidates)
 
     bands: list[TopologyBand] = []

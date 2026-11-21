@@ -13,8 +13,13 @@ side panel, the display modes, and the interactions worth knowing.
 A row of tabs runs across the top, laid out left to right in the order
 you work:
 
-- **Heatmap** - the viewer.
-- **SETUP** - Topology, Properties and Bridges: what goes into the solve.
+- **VIEWS** - Board and Topology: the two canvases, the physical layout
+  and the electrical diagram of the same design. You set up sources,
+  sinks and regulators on them, and they show results once you have
+  solved, so their bracket shades from the setup colour into the results
+  colour. Until there are results, and while they are out of date, the
+  two tabs carry the same marks as the results tabs.
+- **SETUP** - Properties and Bridges: what goes into the solve.
 - **RESULTS** - Nodes, Vias, Fixes, Capacitors and Impedance: what comes
   out of it. The caption is green while the results are current, and
   reads *OUT OF DATE* once the setup has changed since the last solve,
@@ -23,13 +28,14 @@ you work:
   loaded design they carry a small pending icon (a ring with three dots)
   after their name, because until then they can't show a warning count. A results tab is greyed while it has nothing to show, and
   in italics while its numbers are from before a setup change.
-- **Messages**, **Settings** and **Help** after the results. Settings holds
+- **APP** - Messages, Settings and Help: about the program rather than
+  one stage of working on the design, in a quieter grey. Settings holds
   application preferences only; they never change a solve result.
 
-The **Heatmap** tab, where you spend most of your time, is itself split
+The **Board** tab, where you spend most of your time, is itself split
 into three areas:
 
-- **Control panel (left)** - the Heatmap tab's controls, top to bottom:
+- **Control panel (left)** - the Board tab's controls, top to bottom:
   the **Physical layers** list, the **Rails** list, the **Mode**
   dropdown, the **Board Features** toggles, and the **Colour scale**
   (scheme picker and Min / Max boxes).
@@ -69,7 +75,7 @@ The Properties tab holds everything that defines **this design's solve**.
   active nets, mesh and solver statistics, bridged nets and the
   annotation warnings / errors.
 
-The controls for what the viewport shows live in the Heatmap tab's
+The controls for what the viewport shows live in the Board tab's
 left-hand side panel (5.9). From top to bottom:
 
 - **Layer picker** - every copper layer in the stackup. Click to
@@ -96,7 +102,7 @@ left-hand side panel (5.9). From top to bottom:
 The **Topology** tab shows the **power tree** of the PDN
 simulation model - each `PDN_*` directive appears as a coloured box with
 labelled input/output ports; wires connect ports that share the same net.
-This is **not** the PCB layout; for spatial placement use the Heatmap tab.
+This is **not** the PCB layout; for spatial placement use the Board tab.
 
 - **Rows** - each SOURCE starts a row, and each REGULATOR gets its own
   row directly under the row that feeds it, indented one step per
@@ -119,26 +125,33 @@ This is **not** the PCB layout; for spatial placement use the Heatmap tab.
   parts on `+ETH_2V5` (and its `+ SINK` handle) hanging off the chip
   rather than the regulator. This needs the design in memory, or a
   project opened before with it. Auto-bridges on nets no source, sink or regulator uses
-  (pull-up links, signal jumpers) are hidden; toggle **Bridges** on the
-  toolbar to list them, grouped by net.
+  (pull-up links, signal jumpers) are hidden; toggle **Bridges** under
+  **View options** to list them, grouped by net.
 - **Add handles** - a dashed blue `+ SINK (n)` tap under each rail's last
   load, where *n* more parts on the rail (ICs, connectors) aren't set up on
   it yet. A rail with nothing on it yet - typically the far side of a
   SERIES part on a regulator's output - ends in the handle itself instead
   of a grey "no loads" tag. See *Adding sources, regulators and sinks* below. Toggle it off
-  on the toolbar for a tighter diagram. The parts per rail are saved in
+  under **View options** for a tighter diagram. The parts per rail are saved in
   the project's cache folder whenever the design is loaded, so a project
   reopened from its cache shows the same handles. A Gerber import shows
   none.
-- **Classic** - toggles back to the older single-chain column layout,
+- **Cascade** (under **View options**) - draws each regulator inline,
+  wired straight off the rail that feeds it, instead of on a row of its
+  own: `J2 → R18 → U6 → J1` reads as one row. Regulators fed by the same
+  rail stack in that rail's column, and each one's loads carry on to its
+  right. A regulator with a second input rail (another channel) sits on
+  the first rail to reach it; the other input keeps its tag, matched by a
+  `U6` tag where that rail is drawn.
+- **Classic view** (under **View options**) - switches back to the older single-chain column layout,
   which wires every net and draws one return rail under the diagram. The
-  toolbar toggles are remembered between sessions.
+  View options toggles are remembered between sessions.
 - **Nodes** - one box per directive (SOURCE, SINK, REGULATOR, SERIES);
   the header shows the role colour and designator; the body shows the
   configured value (`PDN_V`, `PDN_I`, `PDN_R`, regulator gain).
 - **Ports** - small connectors on the left (inputs) and right (outputs).
   Each port is labelled with the **physical PCB net name** from the pad
-  assignment (the same names you see on the Heatmap and in the Nodes
+  assignment (the same names you see on the Board and in the Nodes
   table), not the schematic `PDN_*_NET` text or the merged rail name from
   the Rails list. Ground ports are the exception: they keep the schematic
   name you gave them (`GND`, `AGND`, …). When one directive terminal ties
@@ -151,13 +164,13 @@ This is **not** the PCB layout; for spatial placement use the Heatmap tab.
   show only their power port and are drawn in a darker shade.
 - **Annotation errors** - errored directives get a red border and ⚠ marker.
 - **Click a box** - opens that part's PDN properties in a sidebar on the
-  right: the same form as the Heatmap's PDN editor panel. A part set up in
+  right: the same form as the Board's PDN editor panel. A part set up in
   the schematic shows its values read-only with **🔓 Unlock to edit**; a
   part with several FYPA directives (one per rail) gets a picker above the
   form. **Apply** updates the diagram straight away; **↻ Resolve** on the
   toolbar re-solves.
-- **⌖ icon** (bottom-right of each box) or **Show on Heatmap** in the
-  sidebar - jumps to that component's pad on the Heatmap (same as **Go ▶**
+- **⌖ icon** (bottom-right of each box) or **Show on Board** in the
+  sidebar - jumps to that component's pad on the Board (same as **Go ▶**
   on the Nodes tab).
 - **Hover a box or port** - tooltip with the configured value.
 
@@ -212,7 +225,7 @@ as two lists, **Sources & regulators** and **Loads**, each with **Add**,
 
 Nothing changes until **Apply**. Series elements (sense resistors,
 ferrites, 0 Ω links) are set up on the **Bridges** tab, and free markers
-dropped on the Heatmap are left as they are.
+dropped on the Board are left as they are.
 
 ### Auto setup
 
@@ -253,7 +266,7 @@ from the text, so treat every suggestion as a starting point to check.
 ### Navigation and zoom
 
 The diagram is rendered as a **vector schematic** (SVG) and can be
-panned and zoomed independently of the Heatmap viewport:
+panned and zoomed independently of the Board viewport:
 
 | Action | How |
 |--------|-----|
@@ -267,7 +280,7 @@ panned and zoomed independently of the Heatmap viewport:
 Keyboard zoom shortcuts (**Ctrl++**, **Ctrl+=**, **Ctrl+-**) work while
 the Topology tab (or one of its controls) has focus.
 
-> **Note:** Heatmap gestures differ - there the mouse wheel zooms the
+> **Note:** Board-tab gestures differ - there the mouse wheel zooms the
 > board view directly (see [Section 5.10](#510-interaction-reference)).
 > On the Topology tab, plain wheel scrolls and **Ctrl**+wheel zooms,
 > matching browser and document-viewer conventions.
@@ -390,9 +403,10 @@ shows a short "no issues" message.
   across launches. The design's base properties are on the Properties tab.
 - **Help** - built-in cheatsheet of hotkeys and gestures.
 
-## 5.9 The Heatmap tab
+## 5.9 The Board tab
 
-The viewport itself lives in a tab called *Heatmap*. You will rarely
+The viewport itself lives in a tab called *Board*; after a solve the
+heatmap is drawn over the board there. You will rarely
 click away from it during normal use - the other tabs hold the setup
 controls, node / via tables, messages, and settings.
 

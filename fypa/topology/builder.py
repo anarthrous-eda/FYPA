@@ -31,6 +31,7 @@ def build_topology_model(
     add_candidates: Mapping[str, Collection[str]] | None = None,
     premerge_parts: Mapping[str, Collection[str]] | None = None,
     collapsed: Collection[str] = (),
+    cascade: bool = False,
 ) -> TopologyModel:
     """Build a Flow diagram layout model for the PDN simulation schematic.
 
@@ -38,7 +39,8 @@ def build_topology_model(
     between rows (:mod:`fypa.topology.rows`); ``"columns"`` is the classic
     single-chain column layout. ``show_bridges``, ``add_candidates`` (the
     viewer's "+ SINK" handles), ``premerge_parts`` (the far side of 0 Ω
-    links) and ``collapsed`` (row keys drawn as a header only), see :func:`~fypa.topology.rows.build_rows_model`, only affect
+    links), ``collapsed`` (row keys drawn as a header only) and ``cascade``
+    (regulators inline off their feed rail), see :func:`~fypa.topology.rows.build_rows_model`, only affect
     the rows layout.
     """
     if layout == "rows":
@@ -46,7 +48,7 @@ def build_topology_model(
 
         return build_rows_model(
             metadata, show_bridges=show_bridges, add_candidates=add_candidates,
-            premerge_parts=premerge_parts, collapsed=collapsed,
+            premerge_parts=premerge_parts, collapsed=collapsed, cascade=cascade,
         )
     if metadata is None:
         return TopologyModel()

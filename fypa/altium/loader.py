@@ -3679,7 +3679,7 @@ def build_solve_metadata(
     )
 
     # Silkscreen lines, component bounding boxes and reference-designator
-    # text for the viewer's Overlays control (Heatmap tab).
+    # text for the viewer's Overlays control (Board tab).
     overlay_records = _build_overlay_records(proj, _net_name)
 
     # Give every absorbed link a directive record so it renders exactly like a
@@ -3854,7 +3854,7 @@ def build_solve_metadata(
         # ORIGINAL name - the hover's "Net = +12V (HS_SNS)".
         "premerged_copper": build_premerged_copper_records(loaded),
         "primitives": primitives,
-        # Overlays-control geometry (Heatmap tab): silkscreen lines,
+        # Overlays-control geometry (Board tab): silkscreen lines,
         # component bounding boxes, reference-designator text.
         "silkscreen": overlay_records["silkscreen"],
         "components": overlay_records["components"],

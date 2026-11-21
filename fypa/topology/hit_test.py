@@ -49,7 +49,7 @@ _JUMP_ICON_HIT = 8.0
 
 
 def jump_icon_center(node: TopologyNode) -> tuple[float, float] | None:
-    """Where a node's "show on Heatmap" icon sits (bottom-right corner of
+    """Where a node's "show on Board" icon sits (bottom-right corner of
     the body, below the last port row; mid-height on a one-line chip), or
     ``None`` when the node has no pad to jump to."""
     if not node.jump_row:
@@ -204,7 +204,7 @@ def topology_tooltip_at(
         return port.tooltip
     icon_node = find_jump_icon_at(model, x, y)
     if icon_node is not None:
-        return f"Show {icon_node.label} on the Heatmap"
+        return f"Show {icon_node.label} on the Board"
     tag = find_tag_at(model, x, y)
     if tag is not None:
         return tag.tooltip or tag.text

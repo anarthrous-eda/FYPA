@@ -4,10 +4,12 @@ A plain ``QTabBar`` is one flat row, which left the tabs that set a solve up
 mixed in with the tabs that report its results. The strip lays the same pages
 out as a pipeline, left to right::
 
-    [Heatmap]  -- SETUP --------------  -- RESULTS - OUT OF DATE --  [Messages][Settings][Help]
-               [Topology][Properties]..  [Nodes][Fixes]..
+    -- VIEWS ---------  -- SETUP -------  -- RESULTS - OUT OF DATE --  -- APP -------------------
+    [Board][Topology]   [Properties]..    [Nodes][Fixes]..             [Messages][Settings][Help]
 
 * a captioned bracket over each group says which side of the solve it is on;
+  a group on both sides (the canvases, where you set up and read results)
+  gets a two-tone bracket that shades from one group's colour to the other;
 * the results caption also says whether those results are current, out of
   date, or not there yet, and takes a colour to match;
 * a results tab is dimmed while it has nothing to show and italic while its
@@ -24,10 +26,12 @@ from dataclasses import dataclass, field
 
 from PySide6.QtCore import QRect, QRectF, QSize, Qt
 from PySide6.QtGui import (
+    QBrush,
     QColor,
     QFont,
     QFontMetrics,
     QIcon,
+    QLinearGradient,
     QPainter,
     QPen,
     QPixmap,
@@ -49,11 +53,13 @@ from fypa.viewer.theme import _T
 
 @dataclass
 class TabGroup:
-    """A run of adjacent tabs. ``caption`` empty = no bracket over them."""
+    """A run of adjacent tabs. ``caption`` empty = no bracket over them.
+    ``tone_end`` set = the bracket shades left to right from ``tone`` to it."""
     indices: list[int]
     caption: str = ""
     key: str = ""
     tone: str = "accent"
+    tone_end: str = ""
 
 
 @dataclass
@@ -77,9 +83,13 @@ _TONES = {
 }
 
 
-def _tone_color(tone: str) -> str:
+def tone_color(tone: str) -> str:
+    """Theme colour for a caption / status tone ("accent", "ok", ...)."""
     t = _T()
     return t[_TONES.get(tone, "fg_dim")]
+
+
+_tone_color = tone_color
 
 
 _PENDING_ICON_PX = 14
@@ -130,10 +140,12 @@ class GroupedTabWidget(QTabWidget):
 class _GroupCaption(QWidget):
     """Small caps caption centred on a bracket line: ``|--- SETUP ---|``."""
 
-    def __init__(self, text: str, tone: str, parent: QWidget | None = None):
+    def __init__(self, text: str, tone: str, parent: QWidget | None = None,
+                 tone_end: str = ""):
         super().__init__(parent)
         self._text = text
         self._tone = tone
+        self._tone_end = tone_end
         self.setFixedHeight(_CAPTION_H)
         font = QFont(self.font())
         font.setPointSizeF(7.0)
@@ -141,9 +153,12 @@ class _GroupCaption(QWidget):
         font.setLetterSpacing(QFont.AbsoluteSpacing, 1.0)
         self.setFont(font)
 
-    def set_caption(self, text: str, tone: str) -> None:
-        if (text, tone) != (self._text, self._tone):
-            self._text, self._tone = text, tone
+    def set_caption(self, text: str, tone: str,
+                    tone_end: str | None = None) -> None:
+        if tone_end is None:
+            tone_end = self._tone_end
+        if (text, tone, tone_end) != (self._text, self._tone, self._tone_end):
+            self._text, self._tone, self._tone_end = text, tone, tone_end
             self.update()
 
     def text(self) -> str:
@@ -152,11 +167,19 @@ class _GroupCaption(QWidget):
     def tone(self) -> str:
         return self._tone
 
+    def tone_end(self) -> str:
+        return self._tone_end
+
     def paintEvent(self, _event) -> None:  # noqa: N802 - Qt name
         p = QPainter(self)
-        color = QColor(_tone_color(self._tone))
-        p.setPen(QPen(color, 1))
         w, h = self.width(), self.height()
+        if self._tone_end:
+            grad = QLinearGradient(0, 0, max(1, w - 1), 0)
+            grad.setColorAt(0.0, QColor(_tone_color(self._tone)))
+            grad.setColorAt(1.0, QColor(_tone_color(self._tone_end)))
+            p.setPen(QPen(QBrush(grad), 1))
+        else:
+            p.setPen(QPen(QColor(_tone_color(self._tone)), 1))
         y = h // 2
         fm = QFontMetrics(self.font())
         text = fm.elidedText(self._text, Qt.ElideRight, max(0, w - 16))
@@ -328,7 +351,8 @@ class TabStrip(QWidget):
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(1)
         if group.caption:
-            caption = _GroupCaption(group.caption, group.tone, box)
+            caption = _GroupCaption(group.caption, group.tone, box,
+                                    tone_end=group.tone_end)
             if group.key:
                 self._captions[group.key] = caption
             col.addWidget(caption)
@@ -435,10 +459,12 @@ class TabStrip(QWidget):
         btn = self._buttons.get(index)
         return "" if btn is None else str(btn.property("tabState") or "")
 
-    def set_group_caption(self, key: str, text: str, tone: str) -> None:
+    def set_group_caption(self, key: str, text: str, tone: str,
+                          tone_end: str | None = None) -> None:
+        """``tone_end`` None keeps a two-tone bracket's current end colour."""
         caption = self._captions.get(key)
         if caption is not None:
-            caption.set_caption(text, tone)
+            caption.set_caption(text, tone, tone_end)
         for btn in self._group_buttons.get(key, ()):
             if btn.property("barTone") != tone:
                 btn.setProperty("barTone", tone)
@@ -448,6 +474,10 @@ class TabStrip(QWidget):
     def group_caption(self, key: str) -> tuple[str, str]:
         caption = self._captions.get(key)
         return ("", "") if caption is None else (caption.text(), caption.tone())
+
+    def group_caption_tone_end(self, key: str) -> str:
+        caption = self._captions.get(key)
+        return "" if caption is None else caption.tone_end()
 
     # --- tracking the tab widget -------------------------------------------
 

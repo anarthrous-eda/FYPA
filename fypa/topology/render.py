@@ -81,7 +81,7 @@ def _draw_wire(
 
 
 def _draw_jump_icon(parts: list[str], center: tuple[float, float], *, color: str) -> None:
-    """Small "locate" crosshair: a ring with four ticks (show on Heatmap)."""
+    """Small "locate" crosshair: a ring with four ticks (show on Board)."""
     cx, cy = center
     r = JUMP_ICON_R
     c = esc(color)

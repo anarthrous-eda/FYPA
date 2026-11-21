@@ -691,6 +691,39 @@ def save_topology_show_add_handles(enabled: bool) -> None:
         )
 
 
+_TOPOLOGY_CASCADE_QS_KEY = "ui/topology_cascade"
+
+
+def load_topology_cascade() -> bool:
+    """Read whether the rows layout draws regulators inline. Defaults to ``False``."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        val = qs.value(_TOPOLOGY_CASCADE_QS_KEY, False)
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            return val.strip().lower() in ("1", "true", "yes", "on")
+        return bool(int(val))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not read topology cascade preference (%s); using default.", e,
+        )
+    return False
+
+
+def save_topology_cascade(enabled: bool) -> None:
+    """Persist whether the rows layout draws regulators inline."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        qs.setValue(_TOPOLOGY_CASCADE_QS_KEY, bool(enabled))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not persist topology cascade preference (%s); ignoring.", e,
+        )
+
+
 _AUTOSETUP_DIR_QS_KEY = "autosetup/datasheet_dir"
 
 

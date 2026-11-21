@@ -130,7 +130,7 @@ def _format_properties_html(solution, metadata: dict | None,
             diel_cell = (f"{diel_mm*1000:.1f} µm" if diel_mm > 0
                          else "<span class='muted'>-</span>")
             # Tint the id cell with the physical-layer swatch used in the
-            # Heatmap tab so users can cross-reference at a glance.
+            # Board tab so users can cross-reference at a glance.
             bg = phys_color_fn(row["name"]) if phys_color_fn else None
             if bg:
                 fg = _contrasting_text_color(bg)

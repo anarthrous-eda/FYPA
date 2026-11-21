@@ -1,4 +1,4 @@
-"""The grouped tab strip: setup tabs | results tabs.
+"""The grouped tab strip: views | setup tabs | results tabs.
 
 * the strip mirrors the tab widget it drives (current tab, tab titles);
 * the results group says whether its numbers are current, out of date, or
@@ -7,7 +7,7 @@
   the loaded design, since its warning count isn't known before then;
 * Messages / Settings / Help follow the results, not pushed to the right;
 * the strip has no Solve / Resolve button of its own; those stay on the
-  Heatmap and Topology tabs.
+  Board and Topology tabs.
 """
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def qapp():
     yield app
 
 
-def _strip(names=("Heatmap", "Topology", "Nodes", "Help")):
+def _strip(names=("Board", "Topology", "Nodes", "Help")):
     tabs = GroupedTabWidget()
     strip = TabStrip(tabs)
     tabs.strip = strip
@@ -82,7 +82,7 @@ def test_tab_title_badges_reach_the_strip(qapp):
 def test_missing_tabs_are_skipped(qapp):
     tabs = GroupedTabWidget()
     strip = TabStrip(tabs)
-    tabs.addTab(QLabel("a"), "Heatmap")
+    tabs.addTab(QLabel("a"), "Board")
     strip.rebuild([TabGroup([0, -1]),
                    TabGroup([-1], caption="RESULTS", key="results")])
     assert strip.tab_order() == [0]
@@ -107,7 +107,7 @@ class _Viewer(av.PdnViewer):
         self._loaded_project = None
         self._solve_stale = stale
         self._awaiting_first_solve = stub
-        self._heatmap_tab_index = self.tabs.addTab(QLabel(""), "Heatmap")
+        self._heatmap_tab_index = self.tabs.addTab(QLabel(""), "Board")
         self._topology_tab_index = self.tabs.addTab(QLabel(""), "Topology")
         self._nodes_tab_index = self.tabs.addTab(
             self._build_nodes_tab(), "Nodes")
@@ -211,7 +211,7 @@ def test_no_pending_icon_while_capacitors_show_a_placeholder(qapp):
 def test_groups_pack_left_without_a_stretch_marker(qapp):
     tabs = GroupedTabWidget()
     strip = TabStrip(tabs)
-    for name in ("Heatmap", "Nodes", "Help"):
+    for name in ("Board", "Nodes", "Help"):
         tabs.addTab(QLabel(name), name)
     strip.rebuild([TabGroup([0]),
                    TabGroup([1], caption="RESULTS", key="results"),
@@ -222,3 +222,44 @@ def test_groups_pack_left_without_a_stretch_marker(qapp):
     help_btn = strip.tab_button(2)
     right = help_btn.mapTo(strip, help_btn.rect().topRight()).x()
     assert right < 600
+
+
+def test_views_group_spans_setup_and_results(qapp):
+    """Board and Topology sit under their own VIEWS bracket, which shades
+    from the setup colour into whatever colour the results caption has."""
+    v = _Viewer(stub=False)
+    strip = v._tab_strip
+    assert strip.group_caption("views") == ("VIEWS", "accent")
+    assert strip.group_caption_tone_end("views") == "ok"
+    order = strip.tab_order()
+    assert order[:2] == [v._heatmap_tab_index, v._topology_tab_index]
+    assert v.tabs.tabText(v._heatmap_tab_index) == "Board"
+    v._solve_stale = True
+    v._refresh_tab_strip_state()
+    assert strip.group_caption_tone_end("views") == "warn"
+
+
+def test_board_carries_the_results_marks_but_is_never_dimmed(qapp):
+    board = lambda v: v._heatmap_tab_index  # noqa: E731
+    unsolved = _Viewer(stub=True)
+    s = unsolved._tab_strip
+    assert s.tab_pending(board(unsolved))
+    assert s.tab_state(board(unsolved)) == ""
+    assert "After a solve" in s.tab_button(board(unsolved)).toolTip()
+    # Topology draws no results yet, so it doesn't promise any.
+    assert not s.tab_pending(unsolved._topology_tab_index)
+
+    stale = _Viewer(stub=False, stale=True)
+    assert not stale._tab_strip.tab_pending(board(stale))
+    assert stale._tab_strip.tab_state(board(stale)) == "stale"
+
+    current = _Viewer(stub=False)
+    assert current._tab_strip.tab_state(board(current)) == ""
+    assert not current._tab_strip.tab_pending(board(current))
+
+
+def test_app_group_is_captioned_in_the_quiet_tone(qapp):
+    v = _Viewer(stub=False)
+    v._help_tab_index = v.tabs.addTab(QLabel(""), "Help")
+    v._rebuild_tab_strip()
+    assert v._tab_strip.group_caption("app") == ("APP", "neutral")

@@ -33,7 +33,7 @@ def _help_tab_style() -> str:
 # Top-level sections, one per viewer tab in tab-strip order. Each renders
 # as a collapsible heading - see :func:`_help_tab_html`.
 _HELP_SECTIONS: tuple[tuple[str, str], ...] = (
-    ("Heatmap", """
+    ("Board", """
 <p>The interactive viewport.</p>
 
 <h3>Keyboard shortcuts</h3>
@@ -251,8 +251,8 @@ Each part has its own ground symbol.</p>
 or regulator uses. <b>Classic</b> switches back to the single-chain column
 layout.</p>
 <p>Click a component box to open its PDN properties in the sidebar (the
-same form as the Heatmap's editor panel); its &#8982; icon jumps to it on
-the Heatmap. Click an amber or grey tag to add a source, regulator or sink
+same form as the Board's editor panel); its &#8982; icon jumps to it on
+the Board. Click an amber or grey tag to add a source, regulator or sink
 on that rail. <b>Auto setup&hellip;</b> proposes a whole setup from the
 design and, optionally, a folder of datasheets, for you to review and apply.
 <b>Manual setup&hellip;</b> lists every source, regulator and load to add or
@@ -279,7 +279,7 @@ edit by hand: pick the net, the part on it and its pins.
   <tr><td><kbd>Space</kbd> + left-button drag</td><td>Pan</td></tr>
   <tr><td>Hover</td><td>Tooltip with port / component values</td></tr>
   <tr><td>Left click on a box</td><td>Open its PDN properties in the sidebar</td></tr>
-  <tr><td>Left click on a box's &#8982; icon</td><td>Jump to that component on the Heatmap</td></tr>
+  <tr><td>Left click on a box's &#8982; icon</td><td>Jump to that component on the Board</td></tr>
   <tr><td>Left click on a red / magenta tag</td><td>Jump to where that rail continues</td></tr>
   <tr><td>Left click on an amber / grey tag</td><td>Add a source, regulator or sink on that rail</td></tr>
 </table>
@@ -290,13 +290,13 @@ focused. The diagram is vector-rendered - zoom stays sharp.</p>
 <p>Sortable table of every directive node with
 its voltage, drop, current density, and power density. Filter by
 role or rail. The <b>Go &#9654;</b> button jumps to that node in
-the Heatmap tab (enables its layer, zooms in, drops a yellow
+the Board tab (enables its layer, zooms in, drops a yellow
 highlight ring - left-click anywhere to clear).</p>
 """),
     ("Vias", """
 <p>Sortable table of every via with worst-segment
 current + power dissipation. The <b>Go &#9654;</b> button jumps to
-that via in the Heatmap tab (enables its layer, zooms in, drops a
+that via in the Board tab (enables its layer, zooms in, drops a
 yellow highlight ring - left-click anywhere to clear).
 The tab title also shows a warning count if any via current
 reaches the threshold.</p>
@@ -310,7 +310,7 @@ Bridges and Capacitors tables work the same way.</p>
 <p>Every part that joins two nets, and what FYPA did with it:
 modelled as a SERIES element, shorted automatically (Net Ties, 0&nbsp;&Omega;
 parts), or not modelled at all. Click a part's designator to jump to it on
-the Heatmap.</p>
+the Board.</p>
 <p>To model a part as a resistance: select its row, type its real DC
 resistance into <i>Selected part</i>, and click <b>Model as SERIES</b>.
 <b>Disable auto-bridge</b> leaves an automatically shorted part open at DC;
@@ -330,7 +330,7 @@ they carry is too small to matter.</p>
     ("Capacitors", """
 <p>Every decoupling capacitor with its mounted loop inductance,
 sorted worst first. The <b>Go &#9654;</b> button jumps to the part on the
-Heatmap; untick <b>Use</b> to leave a part out of the analysis. <i>Show on
+Board; untick <b>Use</b> to leave a part out of the analysis. <i>Show on
 heatmap</i> colours each included capacitor's pads by its loop inductance.</p>
 
 <h3>Mouse controls</h3>

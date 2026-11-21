@@ -66,7 +66,7 @@ from fypa.viewer.widgets import _esc
 # Install the default QSurfaceFormat (OpenGL 3.3 core, vsync on) BEFORE
 # any QOpenGLWidget is constructed. Idempotent - calling it from this
 # module-level scope ensures the format is set before the GLMeshViewer
-# in the Heatmap tab gets created.
+# in the Board tab gets created.
 _install_default_surface_format()
 
 

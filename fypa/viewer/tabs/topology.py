@@ -509,7 +509,7 @@ class _TopologyTabMixin:
     def _build_topology_tab(self) -> QWidget:
         """Build the Topology tab - abstract PDN simulation schematic."""
         # A rebuild (theme switch) deletes the old sidebar: hand the editor
-        # form back to the Heatmap panel before its host disappears.
+        # form back to the Board panel before its host disappears.
         self._topology_form_release()
         # Rows always open expanded (on start, on a design load, on a rebuild).
         self._topology_collapsed: set[str] = set()
@@ -540,61 +540,85 @@ class _TopologyTabMixin:
             toolbar.addWidget(btn)
 
         from fypa.viewer.prefs import (
+            load_topology_cascade,
             load_topology_layout,
             load_topology_show_add_handles,
             load_topology_show_bridges,
         )
 
-        toggle_qss = btn_qss + (
-            f"QToolButton:checked {{ background-color: {_t['bg_hover']};"
-            f"  border-color: {_t['accent']}; }}"
-        )
         self._topology_layout = load_topology_layout()
+        self._topology_cascade = load_topology_cascade()
         self._topology_show_bridges = load_topology_show_bridges()
         self._topology_show_add_handles = load_topology_show_add_handles()
         toolbar.addSpacing(12)
-        self._topology_classic_btn = QToolButton()
-        self._topology_classic_btn.setCheckable(True)
-        self._topology_classic_btn.setChecked(self._topology_layout == "columns")
-        self._sync_topology_classic_btn()
-        self._topology_classic_btn.setCursor(Qt.PointingHandCursor)
-        # Plain style: the label already says what a click does, so a
-        # "checked" highlight would read as the wrong layout being on.
-        self._topology_classic_btn.setStyleSheet(btn_qss)
-        self._topology_classic_btn.toggled.connect(self._on_topology_classic_toggled)
-        toolbar.addWidget(self._topology_classic_btn)
-        self._topology_bridges_btn = QToolButton()
-        self._topology_bridges_btn.setText("Bridges")
-        self._topology_bridges_btn.setToolTip(
+
+        # View options: one drop-down holding the diagram's display toggles.
+        view_btn = QToolButton()
+        view_btn.setText("View options ▾")
+        view_btn.setToolTip("Choose what the topology diagram shows")
+        view_btn.setCursor(Qt.PointingHandCursor)
+        view_btn.setPopupMode(QToolButton.InstantPopup)
+        # The label carries its own arrow; hide Qt's indicator so the two
+        # don't stack.
+        view_btn.setStyleSheet(
+            btn_qss + "QToolButton::menu-indicator { image: none; width: 0; }")
+        view_menu = QMenu(view_btn)
+        view_menu.setToolTipsVisible(True)
+        from fypa.viewer.assets import _menu_check_indicator_qss
+
+        view_menu.setStyleSheet(_menu_check_indicator_qss(
+            _t["fg"], _t["accent"], _t["fg_dim"]))
+
+        def _toggle(text: str, tip: str, checked: bool, slot):
+            act = view_menu.addAction(text)
+            act.setToolTip(tip)
+            act.setCheckable(True)
+            act.setChecked(checked)
+            act.toggled.connect(slot)
+            return act
+
+        self._topology_classic_act = _toggle(
+            "Classic view",
+            "Classic layout: every part in one left-to-right chain with the "
+            "nets wired between them. Off: one row per source / regulator, "
+            "with tags where a rail continues on another row.",
+            self._topology_layout == "columns",
+            self._on_topology_classic_toggled)
+        self._topology_cascade_act = _toggle(
+            "Cascade",
+            "Draw each regulator inline, wired straight off the rail that "
+            "feeds it (J2 → R18 → U6 → J1 on one row), instead of on a row of "
+            "its own linked by tags. Regulators on one rail stack in its "
+            "column. Row layout only.",
+            self._topology_cascade,
+            self._on_topology_cascade_toggled)
+        view_menu.addSeparator()
+        self._topology_bridges_act = _toggle(
+            "Bridges",
             "List 0 Ω auto-bridges on nets no source, sink or regulator uses "
-            "(pull-up links, signal jumpers…)."
-        )
-        self._topology_bridges_btn.setCheckable(True)
-        self._topology_bridges_btn.setChecked(self._topology_show_bridges)
-        self._topology_bridges_btn.setEnabled(self._topology_layout == "rows")
-        self._topology_bridges_btn.setCursor(Qt.PointingHandCursor)
-        self._topology_bridges_btn.setStyleSheet(toggle_qss)
-        self._topology_bridges_btn.toggled.connect(self._on_topology_bridges_toggled)
-        toolbar.addWidget(self._topology_bridges_btn)
-        self._topology_add_btn = QToolButton()
-        self._topology_add_btn.setText("Add handles")
-        self._topology_add_btn.setToolTip(
+            "(pull-up links, signal jumpers…). Row layout only.",
+            self._topology_show_bridges,
+            self._on_topology_bridges_toggled)
+        self._topology_add_act = _toggle(
+            "Add handles",
             "Show a dashed \"+ SINK (n)\" tap under each rail's last load when "
             "more parts on the rail (ICs, connectors) could be a load. Click one "
-            "to add a SINK there in Manual setup. Needs the Altium design loaded."
-        )
-        self._topology_add_btn.setCheckable(True)
-        self._topology_add_btn.setChecked(self._topology_show_add_handles)
-        self._topology_add_btn.setEnabled(self._topology_layout == "rows")
-        self._topology_add_btn.setCursor(Qt.PointingHandCursor)
-        self._topology_add_btn.setStyleSheet(toggle_qss)
-        self._topology_add_btn.toggled.connect(self._on_topology_add_handles_toggled)
-        toolbar.addWidget(self._topology_add_btn)
+            "to add a SINK there in Manual setup. Needs the Altium design "
+            "loaded. Row layout only.",
+            self._topology_show_add_handles,
+            self._on_topology_add_handles_toggled)
+        rows = self._topology_layout == "rows"
+        self._topology_cascade_act.setEnabled(rows)
+        self._topology_bridges_act.setEnabled(rows)
+        self._topology_add_act.setEnabled(rows)
+        view_btn.setMenu(view_menu)
+        self._topology_view_btn = view_btn
+        toolbar.addWidget(view_btn)
         toolbar.addStretch()
         outer.addLayout(toolbar)
 
         # Setup + Resolve, stacked in a left-aligned column under the view
-        # controls. Same look as the Heatmap's Resolve / What-If buttons
+        # controls. Same look as the Board's Resolve / What-If buttons
         # (6 px padding, 6 px radius, bold, badge icon left of the label);
         # the column is as wide as its widest button, so all three match.
         from fypa.viewer.assets import (
@@ -642,7 +666,7 @@ class _TopologyTabMixin:
             "Add and edit sources, regulators and loads by hand: pick a net, "
             "the part on it and its pins, in one list per kind.",
             self._topology_run_manual_setup)
-        # Same green and refresh badge as the Heatmap's Resolve button.
+        # Same green and refresh badge as the Board's Resolve button.
         self._topology_resolve_btn = _big_btn(
             "Resolve", _resolve_icon("#2ca92c", _t["bg"], _t["fg_dim"]),
             "#2ca92c",
@@ -688,7 +712,7 @@ class _TopologyTabMixin:
 
     def _build_topology_sidebar(self) -> QWidget:
         """Right-hand panel showing the clicked part's PDN properties - the
-        same form as the Heatmap's editor panel (see
+        same form as the Board's editor panel (see
         :meth:`_topology_form_activate`)."""
         _t = _T()
         scroll = QScrollArea()
@@ -714,8 +738,8 @@ class _TopologyTabMixin:
         close.clicked.connect(self._topology_close_sidebar)
         head.addWidget(close, 0, Qt.AlignTop)
         lay.addLayout(head)
-        self._topology_side_jump = QPushButton("⌖  Show on Heatmap")
-        self._topology_side_jump.setToolTip("Switch to the Heatmap and zoom to this part")
+        self._topology_side_jump = QPushButton("⌖  Show on Board")
+        self._topology_side_jump.setToolTip("Switch to the Board and zoom to this part")
         self._topology_side_jump.clicked.connect(self._topology_side_jump_clicked)
         lay.addWidget(self._topology_side_jump)
         self._topology_side_hint = QLabel("")
@@ -747,7 +771,7 @@ class _TopologyTabMixin:
 
         The form code (``_populate_editor_form`` / ``_on_editor_apply`` …)
         builds into ``self._editor_form_layout``. Only one form may be live -
-        its widgets are shared ``self._ef_*`` attributes - so the Heatmap
+        its widgets are shared ``self._ef_*`` attributes - so the Board
         panel's copy is cleared while the sidebar owns it, and handed back
         by :meth:`_topology_form_release`."""
         if getattr(self, "_topology_form_owned", False):
@@ -952,7 +976,7 @@ class _TopologyTabMixin:
 
     def _topology_directives_changed(self) -> None:
         """Editor directives changed from the Topology tab: flag the solve
-        stale and refresh the Heatmap markers and the diagram."""
+        stale and refresh the Board markers and the diagram."""
         self._mark_project_dirty()
         for hook in ("_update_pending_rails", "_refresh_editor_markers"):
             fn = getattr(self, hook, None)
@@ -997,7 +1021,7 @@ class _TopologyTabMixin:
         if not dlg.exec():
             return
         # Supplies and loads bound to parts are what the dialog owns; series
-        # elements (Bridges tab) and free Heatmap markers are kept as-is.
+        # elements (Bridges tab) and free Board markers are kept as-is.
         owned = ("SOURCE", "SINK", "REGULATOR")
         before = [d.to_dict() for d in project.editor_directives]
         keep = [d for d in project.editor_directives
@@ -1080,29 +1104,22 @@ class _TopologyTabMixin:
         if view is not None:
             view.fit_in_view()
 
-    def _sync_topology_classic_btn(self) -> None:
-        """The layout button names the layout it switches *to*: "Classic"
-        while the new rows layout is showing, "New" while classic is."""
-        btn = self._topology_classic_btn
-        if btn.isChecked():
-            btn.setText("New")
-            btn.setToolTip(
-                "Switch to the new layout: one row per source / regulator, "
-                "with tags where a rail continues on another row.")
-        else:
-            btn.setText("Classic")
-            btn.setToolTip(
-                "Switch to the classic layout: every part in one left-to-right "
-                "chain with the nets wired between them.")
-
     def _on_topology_classic_toggled(self, checked: bool) -> None:
         from fypa.viewer.prefs import save_topology_layout
 
-        self._sync_topology_classic_btn()
         self._topology_layout = "columns" if checked else "rows"
         save_topology_layout(self._topology_layout)
-        self._topology_bridges_btn.setEnabled(not checked)
-        self._topology_add_btn.setEnabled(not checked)
+        # Cascade, Bridges and Add handles only exist in the rows layout.
+        self._topology_cascade_act.setEnabled(not checked)
+        self._topology_bridges_act.setEnabled(not checked)
+        self._topology_add_act.setEnabled(not checked)
+        self._refresh_topology_live(reuse_metadata=True)
+
+    def _on_topology_cascade_toggled(self, checked: bool) -> None:
+        from fypa.viewer.prefs import save_topology_cascade
+
+        self._topology_cascade = bool(checked)
+        save_topology_cascade(self._topology_cascade)
         self._refresh_topology_live(reuse_metadata=True)
 
     def _on_topology_bridges_toggled(self, checked: bool) -> None:
@@ -1302,6 +1319,7 @@ class _TopologyTabMixin:
             add_candidates=self._topology_add_candidates(),
             premerge_parts=self._topology_premerge_parts(),
             collapsed=getattr(self, "_topology_collapsed", ()),
+            cascade=getattr(self, "_topology_cascade", False),
         )
         self._topology_model = model
         svg = render_topology_svg(model, theme=current_theme())
@@ -1447,7 +1465,7 @@ class _TopologyTabMixin:
     def _on_topology_view_clicked(self, event) -> None:
         """Click on the diagram:
 
-        * a part's ⌖ icon → jump to it on the Heatmap;
+        * a part's ⌖ icon → jump to it on the Board;
         * a tag that continues elsewhere → pan to the other end;
         * an undriven / no-load tag → menu to add a source, regulator or sink;
         * a "+ SINK (n)" handle → Manual setup on a new load for that rail;

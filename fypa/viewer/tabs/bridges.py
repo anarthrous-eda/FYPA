@@ -42,7 +42,7 @@ class _BridgesTabMixin:
     # auto-bridge can be turned off.
 
     _BRIDGES_TABLE_COLUMNS: tuple[tuple[str, str], ...] = (
-        ("Part", "Designator. Click it to jump to the part in the Heatmap "
+        ("Part", "Designator. Click it to jump to the part on the Board "
                  "tab; click elsewhere in the row to just select it."),
         ("Kind", "Inferred from the designator prefix."),
         ("Value", "The part's Altium value / comment."),
@@ -380,13 +380,13 @@ class _BridgesTabMixin:
                     if c == 0:
                         item.setData(Qt.UserRole, r)
                         # Link-styled: a click jumps to the part on the
-                        # Heatmap. Underlined rather than recoloured, since
+                        # Board. Underlined rather than recoloured, since
                         # the colour already carries the row's state.
                         font = item.font()
                         font.setUnderline(True)
                         item.setFont(font)
                         item.setToolTip(
-                            "Click to jump to this part in the Heatmap tab.")
+                            "Click to jump to this part in the Board tab.")
                     if r.get("impact"):
                         item.setForeground(QColor("#ffb300"))
                     elif state == "auto":
@@ -447,7 +447,7 @@ class _BridgesTabMixin:
     def _on_bridges_cell_clicked(self, row: int, col: int) -> None:
         """Locate the part on the board and load its resistance into the
         editor field. A click on the Part cell also jumps to the part on
-        the Heatmap tab, like the Vias tab's Go cell."""
+        the Board tab, like the Vias tab's Go cell."""
         cell = self.bridges_table.item(row, 0)
         r = cell.data(Qt.UserRole) if cell is not None else None
         if not r:
@@ -1183,7 +1183,7 @@ class _BridgesTabMixin:
             action_item.setForeground(action_fg)
             action_item.setTextAlignment(action_align)
             action_item.setToolTip(
-                "Click to jump to this via in the Heatmap tab - zooms "
+                "Click to jump to this via in the Board tab - zooms "
                 "in, enables the via's physical layer if needed, and "
                 "drops a yellow highlight ring."
             )
@@ -1260,7 +1260,7 @@ class _BridgesTabMixin:
 
     def _on_vias_cell_clicked(self, row: int, col: int) -> None:
         """Single-click on the action column (col 0) → jump to that via in
-        the Heatmap tab. Replaces the old per-row QPushButton - see
+        the Board tab. Replaces the old per-row QPushButton - see
         :meth:`_populate_vias_table` for the perf motivation."""
         if col != 0:
             return

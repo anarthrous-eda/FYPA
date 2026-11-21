@@ -28,6 +28,7 @@ from fypa.viewer.tab_strip import (
     GroupedTabWidget,
     TabGroup,
     TabStrip,
+    tone_color,
 )
 from fypa.viewer.theme import _T
 from fypa.viewer.widgets import (
@@ -64,7 +65,9 @@ class _UiBuildMixin:
         self.setCentralWidget(shell)
 
         heatmap_tab = QWidget(self.tabs)
-        self._heatmap_tab_index = self.tabs.addTab(heatmap_tab, "Heatmap")
+        # "Board", not "Heatmap": the tab is where the board is set up as
+        # well as where the heatmap is drawn over it after a solve.
+        self._heatmap_tab_index = self.tabs.addTab(heatmap_tab, "Board")
 
         central = heatmap_tab
         outer = QHBoxLayout(central)
@@ -745,7 +748,7 @@ class _UiBuildMixin:
 
         # Lazy-populate the Nodes/Vias tables on first activation. Done
         # this way (rather than on construction) so opening a viewer on a
-        # large board is instant - the user lands on the Heatmap tab and
+        # large board is instant - the user lands on the Board tab and
         # only pays for the row builds if they actually navigate to the
         # table tabs.
         self.tabs.currentChanged.connect(self._on_tabs_current_changed)
@@ -820,12 +823,16 @@ class _UiBuildMixin:
             return getattr(self, attr, -1)
 
         strip.rebuild([
-            # Outside setup / results: a light grey bar on the open tab (the
-            # Heatmap's own bar follows the colour scale - see
-            # _sync_heatmap_tab_bar).
-            TabGroup([idx("_heatmap_tab_index")], tone="neutral"),
-            TabGroup([idx("_topology_tab_index"),
-                      idx("_properties_tab_index"),
+            # The two canvases sit on both sides of the solve - setup is
+            # done on them and results are read off them - so their bracket
+            # shades from the setup colour into the results caption's
+            # colour (kept in step by _refresh_tab_strip_state). The Board's
+            # own bar follows the colour scale - see _sync_heatmap_tab_bar.
+            TabGroup([idx("_heatmap_tab_index"),
+                      idx("_topology_tab_index")],
+                     caption="VIEWS", key="views", tone="accent",
+                     tone_end="dim"),
+            TabGroup([idx("_properties_tab_index"),
                       idx("_bridges_tab_index")],
                      caption="SETUP", key="setup", tone="accent"),
             TabGroup([idx(attr) for attr, _stack in self._RESULT_TABS],
@@ -834,13 +841,14 @@ class _UiBuildMixin:
             # to the far right, where they were easy to miss.
             TabGroup([idx("_messages_tab_index"),
                       idx("_settings_tab_index"),
-                      idx("_help_tab_index")], tone="neutral"),
+                      idx("_help_tab_index")],
+                     caption="APP", key="app", tone="neutral"),
         ])
         self._refresh_tab_strip_state()
         self._sync_heatmap_tab_bar()
 
     def _sync_heatmap_tab_bar(self) -> None:
-        """Draw the open Heatmap tab's top bar in the active colour scale
+        """Draw the open Board tab's top bar in the active colour scale
         (e.g. viridis) rather than a flat accent colour."""
         strip = getattr(self, "_tab_strip", None)
         index = getattr(self, "_heatmap_tab_index", -1)
@@ -861,6 +869,45 @@ class _UiBuildMixin:
                 f"{round(b * 255):02x}")
         strip.set_tab_bar_gradient(index, colors)
 
+    # Whether the Topology tab draws solve results yet. While False it gets
+    # the VIEWS bracket but not the results marks, which would otherwise
+    # promise numbers it doesn't show. Flip when its results layer lands.
+    _TOPOLOGY_SHOWS_RESULTS = False
+
+    def _refresh_view_tabs_state(self, strip: TabStrip, has_results: bool,
+                                 stale: bool, results_tone: str) -> None:
+        """Keep the VIEWS group in step with the results: its bracket ends
+        in the results caption's colour, the Topology tab's open bar shades
+        the same way, and a view that shows results carries the results
+        tabs' marks - the pending icon before the first solve (it works for
+        setup now; results arrive later), italics while out of date. Never
+        dimmed: a view is always usable for setup."""
+        strip.set_group_caption("views", "VIEWS", "accent", results_tone)
+        topo = getattr(self, "_topology_tab_index", -1)
+        if topo >= 0:
+            strip.set_tab_bar_gradient(
+                topo, [tone_color("accent"), tone_color(results_tone)])
+        views = [(getattr(self, "_heatmap_tab_index", -1),
+                  "the voltage-drop heatmap is drawn over the board")]
+        if self._TOPOLOGY_SHOWS_RESULTS:
+            views.append((topo, "results are drawn on the diagram"))
+        for index, what in views:
+            if index < 0:
+                continue
+            strip.set_tab_pending(index, not has_results)
+            if not has_results:
+                strip.set_tab_state(
+                    index, "",
+                    "Set up sources, sinks and regulators here now. "
+                    f"After a solve, {what}.")
+            elif stale:
+                strip.set_tab_state(
+                    index, "stale",
+                    "Results shown are from the last solve. The setup has "
+                    "changed since - resolve to bring them up to date.")
+            else:
+                strip.set_tab_state(index, "")
+
     def _refresh_tab_strip_state(self) -> None:
         """Bring the strip's results caption and results-tab marks in line
         with the viewer. Cheap; run on every staleness change and tab
@@ -880,6 +927,7 @@ class _UiBuildMixin:
         else:
             caption = ("RESULTS", "ok")
         strip.set_group_caption("results", *caption)
+        self._refresh_view_tabs_state(strip, has_results, stale, caption[1])
 
         for idx_attr, stack_attr in self._RESULT_TABS:
             index = getattr(self, idx_attr, -1)

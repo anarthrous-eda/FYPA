@@ -412,7 +412,7 @@ class _NodesTabMixin:
             action_item.setForeground(action_fg)
             action_item.setTextAlignment(Qt.AlignCenter)
             action_item.setToolTip(
-                "Click to jump to this node in the Heatmap tab - zooms "
+                "Click to jump to this node in the Board tab - zooms "
                 "in, enables the node's layer if needed, and drops a "
                 "yellow highlight ring."
             )
@@ -490,7 +490,7 @@ class _NodesTabMixin:
 
     def _on_nodes_cell_clicked(self, row: int, col: int) -> None:
         """Single-click on the action column (col 0) → jump to that node
-        in the Heatmap tab. Mirrors :meth:`_on_vias_cell_clicked`."""
+        in the Board tab. Mirrors :meth:`_on_vias_cell_clicked`."""
         if col != 0:
             return
         item = self.nodes_table.item(row, 0)

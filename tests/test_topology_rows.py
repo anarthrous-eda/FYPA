@@ -403,7 +403,7 @@ def test_jump_icon_on_parts_with_a_pad() -> None:
             cx, cy = jump_icon_center(node)
             assert node.x < cx < node.x + node.width and node.y < cy < node.y + node.height
             assert find_jump_icon_at(model, cx, cy) is node
-            assert "Heatmap" in topology_tooltip_at(model, cx, cy)
+            assert "Board" in topology_tooltip_at(model, cx, cy)
         assert 'class="topo-jump"' in render_topology_svg(model)
     # No pad → no icon.
     model = build_topology_model(TREE, layout="rows")
@@ -483,3 +483,77 @@ def test_merged_rail_driver_side_uses_its_own_premerge_name() -> None:
     # Without the pre-merge map nothing is renamed.
     plain = build_topology_model(md, layout="rows")
     assert _rows(plain)[0].title == "+12V_IN"
+
+
+# --- cascade ------------------------------------------------------------------
+
+
+def test_cascade_draws_the_regulator_inline_right_of_its_feed() -> None:
+    model = build_topology_model(TREE, layout="rows", cascade=True)
+    rows = _rows(model)
+    assert [(b.kind, b.title) for b in rows] == [
+        ("source", "12P0V"),
+        ("undriven", "Undriven rail +1V8A_O"),
+    ]
+    r18, u6, j1 = (_node(model, n) for n in ("R18", "U6", "J1"))
+    # J2 → R18 → U6 → J1 left to right, on R18's row.
+    assert r18.x + r18.width < u6.x < u6.x + u6.width < j1.x
+    assert u6.y < rows[1].y
+    # +12V is a wire into U6's input, not a ref / feed tag pair.
+    assert not [t for t in model.tags if t.kind in ("ref", "feed")]
+    in_p = next(p for p in u6.ports if p.terminal == "IN_P")
+    assert in_p.side == "left"
+    ends = [pt for w in model.wires if w.net == "+12V" for pt in parse_wire_path(w.path_d)]
+    assert any(abs(x - in_p.x) < WIRE_EPS and abs(y - in_p.y) < WIRE_EPS for x, y in ends)
+
+
+def test_cascade_stacks_regulators_on_one_rail_in_one_column() -> None:
+    md = _md(
+        _d("SOURCE", "J2", "12 V", P="12P0V", N="GND"),
+        _d("RESISTOR", "R18", "5 mOhm", P="+12V", N="12P0V"),
+        _d("REGULATOR", "U6", "V=1 V", IN_P="+12V", IN_N="GND", OUT_P="+VDD", OUT_N="GND"),
+        _d("REGULATOR", "U7", "V=3.3 V", IN_P="+12V", IN_N="GND", OUT_P="+3V3", OUT_N="GND"),
+        _d("SINK", "J1", "10 A", P="+VDD", N="GND"),
+        _d("SINK", "U9", "1 A", P="+3V3", N="GND"),
+    )
+    model = build_topology_model(md, layout="rows", cascade=True)
+    assert [b.kind for b in _rows(model)] == ["source"]
+    u6, u7 = _node(model, "U6"), _node(model, "U7")
+    assert abs(u6.x - u7.x) < 0.5
+    assert u7.y >= u6.y + u6.height
+    # Each regulator's load carries on to its right.
+    assert _node(model, "J1").x > u6.x + u6.width
+    assert _node(model, "U9").x > u7.x + u7.width
+
+
+def test_cascade_tags_a_regulators_second_input_rail() -> None:
+    ch1 = _d("REGULATOR", "U6", "V=1 V", IN_P="+12V", IN_N="GND", OUT_P="+VDD", OUT_N="GND")
+    ch2 = _d("REGULATOR", "U6", "V=1.8 V", IN_P="+5V", IN_N="GND", OUT_P="+1V8", OUT_N="GND")
+    ch1["channel_index"], ch2["channel_index"] = 1, 2
+    md = _md(
+        _d("SOURCE", "J2", "12 V", P="+12V", N="GND"),
+        _d("SOURCE", "J3", "5 V", P="+5V", N="GND"),
+        ch1, ch2,
+        _d("SINK", "J1", "10 A", P="+VDD", N="GND"),
+        _d("SINK", "U5", "1 A", P="+1V8", N="GND"),
+    )
+    model = build_topology_model(md, layout="rows", cascade=True)
+    # Inline on the first rail to reach it; no row of its own.
+    assert [b.title for b in _rows(model)] == ["+12V", "+5V"]
+    u6 = _node(model, "U6")
+    assert abs(u6.y - _node(model, "J2").y) < 0.5
+    # The other input is a feed tag, matched by a "→ U6" ref on the +5V row.
+    ref = next(t for t in model.tags if t.kind == "ref")
+    feed = next(t for t in model.tags if t.kind == "feed")
+    assert (ref.net, feed.net) == ("+5V", "+5V")
+    assert feed.target == (ref.x, ref.y)
+    assert ref.target is not None and u6.x <= ref.target[0] <= u6.x + u6.width
+    assert not [t for t in model.tags if t.net == "+12V"]
+
+
+def test_cascade_off_matches_the_plain_rows_layout() -> None:
+    plain = build_topology_model(TREE, layout="rows")
+    off = build_topology_model(TREE, layout="rows", cascade=False)
+    assert [(n.node_id, n.x, n.y) for n in plain.nodes] == [
+        (n.node_id, n.x, n.y) for n in off.nodes
+    ]

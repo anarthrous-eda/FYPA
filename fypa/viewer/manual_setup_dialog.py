@@ -767,7 +767,7 @@ class ManualSetupDialog(QDialog):
         lay.addWidget(self.issues)
         btns = QHBoxLayout()
         if self._free:
-            note = QLabel(f"{self._free} free marker(s) placed on the Heatmap "
+            note = QLabel(f"{self._free} free marker(s) placed on the Board "
                           "aren't listed and are kept as they are.")
             note.setStyleSheet(f"color: {t['fg_muted']};")
             btns.addWidget(note)

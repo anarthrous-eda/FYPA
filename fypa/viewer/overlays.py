@@ -5,7 +5,7 @@ import math
 import numpy as np
 
 
-# Overlay layers shown in the Heatmap tab's "Board Features" control, in
+# Overlay layers shown in the Board tab's "Board Features" control, in
 # top-to-bottom row order. Each is (key, label, has_sides). A ``has_sides``
 # row carries a split button that breaks the row into separate Top / Bottom
 # rows. This list drives only the UI row order - the draw order is fixed

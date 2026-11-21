@@ -720,7 +720,7 @@ class GLMeshViewer(QOpenGLWidget):
         self._bdrl_pos_vbo: QOpenGLBuffer | None = None
         self._bdrl_col_vbo: QOpenGLBuffer | None = None
         # Overlay-fill rendering (GL_TRIANGLES). Shares the line shader.
-        # Flat-coloured polygons for the Heatmap tab's Overlays control
+        # Flat-coloured polygons for the Board tab's Overlays control
         # when an overlay is set to solid (rather than wire-mesh) fill -
         # filled pads, vias and component bodies. Drawn on top of the
         # heatmap mesh in both 2D and 3D modes.
@@ -1812,7 +1812,7 @@ class GLMeshViewer(QOpenGLWidget):
                           under_mesh_count: int = 0) -> None:
         """Push a batch of solid-fill overlay triangles to the GPU.
 
-        Used by the Heatmap tab's Overlays control for overlays set to
+        Used by the Board tab's Overlays control for overlays set to
         solid (rather than wire-mesh) fill - filled pads, vias and
         component bodies. ``positions`` is an (N, 3) float array of vertex
         triples (consecutive triples form one triangle), so N must be a

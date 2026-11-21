@@ -213,7 +213,7 @@ class _CapacitorsTabMixin:
 
         self.caps_overlay_box = QCheckBox("Show on heatmap")
         self.caps_overlay_box.setToolTip(
-            "Colour each included capacitor's pads on the Heatmap tab by its "
+            "Colour each included capacitor's pads on the Board tab by its "
             "loop inductance (best available tier), on a log scale from the "
             "lowest to the highest on the board."
         )
@@ -844,7 +844,7 @@ class _CapacitorsTabMixin:
             action_item.setForeground(action_fg)
             action_item.setTextAlignment(Qt.AlignCenter)
             action_item.setToolTip(
-                "Click to jump to this capacitor in the Heatmap tab.")
+                "Click to jump to this capacitor in the Board tab.")
             self.caps_table.setItem(r, self._CAPS_ACTION_COL, action_item)
 
             use_item = _MessagesSortItem("")

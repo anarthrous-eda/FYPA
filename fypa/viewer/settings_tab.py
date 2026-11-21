@@ -1244,7 +1244,7 @@ class _SettingsTabMixin:
         styling the side panel + rebuilding the non-heatmap tabs) is
         deferred to the next event-loop tick so we're not destroying
         our own QComboBox in the middle of its currentIndexChanged
-        emission. The Heatmap tab's OpenGL viewer can't be rebuilt
+        emission. The Board tab's OpenGL viewer can't be rebuilt
         safely - its context tear-down kills the process - so we re-
         style the side-panel widgets in place instead and leave the
         canvas alone.

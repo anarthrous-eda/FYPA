@@ -624,3 +624,45 @@ def _set_window_aumid(window) -> None:
             f"[altium_viewer] SHGetPropertyStoreForWindow lookup failed "
             f"({e}); ignoring.\n"
         )
+
+
+def _menu_check_indicator_qss(border: str, dot: str, dim: str) -> str:
+    """``QMenu::indicator`` rules drawing checkable menu items as a box:
+    empty when off, a filled dot inside when on, greyed when disabled.
+
+    Qt's stock tick is a low-res bitmap; these are SVGs written once per
+    colour set to the temp folder (stylesheets need a file URL), which Qt
+    renders crisply at any scale."""
+    import hashlib
+    import tempfile
+
+    key = hashlib.md5(f"{border}{dot}{dim}".encode()).hexdigest()[:10]
+    folder = Path(tempfile.gettempdir()) / "fypa_indicators"
+    folder.mkdir(exist_ok=True)
+
+    def _svg(name: str, box: str, fill: str | None) -> str:
+        path = folder / f"{name}_{key}.svg"
+        if not path.exists():
+            circle = (f'<circle cx="8" cy="8" r="3.5" fill="{fill}"/>'
+                      if fill else "")
+            path.write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg" width="16" '
+                'height="16" viewBox="0 0 16 16">'
+                f'<rect x="1.5" y="1.5" width="13" height="13" rx="2.5" '
+                f'fill="none" stroke="{box}" stroke-width="1.2"/>'
+                f"{circle}</svg>",
+                encoding="utf-8")
+        return path.as_posix()
+
+    rules = (
+        ("unchecked", _svg("off", border, None)),
+        ("checked", _svg("on", border, dot)),
+        ("unchecked:disabled", _svg("off_dim", dim, None)),
+        ("checked:disabled", _svg("on_dim", dim, dim)),
+    )
+    return (
+        "QMenu::item { padding: 4px 16px 4px 28px; }"
+        "QMenu::indicator { width: 14px; height: 14px; left: 7px; }"
+    ) + "".join(
+        f'QMenu::indicator:{state} {{ image: url("{url}"); }}'
+        for state, url in rules)

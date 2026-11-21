@@ -535,7 +535,7 @@ def test_picker_starts_from_the_default_guess(viewer):
 def test_clicking_a_fet_prefills_its_rds_on(viewer):
     import fypa.altium_viewer as V
     row = _select(viewer)
-    # Column 1, not the Part cell: a Part click also jumps to the Heatmap,
+    # Column 1, not the Part cell: a Part click also jumps to the Board,
     # which this stub viewer doesn't have. The prefill runs either way.
     V.PdnViewer._on_bridges_cell_clicked(viewer, row, 1)
     assert float(viewer.bridges_r_edit.text()) == pytest.approx(700e-6)

@@ -1704,7 +1704,7 @@ class _ProbeMixin:
         """Re-apply the active theme to every widget that pinned its
         colours inline at construction time.
 
-        Re-styles the Heatmap-tab side panel in place (we can't rebuild
+        Re-styles the Board-tab side panel in place (we can't rebuild
         it because the OpenGL canvas can't be torn down without crashing
         the process). The other tabs (Properties, Nodes, Vias, Settings,
         Help) are removed and rebuilt via their builders - that's how
@@ -1718,7 +1718,7 @@ class _ProbeMixin:
         """
         t = _T()
 
-        # --- Heatmap tab: re-style side panel widgets in place ---
+        # --- Board tab: re-style side panel widgets in place ---
         def _restyle_eye_list(lw) -> None:
             lw.setStyleSheet(
                 f"QListWidget {{ background-color: {t['bg']}; color: {t['fg']};"

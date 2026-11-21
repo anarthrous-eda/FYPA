@@ -105,9 +105,9 @@ def test_button_tooltips_name_the_shortcut(viewer):
 def test_help_tab_documents_the_keys_and_the_heatmap_heading():
     from fypa.altium_viewer import _HELP_SECTIONS
 
-    # Help is organised by tab; the editor keys live in the Heatmap section.
+    # Help is organised by tab; the editor keys live in the Board section.
     sections = dict(_HELP_SECTIONS)
-    heatmap = sections["Heatmap"]
+    heatmap = sections["Board"]
     assert "<h3>Keyboard shortcuts</h3>" in heatmap
     editor = heatmap.split("<h3>Editor mode")[1]
     assert "<kbd>S</kbd>" in editor

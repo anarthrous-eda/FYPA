@@ -38,7 +38,7 @@ class _ViasTabMixin:
     _JUMP_HALF_WIDTH_MM: float = 5.0
 
     def _jump_to_via(self, row: dict) -> None:
-        """Switch to the Heatmap tab, ensure at least one of the via's
+        """Switch to the Board tab, ensure at least one of the via's
         spanning physical layers is visible, zoom in on the via, and
         drop a yellow highlight ring at its location."""
         self._jump_to_xy(row.get("x_mm"), row.get("y_mm"),
@@ -52,7 +52,7 @@ class _ViasTabMixin:
                          [lid] if lid is not None else [])
 
     def _jump_to_xy(self, x, y, layer_ids) -> None:
-        """Switch to the Heatmap tab, ensure at least one of the given
+        """Switch to the Board tab, ensure at least one of the given
         physical layers is visible, zoom in on ``(x, y)``, and drop a
         yellow highlight ring at that location. Shared by the Vias-tab
         and Nodes-tab "Go" actions."""

@@ -381,7 +381,7 @@ class _FixesTabMixin:
             self._go_to_fix(row)
 
     def _go_to_fix(self, row: int) -> None:
-        """Switch to the Heatmap, make the fix's copper visible, zoom to it."""
+        """Switch to the Board, make the fix's copper visible, zoom to it."""
         opps = getattr(self._roi_result, "opportunities", None) or []
         if not 0 <= row < len(opps):
             return
