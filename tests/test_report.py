@@ -207,6 +207,25 @@ def test_load_voltage_matches_the_solved_pins(sandbox_solve, sandbox_report):
     assert sum(lr.share for lr in rail.layers) == pytest.approx(1.0)
 
 
+def test_load_results_agree_with_the_full_report(sandbox_solve, sandbox_report):
+    """The Topology gauges' light-weight path gives the report's numbers."""
+    from fypa.report.collect import load_results
+
+    solution, metadata = sandbox_solve
+    quick = {ld.key: ld for ld, _rail in load_results(solution, metadata)}
+    full = {ld.key: ld for r in sandbox_report.rails for ld in r.loads}
+    assert quick.keys() == full.keys() and "SINK:J2" in quick
+    for key, ld in full.items():
+        assert quick[key].v_load == ld.v_load
+        assert quick[key].limiting_margin_v == ld.limiting_margin_v
+    # A sink's port voltage is its voltage at load.
+    from fypa.report.collect import topology_results
+
+    _loads, ports = topology_results(solution, metadata)
+    assert ports["SINK:J2:P"] == pytest.approx(full["SINK:J2"].v_load)
+    assert ports["SOURCE:J1:P"] == pytest.approx(1.0, abs=1e-6)
+
+
 def test_sandbox_single_via_at_exactly_the_limit_is_not_over(sandbox_report):
     # P1V_VIA pushes its whole 1 A load through one via: at the 1 A limit,
     # not above it.

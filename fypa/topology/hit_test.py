@@ -208,6 +208,11 @@ def topology_tooltip_at(
     tag = find_tag_at(model, x, y)
     if tag is not None:
         return tag.tooltip or tag.text
+    from fypa.topology.gauges import find_gauge_at
+
+    gauge = find_gauge_at(model, x, y)
+    if gauge is not None:
+        return gauge.tooltip
     node = find_component_at(model, x, y)
     if node is not None and node.tooltip:
         return node.tooltip

@@ -32,6 +32,8 @@ def build_topology_model(
     premerge_parts: Mapping[str, Collection[str]] | None = None,
     collapsed: Collection[str] = (),
     cascade: bool = False,
+    gauges: bool | str = False,
+    port_voltages: bool = False,
 ) -> TopologyModel:
     """Build a Flow diagram layout model for the PDN simulation schematic.
 
@@ -41,7 +43,9 @@ def build_topology_model(
     viewer's "+ SINK" handles), ``premerge_parts`` (the far side of 0 Ω
     links), ``collapsed`` (row keys drawn as a header only) and ``cascade``
     (regulators inline off their feed rail), see :func:`~fypa.topology.rows.build_rows_model`, only affect
-    the rows layout.
+    the rows layout. So does ``gauges`` (``"bar"`` / ``"text"``: a voltage
+    gauge in each load block with a minimum, see :mod:`fypa.topology.gauges`)
+    and ``port_voltages`` (room for, and drawing of, each port's voltage).
     """
     if layout == "rows":
         from fypa.topology.rows import build_rows_model
@@ -49,6 +53,7 @@ def build_topology_model(
         return build_rows_model(
             metadata, show_bridges=show_bridges, add_candidates=add_candidates,
             premerge_parts=premerge_parts, collapsed=collapsed, cascade=cascade,
+            gauges=gauges, port_voltages=port_voltages,
         )
     if metadata is None:
         return TopologyModel()

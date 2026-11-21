@@ -127,6 +127,10 @@ class LoadResult:
     v_high: float | None = None
     margin_high_v: float | None = None   # max_v - v_high
     regulator_type: str = ""             # regulator inputs: "LDO" / "SMPS"
+    # "SINK:U5" / "REGULATOR:U6#1": the directive's role and its label, before
+    # ``label`` gains the regulator's "→ rail". The Topology tab's voltage
+    # gauges find their load by it.
+    key: str = ""
 
     @property
     def limiting_margin_v(self) -> float | None:

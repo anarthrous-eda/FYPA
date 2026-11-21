@@ -159,6 +159,82 @@ def build_report(
     return report
 
 
+def load_results(
+    solution,
+    metadata: dict,
+    settings: ReportSettings | None = None,
+) -> list[tuple[LoadResult, RailReport]]:
+    """Every load (SINK, regulator input) on a driven rail with its rail -
+    the same numbers as the report's load table and checks, without the
+    copper, via, thermal and figure work. Each load's ``status`` is set."""
+    return topology_results(solution, metadata, settings)[0]
+
+
+# Supply-side terminal -> its return, for the per-port voltages.
+_PORT_RETURN = {"P": "N", "IN_P": "IN_N", "OUT_P": "OUT_N"}
+# Terminals that put power out: their port voltage is the pins' mean, not
+# the worst (lowest) one a load is judged on.
+_OUTPUT_TERMS = {("SOURCE", "P"), ("REGULATOR", "OUT_P")}
+
+
+def topology_results(
+    solution,
+    metadata: dict,
+    settings: ReportSettings | None = None,
+) -> tuple[list[tuple[LoadResult, RailReport]], dict[str, float]]:
+    """``(loads, ports)`` for the Topology tab, from one sampling pass.
+
+    ``loads`` is :func:`load_results`. ``ports`` maps
+    ``"ROLE:label:TERM"`` (``"SINK:J1:P"``, ``"REGULATOR:U6:OUT_P"``) to the
+    voltage at that supply-side terminal: its pins minus its return pins
+    (the highest), or minus the rail's source return when the return is
+    ideal - like the report's voltage at load. A load's input takes its
+    lowest pin, a source's or regulator's output the mean of its pins."""
+    settings = settings or ReportSettings()
+    metadata = metadata or {}
+    sampler = SolutionSampler(solution, metadata)
+    rail_names, rail_to_members = compute_rail_groups(
+        cast("TopologyMetadata", metadata))
+    net_to_rail = {n: rail for rail, members in rail_to_members.items()
+                   for n in members}
+    directives = [d for d in metadata.get("directives", [])
+                  if d.get("role") != "AUTO_BRIDGE"]
+    pin_v = _sample_directive_pins(sampler, directives)
+    ctx = _Context(sampler, metadata, directives, pin_v, rail_to_members,
+                   net_to_rail, settings)
+    out: list[tuple[LoadResult, RailReport]] = []
+    for name in rail_names:
+        sources = ctx.sources_of(name)
+        if not sources:
+            continue
+        src_di, src, setpoint = max(sources, key=lambda s: s[2])
+        rail = RailReport(name=name, kind="supply",
+                          members=list(rail_to_members.get(name, [name])),
+                          nominal_v=setpoint, source_label="", load_a=None)
+        ctx._loads(rail, setpoint, ctx.source_return_v(src_di, src))
+        checks.rail_findings(rail, settings)
+        out.extend((ld, rail) for ld in rail.loads)
+
+    ports: dict[str, float] = {}
+    for di, d in enumerate(directives):
+        role = str(d.get("role") or "")
+        label = str(d.get("label") or d.get("designator") or "?")
+        for term, ret in _PORT_RETURN.items():
+            p_volts = ctx.volts(di, term)
+            if not p_volts:
+                continue
+            n_volts = ctx.volts(di, ret)
+            if n_volts:
+                v_ret = max(n_volts)
+            else:
+                rail = ctx.rail_of(d, term)
+                v_ret = ctx.src_ret.get(rail, 0.0) if rail else 0.0
+            v_p = (sum(p_volts) / len(p_volts)
+                   if (role, term) in _OUTPUT_TERMS else min(p_volts))
+            ports[f"{role}:{label}:{term}"] = v_p - v_ret
+    return out, ports
+
+
 # --- sampling -----------------------------------------------------------------
 
 def _sample_directive_pins(sampler: SolutionSampler, directives: list[dict]
@@ -439,6 +515,7 @@ class _Context:
                       if v is not None]
             n_volts = self.volts(di, n_term)
             label = str(d.get("label") or d.get("designator") or "?")
+            key = f"{role}:{label}"
             nets = sorted(_pin_nets(d, p_term) & members)
             limits: dict = {}
             if role == "SINK":
@@ -465,7 +542,7 @@ class _Context:
                 pin_count=len(self.pin_v.get((di, p_term), [])),
                 current_a=current, v_load=None, drop_v=None,
                 return_drop_v=None, min_v=min_v, margin_v=None,
-                status=PASS, max_v=max_v, **limits)
+                status=PASS, max_v=max_v, key=key, **limits)
             if p_pins:
                 worst_pin, v_p = min(p_pins, key=lambda pv: pv[1])
                 v_ret = max(n_volts) if n_volts else src_ret

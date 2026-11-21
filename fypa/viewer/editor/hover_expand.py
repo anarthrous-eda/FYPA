@@ -11,7 +11,7 @@ the icon stays put while the button grows.
 """
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from PySide6.QtCore import (
     QEasingCurve, QEvent, QObject, QPropertyAnimation, QSize, QTimer,

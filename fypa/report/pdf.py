@@ -590,7 +590,7 @@ class _Builder:
             row_status.append(ld.status)
         head = ["Load", "Net", "Pins", "Current", "V at load", "Drop",
                 "in return", "Limits", "Margin", "Status"]
-        widths = [22, 20, 7, 11, 12, 11, 11, 13, 12, 15]
+        widths: list[float] = [22, 20, 7, 11, 12, 11, 11, 13, 12, 15]
         right = {2, 3, 4, 5, 6, 7, 8}
         if worst:
             head.insert(5, "Worst case")

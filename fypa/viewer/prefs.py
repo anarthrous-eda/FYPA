@@ -662,6 +662,106 @@ def save_topology_show_add_handles(enabled: bool) -> None:
         )
 
 
+_TOPOLOGY_GAUGES_QS_KEY = "ui/topology_show_gauges"
+
+
+def load_topology_show_gauges() -> bool:
+    """Read whether load blocks show voltage gauges. Defaults to ``True``."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        val = qs.value(_TOPOLOGY_GAUGES_QS_KEY, True)
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            return val.strip().lower() in ("1", "true", "yes", "on")
+        return bool(int(val))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not read topology gauges preference (%s); using default.", e,
+        )
+    return True
+
+
+def save_topology_show_gauges(enabled: bool) -> None:
+    """Persist whether load blocks show voltage gauges."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        qs.setValue(_TOPOLOGY_GAUGES_QS_KEY, bool(enabled))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not persist topology gauges preference (%s); ignoring.", e,
+        )
+
+
+_TOPOLOGY_PORT_V_QS_KEY = "ui/topology_port_voltages"
+
+
+def load_topology_port_voltages() -> bool:
+    """Read whether ports show their solved voltage. Defaults to ``True``."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        val = qs.value(_TOPOLOGY_PORT_V_QS_KEY, True)
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            return val.strip().lower() in ("1", "true", "yes", "on")
+        return bool(int(val))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not read topology port-voltage preference (%s); using "
+            "default.", e,
+        )
+    return True
+
+
+def save_topology_port_voltages(enabled: bool) -> None:
+    """Persist whether ports show their solved voltage."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        qs.setValue(_TOPOLOGY_PORT_V_QS_KEY, bool(enabled))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not persist topology port-voltage preference (%s); "
+            "ignoring.", e,
+        )
+
+
+_TOPOLOGY_GAUGE_STYLE_QS_KEY = "ui/topology_gauge_style"
+
+
+def load_topology_gauge_style() -> str:
+    """Read how load blocks show their voltage: ``"bar"`` (default) or
+    ``"text"``."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        val = str(qs.value(_TOPOLOGY_GAUGE_STYLE_QS_KEY, "bar")).strip().lower()
+        if val in ("bar", "text"):
+            return val
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not read topology gauge style (%s); using default.", e,
+        )
+    return "bar"
+
+
+def save_topology_gauge_style(style: str) -> None:
+    """Persist how load blocks show their voltage (``"bar"`` / ``"text"``)."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        qs.setValue(_TOPOLOGY_GAUGE_STYLE_QS_KEY,
+                    "text" if style == "text" else "bar")
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not persist topology gauge style (%s); ignoring.", e,
+        )
+
+
 _TOPOLOGY_CASCADE_QS_KEY = "ui/topology_cascade"
 
 

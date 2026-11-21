@@ -503,6 +503,13 @@ def _draw_node(
             f' font-size="9">{esc(truncate_label(node.value_str, max_len=26))}</text>'
         )
 
+    if node.gauges:
+        from fypa.topology.gauges import draw_gauge
+
+        for g in node.gauges:
+            draw_gauge(parts, g, bg=bg, fg=fg, fg_dim=fg_dim, border=border,
+                       err=err)
+
     for port in node.ports:
         px, py = port.x, port.y
         color = port_colors.get(port.role or node.role, fg)
@@ -804,6 +811,12 @@ def _render_rows(
         _draw_tag(parts, tag, bg_alt=bg_alt, fg=fg)
     for wire in model.wires:
         _draw_wire_label(parts, wire, fg=fg, bg=bg)
+    if model.port_voltages:
+        from fypa.topology.gauges import draw_port_voltage
+
+        for node in model.nodes:
+            for port in node.ports:
+                draw_port_voltage(parts, port, bg=bg, fg=fg)
     y = model.height - 52.0 - 20.0 * len(model.notes)
     for note in model.notes:
         y += 20.0

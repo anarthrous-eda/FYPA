@@ -43,6 +43,15 @@ from fypa.topology.constants import (
     TAG_POINT,
     TAG_TEXT_PAD,
 )
+from fypa.topology.gauges import (
+    GAUGE_INSET,
+    GAUGE_NODE_W,
+    PORT_V_ROOM,
+    GaugeSpec,
+    base_terminal,
+    gauge_row_h,
+    gauge_specs,
+)
 from fypa.topology.metadata.layout_bridge import parse_topology_directives
 from fypa.topology.metadata.specs import (
     jump_row_for_directive,
@@ -52,6 +61,7 @@ from fypa.topology.metadata.specs import (
 from fypa.topology.metadata_schema import NodeSpec, TopologyMetadata
 from fypa.topology.terminal_roles import is_output_port, is_single_net_node
 from fypa.topology.types import (
+    NodeGauge,
     TopologyBand,
     TopologyModel,
     TopologyNode,
@@ -288,6 +298,11 @@ class _TreeBuilder:
         # Cascade: a regulator is drawn inline where its input rail first
         # reaches it (in the feeding row) instead of on a row of its own.
         self.cascade = False
+        # Voltage gauges in SINK / regulator-input blocks with a minimum:
+        # "" (none), "bar" or "text".
+        self.gauges = ""
+        # Port voltage labels are drawn: keep wire runs long enough for them.
+        self.port_voltages = False
 
     def add_sink_count(self, net: str, branch: _Branch | None = None) -> int:
         """Candidate loads on ``net`` not already drawn on it (any role) -
@@ -605,6 +620,8 @@ class _Shape:
     left_tags: float = 0.0     # how far tags reach left of the body
     right_tags: float = 0.0    # how far tags reach right of the body
     tagged: list[str] = field(default_factory=list)
+    gauges: list[GaugeSpec] = field(default_factory=list)
+    gauge_top: float = 0.0     # local y of the first gauge row
 
 
 def _node_shape(child: _Child, builder: _TreeBuilder) -> _Shape:
@@ -655,20 +672,28 @@ def _node_shape(child: _Child, builder: _TreeBuilder) -> _Shape:
     bottom = [p for p in part.ports if sides[p.name] == "bottom"]
     n_rows = max(len(left), len(right), 1)
     value = _value_text(part)
+    gauges = gauge_specs(part.spec) if builder.gauges else []
+    gauge_top = HEADER_H + BODY_PAD + n_rows * PORT_ROW_H + 2.0
     h = HEADER_H + BODY_PAD + n_rows * PORT_ROW_H + BODY_PAD
+    if gauges:
+        h += 2.0 + len(gauges) * gauge_row_h(builder.gauges)
+        if not value:
+            h += 6.0   # clear of the jump icon in the bottom corner
     if value:
         h += VALUE_ROW_H
+    node_w = GAUGE_NODE_W if gauges else NODE_W
     port_xy: dict[str, tuple[float, float]] = {}
     for i, p in enumerate(left):
         port_xy[p.name] = (0.0, HEADER_H + BODY_PAD + i * PORT_ROW_H + PORT_ROW_H / 2)
     for i, p in enumerate(right):
-        port_xy[p.name] = (NODE_W, HEADER_H + BODY_PAD + i * PORT_ROW_H + PORT_ROW_H / 2)
+        port_xy[p.name] = (node_w, HEADER_H + BODY_PAD + i * PORT_ROW_H + PORT_ROW_H / 2)
     n_b = len(bottom)
     for i, p in enumerate(bottom):
-        port_xy[p.name] = (NODE_W / 2 + (i - (n_b - 1) / 2) * GND_PORT_SPACING, h)
+        port_xy[p.name] = (node_w / 2 + (i - (n_b - 1) / 2) * GND_PORT_SPACING, h)
     extent = h + (GND_STUB + GND_GLYPH_H if bottom else 0.0)
 
-    shape = _Shape(NODE_W, h, extent, port_xy, sides)
+    shape = _Shape(node_w, h, extent, port_xy, sides,
+                   gauges=gauges, gauge_top=gauge_top)
     for p in part.ports:
         if p.net == GND_NET:
             continue
@@ -867,6 +892,11 @@ class _Placer:
             shape.right_tags + label_need,
             shape.right_tags + BUS_INSET,
         )
+        if self.builder.port_voltages:
+            # Room for the driver's port voltage before the bus, and each
+            # child's between the bus and the child.
+            right_clear = max(right_clear, PORT_V_ROOM)
+            left_clear = max(left_clear, PORT_V_ROOM)
         node_right = x + shape.width
         cx = node_right + right_clear + (nb - 1) * BUS_SPACING + left_clear
         cursor = top
@@ -1083,6 +1113,15 @@ class _Placer:
             compact=compact,
             value_str=_value_text(part),
         )
+        style = self.builder.gauges
+        row_h = gauge_row_h(style)
+        for i, gs in enumerate(shape.gauges):
+            node.gauges.append(NodeGauge(
+                key=gs.key, label=gs.label, min_v=gs.min_v, max_v=gs.max_v,
+                x=x + GAUGE_INSET, y=y + shape.gauge_top + i * row_h,
+                width=shape.width - 2 * GAUGE_INSET, height=row_h,
+                style=style,
+            ))
         for p in part.ports:
             if p.name not in shape.port_xy:
                 continue
@@ -1092,6 +1131,14 @@ class _Placer:
                 abs(oy - ly) < 0.5 and abs(ox - lx) > 0.5
                 for name, (ox, oy) in shape.port_xy.items() if name != p.name
             )
+            pd = (s.get("port_directives") or {}).get(p.name)
+            vkey = ""
+            if pd is not None and not compact:
+                base = base_terminal(p.name)
+                if base in ("P", "IN_P", "OUT_P") and pd.get("role") in (
+                        "SOURCE", "SINK", "REGULATOR"):
+                    plab = str(pd.get("label") or pd.get("designator") or "?")
+                    vkey = f"{pd.get('role')}:{plab}:{base}"
             far = child.branches.get(p.name)
             own = far is not None and (
                 far.pnet or (far.split is not None and far.split.root_label()))
@@ -1106,6 +1153,7 @@ class _Placer:
                 node_id=part.node_id,
                 role=p.role,
                 tooltip=rp.tooltip if rp is not None else p.tooltip,
+                vkey=vkey,
             ))
         return node
 
@@ -1146,6 +1194,8 @@ class _Placer:
             x=x + w, y=y, node_id="",
         )
         left_clear = BUS_INSET + max((s.left_tags for s in shapes.values()), default=0.0)
+        if self.builder.port_voltages:
+            left_clear = max(left_clear, PORT_V_ROOM)
         cx = x + w + max(MIN_TRUNK, _label_width(text)) + left_clear
         _, bottom = self._place_branch(branch, drv, cx, cx - left_clear, top, shapes)
         return max(bottom, y + TAG_H / 2)
@@ -1406,8 +1456,19 @@ def build_rows_model(
     premerge_parts: Mapping[str, Collection[str]] | None = None,
     collapsed: Collection[str] = (),
     cascade: bool = False,
+    gauges: bool | str = False,
+    port_voltages: bool = False,
 ) -> TopologyModel:
     """Build the rows-layout topology model (see module docstring).
+
+    ``port_voltages`` lengthens wire runs so the solved voltage drawn beside
+    each port (:func:`~fypa.topology.gauges.draw_port_voltage`) clears the
+    one at the wire's other end, and turns their drawing on.
+
+    ``gauges`` (``"bar"``, ``"text"``; ``True`` = ``"bar"``) gives each SINK
+    / regulator-input block that declares a minimum voltage a voltage gauge
+    (:mod:`fypa.topology.gauges`); attach the solved readings with
+    :func:`~fypa.topology.gauges.apply_readings`.
 
     ``cascade`` draws each regulator inline, wired straight off the rail that
     feeds it (``J2 → R18 → U6 → J1`` on one row), instead of on a row of its
@@ -1438,6 +1499,9 @@ def build_rows_model(
         k.upper(): {d.upper() for d in v} for k, v in premerge_parts.items()
     }
     rows, hidden, builder = _plan_rows(parts, premerge, cascade=cascade)
+    builder.gauges = ("bar" if gauges is True
+                      else gauges if gauges in ("bar", "text") else "")
+    builder.port_voltages = port_voltages
     placer = _Placer(builder, add_candidates)
 
     bands: list[TopologyBand] = []
@@ -1510,4 +1574,5 @@ def build_rows_model(
         bands=bands,
         gnd_glyphs=placer.gnd_glyphs,
         notes=notes,
+        port_voltages=port_voltages,
     )

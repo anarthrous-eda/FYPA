@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from PySide6.QtCore import QByteArray, QPointF, QRectF, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QKeySequence, QPainter, QShortcut
+from PySide6.QtGui import QColor, QCursor, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
     QFileDialog,
     QGraphicsScene,
@@ -321,6 +321,7 @@ class _TopologyView(QGraphicsView):
         self._fade_highlight_to(1.0)
 
     def wheelEvent(self, event) -> None:
+        self._hide_tip()
         delta_y = event.angleDelta().y()
         delta_x = event.angleDelta().x()
         mods = event.modifiers()
@@ -350,6 +351,7 @@ class _TopologyView(QGraphicsView):
             event.accept()
 
     def keyPressEvent(self, event) -> None:
+        self._hide_tip()
         key = event.key()
         if key == Qt.Key_Space and not event.isAutoRepeat():
             self._space_pan = True
@@ -415,8 +417,6 @@ class _TopologyView(QGraphicsView):
                 v.setValue(int(self._pan_scroll[1] - delta.y()))
             event.accept()
             return
-        from PySide6.QtWidgets import QToolTip
-
         from fypa.topology import topology_tooltip_at
         from fypa.topology.hit_test import topology_net_at
 
@@ -431,9 +431,9 @@ class _TopologyView(QGraphicsView):
                 tip = ("Click to expand this row" if band.collapsed
                        else "Click to collapse this row")
             if tip:
-                QToolTip.showText(event.globalPosition().toPoint(), tip, self)
+                self._show_tip(tip)
             else:
-                QToolTip.hideText()
+                self._hide_tip()
             if not self._space_pan:
                 from fypa.topology.hit_test import (
                     find_component_at,
@@ -456,16 +456,67 @@ class _TopologyView(QGraphicsView):
             self._set_highlighted_net(topology_net_at(model, x, y))
         else:
             self._clear_net_highlight()
+            self._hide_tip()
         super().mouseMoveEvent(event)
 
-    def leaveEvent(self, event) -> None:
-        from PySide6.QtWidgets import QToolTip
+    # --- hover tooltip ------------------------------------------------------
+    #
+    # Not QToolTip: Qt closes that on any focus change anywhere in the app
+    # (and after ~10 s), so a tooltip read while something else in the
+    # window takes focus vanished after a second. This label stays up until
+    # the mouse leaves the item or the view, or a click / wheel / key.
 
-        QToolTip.hideText()
+    def _show_tip(self, text: str) -> None:
+        from fypa.viewer.widgets import (
+            _make_floating_tooltip,
+            _move_tooltip_to_cursor,
+            _qt_widget_alive,
+        )
+
+        label = getattr(self, "_tip_label", None)
+        if label is None or not _qt_widget_alive(label):
+            label = self._tip_label = _make_floating_tooltip(self)
+            # Mouse moves stop arriving once the pointer is over another
+            # window (or another app is in front), so watch the pointer
+            # itself rather than focus or activation.
+            self._tip_watch = QTimer(self)
+            self._tip_watch.setInterval(250)
+            self._tip_watch.timeout.connect(self._hide_tip_if_pointer_left)
+        if label.text() != text:
+            label.setText(text)
+            label.adjustSize()
+        _move_tooltip_to_cursor(label)
+        if not label.isVisible():
+            label.show()
+        if not self._tip_watch.isActive():
+            self._tip_watch.start()
+
+    def _hide_tip(self) -> None:
+        from fypa.viewer.widgets import _qt_widget_alive
+
+        watch = getattr(self, "_tip_watch", None)
+        if watch is not None:
+            watch.stop()
+        label = getattr(self, "_tip_label", None)
+        if label is not None and _qt_widget_alive(label):
+            label.hide()
+
+    def _hide_tip_if_pointer_left(self) -> None:
+        vp = self.viewport()
+        if not vp.rect().contains(vp.mapFromGlobal(QCursor.pos())):
+            self._hide_tip()
+
+    def hideEvent(self, event) -> None:
+        self._hide_tip()   # tab switched away, window minimised
+        super().hideEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._hide_tip()
         self._set_highlighted_net(None)
         super().leaveEvent(event)
 
     def mousePressEvent(self, event) -> None:
+        self._hide_tip()
         if event.button() in (Qt.MiddleButton, Qt.RightButton) or (
             event.button() == Qt.LeftButton and self._space_pan
         ):
@@ -543,11 +594,17 @@ class _TopologyTabMixin:
             load_topology_cascade,
             load_topology_show_add_handles,
             load_topology_show_bridges,
+            load_topology_gauge_style,
+            load_topology_port_voltages,
+            load_topology_show_gauges,
         )
 
         self._topology_cascade = load_topology_cascade()
         self._topology_show_bridges = load_topology_show_bridges()
         self._topology_show_add_handles = load_topology_show_add_handles()
+        self._topology_show_gauges = load_topology_show_gauges()
+        self._topology_gauge_style = load_topology_gauge_style()
+        self._topology_port_voltages = load_topology_port_voltages()
         toolbar.addSpacing(12)
 
         # View options: one drop-down holding the diagram's display toggles.
@@ -598,6 +655,31 @@ class _TopologyTabMixin:
             "loaded.",
             self._topology_show_add_handles,
             self._on_topology_add_handles_toggled)
+        view_menu.addSeparator()
+        self._topology_gauges_act = _toggle(
+            "Voltage gauges",
+            "In each sink (and regulator input) with a minimum voltage: the "
+            "voltage at its pins and its margin to the nearest limit. Pins "
+            "are measured supply minus return, so ground rise counts. Hover "
+            "a gauge for the full numbers.",
+            self._topology_show_gauges,
+            self._on_topology_gauges_toggled)
+        self._topology_gauge_text_act = _toggle(
+            "Gauges as text",
+            "Show each gauge as two lines of text (voltage and margin, then "
+            "the limits and supply) instead of the bar: green zone allowed, "
+            "red outside, dashed mark the supply before any drop, solid band "
+            "the voltage at the pins.",
+            self._topology_gauge_style == "text",
+            self._on_topology_gauge_text_toggled)
+        self._topology_gauge_text_act.setEnabled(self._topology_show_gauges)
+        self._topology_port_v_act = _toggle(
+            "Port voltages",
+            "Show the solved voltage beside each source, regulator and sink "
+            "supply port: its pins minus their return (a load's lowest pin, "
+            "an output's average), so ground rise counts.",
+            self._topology_port_voltages,
+            self._on_topology_port_voltages_toggled)
         view_btn.setMenu(view_menu)
         self._topology_view_btn = view_btn
         toolbar.addWidget(view_btn)
@@ -1178,6 +1260,60 @@ class _TopologyTabMixin:
         self._topology_keep_view_once = True  # keep zoom / scroll, don't refit
         self._refresh_topology_live(reuse_metadata=True)
 
+    def _on_topology_gauges_toggled(self, checked: bool) -> None:
+        from fypa.viewer.prefs import save_topology_show_gauges
+
+        self._topology_show_gauges = bool(checked)
+        save_topology_show_gauges(self._topology_show_gauges)
+        act = getattr(self, "_topology_gauge_text_act", None)
+        if act is not None:
+            act.setEnabled(self._topology_show_gauges)
+        self._topology_keep_view_once = True  # keep zoom / scroll, don't refit
+        self._refresh_topology_live(reuse_metadata=True)
+
+    def _on_topology_port_voltages_toggled(self, checked: bool) -> None:
+        from fypa.viewer.prefs import save_topology_port_voltages
+
+        self._topology_port_voltages = bool(checked)
+        save_topology_port_voltages(self._topology_port_voltages)
+        self._topology_keep_view_once = True  # keep zoom / scroll, don't refit
+        self._refresh_topology_live(reuse_metadata=True)
+
+    def _on_topology_gauge_text_toggled(self, checked: bool) -> None:
+        from fypa.viewer.prefs import save_topology_gauge_style
+
+        self._topology_gauge_style = "text" if checked else "bar"
+        save_topology_gauge_style(self._topology_gauge_style)
+        self._topology_keep_view_once = True  # keep zoom / scroll, don't refit
+        self._refresh_topology_live(reuse_metadata=True)
+
+    def _topology_gauge_readings(self):
+        """``(readings, ports)`` from the last solve (cached per solve):
+        the voltage at every load's pins keyed by ``LoadResult.key``, and
+        every supply port's voltage keyed ``"ROLE:label:TERM"``; ``None``
+        with no solve, or if it fails."""
+        solution, metadata = getattr(self, "solution", None), self.metadata
+        if solution is None or metadata is None:
+            return None
+        key = (id(solution), id(metadata))
+        cache = getattr(self, "_topology_gauge_cache", None)
+        if cache is not None and cache[0] == key:
+            return cache[1]
+        try:
+            from fypa.report.collect import topology_results
+            from fypa.topology.gauges import readings_from_loads
+
+            loads, ports = topology_results(solution, metadata)
+            readings = (readings_from_loads(loads), ports)
+        except Exception:  # noqa: BLE001 - gauges are optional
+            import logging
+
+            logging.getLogger(__name__).debug(
+                "No voltage readings for the topology gauges", exc_info=True)
+            readings = None
+        self._topology_gauge_cache = (key, readings)
+        return readings
+
     def _topology_view_in_memory(self):
         """Design view for the "+ SINK" handles, without prompting or loading
         anything: the last auto-setup run's, else one built (and cached) from
@@ -1360,7 +1496,17 @@ class _TopologyTabMixin:
             premerge_parts=self._topology_premerge_parts(),
             collapsed=getattr(self, "_topology_collapsed", ()),
             cascade=getattr(self, "_topology_cascade", False),
+            gauges=(getattr(self, "_topology_gauge_style", "bar")
+                    if getattr(self, "_topology_show_gauges", True) else ""),
+            port_voltages=bool(getattr(self, "_topology_port_voltages", True)),
         )
+        if model.port_voltages or any(n.gauges for n in model.nodes):
+            from fypa.topology.gauges import apply_readings
+
+            res = self._topology_gauge_readings()
+            apply_readings(model, res[0] if res else None,
+                           ports=res[1] if res else None,
+                           stale=bool(getattr(self, "_solve_stale", False)))
         self._topology_model = model
         svg = render_topology_svg(model, theme=current_theme())
         keep = getattr(self, "_topology_keep_view_once", False)

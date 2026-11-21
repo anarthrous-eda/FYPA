@@ -151,6 +151,53 @@ This is **not** the PCB layout; for spatial placement use the Board tab.
   the first rail to reach it; the other input keeps its tag, matched by a
   `U6` tag where that rail is drawn. The View options toggles are
   remembered between sessions.
+- **Voltage gauges** (under **View options**, on by default) - each SINK
+  with a `PDN_MIN_V`, and each regulator input with a dropout or
+  `PDN_VIN_MIN`, gets a gauge under its ports (the block is drawn wider
+  to fit it). A load with only a maximum gets none. The bar reads left
+  (lower voltage) to right:
+  - **zones** - green where the voltage is allowed (minimum to maximum,
+    or to the end when there is no maximum), red outside it. Solid green
+    ticks mark the limits, labelled `min` / `max` underneath. Every gauge
+    is scaled to its own window, so healthy gauges look alike and an
+    outlier stands out.
+  - **dashed mark** - the supply before any drop, labelled `supply`: a
+    dashed tick at its setpoint, or a dashed box over its range
+    (`PDN_V_TOL` / `PDN_V_MIN` / `PDN_V_MAX`). A label that would overlap
+    another is left out; hover for every number.
+  - **solid band** - where the voltage at the load's pins can sit, from
+    the supply at its minimum to the supply at its maximum with the rail
+    lightly loaded. With no range it is a single bar. The gap between the
+    dashed mark and the band is the drop in the copper. Inside the window
+    the band is grey (pass) or amber (margin under the report's warning
+    share); only the part past a limit is red. A value off the scale
+    pins to that end with an arrow.
+  - **line above the bar** - the worst margin with the limit it is to:
+    `✓ +74.5 mV to min`, `⚠` for a low margin, `✗` for a fail (a negative
+    margin is past the limit by that much). With **Port voltages** off it
+    is led by the voltage at the pins: `0.975 V · ✓ +74.5 mV to min`.
+
+  **Gauges as text** (under **View options**) swaps the bar for two lines:
+  the margin (`✓ +74.5 mV to min`, with the voltage at the pins in front
+  when **Port voltages** is off), then the limits and supply, e.g.
+  `min 0.9 V · max 1.04 V · supply 0.97–1.05 V`. It is shorter, and easier
+  to read when zoomed out.
+
+  The voltage is **supply pins minus return pins**, the same "voltage at
+  load" as the design report, so ground rise counts against the margin.
+  Hover a gauge for the numbers: the range at the pins, the limits, the
+  margin, and the drop with its return-path share. Readings come from the
+  last solve; with edits pending, the gauges are faded until you
+  **Resolve**. Before the first solve a gauge shows its limits and *not
+  solved yet*.
+- **Port voltages** (under **View options**, on by default) - the solved
+  voltage on the wire beside each SOURCE, REGULATOR and SINK supply port:
+  right of an output, left of an input, e.g. `1.000 V` at a regulator's
+  output and `0.991 V` at the sink it feeds. It is the port's pins minus
+  their return pins (a load's lowest pin, an output's average), so the
+  two ends of a wire differ by that rail's drop, ground rise included.
+  Hover the port for the same figure. Faded, like the gauges, while edits
+  are pending.
 - **Nodes** - one box per directive (SOURCE, SINK, REGULATOR, SERIES);
   the header shows the role colour and designator; the body shows the
   configured value (`PDN_V`, `PDN_I`, `PDN_R`, regulator gain).

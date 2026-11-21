@@ -30,6 +30,70 @@ class TopologyPort:
     stub_length: float = 0.0
     wire_x: float | None = None
     role: str = ""
+    # Supply-side ports of a SOURCE / SINK / REGULATOR: "ROLE:label:TERM"
+    # (see fypa.report.collect.topology_results), and once solved the
+    # voltage there - drawn beside the port when port voltages are on.
+    vkey: str = ""
+    voltage: float | None = None
+    voltage_stale: bool = False
+
+
+@dataclass
+class GaugeReading:
+    """Solved voltage at a load's pins, for one :class:`NodeGauge`.
+
+    Voltages are differential: the lowest supply pin minus the highest return
+    pin, so ground rise counts (the same figure as the design report's
+    "voltage at load"). ``low`` / ``high`` span the supply's range (and light
+    load, where a maximum is checked); with no range they are equal.
+    """
+
+    low: float
+    high: float
+    nominal: float              # at the solved load, supply at nominal
+    margin: float | None        # smallest margin to a limit, worst case
+    status: str                 # "PASS" | "WARN" | "FAIL"
+    setpoint: float | None = None    # the rail's supply, nominal
+    src_low: float | None = None     # the supply's range
+    src_high: float | None = None
+    limit: str = "min"          # which limit ``margin`` is to: "min" / "max"
+    tooltip: str = ""
+
+
+@dataclass
+class NodeGauge:
+    """A voltage gauge in a SINK or regulator-input block: the load's
+    allowed window (``min_v``, optional ``max_v``) and, once solved, where
+    its supply actually sits. ``x``/``y``/``width``/``height`` are the area
+    it draws in (all its lines), in diagram coordinates; ``style`` is
+    ``"bar"`` or ``"text"`` (see :mod:`fypa.topology.gauges`)."""
+
+    key: str                    # "SINK:U5", see LoadResult.key
+    label: str                  # channel tag when a block has several, else ""
+    min_v: float
+    max_v: float | None
+    x: float
+    y: float
+    width: float
+    height: float
+    reading: GaugeReading | None = None
+    stale: bool = False         # reading is from a solve that predates edits
+    style: str = "bar"
+    # Show the voltage at the pins with the margin (both styles). Off when
+    # the port beside it already shows that voltage.
+    show_value: bool = True
+
+    @property
+    def tooltip(self) -> str:
+        limits = f"min {self.min_v:.4g} V" + (
+            f", max {self.max_v:.4g} V" if self.max_v is not None else "")
+        if self.reading is None:
+            return (f"Allowed: {limits}\nNo solved voltage yet: Resolve to "
+                    "check this load.")
+        tip = self.reading.tooltip
+        if self.stale:
+            tip += "\n(From the last solve; Resolve to include pending edits.)"
+        return tip
 
 
 @dataclass
@@ -54,6 +118,9 @@ class TopologyNode:
     # symbol - used for 0 Ω auto-bridges.
     compact: bool = False
     value_str: str = ""
+    # Rows layout: voltage gauges (a SINK with PDN_MIN_V, a regulator input
+    # with a dropout / PDN_VIN_MIN), one row each under the port rows.
+    gauges: list[NodeGauge] = field(default_factory=list)
 
 
 @dataclass
@@ -132,6 +199,8 @@ class TopologyModel:
     gnd_glyphs: list[tuple[float, float]] = field(default_factory=list)
     # Rows layout: one-line notes drawn under the diagram (e.g. hidden items).
     notes: list[str] = field(default_factory=list)
+    # Draw each solved port voltage beside its port.
+    port_voltages: bool = False
 
     @property
     def components(self) -> list[TopologyNode]:
