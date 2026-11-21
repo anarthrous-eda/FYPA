@@ -38,12 +38,13 @@ class _MarkerOverlayMixin:
         "RESISTOR":  {"symbol": "s",        "color": "#3aff8a", "size": 12, "label": "SERIES"},
         "SERIES":    {"symbol": "s",        "color": "#3aff8a", "size": 12, "label": "SERIES"},
         "REGULATOR": {"symbol": "d",        "color": "#ff66ff", "size": 14, "label": "REGULATOR"},
-        # A link FYPA shorted on its own (Net Tie, 0 Ω resistor, jumper).
-        # Same square as SERIES because that is what it is electrically, but
-        # a dimmer green and its own legend row so it reads as inferred
-        # rather than annotated, and can be toggled independently.
-        "AUTO_BRIDGE": {"symbol": "s",      "color": "#1f9c5a", "size": 12,
-                        "label": "SERIES (auto)"},
+        # A link FYPA shorted on its own (Net Tie, 0 Ω resistor, jumper, or
+        # anything under the 0.9 mΩ merge threshold). The two nets are merged
+        # into one, so it is not a SERIES element: same name and grey as the
+        # Topology tab's BRIDGE chip, the square shape because it still sits
+        # between two pads, and its own legend row so it can be toggled.
+        "AUTO_BRIDGE": {"symbol": "s",      "color": "#7a8494", "size": 12,
+                        "label": "BRIDGE"},
     }
 
     # --- Directive-pin marker + legend overlay -----------------------------

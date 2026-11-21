@@ -422,7 +422,8 @@ class _TreeBuilder:
                         queue.append(nb)
                     branch.children.append(chip)
                     continue
-                child = _Child(kind="node", part=part, in_ports=in_ports)
+                kind = "chip" if _series_chip(part, in_ports) else "node"
+                child = _Child(kind=kind, part=part, in_ports=in_ports)
                 for p in part.power_ports:
                     if p.net == branch.net or not part.propagating(p):
                         continue
@@ -470,9 +471,30 @@ class _TreeBuilder:
         return child
 
 
+def _series_chip(part: _Part, in_ports: list[str]) -> bool:
+    """A plain two-terminal SERIES part (fuse, shunt, ferrite, inductor DCR)
+    drawn as a one-line chip like a 0 Ω link: one rail in on the left, one
+    out on the right, no return. Multi-channel or grounded SERIES parts keep
+    the full card, which has room for their extra ports."""
+    rail = part.power_ports
+    return (
+        part.kind == "passive"
+        and not part.auto_bridge
+        and not part.gnd_ports
+        and not part.spec.get("sections")
+        and len(rail) == 2
+        and len({p.net for p in rail}) == 2
+        and len(in_ports) == 1
+        and all(p.role in ("RESISTOR", "SERIES") for p in rail)
+    )
+
+
 def _child_order(c: _Child) -> tuple:
     rank = {"node": 0, "chip": 2, "ref": 1}[c.kind]
-    if c.kind == "node" and c.part.kind == "passive":
+    # A SERIES chip sorts like the SERIES card it replaces; only 0 Ω link
+    # chips (self-bridges) go to the end.
+    series_chip = c.kind == "chip" and not c.part.self_bridge
+    if (c.kind == "node" or series_chip) and c.part.kind == "passive":
         return (0, -c.size(), natural_sort_key(c.part.node_id))
     if c.kind == "node":
         return (1, 0, natural_sort_key(c.part.node_id))
@@ -597,11 +619,22 @@ def _node_shape(child: _Child, builder: _TreeBuilder) -> _Shape:
         if child.in_ports:
             port_xy[child.in_ports[0]] = (0.0, CHIP_H / 2)
             sides[child.in_ports[0]] = "left"
-        for name in child.branches:  # a link's far side (see _plan_split)
+        for name in child.branches:  # a link's / SERIES part's far side
             port_xy[name] = (chip_w, CHIP_H / 2)
             sides[name] = "right"
         shape = _Shape(chip_w, CHIP_H, CHIP_H, port_xy, sides)
         shape.right_tags = _empty_branch_reach(child, builder)
+        if not part.self_bridge:
+            # A SERIES chip whose far rail is already drawn (a loop): its
+            # out port is tagged like a card's would be.
+            for p in part.power_ports:
+                if p.name in port_xy:
+                    continue
+                port_xy[p.name] = (chip_w, CHIP_H / 2)
+                sides[p.name] = "right"
+                shape.tagged.append(p.name)
+                shape.right_tags = max(
+                    shape.right_tags, TAG_STUB + tag_width(truncate_label(p.net)))
         return shape
 
     branch_ports = set(child.branches)

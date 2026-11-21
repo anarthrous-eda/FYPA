@@ -1007,7 +1007,7 @@ class _ViaRenderMixin:
         hover_rows: list[dict] = []
         # Dashed P-to-N links of solved series parts (set_series_links).
         series_links: list[tuple] = []
-        # Click targets for the SERIES / SERIES (auto) squares. Kept apart
+        # Click targets for the SERIES / BRIDGE squares. Kept apart
         # from ``hover_rows``: those feed the SOURCE / SINK current
         # tooltip, which has nothing to say about a series part.
         series_click_rows: list[dict] = []

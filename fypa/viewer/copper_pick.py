@@ -959,7 +959,7 @@ class _CopperPickMixin:
             if owner is not None:
                 self._select_component(owner)
                 return
-        # SERIES / SERIES (auto) squares likewise select their part. The
+        # SERIES / BRIDGE squares likewise select their part. The
         # square sits on a pad, so the owner comes from the designator the
         # marker carries rather than from the box under the click.
         series_des = self._pick_series_marker(world_x, world_y)

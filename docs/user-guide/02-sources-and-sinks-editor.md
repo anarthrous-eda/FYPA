@@ -243,7 +243,7 @@ Apply it changes to: *Overrides the schematic directive.*
 
 ### Series elements
 
-The green SERIES and dimmer SERIES (auto) squares are click targets
+The green SERIES and grey BRIDGE squares are click targets
 too: clicking either one selects its part, even when the Components
 overlay is off. The form opens with a series block above the usual
 fields:

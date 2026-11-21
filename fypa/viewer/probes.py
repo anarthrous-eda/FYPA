@@ -1480,7 +1480,7 @@ class _ProbeMixin:
 
     def _pick_series_marker(self, world_x: float,
                             world_y: float) -> str | None:
-        """Designator of the SERIES / SERIES (auto) square under the click,
+        """Designator of the SERIES / BRIDGE square under the click,
         or ``None``. Same hit radius as :meth:`_pick_hovered_marker`; the
         nearest square wins. Covers the solved squares and, in editor
         mode, the editor SERIES ones."""

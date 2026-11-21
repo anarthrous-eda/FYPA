@@ -19,6 +19,7 @@ from fypa.topology.constants import (
     JUNCTION_R,
     NON_GND_WIRE_COLOR,
     PORT_R,
+    CHIP_STRIP_COLORS,
     ROLE_COLORS,
     SINGLE_NET_ROLE_COLORS,
     WIRE_EPS,
@@ -443,7 +444,8 @@ def _draw_node(
     sw = 1.0
 
     if node.compact:
-        _draw_chip(parts, node, bg_alt=bg_alt, fg=fg, fg_dim=fg_dim, border=border)
+        _draw_chip(parts, node, bg_alt=bg_alt, fg=fg, fg_dim=fg_dim, border=border,
+                   err=err)
         return
 
     parts.append(
@@ -571,14 +573,17 @@ def _draw_chip(
     fg: str,
     fg_dim: str,
     border: str,
+    err: str,
 ) -> None:
-    """One-line symbol for a 0 Ω auto-bridge: coloured lead-in, designator, value."""
+    """One-line symbol for a two-terminal SERIES part or a 0 Ω auto-bridge:
+    coloured lead-in (green = SERIES, grey = BRIDGE), designator, value."""
     x, y, w, h = node.x, node.y, node.width, node.height
-    color = ROLE_COLORS.get(node.role, fg_dim)
+    color = CHIP_STRIP_COLORS.get(node.role) or ROLE_COLORS.get(node.role, fg_dim)
+    stroke = err if node.has_error else border
     parts.append(
         f'<rect class="topo-hit" data-label="{esc(node.label)}"'
         f' x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}"'
-        f' rx="4" fill="{esc(bg_alt)}" stroke="{esc(border)}" stroke-width="1"/>'
+        f' rx="4" fill="{esc(bg_alt)}" stroke="{esc(stroke)}" stroke-width="1"/>'
     )
     parts.append(
         f'<rect x="{x:.1f}" y="{y:.1f}" width="6" height="{h:.1f}" rx="2"'
@@ -701,6 +706,7 @@ def _draw_band(
 
 
 _ROWS_LEGEND_ROLES = ("SOURCE", "REGULATOR", "SERIES", "SINK", "BRIDGE")
+_LEGEND_CHIP_W = 18.0   # SERIES / BRIDGE legend swatch: a mini chip
 _ROWS_LEGEND_TAGS = (
     ("net", "rail continues elsewhere (click)"),
     ("ref", "feeds a regulator row (click)"),
@@ -711,7 +717,11 @@ _ROWS_LEGEND_TAGS = (
 
 def rows_legend_width() -> float:
     """Widest line of the rows-layout legend (the model is made at least this wide)."""
-    roles = sum(14 + estimate_text_width(n, 10) + 16 for n in _ROWS_LEGEND_ROLES)
+    roles = sum(
+        (_LEGEND_CHIP_W if n in ("SERIES", "BRIDGE") else 10.0) + 4
+        + estimate_text_width(n, 10) + 16
+        for n in _ROWS_LEGEND_ROLES
+    )
     tags = sum(24 + estimate_text_width(t, 10) + 16 for _, t in _ROWS_LEGEND_TAGS)
     return 12.0 + max(roles, tags + 20 + estimate_text_width("ground", 10))
 
@@ -721,19 +731,33 @@ def _draw_rows_legend(parts: list[str], y: float, *, fg_dim: str, bg_alt: str) -
     for name, color in (
         ("SOURCE", ROLE_COLORS["SOURCE"]),
         ("REGULATOR", ROLE_COLORS["REGULATOR"]),
-        ("SERIES", ROLE_COLORS["RESISTOR"]),
+        ("SERIES", CHIP_STRIP_COLORS["RESISTOR"]),
         ("SINK", ROLE_COLORS["SINK"]),
-        ("BRIDGE", ROLE_COLORS["AUTO_BRIDGE"]),
+        ("BRIDGE", CHIP_STRIP_COLORS["AUTO_BRIDGE"]),
     ):
+        sw = 10.0
+        if name in ("SERIES", "BRIDGE"):
+            # Drawn as chips, so the swatch is a mini chip: body + strip.
+            sw = _LEGEND_CHIP_W
+            parts.append(
+                f'<rect x="{x:.1f}" y="{y - 10:.1f}" width="{sw:g}" height="10"'
+                f' rx="2" fill="{esc(bg_alt)}" stroke="{esc(fg_dim)}"'
+                f' stroke-width="0.8"/>'
+            )
+            parts.append(
+                f'<rect x="{x:.1f}" y="{y - 10:.1f}" width="4" height="10"'
+                f' rx="1" fill="{esc(color)}"/>'
+            )
+        else:
+            parts.append(
+                f'<rect x="{x:.1f}" y="{y - 10:.1f}" width="10" height="10"'
+                f' rx="2" fill="{esc(color)}"/>'
+            )
         parts.append(
-            f'<rect x="{x:.1f}" y="{y - 10:.1f}" width="10" height="10"'
-            f' rx="2" fill="{esc(color)}"/>'
-        )
-        parts.append(
-            f'<text x="{x + 14:.1f}" y="{y:.1f}" fill="{esc(fg_dim)}"'
+            f'<text x="{x + sw + 4:.1f}" y="{y:.1f}" fill="{esc(fg_dim)}"'
             f' font-family="Segoe UI,sans-serif" font-size="10">{name}</text>'
         )
-        x += 14 + estimate_text_width(name, 10) + 16
+        x += sw + 4 + estimate_text_width(name, 10) + 16
     x = 12.0
     y += 18.0
     for kind, text in _ROWS_LEGEND_TAGS:

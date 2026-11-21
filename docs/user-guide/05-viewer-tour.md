@@ -121,8 +121,13 @@ This is **not** the PCB layout; for spatial placement use the Board tab.
   row, headed by the rail name and *no source feeds this rail*); a grey tag marks a rail with no sink or regulator.
 - **Ground** - every part with a return gets its own ground symbol under
   it; there is no shared return rail.
-- **Bridges** - 0 Ω auto-bridges on a powered rail show as one-line chips
-  on that rail. FYPA merges the two nets a link joins into one, but the
+- **SERIES chips** - a two-pin SERIES part (fuse, shunt, ferrite,
+  inductor DCR) is drawn as a one-line chip with a **green** strip:
+  designator, resistance, input rail on the left, output rail on the
+  right. Its two nets stay separate and it has its own drop in the solve.
+  SERIES parts with more channels, or with a return, keep the full card.
+- **Bridges** - 0 Ω auto-bridges on a powered rail show as the same
+  one-line chip with a **grey** strip. FYPA merges the two nets a link joins into one, but the
   chip still shows the far side: `VOUT_2V5 → R106 → +ETH_2V5`, with the
   parts on `+ETH_2V5` (and its `+ SINK` handle) hanging off the chip
   rather than the regulator. This needs the design in memory, or a

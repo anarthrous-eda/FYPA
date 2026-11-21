@@ -12,6 +12,15 @@ ROLE_COLORS: dict[str, str] = {
     "AUTO_BRIDGE": "#7a8494",
 }
 
+# Left strip of a one-line chip. The SERIES header green is too dark to read
+# as a 6 px strip on the dark theme, so chips use a brighter shade of it.
+# BRIDGE keeps its grey: green = a real resistance, grey = nets merged.
+CHIP_STRIP_COLORS: dict[str, str] = {
+    "RESISTOR": "#2fa858",
+    "SERIES": "#2fa858",
+    "AUTO_BRIDGE": ROLE_COLORS["AUTO_BRIDGE"],
+}
+
 # Slightly darker variants for single-net (ideal-return) sources/sinks, so a
 # component that only connects to its power rail reads differently from one
 # that also has a modelled return.

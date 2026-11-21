@@ -1,6 +1,6 @@
 """Series elements are selectable in editor mode and explain themselves.
 
-Clicking a SERIES or SERIES (auto) square selects its part, and the
+Clicking a SERIES or BRIDGE square selects its part, and the
 component form opens with a series block: where the model came from, the
 solved current / drop / loss, and the actions that change it.
 """
@@ -80,7 +80,7 @@ def test_a_click_on_a_series_square_names_its_part(viewer):
         {"x_mm": 0.0, "y_mm": 0.0, "designator": "R1", "size_px": 12,
          "legend_key": "SERIES"},
         {"x_mm": 5.0, "y_mm": 0.0, "designator": "R3", "size_px": 12,
-         "legend_key": "SERIES (auto)"},
+         "legend_key": "BRIDGE"},
     ]
     viewer._editor_series_click_rows = []
     assert viewer._pick_series_marker(0.02, 0.0) == "R1"
