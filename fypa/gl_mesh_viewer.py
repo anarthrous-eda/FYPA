@@ -2880,6 +2880,15 @@ class GLMeshViewer(QOpenGLWidget):
         self._arrow_col_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
         self._arrow_col_vbo.create()
 
+        # Editor-grid VAO/VBOs - share the line shader. Rebuilt every
+        # frame from the current view (a few hundred vertices at most).
+        self._grid_vao = QOpenGLVertexArrayObject()
+        self._grid_vao.create()
+        self._grid_pos_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
+        self._grid_pos_vbo.create()
+        self._grid_col_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
+        self._grid_col_vbo.create()
+
         # Stub-copper VAO/VBOs - share the line shader.
         self._stub_vao = QOpenGLVertexArrayObject()
         self._stub_vao.create()
@@ -3179,6 +3188,11 @@ class GLMeshViewer(QOpenGLWidget):
             GL.glDisable(GL.GL_DEPTH_TEST)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
         self._flush_pending_uploads()
+        # Editor grid straight onto the cleared background, so every
+        # copper / feature pass below paints over it.
+        if (in_2d and self._editor_mode
+                and self._line_program is not None):
+            self._draw_editor_grid()
         # Stubs first - flat-grey copper polygons drawn underneath the
         # heatmap mesh. If a stub happens to overlap a solved layer
         # piece (unlikely after the filter, but possible), the heatmap
@@ -3870,7 +3884,6 @@ class GLMeshViewer(QOpenGLWidget):
     def _draw_overlays(self) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
-        self._draw_editor_grid(painter)
         self._draw_editor_selection(painter)
         self._draw_editor_marquee(painter)
         self._draw_mesh_failure_outline(painter)
@@ -3900,19 +3913,21 @@ class GLMeshViewer(QOpenGLWidget):
             )
         painter.end()
 
-    def _draw_editor_grid(self, painter: QPainter) -> None:
-        """Faint world-mm grid for editor mode. 2D only - a grid drawn over
-        the stacked layers in 3D would just be visual noise. The spacing
-        snaps to a 1/2/5×10ⁿ mm value chosen so adjacent lines land roughly
-        70 px apart at the current zoom; lines on whole-10ⁿ-mm coordinates
-        are drawn slightly brighter as a coarse reference."""
-        if not self._editor_mode or self._view_mode == "3d":
-            return
+    def _draw_editor_grid(self) -> None:
+        """Faint world-mm grid for editor mode, drawn in GL right after the
+        clear so the copper and every other pass paints over it (it is a
+        background, not an overlay). 2D only - a grid drawn over the stacked
+        layers in 3D would just be visual noise. The spacing snaps to a
+        1/2/5×10ⁿ mm value chosen so adjacent lines land roughly 70 px apart
+        at the current zoom; every 5th line is drawn slightly brighter as a
+        coarse reference.
+
+        Lines are thin world-space quads (1 screen px wide) rather than
+        GL_LINES, so they keep the same weight under supersampling. The
+        line shader is opaque, so the faint colours are pre-blended with
+        the editor background they are drawn onto."""
         mpp = max(float(self._mm_per_pixel), 1e-9)
-        w, h = float(self.width()), float(self.height())
         raw_mm = 70.0 * mpp
-        if raw_mm <= 0.0:
-            return
         base = 10.0 ** math.floor(math.log10(raw_mm))
         step_mm = base
         for mult in (1.0, 2.0, 5.0, 10.0):
@@ -3920,32 +3935,66 @@ class GLMeshViewer(QOpenGLWidget):
             if step_mm / mpp >= 70.0:
                 break
         x_min, x_max, y_min, y_max = self.view_range()
-        major_every = 5   # every 5th line is the brighter "major" line
-        thin = QPen(QColor(120, 150, 210, 45))
-        thick = QPen(QColor(140, 170, 230, 90))
-        for pen in (thin, thick):
-            pen.setWidthF(1.0)
-            pen.setCosmetic(True)
-        painter.save()
-        i0 = math.ceil(x_min / step_mm)
-        i = i0
-        x = i0 * step_mm
-        while x <= x_max:
-            px, _ = self.world_to_screen(x, y_min)
-            painter.setPen(thick if i % major_every == 0 else thin)
-            painter.drawLine(QPointF(px, 0.0), QPointF(px, h))
-            i += 1
-            x += step_mm
-        j0 = math.ceil(y_min / step_mm)
-        j = j0
-        y = j0 * step_mm
-        while y <= y_max:
-            _, py = self.world_to_screen(x_min, y)
-            painter.setPen(thick if j % major_every == 0 else thin)
-            painter.drawLine(QPointF(0.0, py), QPointF(w, py))
-            j += 1
-            y += step_mm
-        painter.restore()
+        major_every = 5
+        bg = np.asarray(self._bg_editor, dtype=np.float32)
+
+        def _blend(rgb: tuple[int, int, int], a: int) -> np.ndarray:
+            c = np.asarray(rgb, dtype=np.float32) / 255.0
+            k = a / 255.0
+            return bg * (1.0 - k) + c * k
+
+        thin_c = _blend((120, 150, 210), 45)
+        thick_c = _blend((140, 170, 230), 90)
+        hw = 0.5 * mpp   # half a screen pixel, in mm
+
+        xs = np.arange(math.ceil(x_min / step_mm),
+                       math.floor(x_max / step_mm) + 1)
+        ys = np.arange(math.ceil(y_min / step_mm),
+                       math.floor(y_max / step_mm) + 1)
+        n_lines = len(xs) + len(ys)
+        if n_lines == 0:
+            return
+        pos = np.zeros((n_lines, 6, 3), dtype=np.float32)
+        col = np.empty((n_lines, 6, 3), dtype=np.float32)
+        # Quad corners (two triangles) per line.
+        if len(xs):
+            x = xs * step_mm
+            x0, x1 = x - hw, x + hw
+            pos[:len(xs), :, 0] = np.stack([x0, x1, x1, x0, x1, x0], axis=1)
+            pos[:len(xs), :, 1] = np.array(
+                [y_min, y_min, y_max, y_min, y_max, y_max])
+            col[:len(xs)] = np.where(
+                (xs % major_every == 0)[:, None, None], thick_c, thin_c)
+        if len(ys):
+            y = ys * step_mm
+            y0, y1 = y - hw, y + hw
+            pos[len(xs):, :, 0] = np.array(
+                [x_min, x_max, x_max, x_min, x_max, x_min])
+            pos[len(xs):, :, 1] = np.stack([y0, y0, y1, y0, y1, y1], axis=1)
+            col[len(xs):] = np.where(
+                (ys % major_every == 0)[:, None, None], thick_c, thin_c)
+        pos = np.ascontiguousarray(pos.reshape(-1, 3))
+        col = np.ascontiguousarray(col.reshape(-1, 3))
+
+        prog = self._line_program
+        prog.bind()
+        prog.setUniformValue(self._line_u_mvp_loc, self._current_mvp())
+        self._grid_vao.bind()
+        self._grid_pos_vbo.bind()
+        self._grid_pos_vbo.allocate(pos.tobytes(), pos.nbytes)
+        GL.glEnableVertexAttribArray(0)
+        GL.glVertexAttribPointer(0, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
+        self._grid_pos_vbo.release()
+        self._grid_col_vbo.bind()
+        self._grid_col_vbo.allocate(col.tobytes(), col.nbytes)
+        GL.glEnableVertexAttribArray(1)
+        GL.glVertexAttribPointer(1, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
+        self._grid_col_vbo.release()
+        GL.glDrawArrays(GL.GL_TRIANGLES, 0, pos.shape[0])
+        GL.glDisableVertexAttribArray(0)
+        GL.glDisableVertexAttribArray(1)
+        self._grid_vao.release()
+        prog.release()
 
     def _draw_editor_selection(self, painter: QPainter) -> None:
         """Yellow box around each editor-mode component selection - the
