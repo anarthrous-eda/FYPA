@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from fypa.via_kinds import VIA_KIND_LABELS
 from fypa.viewer.net_names import _looks_like_supply_net, _supply_net_key
 from fypa.viewer.numeric import _numeric_validator, _parse_numeric_text
 from fypa.viewer.table_filter import TableColumnFilter
@@ -1193,6 +1194,7 @@ class _BridgesTabMixin:
                 None,  # action column placeholder; we skip it below
                 row.get("net", ""),
                 row.get("layer_span", ""),
+                VIA_KIND_LABELS.get(row.get("via_kind"), "-"),
                 row.get("x_mm"),
                 row.get("y_mm"),
                 row.get("diameter_mm"),
@@ -1293,9 +1295,10 @@ class _BridgesTabMixin:
             allowed_nets = set(self._rail_to_members.get(rail_choice, [rail_choice]))
 
         # Column indexes (must stay aligned with _VIAS_TABLE_COLUMNS).
-        # Column 0 is the "Go" action button. The "IPC-4761 fill" column at
-        # index 6 pushes |I| max from 9 → 10.
-        NET_COL, CURRENT_COL = 1, 10
+        # Column 0 is the "Go" action button.
+        NET_COL = 1
+        CURRENT_COL = next(i for i, (n, _) in enumerate(
+            self._VIAS_TABLE_COLUMNS) if n == "|I| max (A)")
         col_filter = getattr(self, "vias_col_filter", None)
 
         visible = 0

@@ -112,7 +112,8 @@ class _EditorModeMixin:
         # logic keep working regardless of where the widget is.
 
         # Auto / Manual setup - editor mode only, stacked above Resolve.
-        # Same buttons (and handlers) as the Topology tab's.
+        # Same handlers as the Topology tab's pair, but icon-only squares
+        # here (the tooltip carries the name), like the marker row above.
         for attr, text, tip, slot in (
             ("_board_autosetup_btn", "Auto setup…",
              "Propose sources, regulators, sinks and series elements from "
@@ -124,10 +125,10 @@ class _EditorModeMixin:
              "net, the part on it and its pins, in one list per kind.",
              lambda _c=False: self._topology_run_manual_setup()),
         ):
-            sbtn = QPushButton(text, self._gl_viewer)
-            sbtn.setIconSize(QSize(16, 16))
+            sbtn = QPushButton(self._gl_viewer)
+            sbtn.setIconSize(QSize(18, 18))
             sbtn.setCursor(Qt.PointingHandCursor)
-            sbtn.setToolTip(tip)
+            sbtn.setToolTip(f"<b>{text}</b><br>{tip}")
             sbtn.clicked.connect(slot)
             sbtn.hide()
             setattr(self, attr, sbtn)
@@ -200,8 +201,7 @@ class _EditorModeMixin:
             sbtn.setIcon(icon)
             sbtn.setStyleSheet(
                 "QPushButton {{ border: 1px solid {c}; border-radius: 6px;"
-                "  padding: 6px 12px; font-weight: bold; text-align: left;"
-                "  background-color: {bg}; color: {c}; }}"
+                "  padding: 0px; background-color: {bg}; color: {c}; }}"
                 "QPushButton:hover:enabled {{ background-color: {hover}; }}"
                 "QPushButton:disabled {{ color: {dim}; border-color: {dim}; }}"
                 .format(c=color, bg=t["bg"], hover=t["bg_hover"],
@@ -218,6 +218,8 @@ class _EditorModeMixin:
                 "QPushButton {{ border: 1px solid {green}; border-radius: 6px;"
                 "  padding: 6px 12px; font-weight: bold;"
                 "  background-color: {bg}; color: {green}; }}"
+                # Editor mode: icon-only square (see _sync_resolve_label).
+                "QPushButton[iconOnly=\"true\"] {{ padding: 0px; }}"
                 "QPushButton:hover:enabled {{ background-color: {hover}; }}"
                 "QPushButton:disabled {{ color: {dim}; border-color: {dim}; }}"
                 .format(green="#2ca92c", bg=t["bg"], hover=t["bg_hover"],
@@ -292,6 +294,23 @@ class _EditorModeMixin:
             btn.setMinimumSize(0, 0)
             btn.setMaximumSize(16777215, 16777215)
             btn.adjustSize()
+
+    def _sync_resolve_label(self) -> None:
+        """Label the Resolve button per mode: "Solve" / "Resolve" in viewer
+        mode, icon-only (the ``iconOnly`` property drops the padding) in
+        editor mode, where it sits in the square Auto / Manual setup column.
+        The tooltip keeps the name either way."""
+        rbtn = getattr(self, "_resolve_btn", None)
+        if rbtn is None:
+            return
+        editing = bool(getattr(self, "_editor_mode", False))
+        # Runs at build time too, before _awaiting_first_solve is set.
+        first = bool(getattr(self, "_awaiting_first_solve", False))
+        rbtn.setText("" if editing else ("Solve" if first else "Resolve"))
+        if bool(rbtn.property("iconOnly")) != editing:
+            rbtn.setProperty("iconOnly", editing)
+            rbtn.style().unpolish(rbtn)
+            rbtn.style().polish(rbtn)
 
     def _solve_overlay_visible(self) -> bool:
         if isinstance(getattr(self, "metadata", None), dict):
@@ -413,15 +432,19 @@ class _EditorModeMixin:
         for b in (abtn, mbtn):
             if b is not None:
                 b.setVisible(editing)
+        self._sync_resolve_label()
         stack = (abtn, mbtn, wbtn, rbtn)
-        # The labelled buttons in the column (viewer mode: Edit, What-If,
-        # Resolve; editor mode: Auto setup, Manual setup, Resolve, under the
-        # square toggle) share the largest one's size so the column reads
-        # as one block.
+        # Viewer mode: the labelled buttons in the column (Edit, What-If,
+        # Resolve) share the largest one's size so the column reads as one
+        # block. Editor mode: Auto setup, Manual setup and Resolve are
+        # icon-only squares matching the marker row above them.
         column = [b for b in stack if b is not None and not b.isHidden()]
-        if not editing:
+        if editing:
+            for b in column:
+                b.resize(34, 34)
+        else:
             column.insert(0, btn)
-        if column:
+        if column and not editing:
             hints = [b.sizeHint() for b in column]
             w = max(s.width() for s in hints)
             h = max(s.height() for s in hints)
@@ -926,6 +949,28 @@ class _EditorModeMixin:
             self._editor_panel_width = w
             panel.setFixedWidth(w)
             self._position_editor_panel()
+
+    def _toggle_editor_panel(self) -> None:
+        """Collapse / expand the editor-mode right-hand panel (its handle,
+        or Shift+B), giving the viewport the panel's width. The handle stays
+        on the viewport's right edge while collapsed. A no-op outside editor
+        mode, where the panel follows the copper selection instead."""
+        if not getattr(self, "_editor_mode", False):
+            return
+        self._editor_panel_collapsed = not getattr(
+            self, "_editor_panel_collapsed", False)
+        self._position_editor_panel()
+
+    def _on_editor_panel_handle_press(self) -> None:
+        """Remember the panel width at the start of a handle drag."""
+        self._editor_panel_drag_start_w = self._editor_panel.width()
+
+    def _on_editor_panel_handle_dragged(self, delta_px: int) -> None:
+        """Apply a drag delta from the panel's collapse handle. The panel's
+        right edge is pinned, so dragging left (negative) widens it."""
+        start = getattr(
+            self, "_editor_panel_drag_start_w", self._editor_panel_width)
+        self._on_editor_panel_resized(start - int(delta_px))
 
     def _is_copper_name_selection(self, sel: dict | None) -> bool:
         """Whether the right-hand panel should display the copper-name

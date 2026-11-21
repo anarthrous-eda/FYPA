@@ -7,6 +7,20 @@ from fypa.viewer.overlays import _EDITOR_SCHDOC
 from fypa.viewer.session import _viewer_has_adaptive_smps
 from fypa.viewer.theme import _T
 from fypa.viewer.widgets import _esc
+from fypa.worst_case import range_text
+
+
+def _editor_range_text(ed) -> str:
+    """An editor SOURCE / REGULATOR's output range for the summary - its
+    tolerance as typed, or ``"3.135–3.465 V"``; ``""`` when it has none."""
+    if getattr(ed, "role", None) not in ("SOURCE", "REGULATOR"):
+        return ""
+    tol = getattr(ed, "v_tol", None)
+    if tol:
+        return f"±{tol}" if tol[0].isdigit() else str(tol)
+    return range_text({"value": ed.voltage,
+                       "v_min": getattr(ed, "v_min", None),
+                       "v_max": getattr(ed, "v_max", None)})
 
 
 class _AttachedPdnMixin:
@@ -108,6 +122,8 @@ class _AttachedPdnMixin:
                 "value": format_directive_value(d),
                 "terminals": hits,
                 "min_voltage": d.get("min_voltage"),
+                "max_voltage": d.get("max_voltage"),
+                "range": range_text(d),
                 "ref": ("component", des) if des else None,
                 "pending": False,
             })
@@ -143,6 +159,8 @@ class _AttachedPdnMixin:
                         if value is not None else ""),
                     "terminals": hits,
                     "min_voltage": getattr(ed, "min_voltage", None),
+                    "max_voltage": getattr(ed, "max_voltage", None),
+                    "range": _editor_range_text(ed),
                     "ref": (("component", ed.designator)
                             if ed.kind == "component" and ed.designator
                             else ("free", ed_id)),
@@ -194,9 +212,15 @@ class _AttachedPdnMixin:
                 label = (f"<a href='sel:{_esc(ref[0])}:{_esc(str(ref[1]))}' "
                          f"style='color:{t['fg']};'>{label}</a>")
             value = _esc(r["value"] or "-")
+            if r.get("range"):
+                value += (f" <span style='color:{muted};'>"
+                          f"{_esc(r['range'])}</span>")
             if r.get("min_voltage") is not None:
                 value += (f" <span style='color:{muted};'>&ge;"
                           f"{float(r['min_voltage']):.4g}&nbsp;V</span>")
+            if r.get("max_voltage") is not None:
+                value += (f" <span style='color:{muted};'>&le;"
+                          f"{float(r['max_voltage']):.4g}&nbsp;V</span>")
             if r.get("pending"):
                 value += f" <span style='color:{muted};'>*</span>"
             cells.append(
@@ -474,14 +498,14 @@ class _AttachedPdnMixin:
                 enabled = self._resolve_button_enabled()
                 rbtn.setEnabled(enabled)
                 solveable = enabled or self._has_solveable_directives()
+                # Label ("Solve" / "Resolve", or none in editor mode) is set
+                # by _position_editor_overlays -> _sync_resolve_label below.
                 if self._awaiting_first_solve:
-                    rbtn.setText("Solve")
                     rbtn.setToolTip(
                         "Run the FEM solver on the loaded design"
                         if solveable else self._NOTHING_TO_SOLVE_TIP
                     )
                 else:
-                    rbtn.setText("Resolve")
                     if enabled and not self._has_solveable_directives():
                         rbtn.setToolTip(
                             "Rebuild the design with the Bridges-tab changes "

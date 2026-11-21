@@ -12,6 +12,7 @@ owns that.
 from __future__ import annotations
 
 import copy
+import re
 from collections import defaultdict
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
@@ -81,6 +82,7 @@ def set_supply_type(d: EditorDirective, kind: str) -> None:
         d.in_p_net = d.in_n_net = None
         d.in_p_pins = d.in_n_pins = None
         d.regulator_type = d.efficiency = d.smps_topology = None
+        d.dropout = d.vin_min = d.vin_max = None
     else:
         d.role = "REGULATOR"
         d.single_net = False
@@ -88,6 +90,44 @@ def set_supply_type(d: EditorDirective, kind: str) -> None:
         if kind == "LDO":
             d.efficiency = None
             d.smps_topology = None
+
+
+# What separates the two ends of an output range typed as "3.1 to 3.5 V".
+# A plain hyphen is not one: it is the sign in a "+3/-5%" tolerance.
+_RANGE_SEPARATOR = re.compile(r"\s*(?:\.{2,}|…|–|—|\bto\b)\s*", re.IGNORECASE)
+
+
+def output_range_text(d: EditorDirective) -> str:
+    """A supply's output range as one editable line: its tolerance as typed
+    (``"5%"``), or ``"3.135 to 3.465 V"``; ``""`` when it has none."""
+    if d.v_tol:
+        return d.v_tol
+    if d.v_min is None and d.v_max is None:
+        return ""
+    lo = d.v_min if d.v_min is not None else d.voltage
+    hi = d.v_max if d.v_max is not None else d.voltage
+    if lo is None or hi is None:
+        return ""
+    return f"{lo:.4g} to {hi:.4g} V"
+
+
+def set_output_range(d: EditorDirective, text: str, parse) -> None:
+    """Store a supply's output range from one typed line: a tolerance
+    (``5%``, ``50 mV``, ``+3/-5%``) or the two ends (``3.1 to 3.5 V``,
+    ``3.1 .. 3.5``); blank clears it. ``parse`` turns one voltage into a
+    float or ``None``. Whether the range fits the output voltage is
+    :func:`validate`'s job, so the text survives a later voltage edit."""
+    t = (text or "").strip()
+    d.v_tol = d.v_min = d.v_max = None
+    if not t:
+        return
+    ends = _RANGE_SEPARATOR.split(t)
+    lo = parse(ends[0]) if len(ends) == 2 else None
+    hi = parse(ends[1]) if len(ends) == 2 else None
+    if lo is not None and hi is not None:
+        d.v_min, d.v_max = min(lo, hi), max(lo, hi)
+    else:
+        d.v_tol = t
 
 
 def new_supply() -> EditorDirective:
@@ -504,6 +544,7 @@ def from_schematic(md: dict) -> EditorDirective | None:
         else:
             d.current = md.get("value")
             d.min_voltage = md.get("min_voltage")
+            d.max_voltage = md.get("max_voltage")
     elif role == "REGULATOR":
         d = EditorDirective(kind="component", role="REGULATOR", designator=des,
                             single_net=False,
@@ -516,9 +557,17 @@ def from_schematic(md: dict) -> EditorDirective | None:
                             voltage=md.get("value"),
                             regulator_type=(md.get("regulator_type") or "LDO").upper(),
                             efficiency=md.get("efficiency"),
-                            smps_topology=md.get("smps_topology"))
+                            smps_topology=md.get("smps_topology"),
+                            dropout=md.get("dropout"),
+                            vin_min=md.get("vin_min"),
+                            vin_max=md.get("vin_max"))
     else:
         return None
+    if role in ("SOURCE", "REGULATOR"):
+        # The metadata carries the resolved range, so a schematic PDN_V_TOL
+        # comes across as explicit limits.
+        d.v_min = md.get("v_min")
+        d.v_max = md.get("v_max")
     d.overrides_designator = des
     return d
 
@@ -640,8 +689,17 @@ def validate(entries: list[Entry], view: DesignView,
         if d.role in SUPPLY_ROLES:
             if d.voltage is None or d.voltage == 0:
                 err("enter the output voltage")
+            elif d.v_tol or d.v_min is not None or d.v_max is not None:
+                from fypa.altium.annotations import resolve_voltage_range
+                try:
+                    resolve_voltage_range(d.voltage, d.v_tol, d.v_min, d.v_max)
+                except ValueError as e:
+                    err(f"output range: {e}")
         elif d.current is None or d.current <= 0:
             err("enter the current")
+        elif (d.min_voltage is not None and d.max_voltage is not None
+              and d.max_voltage < d.min_voltage):
+            err("max voltage is below min voltage")
         gnd = d.n_net
         if not d.single_net:
             if not gnd:
@@ -665,6 +723,12 @@ def validate(entries: list[Entry], view: DesignView,
             if (d.regulator_type or "") == "SMPS" and d.efficiency is not None \
                     and not (0 < d.efficiency <= 1):
                 err("efficiency must be between 0 and 100 %")
+            if any(v is not None and v < 0
+                   for v in (d.dropout, d.vin_min, d.vin_max)):
+                err("dropout and input limits can't be negative")
+            elif (d.vin_min is not None and d.vin_max is not None
+                  and d.vin_max < d.vin_min):
+                err("input max is below input min")
         key = (d.designator, d.role, d.p_net)
         if key in seen:
             err(f"duplicates another {d.role.lower()} on {d.p_net}")

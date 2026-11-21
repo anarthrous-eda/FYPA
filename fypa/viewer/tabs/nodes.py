@@ -46,15 +46,35 @@ class _NodesTabMixin:
         ("Drop (V)",           True),
         ("|J| (A/mm^2)",       True),
         ("Power (W/mm^2)",     True),
-        # PDN_MIN_V check (SINK only): the declared minimum acceptable rail
-        # voltage, the measured-vs-declared margin, and the per-pin pass/fail
-        # verdict. Cells are blank ("-") for non-SINK rows and for the SINK
-        # N-terminal (the return side); the margin and status are highlighted
-        # red on FAIL so a long table can be skim-audited at a glance.
+        # Voltage-limit check: a SINK's PDN_MIN_V / PDN_MAX_V on its P pins
+        # and a REGULATOR's input limits on its IN_P pins. "V low" / "V high"
+        # are the pin's worst case over its supply's range (blank when the
+        # supply gave none); Margin is the smallest margin to a limit, worst
+        # case included. Cells are blank ("-") on every other row; the limit
+        # cells are highlighted red on FAIL so a long table can be
+        # skim-audited at a glance.
         ("Min V (V)",          True),
+        ("Max V (V)",          True),
+        ("V low (V)",          True),
+        ("V high (V)",         True),
         ("Margin (V)",         True),
         ("Status",             False),
     )
+
+    _NODES_HEADER_TOOLTIPS: dict[str, str] = {
+        "Min V (V)": "Lowest voltage the pin accepts: a sink's PDN_MIN_V, or "
+                     "the input a regulator needs (its output plus dropout, "
+                     "or PDN_VIN_MIN).",
+        "Max V (V)": "Highest voltage the pin accepts: a sink's PDN_MAX_V or "
+                     "a regulator's PDN_VIN_MAX.",
+        "V low (V)": "Worst case: the solved voltage with the rail's supply "
+                     "at the bottom of its range. Blank when the supply has "
+                     "no range.",
+        "V high (V)": "Worst case: the rail lightly loaded with its supply "
+                      "at the top of its range.",
+        "Margin (V)": "Smallest margin to a limit, at nominal and in the "
+                      "worst case. Negative fails.",
+    }
 
     def _build_nodes_tab(self) -> QWidget:
         """Build the Nodes tab - a sortable table of every directive node
@@ -101,6 +121,10 @@ class _NodesTabMixin:
         cols = self._NODES_TABLE_COLUMNS
         self.nodes_table.setColumnCount(len(cols))
         self.nodes_table.setHorizontalHeaderLabels([c[0] for c in cols])
+        for i, (label, _numeric) in enumerate(cols):
+            tip = self._NODES_HEADER_TOOLTIPS.get(label)
+            if tip:
+                self.nodes_table.horizontalHeaderItem(i).setToolTip(tip)
         self.nodes_table.setSortingEnabled(True)
         self.nodes_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.nodes_table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -392,7 +416,8 @@ class _NodesTabMixin:
         fail_fg = QBrush(QColor(_t["warn_fg"]))
         pass_bg = QBrush(QColor(_t["pass_bg"]))
         pass_fg = QBrush(QColor(_t["pass_fg"]))
-        status_cols = {"Min V (V)", "Margin (V)", "Status"}
+        status_cols = {"Min V (V)", "Max V (V)", "V low (V)", "V high (V)",
+                       "Margin (V)", "Status"}
 
         # Column 0 is the action ("Go") cell; everything else is data in
         # columns 1..N. Stays aligned with _NODES_TABLE_COLUMNS and the
@@ -432,6 +457,9 @@ class _NodesTabMixin:
                 row.get("current_density"),
                 row.get("power_density"),
                 row.get("min_voltage"),
+                row.get("max_voltage"),
+                row.get("voltage_low"),
+                row.get("voltage_high"),
                 row.get("margin"),
                 row.get("status"),
             )

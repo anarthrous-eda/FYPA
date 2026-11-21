@@ -600,8 +600,8 @@ Begin
     gRowY := gRowY + 24;
 End;
 
-{ Kind: VALUE / NET / PINS / DES / ENUM.  Options (ENUM only) is a comma
-  list whose first entry may be empty. }
+{ Kind: VALUE / NET / PINS / DES / ENUM / TEXT (free text, not checked
+  here).  Options (ENUM only) is a comma list whose first entry may be empty. }
 Procedure AddField(Key : String; Caption : String; Kind : String;
                    Required : Boolean; Hint : String; Options : String);
 Var
@@ -695,9 +695,10 @@ Begin
     If Role = 'SOURCE' Then
         Result := 'Voltage source.  PDN_V is required.  Single-net mode ties the N side ' +
                   'to an ideal 0 ohm return; two-terminal mode drives P relative to N.  ' +
-                  'Remote sense holds PDN_V at another part''s pads (usually the load).'
+                  'Remote sense holds PDN_V at another part''s pads (usually the load).  ' +
+                  'An output range makes FYPA check loads at its ends as well as at PDN_V.'
     Else If Role = 'SINK' Then
-        Result := 'Current load.  PDN_I is required.  MIN_V adds a pass/fail check, ' +
+        Result := 'Current load.  PDN_I is required.  MIN_V / MAX_V add pass/fail checks, ' +
                   'PIN_R replaces the default 100 mohm pin coupling resistance.'
     Else If Role = 'SERIES' Then
         Result := 'Resistive element between two nets (shunt, ferrite, fuse, FET ...).  ' +
@@ -746,6 +747,15 @@ Begin
     End;
 End;
 
+{ Output range of a SOURCE / REGULATOR: a tolerance, or explicit limits }
+Procedure AddOutputRange(Dummy : Integer);
+Begin
+    AddHeader('Output range (optional)');
+    AddField('V_TOL', 'Tolerance',      'TEXT',  False, 'e.g. 5%, 50mV, +3/-5%', '');
+    AddField('V_MIN', 'Min voltage',    'VALUE', False, 'instead of a tolerance', '');
+    AddField('V_MAX', 'Max voltage',    'VALUE', False, 'instead of a tolerance', '');
+End;
+
 Procedure AddTerminalsTwoNet(Dummy : Integer);
 Begin
     AddHeader('Terminals');
@@ -782,12 +792,14 @@ Begin
         AddField('V', 'Voltage', 'VALUE', True, 'e.g. 3V3, 5V, 1.8', '');
         AddTerminalsSourceSink(Single);
         AddRemoteSense(Not Single);
+        AddOutputRange(0);
     End
     Else If Role = 'SINK' Then
     Begin
         AddHeader('Value');
         AddField('I',     'Current',        'VALUE', True,  'e.g. 500mA, 1.2A', '');
         AddField('MIN_V', 'Min voltage',    'VALUE', False, 'optional pass/fail', '');
+        AddField('MAX_V', 'Max voltage',    'VALUE', False, 'optional pass/fail', '');
         AddField('PIN_R', 'Pin resistance', 'VALUE', False, 'default 100m (ohm)', '');
         AddTerminalsSourceSink(Single);
     End
@@ -813,11 +825,16 @@ Begin
         AddField('OUT_P_PINS', 'Out + pins', 'PINS', False, 'overrides Out + net', '');
         AddField('OUT_N_PINS', 'Out - pins', 'PINS', False, 'overrides Out - net', '');
         AddRemoteSense(True);
+        AddOutputRange(0);
         AddHeader('Input');
         AddField('IN_P_NET',   'In + net',   'NET',  False, 'or In + pins', '');
         AddField('IN_N_NET',   'In - net',   'NET',  False, 'or In - pins', '');
         AddField('IN_P_PINS',  'In + pins',  'PINS', False, 'overrides In + net', '');
         AddField('IN_N_PINS',  'In - pins',  'PINS', False, 'overrides In - net', '');
+        AddHeader('Input limits (optional)');
+        AddField('DROPOUT', 'Dropout',       'VALUE', False, 'input headroom over output', '');
+        AddField('VIN_MIN', 'Min input',     'VALUE', False, 'e.g. UVLO threshold', '');
+        AddField('VIN_MAX', 'Max input',     'VALUE', False, 'highest input allowed', '');
         AddHeader('Gain');
         AddField('REGULATOR_TYPE',       'Regulator type', 'ENUM',  False, 'LDO: gain 1', ',LDO,SMPS');
         AddField('REGULATOR_EFFICIENCY', 'Efficiency',     'VALUE', False, 'SMPS, 0..1 (def 1)', '');
@@ -975,6 +992,9 @@ Begin
                     Errs.Add('REGULATOR_EFFICIENCY must be in (0, 1], e.g. 0.9.')
                 Else If (Key = 'QUIESCENT') And (gSIValue < 0) Then
                     Errs.Add('QUIESCENT must be >= 0.')
+                Else If ((Key = 'DROPOUT') Or (Key = 'VIN_MIN') Or (Key = 'VIN_MAX')) And
+                        (gSIValue < 0) Then
+                    Errs.Add(Key + ' must be >= 0.')
                 Else If ((Key = 'I') Or (Key = 'GAIN')) And (gSIValue <= 0) Then
                     Warns.Add(Key + ' = ' + Val + ' is not positive.');
             End
@@ -1003,6 +1023,11 @@ Begin
         If ((Key = 'V') Or (Key = 'I') Or (Key = 'R')) And (FieldVal(Key) = '') Then
             Errs.Add('PDN_' + Key + ' is required for ' + Role + '.');
     End;
+
+    { --- output range: a tolerance or explicit limits, never both --- }
+    If (FieldVal('V_TOL') <> '') And
+       ((FieldVal('V_MIN') <> '') Or (FieldVal('V_MAX') <> '')) Then
+        Errs.Add('Give either a Tolerance or Min / Max voltage, not both.');
 
     { --- remote sense: pins name pads on the sense parts --- }
     If (FieldVal('SENSE_PINS') <> '') And (FieldVal('SENSE_DES') = '') Then

@@ -42,6 +42,11 @@ _OVERLAY_LAYERS: list[tuple[str, str, bool]] = [
 # these rows refreshes the via markers + cylinders, not the overlay batch.
 # They carry no fill toggle (markers and barrels are always solid).
 _VIA_OVERLAY_KEYS: frozenset[str] = frozenset({"vias", "pths"})
+# The Vias row lists the board's via kinds (through / blind / buried /
+# micro, see fypa.via_kinds) as sub-rows when it has more than one. A kind's
+# sub-row holds its own visibility in ``_overlay_state["vias"]["kinds"]``
+# and its own colour in ``self._via_kind_colors`` - each only once it has
+# been set apart from the Vias row, which it otherwise follows.
 
 
 # Visibility a fresh row starts in when the project saved none. Rows absent

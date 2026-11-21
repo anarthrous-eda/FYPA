@@ -615,12 +615,10 @@ class _TopologyTabMixin:
         self._topology_view_btn = view_btn
         toolbar.addWidget(view_btn)
         toolbar.addStretch()
-        outer.addLayout(toolbar)
 
-        # Setup + Resolve, stacked in a left-aligned column under the view
-        # controls. Same look as the Board's Resolve / What-If buttons
-        # (6 px padding, 6 px radius, bold, badge icon left of the label);
-        # the column is as wide as its widest button, so all three match.
+        # Setup + Resolve buttons: same look as the Board's Resolve / What-If
+        # buttons (6 px padding, 6 px radius, bold, badge icon left of the
+        # label).
         from fypa.viewer.assets import (
             _autosetup_icon,
             _manual_setup_icon,
@@ -685,7 +683,10 @@ class _TopologyTabMixin:
             "mode if it is on.")
         wbtn.setStyleSheet(
             _big_btn_qss(whatif_orange)
-            + "QPushButton:checked {{ background-color: {c}; color: {bg}; }}"
+            # ":hover:enabled" outranks a bare ":checked", so name the hover
+            # case too: like the Board's button, it stays filled on hover.
+            + "QPushButton:checked, QPushButton:checked:hover:enabled"
+              " {{ background-color: {c}; color: {bg}; }}"
             .format(c=whatif_orange, bg=_t["bg"]))
         wbtn.setChecked(
             bool(getattr(self, "_whatif_open", {}).get("topology", False)))
@@ -699,16 +700,15 @@ class _TopologyTabMixin:
             "Re-run the solver with the current editor changes applied",
             self._on_topology_resolve)
 
+        # Setup + Resolve: a left-hand rail running the tab's full height,
+        # as wide as its widest button so all four match.
         setup_col = QVBoxLayout()
         setup_col.setSpacing(4)
-        setup_col.setContentsMargins(0, 4, 0, 4)
+        setup_col.setContentsMargins(0, 0, 8, 0)
         for b in (self._topology_autosetup_btn, self._topology_manual_btn,
                   self._topology_whatif_btn, self._topology_resolve_btn):
             setup_col.addWidget(b)
-        setup_row = QHBoxLayout()
-        setup_row.addLayout(setup_col)
-        setup_row.addStretch()
-        outer.addLayout(setup_row)
+        setup_col.addStretch(1)
 
         self._topology_split = QSplitter(Qt.Horizontal, widget)
         self._topology_view = _TopologyView(self, self._topology_split)
@@ -719,15 +719,27 @@ class _TopologyTabMixin:
         self._topology_split.setStretchFactor(0, 1)
         self._topology_split.setStretchFactor(1, 0)
         self._topology_sidebar.hide()
+        # View controls sit over the diagram only, so the What-If panel to
+        # the right runs from the top of the tab.
+        diagram_col = QVBoxLayout()
+        diagram_col.setContentsMargins(0, 0, 0, 0)
+        diagram_col.setSpacing(4)
+        diagram_col.addLayout(toolbar)
+        diagram_col.addWidget(self._topology_split, 1)
         # Diagram (+ part sidebar), with the What-If panel's Topology home
         # to its right: the panel moves here from the Board while this tab
         # shows (see _whatif_place_panel).
         split_row = QHBoxLayout()
         split_row.setContentsMargins(0, 0, 0, 0)
         split_row.setSpacing(0)
-        split_row.addWidget(self._topology_split, 1)
+        split_row.addLayout(diagram_col, 1)
         self._topology_whatif_layout = split_row
-        outer.addLayout(split_row, 1)
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        body.addLayout(setup_col)
+        body.addLayout(split_row, 1)
+        outer.addLayout(body, 1)
         if not getattr(self, "_topology_tabs_hooked", False):
             self.tabs.currentChanged.connect(self._on_tabs_changed_for_topology)
             self._topology_tabs_hooked = True

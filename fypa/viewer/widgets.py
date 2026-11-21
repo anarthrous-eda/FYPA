@@ -1048,9 +1048,12 @@ class SidebarToggleButton(QToolButton):
 
     _DRAG_THRESHOLD_PX = 4
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, *, mirrored: bool = False) -> None:
         super().__init__(parent)
         self._collapsed = False
+        # Mirrored: the handle sits on the LEFT of a right-hand panel, so
+        # its triangle points the other way (see :meth:`paintEvent`).
+        self._mirrored = bool(mirrored)
         self._press_global_x: float | None = None
         self._dragging = False
         self.setAutoRaise(True)
@@ -1125,11 +1128,12 @@ class SidebarToggleButton(QToolButton):
         p.drawLine(rect.topRight(), rect.bottomRight())
         # Triangle: points RIGHT (▶) when collapsed (click expands the panel
         # outward); points LEFT (◀) when expanded (click pulls it back in).
+        # A mirrored handle (right-hand panel) is the other way round.
         cx = rect.width() / 2.0
         cy = rect.height() / 2.0
         half_w = 3.0
         half_h = 5.0
-        if self._collapsed:
+        if self._collapsed != self._mirrored:
             tri = QPolygonF([
                 QPointF(cx - half_w, cy - half_h),
                 QPointF(cx - half_w, cy + half_h),

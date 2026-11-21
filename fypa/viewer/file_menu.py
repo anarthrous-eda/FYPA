@@ -755,6 +755,16 @@ class _FileMenuMixin:
                 for key, st in overlay_state.items()
                 if isinstance(st, dict)
             }
+            # Via-kind sub-rows of the Vias row: the kinds set apart from
+            # the row, and whether the sub-rows are unfolded.
+            vias_st = overlay_state.get("vias")
+            if isinstance(vias_st, dict) and "kinds" in vias_st:
+                saved_vias = proj.viewer_settings["overlay_state"]["vias"]
+                saved_vias["kinds"] = {
+                    kind: {"vis": sub.get("vis")}
+                    for kind, sub in vias_st["kinds"].items()
+                }
+                saved_vias["kinds_open"] = bool(vias_st.get("kinds_open"))
 
         colors = getattr(self, "_overlay_colors", None)
         if not colors:
@@ -770,6 +780,9 @@ class _FileMenuMixin:
             bot = bottoms.get(key)
             if bot is not None:
                 entry["bottom"] = _enc(bot)
+            kind_colors = getattr(self, "_via_kind_colors", None)
+            if key == "vias" and kind_colors:
+                entry["kinds"] = {k: _enc(c) for k, c in kind_colors.items()}
             out[key] = entry
         proj.viewer_settings["overlay_colors"] = out
 

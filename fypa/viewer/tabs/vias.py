@@ -15,6 +15,9 @@ class _ViasTabMixin:
         ("",                 False),
         ("Net",              False),
         ("Layer span",       False),
+        # Through / Blind / Buried / Micro - the same kinds the Board
+        # Features "Vias" row lists.
+        ("Type",             False),
         ("X (mm)",           True),
         ("Y (mm)",           True),
         ("Diameter (mm)",    True),

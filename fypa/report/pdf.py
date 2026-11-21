@@ -406,7 +406,7 @@ class _Builder:
                 row = [e(rail.name), H.fmt_v(rail.nominal_v),
                        H.fmt_a(rail.load_a), H.fmt_v(rail.lowest_v), drop,
                        margin]
-                if "below-min-v" in codes:
+                if codes & H.LIMIT_FAIL_CODES:
                     cells.append((5, i, FAIL))
                 elif "low-margin" in codes:
                     cells.append((5, i, WARN))
@@ -570,27 +570,39 @@ class _Builder:
         if not rail.loads:
             return [self.na("No loads on this rail.")]
         rows, cells, row_status = [], [], []
+        worst = H.dc_has_worst_case(rail)
+        # The Worst case column comes after "V at load" when shown.
+        margin_col = 9 if worst else 8
         for i, ld in enumerate(rail.loads):
             label = e(ld.label) + ("" if ld.kind == "sink" else
                                    ' <font color="#5f6670">(regulator input)</font>')
-            margin = ("no limit" if ld.margin_v is None
-                      else H.fmt_mv(ld.margin_v, signed=True))
-            rows.append([label, e(ld.net), str(ld.pin_count),
-                         H.fmt_a(ld.current_a), H.fmt_v(ld.v_load),
-                         H.fmt_mv(ld.drop_v), H.fmt_mv(ld.return_drop_v),
-                         H.fmt_v(ld.min_v), margin, _status_text(ld.status)])
-            if ld.status in (FAIL, WARN) and ld.margin_v is not None:
-                cells.append((8, i, ld.status))
+            m = ld.limiting_margin_v
+            margin = "no limit" if m is None else H.fmt_mv(m, signed=True)
+            row = [label, e(ld.net), str(ld.pin_count),
+                   H.fmt_a(ld.current_a), H.fmt_v(ld.v_load),
+                   H.fmt_mv(ld.drop_v), H.fmt_mv(ld.return_drop_v),
+                   e(H.dc_limit_text(ld)), margin, _status_text(ld.status)]
+            if worst:
+                row.insert(5, e(H.dc_worst_text(ld)))
+            rows.append(row)
+            if ld.status in (FAIL, WARN) and m is not None:
+                cells.append((margin_col, i, ld.status))
             row_status.append(ld.status)
+        head = ["Load", "Net", "Pins", "Current", "V at load", "Drop",
+                "in return", "Limits", "Margin", "Status"]
+        widths = [22, 20, 7, 11, 12, 11, 11, 13, 12, 15]
+        right = {2, 3, 4, 5, 6, 7, 8}
+        if worst:
+            head.insert(5, "Worst case")
+            widths = [19, 16, 6, 10, 11, 17, 10, 10, 17, 11, 13]
+            right = {2, 3, 4, 5, 6, 7, 8, 9}
         return [
-            self.table(["Load", "Net", "Pins", "Current", "V at load", "Drop",
-                        "in return", "Min V", "Margin", "Status"], rows,
-                       [22, 20, 7, 11, 12, 11, 11, 11, 12, 15],
-                       right={2, 3, 4, 5, 6, 7, 8}, cell_styles=cells,
+            self.table(head, rows, widths, right=right, cell_styles=cells,
                        row_status=row_status),
             self.note(f"V at load is the lowest supply pin minus the highest "
                       f"return pin. Drop is measured from the "
-                      f"{H.fmt_v(rail.nominal_v)} setpoint."),
+                      f"{H.fmt_v(rail.nominal_v)} setpoint. "
+                      + H.dc_worst_note(rail)),
         ]
 
     def sec_heatmaps(self, rail: RailReport) -> list:

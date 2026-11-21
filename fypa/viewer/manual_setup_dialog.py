@@ -253,6 +253,18 @@ class _Editor(QWidget):
         self.value.editingFinished.connect(self._on_value)
         self.value_label = QLabel("Voltage" if mode == "supply" else "Current")
         form.addRow(self.value_label, self.value)
+        # Supplies: optional output range (PDN_V_TOL, or PDN_V_MIN / _MAX).
+        self.v_range = QLineEdit()
+        self.v_range.setPlaceholderText(
+            "optional - 5%, 50 mV, +3/-5% or 3.1 to 3.5 V")
+        self.v_range.setToolTip(
+            "How far the output can sit from its voltage: a tolerance, or "
+            "the lowest and highest output. Loads are then checked at the "
+            "nominal and at the ends of this range.")
+        self.v_range.editingFinished.connect(self._on_v_range)
+        self.v_range_label = QLabel("Output range")
+        if mode == "supply":
+            form.addRow(self.v_range_label, self.v_range)
         self.gnd = QComboBox()
         self.gnd.activated.connect(self._on_gnd)
         self.gnd.setToolTip(f"The return path. {M.IDEAL_RETURN}: an ideal 0 V "
@@ -284,8 +296,31 @@ class _Editor(QWidget):
         self.min_v.setPlaceholderText("optional - flags the load if its pins sag below")
         self.min_v.editingFinished.connect(self._on_min_v)
         self.min_v_label = QLabel("Min voltage")
+        self.max_v = QLineEdit()
+        self.max_v.setPlaceholderText("optional - flags the load if its pins can rise above")
+        self.max_v.editingFinished.connect(self._on_max_v)
+        self.max_v_label = QLabel("Max voltage")
         if mode == "load":
             form.addRow(self.min_v_label, self.min_v)
+            form.addRow(self.max_v_label, self.max_v)
+        # Regulators: optional input limits (PDN_DROPOUT / PDN_VIN_MIN / _MAX),
+        # checked against the solved input voltage.
+        self._limit_edits: dict[str, QLineEdit] = {}
+        self._limit_labels: list[QLabel] = []
+        for attr, label, hint in (
+                ("dropout", "Dropout",
+                 "optional - input headroom above the output"),
+                ("vin_min", "Input min", "optional - lowest input it accepts"),
+                ("vin_max", "Input max", "optional - highest input it accepts")):
+            edit = QLineEdit()
+            edit.setPlaceholderText(hint)
+            edit.editingFinished.connect(
+                lambda a=attr: self._on_limit(a))
+            lab = QLabel(label)
+            self._limit_edits[attr] = edit
+            self._limit_labels.append(lab)
+            if mode == "supply":
+                form.addRow(lab, edit)
         lay.addLayout(form)
         self._filled = QLabel("")
         self._filled.setStyleSheet(f"color: {t['fg_muted']}; font-size: 8pt;")
@@ -302,7 +337,8 @@ class _Editor(QWidget):
         has = entry is not None
         editable = has and not (entry and entry.locked)
         for w in (self.type, self.net, self.part, self.show_all, self.pins, self.value,
-                  self.gnd, self.in_net, self.in_pins, self.eff, self.topo, self.min_v):
+                  self.gnd, self.in_net, self.in_pins, self.eff, self.topo, self.min_v,
+                  self.max_v, self.v_range, *self._limit_edits.values()):
             w.setEnabled(editable)
         self._override_btn.setVisible(bool(entry and entry.locked))
         if entry is None:
@@ -334,6 +370,12 @@ class _Editor(QWidget):
             self.topo.setCurrentText(d.smps_topology or "-")
         self.min_v.setText(format_value(d.min_voltage, "voltage")
                            if d.min_voltage is not None else "")
+        self.max_v.setText(format_value(d.max_voltage, "voltage")
+                           if d.max_voltage is not None else "")
+        self.v_range.setText(M.output_range_text(d))
+        for attr, edit in self._limit_edits.items():
+            v = getattr(d, attr)
+            edit.setText(format_value(v, "voltage") if v is not None else "")
         self._sync_visibility()
         self._filled.setText(
             f"Filled in from the design: {', '.join(filled)}." if filled else "")
@@ -396,6 +438,8 @@ class _Editor(QWidget):
             w.setVisible(reg)
         for w in (self.eff, self.eff_label, self.topo, self.topo_label):
             w.setVisible(smps)
+        for w in (*self._limit_edits.values(), *self._limit_labels):
+            w.setVisible(reg)
         if self.mode == "supply":
             self.value_label.setText("Output voltage" if reg else "Voltage")
 
@@ -498,6 +542,21 @@ class _Editor(QWidget):
     def _on_min_v(self) -> None:
         if (d := self._d()) is not None:
             d.min_voltage = parse_value(self.min_v.text())
+            self._edited()
+
+    def _on_max_v(self) -> None:
+        if (d := self._d()) is not None:
+            d.max_voltage = parse_value(self.max_v.text())
+            self._edited()
+
+    def _on_v_range(self) -> None:
+        if (d := self._d()) is not None:
+            M.set_output_range(d, self.v_range.text(), parse_value)
+            self._edited()
+
+    def _on_limit(self, attr: str) -> None:
+        if (d := self._d()) is not None:
+            setattr(d, attr, parse_value(self._limit_edits[attr].text()))
             self._edited()
 
 

@@ -652,6 +652,9 @@ class _MarqueeMixin:
             current=value if role == "SINK" else None,
             resistance=value if role == "SERIES" else None,
             min_voltage=sch.get("min_voltage"),
+            max_voltage=sch.get("max_voltage") if role == "SINK" else None,
+            v_min=sch.get("v_min") if role == "SOURCE" else None,
+            v_max=sch.get("v_max") if role == "SOURCE" else None,
             overrides_designator=sch.get("designator"),
         )
 

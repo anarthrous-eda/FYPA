@@ -32,6 +32,13 @@ from fypa.viewer.vias import _centroid3
 from fypa.viewer.widgets import _esc
 
 
+# Choices of the "Output range" selector on a SOURCE / REGULATOR.
+_RANGE_NONE = "None"
+_RANGE_TOLERANCE = "Tolerance"
+_RANGE_MIN_MAX = "Min / max"
+_RANGE_MODES = (_RANGE_NONE, _RANGE_TOLERANCE, _RANGE_MIN_MAX)
+
+
 class _EditorFormMixin:
     """Editor-mode PDN form, free markers and marker moves with undo."""
 
@@ -913,6 +920,50 @@ class _EditorFormMixin:
         )
         self._ef_min_v_label = QLabel("Min V (V)")
         form.addRow(self._ef_min_v_label, self._ef_min_v)
+        self._ef_max_v = QLineEdit()
+        self._ef_max_v.setValidator(_numeric_validator(self, top=1e12))
+        self._ef_max_v.setToolTip(
+            "Optional: maximum acceptable voltage at this sink's pins "
+            "(PDN_MAX_V). Checked with the rail lightly loaded and its "
+            "source at the top of its range. Leave blank to skip the check."
+        )
+        self._ef_max_v_label = QLabel("Max V (V)")
+        form.addRow(self._ef_max_v_label, self._ef_max_v)
+        # SOURCE / REGULATOR: optional output range, as a tolerance or as
+        # explicit limits (PDN_V_TOL, or PDN_V_MIN / PDN_V_MAX). The solve
+        # runs at the nominal; the checks use the ends of the range.
+        self._ef_range_mode = QComboBox()
+        self._ef_range_mode.addItems(list(_RANGE_MODES))
+        self._ef_range_mode.setToolTip(
+            "Optional: how far the output can sit from the voltage above. "
+            "Loads are then checked at the nominal and at the ends of this "
+            "range."
+        )
+        self._ef_range_mode.currentTextChanged.connect(
+            lambda _t: self._on_editor_role_changed(self._ef_role.currentText()))
+        self._ef_range_mode_label = QLabel("Output range")
+        form.addRow(self._ef_range_mode_label, self._ef_range_mode)
+        self._ef_tol = QLineEdit()
+        self._ef_tol.setPlaceholderText("5%, 50mV or +3/-5%")
+        self._ef_tol.setToolTip(
+            "Tolerance on the output voltage (PDN_V_TOL): a percentage of "
+            "the nominal, or volts with a unit. +3/-5% gives different "
+            "amounts above and below."
+        )
+        self._ef_tol_label = QLabel("Tolerance")
+        form.addRow(self._ef_tol_label, self._ef_tol)
+        self._ef_vmin = QLineEdit()
+        self._ef_vmin.setValidator(_numeric_validator(self, top=1e12))
+        self._ef_vmin.setToolTip(
+            "Lowest output voltage (PDN_V_MIN). Blank = the nominal.")
+        self._ef_vmin_label = QLabel("Output min (V)")
+        form.addRow(self._ef_vmin_label, self._ef_vmin)
+        self._ef_vmax = QLineEdit()
+        self._ef_vmax.setValidator(_numeric_validator(self, top=1e12))
+        self._ef_vmax.setToolTip(
+            "Highest output voltage (PDN_V_MAX). Blank = the nominal.")
+        self._ef_vmax_label = QLabel("Output max (V)")
+        form.addRow(self._ef_vmax_label, self._ef_vmax)
         # REGULATOR-only: converter type, efficiency and SMPS topology
         # (PDN_REGULATOR_TYPE / PDN_REGULATOR_EFFICIENCY / PDN_SMPS_TOPOLOGY).
         self._ef_reg_type = QComboBox()
@@ -935,6 +986,30 @@ class _EditorFormMixin:
         self._ef_topo.setToolTip("Optional SMPS topology (PDN_SMPS_TOPOLOGY).")
         self._ef_topo_label = QLabel("Topology")
         form.addRow(self._ef_topo_label, self._ef_topo)
+        # REGULATOR-only optional input limits (PDN_DROPOUT / PDN_VIN_MIN /
+        # PDN_VIN_MAX), checked against the solved input voltage.
+        self._ef_dropout = QLineEdit()
+        self._ef_dropout.setValidator(_numeric_validator(self, top=1e12))
+        self._ef_dropout.setToolTip(
+            "Optional: how far the input must stay above the output "
+            "(PDN_DROPOUT), in volts. The input is checked at the nominal "
+            "and with its supply at the bottom of its range.")
+        self._ef_dropout_label = QLabel("Dropout (V)")
+        form.addRow(self._ef_dropout_label, self._ef_dropout)
+        self._ef_vin_min = QLineEdit()
+        self._ef_vin_min.setValidator(_numeric_validator(self, top=1e12))
+        self._ef_vin_min.setToolTip(
+            "Optional: lowest input voltage the regulator accepts "
+            "(PDN_VIN_MIN), e.g. its undervoltage lockout.")
+        self._ef_vin_min_label = QLabel("IN min (V)")
+        form.addRow(self._ef_vin_min_label, self._ef_vin_min)
+        self._ef_vin_max = QLineEdit()
+        self._ef_vin_max.setValidator(_numeric_validator(self, top=1e12))
+        self._ef_vin_max.setToolTip(
+            "Optional: highest input voltage the regulator accepts "
+            "(PDN_VIN_MAX).")
+        self._ef_vin_max_label = QLabel("IN max (V)")
+        form.addRow(self._ef_vin_max_label, self._ef_vin_max)
         lay.addLayout(form)
 
         lay.addWidget(QLabel("Current model"))
@@ -1080,6 +1155,14 @@ class _EditorFormMixin:
             self._ef_value.setText("" if val is None else f"{val:g}")
             mv = getattr(existing, "min_voltage", None)
             self._ef_min_v.setText("" if mv is None else f"{mv:g}")
+            self._seed_limit_fields(
+                max_v=getattr(existing, "max_voltage", None),
+                v_tol=getattr(existing, "v_tol", None),
+                v_min=getattr(existing, "v_min", None),
+                v_max=getattr(existing, "v_max", None),
+                dropout=getattr(existing, "dropout", None),
+                vin_min=getattr(existing, "vin_min", None),
+                vin_max=getattr(existing, "vin_max", None))
             self._ef_single.setChecked(existing.single_net)
             self._ef_two.setChecked(not existing.single_net)
             if existing.p_net:
@@ -1116,6 +1199,14 @@ class _EditorFormMixin:
             self._ef_value.setText("" if val is None else f"{val:g}")
             mv = sch_unlock.get("min_voltage")
             self._ef_min_v.setText("" if mv is None else f"{mv:g}")
+            # The metadata carries the resolved range, so a schematic
+            # PDN_V_TOL arrives here as explicit limits.
+            self._seed_limit_fields(
+                max_v=sch_unlock.get("max_voltage"),
+                v_min=sch_unlock.get("v_min"), v_max=sch_unlock.get("v_max"),
+                dropout=sch_unlock.get("dropout"),
+                vin_min=sch_unlock.get("vin_min"),
+                vin_max=sch_unlock.get("vin_max"))
             terms = sch_unlock.get("terminals") or {}
             if role == "REGULATOR":
                 # Present the regulator's OUT pair as P / N so the shared
@@ -1184,6 +1275,89 @@ class _EditorFormMixin:
             self._set_combo(self._ef_innet, in_net)
         self._ef_inpins.setText(", ".join(in_pins or []))
 
+    def _seed_limit_fields(self, *, max_v=None, v_tol=None, v_min=None,
+                           v_max=None, dropout=None, vin_min=None,
+                           vin_max=None) -> None:
+        """Fill the optional check-limit widgets: a SINK's Max V, a SOURCE /
+        REGULATOR's output range and a REGULATOR's input limits."""
+        if not hasattr(self, "_ef_range_mode"):
+            return
+
+        def _num(v) -> str:
+            return "" if v is None else f"{float(v):g}"
+
+        self._ef_max_v.setText(_num(max_v))
+        self._ef_tol.setText(str(v_tol or ""))
+        self._ef_vmin.setText(_num(v_min))
+        self._ef_vmax.setText(_num(v_max))
+        if v_tol:
+            mode = _RANGE_TOLERANCE
+        elif v_min is not None or v_max is not None:
+            mode = _RANGE_MIN_MAX
+        else:
+            mode = _RANGE_NONE
+        self._ef_range_mode.setCurrentText(mode)
+        self._ef_dropout.setText(_num(dropout))
+        self._ef_vin_min.setText(_num(vin_min))
+        self._ef_vin_max.setText(_num(vin_max))
+
+    def _limit_form_fields(self, role: str, value: float
+                           ) -> tuple[dict, str | None]:
+        """Read and check the optional check-limit fields for ``role``.
+
+        Returns ``(fields, None)`` - every limit attribute of an
+        :class:`EditorDirective`, ``None`` for the ones that don't apply to
+        the role - or ``({}, error message)``."""
+        from fypa.altium.annotations import resolve_voltage_range
+
+        fields: dict = dict.fromkeys(
+            ("max_voltage", "v_tol", "v_min", "v_max", "dropout", "vin_min",
+             "vin_max"))
+
+        def _read(widget, name: str) -> float | None:
+            txt = widget.text().strip()
+            if not txt:
+                return None
+            try:
+                return float(txt)
+            except ValueError:
+                raise ValueError(
+                    f"{name} must be numeric (or blank to skip it).") from None
+
+        try:
+            if role == "SINK":
+                fields["max_voltage"] = _read(self._ef_max_v, "Max V")
+            if role in ("SOURCE", "REGULATOR"):
+                mode = self._ef_range_mode.currentText()
+                if mode == _RANGE_TOLERANCE:
+                    fields["v_tol"] = self._ef_tol.text().strip() or None
+                elif mode == _RANGE_MIN_MAX:
+                    fields["v_min"] = _read(self._ef_vmin, "Output min")
+                    fields["v_max"] = _read(self._ef_vmax, "Output max")
+                try:
+                    resolve_voltage_range(value, fields["v_tol"],
+                                          fields["v_min"], fields["v_max"])
+                except ValueError as e:
+                    text = str(e)
+                    raise ValueError(
+                        "Output range: " + text[:1].upper() + text[1:] + "."
+                    ) from None
+            if role == "REGULATOR":
+                for key, widget, name in (
+                        ("dropout", self._ef_dropout, "Dropout"),
+                        ("vin_min", self._ef_vin_min, "IN min"),
+                        ("vin_max", self._ef_vin_max, "IN max")):
+                    fields[key] = _read(widget, name)
+                    if fields[key] is not None and fields[key] < 0:
+                        raise ValueError(f"{name} can't be negative.")
+                if (fields["vin_min"] is not None
+                        and fields["vin_max"] is not None
+                        and fields["vin_max"] < fields["vin_min"]):
+                    raise ValueError("IN max is below IN min.")
+        except ValueError as e:
+            return {}, str(e)
+        return fields, None
+
     def _on_editor_role_changed(self, role: str) -> None:
         """Swap the value field between voltage (SOURCE / REGULATOR output),
         current (SINK) and resistance (SERIES). SERIES and REGULATOR always
@@ -1213,6 +1387,25 @@ class _EditorFormMixin:
             self._ef_min_v_label.setVisible(is_sink)
             if not is_sink:
                 self._ef_min_v.clear()
+        if hasattr(self, "_ef_range_mode"):
+            is_sink = role == "SINK"
+            is_reg = role == "REGULATOR"
+            has_out = role in ("SOURCE", "REGULATOR")
+            mode = self._ef_range_mode.currentText()
+            for widgets, show in (
+                    ((self._ef_max_v, self._ef_max_v_label), is_sink),
+                    ((self._ef_range_mode, self._ef_range_mode_label),
+                     has_out),
+                    ((self._ef_tol, self._ef_tol_label),
+                     has_out and mode == _RANGE_TOLERANCE),
+                    ((self._ef_vmin, self._ef_vmin_label,
+                      self._ef_vmax, self._ef_vmax_label),
+                     has_out and mode == _RANGE_MIN_MAX),
+                    ((self._ef_dropout, self._ef_dropout_label,
+                      self._ef_vin_min, self._ef_vin_min_label,
+                      self._ef_vin_max, self._ef_vin_max_label), is_reg)):
+                for w in widgets:
+                    w.setVisible(show)
         if hasattr(self, "_ef_two"):
             forced_two = role in ("SERIES", "REGULATOR")
             if forced_two and not self._ef_two.isChecked():
@@ -1334,6 +1527,17 @@ class _EditorFormMixin:
                         "numeric (or blank to skip the check).</span>"
                     )
                     return
+        limit_fields, limit_err = self._limit_form_fields(role, value)
+        if limit_err:
+            self._ef_status.setText(
+                f"<span style='color:{_T()['err']};'>{limit_err}</span>")
+            return
+        if (min_v is not None and limit_fields["max_voltage"] is not None
+                and limit_fields["max_voltage"] < min_v):
+            self._ef_status.setText(
+                f"<span style='color:{_T()['err']};'>Max V is below Min V."
+                "</span>")
+            return
 
         existing = self._directive_for_selection()
         d = existing if existing is not None else EditorDirective()
@@ -1345,6 +1549,8 @@ class _EditorFormMixin:
         d.current = value if role == "SINK" else None
         d.resistance = value if role == "SERIES" else None
         d.min_voltage = min_v
+        for _name, _limit in limit_fields.items():
+            setattr(d, _name, _limit)
         # REGULATOR-only fields; cleared for every other role so a role
         # change doesn't leave a stale input pair behind.
         d.in_p_net = reg_fields.get("in_p_net")

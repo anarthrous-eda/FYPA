@@ -54,6 +54,7 @@ _HELP_SECTIONS: tuple[tuple[str, str], ...] = (
   <tr><td><kbd>H</kbd></td><td>Cycle <i>colour scheme</i> forward (Viridis &rarr; Blue&nbsp;&rarr;&nbsp;Red &rarr; &hellip;)</td></tr>
   <tr><td><kbd>Shift</kbd>+<kbd>H</kbd></td><td>Cycle <i>colour scheme</i> backward</td></tr>
   <tr><td><kbd>B</kbd></td><td>Collapse / expand the side panel</td></tr>
+  <tr><td><kbd>Shift</kbd>+<kbd>B</kbd></td><td>Collapse / expand the right-hand editor panel (editor mode)</td></tr>
 </table>
 <p class='muted'>Shortcuts are window-scoped - they fire when the viewer
 window has focus but defer to text inputs (e.g. the Min/Max boxes)

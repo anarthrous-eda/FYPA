@@ -52,9 +52,10 @@ def _editor_directive_to_metadata_dict(ed) -> dict | None:
                 "value_str": f"{current * 1000:.4g} mA",
             }
         )
-        min_v = getattr(ed, "min_voltage", None)
-        if min_v is not None:
-            common["min_voltage"] = float(min_v)
+        for name in ("min_voltage", "max_voltage"):
+            limit = getattr(ed, name, None)
+            if limit is not None:
+                common[name] = float(limit)
     else:
         resistance = float(ed.resistance or 0.0)
         common.update(
@@ -64,6 +65,26 @@ def _editor_directive_to_metadata_dict(ed) -> dict | None:
                 "value_str": f"{resistance * 1000:.4g} mOhm",
             }
         )
+
+    if role in ("SOURCE", "REGULATOR"):
+        # The output range, as the solve will see it; an unusable one is
+        # reported at solve time, so it is simply left out here.
+        try:
+            from fypa.altium.annotations import resolve_voltage_range
+            v_min, v_max = resolve_voltage_range(
+                float(ed.voltage or 0.0), getattr(ed, "v_tol", None),
+                getattr(ed, "v_min", None), getattr(ed, "v_max", None))
+        except ValueError:
+            v_min = v_max = None
+        if v_min is not None:
+            common["v_min"] = float(v_min)
+        if v_max is not None:
+            common["v_max"] = float(v_max)
+    if role == "REGULATOR":
+        for name in ("dropout", "vin_min", "vin_max"):
+            limit = getattr(ed, name, None)
+            if limit is not None:
+                common[name] = float(limit)
 
     def _terminal(net: str | None, *, ideal: bool = False) -> dict:
         if ideal:

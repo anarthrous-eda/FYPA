@@ -104,6 +104,22 @@ class EditorDirective:
     # this limit and flags pass / fail. Meaningful for SINK only; ``None`` to
     # disable the check or for non-SINK roles.
     min_voltage: float | None = None
+    # Its upper counterpart (``PDN_MAX_V``), SINK only.
+    max_voltage: float | None = None
+    # Optional output range of a SOURCE / REGULATOR, in one of two forms
+    # (never both): ``v_tol`` is the tolerance as typed (``"5%"``,
+    # ``"50mV"``, ``"+3/-5%"`` - the ``PDN_V_TOL`` equivalent), or ``v_min``
+    # / ``v_max`` are explicit limits in volts (``PDN_V_MIN`` /
+    # ``PDN_V_MAX``). The solve runs at ``voltage``; the checks use the range.
+    v_tol: str | None = None
+    v_min: float | None = None
+    v_max: float | None = None
+    # Optional REGULATOR input limits, volts: the headroom its input needs
+    # above its output (``PDN_DROPOUT``) and its absolute input range
+    # (``PDN_VIN_MIN`` / ``PDN_VIN_MAX``).
+    dropout: float | None = None
+    vin_min: float | None = None
+    vin_max: float | None = None
     # When set, this editor directive replaces (overrides) the Altium
     # schematic directive carrying this designator - the re-solve drops the
     # schematic one so they don't both stamp a lumped element. ``None`` for
@@ -182,6 +198,11 @@ class EditorDirective:
                         else float(d["resistance"])),
             min_voltage=(None if d.get("min_voltage") is None
                          else float(d["min_voltage"])),
+            v_tol=(str(d["v_tol"]).strip() or None
+                   if d.get("v_tol") is not None else None),
+            **{name: (None if d.get(name) is None else float(d[name]))
+               for name in ("max_voltage", "v_min", "v_max", "dropout",
+                            "vin_min", "vin_max")},
             overrides_designator=d.get("overrides_designator"),
             in_p_net=d.get("in_p_net"),
             in_n_net=d.get("in_n_net"),

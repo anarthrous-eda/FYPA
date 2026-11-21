@@ -154,6 +154,69 @@ supply voltage in the operating-conditions table.
 > rails on one part), use `PDN<n>_MIN_V` per channel, matching the
 > `PDN<n>_I` numbering.
 
+### Optional: `PDN_MAX_V` - maximum acceptable voltage at the sink
+
+`PDN_MAX_V` is the upper counterpart: the highest voltage the part may
+see, usually the maximum supply voltage in its operating-conditions
+table. Add it the same way (`PDN_MAX_V = 3.6`, or `PDN<n>_MAX_V` per
+channel).
+
+The highest voltage a load sees is not in the solved result, which is at
+full load. It is with the rail **lightly loaded**, when the copper drops
+nothing and the pins sit at the source's setpoint. So FYPA checks
+`PDN_MAX_V` against the setpoint (or the solved voltage, where remote
+sense lifts a pin above the setpoint), plus however far the source can
+sit above its nominal - see the next section.
+
+### Optional: source tolerance - `PDN_V_TOL`, or `PDN_V_MIN` / `PDN_V_MAX`
+
+A real supply is not exactly at its nominal voltage. A SOURCE (and a
+REGULATOR, see [Section 4](04-regulators.md)) can say how far off it can
+be, in one of two forms - never both on the same channel:
+
+| Name                      | Value            | Meaning |
+|---------------------------|------------------|---------|
+| `PDN_V_TOL`               | `5%`             | ±5 % of `PDN_V` |
+| `PDN_V_TOL`               | `50mV`           | ±50 mV |
+| `PDN_V_TOL`               | `+3/-5%`         | 3 % above, 5 % below |
+| `PDN_V_TOL`               | `-5%`            | 5 % below only |
+| `PDN_V_MIN` / `PDN_V_MAX` | `3.135` / `3.465` | the lowest and highest output, in volts |
+
+A tolerance in volts must carry a unit or prefix (`50mV`, `0.05V`): a
+bare `5` could mean volts or percent, so it is rejected. With
+`PDN_V_MIN` / `PDN_V_MAX` you may give just one; the other side is then
+the nominal.
+
+`PDN_V` stays the **nominal**, and the solve still runs at it - the
+heatmap and every drop are unchanged. What changes is the checking: each
+load is now checked **at the nominal and in the worst case**, and it
+fails if either fails.
+
+- **Supply at its minimum.** Loads draw a fixed current, so a supply that
+  sits 165 mV low moves every point on its rail down by exactly 165 mV.
+  The worst-case voltage at a load is its solved voltage minus
+  `PDN_V − minimum`, checked against `PDN_MIN_V`.
+- **Supply at its maximum.** The lightly loaded rail (see `PDN_MAX_V`
+  above) plus `maximum − PDN_V`, checked against `PDN_MAX_V`.
+
+Example: `PDN_V = 3.3`, `PDN_V_TOL = 5%`, and a sink with
+`PDN_MIN_V = 3.1` that solves at 3.25 V. At nominal it has 150 mV of
+margin. With the supply at 3.135 V it sits at 3.085 V, 15 mV under its
+limit: **FAIL**, reported as *passes at nominal, fails in the worst
+case*.
+
+A source with no tolerance behaves exactly as before.
+
+> - The shift carries through series parts (ferrites, fuses, load
+>   switches), whose drop depends on current alone, and stops at a
+>   regulator, which holds its own output.
+> - Where several sources feed one rail, the largest of their tolerances
+>   is used - a safe bound.
+> - Not included: a switching regulator fed from the rail draws more
+>   current when its input is low, which adds a little to the drop it
+>   causes upstream (about the tolerance's share of that drop - 5 % more
+>   for a 5 % tolerance).
+
 ## 1.4 Multi-pin parts
 
 For a two-pin part such as J1, FYPA infers which pad is which from

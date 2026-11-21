@@ -234,6 +234,59 @@ def test_sandbox_writes_html_pdf_and_json(sandbox_report, tmp_path):
     assert pdf_path.read_bytes()[:5] == b"%PDF-"
 
 
+def test_sandbox_supply_tolerance_adds_the_worst_case(sandbox_solve, tmp_path):
+    """A range on a rail's source is applied to the solve at nominal: the
+    report, its HTML / PDF and the Nodes rows all shift by the same amount."""
+    import copy
+
+    from fypa.rail_groups import compute_rail_groups
+    from fypa.report import build_report, write_report
+    from fypa.solution_sampling import SolutionSampler, compute_node_rows
+
+    solution, base = sandbox_solve
+    metadata = copy.deepcopy(base)
+    _names, members = compute_rail_groups(metadata)
+    rail_nets = set(members["P1V_1W100L"])
+
+    def on_rail(d, term):
+        return any(p.get("net") in rail_nets
+                   for p in d["terminals"].get(term, {}).get("pins", []))
+
+    source = next(d for d in metadata["directives"]
+                  if d["role"] == "SOURCE" and on_rail(d, "P"))
+    sink = next(d for d in metadata["directives"]
+                if d["role"] == "SINK" and on_rail(d, "P"))
+    source["v_min"], source["v_max"] = 0.97, 1.05      # 1 V, +5 / -3 %
+    # ~50 mV of drop: passes 0.93 V at nominal, not with the source 30 mV low.
+    sink["min_voltage"], sink["max_voltage"] = 0.93, 1.04
+
+    report = build_report(solution, metadata, ReportSettings(detail="all"),
+                          render_figures=False, topology=False)
+    rail = next(r for r in report.rails if r.name == "P1V_1W100L")
+    (load,) = rail.loads
+    assert (rail.source_min_v, rail.source_max_v) == (0.97, 1.05)
+    assert load.margin_v > 0                                  # fine at nominal
+    assert load.v_low == pytest.approx(load.v_load - 0.03)
+    assert load.v_high == pytest.approx(1.05)                 # unloaded rail
+    assert load.status == FAIL
+    assert {f.code for f in rail.findings} >= {"below-min-v-worst",
+                                               "above-max-v"}
+
+    # The Nodes rows agree: same shift, and the pin fails.
+    rows = compute_node_rows(SolutionSampler(solution, metadata), members)
+    pin = next(r for r in rows if r["role"] == "SINK" and r["terminal"] == "P"
+               and r["net"] in rail_nets)
+    assert pin["voltage_low"] == pytest.approx(pin["voltage"] - 0.03)
+    assert pin["voltage_high"] == pytest.approx(1.05)
+    assert pin["status"] == "FAIL" and pin["margin"] < 0 < pin["margin_typical"]
+
+    (html_path,) = write_report(report, tmp_path / "t.html")
+    text = html_path.read_text(encoding="utf-8")
+    assert "Worst case" in text and "fails in the worst case" in text
+    (pdf_path,) = write_report(report, tmp_path / "t.pdf")
+    assert pdf_path.read_bytes()[:5] == b"%PDF-"
+
+
 def test_cli_report_fail_on(sandbox_solve, tmp_path):
     import pickle
 

@@ -45,6 +45,13 @@ from fypa.report.model import (
     ViaResult,
 )
 from fypa.topology.metadata_schema import TopologyMetadata
+from fypa.worst_case import (
+    RailRange,
+    highest_voltage,
+    lowest_voltage,
+    rail_ranges,
+    regulator_input_minimum,
+)
 from fypa.solution_sampling import (
     SolutionSampler,
     compute_via_rows,
@@ -243,6 +250,8 @@ class _Context:
         self.net_to_rail = net_to_rail
         self.settings = settings
         self._currents = RailCurrents(directives, rail_to_members)
+        # Rail name -> how far its supply's range moves it off the solve.
+        self.ranges = rail_ranges(directives, rail_to_members)
         self._layer_cache: dict[tuple[str, str], dict | None] = {}
         self.stackup_by_name = {r.get("name"): r
                                 for r in metadata.get("stackup", [])}
@@ -401,6 +410,9 @@ class _Context:
                 rail.source_label += f" + {len(sources) - 1} more"
             rail.load_a = self.rail_load(name)
             self._loads(rail, setpoint, src_ret)
+            if rail.source_min_v is not None and rail.source_max_v is not None:
+                rail.source_label += (f", range {rail.source_min_v:.4g}–"
+                                      f"{rail.source_max_v:.4g} V")
             self._series_and_regulators(rail)
         else:
             rail.nominal_v = 0.0
@@ -413,6 +425,9 @@ class _Context:
 
     def _loads(self, rail: RailReport, setpoint: float, src_ret: float) -> None:
         members = set(rail.members)
+        rng = self.ranges.get(rail.name)
+        if rng is not None and rng.toleranced:
+            rail.source_min_v, rail.source_max_v = rng.v_min, rng.v_max
         for di, d in enumerate(self.directives):
             role = d.get("role")
             if role not in _SUPPLY_TERMS:
@@ -425,22 +440,32 @@ class _Context:
             n_volts = self.volts(di, n_term)
             label = str(d.get("label") or d.get("designator") or "?")
             nets = sorted(_pin_nets(d, p_term) & members)
+            limits: dict = {}
             if role == "SINK":
                 current = _float(d.get("value"))
                 kind = "sink"
                 min_v = _float(d.get("min_voltage"))
+                max_v = _float(d.get("max_voltage"))
             else:
                 current = self.regulator_input_current(d)
                 out_rail = self.rail_of(d, "OUT_P")
                 kind = "regulator input"
                 label = f"{label} → {out_rail}" if out_rail else label
-                min_v = None
+                need = regulator_input_minimum(d)
+                min_v = need[0] if need else None
+                max_v = _float(d.get("vin_max"))
+                limits = {
+                    "min_name": "input minimum",
+                    "max_name": "PDN_VIN_MAX",
+                    "min_basis": need[1] if need else "",
+                    "regulator_type": str(d.get("regulator_type") or ""),
+                }
             load = LoadResult(
                 label=label, kind=kind, net=", ".join(nets),
                 pin_count=len(self.pin_v.get((di, p_term), [])),
                 current_a=current, v_load=None, drop_v=None,
                 return_drop_v=None, min_v=min_v, margin_v=None,
-                status=PASS)
+                status=PASS, max_v=max_v, **limits)
             if p_pins:
                 worst_pin, v_p = min(p_pins, key=lambda pv: pv[1])
                 v_ret = max(n_volts) if n_volts else src_ret
@@ -454,6 +479,16 @@ class _Context:
                                  _float(worst_pin.get("y_mm")) or 0.0)
                 if min_v is not None:
                     load.margin_v = load.v_load - min_v
+                if rng is not None and rng.low > 0:
+                    load.v_low = lowest_voltage(load.v_load, rng)
+                    if min_v is not None:
+                        load.margin_low_v = load.v_low - min_v
+                if max_v is not None or (rng is not None and rng.high > 0):
+                    load.v_high = highest_voltage(
+                        load.v_load, rng or RailRange(setpoint, 0.0, 0.0,
+                                                      False))
+                    if max_v is not None:
+                        load.margin_high_v = max_v - load.v_high
             rail.loads.append(load)
             for pin, v in self.pin_v.get((di, p_term), []):
                 rail.pin_rows.append({
@@ -472,7 +507,8 @@ class _Context:
             rail.worst_drop_v = max(drops)
             if setpoint:
                 rail.worst_drop_pct = 100.0 * rail.worst_drop_v / setpoint
-        margins = [ld.margin_v for ld in rail.loads if ld.margin_v is not None]
+        margins = [ld.limiting_margin_v for ld in rail.loads
+                   if ld.limiting_margin_v is not None]
         rail.min_margin_v = min(margins) if margins else None
         self.src_ret[rail.name] = src_ret
 
@@ -772,7 +808,9 @@ def _setup_rows(metadata: dict, solution, settings: ReportSettings,
     thermal = metadata.get("thermal_config") or {}
     rows.append(("Electrothermal", "On" if thermal.get("enabled") else "Off"))
     rows.append(("Via current limit", f"{settings.via_limit_a:g} A per via"))
-    rules = ["Load voltage ≥ PDN_MIN_V (FAIL)",
+    rules = ["Load voltage ≥ PDN_MIN_V and ≤ PDN_MAX_V, regulator input "
+             "within its limits, each at nominal and at the supply's range "
+             "ends (FAIL)",
              f"margin ≥ {settings.margin_warn_pct:g} % of nominal (WARN)",
              "via |I| < limit (FAIL)", "|Z| ≤ target up to F_MAX (FAIL)",
              "capacitor flags or loop L over its warning level (WARN)"]
@@ -786,7 +824,12 @@ def _setup_rows(metadata: dict, solution, settings: ReportSettings,
                  "Voltage at a load = lowest supply pin minus highest return "
                  "pin. Drop = setpoint minus that voltage, so it includes the "
                  "return path. Load current = sum of the rail's sinks plus "
-                 "the estimated input current of any regulator it feeds."))
+                 "the estimated input current of any regulator it feeds. "
+                 "Worst case = the solved voltage moved by the supply's "
+                 "range: down by nominal minus minimum; up to the setpoint "
+                 "plus maximum minus nominal (the rail lightly loaded). An "
+                 "SMPS drawing more input current at a low input is not "
+                 "included."))
     rows.append(("Solve status", "Stale: the design was edited after this "
                  "solve" if solve_stale else "Current"))
     return rows

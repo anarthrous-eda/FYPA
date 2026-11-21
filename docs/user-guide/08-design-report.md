@@ -81,8 +81,11 @@ a black-and-white printout still reads.
 
 | Check | Result |
 |-------|--------|
-| Load voltage below its `PDN_MIN_V` | FAIL |
-| Load meets `PDN_MIN_V` by less than the margin setting (default 1 % of nominal) | WARN |
+| Load voltage below its `PDN_MIN_V`, at nominal or with the supply at its minimum | FAIL |
+| Load voltage above its `PDN_MAX_V`, with the rail lightly loaded and the supply at its maximum | FAIL |
+| Regulator input below what it needs (`PDN_DROPOUT` above its output, or `PDN_VIN_MIN`) or above `PDN_VIN_MAX`, same two cases | FAIL |
+| Load meets its minimum by less than the margin setting (default 1 % of nominal), worst case included | WARN |
+| LDO with no `PDN_DROPOUT` or `PDN_VIN_MIN` | UNCHECKED |
 | Drop above the drop budget (optional, % of nominal) | FAIL |
 | A via carrying more than the via current limit | FAIL |
 | Peak current density above the limit (optional, A/mm² of copper cross-section) | WARN |
@@ -105,6 +108,16 @@ Impedance tab.
   much of the drop is in the return.
 - **Load current** is the sum of the rail's sinks plus the estimated input
   current of any regulator it feeds (gain × output current + quiescent).
+- **Worst case** appears when the rail's supply has a tolerance
+  (`PDN_V_TOL`, or `PDN_V_MIN` / `PDN_V_MAX`) or a load has an upper
+  limit. The lowest is the solved voltage minus *nominal − supply
+  minimum*; the highest is the setpoint plus *supply maximum − nominal*,
+  the rail lightly loaded. The DC table then gains a **Worst case**
+  column, and **Margin** is the smallest margin to any limit. A finding
+  that only fails in the worst case says so: *passes at nominal, fails
+  in the worst case*. See
+  [Source tolerance](01-sources-and-sinks.md#optional-source-tolerance---pdn_v_tol-or-pdn_v_min--pdn_v_max)
+  for what the worst case leaves out.
 - **Peak current density** is the 99.9th percentile over the mesh, so a
   single-vertex spike at a pin doesn't stand in for the copper. It is in
   A/mm² of copper cross-section (the sheet current divided by the layer's

@@ -53,9 +53,11 @@ These things change when editor mode is active:
 2. Two extra buttons appear next to the toggle: a red up-triangle
    (**SOURCE**) and a blue down-triangle (**SINK**). These are the free
    marker buttons, covered in 2.4.
-3. **Auto setup…** and **Manual setup…** appear above **Resolve** in the
-   button column - the same two wizards as on the Topology tab. The
-   What-If button is hidden until you leave editor mode.
+3. **Auto setup…** (yellow sparkle) and **Manual setup…** (wrench)
+   appear above **Resolve** in the button column - the same two wizards
+   as on the Topology tab. In editor mode these three are icon-only
+   squares; hover one for its name. The What-If button is hidden until
+   you leave editor mode.
 4. The **PDN Editor** panel slides in on the right-hand side.
 5. Left-drag on empty board sweeps a selection box, for editing several
    sinks in one go - see 2.6.
@@ -144,7 +146,24 @@ If the role is `SINK`, a **Min V (V)** field appears. This is the
 editor-mode equivalent of the schematic `PDN_MIN_V` parameter - the
 minimum acceptable rail voltage at this sink's P pins. Leave it blank
 to skip the check; fill it in to have the Nodes table flag any pin
-below this voltage in red after the solve.
+below this voltage in red after the solve. **Max V (V)** below it is the
+`PDN_MAX_V` equivalent - the most the pins may see, checked with the
+rail lightly loaded.
+
+**Step 6b - (SOURCE / REGULATOR) Optional output range.**
+
+**Output range** says how far the output can sit from the voltage you
+entered. *None* is the default. *Tolerance* shows one field taking `5%`,
+`50mV` or `+3/-5%`; *Min / max* shows **Output min (V)** and **Output
+max (V)** instead. The solve still runs at the nominal voltage; loads
+are then checked at the nominal and at both ends of the range - see
+[Source tolerance](01-sources-and-sinks.md#optional-source-tolerance---pdn_v_tol-or-pdn_v_min--pdn_v_max).
+
+A `REGULATOR` also gets **Dropout (V)**, **IN min (V)** and **IN max
+(V)**: the input headroom it needs above its output and its absolute
+input range, checked against the solved input voltage - see
+[Input headroom](04-regulators.md#input-headroom-pdn_dropout-pdn_vin_min-pdn_vin_max).
+All of these are optional.
 
 **Step 7 - Click Apply.**
 
@@ -361,7 +380,8 @@ Editor edits do not run the solver themselves - they queue up changes
 that the **Resolve** button then applies.
 
 **Resolve.** A green **↻ Resolve** button appears at the top-left of
-the viewport whenever there are unsolved edits. Click it to re-run the
+the viewport whenever there are unsolved edits (in editor mode it shows
+just the green ↻ icon). Click it to re-run the
 solver with the current editor directives applied. The resolve reuses
 the cached design extraction (geometry, net lookup, mesh) so it is
 significantly faster than a cold load - typically a few seconds rather

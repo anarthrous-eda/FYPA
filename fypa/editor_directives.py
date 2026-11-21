@@ -548,11 +548,13 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
                 sense_terms.append(term)
             if bad_sense:
                 continue
+            v_min, v_max = _editor_voltage_range(ed, label, warnings)
             spec = SourceSpec(
                 designator=spec_designator, schdoc_name=_EDITOR_SCHDOC,
                 voltage=float(ed.voltage), p=p_term, n=n_term,
                 channel_index=channel_of.get(ed.id), return_group=return_group,
                 sense_p=sense_terms[0], sense_n=sense_terms[1],
+                v_min=v_min, v_max=v_max,
             )
         elif ed.role == "SINK":
             if ed.current is None:
@@ -566,6 +568,7 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
                 current=float(ed.current), p=p_term, n=n_term,
                 channel_index=channel_of.get(ed.id), return_group=return_group,
                 min_voltage=min_v,
+                max_voltage=_opt_float(getattr(ed, "max_voltage", None)),
             )
         else:  # SERIES - a lumped resistance bridging the two nets
             if ed.resistance is None:
@@ -605,6 +608,29 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
     log.info("apply_editor_directives: applied %d, skipped %d.",
              applied, len(warnings))
     return warnings
+
+
+def _opt_float(value) -> float | None:
+    return None if value is None else float(value)
+
+
+def _editor_voltage_range(ed, label: str, warnings: list[str]
+                          ) -> tuple[float | None, float | None]:
+    """An editor SOURCE / REGULATOR's output range as ``(v_min, v_max)``.
+
+    A range that can't be used (a tolerance that doesn't parse, a limit on
+    the wrong side of the nominal) is dropped with a warning: the directive
+    still solves, only the worst-case check is lost."""
+    from fypa.altium.annotations import resolve_voltage_range
+
+    try:
+        return resolve_voltage_range(
+            float(ed.voltage), getattr(ed, "v_tol", None),
+            _opt_float(getattr(ed, "v_min", None)),
+            _opt_float(getattr(ed, "v_max", None)))
+    except ValueError as e:
+        warnings.append(f"{label}: output range ignored - {e}.")
+        return None, None
 
 
 _REGULATOR_TYPES = ("LDO", "SMPS")
@@ -725,6 +751,7 @@ def _append_editor_regulators(loaded, pending, rail_root, warnings) -> int:
                         f"{label}: nothing drives the input rail "
                         f"{ed.in_p_net!r}, so the SMPS gain can't be derived "
                         "from Vin; starting from 1/η.")
+        v_min, v_max = _editor_voltage_range(ed, label, warnings)
         loaded.annotations.directives.append(RegulatorSpec(
             designator=ed.designator, schdoc_name=_EDITOR_SCHDOC,
             voltage=vout, gain=gain,
@@ -734,6 +761,10 @@ def _append_editor_regulators(loaded, pending, rail_root, warnings) -> int:
             efficiency=eff,
             adaptive_gain_eligible=adaptive,
             smps_topology=topo,
+            v_min=v_min, v_max=v_max,
+            dropout=_opt_float(getattr(ed, "dropout", None)),
+            vin_min=_opt_float(getattr(ed, "vin_min", None)),
+            vin_max=_opt_float(getattr(ed, "vin_max", None)),
         ))
         count += 1
     return count

@@ -175,6 +175,28 @@ U5 (3V3 load):
 Indexed multi-channel sinks support `PDN<n>_MIN_V` per channel, the same way
 `PDN<n>_I` works.
 
+### Supply tolerance and worst-case checks
+
+Optional, and none of it changes the solve - it runs at the nominal `PDN_V`.
+
+| Parameter | On | Purpose |
+|-----------|----|---------|
+| `PDN_V_TOL` | `SOURCE`, `REGULATOR` | Output tolerance: `5%`, `50mV`, `+3/-5%` |
+| `PDN_V_MIN` / `PDN_V_MAX` | `SOURCE`, `REGULATOR` | The same as explicit limits in volts (use instead of `PDN_V_TOL`, not with it) |
+| `PDN_MAX_V` | `SINK` | Maximum acceptable voltage at the part's P pins |
+| `PDN_DROPOUT` | `REGULATOR` | Headroom the input needs above the output |
+| `PDN_VIN_MIN` / `PDN_VIN_MAX` | `REGULATOR` | Lowest / highest input the part accepts |
+
+With a tolerance on the supply, every load is checked **at the nominal and in
+the worst case**, and fails if either fails. Sinks draw a fixed current, so a
+supply at its minimum lowers every point on its rail by the same amount: the
+worst-case low is the solved voltage minus `nominal − minimum`, compared with
+`PDN_MIN_V`. The worst-case high is the lightly loaded rail (no drop) with the
+supply at its maximum, compared with `PDN_MAX_V`. A regulator's input is
+checked the same way against its dropout and input limits. See
+[Source tolerance](docs/user-guide/01-sources-and-sinks.md#optional-source-tolerance---pdn_v_tol-or-pdn_v_min--pdn_v_max)
+and [Input headroom](docs/user-guide/04-regulators.md#input-headroom-pdn_dropout-pdn_vin_min-pdn_vin_max).
+
 ### Single-net (point-to-point) check - `PDN_NET`
 
 Sometimes a net has no return reference at all - tracing power from a

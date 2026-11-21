@@ -45,3 +45,20 @@ def test_store_viewer_settings_saves_overlay_state_without_colors() -> None:
     assert isinstance(saved, dict)
     assert saved["pads"]["both"]["vis"] == "all"
     assert "overlay_colors" not in proj.viewer_settings
+
+
+def test_via_kind_rows_round_trip() -> None:
+    viewer = _OverlayViewerStub()
+    viewer._overlay_state["vias"]["kinds"] = {"micro": {"vis": None}}
+    viewer._overlay_state["vias"]["kinds_open"] = False
+    viewer._via_kind_colors["blind"] = (0.0, 0.5, 1.0)
+    proj = ProjectFile()
+    PdnViewer._store_viewer_settings(viewer, proj)
+
+    reopened = _OverlayViewerStub.__new__(_OverlayViewerStub)
+    reopened._project = proj
+    PdnViewer._init_overlay_state(reopened)
+    vias = reopened._overlay_state["vias"]
+    assert vias["kinds"] == {"micro": {"vis": None}}
+    assert vias["kinds_open"] is False
+    assert reopened._via_kind_colors == {"blind": (0.0, 0.5, 1.0)}

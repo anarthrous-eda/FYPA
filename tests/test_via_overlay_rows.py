@@ -187,3 +187,83 @@ def test_fade_chunk_does_not_mutate_cached_colours() -> None:
     rgba = np.ones((2, 4), dtype=np.float32)
     _fade_chunk(rgba, 0.25)
     assert np.allclose(rgba[:, 3], 1.0)
+
+
+# --- Via-kind sub-rows (through / blind / buried / micro) ------------------
+
+@pytest.fixture
+def kinds_viewer(viewer):
+    """The same board on three copper layers, plus one microvia (3, 3)."""
+    viewer._phys_name_to_layer_id = {"Top": 1, "Mid": 2, "Bottom": 3}
+    md = viewer.metadata
+    md["enabled_copper_layer_ids"] = [1, 2, 3]
+    md["vias"] = [dict(v, layer_end=3) for v in md["vias"]] + [
+        {"x_mm": 3.0, "y_mm": 3.0, "net": "VCC", "diameter_mm": 0.25,
+         "hole_diameter_mm": 0.1, "layer_start": 1, "layer_end": 2},
+    ]
+    md["pths"] = [dict(p, layer_end=3) for p in md["pths"]]
+    viewer._build_overlay_list = lambda: None
+    return viewer
+
+
+def test_via_record_kind_classifies_and_prefers_the_stamp() -> None:
+    from fypa.via_kinds import via_record_kind
+    layers = [1, 2, 3, 4]
+    rec = {"layer_start": 1, "layer_end": 4, "hole_diameter_mm": 0.3}
+    assert via_record_kind(rec, layers) == "through"
+    assert via_record_kind(dict(rec, layer_end=3), layers) == "blind"
+    assert via_record_kind(dict(rec, layer_start=2, layer_end=3),
+                           layers) == "buried"
+    assert via_record_kind(dict(rec, layer_end=2, hole_diameter_mm=0.1),
+                           layers) == "micro"
+    assert via_record_kind(dict(rec, via_kind="buried"), layers) == "buried"
+    assert via_record_kind(rec, []) == "through"      # no stackup known
+
+
+def test_kinds_are_counted_and_single_kind_board_has_no_sub_rows(
+        viewer, kinds_viewer) -> None:
+    assert kinds_viewer._via_kind_counts() == {"through": 2, "micro": 1}
+    assert list(kinds_viewer._via_sub_row_counts()) == ["through", "micro"]
+    kinds_viewer.metadata["vias"] = kinds_viewer.metadata["vias"][:2]
+    assert kinds_viewer._via_sub_row_counts() == {}
+
+
+def test_hidden_kind_is_left_out_and_others_stay(kinds_viewer) -> None:
+    kinds_viewer._update_markers_and_legend(["Top"], ["VCC"])
+    assert _vias(kinds_viewer) == {(1.0, 1.0), (3.0, 3.0)}
+    kinds_viewer._overlay_state["vias"]["kinds"]["micro"] = {"vis": None}
+    kinds_viewer._update_markers_and_legend(["Top"], ["VCC"])
+    assert _vias(kinds_viewer) == {(1.0, 1.0)}
+    # A kind on its show-everywhere eye ignores rails and layers.
+    kinds_viewer._overlay_state["vias"]["kinds"] = {"through": {"vis": "all"}}
+    kinds_viewer._update_markers_and_legend(["Top"], ["VCC"])
+    assert _vias(kinds_viewer) == {(1.0, 1.0), (2.0, 2.0), (3.0, 3.0)}
+
+
+def test_kind_colour_applies_to_that_kind_only(kinds_viewer) -> None:
+    kinds_viewer._via_kind_colors["micro"] = (0.0, 0.0, 1.0)
+    kinds_viewer._update_markers_and_legend(["Top"], ["VCC"])
+    assert _points(kinds_viewer, (0.0, 0.0, 1.0)) == {(3.0, 3.0)}
+    assert _vias(kinds_viewer) == {(1.0, 1.0)}
+
+
+def test_kind_eye_sets_it_apart_until_all_kinds_agree(kinds_viewer) -> None:
+    from fypa.viewer.widgets import EyeButton
+    kinds_viewer._on_overlay_changed = lambda key=None: None
+    st = kinds_viewer._overlay_state["vias"]
+    other = EyeButton(visible=True)
+    kinds_viewer._on_via_kind_eye("micro", "all", True, other)
+    assert st["kinds"] == {"micro": {"vis": "all"}}
+    assert st["both"]["vis"] == "rails" and not other.isVisibleState()
+    kinds_viewer._on_via_kind_eye("through", "all", True, other)
+    assert st["kinds"] == {} and st["both"]["vis"] == "all"
+
+
+def test_vias_row_eye_resets_every_kind(kinds_viewer) -> None:
+    from fypa.viewer.widgets import EyeButton
+    kinds_viewer._on_overlay_changed = lambda key=None: None
+    st = kinds_viewer._overlay_state["vias"]
+    st["kinds"] = {"micro": {"vis": None}}
+    kinds_viewer._on_overlay_eye("vias", "both", "all", True,
+                                 EyeButton(visible=True), EyeButton())
+    assert st["kinds"] == {} and st["both"]["vis"] == "all"

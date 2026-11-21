@@ -6,8 +6,15 @@ import matplotlib
 import matplotlib.colors
 import numpy as np
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QListWidgetItem, QWidget
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QListWidgetItem,
+    QToolButton,
+    QWidget,
+)
 
+from fypa.via_kinds import BOARD_VIA_KINDS, VIA_KIND_LABELS
 from fypa.viewer import copper_tris as _copper_tris
 from fypa.viewer import truetype_text as _truetype_text
 from fypa.viewer.diagnostics import (
@@ -79,6 +86,13 @@ class _OverlayPanelMixin:
                 st["top"] = {"vis": None, "solid": solid0, "alpha_step": 0}
                 st["bottom"] = {"vis": None, "solid": solid0, "alpha_step": 0}
             self._overlay_state[key] = st
+        # Via-kind sub-rows of the Vias row (see _VIA_OVERLAY_KEYS). ``kinds``
+        # holds ``{kind: {"vis": …}}`` only for a kind set apart from the
+        # row; ``kinds_open`` is whether the sub-rows are unfolded.
+        self._overlay_state["vias"]["kinds"] = {}
+        self._overlay_state["vias"]["kinds_open"] = True
+        # Own colour per via kind; a kind absent here follows the Vias row.
+        self._via_kind_colors: dict[str, tuple[float, float, float]] = {}
 
         self._overlay_colors: dict[str, tuple[float, float, float]] = dict(
             _OVERLAY_DEFAULT_COLORS)
@@ -109,6 +123,17 @@ class _OverlayPanelMixin:
                 continue
             if "split" in st:
                 self._overlay_state[key]["split"] = bool(st["split"])
+            if key == "vias":
+                if "kinds_open" in st:
+                    self._overlay_state[key]["kinds_open"] = bool(
+                        st["kinds_open"])
+                kinds = st.get("kinds")
+                for kind, src in (kinds.items()
+                                  if isinstance(kinds, dict) else ()):
+                    if (kind in BOARD_VIA_KINDS and isinstance(src, dict)
+                            and src.get("vis", "") in valid_vis):
+                        self._overlay_state[key]["kinds"][kind] = {
+                            "vis": src["vis"]}
             for variant in ("both", "top", "bottom"):
                 src = st.get(variant)
                 if variant not in self._overlay_state[key] or not isinstance(
@@ -157,6 +182,12 @@ class _OverlayPanelMixin:
             if isinstance(val, dict):
                 primary, bottom = _rgb(val.get("primary")), _rgb(
                     val.get("bottom"))
+                kinds = val.get("kinds") if key == "vias" else None
+                for kind, v in (kinds.items()
+                                if isinstance(kinds, dict) else ()):
+                    rgb = _rgb(v)
+                    if kind in BOARD_VIA_KINDS and rgb is not None:
+                        self._via_kind_colors[kind] = rgb
             else:
                 primary, bottom = _rgb(val), None   # legacy flat form
             if primary is not None:
@@ -201,6 +232,16 @@ class _OverlayPanelMixin:
                 self._add_overlay_row(key, "both", label,
                                       splittable=has_sides)
                 n_rows += 1
+            if key == "vias" and self._overlay_state[key].get("kinds_open"):
+                # One sub-row per via kind on the board.
+                for kind, count in self._via_sub_row_counts().items():
+                    row = self._build_via_kind_row_widget(kind, count)
+                    item = QListWidgetItem()
+                    item.setFlags(Qt.ItemIsEnabled)
+                    self.overlay_list.addItem(item)
+                    item.setSizeHint(row.sizeHint())
+                    self.overlay_list.setItemWidget(item, row)
+                    n_rows += 1
         row_h = self.overlay_list.sizeHintForRow(0) or 24
         self.overlay_list.setFixedHeight(n_rows * row_h + 6)
 
@@ -273,6 +314,19 @@ class _OverlayPanelMixin:
         )
         layout.addWidget(rails_slot)
         layout.addWidget(all_eye)
+        # Vias row with kind sub-rows: when the kinds differ, each eye shows
+        # muted for "some kinds are on this" and a click puts them all on it.
+        via_kinds = self._via_sub_row_counts() if key == "vias" else {}
+        kind_vis = {self._via_row_state("vias", k)[0] for k in via_kinds}
+        if len(kind_vis) > 1:
+            for eye, scope in ((rails_eye, "rails"), (all_eye, "all")):
+                eye._tip_partial = (
+                    "Some via types are shown "
+                    + ("on the selected rails only" if scope == "rails"
+                       else "everywhere")
+                    + " - click to show them all that way")
+                eye.setVisibleState(scope in kind_vis,
+                                    partial=scope in kind_vis, emit=False)
 
         # Colour swatch - opens a picker for this overlay's draw colour.
         # A merged row and the Top row share the layer's primary colour;
@@ -289,6 +343,22 @@ class _OverlayPanelMixin:
         name = QLabel(label_text)
         name.setStyleSheet(f"QLabel {{ color: {_T()['fg']}; }}")
         layout.addWidget(name)
+        if via_kinds:
+            # Fold / unfold the via-kind sub-rows.
+            is_open = bool(self._overlay_state[key].get("kinds_open"))
+            fold_btn = QToolButton()
+            fold_btn.setAutoRaise(True)
+            fold_btn.setCursor(Qt.PointingHandCursor)
+            fold_btn.setFocusPolicy(Qt.NoFocus)
+            fold_btn.setText("▾" if is_open else "▸")
+            fold_btn.setToolTip("Hide the via types" if is_open
+                                else "List the via types (through, blind, "
+                                     "buried, micro)")
+            fold_btn.setStyleSheet(
+                f"QToolButton {{ color: {_T()['fg']}; border: none; "
+                f"padding: 0 2px; }}")
+            fold_btn.clicked.connect(self._on_via_kinds_fold)
+            layout.addWidget(fold_btn)
         layout.addStretch(1)
 
         # Split / merge toggle - only on rows that own a Top + Bottom pair.
@@ -334,6 +404,97 @@ class _OverlayPanelMixin:
             layout.addWidget(fill_btn)
         return w
 
+    # --- Via-kind sub-rows of the Vias row ---------------------------------
+
+    def _via_sub_row_counts(self) -> dict[str, int]:
+        """``{kind: count}`` for the Vias row's sub-rows - one per via kind
+        on the board, or empty when it has a single kind (the Vias row
+        alone then says everything)."""
+        counts = self._via_kind_counts()
+        return counts if len(counts) > 1 else {}
+
+    def _build_via_kind_row_widget(self, kind: str, count: int) -> QWidget:
+        """One via-kind sub-row: ``<indent>[rails eye][all eye][colour]
+        <kind> (<count>)``. The eyes work like the Vias row's, for this kind
+        only; the swatch gives it its own colour (it shows the Vias row's
+        until then). Transparency stays with the Vias row."""
+        vis, _alpha, rgb = self._via_row_state("vias", kind)
+        w = QWidget()
+        layout = QHBoxLayout(w)
+        layout.setContentsMargins(2, 1, 6, 1)
+        layout.setSpacing(4)
+        label = VIA_KIND_LABELS[kind]
+        rails_eye = EyeButton(
+            visible=(vis == "rails"),
+            tip_show=f"Show {label.lower()} vias on the selected rails only",
+            tip_hide=f"Hide {label.lower()} vias (shown on the selected "
+                     "rails only)",
+        )
+        all_eye = EyeButton(
+            visible=(vis == "all"),
+            tip_show=f"Show {label.lower()} vias everywhere",
+            tip_hide=f"Hide {label.lower()} vias (shown everywhere)",
+        )
+        rails_eye.toggled_visible.connect(
+            lambda on: self._on_via_kind_eye(kind, "rails", on, all_eye))
+        all_eye.toggled_visible.connect(
+            lambda on: self._on_via_kind_eye(kind, "all", on, rails_eye))
+        indent = QLabel()
+        indent.setFixedWidth(14)
+        layout.addWidget(indent)
+        layout.addWidget(rails_eye)
+        layout.addWidget(all_eye)
+        colour_btn = OverlayColorButton(rgb=rgb)
+        colour_btn.colorChanged.connect(
+            lambda new_rgb: self._on_via_kind_color(kind, new_rgb))
+        layout.addWidget(colour_btn)
+        name = QLabel(f"{label} ({count})")
+        name.setStyleSheet(f"QLabel {{ color: {_T()['fg']}; }}")
+        layout.addWidget(name)
+        layout.addStretch(1)
+        return w
+
+    def _on_via_kind_eye(self, kind: str, scope: str, on: bool,
+                         other_eye: EyeButton) -> None:
+        """One of a via-kind sub-row's eyes toggled - the same hidden /
+        rails / everywhere pair as a full row, for this kind only. Once
+        every kind on the board agrees again, the Vias row takes that state
+        back and the kinds return to following it."""
+        st = self._overlay_state["vias"]
+        current = self._via_row_state("vias", kind)[0]
+        if on:
+            new_vis = scope
+            other_eye.setVisibleState(False, emit=False)
+        elif current == scope:
+            new_vis = None
+        else:
+            return
+        st["kinds"][kind] = {"vis": new_vis}
+        states = {self._via_row_state("vias", k)[0]
+                  for k in self._via_sub_row_counts()}
+        if len(states) == 1:
+            st["both"]["vis"] = states.pop()
+            st["kinds"] = {}
+        # The Vias row's eyes show the mix; rebuilt a tick later because the
+        # eye that was clicked is mid-emit.
+        QTimer.singleShot(0, self._build_overlay_list)
+        self._on_overlay_changed("vias")
+
+    def _on_via_kind_color(self, kind: str,
+                           rgb: tuple[float, float, float]) -> None:
+        """A via-kind sub-row's swatch picked a colour: that kind stops
+        following the Vias row's colour. Saved with the project; a display
+        change only, so it does not make the solve stale."""
+        self._via_kind_colors[kind] = tuple(float(c) for c in rgb)
+        self._display_dirty = True
+        self._on_overlay_changed("vias")
+
+    def _on_via_kinds_fold(self) -> None:
+        """Fold / unfold the via-kind sub-rows under the Vias row."""
+        st = self._overlay_state["vias"]
+        st["kinds_open"] = not st.get("kinds_open")
+        QTimer.singleShot(0, self._build_overlay_list)
+
     def _on_overlay_eye(self, key: str, variant: str, scope: str, on: bool,
                         rails_eye: EyeButton | None,
                         all_eye: EyeButton) -> None:
@@ -350,6 +511,13 @@ class _OverlayPanelMixin:
                 other.setVisibleState(False, emit=False)
         elif sub["vis"] == scope:
             sub["vis"] = None
+        if key == "vias" and self._via_sub_row_counts():
+            # The Vias row's eyes drive every kind: the kinds drop whatever
+            # set them apart and follow the row again. A muted (mixed) eye
+            # that was on reports "on" for this click, so the scope is the
+            # one clicked either way.
+            self._overlay_state[key]["kinds"] = {}
+            QTimer.singleShot(0, self._build_overlay_list)
         self._on_overlay_changed(key)
 
     def _on_overlay_fill(self, key: str, variant: str, solid: bool) -> None:
@@ -477,6 +645,11 @@ class _OverlayPanelMixin:
         if self.view_3d_box.isChecked():
             self._push_via_cylinders(phys_list, rails,
                                      mode=self.mode_combo.currentText())
+        # The via-span labels sit in the overlay batch and skip hidden via
+        # kinds, so they follow a Vias row change too.
+        span_box = getattr(self, "via_span_box", None)
+        if span_box is not None and span_box.isChecked():
+            self._refresh_overlay_geometry(rails)
 
     def _overlay_side_states(self, key: str) -> dict:
         """Return ``{"top": (vis, solid), "bottom": (vis, solid)}`` for an

@@ -22,6 +22,13 @@ from fypa.altium_geometry import (
     solve_copper_conductivity,
     volume_current_density,
 )
+from fypa.via_kinds import via_record_kind
+from fypa.worst_case import (
+    highest_voltage,
+    lowest_voltage,
+    rail_ranges,
+    regulator_input_minimum,
+)
 
 # Tolerance for "this xy matches a mesh vertex". 0.01 mm is well below any
 # Altium grid and comfortably above float noise. Anything farther is treated
@@ -201,9 +208,12 @@ def compute_node_rows(sampler: SolutionSampler,
     ``drop`` is voltage minus the rail group's highest directive-pin voltage.
     Current density |J| = sqrt(power_density × sheet conductance) / copper
     thickness, in A/mm² of copper cross-section.
-    ``min_voltage`` / ``margin`` / ``status`` come from ``PDN_MIN_V`` and are
-    carried on SINK P-terminal pins only, so the margin check never fires on
-    a return (N) terminal or on a non-sink.
+    ``min_voltage`` / ``max_voltage`` / ``margin`` / ``status`` come from a
+    SINK's ``PDN_MIN_V`` / ``PDN_MAX_V`` (on its P pins) and a REGULATOR's
+    input limits (on its IN_P pins), so the check never fires on a return
+    terminal or on an output. ``voltage_low`` / ``voltage_high`` are the
+    pin's worst case over its supply's range (:mod:`fypa.worst_case`) and
+    ``margin`` already includes them.
     """
     metadata = sampler.metadata
     preps: list[dict] = []
@@ -219,9 +229,25 @@ def compute_node_rows(sampler: SolutionSampler,
         # ``label`` disambiguates multi-channel SOURCE/SINK pins ("U5" vs
         # "U5#1").
         display_desig = str(d.get("label") or desig)
-        directive_min_v = d.get("min_voltage") if role == "SINK" else None
+        # Limits live on the supply-side terminal only: a SINK's P pins
+        # (PDN_MIN_V / PDN_MAX_V) and a REGULATOR's IN_P pins (the input it
+        # needs: dropout / PDN_VIN_MIN, and PDN_VIN_MAX).
+        if role == "SINK":
+            limit_term = "P"
+            directive_min_v = d.get("min_voltage")
+            directive_max_v = d.get("max_voltage")
+        elif role == "REGULATOR":
+            limit_term = "IN_P"
+            need = regulator_input_minimum(d)
+            directive_min_v = need[0] if need else None
+            directive_max_v = d.get("vin_max")
+        else:
+            limit_term = None
+            directive_min_v = directive_max_v = None
         for term_name, term in (d.get("terminals") or {}).items():
-            pin_min_v = directive_min_v if term_name == "P" else None
+            limited = term_name == limit_term
+            pin_min_v = directive_min_v if limited else None
+            pin_max_v = directive_max_v if limited else None
             for pin in term.get("pins", []):
                 layer_id = pin.get("layer_id")
                 net = pin.get("net", "")
@@ -240,12 +266,20 @@ def compute_node_rows(sampler: SolutionSampler,
                     "x_mm": x,
                     "y_mm": y,
                     "min_voltage": pin_min_v,
+                    "max_voltage": pin_max_v,
+                    "limited": limited,
                 })
                 if phys is not None and x is not None and y is not None:
                     requests.setdefault((phys, net), []).append(
                         (prep_idx, float(x), float(y)))
 
     samples = sampler.sample_batch(requests)
+
+    net_to_rail = {n: rail for rail, members in rail_to_members.items()
+                   for n in members}
+    ranges = rail_ranges(
+        [d for d in metadata.get("directives", [])
+         if d.get("role") != "AUTO_BRIDGE"], rail_to_members)
 
     rows: list[dict] = []
     for prep_idx, prep in enumerate(preps):
@@ -259,27 +293,48 @@ def compute_node_rows(sampler: SolutionSampler,
                       conductance, sigma)
                   if pd_val is not None else None)
         min_v = prep["min_voltage"]
-        # Margin = actual sample - declared minimum; ``None`` whenever either
-        # side is missing (no PDN_MIN_V, or the mesh sample failed).
-        if min_v is None or voltage is None:
-            margin = None
-            status = None
-        else:
-            margin = voltage - min_v
-            status = "PASS" if margin >= 0 else "FAIL"
+        max_v = prep["max_voltage"]
+        limited = prep.pop("limited")
+        # Worst case: the pin with its rail's supply at the ends of its
+        # range (fypa.worst_case). Shown on the limited pins of a rail whose
+        # supply gave a range, and wherever there is a maximum to check.
+        rng = ranges.get(net_to_rail.get(prep["net"]))
+        v_low = v_high = None
+        if voltage is not None and limited:
+            if rng is not None and rng.low > 0:
+                v_low = lowest_voltage(voltage, rng)
+            if rng is not None and (max_v is not None or rng.high > 0):
+                v_high = highest_voltage(voltage, rng)
+            elif max_v is not None:
+                v_high = voltage
+        # Margin = the smallest margin to a declared limit, at nominal and
+        # in the worst case; ``None`` when no limit applies or the mesh
+        # sample failed. ``margin_typical`` is the solved voltage alone
+        # against the minimum.
+        margins = []
+        margin_typical = None
+        if voltage is not None and min_v is not None:
+            margin_typical = voltage - min_v
+            margins.append((v_low if v_low is not None else voltage) - min_v)
+        if v_high is not None and max_v is not None:
+            margins.append(max_v - v_high)
+        margin = min(margins) if margins else None
+        status = (None if margin is None
+                  else "PASS" if margin >= 0 else "FAIL")
         row = dict(prep)
         row.update({
             "voltage": voltage,
+            "voltage_low": v_low,
+            "voltage_high": v_high,
             "power_density": pd_val,
             "current_density": cd_val,
             "margin": margin,
+            "margin_typical": margin_typical,
             "status": status,
         })
         rows.append(row)
 
     # Drop per row: V - max(V on the same rail group).
-    net_to_rail = {n: rail for rail, members in rail_to_members.items()
-                   for n in members}
     rail_max_v: dict[str, float] = {}
     for r in rows:
         rail = net_to_rail.get(r["net"])
@@ -312,6 +367,9 @@ def compute_via_rows(sampler: SolutionSampler,
     # Stackup layer ids in physical order (top → bottom).
     stackup_ids = [row["layer_id"] for row in metadata.get("stackup", [])]
     stackup_idx: dict[int, int] = {lid: i for i, lid in enumerate(stackup_ids)}
+    # Copper layers the via kind (through / blind / buried / micro) is
+    # judged against, for records that carry no ``via_kind`` of their own.
+    kind_layers = list(metadata.get("enabled_copper_layer_ids") or stackup_ids)
 
     preps: list[dict] = []
     requests: dict[tuple[str, str], list[tuple[object, float, float]]] = {}
@@ -403,6 +461,7 @@ def compute_via_rows(sampler: SolutionSampler,
             "layer_span": f"{layer_name(top_lid)} → {layer_name(bot_lid)}",
             # Sampled-and-coupled layer ids in stackup order (top first).
             "layer_ids": [lid for lid, _v in sampled_sorted],
+            "via_kind": via_record_kind(via_dict, kind_layers),
             "x_mm": prep["x"],
             "y_mm": prep["y"],
             "diameter_mm": via_dict.get("diameter_mm"),

@@ -45,6 +45,9 @@ and four nets (two output, two input):
 | `PDN_REGULATOR_EFFICIENCY` | 0-1; SMPS only (default `1.0`)                       | `0.9`     |
 | `PDN_GAIN`                 | Optional fixed override (disables auto-gain)             | `0.73`    |
 | `PDN_QUIESCENT`            | Optional constant input current (Eigenverbrauch / Iq)    | `5mA`     |
+| `PDN_V_TOL`                | Optional output tolerance - or `PDN_V_MIN` / `PDN_V_MAX`   | `2%`      |
+| `PDN_DROPOUT`              | Optional: headroom the input needs above the output      | `300mV`   |
+| `PDN_VIN_MIN` / `PDN_VIN_MAX` | Optional: lowest / highest input the part accepts     | `4.5` / `18` |
 | `PDN_OUT_P_NET`            | Output supply net                                      | `+3V3`    |
 | `PDN_OUT_N_NET`            | Output return net                                      | `0V`      |
 | `PDN_IN_P_NET`             | Input supply net                                       | `+5V`     |
@@ -177,6 +180,41 @@ The solver adds this as a **constant input current** on `PDN_IN_P_NET` /
 `PDN_IN_N_NET`, in addition to the load-proportional `PDN_GAIN × I_out`
 term. It increases IR drop on the input rail even when the output load
 is zero.
+
+### Output tolerance (`PDN_V_TOL`, or `PDN_V_MIN` / `PDN_V_MAX`)
+
+A regulator's output takes the same optional range as a SOURCE - see
+[Source tolerance](01-sources-and-sinks.md#optional-source-tolerance---pdn_v_tol-or-pdn_v_min--pdn_v_max).
+The loads on its output rail are then checked at the nominal and at the
+ends of the range. The range belongs to this regulator alone: a tolerance
+on the supply feeding it does not pass through to its output.
+
+### Input headroom (`PDN_DROPOUT`, `PDN_VIN_MIN`, `PDN_VIN_MAX`)
+
+A regulator only regulates while its input is high enough. Tell FYPA
+what it needs and the solved input voltage is checked against it:
+
+- **`PDN_DROPOUT`** - how far the input must stay above the output, in
+  volts (`300mV`). The natural form for an LDO. The headroom is counted
+  above the output's *maximum* when the output has a range, since a
+  regulator at the top of its range needs the most input.
+- **`PDN_VIN_MIN`** - the lowest input the part accepts, in volts, such
+  as an undervoltage-lockout threshold. The natural form for a switcher.
+  With both set, the stricter one applies.
+- **`PDN_VIN_MAX`** - the highest input the part accepts.
+
+The input is checked like a load: at the nominal, and in the worst case
+when the supply feeding it has a tolerance (lowest against the minimum,
+the lightly loaded rail at its highest against `PDN_VIN_MAX`). Either
+failing is a **FAIL**. The limits show on the regulator's input pins in
+the Nodes tab and on its *regulator input* row in the design report.
+
+`PDN_DROPOUT` is an error on a `BOOST`, `BUCKBOOST` or `INVERTER`, whose
+input need not sit above its output - use `PDN_VIN_MIN` there.
+
+An LDO with neither `PDN_DROPOUT` nor `PDN_VIN_MIN` is reported as
+UNCHECKED: its input voltage was calculated, but nothing says whether it
+is enough.
 
 ## 4.4 Manual `PDN_GAIN` (advanced)
 

@@ -165,6 +165,9 @@ class _ProbeMixin:
         right = gl.width()
         if panel is not None and panel.isVisible():
             right -= panel.width()
+        handle = getattr(self, "_editor_panel_toggle_btn", None)
+        if handle is not None and handle.isVisible():
+            right -= handle.width()
         tag.move(max(margin, right - tag.width() - margin),
                  max(margin, gl.height() - tag.height() - margin))
         tag.show()
@@ -202,7 +205,27 @@ class _ProbeMixin:
         panel.setFixedHeight(max(h, 50))
         panel.move(gl.width() - w - margin, margin)
         panel.raise_()
-        gl.set_legend_right_inset(float(w) if panel.isVisible() else 0.0)
+        # Editor mode: the panel is always wanted, so its visibility is just
+        # the collapse state, and the collapse handle rides its left edge
+        # (or the viewport's right edge while collapsed). Viewer mode leaves
+        # visibility to the copper selection and has no handle.
+        handle = getattr(self, "_editor_panel_toggle_btn", None)
+        handle_w = 0
+        if handle is not None:
+            editing = bool(getattr(self, "_editor_mode", False))
+            collapsed = bool(getattr(self, "_editor_panel_collapsed", False))
+            if editing:
+                panel.setVisible(not collapsed)
+                handle_w = handle.width()
+                handle.setCollapsed(collapsed)
+                handle.setFixedHeight(max(h, 50))
+                handle.move(
+                    gl.width() - margin - handle_w - (0 if collapsed else w),
+                    margin)
+                handle.raise_()
+            handle.setVisible(editing)
+        gl.set_legend_right_inset(
+            float(handle_w + (w if panel.isVisible() else 0)))
         self._position_view_mode_tag()
 
     def _on_spacemouse_fit(self) -> None:
@@ -1787,6 +1810,8 @@ class _ProbeMixin:
         self._apply_view_mode_tag_theme()
         if getattr(self, "_sidebar_toggle_btn", None) is not None:
             self._sidebar_toggle_btn.update()
+        if getattr(self, "_editor_panel_toggle_btn", None) is not None:
+            self._editor_panel_toggle_btn.update()
 
         # --- Non-heatmap tabs: remove and rebuild ---
         heatmap_idx = self._heatmap_tab_index

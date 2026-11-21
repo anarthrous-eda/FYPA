@@ -4,6 +4,7 @@ from __future__ import annotations
 import numpy as np
 from PySide6.QtGui import QKeySequence, QShortcut
 
+from fypa.via_kinds import BOARD_VIA_KINDS, via_record_kind
 from fypa.viewer.diagnostics import _apply_mesh_failure_highlights
 from fypa.viewer.display import _build_cmap_lut, _VIA_CURRENT_MODE
 from fypa.viewer.overlays import _rec_slot_tuple
@@ -186,10 +187,15 @@ class _ViewportMixin:
         id_to_phys = {v: k for k, v in self._phys_name_to_layer_id.items()}
         labels: list[dict] = []
         seen: set[tuple[float, float]] = set()
+        # A via kind whose Board Features sub-row is hidden draws no via,
+        # so it gets no label either.
+        kind_state = self._via_kind_states()
         for v in self.metadata.get("vias", []):
             ls = v.get("layer_start")
             le = v.get("layer_end")
             if ls is None or le is None:
+                continue
+            if kind_state.get(self._via_kind(v), (None,))[0] is None:
                 continue
             lo, hi = (ls, le) if ls <= le else (le, ls)
             # Match the marker / cylinder rule: primary-eye visibility
@@ -242,11 +248,15 @@ class _ViewportMixin:
     def _collect_via_positions(self, target_layer_id: int | None,
                                rail_members: set[str], *,
                                rail_scoped: bool = True,
+                               kinds: set[str] | None = None,
                                ) -> tuple[list[float], list[float],
                                           list[float]]:
         """Vias whose span includes ``target_layer_id``. Returns parallel
         xs/ys lists plus each via's physical diameter (mm) so the marker
         overlay can size the orange dot to the real via footprint.
+
+        ``kinds`` narrows it to those via kinds (through / blind / buried /
+        micro); ``None`` takes every kind.
 
         ``rail_scoped`` selects which eye is asking:
 
@@ -265,6 +275,9 @@ class _ViewportMixin:
         mask = (idx["lo"] <= target_layer_id) & (target_layer_id <= idx["hi"])
         if rail_scoped:
             mask &= self._via_net_mask(idx, rail_members)
+        if kinds is not None:
+            mask &= np.isin(idx["kind"], [BOARD_VIA_KINDS.index(k)
+                                          for k in kinds])
         if self._editor_focus_active():
             mask &= self._via_net_mask(idx, self._editor_focus_nets)
         return (idx["x"][mask].tolist(), idx["y"][mask].tolist(),
@@ -284,6 +297,35 @@ class _ViewportMixin:
             memo = idx["_memo"] = (key, per_net[idx["net"]])
         return memo[1]
 
+    def _via_kind_index(self) -> dict[int, str]:
+        """``id(record) -> kind`` for every ``metadata["vias"]`` record.
+        Rebuilt when the metadata's via list is replaced."""
+        md = getattr(self, "metadata", None) or {}
+        vias = md.get("vias") or []
+        cached = getattr(self, "_via_kind_cache", None)
+        if (cached is not None and cached[0] is vias
+                and cached[1] == len(vias)):
+            return cached[2]
+        # Copper layer ids, top to bottom. A Gerber import carries no
+        # enabled-layer list, but its stackup rows are the same thing.
+        layers = list(md.get("enabled_copper_layer_ids")
+                      or [row["layer_id"] for row in md.get("stackup", [])])
+        index = {id(v): via_record_kind(v, layers) for v in vias}
+        self._via_kind_cache = (vias, len(vias), index)
+        return index
+
+    def _via_kind(self, rec: dict) -> str:
+        """Kind (through / blind / buried / micro) of one via record."""
+        return self._via_kind_index().get(id(rec), "through")
+
+    def _via_kind_counts(self) -> dict[str, int]:
+        """How many vias of each kind the board has, in
+        :data:`BOARD_VIA_KINDS` order; kinds it has none of are left out."""
+        counts: dict[str, int] = {}
+        for kind in self._via_kind_index().values():
+            counts[kind] = counts.get(kind, 0) + 1
+        return {k: counts[k] for k in BOARD_VIA_KINDS if k in counts}
+
     def _via_position_index(self) -> dict | None:
         """Column arrays over ``metadata['vias']`` (span, position, marker
         diameter, net) so the per-layer via filter is a few array masks
@@ -299,6 +341,7 @@ class _ViewportMixin:
         xs: list[float] = []
         ys: list[float] = []
         ds: list[float] = []
+        kind_codes: list[int] = []
         net_ids: list[int] = []
         nets: list = []
         net_index: dict = {}
@@ -312,6 +355,7 @@ class _ViewportMixin:
             xs.append(v.get("x_mm", 0.0))
             ys.append(v.get("y_mm", 0.0))
             ds.append(self._via_marker_diameter_mm(v))
+            kind_codes.append(BOARD_VIA_KINDS.index(self._via_kind(v)))
             net = v.get("net")
             ni = net_index.get(net)
             if ni is None:
@@ -324,6 +368,7 @@ class _ViewportMixin:
             "x": np.asarray(xs, dtype=np.float64),
             "y": np.asarray(ys, dtype=np.float64),
             "d": np.asarray(ds, dtype=np.float64),
+            "kind": np.asarray(kind_codes, dtype=np.int64),
             "net": np.asarray(net_ids, dtype=np.int64),
             "nets": nets,
         } if lo else None
@@ -790,6 +835,8 @@ class _ViewportMixin:
             ("H", self._hotkey_cycle_colormap),
             ("Shift+H", self._hotkey_cycle_colormap_reverse),
             ("B", self._toggle_sidebar),
+            # The editor-mode right-hand panel; no-op outside editor mode.
+            ("Shift+B", self._toggle_editor_panel),
             # Show / hide the What-If panel (same as its viewport button;
             # no-op in editor mode).
             ("W", self._toggle_whatif_panel_visible),

@@ -273,7 +273,7 @@ def _rail_table(r: Report) -> str:
                      f'<td class="num">rise {fmt_mv(rail.ground_rise_v)}</td>',
                      '<td class="num">-</td>']
         else:
-            margin_cls = ("bad" if "below-min-v" in codes else
+            margin_cls = ("bad" if codes & LIMIT_FAIL_CODES else
                           "caution" if "low-margin" in codes else
                           "nolimit" if rail.min_margin_v is None else "")
             margin_txt = ("no limit" if rail.min_margin_v is None
@@ -397,8 +397,9 @@ def _condensed(rail: RailReport) -> str:
         if lowest is not None:
             txt = (f"Lowest load {esc(lowest.label)} at "
                    f"{fmt_v(lowest.v_load)}")
-            if lowest.margin_v is not None:
-                txt += f" ({fmt_mv(lowest.margin_v, signed=True)} margin)"
+            if lowest.limiting_margin_v is not None:
+                txt += (f" ({fmt_mv(lowest.limiting_margin_v, signed=True)}"
+                        " margin)")
             txt += (f", drop {fmt_mv(rail.worst_drop_v)}"
                     + (f" ({rail.worst_drop_pct:.2g} %)"
                        if rail.worst_drop_pct is not None else "") + ".")
@@ -422,6 +423,13 @@ def _condensed(rail: RailReport) -> str:
     return " ".join(parts)
 
 
+# Finding codes that mean a load is outside a voltage limit. Shared with the
+# PDF renderer.
+LIMIT_FAIL_CODES: frozenset[str] = frozenset({
+    "below-min-v", "below-min-v-worst", "above-max-v",
+})
+
+
 def lowest_load(rail: RailReport) -> LoadResult | None:
     """The load with the lowest solved voltage, if any was solved."""
     best: LoadResult | None = None
@@ -443,7 +451,9 @@ def kpi_tiles(rail: RailReport) -> list[tuple[str, str, str, str]]:
         if lowest is not None:
             sub = lowest.label + (f" · min {fmt_v(lowest.min_v)}"
                                   if lowest.min_v is not None else "")
-            tiles.append((FAIL if "below-min-v" in codes else
+            if lowest.v_low is not None:
+                sub += f" · {fmt_v(lowest.v_low)} at supply minimum"
+            tiles.append((FAIL if codes & LIMIT_FAIL_CODES else
                           WARN if "low-margin" in codes else "",
                           "Lowest load", fmt_v(lowest.v_load), sub))
         tiles.append((FAIL if "drop-budget" in codes else "", "Worst drop",
@@ -508,39 +518,89 @@ def _sec_power_path(rail: RailReport, r: Report) -> str:
     return _figure(rail, "power_path", f"Power path for {rail.name}")
 
 
+def dc_has_worst_case(rail: RailReport) -> bool:
+    """True when the DC table needs its "Worst case" column: the supply gave
+    a range, or a load has an upper limit. Shared with the PDF renderer."""
+    return any(ld.v_low is not None or ld.v_high is not None
+               for ld in rail.loads)
+
+
+def dc_worst_text(ld: LoadResult) -> str:
+    """A load's worst-case voltage(s): ``"3.105 – 3.480 V"``, or one end."""
+    if ld.v_low is not None and ld.v_high is not None:
+        return f"{ld.v_low:.3f} – {ld.v_high:.3f} V"
+    if ld.v_low is not None:
+        return fmt_v(ld.v_low)
+    if ld.v_high is not None:
+        return "≤ " + fmt_v(ld.v_high)
+    return "-"
+
+
+def dc_limit_text(ld: LoadResult) -> str:
+    """A load's limits: ``"≥ 3.000 V"``, ``"3.000 – 3.600 V"`` or ``"-"``."""
+    if ld.min_v is not None and ld.max_v is not None:
+        return f"{ld.min_v:.3f} – {ld.max_v:.3f} V"
+    if ld.min_v is not None:
+        return "≥ " + fmt_v(ld.min_v)
+    if ld.max_v is not None:
+        return "≤ " + fmt_v(ld.max_v)
+    return "-"
+
+
+def dc_worst_note(rail: RailReport) -> str:
+    """The sentence under the DC table that says what "Worst case" and
+    "Margin" mean on this rail; ``""`` when the column is not shown."""
+    if not dc_has_worst_case(rail):
+        return ""
+    if rail.source_min_v is not None and rail.source_max_v is not None:
+        rng = (f"the supply's {fmt_v(rail.source_min_v)} to "
+               f"{fmt_v(rail.source_max_v)} range")
+    else:
+        rng = "the setpoint (no supply range was given)"
+    return (f"Worst case is the lowest and highest the load can see over "
+            f"{rng}; the highest is with the rail lightly loaded. Margin is "
+            "the smallest margin to a limit, worst case included.")
+
+
 def _sec_dc(rail: RailReport, r: Report) -> str:
     if rail.kind != "supply":
         return ""
     if not rail.loads:
         return '<div class="na-line">No loads on this rail.</div>'
     rows = []
+    worst = dc_has_worst_case(rail)
     for ld in rail.loads:
         tr = {FAIL: "row-fail", WARN: "row-warn"}.get(ld.status, "")
-        m_cls = ("bad" if ld.status == FAIL and ld.margin_v is not None
-                 and ld.margin_v < 0 else
+        margin = ld.limiting_margin_v
+        m_cls = ("bad" if ld.status == FAIL and margin is not None
+                 and margin < 0 else
                  "caution" if ld.status == WARN else
-                 "nolimit" if ld.margin_v is None else "")
+                 "nolimit" if margin is None else "")
         kind = "" if ld.kind == "sink" else ' <span class="muted">(regulator input)</span>'
         rows.append(
             f'<tr class="{tr}"><td>{esc(ld.label)}{kind}</td><td>{esc(ld.net)}</td>'
             f'<td class="num">{ld.pin_count}</td>'
             f'<td class="num">{fmt_a(ld.current_a)}</td>'
             f'<td class="num">{fmt_v(ld.v_load)}</td>'
-            f'<td class="num">{fmt_mv(ld.drop_v)}</td>'
+            + (f'<td class="num">{esc(dc_worst_text(ld))}</td>' if worst
+               else "")
+            + f'<td class="num">{fmt_mv(ld.drop_v)}</td>'
             f'<td class="num">{fmt_mv(ld.return_drop_v)}</td>'
-            f'<td class="num">{fmt_v(ld.min_v)}</td>'
+            f'<td class="num">{esc(dc_limit_text(ld))}</td>'
             f'<td class="num {m_cls}">'
-            f'{"no limit" if ld.margin_v is None else fmt_mv(ld.margin_v, True)}'
+            f'{"no limit" if margin is None else fmt_mv(margin, True)}'
             f'</td><td>{chip(ld.status)}</td></tr>')
     return ('<div class="scroll"><table><thead><tr><th>Load</th><th>Net</th>'
             '<th class="num">Pins</th><th class="num">Current</th>'
-            '<th class="num">V at load</th><th class="num">Drop</th>'
-            '<th class="num">in return</th><th class="num">Min V</th>'
+            '<th class="num">V at load</th>'
+            + ('<th class="num">Worst case</th>' if worst else "")
+            + '<th class="num">Drop</th>'
+            '<th class="num">in return</th><th class="num">Limits</th>'
             '<th class="num">Margin</th><th>Status</th></tr></thead><tbody>'
             + "".join(rows) + "</tbody></table></div>"
             f'<p class="note">V at load is the lowest supply pin minus the '
             f'highest return pin. Drop is measured from the '
-            f'{fmt_v(rail.nominal_v)} setpoint.'
+            f'{fmt_v(rail.nominal_v)} setpoint. {esc(dc_worst_note(rail))}'
             + (" Every pin is listed in the appendix."
                if r.settings.include_appendix else "") + "</p>")
 

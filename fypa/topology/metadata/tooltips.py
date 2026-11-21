@@ -10,6 +10,7 @@ from fypa.topology.util import (
     fmt_compact,
     reformat_legacy_value_str,
 )
+from fypa.worst_case import limit_lines
 
 
 def directive_tooltip_lines(directive: DirectiveDict) -> list[str]:
@@ -21,6 +22,7 @@ def directive_tooltip_lines(directive: DirectiveDict) -> list[str]:
     if role == "REGULATOR":
         if directive.get("gain") is not None:
             lines.append(f"gain {fmt_compact(float(directive['gain']))}")
+    lines.extend(limit_lines(directive))
     terms = directive.get("terminals") or {}
     port_defs = ROLE_PORTS.get(role, [("P", "left", 0), ("N", "right", 1)])
     n_names = {p for p, _, _ in port_defs if p in ("N", "IN_N")}

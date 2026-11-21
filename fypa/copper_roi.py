@@ -19,8 +19,9 @@ practice (widen first, add layers and vias, thicken last):
 * **via** - one more via beside an existing one, halved the same way.
 
 The target load is ranked by how much of its drop budget it uses: the drop
-from the rail's setpoint over ``nominal - PDN_MIN_V`` when PDN_MIN_V is set,
-else over :data:`DEFAULT_BUDGET_PCT` of nominal. Drops and margins come from
+from the rail's setpoint over ``nominal - PDN_MIN_V`` when PDN_MIN_V is set
+(counted from the supply's minimum instead of nominal when the supply gave a
+range), else over :data:`DEFAULT_BUDGET_PCT` of nominal. Drops and margins come from
 :func:`fypa.report.collect.build_report`, so the ranking always agrees with
 the design report.
 """
@@ -99,8 +100,13 @@ def rank_loads(solution, metadata: dict,
         for ld in rail.loads:
             if ld.kind != "sink" or ld.drop_v is None:
                 continue
-            if ld.min_v is not None and nominal - ld.min_v > 0:
-                budget, basis = nominal - ld.min_v, "PDN_MIN_V"
+            # The drop a load can afford is counted from the supply's
+            # minimum when it gave a range: that is the voltage the copper
+            # has to deliver from in the worst case.
+            floor = getattr(rail, "source_min_v", None)
+            floor = nominal if floor is None else float(floor)
+            if ld.min_v is not None and floor - ld.min_v > 0:
+                budget, basis = floor - ld.min_v, "PDN_MIN_V"
             else:
                 budget, basis = nominal * default_budget_pct / 100.0, "default"
             used = ld.drop_v / budget if budget > 0 else math.inf

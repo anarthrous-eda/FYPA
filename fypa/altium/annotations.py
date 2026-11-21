@@ -35,6 +35,11 @@ REGULATOR      PDN_V                           PDN_OUT_P_NET, PDN_OUT_N_NET,
                BUCK|BOOST|BUCKBOOST|INVERTER
 ============   =============================   ==================================================
 
+Check limits (optional; none of them changes the solve - see
+:mod:`fypa.worst_case`): a SOURCE / REGULATOR output range as ``PDN_V_TOL``
+*or* ``PDN_V_MIN`` / ``PDN_V_MAX``; a SINK's ``PDN_MIN_V`` / ``PDN_MAX_V``; a
+REGULATOR's ``PDN_DROPOUT`` / ``PDN_VIN_MIN`` / ``PDN_VIN_MAX``.
+
 Multi-connector P / N pads (``*_DES``)
 --------------------------------------
 Two-terminal SOURCE / SINK channels may pull a terminal's pads from **other**
@@ -248,6 +253,7 @@ from fypa.altium.extract import (
     RawSchSheetSymbol,
 )
 from fypa.altium_geometry import _pad_polygon
+from fypa.worst_case import NO_DROPOUT_TOPOLOGIES
 
 
 log = logging.getLogger(__name__)
@@ -360,13 +366,19 @@ _REMOTE_SENSE_SUFFIXES: frozenset[str] = frozenset({
 _COMMON_TERMINAL_SUFFIXES: frozenset[str] = frozenset({
     "NET", "PINS", "P_NET", "N_NET", "P_PINS", "N_PINS", "IGNORE_PINS",
 }) | _PART_WIDE_PIN_FILTER_SUFFIXES
+# The output range of a SOURCE / REGULATOR: a tolerance on PDN_V, or explicit
+# limits (see resolve_voltage_range). Modifiers, not channel-defining.
+_VOLTAGE_RANGE_SUFFIXES: frozenset[str] = frozenset({
+    "V_TOL", "V_MIN", "V_MAX",
+})
 _KNOWN_SUFFIXES_BY_ROLE: dict[str, frozenset[str]] = {
     "SOURCE": _COMMON_TERMINAL_SUFFIXES | frozenset({"V", "P_DES", "N_DES"})
-    | _REMOTE_SENSE_SUFFIXES,
+    | _REMOTE_SENSE_SUFFIXES | _VOLTAGE_RANGE_SUFFIXES,
     "SINK": _COMMON_TERMINAL_SUFFIXES | frozenset(
-        {"I", "MIN_V", "PIN_R", "P_DES", "N_DES"}),
-    "REGULATOR": frozenset({
+        {"I", "MIN_V", "MAX_V", "PIN_R", "P_DES", "N_DES"}),
+    "REGULATOR": _VOLTAGE_RANGE_SUFFIXES | frozenset({
         "V", "GAIN", "REGULATOR_TYPE", "REGULATOR_EFFICIENCY", "QUIESCENT",
+        "DROPOUT", "VIN_MIN", "VIN_MAX",
         "OUT_P_NET", "OUT_N_NET", "OUT_P_PINS", "OUT_N_PINS",
         "IN_P_NET", "IN_N_NET", "IN_P_PINS", "IN_N_PINS",
         "IGNORE_PINS",
@@ -579,6 +591,94 @@ def parse_si_value(s: str) -> float:
         magnitude = _apply_si_suffix(magnitude, rest)
 
     return sign * magnitude
+
+
+# --- source / regulator output voltage range -----------------------------------
+
+_TOLERANCE_HINT = "; use forms like 5%, 50mV or +3/-5%"
+
+
+def parse_voltage_tolerance(text: str, nominal: float) -> tuple[float, float]:
+    """``(v_min, v_max)`` for a tolerance on ``nominal`` volts.
+
+    Accepts a symmetric tolerance (``5%``, ``±5%``, ``+/-50mV``), an
+    asymmetric pair (``+3/-5%``, ``+3%/-5%``, ``-100mV/+50mV``) and a
+    one-sided one (``-5%``). A percentage is of the nominal; anything else is
+    volts and must carry a unit or SI prefix, because a bare ``5`` could mean
+    either. Raises :class:`ValueError` on anything else.
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        raise ValueError("empty tolerance")
+    body = raw.replace("±", "").replace("+/-", "").replace("+-", "").strip()
+    parts = [p.strip() for p in body.split("/")]
+    if not 1 <= len(parts) <= 2 or not all(parts):
+        raise ValueError(f"cannot parse tolerance {raw!r}{_TOLERANCE_HINT}")
+    # In "+3/-5%" the unit is written once, on the last part.
+    shared_pct = parts[-1].endswith("%")
+
+    def _amount(part: str) -> tuple[int, float]:
+        sign = 0
+        if part[0] in "+-":
+            sign = 1 if part[0] == "+" else -1
+            part = part[1:].strip()
+        is_pct = part.endswith("%")
+        if is_pct:
+            part = part[:-1].strip()
+        elif not any(c.isalpha() for c in part):
+            if not (shared_pct and len(parts) == 2):
+                raise ValueError(
+                    f"tolerance {raw!r} needs a unit{_TOLERANCE_HINT}")
+            is_pct = True
+        try:
+            value = parse_si_value(part)
+        except ValueError:
+            raise ValueError(
+                f"cannot parse tolerance {raw!r}{_TOLERANCE_HINT}") from None
+        if value < 0:
+            raise ValueError(f"cannot parse tolerance {raw!r}{_TOLERANCE_HINT}")
+        return sign, (abs(nominal) * value / 100.0 if is_pct else value)
+
+    amounts = [_amount(p) for p in parts]
+    if len(amounts) == 1:
+        sign, amt = amounts[0]
+        low = amt if sign <= 0 else 0.0
+        high = amt if sign >= 0 else 0.0
+    else:
+        signs = sorted(s for s, _a in amounts)
+        if signs != [-1, 1]:
+            raise ValueError(
+                f"tolerance {raw!r} needs one + and one - part"
+                f"{_TOLERANCE_HINT}")
+        low = next(a for s, a in amounts if s < 0)
+        high = next(a for s, a in amounts if s > 0)
+    return nominal - low, nominal + high
+
+
+def resolve_voltage_range(
+    nominal: float,
+    tolerance: str | None = None,
+    v_min: float | None = None,
+    v_max: float | None = None,
+) -> tuple[float | None, float | None]:
+    """The output range of a SOURCE / REGULATOR as ``(v_min, v_max)``, from a
+    tolerance *or* explicit limits (either may be ``None`` = not given).
+
+    Raises :class:`ValueError` when both forms are given or a limit is on the
+    wrong side of the nominal.
+    """
+    if tolerance is not None and str(tolerance).strip():
+        if v_min is not None or v_max is not None:
+            raise ValueError(
+                "give either a tolerance or a min / max range, not both")
+        v_min, v_max = parse_voltage_tolerance(tolerance, nominal)
+    if v_min is not None and v_min > nominal:
+        raise ValueError(
+            f"minimum {v_min:g} V is above the nominal {nominal:g} V")
+    if v_max is not None and v_max < nominal:
+        raise ValueError(
+            f"maximum {v_max:g} V is below the nominal {nominal:g} V")
+    return v_min, v_max
 
 
 # --- per-component parameter lookup -------------------------------------------
@@ -3505,6 +3605,11 @@ class SourceSpec(_BaseSpec):
     # side senses locally. See _resolve_remote_sense.
     sense_p: TerminalSpec | None = None
     sense_n: TerminalSpec | None = None
+    # Optional output range (PDN_V_TOL, or PDN_V_MIN / PDN_V_MAX), volts.
+    # Not solved with: the solve runs at ``voltage`` and the checks shift its
+    # result to the range's ends (see fypa.worst_case). ``None`` = not given.
+    v_min: float | None = None
+    v_max: float | None = None
 
 
 @dataclass(frozen=True)
@@ -3518,6 +3623,9 @@ class SinkSpec(_BaseSpec):
     # viewer's Nodes table compares the sink's actual P-terminal voltage
     # against this limit and flags pass / fail per pin.
     min_voltage: float | None = None
+    # Optional maximum acceptable rail voltage (PDN_MAX_V), checked against
+    # the lightly loaded rail at its source's maximum (see fypa.worst_case).
+    max_voltage: float | None = None
     solve_excluded: bool = False  # see SourceSpec.solve_excluded
     # Per-part override for the multi-pin star coupling resistance (Ω),
     # from ``PDN_PIN_R`` / ``PDN<n>_PIN_R``. ``None`` keeps the global
@@ -3645,6 +3753,15 @@ class RegulatorSpec(_BaseSpec):
     # (1 - D) / D x i_v, and the input still draws gain x the output current,
     # i.e. gain / D x i_v (see regulator_input_gain).
     freewheel_duty: float | None = None
+    # Optional output range, as on SourceSpec.
+    v_min: float | None = None
+    v_max: float | None = None
+    # Optional input limits, checked against the solved input voltage (see
+    # fypa.worst_case): the headroom the input needs above the output
+    # (PDN_DROPOUT) and the absolute input range (PDN_VIN_MIN / PDN_VIN_MAX).
+    dropout: float | None = None
+    vin_min: float | None = None
+    vin_max: float | None = None
 
 
 def regulator_input_gain(d: RegulatorSpec) -> float | None:
@@ -3774,6 +3891,56 @@ def _optional_value(params: dict[str, str], key: str, role_diag: str,
             f"{role_diag}: {key}={raw!r} - {e}{_PARSE_VALUE_HINT}",
         )
         return None
+
+
+_RANGE_UNSET: tuple[None, None] = (None, None)
+
+
+def _optional_voltage_range(
+    params: dict[str, str], idx: int | None, nominal: float, role_diag: str,
+    result: AnnotationResult,
+) -> tuple[float | None, float | None] | None:
+    """A SOURCE / REGULATOR channel's ``(v_min, v_max)`` from PDN_V_TOL or
+    PDN_V_MIN / PDN_V_MAX; ``(None, None)`` when none is set. Returns ``None``
+    (error recorded) when what is set can't be used."""
+    tol_key = _channel_key("V_TOL", idx)
+    min_key = _channel_key("V_MIN", idx)
+    max_key = _channel_key("V_MAX", idx)
+    tol = _ci_get(params, tol_key)
+    has_min = _ci_get(params, min_key) is not None
+    has_max = _ci_get(params, max_key) is not None
+    if tol is None and not has_min and not has_max:
+        return _RANGE_UNSET
+    v_min = _optional_value(params, min_key, role_diag, result)
+    v_max = _optional_value(params, max_key, role_diag, result)
+    if (has_min and v_min is None) or (has_max and v_max is None):
+        return None  # unparseable - error already recorded
+    try:
+        return resolve_voltage_range(nominal, tol, v_min, v_max)
+    except ValueError as e:
+        keys = " / ".join(k for k, on in (
+            (tol_key, tol is not None), (min_key, has_min),
+            (max_key, has_max)) if on)
+        _append_error_once(result, f"{role_diag}: {keys} - {e}")
+        return None
+
+
+def _optional_limit(
+    params: dict[str, str], key: str, role_diag: str,
+    result: AnnotationResult, *, positive: bool = False,
+) -> tuple[bool, float | None]:
+    """``(ok, value)`` for an optional check limit. ``ok`` is False (error
+    recorded) when the parameter is set but unusable, so the caller can skip
+    the directive instead of silently dropping the check."""
+    if _ci_get(params, key) is None:
+        return True, None
+    value = _optional_value(params, key, role_diag, result)
+    if value is None:
+        return False, None
+    if positive and value < 0:
+        _append_error_once(result, f"{role_diag}: {key} must be >= 0")
+        return False, None
+    return True, value
 
 
 def _terminal_net_name(proj: ExtractedProject, term: TerminalSpec) -> str | None:
@@ -4289,6 +4456,10 @@ def _parse_source(comp, proj, enabled_layers, result,
             v = _require_value(params, _channel_key("V", idx), value_diag, result)
             if v is None:
                 continue
+            v_range = _optional_voltage_range(
+                params, idx, v, value_diag, result)
+            if v_range is None:
+                continue
             mode = _terminal_mode(params, idx, value_diag, result)
             if mode is None:
                 continue
@@ -4314,6 +4485,7 @@ def _parse_source(comp, proj, enabled_layers, result,
                     designator=pcb_des, schdoc_name=comp.schdoc_name,
                     voltage=v, p=p, n=None, channel_index=idx,
                     sense_p=sense[0], sense_n=sense[1],
+                    v_min=v_range[0], v_max=v_range[1],
                 ))
                 continue
             pair = _resolve_two_terminal(
@@ -4342,6 +4514,7 @@ def _parse_source(comp, proj, enabled_layers, result,
                 designator=pcb_des, schdoc_name=comp.schdoc_name,
                 voltage=v, p=pair[0], n=pair[1], channel_index=idx,
                 sense_p=sense[0], sense_n=sense[1],
+                v_min=v_range[0], v_max=v_range[1],
             ))
     return specs
 
@@ -4416,6 +4589,16 @@ def _parse_sink(comp, proj, enabled_layers, result,
             min_v = _optional_value(
                 params, _channel_key("MIN_V", idx), value_diag, result,
             )
+            max_v = _optional_value(
+                params, _channel_key("MAX_V", idx), value_diag, result,
+            )
+            if min_v is not None and max_v is not None and max_v < min_v:
+                _append_error_once(
+                    result,
+                    f"{value_diag}: {_channel_key('MAX_V', idx)} "
+                    f"({max_v:g} V) is below {_channel_key('MIN_V', idx)} "
+                    f"({min_v:g} V)")
+                max_v = None
             # Per-part package pin-to-pin resistance. Optional; unset keeps
             # the global default (fypa.altium.loader.COUPLING_RESISTANCE_OHM).
             pin_r = _optional_value(
@@ -4437,7 +4620,8 @@ def _parse_sink(comp, proj, enabled_layers, result,
                 specs.append(SinkSpec(
                     designator=pcb_des, schdoc_name=comp.schdoc_name,
                     current=i, p=p, n=None, channel_index=idx,
-                    min_voltage=min_v, pin_coupling_ohm=pin_r,
+                    min_voltage=min_v, max_voltage=max_v,
+                    pin_coupling_ohm=pin_r,
                 ))
                 continue
             pair = _resolve_two_terminal(
@@ -4459,7 +4643,8 @@ def _parse_sink(comp, proj, enabled_layers, result,
             specs.append(SinkSpec(
                 designator=pcb_des, schdoc_name=comp.schdoc_name,
                 current=i, p=pair[0], n=pair[1], channel_index=idx,
-                min_voltage=min_v, pin_coupling_ohm=pin_r,
+                min_voltage=min_v, max_voltage=max_v,
+                pin_coupling_ohm=pin_r,
             ))
     return specs
 
@@ -5404,6 +5589,26 @@ def _parse_regulator(comp, proj, enabled_layers, result,
                     )
                     continue
                 quiescent = iq_raw
+            v_range = _optional_voltage_range(
+                params, idx, v, value_diag, result)
+            if v_range is None:
+                continue
+            limits = [
+                _optional_limit(params, _channel_key(suffix, idx),
+                                value_diag, result, positive=True)
+                for suffix in ("DROPOUT", "VIN_MIN", "VIN_MAX")
+            ]
+            if not all(ok for ok, _v in limits):
+                continue
+            dropout, vin_min, vin_max = (val for _ok, val in limits)
+            if (vin_min is not None and vin_max is not None
+                    and vin_max < vin_min):
+                _append_error_once(
+                    result,
+                    f"{value_diag}: {_channel_key('VIN_MAX', idx)} "
+                    f"({vin_max:g} V) is below "
+                    f"{_channel_key('VIN_MIN', idx)} ({vin_min:g} V)")
+                continue
             out = _resolve_two_terminal(
                 proj, pcb_idx, params,
                 _channel_key("OUT_P_NET", idx), _channel_key("OUT_N_NET", idx),
@@ -5451,6 +5656,14 @@ def _parse_regulator(comp, proj, enabled_layers, result,
                     )
                     continue
                 smps_topology = topo_val
+            if dropout is not None and smps_topology in NO_DROPOUT_TOPOLOGIES:
+                _append_error_once(
+                    result,
+                    f"{value_diag}: {_channel_key('DROPOUT', idx)} does not "
+                    f"apply to a {smps_topology} converter, whose input need "
+                    f"not sit above its output - use "
+                    f"{_channel_key('VIN_MIN', idx)} for its lowest input")
+                continue
             sw1_net = _ci_get(params, _channel_key("SW1_NET", idx))
             sw2_net = _ci_get(params, _channel_key("SW2_NET", idx))
             specs.append(RegulatorSpec(
@@ -5468,6 +5681,8 @@ def _parse_regulator(comp, proj, enabled_layers, result,
                 sw2_net=sw2_net,
                 out_sense_p=sense[0],
                 out_sense_n=sense[1],
+                v_min=v_range[0], v_max=v_range[1],
+                dropout=dropout, vin_min=vin_min, vin_max=vin_max,
             ))
     return specs
 

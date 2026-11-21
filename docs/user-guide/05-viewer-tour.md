@@ -38,7 +38,9 @@ into three areas:
 - **Control panel (left)** - the Board tab's controls, top to bottom:
   the **Physical layers** list, the **Rails** list, the **Mode**
   dropdown, the **Board Features** toggles, and the **Colour scale**
-  (scheme picker and Min / Max boxes).
+  (scheme picker and Min / Max boxes). On a board with more than one
+  via type, the **Vias** row unfolds into Through / Blind / Buried /
+  Micro sub-rows, each with its own eyes and colour.
 - **Viewport (centre / right)** - the OpenGL canvas. Shows the current
   layer's copper, shaded by the current display mode. Pan with the
   mouse, zoom with the wheel.
@@ -317,11 +319,19 @@ REGULATOR / SERIES directive). Columns:
 - **Designator / Pad** - which part, which pad.
 - **Net** - the net this pin connects to.
 - **V** - the solved voltage at this pin.
-- **Min V**, **Margin**, **Status** - only populated for SINK pins
-  that carry a `PDN_MIN_V` value
-  (see [Section 1.3](01-sources-and-sinks.md#optional-pdn_min_v--minimum-acceptable-voltage-at-the-sink)).
-  *Margin* is the measured voltage minus the minimum; rows with a
-  negative margin are highlighted red with `Status = FAIL`.
+- **Min V**, **Max V**, **Margin**, **Status** - populated for SINK
+  pins that carry a `PDN_MIN_V` or `PDN_MAX_V` value
+  (see [Section 1.3](01-sources-and-sinks.md#optional-pdn_min_v--minimum-acceptable-voltage-at-the-sink)),
+  and for a REGULATOR's input pins when it has a dropout or input
+  limits (see [Section 4](04-regulators.md#input-headroom-pdn_dropout-pdn_vin_min-pdn_vin_max)).
+- **V low**, **V high** - the pin's worst case when the supply feeding
+  its rail has a tolerance: the solved voltage with the supply at its
+  minimum, and the lightly loaded rail with the supply at its maximum.
+  Blank when the supply has no tolerance (V high still shows where there
+  is a Max V to compare with).
+  *Margin* is the smallest margin to a limit, at nominal and in the
+  worst case; rows with a negative margin are highlighted red with
+  `Status = FAIL`. Hover a column header for its definition.
 
 The table is sortable - click a column header to sort by it. Sorting
 by Margin ascending is the fastest way to find which pin is closest
@@ -344,7 +354,9 @@ tab runs it straight away.
 
 - **Loads** (left) - every SINK, worst first, by how much of its drop
   budget it uses. The budget is `nominal − PDN_MIN_V` when the sink has
-  a `PDN_MIN_V`, otherwise 5 % of the rail's nominal voltage. Over-budget
+  a `PDN_MIN_V`, otherwise 5 % of the rail's nominal voltage. When the
+  rail's supply has a tolerance the budget is counted from the supply's
+  minimum instead of the nominal, so it matches the worst case. Over-budget
   loads are red. The drop is the same number the design report shows.
 - **Fixes** (right) - for the selected load, ranked by the voltage each
   would gain:
@@ -378,6 +390,8 @@ Columns:
 
 - **Net** - which net the via belongs to.
 - **From / To** - the two layers it connects.
+- **Type** - Through, Blind, Buried or Micro (a blind or buried via
+  across one dielectric with a drill of 0.15 mm or less).
 - **Current (A)** - the solved current through the via.
 
 Sort by Current descending to spot vias that are carrying too much -

@@ -36,6 +36,7 @@ def rail_findings(rail: RailReport, s: ReportSettings) -> None:
 
     if rail.kind == "supply":
         no_limit = []
+        no_dropout = []
         for ld in rail.loads:
             if ld.v_load is None:
                 ld.status = UNCHECKED
@@ -46,31 +47,84 @@ def rail_findings(rail: RailReport, s: ReportSettings) -> None:
                     "load-unsampled"))
                 continue
             status = PASS
+            is_sink = ld.kind == "sink"
             if ld.min_v is not None and ld.margin_v is not None:
                 where = (f"Drop {fmt_mv(ld.drop_v or 0.0)} from the "
                          f"{nominal:.4g} V setpoint"
                          + (f" ({fmt_mv(ld.return_drop_v)} of it in the "
                             "return path)" if ld.return_drop_v else "")
                          + f". Lowest pin {ld.worst_pin} on {ld.worst_layer}.")
+                if ld.min_basis:
+                    where = (f"The {ld.min_name} is {ld.min_basis}. " + where)
+                at_min = (f"the supply at its {rail.source_min_v:.4g} V minimum"
+                          if rail.source_min_v is not None
+                          else "the supply at its minimum")
+                # The margin that counts: worst case when the supply has a
+                # range, else the solved one.
+                worst = (ld.margin_low_v if ld.margin_low_v is not None
+                         else ld.margin_v)
                 if ld.margin_v < 0:
                     status = FAIL
                     out.append(Finding(
                         FAIL,
                         f"{ld.label} at {ld.v_load:.3f} V, "
-                        f"{fmt_mv(-ld.margin_v)} below PDN_MIN_V "
+                        f"{fmt_mv(-ld.margin_v)} below {ld.min_name} "
                         f"{ld.min_v:.3f} V", where, rail.name,
-                        "load below minimum voltage", "below-min-v"))
-                elif nominal and ld.margin_v < nominal * s.margin_warn_pct / 100:
+                        "load below minimum voltage" if is_sink
+                        else "regulator input below its minimum",
+                        "below-min-v"))
+                elif worst < 0 and ld.v_low is not None:
+                    status = FAIL
+                    out.append(Finding(
+                        FAIL,
+                        f"{ld.label} at {ld.v_low:.3f} V with {at_min}, "
+                        f"{fmt_mv(-worst)} below {ld.min_name} "
+                        f"{ld.min_v:.3f} V",
+                        f"Passes at the {nominal:.4g} V nominal "
+                        f"({ld.v_load:.3f} V) and fails in the worst case. "
+                        + where, rail.name,
+                        ("load" if is_sink else "regulator input")
+                        + " below minimum voltage at the supply's minimum",
+                        "below-min-v-worst"))
+                elif nominal and worst < nominal * s.margin_warn_pct / 100:
                     status = WARN
                     out.append(Finding(
                         WARN,
-                        f"{ld.label}: only {fmt_mv(ld.margin_v)} above "
-                        f"PDN_MIN_V {ld.min_v:.3f} V",
+                        f"{ld.label}: only {fmt_mv(worst)} above "
+                        f"{ld.min_name} {ld.min_v:.3f} V"
+                        + (f" with {at_min}"
+                           if ld.margin_low_v is not None else ""),
                         f"Margin is under {s.margin_warn_pct:g} % of the "
                         f"{nominal:.4g} V nominal. " + where, rail.name,
                         "low voltage margin", "low-margin"))
-            elif ld.kind == "sink":
+            elif is_sink:
                 no_limit.append(ld.label)
+            elif ld.regulator_type == "LDO":
+                no_dropout.append(ld.label)
+            if ld.max_v is not None and ld.margin_high_v is not None \
+                    and ld.margin_high_v < 0:
+                status = FAIL
+                over = ld.v_load - ld.max_v
+                if over > 0:
+                    title = (f"{ld.label} at {ld.v_load:.3f} V, "
+                             f"{fmt_mv(over)} above {ld.max_name} "
+                             f"{ld.max_v:.3f} V")
+                    detail = "Exceeded at the solved load."
+                else:
+                    at_max = (f"the supply at its {rail.source_max_v:.4g} V "
+                              "maximum" if rail.source_max_v is not None
+                              and rail.source_max_v > nominal
+                              else f"the {nominal:.4g} V setpoint")
+                    title = (f"{ld.label} can reach {ld.v_high:.3f} V, "
+                             f"{fmt_mv(-ld.margin_high_v)} above "
+                             f"{ld.max_name} {ld.max_v:.3f} V")
+                    detail = (f"With the rail lightly loaded and {at_max}. "
+                              f"At the solved load it sits at "
+                              f"{ld.v_load:.3f} V.")
+                out.append(Finding(
+                    FAIL, title, detail, rail.name,
+                    ("load" if is_sink else "regulator input")
+                    + " above maximum voltage", "above-max-v"))
             if (s.drop_budget_pct is not None and nominal
                     and ld.drop_v is not None
                     and ld.drop_v > nominal * s.drop_budget_pct / 100):
@@ -82,7 +136,7 @@ def rail_findings(rail: RailReport, s: ReportSettings) -> None:
                     f"{s.drop_budget_pct:g} % budget",
                     f"Lowest pin {ld.worst_pin} on {ld.worst_layer}.",
                     rail.name, "drop over budget", "drop-budget"))
-            elif (status == PASS and ld.min_v is None
+            elif (status == PASS and ld.min_v is None and ld.max_v is None
                   and s.drop_budget_pct is None):
                 status = UNCHECKED
             ld.status = status
@@ -96,6 +150,17 @@ def rail_findings(rail: RailReport, s: ReportSettings) -> None:
                  if len(no_limit) < n_sinks else "No PDN_MIN_V on any sink"),
                 f"The drop at {who} was calculated but not compared against "
                 "a limit.", rail.name, "no voltage limit", "no-min-v"))
+        if no_dropout:
+            n = len(no_dropout)
+            who = ", ".join(no_dropout[:4]) + (
+                f" and {n - 4} more" if n > 4 else "")
+            out.append(Finding(
+                UNCHECKED,
+                f"No PDN_DROPOUT or PDN_VIN_MIN on {n} LDO"
+                f"{'s' if n != 1 else ''} fed from this rail",
+                f"The input voltage at {who} was calculated but not "
+                "compared against the headroom the regulator needs.",
+                rail.name, "no input-headroom limit", "no-dropout"))
 
     if rail.vias_over:
         over = [v for v in rail.vias if v.over_limit]

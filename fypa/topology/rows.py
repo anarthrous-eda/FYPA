@@ -66,6 +66,7 @@ from fypa.topology.util import (
     format_directive_value,
     truncate_label,
 )
+from fypa.worst_case import tolerance_text
 
 # --- geometry ---------------------------------------------------------------
 
@@ -700,6 +701,11 @@ def directive_value_text(d: dict) -> str:
     ``BUCK · 1 V``. Shared by the Topology blocks and the part sidebar so
     both say the same thing."""
     value = format_directive_value(d)
+    if value and d.get("role") in ("SOURCE", "REGULATOR"):
+        # The output range, as a tolerance: "3.3 V ±5%".
+        tol = tolerance_text(d)
+        if tol:
+            value = f"{value} {tol}"
     if d.get("role") == "REGULATOR":
         kind = str(d.get("smps_topology") or d.get("regulator_type") or "").strip()
         if kind and d.get("value") is not None:

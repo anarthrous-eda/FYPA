@@ -61,6 +61,12 @@ from fypa.altium_geometry import (
 from pdnsolver import problem as _pp
 
 from fypa.altium import diode_curve as _diode_curve
+# Via classification lives in fypa.via_kinds so the viewer shares it.
+from fypa.via_kinds import (
+    MICROVIA_MAX_DRILL_MM,  # noqa: F401  (re-exported)
+    classify_via as _classify_via,
+    via_layer_span as _via_pad_layer_span,
+)
 
 
 # Via barrel resistance is computed per-via, per-hop from physical geometry:
@@ -85,10 +91,6 @@ PLATING_THICKNESS_MM: float = 0.025
 PLATING_BLIND_MM: float = 0.025
 PLATING_BURIED_MM: float = 0.015
 PLATING_MICROVIA_MM: float = 0.012
-# A blind / buried via counts as a microvia when it spans one dielectric
-# (two adjacent copper layers) and its drill is at most this (IPC-2226:
-# a microvia is <= 0.15 mm). Altium carries no microvia flag on a via.
-MICROVIA_MAX_DRILL_MM: float = 0.15
 
 VIA_KINDS: tuple[str, ...] = ("through", "blind", "buried", "micro", "pth")
 
@@ -124,22 +126,6 @@ def plating_summary(phys: dict) -> str:
             f"buried {_um('plating_buried_mm')} · "
             f"micro {_um('plating_microvia_mm')} µm")
 
-
-def _classify_via(start: int, end: int, span: list[int] | tuple[int, ...],
-                  enabled_layers: list[int], drill_mm: float) -> str:
-    """Via kind from its declared end layers: *through* when both ends are
-    the stack's outer layers, *blind* with one, *buried* with neither; a
-    blind or buried via over one dielectric with a small drill is *micro*.
-    Outer layers are the first and last enabled copper layers."""
-    if not enabled_layers:
-        return "through"
-    outer = {enabled_layers[0], enabled_layers[-1]}
-    n_outer = (start in outer) + (end in outer)
-    if n_outer == 2 and start != end:
-        return "through"
-    if (len(span) == 2 and 0.0 < drill_mm <= MICROVIA_MAX_DRILL_MM):
-        return "micro"
-    return "blind" if n_outer == 1 else "buried"
 
 # Same conductivity used by the plane-sheet model (5.95e4 S/mm == 5.95e7 S/m
 # for annealed copper). Resistivity in ohm·mm so that L_hop [mm] / A [mm^2]
@@ -1274,31 +1260,6 @@ def _drop_unlanded_sense(element, conns, aux, d):
                 type(d).__name__, getattr(d, "designator", "?"),
                 "+" if attr == "sense_p" else "−")
     return dataclasses.replace(element, **changes) if changes else element
-
-
-def _via_pad_layer_span(start: int, end: int, enabled_layers: list[int]) -> list[int]:
-    """Return enabled copper layers that a via/through-hole pad bridges,
-    in Top->Bottom order.
-
-    ``enabled_layers`` is in Top->Bottom *positional* order but internal plane
-    layers carry raw ids 39-54 (INTERNAL_PLANE_1..16) that are numerically
-    ABOVE the Bottom-layer id (32) even though they sit physically between Top
-    and Bottom. A raw-id range test (``start <= lid <= end``) therefore silently
-    drops every internal plane from a normal Top(1)->Bottom(32) through-via
-    span, so vias never couple current into via-stitched planes. Slice by
-    position instead - exactly what the geometry side's ``_via_on_layer`` does.
-    """
-    try:
-        i_a = enabled_layers.index(start)
-        i_b = enabled_layers.index(end)
-    except ValueError:
-        # An endpoint isn't in the enabled chain (e.g. a via referencing a
-        # disabled layer) - fall back to the raw-id range rather than crash.
-        if start > end:
-            start, end = end, start
-        return [lid for lid in enabled_layers if start <= lid <= end]
-    lo, hi = (i_a, i_b) if i_a <= i_b else (i_b, i_a)
-    return enabled_layers[lo:hi + 1]
 
 
 def _layer_z_centers_mm(
@@ -3222,6 +3183,7 @@ def build_solve_metadata(
                 "N": _terminal_summary(d.n, nets),
             }
             _export_remote_sense(common, d.sense_p, d.sense_n, nets)
+            _export_limits(common, d, ("v_min", "v_max"))
         elif isinstance(d, SinkSpec):
             common["value"] = d.current
             common["unit"] = "A"
@@ -3233,8 +3195,8 @@ def build_solve_metadata(
             # Optional PDN_MIN_V - minimum acceptable rail voltage at the
             # sink's P terminal. The viewer's Nodes table renders a per-pin
             # margin / pass-fail column off this. ``None`` when unset.
-            if getattr(d, "min_voltage", None) is not None:
-                common["min_voltage"] = float(d.min_voltage)
+            # PDN_MAX_V is its upper counterpart.
+            _export_limits(common, d, ("min_voltage", "max_voltage"))
         elif isinstance(d, ResistorSpec):
             common["value"] = d.resistance
             common["unit"] = "Ohm"
@@ -3286,6 +3248,8 @@ def build_solve_metadata(
                 "IN_N":  _terminal_summary(d.in_n, nets),
             }
             _export_remote_sense(common, d.out_sense_p, d.out_sense_n, nets)
+            _export_limits(common, d, (
+                "v_min", "v_max", "dropout", "vin_min", "vin_max"))
         directives.append(common)
 
     active_nets = sorted({_net_name(i) for i in _collect_active_nets(
@@ -3336,6 +3300,12 @@ def build_solve_metadata(
             "hole_diameter_mm": v.hole_diameter_mm,
             "layer_start": v.layer_start,
             "layer_end": v.layer_end,
+            # through / blind / buried / micro - the same classification
+            # the coupling sites pick their plating from.
+            "via_kind": _classify_via(
+                v.layer_start, v.layer_end,
+                _via_pad_layer_span(v.layer_start, v.layer_end, enabled),
+                enabled, float(v.hole_diameter_mm)),
             "unconnected_layer_ids": [
                 int(i) for i in getattr(v, "unconnected_layer_ids", ())],
             "segments": site_segments,
@@ -3935,6 +3905,15 @@ def _export_remote_sense(common: dict, sense_p, sense_n, nets) -> None:
              for k, t in (("P", sense_p), ("N", sense_n)) if t is not None}
     if sense:
         common["remote_sense"] = sense
+
+
+def _export_limits(common: dict, d, names: tuple[str, ...]) -> None:
+    """Copy a directive's optional check limits (volts) into its metadata
+    entry under the same names; one left unset is omitted."""
+    for name in names:
+        value = getattr(d, name, None)
+        if value is not None:
+            common[name] = float(value)
 
 
 def _terminal_summary(term, nets) -> dict:

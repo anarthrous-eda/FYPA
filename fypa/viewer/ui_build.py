@@ -630,6 +630,26 @@ class _UiBuildMixin:
         self._editor_panel = self._build_editor_panel()
         self._editor_panel.setParent(self._gl_viewer)
         self._editor_panel.hide()
+        # Collapse / resize handle on the panel's left edge - the mirror of
+        # the left side panel's. Editor mode only (the viewer-mode copper
+        # properties panel comes and goes with the selection instead); it
+        # floats on the viewport like the panel it controls.
+        # _position_editor_panel keeps it pinned and applies the collapse.
+        self._editor_panel_collapsed = False
+        self._editor_panel_drag_start_w = self._editor_panel_width
+        self._editor_panel_toggle_btn = SidebarToggleButton(
+            self._gl_viewer, mirrored=True)
+        self._editor_panel_toggle_btn.setToolTip(
+            "Drag to resize the editor panel · "
+            "Click to collapse / expand (Shift+B)"
+        )
+        self._editor_panel_toggle_btn.clicked.connect(
+            self._toggle_editor_panel)
+        self._editor_panel_toggle_btn.pressed.connect(
+            self._on_editor_panel_handle_press)
+        self._editor_panel_toggle_btn.resizedBy.connect(
+            self._on_editor_panel_handle_dragged)
+        self._editor_panel_toggle_btn.hide()
         self._position_editor_panel()
 
         self._init_log.info(

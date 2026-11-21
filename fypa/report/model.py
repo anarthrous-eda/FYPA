@@ -110,6 +110,32 @@ class LoadResult:
     worst_pin: str = ""
     worst_layer: str = ""
     worst_xy: tuple[float, float] | None = None
+    # What ``min_v`` / ``max_v`` are, for the findings: a sink's PDN_MIN_V /
+    # PDN_MAX_V, or a regulator's input limits (``min_basis`` says how the
+    # minimum was arrived at: "3.3 V output + 300 mV dropout").
+    min_name: str = "PDN_MIN_V"
+    max_name: str = "PDN_MAX_V"
+    min_basis: str = ""
+    max_v: float | None = None
+    # Worst case, from the range of the rail's supply (fypa.worst_case).
+    # ``v_low``: the supply at its minimum - set only when the supply gave a
+    # range below nominal. ``v_high``: the rail lightly loaded with the supply
+    # at its maximum - set when there is a ``max_v`` to compare with or a
+    # range above nominal.
+    v_low: float | None = None
+    margin_low_v: float | None = None    # v_low - min_v
+    v_high: float | None = None
+    margin_high_v: float | None = None   # max_v - v_high
+    regulator_type: str = ""             # regulator inputs: "LDO" / "SMPS"
+
+    @property
+    def limiting_margin_v(self) -> float | None:
+        """The smallest margin to any limit, worst case included; ``None``
+        when the load has no limit."""
+        low = self.margin_low_v if self.margin_low_v is not None \
+            else self.margin_v
+        both = [m for m in (low, self.margin_high_v) if m is not None]
+        return min(both) if both else None
 
 
 @dataclass
@@ -201,6 +227,9 @@ class RailReport:
     nominal_v: float | None
     source_label: str             # "U4 (SMPS buck, from 5V0)"
     load_a: float | None
+    # The supply's range when it gave one (PDN_V_TOL / PDN_V_MIN / _MAX).
+    source_min_v: float | None = None
+    source_max_v: float | None = None
     loads: list[LoadResult] = field(default_factory=list)
     lowest_v: float | None = None
     worst_drop_v: float | None = None

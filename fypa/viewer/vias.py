@@ -90,7 +90,7 @@ class _ViaRenderMixin:
     # (Altium pads have no blind/buried span) so their cylinders run the
     # full stack.
 
-    def _via_row_state(self, key: str
+    def _via_row_state(self, key: str, kind: str | None = None
                        ) -> tuple[str | None, float,
                                   tuple[float, float, float]]:
         """``(vis, alpha, rgb)`` of the Vias (``"vias"``) or Plated TH
@@ -100,7 +100,11 @@ class _ViaRenderMixin:
         layer it crosses with its net on a visible rail, or a crossed layer
         with its all-copper eye on) or ``"all"`` (every one on the board).
         Falls back to the built-in defaults when the overlay state isn't
-        built (a bare viewer in tests)."""
+        built (a bare viewer in tests).
+
+        ``kind`` (one of :data:`BOARD_VIA_KINDS`, Vias row only) asks for
+        that via kind's sub-row: its own visibility and colour where it has
+        them, the Vias row's otherwise. Transparency is always the row's."""
         default_rgb = _OVERLAY_DEFAULT_COLORS[key]
         st = (getattr(self, "_overlay_state", None) or {}).get(key)
         if not st:
@@ -108,9 +112,28 @@ class _ViaRenderMixin:
         both = st.get("both") or {}
         rgb = (getattr(self, "_overlay_colors", None) or {}).get(
             key, default_rgb)
-        return (both.get("vis"),
+        vis = both.get("vis")
+        if kind is not None and key == "vias":
+            own = (st.get("kinds") or {}).get(kind)
+            if own is not None and "vis" in own:
+                vis = own["vis"]
+            own_rgb = (getattr(self, "_via_kind_colors", None) or {}).get(kind)
+            if own_rgb is not None:
+                rgb = own_rgb
+        return (vis,
                 _transparency_alpha(both.get("alpha_step", 0) or 0),
                 rgb)
+
+    def _via_kind_states(self) -> dict[str, tuple[str | None,
+                                                  tuple[float, float, float]]]:
+        """``{kind: (vis, rgb)}`` for every via kind on the board - what
+        each one's sub-row (or, failing that, the Vias row) says. A fully
+        transparent Vias row reads as hidden."""
+        out = {}
+        for kind in self._via_kind_counts():
+            vis, alpha, rgb = self._via_row_state("vias", kind)
+            out[kind] = (vis if alpha > 0.0 else None, rgb)
+        return out
 
     def _via_span_layer_ids(self, key: str) -> set[int]:
         """The distinct top-of-span layer ids of ``metadata[key]`` (``"vias"``
@@ -154,10 +177,14 @@ class _ViaRenderMixin:
             return
         # Board Features rows: visibility, transparency and plain colour of
         # the via and PTH barrels.
-        via_vis, via_alpha, via_rgb = self._via_row_state("vias")
+        _row_vis, via_alpha, _row_rgb = self._via_row_state("vias")
         pth_vis, pth_alpha, pth_rgb = self._via_row_state("pths")
-        if via_alpha <= 0.0:
-            via_vis = None
+        # Each via kind (through / blind / buried / micro) carries its own
+        # visibility and colour - see :meth:`_via_kind_states`.
+        kind_state = self._via_kind_states()
+        kind_vis = {vis for vis, _rgb in kind_state.values()}
+        via_vis = ("all" if "all" in kind_vis
+                   else "rails" if "rails" in kind_vis else None)
         if pth_alpha <= 0.0:
             pth_vis = None
         if via_vis is None and pth_vis is None:
@@ -223,7 +250,8 @@ class _ViaRenderMixin:
             self._via_dead_section_alpha, self._VIA_CYL_SEGMENTS,
             self._VIA_CYL_MIN_RADIUS_MM,
             tuple((p, self._layer_z_for(p)) for p in id_to_phys.values()),
-            tuple(via_rgb), tuple(pth_rgb),
+            tuple((k, tuple(rgb)) for k, (_vis, rgb) in kind_state.items()),
+            tuple(pth_rgb),
         )
         solid_cached = getattr(self, "_via_cyl_cache", None)
         if solid_cached is None or solid_cached[0] != solid_sig:
@@ -265,7 +293,8 @@ class _ViaRenderMixin:
                 continue
             lo_id = min(ls_id, le_id)
             hi_id = max(ls_id, le_id)
-            if not _site_shown(v, via_vis, lo_id, hi_id):
+            k_vis, via_rgb = kind_state.get(self._via_kind(v), (None, _row_rgb))
+            if not _site_shown(v, k_vis, lo_id, hi_id):
                 continue
             phys_top = id_to_phys.get(lo_id)
             phys_bot = id_to_phys.get(hi_id)
@@ -835,6 +864,7 @@ class _ViaRenderMixin:
     def _build_via_current_marker_groups(
         self, target_layer_ids: set[int], rail_members: set[str],
         *, show_all: bool = False, alpha: float = 1.0,
+        kind_vis: dict[str, str | None] | None = None,
     ) -> list[MarkerGroup]:
         """Build a list of MarkerGroups for the 2D Via Current overlay.
 
@@ -850,7 +880,9 @@ class _ViaRenderMixin:
         vias into invisible dots).
 
         ``show_all`` (the Vias row's show-everywhere eye) skips the rail and
-        layer filters; ``alpha`` is the row's transparency.
+        layer filters; ``alpha`` is the row's transparency. ``kind_vis``
+        (``{kind: vis}``) decides it per via kind instead: a hidden kind is
+        left out and one on its show-everywhere eye skips the filters.
         """
         if not self._via_current_lookup or self.metadata is None:
             return []
@@ -862,8 +894,16 @@ class _ViaRenderMixin:
         n_buckets = max(2, int(self._VIA_CURRENT_BUCKETS))
         # bucket -> list of (x, y, diameter_mm)
         buckets: dict[int, list[tuple[float, float, float]]] = {}
+        row_show_all = show_all
         for v in self.metadata.get("vias", []):
             net = v.get("net", "")
+            if kind_vis is not None:
+                k_vis = kind_vis.get(self._via_kind(v))
+                if k_vis is None:
+                    continue
+                show_all = (k_vis == "all")
+            else:
+                show_all = row_show_all
             if not show_all and rail_members and net not in rail_members:
                 continue
             ls_id = v.get("layer_start")
@@ -993,10 +1033,14 @@ class _ViaRenderMixin:
         copper_layer_ids = set(self._visible_all_copper_layer_ids().keys())
         # Vias / Plated TH Board Features rows (visibility, alpha, colour).
         # A row on its show-everywhere eye draws even with no layer eye on.
-        via_vis, via_alpha, via_rgb = self._via_row_state("vias")
+        _row_vis, via_alpha, _row_rgb = self._via_row_state("vias")
         pth_vis, pth_alpha, pth_rgb = self._via_row_state("pths")
-        if via_alpha <= 0.0:
-            via_vis = None
+        # Per via kind (through / blind / buried / micro): each one's own
+        # sub-row visibility and colour.
+        kind_state = self._via_kind_states()
+        kind_vis_set = {vis for vis, _rgb in kind_state.values()}
+        via_vis = ("all" if "all" in kind_vis_set
+                   else "rails" if "rails" in kind_vis_set else None)
         if pth_alpha <= 0.0:
             pth_vis = None
         any_all = "all" in (via_vis, pth_vis)
@@ -1204,31 +1248,42 @@ class _ViaRenderMixin:
                 # to the real footprint. The GL viewer floors the drawn
                 # size at _VIA_MARKER_MIN_PX so vias stay visible when
                 # zoomed out.
-                via_pts: dict[tuple[float, float], float] = {}
-                if via_vis == "all":
-                    # Every via on the board: ask once per span end with
-                    # the rail filter off (a via's span always holds its
-                    # own start layer).
-                    for lid in self._via_span_layer_ids("vias"):
-                        vxs, vys, vds = self._collect_via_positions(
-                            lid, set(), rail_scoped=False)
-                        for vx, vy, vd in zip(vxs, vys, vds):
-                            via_pts[(vx, vy)] = vd
-                elif via_vis == "rails":
-                    for lid in target_layer_ids:
-                        vxs, vys, vds = self._collect_via_positions(
-                            lid, rail_members)
-                        for vx, vy, vd in zip(vxs, vys, vds):
-                            via_pts[(vx, vy)] = vd
-                    # All-copper (second eye) layers add their own vias
-                    # without the rail filter - same rule as the 3D
-                    # cylinder path in :meth:`_push_via_cylinders`.
-                    for lid in copper_layer_ids:
-                        vxs, vys, vds = self._collect_via_positions(
-                            lid, set(), rail_scoped=False)
-                        for vx, vy, vd in zip(vxs, vys, vds):
-                            via_pts[(vx, vy)] = vd
-                if via_pts:
+                # Kinds sharing a visibility and colour draw as one group.
+                kind_groups: dict[tuple, set[str]] = {}
+                for kind, (k_vis, k_rgb) in kind_state.items():
+                    if k_vis is not None:
+                        kind_groups.setdefault(
+                            (k_vis, tuple(k_rgb)), set()).add(kind)
+                for (g_vis, via_rgb), g_kinds in kind_groups.items():
+                    # No kind filter needed when the group is every kind.
+                    kinds = (None if len(g_kinds) == len(kind_state)
+                             else g_kinds)
+                    via_pts: dict[tuple[float, float], float] = {}
+                    if g_vis == "all":
+                        # Every via on the board: ask once per span end with
+                        # the rail filter off (a via's span always holds its
+                        # own start layer).
+                        for lid in self._via_span_layer_ids("vias"):
+                            vxs, vys, vds = self._collect_via_positions(
+                                lid, set(), rail_scoped=False, kinds=kinds)
+                            for vx, vy, vd in zip(vxs, vys, vds):
+                                via_pts[(vx, vy)] = vd
+                    elif g_vis == "rails":
+                        for lid in target_layer_ids:
+                            vxs, vys, vds = self._collect_via_positions(
+                                lid, rail_members, kinds=kinds)
+                            for vx, vy, vd in zip(vxs, vys, vds):
+                                via_pts[(vx, vy)] = vd
+                        # All-copper (second eye) layers add their own vias
+                        # without the rail filter - same rule as the 3D
+                        # cylinder path in :meth:`_push_via_cylinders`.
+                        for lid in copper_layer_ids:
+                            vxs, vys, vds = self._collect_via_positions(
+                                lid, set(), rail_scoped=False, kinds=kinds)
+                            for vx, vy, vd in zip(vxs, vys, vds):
+                                via_pts[(vx, vy)] = vd
+                    if not via_pts:
+                        continue
                     n_via = len(via_pts)
                     via_xs = np.fromiter((p[0] for p in via_pts),
                                          dtype=np.float64, count=n_via)
@@ -1319,7 +1374,8 @@ class _ViaRenderMixin:
             rail_members = set(self._effective_rail_members(rail_names))
             groups.extend(self._build_via_current_marker_groups(
                 target_layer_ids, rail_members,
-                show_all=(via_vis == "all"), alpha=via_alpha,
+                alpha=via_alpha,
+                kind_vis={k: vis for k, (vis, _rgb) in kind_state.items()},
             ))
 
         # Jump-highlight ring - always shown, drawn last so it sits on

@@ -66,7 +66,8 @@ class _FixesTabMixin:
             "by how much of their drop budget they use - the drop from the "
             "rail's setpoint over (nominal − PDN_MIN_V) where PDN_MIN_V is "
             f"set, otherwise over {copper_roi.DEFAULT_BUDGET_PCT:g} % of "
-            "nominal. Pick a load to rank its fixes; click Go to see one "
+            "nominal. A supply with a tolerance is counted at its minimum. "
+            "Pick a load to rank its fixes; click Go to see one "
             "on the heatmap.")
         intro.setWordWrap(True)
         intro.setStyleSheet(f"QLabel {{ color: {t['fg_muted']}; }}")
