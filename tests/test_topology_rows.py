@@ -250,6 +250,29 @@ def test_add_sink_handle_counts_parts_not_already_on_the_rail() -> None:
     assert 'stroke-dasharray="3 2"' in render_topology_svg(model)
 
 
+@pytest.mark.parametrize("cascade", [False, True])
+def test_add_sink_handle_hugs_its_load_not_the_loads_subtree(cascade: bool) -> None:
+    # 12P0V's last load is R18, whose far side (+12V → U6 → +VDD → J1, each
+    # with its own handle) runs on to the right. 12P0V's handle sits the same
+    # short gap under R18 as every other handle sits under its load - not
+    # below everything R18 feeds.
+    cands = {"12P0V": {"U1"}, "+12V": {"U2"}, "+VDD": {"U3"}}
+    model = build_topology_model(TREE, layout="rows", add_candidates=cands,
+                                 cascade=cascade)
+    adds = {t.net: t for t in model.tags if t.kind == "add"}
+    loads = {"12P0V": "R18", "+VDD": "J1"}
+    if cascade:
+        loads["+12V"] = "U6"   # inline, so +12V has a load in this row
+    for net, des in loads.items():
+        node, add = _node(model, des), adds[net]
+        assert add.x == pytest.approx(node.x), net   # in its load's column
+    # R18 is a chip (nothing hangs below it), so its handle is one sibling
+    # gap under it - and above the handles of the parts R18 feeds.
+    r18, add12 = _node(model, "R18"), adds["12P0V"]
+    assert add12.y - add12.height / 2 - (r18.y + r18.height) < 20
+    assert add12.y < min(adds[n].y for n in loads if n != "12P0V")
+
+
 def test_add_sink_handle_on_the_far_side_of_a_series_part() -> None:
     # A regulator feeding its loads through a series resistor: the rail past
     # the resistor has nothing on it yet, so it ends in a "+ SINK" handle
@@ -337,12 +360,14 @@ def test_no_add_handle_when_every_candidate_is_already_on_the_rail() -> None:
     assert not any(t.kind == "add" for t in model.tags)
 
 
+@pytest.mark.parametrize("cascade", [False, True])
 @pytest.mark.parametrize("name", _all_fixture_names())
-def test_fixture_layout_is_clean_with_add_handles(name: str) -> None:
+def test_fixture_layout_is_clean_with_add_handles(name: str, cascade: bool) -> None:
     md = load_topology_fixture(name)
-    plain = build_topology_model(md, layout="rows")
+    plain = build_topology_model(md, layout="rows", cascade=cascade)
     cands = {w.net: {"ZZ999"} for w in plain.wires if w.net and w.net != GND_NET}
-    model = build_topology_model(md, layout="rows", add_candidates=cands)
+    model = build_topology_model(md, layout="rows", add_candidates=cands,
+                                 cascade=cascade)
     adds = [t for t in model.tags if t.kind == "add"]
     taps = [w for w in model.wires if w.routing_kind == "add_tap"]
     # Under a rail's last load (dashed tap), or at a load-less rail's port

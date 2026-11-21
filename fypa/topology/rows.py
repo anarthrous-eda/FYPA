@@ -901,6 +901,7 @@ class _Placer:
         taps: list[tuple[float, float]] = []
         cursor = top
         bottom = drv.y
+        last_body = top   # bottom of the last load's own body (not its subtree)
         for i, c in enumerate(branch.children):
             shape = child_shapes[id(c)]
             off = self.first_in_offset(c, shape)
@@ -912,13 +913,18 @@ class _Placer:
             taps.extend(pts)
             cursor = c_bottom + SIBLING_GAP
             bottom = max(bottom, c_bottom)
-        # "+ SINK" handle one tap below the last load. A rail with no loads
+            last_body = ctop + shape.extent
+        # "+ SINK" handle one tap below the last load's own body - always the
+        # same short stub, however deep that load's subtree runs. The subtree
+        # is drawn in later columns, which start past the load's right edge,
+        # and the handle is narrower than any load with a subtree, so the
+        # space under the load in this column is free. A rail with no loads
         # (e.g. the far side of a SERIES part) gets it at the driver port
         # instead of its "no loads" end tag - see resolve_tags.
         n_add = self.builder.add_sink_count(net, branch) if branch.children else 0
-        add_y = cursor + TAG_H / 2
+        add_y = last_body + SIBLING_GAP + TAG_H / 2
         if n_add:
-            cursor += TAG_H + SIBLING_GAP
+            cursor = max(cursor, add_y + TAG_H / 2 + SIBLING_GAP)
             bottom = max(bottom, add_y + TAG_H / 2)
         self._route_net(net, branch.label, drv, bus_x, taps, label_from=label_from,
                         branch=branch)

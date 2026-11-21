@@ -3666,10 +3666,9 @@ def build_solve_metadata(
             # report the surviving net after the merge, so a RESISTOR record
             # would be gated by the marker overlay's "is this net on a visible
             # rail?" test and vanish whenever the user is looking at anything
-            # but that rail - which, for the ground-to-ground merges these
-            # usually are, means always. AUTO_BRIDGE gets its own legend row
-            # and skips that gate, so an inferred short is always visible and
-            # independently toggleable.
+            # but that rail. AUTO_BRIDGE gets its own legend row, and the
+            # overlay's rail gate also matches it on ``shorted_nets``, so it
+            # shows whenever either shorted net is on a visible rail.
             "role": "AUTO_BRIDGE",
             "designator": _mb["designator"],
             "channel_index": None,

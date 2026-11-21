@@ -1085,6 +1085,12 @@ class _ViaRenderMixin:
                 # belong together when several series parts sit close.
                 link_sides: tuple[list, list] | None = (
                     ([], []) if role in ("RESISTOR", "AUTO_BRIDGE") else None)
+                # An auto-bridge's pads both report the surviving net after
+                # the merge, so it also counts as on a visible rail when
+                # either of the nets it shorted is ("GND ↔ AGND").
+                bridge_on_rail = role == "AUTO_BRIDGE" and any(
+                    n.strip() in rail_members
+                    for n in str(d.get("shorted_nets") or "").split("↔"))
                 for term_name, term in (d.get("terminals") or {}).items():
                     term_pins = term.get("pins") or []
                     is_n_side = term_name in _N_SIDE_TERMINALS
@@ -1141,14 +1147,10 @@ class _ViaRenderMixin:
                         # every rail's directives in at once. No visible rail
                         # ⇒ no rail markers (don't fall through to "show
                         # everything").
-                        # An auto-bridge is not gated on rail visibility:
-                        # after the merge both its pads report the surviving
-                        # net, which is usually a return net the user is not
-                        # currently viewing - so the rail test would hide
-                        # exactly the inferred shorts they most need to see.
-                        # Its own legend row provides the off switch instead.
-                        if (role != "AUTO_BRIDGE"
-                                and pin.get("net") not in rail_members):
+                        # An auto-bridge follows the same rail test, matched
+                        # on its shorted nets as well (see bridge_on_rail).
+                        if (pin.get("net") not in rail_members
+                                and not bridge_on_rail):
                             continue
                         # Net focus narrows this further to the focused net:
                         # the whole point of focusing is to see one net's
