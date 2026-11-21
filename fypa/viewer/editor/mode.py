@@ -113,22 +113,17 @@ class _EditorModeMixin:
 
         # Auto / Manual setup - editor mode only, stacked above Resolve.
         # Same handlers as the Topology tab's pair, but icon-only squares
-        # here (the tooltip carries the name), like the marker row above.
-        for attr, text, tip, slot in (
-            ("_board_autosetup_btn", "Auto setup…",
-             "Propose sources, regulators, sinks and series elements from "
-             "the design (and a datasheet folder, if you have one), then "
-             "review and apply them.",
+        # here, like the marker row above; no tooltip - a hover reveals
+        # the label instead (hover_expand, below).
+        for attr, slot in (
+            ("_board_autosetup_btn",
              lambda _c=False: self._topology_run_autosetup()),
-            ("_board_manual_btn", "Manual setup…",
-             "Add and edit sources, regulators and loads by hand: pick a "
-             "net, the part on it and its pins, in one list per kind.",
+            ("_board_manual_btn",
              lambda _c=False: self._topology_run_manual_setup()),
         ):
             sbtn = QPushButton(self._gl_viewer)
             sbtn.setIconSize(QSize(18, 18))
             sbtn.setCursor(Qt.PointingHandCursor)
-            sbtn.setToolTip(f"<b>{text}</b><br>{tip}")
             sbtn.clicked.connect(slot)
             sbtn.hide()
             setattr(self, attr, sbtn)
@@ -144,7 +139,9 @@ class _EditorModeMixin:
         self._resolve_btn = rbtn
 
         # Editor mode: the three icon-only squares reveal their label after
-        # a 2 s hover (widen, then show the text) and shrink back on leave.
+        # a 0.5 s hover (widen, then show the text) and shrink back on leave.
+        # Their tooltips are suppressed in editor mode (Resolve keeps its
+        # status tooltip in viewer mode).
         from fypa.viewer.editor.hover_expand import HoverExpander
         editing = lambda: bool(getattr(self, "_editor_mode", False))  # noqa: E731
         first = lambda: bool(getattr(self, "_awaiting_first_solve", False))  # noqa: E731

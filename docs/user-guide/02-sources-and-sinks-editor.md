@@ -56,7 +56,7 @@ These things change when editor mode is active:
 3. **Auto setup…** (yellow sparkle) and **Manual setup…** (wrench)
    appear above **Resolve** in the button column - the same two wizards
    as on the Topology tab. In editor mode these three are icon-only
-   squares; rest the mouse on one for two seconds and it widens to show
+   squares; rest the mouse on one for half a second and it widens to show
    its name, shrinking back when the mouse leaves. The What-If button is hidden until
    you leave editor mode.
 4. The **PDN Editor** panel slides in on the right-hand side.

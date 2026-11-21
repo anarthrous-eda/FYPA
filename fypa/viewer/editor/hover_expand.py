@@ -16,7 +16,7 @@ from typing import Callable
 from PySide6.QtCore import (
     QEasingCurve, QEvent, QObject, QPropertyAnimation, QSize, QTimer,
 )
-from PySide6.QtWidgets import QAbstractButton, QToolTip
+from PySide6.QtWidgets import QAbstractButton
 
 
 def _repolish(btn: QAbstractButton) -> None:
@@ -33,7 +33,7 @@ class HoverExpander(QObject):
     """
 
     def __init__(self, btn: QAbstractButton, label_fn: Callable[[], str],
-                 active_fn: Callable[[], bool], *, delay_ms: int = 2000,
+                 active_fn: Callable[[], bool], *, delay_ms: int = 500,
                  collapsed: int = 34, duration_ms: int = 160) -> None:
         super().__init__(btn)
         self._btn = btn
@@ -56,6 +56,8 @@ class HoverExpander(QObject):
     def eventFilter(self, obj, event):  # noqa: N802 (Qt override)
         if obj is self._btn:
             et = event.type()
+            if et == QEvent.ToolTip and self._active_fn():
+                return True   # the revealed label stands in for a tooltip
             if et == QEvent.Enter:
                 if self._active_fn() and self.state in ("idle", "collapsing"):
                     self._timer.start()
@@ -85,7 +87,6 @@ class HoverExpander(QObject):
         target = QSize(max(btn.sizeHint().width(), self._collapsed),
                        btn.height())
         self._set_expanded_look("")
-        QToolTip.hideText()
         btn.raise_()
         self.state = "expanding"
         self._anim.stop()
