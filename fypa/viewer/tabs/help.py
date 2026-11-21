@@ -249,8 +249,7 @@ instead of a long wire - click a tag to jump to the other end. Dashed
 amber tags mark rails nothing drives; grey tags mark rails with no loads.
 Each part has its own ground symbol.</p>
 <p><b>Bridges</b> lists 0&nbsp;&Omega; auto-bridges on nets no source, sink
-or regulator uses. <b>Classic</b> switches back to the single-chain column
-layout.</p>
+or regulator uses.</p>
 <p>Click a component box to open its PDN properties in the sidebar (the
 same form as the Board's editor panel); its &#8982; icon jumps to it on
 the Board. Click an amber or grey tag to add a source, regulator or sink

@@ -149,10 +149,8 @@ This is **not** the PCB layout; for spatial placement use the Board tab.
   rail stack in that rail's column, and each one's loads carry on to its
   right. A regulator with a second input rail (another channel) sits on
   the first rail to reach it; the other input keeps its tag, matched by a
-  `U6` tag where that rail is drawn.
-- **Classic view** (under **View options**) - switches back to the older single-chain column layout,
-  which wires every net and draws one return rail under the diagram. The
-  View options toggles are remembered between sessions.
+  `U6` tag where that rail is drawn. The View options toggles are
+  remembered between sessions.
 - **Nodes** - one box per directive (SOURCE, SINK, REGULATOR, SERIES);
   the header shows the role colour and designator; the body shows the
   configured value (`PDN_V`, `PDN_I`, `PDN_R`, regulator gain).

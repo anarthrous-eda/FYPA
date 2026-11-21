@@ -30,7 +30,7 @@ full build pipeline (avoids circular imports with ``fypa.rail_groups``).
   last load, where n counts candidates not already drawn on that net. Invariant:
   every port ends at a wire endpoint (wired, tagged or grounded). Tests:
   `tests/test_topology_rows.py`.
-- **`"columns"`** (the API default, "Classic" in the viewer) - the
+- **`"columns"`** (the API default; the viewer no longer offers it) - the
   single-chain column layout below. Everything from here down describes it.
 
 ## Pipeline

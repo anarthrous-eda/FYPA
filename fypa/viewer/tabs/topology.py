@@ -541,12 +541,10 @@ class _TopologyTabMixin:
 
         from fypa.viewer.prefs import (
             load_topology_cascade,
-            load_topology_layout,
             load_topology_show_add_handles,
             load_topology_show_bridges,
         )
 
-        self._topology_layout = load_topology_layout()
         self._topology_cascade = load_topology_cascade()
         self._topology_show_bridges = load_topology_show_bridges()
         self._topology_show_add_handles = load_topology_show_add_handles()
@@ -577,26 +575,19 @@ class _TopologyTabMixin:
             act.toggled.connect(slot)
             return act
 
-        self._topology_classic_act = _toggle(
-            "Classic view",
-            "Classic layout: every part in one left-to-right chain with the "
-            "nets wired between them. Off: one row per source / regulator, "
-            "with tags where a rail continues on another row.",
-            self._topology_layout == "columns",
-            self._on_topology_classic_toggled)
         self._topology_cascade_act = _toggle(
             "Cascade",
             "Draw each regulator inline, wired straight off the rail that "
             "feeds it (J2 → R18 → U6 → J1 on one row), instead of on a row of "
             "its own linked by tags. Regulators on one rail stack in its "
-            "column. Row layout only.",
+            "column.",
             self._topology_cascade,
             self._on_topology_cascade_toggled)
         view_menu.addSeparator()
         self._topology_bridges_act = _toggle(
             "Bridges",
             "List 0 Ω auto-bridges on nets no source, sink or regulator uses "
-            "(pull-up links, signal jumpers…). Row layout only.",
+            "(pull-up links, signal jumpers…).",
             self._topology_show_bridges,
             self._on_topology_bridges_toggled)
         self._topology_add_act = _toggle(
@@ -604,13 +595,9 @@ class _TopologyTabMixin:
             "Show a dashed \"+ SINK (n)\" tap under each rail's last load when "
             "more parts on the rail (ICs, connectors) could be a load. Click one "
             "to add a SINK there in Manual setup. Needs the Altium design "
-            "loaded. Row layout only.",
+            "loaded.",
             self._topology_show_add_handles,
             self._on_topology_add_handles_toggled)
-        rows = self._topology_layout == "rows"
-        self._topology_cascade_act.setEnabled(rows)
-        self._topology_bridges_act.setEnabled(rows)
-        self._topology_add_act.setEnabled(rows)
         view_btn.setMenu(view_menu)
         self._topology_view_btn = view_btn
         toolbar.addWidget(view_btn)
@@ -1168,17 +1155,6 @@ class _TopologyTabMixin:
         if view is not None:
             view.fit_in_view()
 
-    def _on_topology_classic_toggled(self, checked: bool) -> None:
-        from fypa.viewer.prefs import save_topology_layout
-
-        self._topology_layout = "columns" if checked else "rows"
-        save_topology_layout(self._topology_layout)
-        # Cascade, Bridges and Add handles only exist in the rows layout.
-        self._topology_cascade_act.setEnabled(not checked)
-        self._topology_bridges_act.setEnabled(not checked)
-        self._topology_add_act.setEnabled(not checked)
-        self._refresh_topology_live(reuse_metadata=True)
-
     def _on_topology_cascade_toggled(self, checked: bool) -> None:
         from fypa.viewer.prefs import save_topology_cascade
 
@@ -1253,8 +1229,6 @@ class _TopologyTabMixin:
         project's cache); otherwise - a project reopened from its solve
         cache - from that saved copy, so the diagram doesn't depend on how
         the project was opened."""
-        if getattr(self, "_topology_layout", "rows") != "rows":
-            return None
         from fypa.autosetup import manual as M
 
         view = self._topology_view_in_memory()
@@ -1341,7 +1315,7 @@ class _TopologyTabMixin:
         """Render the topology SVG from setup metadata.
 
         ``reuse_metadata``: only a view setting changed (a row collapsed,
-        Bridges / + SINK / classic toggled), not the setup - reuse the last
+        Bridges / + SINK / Cascade toggled), not the setup - reuse the last
         preview metadata rather than rebuild it. With pending edits that
         rebuild re-applies every editor directive to a copy of the design and
         re-derives the solve metadata, which takes seconds on a large board,
@@ -1380,7 +1354,7 @@ class _TopologyTabMixin:
         self._topology_refresh_resolve_btn()
         model = build_topology_model(
             preview_md,
-            layout=getattr(self, "_topology_layout", "rows"),
+            layout="rows",
             show_bridges=getattr(self, "_topology_show_bridges", False),
             add_candidates=self._topology_add_candidates(),
             premerge_parts=self._topology_premerge_parts(),

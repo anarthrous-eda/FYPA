@@ -594,38 +594,9 @@ def save_show_bridge_notice(enabled: bool) -> None:
         )
 
 
-# Topology tab: "rows" (one row per power origin) or "columns" (classic), and
-# whether the rows layout lists auto-bridges that sit off the power tree.
-_TOPOLOGY_LAYOUT_QS_KEY = "ui/topology_layout"
-
-
+# Topology tab: whether the rows layout lists auto-bridges that sit off the
+# power tree.
 _TOPOLOGY_BRIDGES_QS_KEY = "ui/topology_show_bridges"
-
-
-def load_topology_layout() -> str:
-    """Read the Topology tab layout. Defaults to ``"rows"``."""
-    try:
-        from PySide6.QtCore import QSettings
-        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
-        val = str(qs.value(_TOPOLOGY_LAYOUT_QS_KEY, "rows") or "rows")
-        return val if val in ("rows", "columns") else "rows"
-    except Exception as e:
-        logging.getLogger(__name__).debug(
-            "Could not read topology layout preference (%s); using default.", e,
-        )
-    return "rows"
-
-
-def save_topology_layout(layout: str) -> None:
-    """Persist the Topology tab layout (``"rows"`` or ``"columns"``)."""
-    try:
-        from PySide6.QtCore import QSettings
-        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
-        qs.setValue(_TOPOLOGY_LAYOUT_QS_KEY, layout)
-    except Exception as e:
-        logging.getLogger(__name__).debug(
-            "Could not persist topology layout preference (%s); ignoring.", e,
-        )
 
 
 def load_topology_show_bridges() -> bool:
