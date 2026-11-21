@@ -691,9 +691,11 @@ def _draw_band(
     if band.subtitle or band.collapsed:
         sub = band.subtitle + ("   (collapsed)" if band.collapsed else "")
         sub_x = title_x + estimate_text_width(band.title, 11) + 12
+        # An undriven rail's note is a warning, not a part description.
+        italic = ' font-style="italic"' if band.kind == "undriven" else ""
         parts.append(
             f'<text x="{sub_x:.1f}" y="{y + 15.5:.1f}" fill="{esc(fg_dim)}"'
-            f' font-family="Segoe UI,sans-serif" font-size="10">'
+            f' font-family="Segoe UI,sans-serif" font-size="10"{italic}>'
             f"{esc(sub.strip())}</text>"
         )
 

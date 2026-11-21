@@ -1250,8 +1250,8 @@ def _band_text(row: _Row) -> tuple[str, str]:
         return title, "  ·  ".join(b for b in (sub, flow) if b)
     if row.kind == "undriven" and row.root_branch is not None:
         return (
-            f"Undriven rail {truncate_label(row.root_branch.label)}",
-            "no source or regulator feeds this rail",
+            truncate_label(row.root_branch.label),
+            "no source feeds this rail",
         )
     return "Unconnected", "parts with no rail to hang off"
 

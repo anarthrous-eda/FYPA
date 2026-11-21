@@ -152,7 +152,8 @@ class _EditorModeMixin:
             "Show / hide the What-If panel (W): try a change - copper "
             "weight, temperature, via plating - and compare it with this "
             "result. Not available in editor mode.")
-        wbtn.toggled.connect(self._set_whatif_panel_visible)
+        wbtn.toggled.connect(
+            lambda on: self._set_whatif_panel_visible(on, where="board"))
         self._whatif_btn = wbtn
         self._restyle_editor_overlay_buttons()
         self._position_editor_overlays()
@@ -860,7 +861,7 @@ class _EditorModeMixin:
         # The What-If panel is viewer-mode only: entering the editor closes
         # it (its button is hidden by _position_editor_overlays below).
         if self._editor_mode:
-            self._set_whatif_panel_visible(False)
+            self._set_whatif_panel_visible(False, where="board")
         # Source / sink free-marker buttons live in the viewport overlay
         # and are visible only while editor mode is active.
         for attr in ("_editor_add_source_btn", "_editor_add_sink_btn"):

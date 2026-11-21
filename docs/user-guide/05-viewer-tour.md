@@ -115,8 +115,8 @@ This is **not** the PCB layout; for spatial placement use the Board tab.
   regulator, the input net (red) on the regulator's own row, the net name
   where a rail loops back to a part drawn elsewhere. **Click a tag** to
   jump to the other end; hovering one highlights the whole net. A dashed
-  amber tag marks a rail nothing drives (such rails get their own
-  *Undriven rail* row); a grey tag marks a rail with no sink or regulator.
+  amber tag marks a rail nothing drives (such rails get their own amber
+  row, headed by the rail name and *no source feeds this rail*); a grey tag marks a rail with no sink or regulator.
 - **Ground** - every part with a return gets its own ground symbol under
   it; there is no shared return rail.
 - **Bridges** - 0 Ω auto-bridges on a powered rail show as one-line chips
@@ -169,9 +169,12 @@ This is **not** the PCB layout; for spatial placement use the Board tab.
   part with several FYPA directives (one per rail) gets a picker above the
   form. **Apply** updates the diagram straight away; **↻ Resolve** on the
   toolbar re-solves.
-- **What-If** (under **Manual setup…**, above **↻ Resolve**) - switches to
-  the Board and opens the What-If panel there, leaving editor mode first
-  if it is on.
+- **What-If** (under **Manual setup…**, above **↻ Resolve**; or **W**) -
+  shows the What-If panel on the right of this tab, the same panel as on
+  the Board. It shares that side with the part sidebar: whichever you
+  opened last is shown. Open / closed is remembered separately for the
+  Board and Topology tabs. Opening it leaves editor mode, and clicking a
+  box switches the view back to the base design, since the form edits it.
 - **⌖ icon** (bottom-right of each box) or **Show on Board** in the
   sidebar - jumps to that component's pad on the Board (same as **Go ▶**
   on the Nodes tab).

@@ -66,7 +66,7 @@ def test_one_row_per_origin_regulator_under_its_feed() -> None:
     assert [(b.kind, b.title) for b in rows] == [
         ("source", "12P0V"),
         ("regulator", "+VDD"),
-        ("undriven", "Undriven rail +1V8A_O"),
+        ("undriven", "+1V8A_O"),
     ]
     assert rows[1].depth == 1 and rows[1].x > rows[0].x
     # The regulator's own row sits below the source row.
@@ -493,7 +493,7 @@ def test_cascade_draws_the_regulator_inline_right_of_its_feed() -> None:
     rows = _rows(model)
     assert [(b.kind, b.title) for b in rows] == [
         ("source", "12P0V"),
-        ("undriven", "Undriven rail +1V8A_O"),
+        ("undriven", "+1V8A_O"),
     ]
     r18, u6, j1 = (_node(model, n) for n in ("R18", "U6", "J1"))
     # J2 → R18 → U6 → J1 left to right, on R18's row.

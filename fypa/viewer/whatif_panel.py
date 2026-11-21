@@ -670,6 +670,11 @@ class _WhatIfMixin:
             f"QLabel {{ color: {t['fg_hint']}; }}")
         lay.addWidget(self._whatif_status)
         outer_layout.addWidget(panel)
+        # One panel, two homes: the Board's row (here) and the Topology
+        # tab's row. Open / closed is remembered per tab; the panel moves to
+        # whichever of the two is showing (see _whatif_place_panel).
+        self._whatif_board_layout = outer_layout
+        self._whatif_open = {"board": False, "topology": False}
 
         # Banner on the heatmap while a what-if (or the difference) shows.
         self._whatif_banner = QLabel("", self._gl_viewer)
@@ -706,36 +711,96 @@ class _WhatIfMixin:
             return
         lo = self._WHATIF_PANEL_MIN_W
         w = max(lo, int(proposed_w))
-        gl = getattr(self, "_gl_viewer", None)
-        if gl is not None and gl.width() > 0:
-            room = panel.width() + gl.width() - self._WHATIF_PANEL_PLOT_RESERVE
+        # The plot it takes space from: the GL viewer on the Board, the
+        # diagram (and part sidebar) on the Topology tab.
+        plot = (getattr(self, "_topology_split", None)
+                if self._whatif_context() == "topology"
+                else getattr(self, "_gl_viewer", None))
+        if plot is not None and plot.width() > 0:
+            room = panel.width() + plot.width() - self._WHATIF_PANEL_PLOT_RESERVE
             w = min(w, max(lo, room))
         panel.set_preferred_width(w)
 
-    def _toggle_whatif_panel_visible(self) -> None:
-        """W hotkey: same as clicking the What-If button."""
-        panel = getattr(self, "_whatif_panel", None)
-        if panel is None:
-            return
-        self._set_whatif_panel_visible(not panel.isVisible())
+    def _whatif_context(self) -> str:
+        """``"topology"`` while the Topology tab is showing, else
+        ``"board"`` - the tab whose What-If panel state applies."""
+        tabs = getattr(self, "tabs", None)
+        if (tabs is not None
+                and getattr(self, "_topology_whatif_layout", None) is not None
+                and tabs.currentIndex()
+                == getattr(self, "_topology_tab_index", -1)):
+            return "topology"
+        return "board"
 
-    def _set_whatif_panel_visible(self, visible: bool) -> None:
-        """Show / hide the What-If panel and keep its button in step. The
-        panel is viewer-mode only, so a show request in editor mode is
-        refused."""
+    def _toggle_whatif_panel_visible(self) -> None:
+        """W hotkey: same as clicking the showing tab's What-If button."""
+        if getattr(self, "_whatif_panel", None) is None:
+            return
+        where = self._whatif_context()
+        self._set_whatif_panel_visible(
+            not self._whatif_open.get(where, False), where=where)
+
+    def _set_whatif_panel_visible(self, visible: bool,
+                                  where: str | None = None) -> None:
+        """Open / close the What-If panel on one tab (``"board"`` or
+        ``"topology"``; default the one showing) and keep the buttons in
+        step. On the Board the panel is viewer-mode only, so a show request
+        in editor mode is refused. On the Topology tab it shares the
+        right-hand side with the part sidebar - opening it closes the
+        sidebar - and opening it leaves editor mode (the what-if views swap
+        the design on screen, which the editor must not edit)."""
         panel = getattr(self, "_whatif_panel", None)
         if panel is None:
             return
-        visible = bool(visible) and not bool(getattr(self, "_editor_mode", False))
-        if panel.isVisible() != visible:
-            panel.setVisible(visible)
+        where = where or self._whatif_context()
+        visible = bool(visible)
+        if where == "topology":
             if visible:
-                self._refresh_whatif_compare()
-        btn = getattr(self, "_whatif_btn", None)
-        if btn is not None and btn.isChecked() != visible:
-            btn.blockSignals(True)
-            btn.setChecked(visible)
-            btn.blockSignals(False)
+                close = getattr(self, "_topology_close_sidebar", None)
+                if close is not None:
+                    close()
+                toggle = getattr(self, "_editor_toggle_btn", None)
+                if toggle is not None and toggle.isChecked():
+                    toggle.setChecked(False)
+        else:
+            visible = visible and not bool(getattr(self, "_editor_mode", False))
+        self._whatif_open[where] = visible
+        for attr, key in (("_whatif_btn", "board"),
+                          ("_topology_whatif_btn", "topology")):
+            btn = getattr(self, attr, None)
+            want = bool(self._whatif_open.get(key, False))
+            if btn is not None and btn.isChecked() != want:
+                btn.blockSignals(True)
+                btn.setChecked(want)
+                btn.blockSignals(False)
+        self._whatif_place_panel()
+
+    def _whatif_place_panel(self) -> None:
+        """Move the panel into the showing tab's row (Board or Topology)
+        and show it there if that tab has it open. Called on every tab
+        switch and on every open / close."""
+        panel = getattr(self, "_whatif_panel", None)
+        if panel is None:
+            return
+        where = self._whatif_context()
+        board = getattr(self, "_whatif_board_layout", None)
+        topo = getattr(self, "_topology_whatif_layout", None)
+        target = topo if where == "topology" else board
+        visible = bool(self._whatif_open.get(where, False))
+        was_visible = panel.isVisible()
+        if target is not None and target.indexOf(panel) < 0:
+            # Hide explicitly before the move: a reparented widget that
+            # wasn't explicitly hidden gets a deferred show from its new
+            # layout, which would open it on a tab that has it closed.
+            panel.hide()
+            was_visible = False
+            other = board if target is topo else topo
+            if other is not None:
+                other.removeWidget(panel)
+            target.addWidget(panel)
+        panel.setVisible(visible)
+        if visible and not was_visible:
+            self._refresh_whatif_compare()
 
     def _position_whatif_banner(self) -> None:
         banner = getattr(self, "_whatif_banner", None)

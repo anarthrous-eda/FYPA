@@ -667,17 +667,31 @@ class _TopologyTabMixin:
             "Add and edit sources, regulators and loads by hand: pick a net, "
             "the part on it and its pins, in one list per kind.",
             self._topology_run_manual_setup)
-        # Same pastel orange and badge as the Board's What-If button. The
-        # panel lives on the Board, so this opens it there.
+        # Same pastel orange and badge as the Board's What-If button. Shows
+        # the What-If panel on this tab's right-hand side, in place of the
+        # part sidebar; open / closed is kept apart from the Board's.
         whatif_orange = (self._WHATIF_ORANGE_DARK
                          if current_theme_mode() == "dark"
                          else self._WHATIF_ORANGE_LIGHT)
-        self._topology_whatif_btn = _big_btn(
-            "What-If", _whatif_icon(whatif_orange, _t["bg"]), whatif_orange,
-            "Open the What-If panel on the Board tab: try a change - copper "
+        wbtn = QPushButton("What-If")
+        wbtn.setIcon(_whatif_icon(whatif_orange, _t["bg"]))
+        wbtn.setIconSize(QSize(16, 16))
+        wbtn.setCursor(Qt.PointingHandCursor)
+        wbtn.setCheckable(True)
+        wbtn.setToolTip(
+            "Show / hide the What-If panel (W): try a change - copper "
             "weight, temperature, via plating - and compare it with this "
-            "result. Leaves editor mode if it is on.",
-            self._on_topology_whatif)
+            "result. Replaces the part sidebar while open; leaves editor "
+            "mode if it is on.")
+        wbtn.setStyleSheet(
+            _big_btn_qss(whatif_orange)
+            + "QPushButton:checked {{ background-color: {c}; color: {bg}; }}"
+            .format(c=whatif_orange, bg=_t["bg"]))
+        wbtn.setChecked(
+            bool(getattr(self, "_whatif_open", {}).get("topology", False)))
+        wbtn.toggled.connect(
+            lambda on: self._set_whatif_panel_visible(on, where="topology"))
+        self._topology_whatif_btn = wbtn
         # Same green and refresh badge as the Board's Resolve button.
         self._topology_resolve_btn = _big_btn(
             "Resolve", _resolve_icon("#2ca92c", _t["bg"], _t["fg_dim"]),
@@ -705,7 +719,15 @@ class _TopologyTabMixin:
         self._topology_split.setStretchFactor(0, 1)
         self._topology_split.setStretchFactor(1, 0)
         self._topology_sidebar.hide()
-        outer.addWidget(self._topology_split, 1)
+        # Diagram (+ part sidebar), with the What-If panel's Topology home
+        # to its right: the panel moves here from the Board while this tab
+        # shows (see _whatif_place_panel).
+        split_row = QHBoxLayout()
+        split_row.setContentsMargins(0, 0, 0, 0)
+        split_row.setSpacing(0)
+        split_row.addWidget(self._topology_split, 1)
+        self._topology_whatif_layout = split_row
+        outer.addLayout(split_row, 1)
         if not getattr(self, "_topology_tabs_hooked", False):
             self.tabs.currentChanged.connect(self._on_tabs_changed_for_topology)
             self._topology_tabs_hooked = True
@@ -833,6 +855,13 @@ class _TopologyTabMixin:
         sel = self._topology_node_selection(node)
         if sel is None:
             return
+        # One right-hand panel at a time: the part form replaces What-If.
+        # It edits the base design, so put the base back on screen.
+        if getattr(self, "_whatif_open", {}).get("topology"):
+            self._set_whatif_panel_visible(False, where="topology")
+        ensure = getattr(self, "_whatif_ensure_base", None)
+        if ensure is not None:
+            ensure()
         self._topology_side_node = node
         role = "SERIES" if node.role in ("RESISTOR", "SERIES") else node.role
         self._topology_side_title.setText(
@@ -886,6 +915,9 @@ class _TopologyTabMixin:
             self._jump_to_node(node.jump_row)
 
     def _on_tabs_changed_for_topology(self, index: int) -> None:
+        place = getattr(self, "_whatif_place_panel", None)
+        if place is not None:
+            place()
         if index != getattr(self, "_topology_tab_index", -1):
             self._topology_close_sidebar()
         else:
@@ -909,16 +941,6 @@ class _TopologyTabMixin:
         self._topology_close_sidebar()
         self._on_resolve_clicked()
 
-    def _on_topology_whatif(self) -> None:
-        """Open the What-If panel - it lives on the Board, and is
-        viewer-mode only, so switch to the Board and leave editor mode
-        first (placed directives stay in the project)."""
-        self._topology_close_sidebar()
-        self.tabs.setCurrentIndex(self._heatmap_tab_index)
-        toggle = getattr(self, "_editor_toggle_btn", None)
-        if toggle is not None and toggle.isChecked():
-            toggle.setChecked(False)
-        self._set_whatif_panel_visible(True)
 
     # --- Auto setup / click-to-add --------------------------------------------
 
