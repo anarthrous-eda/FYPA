@@ -728,13 +728,12 @@ def rows_legend_width() -> float:
 
 def _draw_rows_legend(parts: list[str], y: float, *, fg_dim: str, bg_alt: str) -> None:
     x = 12.0
-    for name, color in (
-        ("SOURCE", ROLE_COLORS["SOURCE"]),
-        ("REGULATOR", ROLE_COLORS["REGULATOR"]),
-        ("SERIES", CHIP_STRIP_COLORS["RESISTOR"]),
-        ("SINK", ROLE_COLORS["SINK"]),
-        ("BRIDGE", CHIP_STRIP_COLORS["AUTO_BRIDGE"]),
-    ):
+    chip_colors = {
+        "SERIES": CHIP_STRIP_COLORS["RESISTOR"],
+        "BRIDGE": CHIP_STRIP_COLORS["AUTO_BRIDGE"],
+    }
+    for name in _ROWS_LEGEND_ROLES:
+        color = chip_colors.get(name) or ROLE_COLORS[name]
         sw = 10.0
         if name in ("SERIES", "BRIDGE"):
             # Drawn as chips, so the swatch is a mini chip: body + strip.

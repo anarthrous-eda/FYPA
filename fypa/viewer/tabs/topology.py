@@ -1191,6 +1191,7 @@ class _TopologyTabMixin:
 
         self._topology_show_bridges = bool(checked)
         save_topology_show_bridges(self._topology_show_bridges)
+        self._topology_keep_view_once = True  # keep zoom / scroll, don't refit
         self._refresh_topology_live(reuse_metadata=True)
 
     def _on_topology_add_handles_toggled(self, checked: bool) -> None:
@@ -1198,6 +1199,7 @@ class _TopologyTabMixin:
 
         self._topology_show_add_handles = bool(checked)
         save_topology_show_add_handles(self._topology_show_add_handles)
+        self._topology_keep_view_once = True  # keep zoom / scroll, don't refit
         self._refresh_topology_live(reuse_metadata=True)
 
     def _topology_view_in_memory(self):
