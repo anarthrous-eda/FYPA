@@ -625,6 +625,7 @@ class _TopologyTabMixin:
             _autosetup_icon,
             _manual_setup_icon,
             _resolve_icon,
+            _whatif_icon,
         )
 
         def _big_btn_qss(color: str) -> str:
@@ -666,6 +667,17 @@ class _TopologyTabMixin:
             "Add and edit sources, regulators and loads by hand: pick a net, "
             "the part on it and its pins, in one list per kind.",
             self._topology_run_manual_setup)
+        # Same pastel orange and badge as the Board's What-If button. The
+        # panel lives on the Board, so this opens it there.
+        whatif_orange = (self._WHATIF_ORANGE_DARK
+                         if current_theme_mode() == "dark"
+                         else self._WHATIF_ORANGE_LIGHT)
+        self._topology_whatif_btn = _big_btn(
+            "What-If", _whatif_icon(whatif_orange, _t["bg"]), whatif_orange,
+            "Open the What-If panel on the Board tab: try a change - copper "
+            "weight, temperature, via plating - and compare it with this "
+            "result. Leaves editor mode if it is on.",
+            self._on_topology_whatif)
         # Same green and refresh badge as the Board's Resolve button.
         self._topology_resolve_btn = _big_btn(
             "Resolve", _resolve_icon("#2ca92c", _t["bg"], _t["fg_dim"]),
@@ -677,7 +689,7 @@ class _TopologyTabMixin:
         setup_col.setSpacing(4)
         setup_col.setContentsMargins(0, 4, 0, 4)
         for b in (self._topology_autosetup_btn, self._topology_manual_btn,
-                  self._topology_resolve_btn):
+                  self._topology_whatif_btn, self._topology_resolve_btn):
             setup_col.addWidget(b)
         setup_row = QHBoxLayout()
         setup_row.addLayout(setup_col)
@@ -896,6 +908,17 @@ class _TopologyTabMixin:
     def _on_topology_resolve(self) -> None:
         self._topology_close_sidebar()
         self._on_resolve_clicked()
+
+    def _on_topology_whatif(self) -> None:
+        """Open the What-If panel - it lives on the Board, and is
+        viewer-mode only, so switch to the Board and leave editor mode
+        first (placed directives stay in the project)."""
+        self._topology_close_sidebar()
+        self.tabs.setCurrentIndex(self._heatmap_tab_index)
+        toggle = getattr(self, "_editor_toggle_btn", None)
+        if toggle is not None and toggle.isChecked():
+            toggle.setChecked(False)
+        self._set_whatif_panel_visible(True)
 
     # --- Auto setup / click-to-add --------------------------------------------
 

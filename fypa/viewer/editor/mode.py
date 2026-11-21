@@ -17,7 +17,9 @@ from PySide6.QtWidgets import (
 )
 
 from fypa.viewer.assets import (
+    _autosetup_icon,
     _load_editmode_icon,
+    _manual_setup_icon,
     _resolve_icon,
     _triangle_icon,
     _whatif_icon,
@@ -109,6 +111,27 @@ class _EditorModeMixin:
         # handler are unchanged, so the solve-time reads and the resolve-enable
         # logic keep working regardless of where the widget is.
 
+        # Auto / Manual setup - editor mode only, stacked above Resolve.
+        # Same buttons (and handlers) as the Topology tab's.
+        for attr, text, tip, slot in (
+            ("_board_autosetup_btn", "Auto setup…",
+             "Propose sources, regulators, sinks and series elements from "
+             "the design (and a datasheet folder, if you have one), then "
+             "review and apply them.",
+             lambda _c=False: self._topology_run_autosetup()),
+            ("_board_manual_btn", "Manual setup…",
+             "Add and edit sources, regulators and loads by hand: pick a "
+             "net, the part on it and its pins, in one list per kind.",
+             lambda _c=False: self._topology_run_manual_setup()),
+        ):
+            sbtn = QPushButton(text, self._gl_viewer)
+            sbtn.setIconSize(QSize(16, 16))
+            sbtn.setCursor(Qt.PointingHandCursor)
+            sbtn.setToolTip(tip)
+            sbtn.clicked.connect(slot)
+            sbtn.hide()
+            setattr(self, attr, sbtn)
+
         rbtn = QPushButton("Resolve", self._gl_viewer)
         rbtn.setIconSize(QSize(16, 16))
         rbtn.setCursor(Qt.PointingHandCursor)
@@ -160,6 +183,29 @@ class _EditorModeMixin:
             if b is not None:
                 b.setStyleSheet(qss)
         self._sync_editor_toggle_look(force=True)
+        # Auto setup pastel yellow (deeper on light), Manual setup accent -
+        # matching the Topology tab's pair.
+        autosetup_yellow = ("#f2d675" if current_theme_mode() == "dark"
+                            else "#c9a227")
+        for attr, color, icon in (
+            ("_board_autosetup_btn", autosetup_yellow,
+             _autosetup_icon(autosetup_yellow, t["bg"])),
+            ("_board_manual_btn", t["accent"],
+             _manual_setup_icon(t["accent"], t["bg"])),
+        ):
+            sbtn = getattr(self, attr, None)
+            if sbtn is None:
+                continue
+            sbtn.setIcon(icon)
+            sbtn.setStyleSheet(
+                "QPushButton {{ border: 1px solid {c}; border-radius: 6px;"
+                "  padding: 6px 12px; font-weight: bold; text-align: left;"
+                "  background-color: {bg}; color: {c}; }}"
+                "QPushButton:hover:enabled {{ background-color: {hover}; }}"
+                "QPushButton:disabled {{ color: {dim}; border-color: {dim}; }}"
+                .format(c=color, bg=t["bg"], hover=t["bg_hover"],
+                        dim=t["fg_dim"])
+            )
         rbtn = getattr(self, "_resolve_btn", None)
         if rbtn is not None:
             # Refresh badge left of the label, drawn like the What-If badge;
@@ -347,8 +393,8 @@ class _EditorModeMixin:
         """Pin the overlay buttons to the GL viewer's top-left corner, as a
         column: Edit, then What-If (viewer mode), then Resolve. In editor
         mode the top row is the square edit toggle plus the SOURCE / SINK
-        marker buttons, with Resolve still directly beneath it and What-If
-        hidden. Safe before the widgets exist (no-op); wired to every
+        marker buttons, with Auto setup, Manual setup and Resolve beneath
+        it and What-If hidden. Safe before the widgets exist (no-op); wired to every
         GL-viewer resize via :meth:`eventFilter`."""
         gl = getattr(self, "_gl_viewer", None)
         btn = getattr(self, "_editor_toggle_btn", None)
@@ -361,10 +407,17 @@ class _EditorModeMixin:
         wbtn = getattr(self, "_whatif_btn", None)
         if wbtn is not None:
             wbtn.setVisible(not editing)
+        abtn = getattr(self, "_board_autosetup_btn", None)
+        mbtn = getattr(self, "_board_manual_btn", None)
+        for b in (abtn, mbtn):
+            if b is not None:
+                b.setVisible(editing)
+        stack = (abtn, mbtn, wbtn, rbtn)
         # The labelled buttons in the column (viewer mode: Edit, What-If,
-        # Resolve; editor mode: just Resolve, under the square toggle) share
-        # the largest one's size so the column reads as one block.
-        column = [b for b in (wbtn, rbtn) if b is not None and not b.isHidden()]
+        # Resolve; editor mode: Auto setup, Manual setup, Resolve, under the
+        # square toggle) share the largest one's size so the column reads
+        # as one block.
+        column = [b for b in stack if b is not None and not b.isHidden()]
         if not editing:
             column.insert(0, btn)
         if column:
@@ -385,7 +438,7 @@ class _EditorModeMixin:
                 x += b.width() + gap
         # In editor mode, clear the backdrop that wraps the top row too.
         y = margin + btn.height() + gap + (6 if editing else 0)
-        for b in (wbtn, rbtn):
+        for b in stack:
             if b is not None and not b.isHidden():
                 b.move(margin, y)
                 b.raise_()

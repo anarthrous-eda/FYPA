@@ -45,7 +45,7 @@ command), then either:
 
 ![Editor toggle button in the top-left of the viewport](screenshots/02-editor-toggle.png)
 
-Three things change when editor mode is active:
+These things change when editor mode is active:
 
 1. The viewport background dims slightly, and copper not connected to
    the current selection is shown faded - so the rail you are about to
@@ -53,8 +53,11 @@ Three things change when editor mode is active:
 2. Two extra buttons appear next to the toggle: a red up-triangle
    (**SOURCE**) and a blue down-triangle (**SINK**). These are the free
    marker buttons, covered in 2.4.
-3. The **PDN Editor** panel slides in on the right-hand side.
-4. Left-drag on empty board sweeps a selection box, for editing several
+3. **Auto setup…** and **Manual setup…** appear above **Resolve** in the
+   button column - the same two wizards as on the Topology tab. The
+   What-If button is hidden until you leave editor mode.
+4. The **PDN Editor** panel slides in on the right-hand side.
+5. Left-drag on empty board sweeps a selection box, for editing several
    sinks in one go - see 2.6.
 
 Press `E` again - or click the toggle off - to leave editor mode. Any

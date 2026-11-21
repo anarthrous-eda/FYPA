@@ -257,6 +257,7 @@ on that rail. <b>Auto setup&hellip;</b> proposes a whole setup from the
 design and, optionally, a folder of datasheets, for you to review and apply.
 <b>Manual setup&hellip;</b> lists every source, regulator and load to add or
 edit by hand: pick the net, the part on it and its pins.
+<b>What-If</b> opens the What-If panel on the Board (leaving editor mode).
 <b>&#8635; Resolve</b> re-solves with your changes.</p>
 
 <h3>Keyboard shortcuts</h3>

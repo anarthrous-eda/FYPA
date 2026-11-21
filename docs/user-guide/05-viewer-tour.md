@@ -169,6 +169,9 @@ This is **not** the PCB layout; for spatial placement use the Board tab.
   part with several FYPA directives (one per rail) gets a picker above the
   form. **Apply** updates the diagram straight away; **↻ Resolve** on the
   toolbar re-solves.
+- **What-If** (under **Manual setup…**, above **↻ Resolve**) - switches to
+  the Board and opens the What-If panel there, leaving editor mode first
+  if it is on.
 - **⌖ icon** (bottom-right of each box) or **Show on Board** in the
   sidebar - jumps to that component's pad on the Board (same as **Go ▶**
   on the Nodes tab).
