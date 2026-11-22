@@ -497,6 +497,15 @@ heatmap is drawn over the board there. You will rarely
 click away from it during normal use - the other tabs hold the setup
 controls, node / via tables, messages, and settings.
 
+Markers on the pins say what each part does to its rail: a red ▲ is a
+SOURCE, a blue ▼ a SINK, a green ■ a SERIES part. A regulator is
+magenta at both ends - ▲ on its output pins, where it supplies the rail,
+and ▼ on its input pins, where it loads the rail feeding it. A ground
+pin that serves as the return for both ends belongs to neither, and is
+a magenta ◆. The legend at the top right lists them as **REG OUT**,
+**REG IN** and **REG RETURN**; like every legend row, each one hides or
+shows its markers when clicked.
+
 ## 5.10 Interaction reference
 
 | Action                          | How                                                                  |

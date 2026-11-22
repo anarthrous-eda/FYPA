@@ -284,3 +284,46 @@ def test_vias_row_eye_resets_every_kind(kinds_viewer) -> None:
     kinds_viewer._on_overlay_eye("vias", "both", "all", True,
                                  EyeButton(visible=True), EyeButton())
     assert st["kinds"] == {} and st["both"]["vis"] == "all"
+
+
+def test_regulator_ends_get_their_own_glyph_and_legend_row(viewer) -> None:
+    """Output pins draw as an up triangle, input pins as a down one, both
+    in the regulator colour, each under its own legend toggle."""
+    def term(net, x):
+        return {"requested_net": net,
+                "pins": [{"net": net, "layer_id": 1, "x_mm": x, "y_mm": 9.0}]}
+    viewer.metadata["directives"] = [{
+        "role": "REGULATOR", "designator": "U2", "label": "U2",
+        "schdoc": "power.SchDoc", "value": 3.3, "unit": "V",
+        "terminals": {"OUT_P": term("VCC", 10.0), "OUT_N": term("GND", 11.0),
+                      "IN_P": term("VIN", 12.0), "IN_N": term("GND", 13.0)},
+    }]
+    # The ground pin at x=11 is also one of the input's returns: it is
+    # drawn once, as the plain diamond, not as two triangles on one pad.
+    viewer.metadata["directives"][0]["terminals"]["IN_N"]["pins"].append(
+        {"net": "GND", "layer_id": 1, "x_mm": 11.0, "y_mm": 9.0})
+    style = viewer._ROLE_MARKER_STYLE
+    viewer._gl_viewer.relief_z_span = lambda: 0.0   # relief view off
+    viewer._layer_color_for = lambda phys: "#ff0000"
+
+    def drawn():
+        return {(g.symbol, x) for g in viewer._gl_viewer.markers
+                if g.color == style["REGULATOR"]["color"]
+                for x in g.xs.tolist()}
+
+    viewer._update_markers_and_legend(["Top"], ["VCC", "VIN", "GND"])
+    assert drawn() == {("tri_up", 10.0), ("d", 11.0),
+                       ("tri_down", 12.0), ("tri_down", 13.0)}
+    assert sum(len(g.xs) for g in viewer._gl_viewer.markers
+               if g.color == style["REGULATOR"]["color"]) == 4
+    keys = [r.key for r in viewer._gl_viewer.legend]
+    assert {"REG OUT", "REG IN", "REG RETURN"} <= set(keys)
+    assert "REGULATOR" not in keys
+
+    # Only the output rail in view: no REG IN row. Hiding REG OUT keeps
+    # the row but drops its markers.
+    viewer._hidden_legend_keys = {"REG OUT"}
+    viewer._update_markers_and_legend(["Top"], ["VCC"])
+    assert drawn() == set()
+    assert [r.key for r in viewer._gl_viewer.legend
+            if r.key.startswith("REG")] == ["REG OUT"]

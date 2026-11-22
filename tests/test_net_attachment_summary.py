@@ -32,6 +32,7 @@ class _SummaryViewerStub:
     _ATTACH_ROLE_WORDS = PdnViewer._ATTACH_ROLE_WORDS
     _ROLE_MARKER_STYLE = PdnViewer._ROLE_MARKER_STYLE
     _LEGEND_GLYPHS = PdnViewer._LEGEND_GLYPHS
+    _marker_style_key = staticmethod(PdnViewer._marker_style_key)
 
     _connected_nets = PdnViewer._connected_nets
     # Rebind as a staticmethod: the class attribute above hands back the
@@ -181,6 +182,46 @@ def test_sinks_sort_after_sources():
     ])
     assert [r["role"] for r in v._net_attachment_rows("+12V")] == [
         "SOURCE", "REGULATOR", "SINK"]
+
+
+def _regulator(designator="U2", out_net="+3V3", in_net="+12V"):
+    def term(net):
+        return {"requested_net": net, "pins": [{"net": net}]}
+    return {
+        "role": "REGULATOR", "designator": designator, "label": designator,
+        "schdoc": "power.SchDoc", "value": 3.3, "unit": "V",
+        "terminals": {"OUT_P": term(out_net), "OUT_N": term("GND"),
+                      "IN_P": term(in_net), "IN_N": term("GND")},
+    }
+
+
+def test_marker_style_key_splits_a_regulator_by_terminal():
+    key = PdnViewer._marker_style_key
+    assert key("SOURCE", "P") == "SOURCE"
+    assert key("SINK", "N") == "SINK"
+    assert key("REGULATOR", "OUT_P") == "REGULATOR_OUT"
+    assert key("REGULATOR", "OUT_N") == "REGULATOR_OUT"
+    assert key("REGULATOR", "IN_P") == "REGULATOR_IN"
+    assert key("REGULATOR", "IN_N") == "REGULATOR_IN"
+    # Several terminals on one net: the P side decides; returns alone
+    # (OUT_N and IN_N sharing GND) or no terminal stay the plain glyph.
+    assert key("REGULATOR", ["IN_P", "OUT_N"]) == "REGULATOR_IN"
+    assert key("REGULATOR", ["IN_N", "OUT_N"]) == "REGULATOR"
+    assert key("REGULATOR") == "REGULATOR"
+    styles = PdnViewer._ROLE_MARKER_STYLE
+    assert styles["REGULATOR_OUT"]["symbol"] == styles["SOURCE"]["symbol"]
+    assert styles["REGULATOR_IN"]["symbol"] == styles["SINK"]["symbol"]
+    assert (styles["REGULATOR_OUT"]["color"] == styles["REGULATOR_IN"]["color"]
+            == styles["REGULATOR"]["color"])
+    assert styles["REGULATOR_OUT"]["label"] != styles["REGULATOR_IN"]["label"]
+
+
+def test_summary_html_shows_the_regulator_end_on_the_clicked_net():
+    v = _SummaryViewerStub([_regulator()])
+    v._rail_to_members["+3V3"] = ["+3V3"]
+    assert "▲&nbsp;REGULATOR" in v._net_summary_html("+3V3")   # output
+    assert "▼&nbsp;REGULATOR" in v._net_summary_html("+12V")   # input
+    assert "◆&nbsp;REGULATOR" in v._net_summary_html("GND")    # returns
 
 
 def test_summary_html_reports_values_and_total_load():

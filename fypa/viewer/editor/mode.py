@@ -68,10 +68,12 @@ class _EditorModeMixin:
         bg.hide()
         self._editor_overlay_bg = bg
 
-        # Icon, label, size and colours depend on the mode (labelled pastel
-        # blue "Edit" in viewer mode, square icon-only in editor mode) and
-        # are applied by _sync_editor_toggle_look.
-        btn = QToolButton(self._gl_viewer)
+        # Icon and colours depend on the mode (pastel blue in viewer mode,
+        # where a hover reveals its "Edit Mode" label; plain in editor mode,
+        # leading the marker row) and are applied by
+        # _sync_editor_toggle_look. A QPushButton, not a QToolButton, so
+        # its stylesheet can hold the icon left while a hover widens it.
+        btn = QPushButton(self._gl_viewer)
         btn.setCheckable(True)
         btn.setCursor(Qt.PointingHandCursor)
         btn.setIconSize(QSize(20, 20))
@@ -138,25 +140,9 @@ class _EditorModeMixin:
         rbtn.hide()
         self._resolve_btn = rbtn
 
-        # Editor mode: the three icon-only squares reveal their label after
-        # a short hover (widen, then show the text) and shrink back on leave.
-        # Their tooltips are suppressed in editor mode (Resolve keeps its
-        # status tooltip in viewer mode).
-        from fypa.viewer.editor.hover_expand import HoverExpander
-        editing = lambda: bool(getattr(self, "_editor_mode", False))  # noqa: E731
-        first = lambda: bool(getattr(self, "_awaiting_first_solve", False))  # noqa: E731
-        self._overlay_expanders = {
-            self._board_autosetup_btn: HoverExpander(
-                self._board_autosetup_btn, lambda: "Auto setup…", editing),
-            self._board_manual_btn: HoverExpander(
-                self._board_manual_btn, lambda: "Manual setup…", editing),
-            rbtn: HoverExpander(
-                rbtn, lambda: "Solve" if first() else "Resolve", editing),
-        }
-
-        # What-If panel toggle - sits right of Resolve. Viewer mode only:
+        # What-If panel toggle - sits above Resolve. Viewer mode only:
         # hidden (and the panel closed) while editor mode is on.
-        wbtn = QPushButton("What-If", self._gl_viewer)
+        wbtn = QPushButton(self._gl_viewer)
         wbtn.setIconSize(QSize(16, 16))
         wbtn.setCheckable(True)
         wbtn.setCursor(Qt.PointingHandCursor)
@@ -167,6 +153,29 @@ class _EditorModeMixin:
         wbtn.toggled.connect(
             lambda on: self._set_whatif_panel_visible(on, where="board"))
         self._whatif_btn = wbtn
+
+        # The column buttons are icon-only squares that reveal their label
+        # after a short hover (widen, then show the text) and shrink back on
+        # leave: Edit, What-If and Resolve in viewer mode; Auto setup,
+        # Manual setup and Resolve in editor mode. The edit toggle reveals
+        # nothing in editor mode, where it leads the marker row and would
+        # widen over the SOURCE / SINK buttons. The label stands in for the
+        # tooltip, except on a greyed-out button (hover_expand).
+        from fypa.viewer.editor.hover_expand import HoverExpander
+        editing = lambda: bool(getattr(self, "_editor_mode", False))  # noqa: E731
+        viewing = lambda: not editing()  # noqa: E731
+        always = lambda: True  # noqa: E731
+        first = lambda: bool(getattr(self, "_awaiting_first_solve", False))  # noqa: E731
+        self._overlay_expanders = {
+            btn: HoverExpander(btn, lambda: "Edit Mode", viewing),
+            self._board_autosetup_btn: HoverExpander(
+                self._board_autosetup_btn, lambda: "Auto setup…", editing),
+            self._board_manual_btn: HoverExpander(
+                self._board_manual_btn, lambda: "Manual setup…", editing),
+            wbtn: HoverExpander(wbtn, lambda: "What-If", always),
+            rbtn: HoverExpander(
+                rbtn, lambda: "Solve" if first() else "Resolve", always),
+        }
         self._restyle_editor_overlay_buttons()
         self._position_editor_overlays()
 
@@ -231,16 +240,14 @@ class _EditorModeMixin:
             # Border + text use a fixed "go" green (not a theme token) so the
             # Resolve action reads as a positive call-to-action in both themes.
             rbtn.setStyleSheet(
+                # Icon-only square, icon held left at its centred spot
+                # (1 + 8 + 16 + 8 + 1) so a hover can widen it to reveal
+                # the label (hover_expand).
                 "QPushButton {{ border: 1px solid {green}; border-radius: 6px;"
-                "  padding: 6px 12px; font-weight: bold;"
+                "  padding: 0px 0px 0px 8px; text-align: left;"
+                "  font-weight: bold;"
                 "  background-color: {bg}; color: {green}; }}"
-                # Editor mode: icon-only square (see _sync_resolve_label),
-                # icon held left at its centred spot (1 + 8 + 16 + 8 + 1) so
-                # a hover can widen it to reveal the label (hover_expand).
-                "QPushButton[iconOnly=\"true\"] {{ padding: 0px 0px 0px 8px;"
-                "  text-align: left; }}"
-                "QPushButton[iconOnly=\"true\"][expanded=\"true\"] {{"
-                "  padding: 0px 10px 0px 8px; }}"
+                "QPushButton[expanded=\"true\"] {{ padding: 0px 10px 0px 8px; }}"
                 "QPushButton:hover:enabled {{ background-color: {hover}; }}"
                 "QPushButton:disabled {{ color: {dim}; border-color: {dim}; }}"
                 .format(green="#2ca92c", bg=t["bg"], hover=t["bg_hover"],
@@ -258,9 +265,12 @@ class _EditorModeMixin:
             # rebuilt here so a theme switch recolours it.
             wbtn.setIcon(_whatif_icon(orange, t["bg"]))
             wbtn.setStyleSheet(
+                # Icon-only square like Resolve (hover reveals the label).
                 "QPushButton {{ border: 1px solid {accent}; border-radius: 6px;"
-                "  padding: 6px 12px; font-weight: bold;"
+                "  padding: 0px 0px 0px 8px; text-align: left;"
+                "  font-weight: bold;"
                 "  background-color: {bg}; color: {accent}; }}"
+                "QPushButton[expanded=\"true\"] {{ padding: 0px 10px 0px 8px; }}"
                 "QPushButton:hover {{ background-color: {hover}; }}"
                 "QPushButton:checked {{ background-color: {accent};"
                 "  color: {bg}; }}"
@@ -271,12 +281,13 @@ class _EditorModeMixin:
             ag_chk.setStyleSheet(f"QCheckBox {{ color: {t['fg']}; }}")
 
     def _sync_editor_toggle_look(self, force: bool = False) -> None:
-        """Give the editor toggle its per-mode look. Viewer mode: icon plus
-        an "Edit" label in the theme's pastel blue accent, styled like the
-        Resolve / What-If buttons it heads the column of. Editor mode: the
-        34 x 34 icon-only square (accent-filled while checked) that leads
-        the SOURCE / SINK marker row. Skips the restyle when the mode hasn't
-        changed since the last call, unless ``force`` (theme switch)."""
+        """Give the editor toggle its per-mode look - a 34 x 34 icon-only
+        square either way. Viewer mode: the theme's pastel blue accent,
+        styled like the What-If / Resolve squares it heads the column of,
+        widening on hover to reveal "Edit Mode" (hover_expand). Editor mode:
+        accent-filled while checked, leading the SOURCE / SINK marker row.
+        Skips the restyle when the mode hasn't changed since the last call,
+        unless ``force`` (theme switch)."""
         btn = getattr(self, "_editor_toggle_btn", None)
         if btn is None:
             return
@@ -285,58 +296,68 @@ class _EditorModeMixin:
             return
         self._editor_toggle_look = editing
         t = _T()
+        # Icon held left at its centred-in-34px spot (1 + 6 + 20 + 6 + 1)
+        # so it stays put while a hover widens the button; [expanded] adds
+        # the right padding for the revealed label.
         if editing:
+            # Back to the square before fixing the size, in case a hover
+            # had it widened when editor mode was entered.
+            exp = getattr(self, "_overlay_expanders", {}).get(btn)
+            if exp is not None:
+                exp.reset()
             icon = _load_editmode_icon()
             btn.setText("" if icon is not None else "Edit")
             if icon is not None:
                 btn.setIcon(icon)
-            btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
-            btn.setStyleSheet(self._EDITOR_OVERLAY_BTN_QSS % {
-                "border": t["border"], "bg": t["bg"],
-                "hover": t["bg_hover"], "accent": t["accent"],
-            })
+            btn.setStyleSheet(
+                "QPushButton {{ border: 1px solid {border};"
+                "  border-radius: 6px; padding: 0px 0px 0px 6px;"
+                "  text-align: left; background-color: {bg}; }}"
+                "QPushButton:hover {{ background-color: {hover}; }}"
+                "QPushButton:checked {{ background-color: {accent};"
+                "  border-color: {accent}; }}"
+                .format(border=t["border"], bg=t["bg"], hover=t["bg_hover"],
+                        accent=t["accent"])
+            )
             btn.setFixedSize(34, 34)
         else:
             accent = t["accent"]
             icon = _load_editmode_icon(accent)
             if icon is not None:
                 btn.setIcon(icon)
-            btn.setText("Edit")
-            btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            # Blank unless a hover has it expanded; the label stays as a
+            # fallback when the icon asset is missing.
+            exp = getattr(self, "_overlay_expanders", {}).get(btn)
+            if icon is None:
+                btn.setText("Edit")
+            else:
+                btn.setText(exp.current_label() if exp is not None else "")
             btn.setStyleSheet(
-                "QToolButton {{ border: 1px solid {c}; border-radius: 6px;"
-                "  padding: 4px 12px 4px 10px; font-weight: bold;"
+                "QPushButton {{ border: 1px solid {c}; border-radius: 6px;"
+                "  padding: 0px 0px 0px 6px; text-align: left;"
+                "  font-weight: bold;"
                 "  background-color: {bg}; color: {c}; }}"
-                "QToolButton:hover {{ background-color: {hover}; }}"
+                "QPushButton[expanded=\"true\"] {{ padding: 0px 10px 0px 6px; }}"
+                "QPushButton:hover {{ background-color: {hover}; }}"
                 .format(c=accent, bg=t["bg"], hover=t["bg_hover"])
             )
-            # Undo the editor-mode fixed size; the column layout in
-            # _position_editor_overlays sets the final width.
+            # Undo the editor-mode fixed size so a hover can widen it; the
+            # column layout in _position_editor_overlays keeps it square
+            # while idle.
             btn.setMinimumSize(0, 0)
             btn.setMaximumSize(16777215, 16777215)
-            btn.adjustSize()
+            if exp is None or exp.state == "idle":
+                btn.resize(34, 34)
 
     def _sync_resolve_label(self) -> None:
-        """Label the Resolve button per mode: "Solve" / "Resolve" in viewer
-        mode, icon-only (the ``iconOnly`` property drops the padding) in
-        editor mode, where it sits in the square Auto / Manual setup column.
-        The tooltip keeps the name either way."""
+        """Keep the icon-only Resolve square blank, unless a hover has it
+        expanded - then its label is "Solve" before the first solve,
+        "Resolve" after (hover_expand)."""
         rbtn = getattr(self, "_resolve_btn", None)
         if rbtn is None:
             return
-        editing = bool(getattr(self, "_editor_mode", False))
-        # Runs at build time too, before _awaiting_first_solve is set.
-        first = bool(getattr(self, "_awaiting_first_solve", False))
-        if editing:
-            # Blank, unless a hover has it expanded (hover_expand).
-            exp = getattr(self, "_overlay_expanders", {}).get(rbtn)
-            rbtn.setText(exp.current_label() if exp is not None else "")
-        else:
-            rbtn.setText("Solve" if first else "Resolve")
-        if bool(rbtn.property("iconOnly")) != editing:
-            rbtn.setProperty("iconOnly", editing)
-            rbtn.style().unpolish(rbtn)
-            rbtn.style().polish(rbtn)
+        exp = getattr(self, "_overlay_expanders", {}).get(rbtn)
+        rbtn.setText(exp.current_label() if exp is not None else "")
 
     def _solve_overlay_visible(self) -> bool:
         if isinstance(getattr(self, "metadata", None), dict):
@@ -459,29 +480,22 @@ class _EditorModeMixin:
             if b is not None:
                 b.setVisible(editing)
         expanders = getattr(self, "_overlay_expanders", {})
-        if not editing:
-            for exp in expanders.values():
-                exp.reset()
+        # A mode switch mid-hover: drop the expansion of any button that
+        # no longer reveals its label in this mode.
+        for exp in expanders.values():
+            exp.reset_if_inactive()
         self._sync_resolve_label()
         stack = (abtn, mbtn, wbtn, rbtn)
-        # Viewer mode: the labelled buttons in the column (Edit, What-If,
-        # Resolve) share the largest one's size so the column reads as one
-        # block. Editor mode: Auto setup, Manual setup and Resolve are
-        # icon-only squares matching the marker row above them.
+        # Every button in the column is an icon-only square (Edit, What-If
+        # and Resolve in viewer mode; Auto setup, Manual setup and Resolve
+        # in editor mode, matching the marker row above them).
         column = [b for b in stack if b is not None and not b.isHidden()]
-        if editing:
-            for b in column:
-                exp = expanders.get(b)
-                if exp is None or exp.state == "idle":
-                    b.resize(34, 34)   # else mid-hover: keep its width
-        else:
+        if not editing:
             column.insert(0, btn)
-        if column and not editing:
-            hints = [b.sizeHint() for b in column]
-            w = max(s.width() for s in hints)
-            h = max(s.height() for s in hints)
-            for b in column:
-                b.resize(w, h)
+        for b in column:
+            exp = expanders.get(b)
+            if exp is None or exp.state == "idle":
+                b.resize(34, 34)   # else mid-hover: keep its width
 
         btn.move(margin, margin)
         btn.raise_()

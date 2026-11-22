@@ -42,7 +42,7 @@ Open the project in the viewer as usual (see Section 1.6 for the launch
 command), then either:
 
 - Click the **edit-mode toggle** button at the top-left of the
-  viewport, **or**
+  viewport (a pencil square; hover it to see **Edit Mode**), **or**
 - Press the **`E`** hotkey.
 
 ![Editor toggle button in the top-left of the viewport](screenshots/02-editor-toggle.png)
@@ -57,10 +57,11 @@ These things change when editor mode is active:
    marker buttons, covered in 2.4.
 3. **Auto setup…** (yellow sparkle) and **Manual setup…** (wrench)
    appear above **Resolve** in the button column - the same two wizards
-   as on the Topology tab. In editor mode these three are icon-only
+   as on the Topology tab. Like every button in that column (and the
+   Edit, What-If and Resolve buttons in viewer mode) they are icon-only
    squares; rest the mouse on one for a moment and it widens to show
-   its name, shrinking back when the mouse leaves. The What-If button is hidden until
-   you leave editor mode.
+   its name, shrinking back when the mouse leaves. The What-If button is
+   hidden until you leave editor mode.
 4. The **PDN Editor** panel slides in on the right-hand side.
 5. Left-drag on empty board sweeps a selection box, for editing several
    sinks in one go - see 2.6.
@@ -198,7 +199,7 @@ button.**
 
 The button highlights to show it is armed, and the viewport cursor
 carries a small red (SOURCE) or blue (SINK) triangle beside its tip for
-as long as it stays armed. The status bar reminds you:
+as long as it stays armed. A short notice at the bottom of the window reminds you:
 *Click copper to drop a free source / sink.* Click the button again, or
 press **Esc**, to cancel.
 
@@ -395,8 +396,8 @@ Editor edits do not run the solver themselves - they queue up changes
 that the **Resolve** button then applies.
 
 **Resolve.** A green **↻ Resolve** button appears at the top-left of
-the viewport whenever there are unsolved edits (in editor mode it shows
-just the green ↻ icon). Click it to re-run the
+the viewport whenever there are unsolved edits (just the green ↻ icon;
+hover it to see **Solve** or **Resolve**). Click it to re-run the
 solver with the current editor directives applied. The resolve reuses
 the cached design extraction (geometry, net lookup, mesh) so it is
 significantly faster than a cold load - typically a few seconds rather
@@ -470,7 +471,7 @@ Setup from Another Design…*.
 **Applied without asking** - FYPA can show it is the same part:
 
 - **Unchanged** - the same designator, pins and nets. A part that only
-  moved is noted in the status bar.
+  moved is noted in a notice at the bottom of the window.
 - **Re-annotated** - the designator changed, but the part's Altium
   unique id (its schematic link, else its PCB id) is now on the new
   designator; or, for parts without ids, exactly one part with the same

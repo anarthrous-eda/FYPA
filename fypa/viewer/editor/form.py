@@ -2384,6 +2384,59 @@ class _EditorFormMixin:
         # On a solved-but-hidden rail ⇒ hide; on no solved rail ⇒ still show.
         return not (conn & solved_members)
 
+    @staticmethod
+    def _regulator_input_side(d):
+        """The input end of an editor REGULATOR, shaped like a two-net
+        directive of its own (``p_net`` = the input net, ``n_net`` = its
+        return, which defaults to the output's as it does in the solve), so
+        the visibility tests written for a directive's ``p_net`` /
+        ``n_net`` can be asked about that end. ``None`` for any other
+        directive, and for a regulator with no input net yet."""
+        if (d.role != "REGULATOR" or d.kind != "component"
+                or not d.designator or not getattr(d, "in_p_net", None)):
+            return None
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            id=d.id, role=d.role, kind=d.kind, designator=d.designator,
+            p_net=d.in_p_net,
+            n_net=getattr(d, "in_n_net", None) or d.n_net,
+            p_pins=getattr(d, "in_p_pins", None),
+            n_pins=getattr(d, "in_n_pins", None),
+            single_net=False, anchor_xy=None, layer_id=None)
+
+    def _regulator_input_points(self, d, visible_ids):
+        """``(p_side, n_side)`` glyph points of an editor REGULATOR's input
+        pins, in the :meth:`_editor_directive_points` point format - empty
+        when ``d`` has no input end or its rail is not in view.
+
+        The input end follows its own rail, independently of the output
+        end (as the solved markers do, pin by pin)."""
+        side = self._regulator_input_side(d)
+        if side is None or not self._directive_rail_visible(side):
+            return [], []
+        p_pts = self._component_pad_points(
+            side.designator, [side.p_net], visible_ids,
+            with_layer_color=True, pin_filter=side.p_pins)
+        n_pts = (self._component_pad_points(
+            side.designator, [side.n_net], visible_ids,
+            with_layer_color=True, pin_filter=side.n_pins)
+            if side.n_net else [])
+        return p_pts, n_pts
+
+    def _regulator_shared_return_xy(self, d) -> set[tuple[float, float]]:
+        """Pad centres an editor REGULATOR's output return and input return
+        both resolve to - the usual single ground. Such a pin belongs to
+        neither end and draws as the plain regulator diamond, whichever of
+        the two rails is in view. Empty for any other directive."""
+        side = self._regulator_input_side(d)
+        if side is None or not side.n_net or not d.n_net:
+            return set()
+        out_xy = {(p[0], p[1]) for p in self._component_pad_points(
+            d.designator, [d.n_net], pin_filter=d.n_pins)}
+        in_xy = {(p[0], p[1]) for p in self._component_pad_points(
+            side.designator, [side.n_net], pin_filter=side.n_pins)}
+        return out_xy & in_xy
+
     def _editor_marker_groups(self) -> list:
         """MarkerGroups for the placed editor directives - drawn only in
         editor mode so they don't clutter the normal viewer. The directive
@@ -2412,16 +2465,19 @@ class _EditorFormMixin:
         # layer, drops out so editor markers track layer visibility.
         visible_ids = self._visible_layer_ids()
         id_to_phys = {v: k for k, v in self._phys_name_to_layer_id.items()}
-        # Keyed (role, is_selected, is_n_side): the selected marker lands
-        # in its own group (larger / thicker), and the N-side pins land in
-        # theirs so they can carry the green outline. Each point is an
+        # Keyed (style key, is_selected, is_n_side): the selected marker
+        # lands in its own group (larger / thicker), and the N-side pins land
+        # in theirs so they can carry the green outline. The style key is
+        # the role, except for a regulator's two ends (_marker_style_key).
+        # Each point is an
         # ``(x, y, layer_colour, z)`` tuple - the colour drives the marker's
         # outer layer ring (``None`` ⇒ no ring) and ``z`` is the copper
         # layer's world-z (mm) so 3D markers sit at the right depth.
         by_key: dict[tuple[str, bool, bool],
                      list[tuple[float, float, str | None, float]]] = {}
-        # Emphasised points keyed by role: a marquee can hold sinks and
-        # sources at once, and each needs its own box shape.
+        # Emphasised points keyed by style key: a marquee can hold sinks and
+        # sources at once (and a regulator has a glyph per end), and each
+        # needs its own box shape.
         sel_by_role: dict[
             str, list[tuple[float, float, str | None, float]]] = {}
         # Dashed P-to-N links of SERIES directives, pushed alongside the
@@ -2433,13 +2489,30 @@ class _EditorFormMixin:
         self._editor_series_click_rows = series_clicks
         series_size = int(self._ROLE_MARKER_STYLE["SERIES"]["size"]) + 4
         for d in self._project.editor_directives:
-            if not self._directive_rail_visible(d):
-                continue   # marker's rail is hidden
-            # Pin points split into P-side and N-side.
-            pts = self._editor_directive_points(d, visible_ids, id_to_phys)
-            if pts is None:
-                continue   # nothing of this directive is on screen
-            p_pts, n_pts = pts
+            # Pin points split into P-side and N-side; none when the
+            # marker's rail is hidden or nothing of it is on screen.
+            pts = (self._editor_directive_points(d, visible_ids, id_to_phys)
+                   if self._directive_rail_visible(d) else None)
+            p_pts, n_pts = pts or ([], [])
+            # A regulator's input pins: down triangles on the rail that
+            # feeds it, shown with that rail whatever the output's is doing.
+            in_p_pts, in_n_pts = self._regulator_input_points(d, visible_ids)
+            if pts is None and not (in_p_pts or in_n_pts):
+                continue
+            # Return pins the two ends share: one diamond each, shown
+            # while either end is.
+            shared_pts: list = []
+            shared_xy = self._regulator_shared_return_xy(d)
+            if shared_xy:
+                seen: set[tuple[float, float]] = set()
+                for p in (*n_pts, *in_n_pts):
+                    xy = (p[0], p[1])
+                    if xy in shared_xy and xy not in seen:
+                        seen.add(xy)
+                        shared_pts.append(p)
+                n_pts = [p for p in n_pts if (p[0], p[1]) not in shared_xy]
+                in_n_pts = [p for p in in_n_pts
+                            if (p[0], p[1]) not in shared_xy]
             if d.role == "SERIES" and p_pts and n_pts:
                 series_links.append((
                     _centroid3([(p[0], p[1], p[3]) for p in p_pts]),
@@ -2451,14 +2524,20 @@ class _EditorFormMixin:
                      "designator": d.designator, "size_px": series_size}
                     for p in (*p_pts, *n_pts))
             is_sel = d.id in sel_ids
-            for is_n_side, pts in ((False, p_pts), (True, n_pts)):
-                if pts:
-                    by_key.setdefault(
-                        (d.role, is_sel, is_n_side), []).extend(pts)
-            if is_sel:
-                bucket = sel_by_role.setdefault(d.role, [])
-                bucket.extend(p_pts)
-                bucket.extend(n_pts)
+            # An editor directive's own points are its P / N pins - for a
+            # regulator, the output end.
+            for key, side_p, side_n in (
+                    (self._marker_style_key(d.role, "OUT_P"), p_pts, n_pts),
+                    ("REGULATOR_IN", in_p_pts, in_n_pts),
+                    ("REGULATOR", [], shared_pts)):
+                for is_n_side, pts in ((False, side_p), (True, side_n)):
+                    if pts:
+                        by_key.setdefault(
+                            (key, is_sel, is_n_side), []).extend(pts)
+                if is_sel and (side_p or side_n):
+                    bucket = sel_by_role.setdefault(key, [])
+                    bucket.extend(side_p)
+                    bucket.extend(side_n)
         # Outline width shared by the selected marker and its box.
         sel_edge_w = _EDITOR_MARKER_EDGE_W * _EDITOR_MARKER_SELECT_SCALE
         groups = []

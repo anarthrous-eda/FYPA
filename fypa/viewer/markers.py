@@ -37,7 +37,19 @@ class _MarkerOverlayMixin:
         "SINK":      {"symbol": "tri_down", "color": "#3aa8ff", "size": 16, "label": "SINK"},
         "RESISTOR":  {"symbol": "s",        "color": "#3aff8a", "size": 12, "label": "SERIES"},
         "SERIES":    {"symbol": "s",        "color": "#3aff8a", "size": 12, "label": "SERIES"},
-        "REGULATOR": {"symbol": "d",        "color": "#ff66ff", "size": 14, "label": "REGULATOR"},
+        # A regulator as drawn on the Board: magenta says "regulator", the
+        # triangle says which way the current goes, as it does for SOURCE /
+        # SINK - up on the output pins (it supplies that rail), down on the
+        # input pins (it loads that one). The plain diamond is a return pin
+        # the output and the input share (the usual single ground), which
+        # belongs to neither end; it is also the fallback for a context
+        # with no terminal to go on. Each has its own legend row. See
+        # _marker_style_key.
+        "REGULATOR": {"symbol": "d",        "color": "#ff66ff", "size": 14, "label": "REG RETURN"},
+        "REGULATOR_OUT": {"symbol": "tri_up",   "color": "#ff66ff", "size": 14,
+                          "label": "REG OUT"},
+        "REGULATOR_IN":  {"symbol": "tri_down", "color": "#ff66ff", "size": 14,
+                          "label": "REG IN"},
         # A link FYPA shorted on its own (Net Tie, 0 Ω resistor, jumper, or
         # anything under the 0.9 mΩ merge threshold). The two nets are merged
         # into one, so it is not a SERIES element: same name and grey as the
@@ -46,6 +58,31 @@ class _MarkerOverlayMixin:
         "AUTO_BRIDGE": {"symbol": "s",      "color": "#7a8494", "size": 12,
                         "label": "BRIDGE"},
     }
+
+    @staticmethod
+    def _marker_style_key(role: str, terminals=()) -> str:
+        """Key into :attr:`_ROLE_MARKER_STYLE` for a directive's marker on
+        the given terminal(s).
+
+        Only a REGULATOR depends on the terminal: ``OUT_*`` draws as
+        REGULATOR_OUT and ``IN_*`` as REGULATOR_IN, the return pins taking
+        their side's glyph. Given several terminals (the ones a regulator
+        has on one net), the P side decides; with only returns to go on -
+        typically OUT_N and IN_N sharing GND - or none, it stays the plain
+        REGULATOR."""
+        if role != "REGULATOR":
+            return role
+        if isinstance(terminals, str):
+            terminals = (terminals,)
+        names = set(terminals or ())
+        sides = {n.split("_", 1)[0] for n in names if n.endswith("_P")}
+        if not sides:
+            sides = {n.split("_", 1)[0] for n in names}
+        if sides == {"OUT"}:
+            return "REGULATOR_OUT"
+        if sides == {"IN"}:
+            return "REGULATOR_IN"
+        return "REGULATOR"
 
     # --- Directive-pin marker + legend overlay -----------------------------
 

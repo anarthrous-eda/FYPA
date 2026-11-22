@@ -66,7 +66,7 @@ def adopt_restored_setup(window, metadata, solution) -> bool:
         names = " and ".join(Path(p).name for p in set_aside)
         window.statusBar().showMessage(
             f"Clean import - the saved setup was set aside as {names}. "
-            "File > Import Setup from Another Design… brings it back.", 30000)
+            "File > Import Setup from Another Design… brings it back.", 15000)
     raw = (metadata or {}).pop("setup_restore", None) if isinstance(
         metadata, dict) else None
     if not raw or not hasattr(window, "_ensure_project"):

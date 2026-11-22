@@ -128,6 +128,12 @@ class HoverExpander(QObject):
             _repolish(self._btn)
             self._btn.resize(self._collapsed, self._btn.height())
 
+    def reset_if_inactive(self) -> None:
+        """:meth:`reset` when ``active_fn`` no longer allows a reveal
+        (e.g. the mode changed while the button was expanded)."""
+        if self.state != "idle" and not self._active_fn():
+            self.reset()
+
     def current_label(self) -> str:
         """Text the button should carry right now: the label only while
         fully expanded."""

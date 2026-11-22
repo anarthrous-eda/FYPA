@@ -1064,9 +1064,11 @@ class _ViaRenderMixin:
             focus_marker_nets = (self._editor_focus_nets
                                  if self._editor_focus_active() else None)
 
-            # Keyed (role, is_n_side): the P side and N side of a
+            # Keyed (style key, is_n_side): the P side and N side of a
             # directive draw as separate groups so the N side can carry
-            # the green outline.
+            # the green outline. The style key is the role, except that a
+            # regulator's output and input pins have one each (see
+            # _marker_style_key).
             per_role: dict[tuple[str, bool],
                            tuple[list[float], list[float],
                                  list[float], list[str | None]]] = {}
@@ -1101,9 +1103,23 @@ class _ViaRenderMixin:
                 bridge_on_rail = role == "AUTO_BRIDGE" and any(
                     n.strip() in rail_members
                     for n in str(d.get("shorted_nets") or "").split("↔"))
+                # A regulator's two returns usually resolve to the same
+                # ground pins. Such a pin belongs to neither end, so it is
+                # drawn once, as the plain regulator diamond (REG RETURN),
+                # not as an up and a down triangle on top of each other.
+                shared_return: set[tuple] = set()
+                if role == "REGULATOR":
+                    def _pin_keys(term_name: str) -> set[tuple]:
+                        return {
+                            (p.get("layer_id"), p.get("x_mm"), p.get("y_mm"))
+                            for p in ((d.get("terminals") or {}).get(term_name)
+                                      or {}).get("pins") or []}
+                    shared_return = _pin_keys("OUT_N") & _pin_keys("IN_N")
                 for term_name, term in (d.get("terminals") or {}).items():
                     term_pins = term.get("pins") or []
                     is_n_side = term_name in _N_SIDE_TERMINALS
+                    drop_shared = bool(shared_return) and term_name == "IN_N"
+                    style_key = self._marker_style_key(role, term_name)
                     # Per-pin current estimate for hover. Equal split when
                     # area weighting is off; I * A_i / ΣA when the solve used
                     # area-weighted star coupling (physics_constants flag).
@@ -1149,6 +1165,13 @@ class _ViaRenderMixin:
                         lid = pin.get("layer_id")
                         if lid not in target_layer_ids:
                             continue
+                        pin_style_key = style_key
+                        if shared_return and is_n_side and (
+                                lid, pin.get("x_mm"),
+                                pin.get("y_mm")) in shared_return:
+                            if drop_shared:
+                                continue   # drawn with OUT_N
+                            pin_style_key = "REGULATOR"
                         # A solved directive's markers - both the P side and
                         # the return (N) side - show only while their net is
                         # on a visible rail. This holds in editor mode as well
@@ -1172,7 +1195,7 @@ class _ViaRenderMixin:
                                 and pin.get("net") not in focus_marker_nets:
                             continue
                         xs, ys, zs, rcs = per_role.setdefault(
-                            (role, is_n_side), ([], [], [], []))
+                            (pin_style_key, is_n_side), ([], [], [], []))
                         px = pin.get("x_mm", 0.0)
                         py = pin.get("y_mm", 0.0)
                         xs.append(px)
@@ -1220,12 +1243,14 @@ class _ViaRenderMixin:
                             _centroid3(link_sides[1]),
                             style["color"]))
 
-            for (role, is_n_side), (xs, ys, zs, rcs) in per_role.items():
+            for (style_key, is_n_side), (xs, ys, zs, rcs) in per_role.items():
                 if not xs:
                     continue
-                style = self._ROLE_MARKER_STYLE[role]
+                style = self._ROLE_MARKER_STYLE[style_key]
                 role_key = style["label"]
-                # One legend row per role - the P / N split is a marker
+                # One legend row per role (a regulator has one for its
+                # output, one for its input and one for the return pins
+                # the two share) - the P / N split is a marker
                 # detail, not a separate legend entry. Add the row even
                 # when the user has hidden it (so the toggle stays
                 # reachable) but skip emitting the MarkerGroup so the

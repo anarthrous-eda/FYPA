@@ -202,7 +202,10 @@ class _AttachedPdnMixin:
 
         cells = []
         for r in rows[:self._ATTACH_MAX_ROWS]:
-            style = self._ROLE_MARKER_STYLE.get(r["role"], {})
+            # A regulator shows the end it has on this net: ▲ where the net
+            # is its output, ▼ where it is its input.
+            style = self._ROLE_MARKER_STYLE.get(
+                self._marker_style_key(r["role"], r.get("terminals")), {})
             glyph = self._LEGEND_GLYPHS.get(style.get("symbol", ""), "\u25cf")
             color = style.get("color", t["fg"])
             label = _esc(r["label"])

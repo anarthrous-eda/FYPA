@@ -50,8 +50,8 @@ need.
 Once a project is open in the viewer, **File > Export > ParaView…**
 writes the currently-loaded solution straight out. A directory chooser
 opens (defaulting to the project's cache folder); pick a destination
-and one `.vtu` file is written per copper layer. The status bar shows
-how many files were written.
+and one `.vtu` file is written per copper layer. A notice at the bottom
+of the window shows how many files were written.
 
 This is the quickest path - no extra `solve` step, no pickle handling,
 and any in-editor changes you have already resolved are reflected in

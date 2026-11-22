@@ -635,6 +635,62 @@ def test_a_mixed_role_selection_boxes_each_glyph_in_its_own_shape(viewer):
     assert symbols == ["tri_down_box", "tri_up_box"]
 
 
+def _regulator_glyphs(v) -> set:
+    """``(symbol, x, is_return)`` of every regulator glyph drawn."""
+    colour = v._ROLE_MARKER_STYLE["REGULATOR"]["color"]
+    return {(g.symbol, x, g.edge_color != "#101010")
+            for g in v._editor_marker_groups() if g.color == colour
+            for x in g.xs.tolist()}
+
+
+def _place_regulator(viewer) -> None:
+    """U1 as a 3V3 -> 1V8 regulator: output pin at x=10, input pin at
+    x=12, one ground pin (x=11) shared by both returns."""
+    pads = {"+1V8": [(10.0, 10.0)], "GND": [(11.0, 10.0)],
+            "+3V3": [(12.0, 10.0)]}
+    viewer._component_pad_points = (
+        lambda des, nets, visible_layer_ids=None, with_layer_color=False,
+        pin_filter=None: [(x, y, None, 0.0) if with_layer_color else (x, y)
+                          for net in nets for x, y in pads.get(net, [])])
+    viewer._project.upsert_directive(EditorDirective(
+        kind="component", role="REGULATOR", designator="U1",
+        single_net=False, p_net="+1V8", n_net="GND", in_p_net="+3V3",
+        voltage=1.8))
+
+
+def test_an_editor_regulator_draws_both_of_its_ends(viewer):
+    """Up triangles on the output pins, down triangles on the input pins;
+    the ground pin both returns share is drawn once, as a diamond."""
+    _place_regulator(viewer)
+    assert _regulator_glyphs(viewer) == {
+        ("tri_up", 10.0, False), ("d", 11.0, True),
+        ("tri_down", 12.0, False)}
+
+
+def test_an_editor_regulator_s_ends_follow_their_own_rails(viewer):
+    _place_regulator(viewer)
+    shown = {"+3V3"}
+    viewer._directive_rail_visible = lambda d: d.p_net in shown
+    # Only the input rail in view: its pin, and the shared return, which
+    # is the same diamond whichever end brings it on screen.
+    assert _regulator_glyphs(viewer) == {
+        ("tri_down", 12.0, False), ("d", 11.0, True)}
+    shown.clear()
+    shown.add("+1V8")
+    assert _regulator_glyphs(viewer) == {
+        ("tri_up", 10.0, False), ("d", 11.0, True)}
+
+
+def test_a_selected_editor_regulator_is_boxed_at_both_ends(viewer):
+    _place_regulator(viewer)
+    viewer._editor_selection = {"kind": "component", "designator": "U1",
+                                "nets": list(NETS), "bbox": None,
+                                "unlocked": False}
+    boxes = {g.symbol: sorted(g.xs.tolist()) for g in _box_groups(viewer)}
+    assert boxes == {"tri_up_box": [10.0], "tri_down_box": [12.0],
+                     "s": [11.0]}
+
+
 def test_each_multi_selected_component_gets_its_own_selection_box(viewer):
     for des in ("U1", "U2", "U3"):
         viewer._project.upsert_directive(_sink(des))

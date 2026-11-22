@@ -526,6 +526,16 @@ class PdnViewer(
         from fypa.viewer.heap import settle_heap
         settle_heap("viewer opened")
 
+    def statusBar(self):  # noqa: N802 (Qt override)
+        """Messages show as a toast over the bottom of the window (see
+        :mod:`fypa.viewer.toast`) - a real status bar would keep its strip
+        there, empty, after the first message."""
+        bar = getattr(self, "_toast_bar", None)
+        if bar is None:
+            from fypa.viewer.toast import ToastBar
+            bar = self._toast_bar = ToastBar(self)
+        return bar
+
     def _init_solution_indices(self) -> None:
         """(Re)build layer / rail indices from :attr:`solution` and
         :attr:`metadata`. Called from ``__init__`` and after an in-place
