@@ -129,6 +129,21 @@ def _build_help_menu(window) -> None:
     the same Help entries immediately after their File menu."""
     help_menu = window.menuBar().addMenu("&Help")
 
+    # Viewer only: the routes it offers act on an open design.
+    if hasattr(window, "_topology_run_autosetup"):
+        setup = QAction("&Set up sources and sinks…", window)
+        setup.setStatusTip(
+            "The ways to define where power enters the board and where it "
+            "is drawn: in Altium, on the board, Auto setup or Manual setup.")
+
+        def _open_setup() -> None:
+            from fypa.viewer.setup_chooser import open_setup_chooser
+            open_setup_chooser(window)
+
+        setup.triggered.connect(_open_setup)
+        help_menu.addAction(setup)
+        help_menu.addSeparator()
+
     open_log = QAction("Open &Log", window)
     open_log.setStatusTip(
         "Open the FYPA log file in the system's default application."

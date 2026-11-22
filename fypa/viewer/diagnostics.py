@@ -10,22 +10,31 @@ from fypa.viewer.overlays import _overlay_circle_ring
 
 
 def _maybe_warn_needs_directives(parent_win, solution) -> None:
-    """Pop a one-time notice when ``solution`` is the editor-mode stub built
-    for an Altium project that loaded without any SOURCE / REGULATOR
+    """Offer the setup chooser when ``solution`` is the editor-mode stub
+    built for an Altium project that loaded without any SOURCE / REGULATOR
     directive. No-op for ordinary solved solutions and for Gerber stubs
     (which never carry the ``needs_directives`` sentinel).
+
+    Callers run it after the other post-load notices: the route the user
+    picks can open a wizard, which should not end up underneath them. With
+    the chooser switched off, a status-bar line says where to find it.
     """
     si = getattr(solution, "solver_info", None)
     if not isinstance(si, dict) or not si.get("needs_directives"):
         return
-    QMessageBox.information(
-        parent_win,
-        "No PDN settings found",
-        "No predefined PDN parameters (SOURCE / REGULATOR) were found in "
-        "this design, so there's nothing to solve yet.\n\n"
-        "The design has loaded - switch on Edit to place sources / sinks "
-        "manually, then press Resolve.",
-    )
+    # Only a viewer can run the routes (the launcher passes itself when the
+    # viewer failed to open).
+    if not hasattr(parent_win, "_topology_run_autosetup"):
+        return
+    from fypa.viewer.prefs import load_show_setup_chooser
+    from fypa.viewer.setup_chooser import open_setup_chooser
+
+    if load_show_setup_chooser():
+        open_setup_chooser(parent_win, on_load=True)
+    else:
+        parent_win.statusBar().showMessage(
+            "No sources or sinks defined yet - Help > Set up sources and "
+            "sinks… shows the ways to add them.", 20000)
 
 
 

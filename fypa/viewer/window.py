@@ -939,11 +939,13 @@ class PdnViewer(
             # a different board re-fits.
             self._render()
 
-            _maybe_warn_needs_directives(self, new_solution)
             _maybe_show_annotation_errors(self, metadata)
             _maybe_show_mesh_failures(self, metadata)
             _maybe_warn_open_loop_rails(self, metadata)
             _maybe_warn_connectivity_breaks(self, metadata)
+            # Last, so a wizard picked in the setup chooser doesn't open
+            # underneath the notices above.
+            _maybe_warn_needs_directives(self, new_solution)
 
             if not getattr(self, "_vias_warn_init_scheduled", False):
                 self._vias_warn_init_scheduled = True

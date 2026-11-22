@@ -507,10 +507,6 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         if new_win is not None:
             _record_recent_altium_from_metadata(metadata)
         _clear_pending_altium_recent(self)
-        # An Altium project with no SOURCE/REGULATOR loads as an editor-mode
-        # stub instead of failing - let the user know it's set up for manual
-        # marker placement rather than a finished solve.
-        _maybe_warn_needs_directives(new_win or self, new_solution)
         _maybe_show_annotation_errors(new_win or self, metadata)
         _maybe_show_mesh_failures(new_win or self, metadata)
         # Rails with only sources or only sinks were skipped - tell the user.
@@ -519,6 +515,10 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         _maybe_warn_connectivity_breaks(new_win or self, metadata)
         # Parts joining a solved rail to copper outside the FEM - advisory.
         _maybe_warn_unannotated_bridges(new_win or self, metadata)
+        # An Altium project with no SOURCE/REGULATOR loads as an editor-mode
+        # stub instead of failing - offer the ways to set it up. Last, so a
+        # wizard the user picks doesn't open underneath the notices above.
+        _maybe_warn_needs_directives(new_win or self, new_solution)
 
     def _on_menu_open_solution(self) -> None:
         path_str, _ = QFileDialog.getOpenFileName(

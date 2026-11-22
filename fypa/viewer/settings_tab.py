@@ -32,6 +32,7 @@ from fypa.viewer.prefs import (
     load_mesh_max_workers,
     load_minres_budget_s,
     load_show_bridge_notice,
+    load_show_setup_chooser,
     load_solve_in_subprocess,
     load_supersampling_enabled,
     load_via_no_current_opacity,
@@ -40,6 +41,7 @@ from fypa.viewer.prefs import (
     save_mesh_max_workers,
     save_minres_budget_s,
     save_show_bridge_notice,
+    save_show_setup_chooser,
     save_solve_in_subprocess,
     save_supersampling_enabled,
     save_via_no_current_opacity,
@@ -363,6 +365,18 @@ class _SettingsTabMixin:
         self._settings_bridge_notice_check.toggled.connect(
             lambda checked: save_show_bridge_notice(bool(checked)))
         gen_layout.addWidget(self._settings_bridge_notice_check)
+
+        self._settings_setup_chooser_check = QCheckBox(
+            "Show the setup chooser when a design has no sources or sinks")
+        self._settings_setup_chooser_check.setChecked(load_show_setup_chooser())
+        self._settings_setup_chooser_check.setToolTip(
+            "When checked, loading a design with no PDN setup opens the "
+            "chooser of ways to add sources and sinks. Help > Set up sources "
+            "and sinks… opens it either way. Persists across launches."
+        )
+        self._settings_setup_chooser_check.toggled.connect(
+            lambda checked: save_show_setup_chooser(bool(checked)))
+        gen_layout.addWidget(self._settings_setup_chooser_check)
 
         # No-current via opacity - fade level (3D) of via-barrel sections that
         # carry no current on the selected rail. Persisted immediately and

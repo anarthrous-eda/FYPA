@@ -239,7 +239,32 @@ class _UiBuildMixin:
             self.mode_combo.setVisible(False)
 
         side.addSpacing(8)
-        side.addWidget(QLabel("<b>Board Features</b>"))
+        # Header with a small "?" badge carrying the help text, so the
+        # explanation is on demand instead of popping up over every row.
+        _features_head = QHBoxLayout()
+        _features_head.setContentsMargins(0, 0, 0, 0)
+        _features_head.setSpacing(6)
+        _features_head.addWidget(QLabel("<b>Board Features</b>"))
+        self.overlay_help = QLabel("?")
+        self.overlay_help.setFixedSize(16, 16)
+        self.overlay_help.setAlignment(Qt.AlignCenter)
+        self.overlay_help.setCursor(Qt.WhatsThisCursor)
+        self.overlay_help.setStyleSheet(
+            f"QLabel {{ color: {_t['fg_dim']}; border: 1px solid {_t['fg_dim']};"
+            f"          border-radius: 8px; font-weight: bold; font-size: 10px; }}"
+            f"QLabel:hover {{ color: {_t['fg']}; border-color: {_t['fg']}; }}"
+        )
+        self.overlay_help.setToolTip(
+            "Non-copper overlays. Each row has two eyes - show on the "
+            "selected rails only (left) or show everywhere (right) - a "
+            "colour swatch that opens a picker for the overlay's colour, "
+            "and a wire-mesh / solid fill toggle on the right. Overlay, "
+            "pads, components and designators can be split into separate "
+            "Top / Bottom rows with the split button."
+        )
+        _features_head.addWidget(self.overlay_help)
+        _features_head.addStretch(1)
+        side.addLayout(_features_head)
         # Non-copper display layers - silkscreen, pads, vias, components and
         # designators. Same QListWidget-of-rows control as the Physical
         # layers / Rails lists above, but each row carries two eyes (visible
@@ -257,14 +282,6 @@ class _UiBuildMixin:
             f"QListWidget::item:hover {{ background-color: {_t['bg_hover']}; }}"
         )
         self.overlay_list.setAlternatingRowColors(True)
-        self.overlay_list.setToolTip(
-            "Non-copper overlays. Each row has two eyes - show on the "
-            "selected rails only (left) or show everywhere (right) - a "
-            "colour swatch that opens a picker for the overlay's colour, "
-            "and a wire-mesh / solid fill toggle on the right. Overlay, "
-            "pads, components and designators can be split into separate "
-            "Top / Bottom rows with the split button."
-        )
         self._init_overlay_state()
         self._build_overlay_list()
         side.addWidget(self.overlay_list)

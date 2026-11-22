@@ -477,8 +477,8 @@ class _ProbeMixin:
                 world_x, world_y, None,
             )
             self.probe_label_widget.setText(
-                f"x = {world_x:>8.3f} mm   y = {world_y:>8.3f} mm   "
-                f"(no copper at this point){via_part}{marker_part}{diff_part}"
+                f"x = {world_x:>8.3f} mm   y = {world_y:>8.3f} mm"
+                f"{via_part}{marker_part}{diff_part}"
             )
             self._update_cursor_tooltip(None, via_row=via_row,
                                         marker_row=marker_row)

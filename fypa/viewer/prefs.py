@@ -81,6 +81,12 @@ _RECENT_PANEL_EXPANDED_QS_KEY = "ui/launcher_recent_panel_expanded"
 _BRIDGE_NOTICE_QS_KEY = "ui/show_bridge_notice"
 
 
+# Whether the "Set up sources and sinks" chooser opens by itself when a
+# design loads with no PDN setup. On by default; Help > Set up sources and
+# sinks… opens it either way.
+_SETUP_CHOOSER_QS_KEY = "ui/show_setup_chooser"
+
+
 
 
 def _recent_settings():
@@ -591,6 +597,37 @@ def save_show_bridge_notice(enabled: bool) -> None:
     except Exception as e:
         logging.getLogger(__name__).debug(
             "Could not persist bridge-notice preference (%s); ignoring.", e,
+        )
+
+
+def load_show_setup_chooser() -> bool:
+    """Read whether the setup chooser opens when a design loads with no PDN
+    setup. Defaults to ``True``."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        val = qs.value(_SETUP_CHOOSER_QS_KEY, True)
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            return val.strip().lower() in ("1", "true", "yes", "on")
+        return bool(int(val))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not read setup-chooser preference (%s); using default.", e,
+        )
+    return True
+
+
+def save_show_setup_chooser(enabled: bool) -> None:
+    """Persist whether the setup chooser opens on an unconfigured load."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        qs.setValue(_SETUP_CHOOSER_QS_KEY, bool(enabled))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not persist setup-chooser preference (%s); ignoring.", e,
         )
 
 
