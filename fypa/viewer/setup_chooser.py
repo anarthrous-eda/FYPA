@@ -41,7 +41,10 @@ _ALTIUM_GUIDE_URL = (
     "https://github.com/anarthrous-eda/FYPA/blob/main/docs/user-guide/"
     "01-sources-and-sinks.md")
 
-_FYPA_STORE_NOTE = "Saved in the FYPA project (.fypa), not in the design."
+_FYPA_STORE_NOTE = ("Saved beside the design (.fypa-setup.json) and restored "
+                    "when it is imported again; changed parts are flagged.")
+# Gerber imports have no sidecar (fypa.setup_sidecar is Altium-only).
+_FYPA_STORE_NOTE_GERBER = "Saved in the FYPA project (.fypa)."
 
 # (route, title, badge, body, store note, button label)
 _CARDS = (
@@ -159,6 +162,8 @@ class SetupChooserDialog(QDialog):
         if not self._has_schematic:
             badge = ("Recommended for this design" if route == ROUTE_BOARD
                      else "")
+            if store == _FYPA_STORE_NOTE:
+                store = _FYPA_STORE_NOTE_GERBER
 
         frame = QFrame()
         frame.setObjectName("setupCard")

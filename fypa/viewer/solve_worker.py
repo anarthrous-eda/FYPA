@@ -339,8 +339,16 @@ class _SolveWorker(QThread):
                   auto_series_max_ohm: float | None = None,
                   write_solve_cache: bool = True,
                   variant: str | None = None,
+                  restore_setup: bool = False,
                   parent=None) -> None:
         super().__init__(parent)
+        # Altium import with no project file: bring back the setup saved
+        # beside the design (fypa.setup_sidecar), matched against the design
+        # as loaded. Only when the caller passes no editor directives of its
+        # own - an opened .fypa or a Resolve already has them.
+        self._restore_setup = bool(restore_setup) and not editor_directives
+        self._saved_setup = None       # SavedSetup read at the start of run()
+        self._restore_report = None    # RestoreReport once matched
         # Assembly variant request (Properties tab, persisted in the .fypa):
         # None follows Altium's CurrentVariant, "" is the base design. Acts
         # while annotations are parsed, so it reaches load_project.
@@ -634,7 +642,38 @@ class _SolveWorker(QThread):
         _timer.log_breakdown()
         record_stackup_overrides(metadata, pristine_loaded,
                                  self._stackup_overrides)
+        self._attach_restore_report(metadata)
         self.finished_ok.emit(stub_solution, metadata, pristine_loaded)
+
+    def _restore_saved_setup(self, loaded) -> None:
+        """Match the saved setup against ``loaded`` (the pristine design) and
+        take what still fits as this solve's editor directives / copper
+        names. Never fails the load: on any error the setup is skipped."""
+        from fypa.setup_sidecar import match_exact
+
+        saved = self._saved_setup
+        self.stage_changed.emit("Restoring the saved setup…")
+        try:
+            report = match_exact(saved, loaded.extracted,
+                                 loaded.annotations.directives)
+        except Exception as e:  # noqa: BLE001
+            logging.getLogger(__name__).warning(
+                "Couldn't match the saved setup to this design (%s: %s); "
+                "opening without it.", type(e).__name__, e)
+            return
+        self._restore_report = report
+        self._editor_directives = list(report.applied)
+        self._copper_names = list(report.copper_names)
+        logging.getLogger(__name__).info(
+            "Saved setup %s: %d restored, %d held, %d superseded by the "
+            "schematic.", saved.path, len(report.applied), len(report.held),
+            len(report.superseded))
+
+    def _attach_restore_report(self, metadata) -> None:
+        """Hand the restore outcome to the viewer, which adopts the restored
+        entries as its project's and tells the user about the rest."""
+        if self._restore_report is not None and isinstance(metadata, dict):
+            metadata["setup_restore"] = self._restore_report.to_metadata()
 
     def _expected_stage_count(self) -> int:
         """Best-effort count of stage_changed emissions ``run()`` will fire,
@@ -721,6 +760,21 @@ class _SolveWorker(QThread):
             # Read by the per-net geometry cache in _emit_stub_and_finish.
             self._pcbdoc_resolved = pcbdoc_resolved
 
+            # A saved setup means this solve won't match the on-disk
+            # project, so read it now: it rules out the solve-cache fast
+            # path below, like editor directives do.
+            if self._restore_setup:
+                try:
+                    from fypa.setup_sidecar import load_setup
+                    saved = load_setup(self._prjpcb_path, pcbdoc_resolved)
+                except Exception as e:  # noqa: BLE001 - never block a load
+                    logging.getLogger(__name__).warning(
+                        "Couldn't read the saved setup (%s: %s); ignoring.",
+                        type(e).__name__, e)
+                    saved = None
+                if saved is not None and not saved.is_empty():
+                    self._saved_setup = saved
+
             # Solve-cache fast path: pickle.load can take 5-10 s on large
             # boards and blocks until the file is fully read, so doing it
             # here (off the GUI thread) keeps the progress dialog responsive.
@@ -732,7 +786,8 @@ class _SolveWorker(QThread):
                     and pcbdoc_resolved is not None
                     and not self._stackup_overrides
                     and not self._sink_overrides
-                    and not self._editor_directives):
+                    and not self._editor_directives
+                    and self._saved_setup is None):
                 self.stage_changed.emit(
                     f"Checking solve cache for {self._prjpcb_path.name}…"
                 )
@@ -922,6 +977,9 @@ class _SolveWorker(QThread):
             # in-memory source for the next resolve (see _loaded_project).
             pristine_loaded = loaded
 
+            if self._saved_setup is not None:
+                self._restore_saved_setup(loaded)
+
             if self._stackup_overrides:
                 self.stage_changed.emit(
                     f"Applying {len(self._stackup_overrides)} stackup "
@@ -1038,9 +1096,12 @@ class _SolveWorker(QThread):
                 # a missing source there is still a hard failure. A load-only
                 # run never asked to solve (e.g. a Resolve that only rebuilds
                 # the design after a Bridges-tab change), so it always opens.
+                # A restored setup is not an explicit request: if it still
+                # has no source, open for setup like an unconfigured design.
                 explicit_solve = (
                     not self._load_only
-                    and bool(self._editor_directives
+                    and bool((self._editor_directives
+                              and self._restore_report is None)
                              or self._stackup_overrides
                              or self._sink_overrides)
                 )
@@ -1207,6 +1268,7 @@ class _SolveWorker(QThread):
             _timer.log_breakdown()
             record_stackup_overrides(metadata, pristine_loaded,
                                      self._stackup_overrides)
+            self._attach_restore_report(metadata)
             self.finished_ok.emit(new_solution, metadata, pristine_loaded)
         except Exception as e:
             import traceback

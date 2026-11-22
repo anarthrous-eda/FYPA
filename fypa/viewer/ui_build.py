@@ -6,6 +6,7 @@ import matplotlib as _mpl
 from fypa.gl_mesh_viewer import GLMeshViewer
 from fypa.spacemouse_nav import SpaceMouseController
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -184,7 +185,12 @@ class _UiBuildMixin:
         side.addWidget(self.layer_list)
 
         side.addSpacing(8)
-        side.addWidget(QLabel("<b>Rails</b>"))
+        self.rail_help = HelpBadge(
+            "PDN rails - click the eye on one or more to show their copper. "
+            "Each rail groups together nets joined by bridges or series. "
+            "Expand a rail to toggle individual subnet nets."
+        )
+        side.addLayout(self._section_header("Rails", self.rail_help))
         # Altium-style rail list - mirrors the physical-layer control above
         # so users can show any combination of rails at once. The first row
         # is an "All Rails" toggle that mirrors the same UX as "All Layers".
@@ -201,13 +207,6 @@ class _UiBuildMixin:
             f"QListWidget::item:hover {{ background-color: {_t['bg_hover']}; }}"
         )
         self.rail_list.setAlternatingRowColors(True)
-        self.rail_list.setToolTip(
-            "PDN rails - tick one or more to show their copper. Each rail "
-            "groups together nets bridged by a RESISTOR directive (e.g. "
-            "selecting '+3V3' shows both +3V3 and 3V3_SW copper if L2 "
-            "bridges them). Expand a rail (▶) to toggle individual subnet "
-            "nets. 'All Rails' toggles every rail at once."
-        )
 
         self._init_rail_list_state()
 
@@ -240,12 +239,6 @@ class _UiBuildMixin:
             self.mode_combo.setVisible(False)
 
         side.addSpacing(8)
-        # Header with a small superscript "ⓘ" carrying the help text, so the
-        # explanation is on demand instead of popping up over every row.
-        _features_head = QHBoxLayout()
-        _features_head.setContentsMargins(0, 0, 0, 0)
-        _features_head.setSpacing(3)
-        _features_head.addWidget(QLabel("<b>Board Features</b>"))
         self.overlay_help = HelpBadge(
             "Non-copper overlays. Each row has two eyes - show on the "
             "selected rails only (left) or show everywhere (right) - a "
@@ -254,10 +247,7 @@ class _UiBuildMixin:
             "pads, components and designators can be split into separate "
             "Top / Bottom rows with the split button."
         )
-        # Top-aligned so the ⓘ sits raised like a footnote marker.
-        _features_head.addWidget(self.overlay_help, 0, Qt.AlignTop)
-        _features_head.addStretch(1)
-        side.addLayout(_features_head)
+        side.addLayout(self._section_header("Board Features", self.overlay_help))
         # Non-copper display layers - silkscreen, pads, vias, components and
         # designators. Same QListWidget-of-rows control as the Physical
         # layers / Rails lists above, but each row carries two eyes (visible
@@ -826,6 +816,29 @@ class _UiBuildMixin:
         ("_caps_tab_index", "_caps_stack"),
         ("_impedance_tab_index", "_impedance_stack"),
     )
+
+    @staticmethod
+    def _section_header(title: str, help_badge: HelpBadge) -> QHBoxLayout:
+        """Bold sidebar section title with an "ⓘ" help badge at the right edge.
+
+        The help lives on the badge instead of a tooltip on the whole list,
+        which popped up over every row and got in the way.
+        """
+        head = QHBoxLayout()
+        # Right margin lines the ⓘ up with the rows' right-hand toggles.
+        head.setContentsMargins(0, 0, 6, 0)
+        head.setSpacing(3)
+        label = QLabel(f"<b>{title}</b>")
+        head.addWidget(label, 0, Qt.AlignBottom)
+        head.addStretch(1)
+        # Bottom of the ring level with the bottom of the title's letters:
+        # both bottom-aligned, the badge lifted by the font's descent
+        # (+1 px for the ring's anti-aliased edge).
+        bold = QFont(label.font())
+        bold.setBold(True)
+        help_badge.set_baseline_lift(QFontMetrics(bold).descent() + 1)
+        head.addWidget(help_badge, 0, Qt.AlignBottom)
+        return head
 
     def _tab_pending_tip(self, stack_attr: str) -> str:
         """Tooltip for a results tab whose analysis runs on demand and

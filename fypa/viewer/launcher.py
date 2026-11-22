@@ -518,7 +518,12 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         # An Altium project with no SOURCE/REGULATOR loads as an editor-mode
         # stub instead of failing - offer the ways to set it up. Last, so a
         # wizard the user picks doesn't open underneath the notices above.
-        _maybe_warn_needs_directives(new_win or self, new_solution)
+        # A setup restored from beside the design (or one that couldn't be)
+        # replaces the chooser.
+        from fypa.viewer.setup_restore import adopt_restored_setup
+        if not (new_win is not None
+                and adopt_restored_setup(new_win, metadata, new_solution)):
+            _maybe_warn_needs_directives(new_win or self, new_solution)
 
     def _on_menu_open_solution(self) -> None:
         path_str, _ = QFileDialog.getOpenFileName(

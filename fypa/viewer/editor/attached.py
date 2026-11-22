@@ -535,6 +535,9 @@ class _AttachedPdnMixin:
         self._project_dirty = True
         self._refresh_solve_stale_overlay()
         self._invalidate_topology()
+        # Keep the setup saved beside the design (fypa.setup_sidecar).
+        from fypa.viewer.setup_restore import schedule_setup_save
+        schedule_setup_save(self)
 
     def _mark_project_names_dirty(self) -> None:
         """Record a project change that needs saving but leaves the solve
@@ -544,6 +547,8 @@ class _AttachedPdnMixin:
         marks the project dirty itself."""
         self._display_dirty = True
         self._invalidate_topology()
+        from fypa.viewer.setup_restore import schedule_setup_save
+        schedule_setup_save(self)
 
     def _invalidate_topology(self) -> None:
         """Refresh the Topology tab now if it's showing, else on next visit."""

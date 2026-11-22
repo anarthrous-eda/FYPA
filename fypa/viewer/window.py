@@ -802,6 +802,10 @@ class PdnViewer(
         # A What-If view may have the base parked aside: put it back so the
         # swap below replaces the real base.
         self._whatif_drop_view_state()
+        # A setup edit still waiting to be saved belongs to the design on
+        # screen now - write it before the metadata swaps to the new one.
+        from fypa.viewer.setup_restore import flush_setup_save
+        flush_setup_save(self)
         try:
             self.solution = new_solution
             self.metadata = metadata
@@ -837,6 +841,8 @@ class PdnViewer(
 
             project_swap = is_import or project is not None
             if project_swap:
+                # Held sidecar entries belong to the previous design.
+                self._setup_held = []
                 if self._editor_mode:
                     self._on_editor_mode_toggled(False)
                 if project is not None:
@@ -944,8 +950,11 @@ class PdnViewer(
             _maybe_warn_open_loop_rails(self, metadata)
             _maybe_warn_connectivity_breaks(self, metadata)
             # Last, so a wizard picked in the setup chooser doesn't open
-            # underneath the notices above.
-            _maybe_warn_needs_directives(self, new_solution)
+            # underneath the notices above. A setup restored from beside the
+            # design (or one that couldn't be) replaces the chooser.
+            from fypa.viewer.setup_restore import adopt_restored_setup
+            if not adopt_restored_setup(self, metadata, new_solution):
+                _maybe_warn_needs_directives(self, new_solution)
 
             if not getattr(self, "_vias_warn_init_scheduled", False):
                 self._vias_warn_init_scheduled = True

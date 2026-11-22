@@ -11,8 +11,10 @@ is useful for:
 - Overriding a single schematic `PDN_*` directive for one analysis,
   while leaving the original in place on disk.
 
-Editor edits are stored in a small JSON project file (`.fypa`) that sits
-beside the board. The Altium source files are never written to.
+Editor edits are saved automatically in a small setup file beside the
+board (`<Board>.fypa-setup.json`, see [2.9](#29-the-setup-file-beside-the-board))
+and, when you save a project, in its `.fypa` file. The Altium source
+files are never written to.
 
 > Read [Section 1](01-sources-and-sinks.md) first if you have not. The
 > underlying concepts - sources, sinks, P / N nets, single-net vs two-net
@@ -433,7 +435,42 @@ re-running the FEM.
 > present if you intend to **re-solve** on the new machine; pure
 > viewing works from the pickles alone.
 
-## 2.9 Troubleshooting
+## 2.9 The setup file beside the board
+
+Every source, sink, regulator and series element you set up in FYPA -
+on the board, with Auto setup or with Manual setup - is also saved
+automatically to `<Board>.fypa-setup.json`, next to the `.PcbDoc`. There
+is nothing to press: the file is rewritten a moment after each change,
+and deleted again if you remove everything.
+
+The next time that design is imported (*File > Import Altium Design*,
+or from the Recent list), FYPA reads the file back and checks every
+entry against the design as it is now:
+
+- **Restored** - the part, its pins and its nets are all still there.
+  The entry is applied with its values unchanged, and the first solve
+  includes it.
+- **Held back** - the part is gone, is now a different part (its Altium
+  unique ids, footprint or comment changed), lost a pin the entry
+  uses, or a net the entry names no longer exists. The entry is not
+  applied. It stays in the file and is tried again on every import, so
+  it comes back by itself if the part does. If the part was only
+  renamed, place it again on the new designator.
+- **Dropped** - the part now has `PDN_*` parameters in the schematic.
+  The schematic takes precedence for anything it defines, so the FYPA
+  entry is removed. (An entry made with *Unlock to edit*, which
+  overrides the schematic deliberately, is kept.)
+
+A notice lists anything held back or dropped; when everything matches,
+the status bar just says how much was restored.
+
+If the board's folder can't be written (a read-only checkout, a network
+share), the file is kept in FYPA's per-user cache folder for that project
+instead. Opening a saved `.fypa` uses the `.fypa`'s own setup and leaves
+this file alone. Gerber imports have no setup file; save a `.fypa` to
+keep their setup.
+
+## 2.10 Troubleshooting
 
 | Message or symptom                                                           | Likely cause                                                                 | Fix                                                                          |
 |------------------------------------------------------------------------------|------------------------------------------------------------------------------|------------------------------------------------------------------------------|

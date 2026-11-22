@@ -457,7 +457,7 @@ did not abort the run but is worth knowing about. Examples:
 - Net names referenced in `PDN_*` parameters that were not found on
   the PCB (and were therefore skipped).
 - Editor directives that could not be applied (skipped, not aborted -
-  see [Section 2.9](02-sources-and-sinks-editor.md#29-troubleshooting)).
+  see [Section 2.10](02-sources-and-sinks-editor.md#210-troubleshooting)).
 - Solver warnings about near-singular matrices, suspicious gradients,
   etc.
 

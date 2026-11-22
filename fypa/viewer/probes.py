@@ -238,6 +238,9 @@ class _ProbeMixin:
         Python object."""
         if getattr(self, "_spacemouse", None) is not None:
             self._spacemouse.shutdown()
+        # Write a setup edit still waiting to be saved beside the design.
+        from fypa.viewer.setup_restore import flush_setup_save
+        flush_setup_save(self)
         # Stop the background copper workers and release the copper data.
         self._shutdown_copper_layers()
         app = QApplication.instance()

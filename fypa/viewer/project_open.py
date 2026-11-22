@@ -360,6 +360,8 @@ def _start_launcher_altium_solve(
         # A fresh import follows Altium's current variant unless the command
         # line picked one; never the previous project's choice.
         variant=window.__dict__.pop("_cli_variant", None),
+        # Bring back the setup saved beside this design (setup_sidecar).
+        restore_setup=True,
         parent=window,
     )
     _stash_pending_altium_recent(
@@ -507,6 +509,7 @@ def _open_altium_project_at(
         load_only=imp["load_only"],
         adaptive_regulator_gain=load_adaptive_regulator_gain(),
         is_import=True,
+        restore_setup=True,
         dialog_title=imp["dialog_title"],
         dialog_text=imp["dialog_text"],
         pending_altium_recent_pcbdoc=selected_pcbdoc,

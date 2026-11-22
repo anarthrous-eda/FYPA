@@ -1302,18 +1302,19 @@ class HelpBadge(QWidget):
     """
 
     _DIAM = 11.0      # ring diameter, px
-    _RAISE = 4        # empty px under the ring - lifts it like a footnote
 
     def __init__(self, text: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         d = int(self._DIAM) + 2
-        self.setFixedSize(d, d + self._RAISE)
+        self.setFixedSize(d, d)
         self.setCursor(Qt.WhatsThisCursor)
         t = _T()
         self._col = QColor(t["fg_dim"])
         self._col_hover = QColor(t["fg"])
         # Same look as the app's QToolTip style (theme.py).
-        self._popup = QLabel(text, None, Qt.ToolTip | Qt.FramelessWindowHint)
+        # Parented to the badge (still its own top-level window thanks to
+        # Qt.ToolTip) so the two are deleted together.
+        self._popup = QLabel(text, self, Qt.ToolTip | Qt.FramelessWindowHint)
         self._popup.setAttribute(Qt.WA_ShowWithoutActivating)
         self._popup.setAttribute(Qt.WA_TransparentForMouseEvents)
         self._popup.setWordWrap(True)
@@ -1322,7 +1323,15 @@ class HelpBadge(QWidget):
             f"QLabel {{ background-color: {t['bg']}; color: {t['fg']};"
             f"          border: 1px solid {t['border']}; padding: 3px 6px; }}"
         )
-        self.destroyed.connect(self._popup.deleteLater)
+
+    def set_baseline_lift(self, px: int) -> None:
+        """Leave *px* empty pixels under the ring.
+
+        Bottom-aligned next to a text label, passing the font's descent
+        puts the bottom of the ring on the text baseline.
+        """
+        d = int(self._DIAM) + 2
+        self.setFixedSize(d, d + max(0, px))
 
     def paintEvent(self, _e) -> None:  # noqa: N802 - Qt override
         p = QPainter(self)
@@ -1330,7 +1339,7 @@ class HelpBadge(QWidget):
         col = self._col_hover if self.underMouse() else self._col
         cx = self.width() / 2.0
         r = self._DIAM / 2.0
-        cy = 1.0 + r
+        cy = self.height() - 1.0 - r     # ring sits on the bottom edge
         pen = QPen(col, 1.1)
         p.setPen(pen)
         p.setBrush(Qt.NoBrush)
@@ -1364,7 +1373,10 @@ class HelpBadge(QWidget):
             self._show_help()
             self.update()
         elif et in (QEvent.Leave, QEvent.Hide):
-            self._popup.hide()
+            try:
+                self._popup.hide()
+            except RuntimeError:     # popup already gone at app shutdown
+                pass
             self.update()
         elif et in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease,
                     QEvent.MouseButtonDblClick):
