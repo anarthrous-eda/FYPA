@@ -106,6 +106,10 @@ simulation model - each `PDN_*` directive appears as a coloured box with
 labelled input/output ports; wires connect ports that share the same net.
 This is **not** the PCB layout; for spatial placement use the Board tab.
 
+The icon-only squares at the diagram's top-left are **Auto setup**,
+**Manual setup**, **What-If** and **↻ Resolve**; rest the mouse on one
+for a moment and it widens to show its name.
+
 - **Rows** - each SOURCE starts a row, and each REGULATOR gets its own
   row directly under the row that feeds it, indented one step per
   conversion stage, so reading top to bottom follows the power tree. A
@@ -236,41 +240,41 @@ This is **not** the PCB layout; for spatial placement use the Board tab.
 
 Click a **dashed amber tag** (a rail nothing drives) to add a SOURCE on
 it or a REGULATOR whose output it is; click a **grey tag** (a rail with
-no loads) to add a SINK. To add **another** load to a rail that already
+no sinks) to add a SINK. To add **another** sink to a rail that already
 has one, click its dashed blue **`+ SINK (n)`** handle under the last
-load. Each opens **Manual setup** (below) on a new entry for that net,
+sink. Each opens **Manual setup** (below) on a new entry for that net,
 with the part auto setup would pick, when it is confident, and its values
-filled in. A new load is never preset to a part already on that rail. On
-the **Loads** tab the **Part** list shows only the parts the handle
+filled in. A new sink is never preset to a part already on that rail. On
+the **Sinks** tab the **Part** list shows only the parts the handle
 counted: ICs and connectors on the net not already set up on it. Tick
 **Show all parts** to pick any part with a pin on the net, such as a
-resistor; there, a part already a load on the net is listed last, marked
-*already a load here*. Check the value (`3.3 V`, `250 mA` - SI prefixes
+resistor; there, a part already a sink on the net is listed last, marked
+*already a sink here*. Check the value (`3.3 V`, `250 mA` - SI prefixes
 are fine) and **Apply**.
 
 ### Manual setup
 
 **Manual setup…** on the toolbar opens the whole supply side of the PDN
-as two lists, **Sources & regulators** and **Loads**, each with **Add**,
+as two lists, **Sources & regulators** and **Sinks**, each with **Add**,
 **Duplicate** and **Remove** and an editor for the selected row:
 
-- **Supplies** have a **Type**: *Source* (an ideal supply such as a
+- **Sources & regulators** have a **Type**: *Source* (an ideal supply such as a
   connector), *LDO* (input current = output current) or *Switcher* (input
   power = output power ÷ efficiency). A regulator also needs its **Input
   net**, and a switcher takes an efficiency and an optional topology.
-- **Loads** take a current and an optional minimum voltage; the Nodes tab
-  flags the load if its pins sag below that.
+- **Sinks** take a current and an optional minimum voltage; the Nodes tab
+  flags the sink if its pins sag below that.
 - Every row is picked the same way: the **net** (type to search; rails
   come first), then the **part** on it (busiest first, e.g.
   `U7  MAX38913AATD+  (3)`), then optionally its **pins** (blank = all
   of that part's pins on the net). **Ground** is the return net, or
-  *(ideal return)* for a source or load that returns through an ideal 0 V
+  *(ideal return)* for a source or sink that returns through an ideal 0 V
   node.
 - Empty fields fill in from the design, and nothing you typed is
   overwritten: the voltage from the net name (`+1V8` → 1.8 V), the
   ground from the part's ground pins, and a regulator's input when the
   part has exactly one other rail.
-- **Split across nets…** (Loads) shares one part's total current over
+- **Split across nets…** (Sinks) shares one part's total current over
   all its supply rails by how many supply pins each has, e.g. a level
   shifter on both its VCC(A) and VCC(B) rails.
 - Directives defined in the Altium schematic are listed locked (🔒).
@@ -278,12 +282,19 @@ as two lists, **Sources & regulators** and **Loads**, each with **Add**,
   the next resolve; removing the copy brings the schematic one back.
 - Problems are listed under the tabs. Errors, such as a missing value,
   pins that aren't on the chosen net, or input = output, must be fixed
-  before **Apply**. Warnings, such as a load on a rail nothing supplies
+  before **Apply**. Warnings, such as a sink on a rail nothing supplies
   yet, don't block it.
 
+- Free source / sink markers dropped on the Board are listed too (◎,
+  with their location). Their value, output range, voltage limits and
+  ground can be edited here, and **Remove** deletes one. Their net and
+  place are the copper they sit on, so they are changed on the Board:
+  **Apply and show on Board** applies your edits and zooms the Board to
+  the marker (selected, if editor mode is on). **Duplicate** is off for
+  them; drop another marker on the Board instead.
+
 Nothing changes until **Apply**. Series elements (sense resistors,
-ferrites, 0 Ω links) are set up on the **Bridges** tab, and free markers
-dropped on the Board are left as they are.
+ferrites, 0 Ω links) are set up on the **Bridges** tab.
 
 ### Auto setup
 
@@ -388,27 +399,27 @@ by Margin ascending is the fastest way to find which pin is closest
 to falling below its limit.
 
 Right-click a SINK row and choose *Show fixes for …* to open the
-**Fixes** tab on that load.
+**Fixes** tab on that sink.
 
 ### The Fixes tab - where would copper help?
 
 The heatmap shows where current flows. The **Fixes** tab answers the
-question you ask next: *for this load, where would extra copper cut its
-drop the most?* Copper carrying another load's current, or copper beyond
-the load, scores nothing.
+question you ask next: *for this sink, where would extra copper cut its
+drop the most?* Copper carrying another sink's current, or copper beyond
+the sink, scores nothing.
 
 The report doesn't run when you open the tab - click **Run fixes
 report**. It stays up until the solution changes (a re-solve or a
 what-if), then the button comes back. *Show fixes for …* on the Nodes
 tab runs it straight away.
 
-- **Loads** (left) - every SINK, worst first, by how much of its drop
+- **Sinks** (left) - every SINK, worst first, by how much of its drop
   budget it uses. The budget is `nominal − PDN_MIN_V` when the sink has
   a `PDN_MIN_V`, otherwise 5 % of the rail's nominal voltage. When the
-  rail's supply has a tolerance the budget is counted from the supply's
+  rail's source has a tolerance the budget is counted from the source's
   minimum instead of the nominal, so it matches the worst case. Over-budget
-  loads are red. The drop is the same number the design report shows.
-- **Fixes** (right) - for the selected load, ranked by the voltage each
+  sinks are red. The drop is the same number the design report shows.
+- **Fixes** (right) - for the selected sink, ranked by the voltage each
   would gain:
   - **Widen** - push this copper edge out by 0.25 mm. For a trace,
     either edge.
@@ -419,11 +430,11 @@ tab runs it straight away.
   Fixes that would run into another net's copper are greyed and listed
   last. Click **Go** to jump to a fix on the heatmap.
 
-**Show fixes on the heatmap** draws every fix of the selected load over
+**Show fixes on the heatmap** draws every fix of the selected sink over
 whatever mode the heatmap is in - a line along an edge to widen, a dashed
 outline round copper to parallel, a ring on a via - numbered as in the
 table. **Show value map** colours the heatmap by where parallel copper
-would help the load most (volts gained per mm²) instead of the Mode
+would help the sink most (volts gained per mm²) instead of the Mode
 quantity; choosing a mode turns it off.
 
 The ranking comes from one extra ("adjoint") solve per load, done with

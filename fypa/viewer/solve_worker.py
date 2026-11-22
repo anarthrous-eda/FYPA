@@ -6,7 +6,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from PySide6.QtCore import QObject, QThread, QTimer, Signal
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
@@ -65,6 +65,9 @@ class _SolveProgressUpdater(QObject):
         # counter. Set now (the dialog is already shown) so it counts
         # from the moment the dialog appears, not from the first stage.
         self._total_start: float = time.monotonic()
+        # The dialog's own message label (looked up before the elapsed
+        # label is added, which is also a QLabel child).
+        self._label: QLabel | None = dlg.findChild(QLabel)
         self._elapsed_label: QLabel = self._make_elapsed_label(dlg)
         self._timer = QTimer(self)
         self._timer.setInterval(1000)
@@ -153,10 +156,29 @@ class _SolveProgressUpdater(QObject):
         elapsed = int(time.monotonic() - self._stage_start)
         first = f"{self._stage_text}  ({elapsed}s)" if elapsed > 0 \
             else self._stage_text
+        lines = [first]
         if self._substage_text:
-            self._dlg.setLabelText(f"{first}\nCurrently: {self._substage_text}")
+            lines.append(f"Currently: {self._substage_text}")
+        self._dlg.setLabelText(self._fit_lines(lines))
+
+    def _fit_lines(self, lines: list[str]) -> str:
+        """Elide each line (with "…") to the dialog label's width.
+
+        The dialog is fixed-size, so an over-long stage or substage message
+        would otherwise be clipped at both edges of the centred label.
+        """
+        label = self._label
+        if label is not None and label.width() > 0:
+            width = label.width()
+            fm = label.fontMetrics()
         else:
-            self._dlg.setLabelText(first)
+            width = self._dlg.width() - 24
+            fm = self._dlg.fontMetrics()
+        out: list[str] = []
+        for line in lines:
+            for part in line.split("\n"):
+                out.append(fm.elidedText(part, Qt.ElideRight, max(width, 50)))
+        return "\n".join(out)
 
     def stop(self) -> None:
         """Stop the elapsed-time timer. Safe to call multiple times."""

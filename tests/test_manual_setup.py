@@ -27,7 +27,7 @@ def test_parts_on_net_busiest_first_with_value_and_pad_count() -> None:
 def test_parts_already_a_load_on_the_net_go_last_and_are_marked() -> None:
     rows = M.parts_on_net(_board(), "+3V3", prefer="load", taken={"u2"})
     assert rows[0][0] == "U4"
-    assert rows[-1][0] == "U2" and rows[-1][1].endswith("already a load here")
+    assert rows[-1][0] == "U2" and rows[-1][1].endswith("already a sink here")
     assert not any("already" in label for des, label in rows if des != "U2")
 
 
@@ -348,3 +348,103 @@ def test_preset_without_a_pick_sets_role_and_net_only() -> None:
     assert sink.designator and sink.current is None  # value left to the user
     reg = M.preset(view, "+3V3", "REGULATOR")
     assert reg.role == "REGULATOR" and M.supply_type(reg) == "LDO"
+
+
+# --- copper (free) markers ----------------------------------------------------------
+
+
+def _free(role: str, net: str, **kw) -> M.EditorDirective:
+    return M.EditorDirective(kind="free", role=role, p_net=net, single_net=True,
+                             anchor_xy=(34.21, 18.66), layer="Top Layer",
+                             layer_id=1, **kw)
+
+
+def test_copper_markers_listed_are_sources_and_sinks_only() -> None:
+    assert M.is_listed_free_marker(_free("SOURCE", "+12V"))
+    assert M.is_listed_free_marker(_free("SINK", "+3V3"))
+    assert not M.is_listed_free_marker(_free("SERIES", "+3V3"))
+    assert not M.is_listed_free_marker(M.new_load())
+
+
+def test_copper_marker_title_shows_where_it_sits() -> None:
+    e = _entry(_free("SOURCE", "+12V", voltage=12.0))
+    assert e.is_free
+    assert e.title() == "◎ (34.2, 18.7)  Source  +12V · 12 V"
+    assert M.free_marker_where(e.directive, layer=True) == "Top Layer (34.2, 18.7) mm"
+
+
+def test_autofill_never_gives_a_copper_marker_a_part() -> None:
+    d = _free("SINK", "+3V3", current=0.1)
+    M.autofill(d, _board())
+    assert d.designator is None
+    s = _free("SOURCE", "+12V")
+    assert M.autofill(s, _board()) == ["voltage"] and s.voltage == 12.0
+    assert s.designator is None
+
+
+def test_copper_marker_validation_checks_values_not_parts() -> None:
+    view = _board()
+    ok_src = _free("SOURCE", "+12V", voltage=12.0)
+    ok_load = _free("SINK", "+12V", current=0.5)
+    no_i = _free("SINK", "+12V")
+    bad_gnd = _free("SINK", "+12V", current=0.1)
+    bad_gnd.single_net, bad_gnd.n_net = False, "+12V"
+    issues = M.validate([_entry(x) for x in (ok_src, ok_load, no_i, bad_gnd)], view)
+    by_id = {i.entry_id: i.text for i in issues if i.level == "error"}
+    assert ok_src.id not in by_id and ok_load.id not in by_id
+    assert "enter the current" in by_id[no_i.id]
+    assert by_id[no_i.id].startswith("Free marker (34.2, 18.7)")
+    assert "same net" in by_id[bad_gnd.id]
+    # No "pick the part", no duplicate error for two markers on one rail.
+    assert not any("part" in t or "duplicates" in t for t in by_id.values())
+
+
+def test_a_copper_source_feeds_the_loads_on_its_rail() -> None:
+    view = _board()
+    src = _free("SOURCE", "+3V3_SW", voltage=3.3)
+    load = M.new_load()
+    load.p_net, load.designator, load.current = "+3V3_SW", "U5", 0.05
+    M.set_ground(load, "GND")
+    issues = M.validate([_entry(src), _entry(load)], view)
+    assert not [i for i in issues if "nothing supplies" in i.text]
+
+
+@pytest.fixture(scope="module")
+def qapp():
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    yield app
+
+
+def test_dialog_lists_copper_markers_with_location_and_values_only(qapp) -> None:
+    from fypa.viewer.manual_setup_dialog import ManualSetupDialog
+
+    src = _free("SOURCE", "+12V", voltage=12.0)
+    load = _free("SINK", "+3V3", current=0.25)
+    series = _free("SERIES", "+3V3", resistance=0.01)
+    dlg = ManualSetupDialog(None, view=_board(), editor_directives=[src, load, series],
+                            metadata=None)
+    sup, ld = dlg.supplies, dlg.loads
+    assert [sup.list.item(i).text() for i in range(sup.list.count())] == [
+        "◎ (34.2, 18.7)  Source  +12V · 12 V"]
+    assert ld.list.count() == 1
+    ed = sup.editor
+    assert ed.entry.directive.id == src.id
+    assert not ed.net.isEnabled() and not ed.type.isEnabled()
+    assert ed.value.isEnabled() and ed.gnd.isEnabled()
+    assert ed.location.text() == "Top Layer (34.2, 18.7) mm"
+    assert ed.part_row.isHidden() and ed.pins.isHidden() and not ed.location.isHidden()
+    assert not ed.locate_btn.isHidden()
+    assert not sup._duplicate_btn.isEnabled() and sup._remove_btn.isEnabled()
+    # A value edit goes to the working copy, not the project's directive.
+    ed.value.setText("11 V")
+    ed._on_value()
+    out = {d.id: d for d in dlg.result_directives()}
+    assert out[src.id].voltage == 11.0 and src.voltage == 12.0
+    assert set(out) == {src.id, load.id}          # SERIES stays on the Bridges tab
+    # "Apply and show on Board" applies and names the marker.
+    ed.locate_btn.click()
+    from PySide6.QtWidgets import QDialog
+    assert dlg.result() == QDialog.Accepted and dlg.locate_id == src.id

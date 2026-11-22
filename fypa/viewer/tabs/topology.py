@@ -135,9 +135,8 @@ class _TopologyView(QGraphicsView):
         if on:
             self._place_empty_panel()
             # Keep the floating setup buttons clickable above it.
-            overlay = getattr(self._viewer, "_topology_setup_overlay", None)
-            if overlay is not None:
-                overlay.raise_()
+            for b in getattr(self._viewer, "_topology_setup_btns", ()):
+                b.raise_()
 
     def _place_empty_panel(self) -> None:
         panel = self._empty_panel
@@ -716,9 +715,12 @@ class _TopologyTabMixin:
         toolbar.addWidget(view_btn)
         toolbar.addStretch()
 
-        # Setup + Resolve buttons: same look as the Board's Resolve / What-If
-        # buttons (6 px padding, 6 px radius, bold, badge icon left of the
-        # label).
+        # Setup, What-If + Resolve: 34 x 34 icon-only squares (6 px radius,
+        # bold, the Board's badge icons) that widen on hover to reveal their
+        # label, like the Board's editor-mode column (hover_expand). The
+        # icon is held left at its centred spot (1 + 8 + 16 + 8 + 1) so it
+        # stays put while the button grows; [expanded] adds the right
+        # padding for the label.
         from fypa.viewer.assets import (
             _autosetup_icon,
             _manual_setup_icon,
@@ -729,8 +731,9 @@ class _TopologyTabMixin:
         def _big_btn_qss(color: str) -> str:
             return (
                 "QPushButton {{ border: 1px solid {c}; border-radius: 6px;"
-                "  padding: 6px 12px; font-weight: bold; text-align: left;"
-                "  background-color: {bg}; color: {c}; }}"
+                "  padding: 0px 0px 0px 8px; font-weight: bold;"
+                "  text-align: left; background-color: {bg}; color: {c}; }}"
+                "QPushButton[expanded=\"true\"] {{ padding: 0px 10px 0px 8px; }}"
                 "QPushButton:hover:enabled {{ background-color: {hover}; }}"
                 "QPushButton:disabled {{ color: {dim}; border-color: {dim}; }}"
                 .format(c=color, bg=_t["bg"], hover=_t["bg_hover"],
@@ -738,7 +741,9 @@ class _TopologyTabMixin:
             )
 
         def _big_btn(text: str, icon, color: str, tip: str, slot) -> QPushButton:
-            b = QPushButton(text)
+            # ``text`` is the hover label (see the expanders below); the
+            # button itself starts blank.
+            b = QPushButton()
             b.setIcon(icon)
             b.setIconSize(QSize(16, 16))
             b.setCursor(Qt.PointingHandCursor)
@@ -762,7 +767,7 @@ class _TopologyTabMixin:
             self._topology_run_autosetup)
         self._topology_manual_btn = _big_btn(
             "Manual setup…", _manual_setup_icon(accent, _t["bg"]), accent,
-            "Add and edit sources, regulators and loads by hand: pick a net, "
+            "Add and edit sources, regulators and sinks by hand: pick a net, "
             "the part on it and its pins, in one list per kind.",
             self._topology_run_manual_setup)
         # Same pastel orange and badge as the Board's What-If button. Shows
@@ -771,7 +776,7 @@ class _TopologyTabMixin:
         whatif_orange = (self._WHATIF_ORANGE_DARK
                          if current_theme_mode() == "dark"
                          else self._WHATIF_ORANGE_LIGHT)
-        wbtn = QPushButton("What-If")
+        wbtn = QPushButton()
         wbtn.setIcon(_whatif_icon(whatif_orange, _t["bg"]))
         wbtn.setIconSize(QSize(16, 16))
         wbtn.setCursor(Qt.PointingHandCursor)
@@ -805,24 +810,37 @@ class _TopologyTabMixin:
         from fypa.viewer.empty_state import EmptyStatePanel, run_empty_state_action
         self._topology_view.set_empty_panel(EmptyStatePanel(
             lambda what: run_empty_state_action(self, what)))
-        # Setup + Resolve: a column floating over the diagram's top-left
-        # corner (like the Board's buttons), so the diagram runs the tab's
-        # full width. All four as wide as the widest. Parented to the view,
-        # not its viewport, so they stay put while the diagram scrolls.
-        setup_overlay = QWidget(self._topology_view)
-        setup_col = QVBoxLayout(setup_overlay)
-        setup_col.setSpacing(4)
-        setup_col.setContentsMargins(0, 0, 0, 0)
+        # Setup, What-If + Resolve: a column of squares floating over the
+        # diagram's top-left corner (like the Board's buttons), so the
+        # diagram runs the tab's full width. Parented straight to the view
+        # (not its viewport, so they stay put while the diagram scrolls, and
+        # not a layout, which would hold a hovered button's width), placed
+        # by hand.
+        from fypa.viewer.editor.hover_expand import HoverExpander
+
         setup_btns = (self._topology_autosetup_btn, self._topology_manual_btn,
                       self._topology_whatif_btn, self._topology_resolve_btn)
-        col_w = max(b.sizeHint().width() for b in setup_btns)
+        y = 8
         for b in setup_btns:
-            b.setFixedWidth(col_w)
-            setup_col.addWidget(b)
-        setup_overlay.adjustSize()
-        setup_overlay.move(8, 8)
-        setup_overlay.raise_()
-        self._topology_setup_overlay = setup_overlay
+            b.setParent(self._topology_view)
+            b.resize(34, 34)
+            b.move(8, y)
+            b.raise_()
+            y += 34 + 4
+        always = lambda: True  # noqa: E731
+        self._topology_expanders = {
+            self._topology_autosetup_btn: HoverExpander(
+                self._topology_autosetup_btn, lambda: "Auto setup…", always),
+            self._topology_manual_btn: HoverExpander(
+                self._topology_manual_btn, lambda: "Manual setup…", always),
+            wbtn: HoverExpander(wbtn, lambda: "What-If", always),
+            self._topology_resolve_btn: HoverExpander(
+                self._topology_resolve_btn,
+                lambda: ("Solve" if getattr(self, "_awaiting_first_solve",
+                                            False) else "Resolve"),
+                always),
+        }
+        self._topology_setup_btns = setup_btns
         self._topology_view.set_background(_t["bg"])
         self._topology_split.addWidget(self._topology_view)
         self._topology_sidebar = self._build_topology_sidebar()
@@ -1056,8 +1074,11 @@ class _TopologyTabMixin:
         except Exception:  # noqa: BLE001 - viewer without editor state
             enabled = False
         btn.setEnabled(enabled)
-        awaiting = getattr(self, "_awaiting_first_solve", False)
-        btn.setText("Solve" if awaiting else "Resolve")
+        # Icon-only; the label ("Solve" before the first solve, else
+        # "Resolve") shows only while a hover has the button expanded.
+        exp = getattr(self, "_topology_expanders", {}).get(btn)
+        if exp is not None:
+            btn.setText(exp.current_label())
         btn.setToolTip(
             "Set up a source and a sink first - there is nothing to solve yet."
             if getattr(self, "_topology_needs_setup", False)
@@ -1219,18 +1240,46 @@ class _TopologyTabMixin:
                                 metadata=self.metadata, preset=preset)
         if not dlg.exec():
             return
-        # Supplies and loads bound to parts are what the dialog owns; series
-        # elements (Bridges tab) and free Board markers are kept as-is.
+        # The dialog owns supplies and loads bound to parts and the copper
+        # source / sink markers; series elements (Bridges tab) are kept
+        # as-is. Edited rows stay where they were in the project's list (so
+        # an untouched setup compares equal), removed ones drop out and new
+        # ones go at the end.
         owned = ("SOURCE", "SINK", "REGULATOR")
         before = [d.to_dict() for d in project.editor_directives]
-        keep = [d for d in project.editor_directives
-                if not (d.kind == "component" and d.role in owned)]
-        project.editor_directives = keep + dlg.result_directives()
+        edited = {d.id: d for d in dlg.result_directives()}
+        merged = []
+        for d in project.editor_directives:
+            mine = ((d.kind == "component" and d.role in owned)
+                    or M.is_listed_free_marker(d))
+            if not mine:
+                merged.append(d)
+            elif d.id in edited:
+                merged.append(edited.pop(d.id))
+        project.editor_directives = merged + list(edited.values())
         if [d.to_dict() for d in project.editor_directives] != before:
             self._topology_close_sidebar()
             self._topology_directives_changed()
             self.statusBar().showMessage(
                 "Manual setup applied - press Resolve to solve.", 8000)
+        if dlg.locate_id:
+            self._topology_show_marker_on_board(dlg.locate_id)
+
+    def _topology_show_marker_on_board(self, directive_id: str) -> None:
+        """Switch to the Board zoomed to a free marker (Manual setup's
+        "Apply and show on Board"), selecting it when editor mode is on."""
+        project = self._ensure_project()
+        d = project.directive_by_id(directive_id)
+        if d is None or d.anchor_xy is None:
+            return
+        self._topology_close_sidebar()
+        self._jump_to_xy(float(d.anchor_xy[0]), float(d.anchor_xy[1]),
+                         [d.layer_id] if d.layer_id is not None else [])
+        if getattr(self, "_editor_mode", False):
+            self._select_free_marker(d)
+        else:
+            self.statusBar().showMessage(
+                "Turn on editor mode to move this marker or change its net.", 8000)
 
     def _topology_parts_on_net(self, net: str) -> set[str]:
         """Designators (upper) of parts drawn with a port on ``net``."""

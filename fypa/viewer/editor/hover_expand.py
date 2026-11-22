@@ -1,7 +1,8 @@
-"""Hover-to-reveal labels for the icon-only editor overlay buttons.
+"""Hover-to-reveal labels for icon-only overlay buttons.
 
-In editor mode Auto setup, Manual setup and Resolve are 34 x 34 icon-only
-squares. Resting the mouse on one for a moment widens it and then shows its
+In Board editor mode Auto setup, Manual setup and Resolve are 34 x 34
+icon-only squares, as are the Topology tab's Auto setup, Manual setup,
+What-If and Resolve. Resting the mouse on one for a moment widens it and then shows its
 label; leaving it hides the label and shrinks it back to the icon.
 
 The button's stylesheet is expected to keep the icon left-aligned at the
@@ -56,8 +57,11 @@ class HoverExpander(QObject):
     def eventFilter(self, obj, event):  # noqa: N802 (Qt override)
         if obj is self._btn:
             et = event.type()
-            if et == QEvent.ToolTip and self._active_fn():
-                return True   # the revealed label stands in for a tooltip
+            if (et == QEvent.ToolTip and self._active_fn()
+                    and self._btn.isEnabled()):
+                # The revealed label stands in for a tooltip - except on a
+                # greyed-out button, whose tooltip says why it is disabled.
+                return True
             if et == QEvent.Enter:
                 if self._active_fn() and self.state in ("idle", "collapsing"):
                     self._timer.start()
@@ -113,7 +117,8 @@ class HoverExpander(QObject):
 
     def reset(self) -> None:
         """Drop straight back to idle (no animation), e.g. on leaving editor
-        mode. Leaves the text and size to the caller's layout."""
+        mode or the button being hidden mid-hover: blank, back to the
+        collapsed square."""
         self._timer.stop()
         self._anim.stop()
         if self.state != "idle":
@@ -121,6 +126,7 @@ class HoverExpander(QObject):
             self._btn.setText("")
             self._btn.setProperty("expanded", False)
             _repolish(self._btn)
+            self._btn.resize(self._collapsed, self._btn.height())
 
     def current_label(self) -> str:
         """Text the button should carry right now: the label only while

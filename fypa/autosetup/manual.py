@@ -47,17 +47,43 @@ class Entry:
     def is_supply(self) -> bool:
         return self.directive.role in SUPPLY_ROLES
 
+    @property
+    def is_free(self) -> bool:
+        """A copper (free) marker placed on the Board: no part, a fixed
+        net and location; only its values are edited here."""
+        return self.directive.kind == "free"
+
     def title(self) -> str:
         d = self.directive
-        kind = supply_type(d) if self.is_supply else "Load"
+        kind = supply_type(d) if self.is_supply else "Sink"
         net = d.p_net or "?"
         val = ""
         if d.role == "SINK" and d.current is not None:
             val = f" · {_fmt(d.current, 'A')}"
         elif d.voltage is not None:
             val = f" · {_fmt(d.voltage, 'V')}"
+        if self.is_free:
+            return f"◎ {free_marker_where(d)}  {kind}  {net}{val}"
         lock = "🔒 " if self.locked else ""
         return f"{lock}{d.designator or '?'}  {kind}  {net}{val}"
+
+
+def free_marker_where(d: EditorDirective, *, layer: bool = False) -> str:
+    """Short location of a free marker: ``(34.2, 18.7)``, with the layer
+    in front when ``layer`` is set (``Top Layer (34.2, 18.7) mm``)."""
+    if d.anchor_xy is None:
+        at = "(?)"
+    else:
+        at = f"({d.anchor_xy[0]:.1f}, {d.anchor_xy[1]:.1f})"
+    if not layer:
+        return at
+    return f"{d.layer or 'copper'} {at} mm"
+
+
+def is_listed_free_marker(d: EditorDirective) -> bool:
+    """Free markers the wizard lists: sources and sinks (series ones
+    belong to the Bridges tab)."""
+    return d.kind == "free" and d.role in ("SOURCE", "SINK")
 
 
 def _fmt(v: float, unit: str) -> str:
@@ -314,7 +340,7 @@ def parts_on_net(view: DesignView, net: str, *, prefer: str = "",
         is_taken = part.designator.upper() in taken_up
         label = f"{part.designator}  {part.mpn or part.value_text}".rstrip() + f"  ({n})"
         if is_taken:
-            label += "  - already a load here"
+            label += "  - already a sink here"
         rows.append(((is_taken, kind, -n, part.designator), part.designator, label))
     rows.sort()
     return [(des, label) for _k, des, label in rows]
@@ -405,6 +431,8 @@ def autofill(d: EditorDirective, view: DesignView, *,
         if v is not None:
             d.voltage = v
             filled.append("voltage")
+    if d.kind == "free":
+        return filled        # a free marker has no part to guess
     if not d.designator:
         prefer = "supply" if d.role in SUPPLY_ROLES else "load"
         cands = parts_on_net(view, net, prefer=prefer)
@@ -656,13 +684,19 @@ def validate(entries: list[Entry], view: DesignView,
         if e.locked:
             continue
         d = e.directive
-        name = d.designator or "new entry"
+        if e.is_free:
+            name = f"Free marker {free_marker_where(d)}"
+        else:
+            name = d.designator or "new entry"
 
         def err(text: str, _id=d.id, _name=name) -> None:
             issues.append(Issue("error", _id, f"{_name}: {text}"))
 
         if not d.p_net:
             err("pick a net")
+            continue
+        if e.is_free:
+            _validate_free(err, d)
             continue
         if not d.designator:
             err("pick the part")
@@ -746,9 +780,33 @@ def validate(entries: list[Entry], view: DesignView,
             continue
         if find(d.p_net) not in supplied:
             issues.append(Issue("warning", d.id,
-                                f"{d.designator or 'load'}: nothing supplies "
+                                f"{d.designator or 'sink'}: nothing supplies "
                                 f"{d.p_net} yet"))
     return issues
+
+
+def _validate_free(err, d: EditorDirective) -> None:
+    """A free marker's values: the net and location are the Board's, so
+    only the value, output range / voltage limits and return are checked."""
+    if d.role == "SOURCE":
+        if d.voltage is None or d.voltage == 0:
+            err("enter the voltage")
+        elif d.v_tol or d.v_min is not None or d.v_max is not None:
+            from fypa.altium.annotations import resolve_voltage_range
+            try:
+                resolve_voltage_range(d.voltage, d.v_tol, d.v_min, d.v_max)
+            except ValueError as e:
+                err(f"output range: {e}")
+    elif d.current is None or d.current <= 0:
+        err("enter the current")
+    elif (d.min_voltage is not None and d.max_voltage is not None
+          and d.max_voltage < d.min_voltage):
+        err("max voltage is below min voltage")
+    if not d.single_net:
+        if not d.n_net:
+            err("pick the ground / return net")
+        elif d.n_net == d.p_net:
+            err("ground and supply are the same net")
 
 
 def _check_pins(err, part: Part, net: str, pins: list[str] | None, what: str) -> None:

@@ -32,7 +32,7 @@ log = logging.getLogger(__name__)
 # Fix kind -> the word the table shows.
 _KIND_LABELS = {"widen": "Widen", "parallel": "Add layer", "via": "Add via"}
 
-_LOAD_COLUMNS = ("Load", "Rail", "Drop", "Budget", "Used", "Budget basis")
+_LOAD_COLUMNS = ("Sink", "Rail", "Drop", "Budget", "Used", "Budget basis")
 _FIX_COLUMNS = ("", "#", "Fix", "Est. gain", "Where", "Notes")
 _FIX_GO_COL = 0
 
@@ -62,12 +62,12 @@ class _FixesTabMixin:
         outer.setContentsMargins(8, 8, 8, 8)
 
         intro = QLabel(
-            "Where extra copper would help each load most. Loads are listed "
+            "Where extra copper would help each sink most. Sinks are listed "
             "by how much of their drop budget they use - the drop from the "
             "rail's setpoint over (nominal − PDN_MIN_V) where PDN_MIN_V is "
             f"set, otherwise over {copper_roi.DEFAULT_BUDGET_PCT:g} % of "
-            "nominal. A supply with a tolerance is counted at its minimum. "
-            "Pick a load to rank its fixes; click Go to see one "
+            "nominal. A source with a tolerance is counted at its minimum. "
+            "Pick a sink to rank its fixes; click Go to see one "
             "on the heatmap.")
         intro.setWordWrap(True)
         intro.setStyleSheet(f"QLabel {{ color: {t['fg_muted']}; }}")
@@ -142,7 +142,7 @@ class _FixesTabMixin:
         lay = QVBoxLayout(page)
         lay.addStretch(1)
         text = QLabel(
-            "Rank the loads by drop budget used and find where extra copper "
+            "Rank the sinks by drop budget used and find where extra copper "
             "would help each one most.")
         text.setWordWrap(True)
         text.setAlignment(Qt.AlignCenter)
@@ -223,7 +223,7 @@ class _FixesTabMixin:
             from fypa.viewer.empty_state import ACTION_SOLVE
             return ("Solve again to rank fixes",
                     "This solution was saved before FYPA could rank copper "
-                    f"fixes, or has no SINK loads. Solve again to show {shows}.",
+                    f"fixes, or has no sinks. Solve again to show {shows}.",
                     ACTION_SOLVE)
         return None
 
@@ -261,7 +261,7 @@ class _FixesTabMixin:
         tbl.resizeColumnsToContents()
         tbl.blockSignals(False)
         if not rows:
-            self.fixes_summary.setText("No solved SINK loads to rank copper for.")
+            self.fixes_summary.setText("No solved sinks to rank copper for.")
             self.fixes_table.setRowCount(0)
             return
         pending = getattr(self, "_fixes_pending", None)
@@ -368,7 +368,7 @@ class _FixesTabMixin:
         if not opps and self._roi_result is not None:
             tbl.setRowCount(1)
             tbl.setItem(0, 4, QTableWidgetItem(
-                "No copper change would move this load's voltage noticeably."))
+                "No copper change would move this sink's voltage noticeably."))
         tbl.resizeColumnsToContents()
         tbl.resizeRowsToContents()
         tbl.blockSignals(False)

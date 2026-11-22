@@ -126,7 +126,7 @@ def add_load_custom_menu(window, file_menu) -> None:
     custom = file_menu.addMenu("Load C&ustom…")
     load_pdn = QAction("&Tomachie pdn.json…", window)
     load_pdn.setStatusTip(
-        "Set up sources, regulators, series parts and loads from a Tomachie pdn.json")
+        "Set up sources, regulators, series parts and sinks from a Tomachie pdn.json")
     load_pdn.triggered.connect(lambda: on_load_tomachie_pdn(window))
     custom.addAction(load_pdn)
 

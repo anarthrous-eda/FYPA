@@ -177,6 +177,7 @@ class _Editor(QWidget):
 
     changed = Signal()
     override = Signal()
+    locate = Signal()
 
     def __init__(self, mode: str, view) -> None:
         super().__init__()
@@ -233,21 +234,32 @@ class _Editor(QWidget):
         self.show_all.setToolTip(
             "Unticked: only ICs and connectors on this net that aren't already "
             "set up on it (the parts counted by the Topology tab's + SINK (n)).\n"
-            "Ticked: every part with a pin on the net, e.g. a resistor as a load.")
+            "Ticked: every part with a pin on the net, e.g. a resistor as a sink.")
         self.show_all.toggled.connect(self._on_show_all)
+        self.part_label = QLabel("Part")
         if mode == "load":
-            row = QHBoxLayout()
+            # In a widget, not a bare layout, so the row can be hidden.
+            self.part_row = QWidget()
+            row = QHBoxLayout(self.part_row)
             row.setContentsMargins(0, 0, 0, 0)
             row.addWidget(self.part, 1)
             row.addWidget(self.show_all)
-            form.addRow("Part", row)
+            form.addRow(self.part_label, self.part_row)
         else:
-            form.addRow("Part", self.part)
+            self.part_row = self.part
+            form.addRow(self.part_label, self.part)
+        # Free markers: where it sits instead of a part (moved on the Board).
+        self.location = QLabel("")
+        self.location.setToolTip("Set on the Board: drag the marker there to "
+                                 "move it, or onto other copper to change its net.")
+        self.location_label = QLabel("Location")
+        form.addRow(self.location_label, self.location)
         self.pins = _PinPicker()
         self.pins.setToolTip("Which of the part's pins on the net carry the "
                              "current: all of them, or a hand-picked set.")
         self.pins.changed.connect(self._on_pins)
-        form.addRow("Output pins" if mode == "supply" else "Pins", self.pins)
+        self.pins_label = QLabel("Output pins" if mode == "supply" else "Pins")
+        form.addRow(self.pins_label, self.pins)
         self.value = QLineEdit()
         self.value.setPlaceholderText("e.g. 3.3 V" if mode == "supply" else "e.g. 250 mA")
         self.value.editingFinished.connect(self._on_value)
@@ -259,7 +271,7 @@ class _Editor(QWidget):
             "optional - 5%, 50 mV, +3/-5% or 3.1 to 3.5 V")
         self.v_range.setToolTip(
             "How far the output can sit from its voltage: a tolerance, or "
-            "the lowest and highest output. Loads are then checked at the "
+            "the lowest and highest output. Sinks are then checked at the "
             "nominal and at the ends of this range.")
         self.v_range.editingFinished.connect(self._on_v_range)
         self.v_range_label = QLabel("Output range")
@@ -268,7 +280,7 @@ class _Editor(QWidget):
         self.gnd = QComboBox()
         self.gnd.activated.connect(self._on_gnd)
         self.gnd.setToolTip(f"The return path. {M.IDEAL_RETURN}: an ideal 0 V "
-                            "return instead of copper (sources and loads only).")
+                            "return instead of copper (sources and sinks only).")
         form.addRow("Ground", self.gnd)
         # The input net is one of the regulator's own nets - filled per part
         # in load(), so it can't be pointed at a net the part isn't on.
@@ -293,11 +305,11 @@ class _Editor(QWidget):
         self.topo_label = QLabel("Topology")
         form.addRow(self.topo_label, self.topo)
         self.min_v = QLineEdit()
-        self.min_v.setPlaceholderText("optional - flags the load if its pins sag below")
+        self.min_v.setPlaceholderText("optional - flags the sink if its pins sag below")
         self.min_v.editingFinished.connect(self._on_min_v)
         self.min_v_label = QLabel("Min voltage")
         self.max_v = QLineEdit()
-        self.max_v.setPlaceholderText("optional - flags the load if its pins can rise above")
+        self.max_v.setPlaceholderText("optional - flags the sink if its pins can rise above")
         self.max_v.editingFinished.connect(self._on_max_v)
         self.max_v_label = QLabel("Max voltage")
         if mode == "load":
@@ -322,6 +334,12 @@ class _Editor(QWidget):
             if mode == "supply":
                 form.addRow(lab, edit)
         lay.addLayout(form)
+        self.locate_btn = QPushButton("⌖  Apply and show on Board")
+        self.locate_btn.setToolTip(
+            "Apply the changes made here and switch to the Board, zoomed to "
+            "this marker - move it or change its net there.")
+        self.locate_btn.clicked.connect(self.locate.emit)
+        lay.addWidget(self.locate_btn)
         self._filled = QLabel("")
         self._filled.setStyleSheet(f"color: {t['fg_muted']}; font-size: 8pt;")
         self._filled.setWordWrap(True)
@@ -341,19 +359,37 @@ class _Editor(QWidget):
                   self.max_v, self.v_range, *self._limit_edits.values()):
             w.setEnabled(editable)
         self._override_btn.setVisible(bool(entry and entry.locked))
+        free = bool(entry and entry.is_free)
+        # A free marker's net and location are the copper it sits on, and
+        # it can't become a regulator: those stay on the Board.
+        self.type.setEnabled(editable and not free)
+        self.net.setEnabled(editable and not free)
+        self.locate_btn.setVisible(free)
         if entry is None:
             self._banner.setText(f"<span style='color:{t['fg_muted']};'>Nothing "
                                  "selected - use Add.</span>")
             self._filled.setText("")
+            self._sync_visibility()
             return
+        if entry.locked:
+            banner = "Defined in the Altium schematic."
+        elif free:
+            banner = ("Free marker placed on the Board. Its net and location "
+                      "are set there; its values can be edited here.")
+        else:
+            banner = ""
         self._banner.setText(
-            f"<span style='color:{t['fg_muted']};'>Defined in the Altium "
-            "schematic.</span>" if entry.locked else "")
+            f"<span style='color:{t['fg_muted']};'>{banner}</span>" if banner else "")
         d = entry.directive
         with QSignalBlocker(self.type):
             self.type.setCurrentText(M.supply_type(d) if self.mode == "supply" else "Source")
         self.net.set_net(d.p_net)
-        self._fill_parts(d)
+        self.location.setText(M.free_marker_where(d, layer=True) if free else "")
+        if free:
+            with QSignalBlocker(self.part):
+                self.part.clear()
+        else:
+            self._fill_parts(d)
         part = self.view.part(d.designator) if d.designator else None
         self.pins.set_pins(M.pins_of(part, d.p_net), d.p_pins, d.p_net)
         self.in_net.set_choices(
@@ -432,6 +468,11 @@ class _Editor(QWidget):
 
     def _sync_visibility(self) -> None:
         d = self.entry.directive if self.entry else None
+        free = bool(self.entry and self.entry.is_free)
+        for w in (self.part_label, self.part_row, self.pins_label, self.pins):
+            w.setVisible(not free)
+        for w in (self.location_label, self.location):
+            w.setVisible(free)
         reg = bool(d and d.role == "REGULATOR")
         smps = reg and (d.regulator_type or "") == "SMPS"
         for w in (self.in_net, self.in_net_label, self.in_pins, self.in_pins_label):
@@ -564,6 +605,7 @@ class _RolePage(QWidget):
     """List + Add / Duplicate / Remove + editor, for supplies or loads."""
 
     changed = Signal()
+    locate = Signal(str)      # a free marker's directive id
 
     def __init__(self, mode: str, view, entries: list[M.Entry]) -> None:
         super().__init__()
@@ -604,6 +646,7 @@ class _RolePage(QWidget):
             self.editor.used = self._used_on_net
         self.editor.changed.connect(self._on_edit)
         self.editor.override.connect(self._override)
+        self.editor.locate.connect(self._locate)
         split.addWidget(self.editor)
         split.setSizes([330, 520])
         lay.addWidget(split)
@@ -650,6 +693,11 @@ class _RolePage(QWidget):
                     it.setForeground(Qt.gray)
                     it.setToolTip("Defined in the Altium schematic - select and "
                                   "Override to edit it here")
+                elif e.is_free:
+                    it.setToolTip(
+                        "Free marker on "
+                        f"{M.free_marker_where(e.directive, layer=True)} - its "
+                        "values are edited here, its place and net on the Board")
                 self.list.addItem(it)
         idx = next((i for i, e in enumerate(rows) if e.directive.id == cur), 0)
         if rows:
@@ -681,8 +729,18 @@ class _RolePage(QWidget):
 
     def _update_buttons(self) -> None:
         e = self.editor.entry
-        self._duplicate_btn.setEnabled(e is not None)
+        # A copy of a free marker would need a place of its own: drop
+        # another marker on the Board instead.
+        self._duplicate_btn.setEnabled(e is not None and not e.is_free)
+        self._duplicate_btn.setToolTip(
+            "Place another free marker on the Board instead"
+            if e is not None and e.is_free else
+            "Copy the selected entry (e.g. the same part on another rail)")
         self._remove_btn.setEnabled(e is not None and not e.locked)
+
+    def _locate(self) -> None:
+        if self.editor.entry is not None:
+            self.locate.emit(self.editor.entry.directive.id)
 
     def _on_edit(self) -> None:
         e = self.editor.entry
@@ -700,7 +758,7 @@ class _RolePage(QWidget):
 
     def _dup(self) -> None:
         e = self.editor.entry
-        if e is None:
+        if e is None or e.is_free:
             return
         d = M.duplicate(e.directive)
         if e.locked:
@@ -769,7 +827,7 @@ class ManualSetupDialog(QDialog):
         """``preset`` is a new directive (see :func:`M.preset`) to add and
         open straight away - the Topology tab's click-to-add on a tag."""
         super().__init__(parent)
-        self.setWindowTitle("Manual setup - sources, regulators and loads")
+        self.setWindowTitle("Manual setup - sources, regulators and sinks")
         self.resize(1040, 680)
         # Work on the nets as drawn, like the auto-setup classifier: after the
         # loader's 0 Ω merge a module's output (VOUT_PS1V8) and the rail it
@@ -784,12 +842,17 @@ class ManualSetupDialog(QDialog):
         if series:
             view = dataclasses.replace(view, bridges=list(view.bridges) + series)
         self.view = view
-        # Working copies: nothing in the project changes until Apply.
+        # Working copies: nothing in the project changes until Apply. Copper
+        # markers placed on the Board are listed too (values editable here,
+        # net and location on the Board).
         self.entries: list[M.Entry] = [
             M.Entry(directive=M.duplicate_keep_id(d))
             for d in editor_directives
-            if d.kind == "component" and d.role in ("SOURCE", "SINK", "REGULATOR")
+            if (d.kind == "component" and d.role in ("SOURCE", "SINK", "REGULATOR"))
+            or M.is_listed_free_marker(d)
         ]
+        # Set by "Apply and show on Board": the free marker to show.
+        self.locate_id: str | None = None
         for e in self.entries:
             md = next((m for m in (metadata or {}).get("directives") or []
                        if m.get("designator") == e.directive.overrides_designator
@@ -798,16 +861,14 @@ class ManualSetupDialog(QDialog):
         self.entries += M.schematic_entries(metadata, editor_directives)
         if preset is not None:
             self.entries.append(M.Entry(directive=preset))
-        self._free = sum(1 for d in editor_directives
-                         if d.kind == "free" and d.role != "SERIES")
 
-        t = _T()
         lay = QVBoxLayout(self)
         intro = QLabel(
-            "Set up the power tree by hand. For each <b>supply</b> or <b>load</b> "
+            "Set up the power tree by hand. For each <b>source</b>, <b>regulator</b> or <b>sink</b> "
             "pick its net, then the part on that net, then (optionally) its pins. "
             "Empty fields fill in from the design. Schematic directives are shown "
-            "locked; <b>Override</b> takes one over. Series elements (sense "
+            "locked; <b>Override</b> takes one over. Free markers (◎) are placed "
+            "on the Board - their values can be edited here. Series elements (sense "
             "resistors, ferrites, links) are set up on the <b>Bridges</b> tab.")
         intro.setWordWrap(True)
         intro.setTextFormat(Qt.RichText)
@@ -816,20 +877,16 @@ class ManualSetupDialog(QDialog):
         self.supplies = _RolePage("supply", view, self.entries)
         self.loads = _RolePage("load", view, self.entries)
         self.tabs.addTab(self.supplies, "Sources && regulators")
-        self.tabs.addTab(self.loads, "Loads")
+        self.tabs.addTab(self.loads, "Sinks")
         for page in (self.supplies, self.loads):
             page.changed.connect(self._revalidate)
+            page.locate.connect(self._locate)
         lay.addWidget(self.tabs, 1)
         self.issues = QLabel("")
         self.issues.setWordWrap(True)
         self.issues.setTextFormat(Qt.RichText)
         lay.addWidget(self.issues)
         btns = QHBoxLayout()
-        if self._free:
-            note = QLabel(f"{self._free} free marker(s) placed on the Board "
-                          "aren't listed and are kept as they are.")
-            note.setStyleSheet(f"color: {t['fg_muted']};")
-            btns.addWidget(note)
         btns.addStretch(1)
         cancel = QPushButton("Cancel")
         cancel.clicked.connect(self.reject)
@@ -867,7 +924,17 @@ class ManualSetupDialog(QDialog):
         n = sum(1 for e in self.entries if not e.locked)
         self.apply_btn.setEnabled(not errs)
         self.apply_btn.setText(f"Apply ({n} FYPA entr{'y' if n == 1 else 'ies'})")
+        for page in (self.supplies, self.loads):
+            page.editor.locate_btn.setEnabled(not errs)
+
+    def _locate(self, directive_id: str) -> None:
+        """Apply, then have the caller show this free marker on the Board."""
+        if not self.apply_btn.isEnabled():
+            return
+        self.locate_id = directive_id
+        self.accept()
 
     def result_directives(self):
-        """The edited supplies and loads (FYPA-owned rows only)."""
+        """The edited supplies, loads and free markers (FYPA-owned rows
+        only)."""
         return [e.directive for e in self.entries if not e.locked]
