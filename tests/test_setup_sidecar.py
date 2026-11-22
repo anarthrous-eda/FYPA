@@ -298,21 +298,23 @@ def test_viewer_without_a_saved_setup_falls_through(qapp, paths):
     assert adopt_restored_setup(_window(paths), {}, None) is False
 
 
-def test_held_entries_are_listed_and_stay_saved(qapp, paths, monkeypatch):
-    from fypa.viewer import list_dialog
+def test_held_entries_open_the_review_and_stay_saved(qapp, paths, monkeypatch):
+    from fypa.viewer import setup_restore
     from fypa.viewer.setup_restore import adopt_restored_setup
 
     prj, pcb, _ = paths
-    shown = []
-    monkeypatch.setattr(list_dialog, "show_list_notice",
-                        lambda *a, **k: shown.append(a[3]))
+    opened = []
+    monkeypatch.setattr(setup_restore, "open_setup_review",
+                        lambda w, **k: opened.append(list(w._setup_review)))
     saved = _saved(paths, [_sink(), _sink("U9")],
-                   _design(_comp("U1"), _comp("U9")))
+                   _design(_comp("U1"), _comp("U9", uid="P9", suid="S9")))
     rep = SS.match_exact(saved, _design(_comp("U1")))
     win = _window(paths, _design(_comp("U1")))
     adopt_restored_setup(win, {"setup_restore": rep.to_metadata()},
                          SimpleNamespace(solver_info={}))
-    assert shown and "U9 is not on this board" in shown[0][0]
+    (items,) = opened
+    assert [it.entry.reason for it in items] == ["U9 is not on this board"]
+    assert win.metadata["setup_held"][0].startswith("SINK U9")
     again = SS.load_setup(prj, pcb)
     assert [d.designator for d in again.directives] == ["U1"]
     assert [h.directive.designator for h in again.held] == ["U9"]
@@ -351,3 +353,186 @@ def test_gerber_designs_have_no_sidecar(qapp, paths):
     win.metadata["source_kind"] = "gerber"
     win._ensure_project().editor_directives = [_sink()]
     assert save_setup_now(win) is None
+
+
+# --- stage 2: parts that changed ---------------------------------------------
+
+def _plain(des, **kw):
+    """A part with no Altium unique ids - only footprint, value, position
+    and pins to go on."""
+    return _comp(des, uid="", suid="", **kw)
+
+
+def test_reannotated_part_follows_its_unique_id(paths):
+    saved = _saved(paths, [_sink("U1")], _design(_comp("U1", xy=(5.0, 5.0))))
+    rep = SS.match_saved(saved, _design(_comp("U7", xy=(5.0, 5.0))))
+    assert [d.designator for d in rep.applied] == ["U7"]
+    assert rep.applied[0].id == saved.directives[0].id
+    assert any("U1 → U7" in c for c in rep.changes[rep.applied[0].id])
+    assert not rep.held and not rep.review
+
+
+def test_reannotation_without_ids_matches_the_same_spot(paths):
+    saved = _saved(paths, [_sink("U1")], _design(_plain("U1")))
+    now = _design(_plain("U7"), _plain("U8", xy=(90.0, 90.0)))
+    rep = SS.match_saved(saved, now)
+    assert [d.designator for d in rep.applied] == ["U7"]
+
+
+def test_a_renamed_net_on_the_same_part_is_proposed_not_applied(paths):
+    saved = _saved(paths, [_sink("U1")], _design(_comp("U1")))
+    now = _design(_comp("U1"), nets=("+3V3_MAIN", "GND"),
+                  pins={"U1": {"1": "+3V3_MAIN", "2": "GND"}})
+    rep = SS.match_saved(saved, now)
+    assert rep.applied == []
+    (item,) = rep.review
+    assert item.status == SS.REVIEW_NET_CHANGED
+    cand = item.candidates[0]
+    assert cand.directive.p_net == "+3V3_MAIN"
+    assert cand.directive.designator == "U1"
+    assert "net +3V3 → +3V3_MAIN" in cand.changes
+
+
+def test_a_moved_and_renamed_part_without_ids_is_a_likely_match(paths):
+    saved = _saved(paths, [_sink("U1")], _design(_plain("U1")))
+    rep = SS.match_saved(saved, _design(_plain("U4", xy=(12.0, 21.0))))
+    (item,) = rep.review
+    assert item.status == SS.REVIEW_LIKELY
+    assert item.candidates[0].designator == "U4"
+    assert rep.applied == []
+
+
+def test_two_equal_parts_make_it_ambiguous(paths):
+    saved = _saved(paths, [_sink("U1")], _design(_plain("U1")))
+    now = _design(_plain("U4", xy=(12.0, 21.0)), _plain("U5", xy=(8.0, 19.0)))
+    (item,) = SS.match_saved(saved, now).review
+    assert item.status == SS.REVIEW_AMBIGUOUS
+    assert {c.designator for c in item.candidates} == {"U4", "U5"}
+
+
+def test_nothing_like_it_is_missing(paths):
+    saved = _saved(paths, [_sink("U1")], _design(_plain("U1")))
+    now = _design(_plain("R1", fp="0402", comment="10k", xy=(80.0, 80.0)),
+                  pins={"R1": {"1": "+5V", "2": "GND"}})
+    (item,) = SS.match_saved(saved, now).review
+    assert item.status == SS.REVIEW_MISSING and item.candidates == []
+
+
+def test_two_saved_parts_never_claim_the_same_new_part(paths):
+    saved = _saved(paths, [_sink("U1"), _sink("U2")],
+                   _design(_plain("U1"), _plain("U2", xy=(10.4, 20.0))))
+    rep = SS.match_saved(saved, _design(_plain("U9", xy=(10.2, 20.0))))
+    assert [d.designator for d in rep.applied].count("U9") <= 1
+    assert len(rep.applied) + len(rep.review) == 2
+    # Both entries pointed at U9: neither is the clear answer.
+    for item in rep.review:
+        assert item.status != SS.REVIEW_LIKELY
+
+
+def test_entries_on_one_part_move_together(paths):
+    reg = EditorDirective(kind="component", role="REGULATOR", designator="U1",
+                          single_net=False, p_net="+3V3", n_net="GND",
+                          in_p_net="+5V", voltage=3.3, regulator_type="LDO")
+    pins = {"1": "+3V3", "2": "GND", "3": "+5V"}
+    saved = _saved(paths, [reg, _sink("U1")],
+                   _design(_comp("U1"), pins={"U1": pins}))
+    rep = SS.match_saved(saved, _design(_comp("U3"), pins={"U3": pins}))
+    assert sorted(d.role for d in rep.applied) == ["REGULATOR", "SINK"]
+    assert {d.designator for d in rep.applied} == {"U3"}
+
+
+def test_a_part_picked_by_hand_is_checked(paths):
+    saved = _saved(paths, [_sink("U1")], _design(_plain("U1")))
+    now = _design(_plain("U4", xy=(60.0, 60.0)),
+                  _plain("R1", fp="0402", comment="10k"),
+                  pins={"U4": {"1": "+3V3", "2": "GND"},
+                        "R1": {"1": "+5V", "2": "+5V"}})
+    (item,) = SS.match_saved(saved, now).review
+    ok = SS.retarget_to(item.entry, now, "U4")
+    assert isinstance(ok, SS.Candidate) and ok.directive.designator == "U4"
+    bad = SS.retarget_to(item.entry, now, "R1")
+    assert isinstance(bad, str) and "R1" in bad
+    assert "not on this board" in SS.retarget_to(item.entry, now, "U99")
+
+
+def test_review_survives_the_trip_to_the_viewer(paths):
+    saved = _saved(paths, [_sink("U1")], _design(_plain("U1")))
+    rep = SS.match_saved(saved, _design(_plain("U4", xy=(12.0, 21.0))))
+    back = SS.RestoreReport.from_metadata(
+        json.loads(json.dumps(rep.to_metadata())))
+    assert back.review[0].status == SS.REVIEW_LIKELY
+    assert back.review[0].candidates[0].directive.designator == "U4"
+
+
+# --- review dialog and what it does ------------------------------------------
+
+def _review_window(paths, report, extracted):
+    win = _window(paths, extracted)
+    win._mark_project_dirty = lambda: setattr(win, "dirty", True)
+    win._ensure_project().editor_directives = list(report.applied)
+    win._setup_held = list(report.held)
+    win._setup_review = list(report.review)
+    return win
+
+
+def test_dialog_preselects_clear_answers_only(qapp, paths):
+    from fypa.viewer.setup_review import ACCEPT, KEEP, SetupReviewDialog
+
+    saved = _saved(paths, [_sink("U1"), _sink("U2")],
+                   _design(_plain("U1"), _plain("U2", xy=(70.0, 70.0))))
+    now = _design(_plain("U4", xy=(12.0, 21.0)),
+                  _plain("U5", xy=(68.0, 70.0)), _plain("U6", xy=(72.0, 70.0)))
+    rep = SS.match_saved(saved, now)
+    statuses = {it.entry.directive.designator: it.status for it in rep.review}
+    assert statuses == {"U1": SS.REVIEW_LIKELY, "U2": SS.REVIEW_AMBIGUOUS}
+    dlg = SetupReviewDialog(None, rep.review)
+    got = {it.entry.directive.designator: (a, c.designator if c else None)
+           for it, a, c in dlg.decisions()}
+    assert got == {"U1": (ACCEPT, "U4"), "U2": (KEEP, None)}
+
+
+def test_applying_decisions_moves_removes_and_keeps(qapp, paths):
+    from fypa.viewer.setup_restore import apply_review_decisions, save_setup_now
+    from fypa.viewer.setup_review import ACCEPT, KEEP, REMOVE
+
+    prj, pcb, _ = paths
+    saved = _saved(paths, [_sink("U1"), _sink("U2"), _sink("U3")],
+                   _design(_plain("U1"), _plain("U2", xy=(40.0, 40.0)),
+                           _plain("U3", xy=(70.0, 70.0))))
+    now = _design(_plain("U4", xy=(12.0, 21.0)))
+    rep = SS.match_saved(saved, now)
+    win = _review_window(paths, rep, now)
+    by = {it.entry.directive.designator: it for it in rep.review}
+    apply_review_decisions(win, [
+        (by["U1"], ACCEPT, by["U1"].candidates[0]),
+        (by["U2"], REMOVE, None),
+        (by["U3"], KEEP, None),
+    ])
+    assert [d.designator for d in win._project.editor_directives] == ["U4"]
+    assert [h.directive.designator for h in win._setup_held] == ["U3"]
+    assert win.dirty is True
+    assert win.metadata["setup_held"][0].startswith("SINK U3")
+    save_setup_now(win)
+    back = SS.load_setup(prj, pcb)
+    assert [d.designator for d in back.directives] == ["U4"]
+    assert [h.directive.designator for h in back.held] == ["U3"]
+
+
+def test_solve_goes_ahead_when_nothing_is_held_or_it_was_acknowledged(
+        qapp, paths):
+    from fypa.viewer.setup_restore import confirm_solve_with_held
+
+    win = _window(paths)
+    assert confirm_solve_with_held(win) is True
+    win._setup_held = [SS.HeldEntry(_sink(), "U1 is not on this board")]
+    win._setup_held_ack = True
+    assert confirm_solve_with_held(win) is True
+
+
+def test_report_warns_about_held_entries():
+    from fypa.report.checks import design_findings
+
+    out = design_findings({"setup_held": ["SINK U3 on +3V3 - gone"]}, None,
+                          False)
+    (f,) = [f for f in out if f.code == "setup-held"]
+    assert "SINK U3" in f.detail

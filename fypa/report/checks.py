@@ -244,6 +244,20 @@ def design_findings(metadata: dict, solution, solve_stale: bool
             "The results below reflect the last solve. Re-solve before "
             "relying on this report.", None, "solve is out of date",
             "stale"))
+    held = [str(m) for m in metadata.get("setup_held") or []]
+    if held:
+        n = len(held)
+        out.append(Finding(
+            WARN,
+            f"{n} saved setup entr{'y was' if n == 1 else 'ies were'} not "
+            "applied",
+            "The design changed since its setup was saved and "
+            f"{'this entry' if n == 1 else 'these entries'} could not be "
+            "matched to a part, so the solve ran without "
+            f"{'it' if n == 1 else 'them'}: " + "; ".join(held) + ". A load "
+            "left out makes the results look better than they are - review "
+            "them with Help > Review saved setup… and re-solve.",
+            None, "saved setup not fully applied", "setup-held"))
     for mf in metadata.get("mesh_failures") or []:
         net = mf.get("net", "?") if isinstance(mf, dict) else "?"
         summary = mf.get("summary", "") if isinstance(mf, dict) else str(mf)

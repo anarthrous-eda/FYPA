@@ -649,12 +649,12 @@ class _SolveWorker(QThread):
         """Match the saved setup against ``loaded`` (the pristine design) and
         take what still fits as this solve's editor directives / copper
         names. Never fails the load: on any error the setup is skipped."""
-        from fypa.setup_sidecar import match_exact
+        from fypa.setup_sidecar import match_saved
 
         saved = self._saved_setup
         self.stage_changed.emit("Restoring the saved setup…")
         try:
-            report = match_exact(saved, loaded.extracted,
+            report = match_saved(saved, loaded.extracted,
                                  loaded.annotations.directives)
         except Exception as e:  # noqa: BLE001
             logging.getLogger(__name__).warning(

@@ -843,6 +843,8 @@ class PdnViewer(
             if project_swap:
                 # Held sidecar entries belong to the previous design.
                 self._setup_held = []
+                self._setup_review = []
+                self._setup_held_ack = False
                 if self._editor_mode:
                     self._on_editor_mode_toggled(False)
                 if project is not None:
@@ -952,8 +954,13 @@ class PdnViewer(
             # Last, so a wizard picked in the setup chooser doesn't open
             # underneath the notices above. A setup restored from beside the
             # design (or one that couldn't be) replaces the chooser.
-            from fypa.viewer.setup_restore import adopt_restored_setup
+            from fypa.viewer.setup_restore import (
+                adopt_restored_setup, stamp_held,
+            )
             if not adopt_restored_setup(self, metadata, new_solution):
+                # Entries still held from an earlier restore: this result
+                # was solved without them, and the report must say so.
+                stamp_held(self)
                 _maybe_warn_needs_directives(self, new_solution)
 
             if not getattr(self, "_vias_warn_init_scheduled", False):

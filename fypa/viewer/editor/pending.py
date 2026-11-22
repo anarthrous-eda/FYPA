@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QListWidgetItem, QMessageBox
 from fypa.viewer.theme import _T
 from fypa.viewer.widgets import _qt_widget_alive, EyeButton
 
-
+
 # The Resolve progress pop-up's message. The What-If runner sizes its own
 # pop-up from it too, so the two come up the same width.
 RESOLVE_DIALOG_TEXT = (
@@ -242,6 +242,11 @@ class _PendingRailsMixin:
                 "<b>Adaptive SMPS gain</b> to re-solve with iterative "
                 "regulator gain, or edit directives / settings first.",
             )
+            return
+        # Saved setup entries the design no longer matched: review them, or
+        # solve knowingly without them.
+        from fypa.viewer.setup_restore import confirm_solve_with_held
+        if not confirm_solve_with_held(self):
             return
         editor_directives = (
             list(self._project.editor_directives)

@@ -445,24 +445,47 @@ and deleted again if you remove everything.
 
 The next time that design is imported (*File > Import Altium Design*,
 or from the Recent list), FYPA reads the file back and checks every
-entry against the design as it is now:
+entry against the design as it is now. Only an entry's *anchor* - which
+part, pins and nets it sits on - is ever re-matched; its values
+(current, voltage, limits) are never changed.
 
-- **Restored** - the part, its pins and its nets are all still there.
-  The entry is applied with its values unchanged, and the first solve
-  includes it.
-- **Held back** - the part is gone, is now a different part (its Altium
-  unique ids, footprint or comment changed), lost a pin the entry
-  uses, or a net the entry names no longer exists. The entry is not
-  applied. It stays in the file and is tried again on every import, so
-  it comes back by itself if the part does. If the part was only
-  renamed, place it again on the new designator.
-- **Dropped** - the part now has `PDN_*` parameters in the schematic.
-  The schematic takes precedence for anything it defines, so the FYPA
-  entry is removed. (An entry made with *Unlock to edit*, which
-  overrides the schematic deliberately, is kept.)
+**Applied without asking** - FYPA can show it is the same part:
 
-A notice lists anything held back or dropped; when everything matches,
-the status bar just says how much was restored.
+- **Unchanged** - the same designator, pins and nets. A part that only
+  moved is noted in the status bar.
+- **Re-annotated** - the designator changed, but the part's Altium
+  unique id (its schematic link, else its PCB id) is now on the new
+  designator; or, for parts without ids, exactly one part with the same
+  footprint, value and side sits where it was, on the same nets. The
+  entry follows it, and a notice lists each `U12 → U14`.
+
+**Dropped** - the part now has `PDN_*` parameters in the schematic. The
+schematic takes precedence for anything it defines, so the FYPA entry is
+removed. (An entry made with *Unlock to edit*, which overrides the
+schematic deliberately, is kept.)
+
+**Held for review** - anything less certain is not applied. The
+*Review the saved setup* dialog opens with one row per entry:
+
+| Status | Meaning | Suggested |
+|---|---|---|
+| Net changed | The same part, but a net the entry uses was renamed (read from the pins it used) | Move to that part on the new net |
+| Likely match | The part is gone and one other part fits clearly - same footprint, value, pin nets, nearby | Move to that part |
+| Several matches | More than one part fits about equally well | Keep held - pick one yourself |
+| Not found | Nothing on the board fits | Keep held |
+
+For each row choose **Move to** a suggested part, **Choose another
+part…** (FYPA checks it has the pins and nets the entry needs), **Keep
+held**, or **Remove from the setup**. ⌖ shows the part on the Board.
+Nothing changes until **Apply**; **Decide later** keeps every entry held,
+and *Help > Review saved setup…* opens the dialog again. A held entry
+stays in the file and is tried again on every import, so it comes back
+by itself if the part does.
+
+Pressing **Solve** while entries are still held asks first: review
+them, or solve without them. A solve that ran without them says so in
+the design report - a load left out makes the results look better than
+they are.
 
 If the board's folder can't be written (a read-only checkout, a network
 share), the file is kept in FYPA's per-user cache folder for that project

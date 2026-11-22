@@ -183,9 +183,16 @@ def component_fingerprint(extracted, designator: str,
         str(designator).strip().upper(), [])
     if len(idx) != 1:
         return None
-    c = extracted.pcb_components[idx[0]]
     if pins is None:
         pins = _pins_by_component(extracted)
+    return _fingerprint_at(extracted, idx[0], pins)
+
+
+def _fingerprint_at(extracted, index: int,
+                    pins: dict[int, dict[str, str]]) -> dict[str, Any]:
+    """The fingerprint of component ``index`` (see
+    :func:`component_fingerprint`)."""
+    c = extracted.pcb_components[index]
     params = getattr(c, "parameters", None) or {}
     centre = c.center
     if hasattr(centre, "x"):                     # extract.Pt2D
@@ -200,7 +207,7 @@ def component_fingerprint(extracted, designator: str,
         "comment": str(params.get("Comment") or params.get("COMMENT") or ""),
         "xy": [round(x, 4), round(y, 4)],
         "layer": str(getattr(c, "layer_name", "") or ""),
-        "pins": dict(sorted(pins.get(idx[0], {}).items())),
+        "pins": dict(sorted(pins.get(index, {}).items())),
     }
 
 
@@ -306,14 +313,84 @@ def load_setup(prjpcb_path: Path, pcbdoc_path: Path | None) -> SavedSetup | None
 
 # --- restore -----------------------------------------------------------------
 
+# Review statuses, worst-understood last. Only the review dialog changes
+# anything for these: nothing below "renamed" is applied without the user.
+REVIEW_NET_CHANGED = "net-changed"   # same part, a net it uses was renamed
+REVIEW_LIKELY = "likely"             # one part fits well, but nothing proves it
+REVIEW_AMBIGUOUS = "ambiguous"       # several parts fit about equally
+REVIEW_MISSING = "missing"           # nothing plausible
+
+REVIEW_LABELS = {
+    REVIEW_NET_CHANGED: "Net changed",
+    REVIEW_LIKELY: "Likely match",
+    REVIEW_AMBIGUOUS: "Several matches",
+    REVIEW_MISSING: "Not found",
+}
+
+
+@dataclass
+class Candidate:
+    """A part a held entry could move to, with the entry rewritten for it."""
+
+    designator: str
+    directive: EditorDirective
+    why: str
+    changes: list[str] = field(default_factory=list)
+    score: float = 0.0
+    xy: tuple[float, float] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"designator": self.designator,
+                "directive": self.directive.to_dict(), "why": self.why,
+                "changes": list(self.changes), "score": self.score,
+                "xy": list(self.xy) if self.xy else None}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> Candidate:
+        xy = d.get("xy")
+        return cls(str(d.get("designator") or ""),
+                   EditorDirective.from_dict(d.get("directive") or {}),
+                   str(d.get("why") or ""), list(d.get("changes") or []),
+                   float(d.get("score") or 0.0),
+                   (float(xy[0]), float(xy[1])) if xy else None)
+
+
+@dataclass
+class ReviewItem:
+    """A held entry the user decides on: its status and the parts it could
+    go to (best first; empty when nothing fits)."""
+
+    entry: HeldEntry
+    status: str
+    candidates: list[Candidate] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"entry": self.entry.to_dict(), "status": self.status,
+                "candidates": [c.to_dict() for c in self.candidates]}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> ReviewItem:
+        return cls(HeldEntry.from_dict(d.get("entry") or {}),
+                   str(d.get("status") or REVIEW_MISSING),
+                   [Candidate.from_dict(c) for c in d.get("candidates") or []])
+
+
 @dataclass
 class RestoreReport:
-    """The outcome of matching a saved setup against a design."""
+    """The outcome of matching a saved setup against a design.
+
+    ``held`` is every entry not applied (kept in the sidecar); ``review``
+    has one item per held entry saying why and what it could go to.
+    ``changes`` notes, per applied entry id, what the restore changed about
+    it (``"U12 → U14"``) - applied without asking because the part is
+    provably the same."""
 
     applied: list[EditorDirective] = field(default_factory=list)
     copper_names: list[CopperName] = field(default_factory=list)
     held: list[HeldEntry] = field(default_factory=list)
     superseded: list[HeldEntry] = field(default_factory=list)
+    review: list[ReviewItem] = field(default_factory=list)
+    changes: dict[str, list[str]] = field(default_factory=dict)
     path: Path | None = None
 
     def to_metadata(self) -> dict[str, Any]:
@@ -324,6 +401,8 @@ class RestoreReport:
             "copper_names": [c.to_dict() for c in self.copper_names],
             "held": [h.to_dict() for h in self.held],
             "superseded": [h.to_dict() for h in self.superseded],
+            "review": [r.to_dict() for r in self.review],
+            "changes": {k: list(v) for k, v in self.changes.items()},
         }
 
     @classmethod
@@ -335,6 +414,9 @@ class RestoreReport:
             held=[HeldEntry.from_dict(x) for x in d.get("held") or []],
             superseded=[HeldEntry.from_dict(x)
                         for x in d.get("superseded") or []],
+            review=[ReviewItem.from_dict(x) for x in d.get("review") or []],
+            changes={str(k): list(v)
+                     for k, v in (d.get("changes") or {}).items()},
             path=Path(d["path"]) if d.get("path") else None,
         )
 
@@ -441,8 +523,375 @@ def match_exact(saved: SavedSetup, extracted, schematic_directives=()
     return report
 
 
+# --- matching parts that changed ---------------------------------------------
+
+# A part within this distance of where the entry's part was counts as "the
+# same spot" (mm) - re-annotation keeps parts put; a nudge is still close.
+_SAME_SPOT_MM = 0.5
+_NEAR_MM = 5.0
+# A candidate below this score isn't offered as a match at all, and the best
+# needs to beat the runner-up by this much to be "the" likely one.
+_MIN_SCORE = 5.0
+_CLEAR_LEAD = 1.0
+_MAX_CANDIDATES = 5
+_MOVED_MM = 0.5
+
+# Each net field and the pin restriction / designator list that goes with it.
+_NET_PIN = (("p_net", "p_pins", "p_des"), ("n_net", "n_pins", "n_des"),
+            ("in_p_net", "in_p_pins", None), ("in_n_net", "in_n_pins", None))
+
+
+def _xy(fp: dict[str, Any] | None) -> tuple[float, float] | None:
+    xy = (fp or {}).get("xy")
+    return (float(xy[0]), float(xy[1])) if xy else None
+
+
+def _dist(a: dict[str, Any] | None, b: dict[str, Any] | None) -> float | None:
+    pa, pb = _xy(a), _xy(b)
+    if pa is None or pb is None:
+        return None
+    return ((pa[0] - pb[0]) ** 2 + (pa[1] - pb[1]) ** 2) ** 0.5
+
+
+def _retarget(d: EditorDirective, anchor: dict[str, Any] | None,
+              now: dict[str, Any], nets: set[str], by_des: dict[str, list[int]]
+              ) -> tuple[EditorDirective, list[str], bool] | None:
+    """``(d rewritten for the part now, what changed, whether a net had
+    to be followed by pin)`` - or ``None`` when it can't go there (a pin it is restricted to
+    is missing, or a net it needs can't be found on the part's pins).
+
+    A net that no longer exists, or isn't on the new part, is followed by
+    pin: the pads that carried it on the old part, read on the new one. It
+    is only taken when those pads all agree on one net."""
+    new = EditorDirective.from_dict(d.to_dict())     # same id, same values
+    changes: list[str] = []
+    nets_changed = False
+    old_des, new_des = d.designator or "", now["designator"]
+    if old_des.strip().upper() != new_des.strip().upper():
+        new.designator = new_des
+        changes.append(f"{old_des} → {new_des}")
+        if (d.overrides_designator or "").strip().upper() == old_des.strip().upper():
+            new.overrides_designator = new_des
+        for f in _DES_FIELDS:
+            lst = getattr(d, f)
+            if lst:
+                setattr(new, f, [new_des if x.strip().upper()
+                                 == old_des.strip().upper() else x for x in lst])
+    for f in _DES_FIELDS:
+        if any(x.strip().upper() not in by_des for x in getattr(new, f) or []):
+            return None
+    pins_now: dict[str, str] = now.get("pins") or {}
+    pins_old: dict[str, str] = (anchor or {}).get("pins") or {}
+    for f in _PIN_FIELDS:
+        if any(p not in pins_now for p in getattr(new, f) or []):
+            return None
+    for net_f, pin_f, des_f in _NET_PIN:
+        net = getattr(new, net_f)
+        if not net:
+            continue
+        on_part = net in set(pins_now.values())
+        # A terminal drawn from other parts' pads (p_des / n_des) needn't be
+        # on this part; it only has to exist.
+        if des_f and getattr(new, des_f):
+            if net in nets:
+                continue
+            return None
+        if net in nets and on_part:
+            continue
+        pads = list(getattr(new, pin_f) or []) or [
+            p for p, n in pins_old.items() if n == net]
+        found = {pins_now[p] for p in pads if pins_now.get(p)}
+        if len(found) != 1:
+            return None
+        repl = found.pop()
+        if repl != net:
+            setattr(new, net_f, repl)
+            changes.append(f"net {net} → {repl}")
+            nets_changed = True
+    # Supply and return on one net is no load at all - the pins followed
+    # don't belong to a part like this one.
+    for a, b in (("p_net", "n_net"), ("in_p_net", "in_n_net")):
+        if getattr(new, a) and getattr(new, a) == getattr(new, b):
+            return None
+    return new, changes, nets_changed
+
+
+def _score(anchor: dict[str, Any], now: dict[str, Any]
+           ) -> tuple[float, str, bool]:
+    """How well part ``now`` fits the part ``anchor`` described: ``(score,
+    why, same_spot)``. ``same_spot`` is the strict test for applying a
+    rename without asking: same footprint, value and side, where it was."""
+    why: list[str] = []
+    score = 0.0
+    fp_eq = bool(anchor.get("footprint")) and anchor["footprint"] == now.get("footprint")
+    a_cm, n_cm = anchor.get("comment") or "", now.get("comment") or ""
+    cm_eq = bool(a_cm) and a_cm == n_cm
+    if fp_eq:
+        score += 3
+        why.append("same footprint")
+    if cm_eq:
+        score += 3
+        why.append(f"same value ({a_cm})")
+    same_side = bool(anchor.get("layer")) and anchor.get("layer") == now.get("layer")
+    if same_side:
+        score += 1
+    d = _dist(anchor, now)
+    if d is not None and d < _SAME_SPOT_MM:
+        score += 4
+        why.append("same position")
+    elif d is not None and d < _NEAR_MM:
+        score += 2
+        why.append(f"{d:.1f} mm away")
+    old_pins = anchor.get("pins") or {}
+    new_pins = now.get("pins") or {}
+    if old_pins:
+        same = sum(1 for p, n in old_pins.items() if n and new_pins.get(p) == n)
+        frac = same / len(old_pins)
+        score += 3 * frac
+        if frac >= 0.999:
+            why.append("same pin nets")
+        elif frac > 0:
+            why.append(f"{same} of {len(old_pins)} pin nets the same")
+    same_spot = (fp_eq and (cm_eq or not (a_cm or n_cm)) and same_side
+                 and d is not None and d < _SAME_SPOT_MM)
+    return score, ", ".join(why) or "nothing in common", same_spot
+
+
+def match_saved(saved: SavedSetup, extracted, schematic_directives=()
+                ) -> RestoreReport:
+    """:func:`match_exact`, then a second look at what it held back.
+
+    Entries placed on the same part are moved together, and no two parts'
+    entries can claim the same new part. For each held part, in order:
+
+    * **Same placed part, new designator** - its Altium unique id (schematic
+      link, else PCB id) is on another designator: applied, the change
+      noted. If a net had to be followed by pin as well, it goes to review.
+    * **Same spot** - one part with the same footprint, value and side sits
+      where it was, and its nets line up: applied as a rename, noted.
+    * Otherwise it goes to review: **net changed** (the same part, a net it
+      uses renamed - proposed, not applied), **likely** (one clear best
+      part), **several matches** (no clear best) or **not found**.
+
+    Nothing in review is applied; the dialog does that once the user
+    agrees. Free markers and entries saved without a fingerprint are only
+    ever matched exactly."""
+    report = match_exact(saved, extracted, schematic_directives)
+    comps = getattr(extracted, "pcb_components", ()) or ()
+    by_des = _components_by_designator(extracted)
+    pins = _pins_by_component(extracted)
+    nets = {n.name for n in getattr(extracted, "nets", ()) or ()}
+    nets.update(c.name for c in saved.copper_names)
+    from_schematic = schematic_designators(schematic_directives)
+    now_fps = [_fingerprint_at(extracted, i, pins) for i in range(len(comps))]
+
+    # Moved, but otherwise matched exactly: worth a note, nothing more.
+    for d in report.applied:
+        if d.kind == "component" and d.designator:
+            idx = by_des.get(d.designator.strip().upper(), [])
+            moved = (_dist(saved.anchors.get(d.id), now_fps[idx[0]])
+                     if len(idx) == 1 else None)
+            if moved is not None and moved >= _MOVED_MM:
+                report.changes.setdefault(d.id, []).append(
+                    f"moved {moved:.1f} mm")
+
+    # Parts already spoken for: by an applied entry of that designator.
+    claimed: dict[int, str] = {}
+    for d in report.applied:
+        if d.kind == "component" and d.designator:
+            for i in by_des.get(d.designator.strip().upper(), []):
+                claimed[i] = d.designator.strip().upper()
+
+    # Group the held entries by the part they were placed on.
+    groups: dict[str, list[HeldEntry]] = {}
+    loose: list[HeldEntry] = []
+    for h in report.held:
+        d = h.directive
+        if d.kind == "component" and d.designator and h.anchor:
+            groups.setdefault(d.designator.strip().upper(), []).append(h)
+        else:
+            loose.append(h)
+    report.held = []
+
+    def _fit_all(group: list[HeldEntry], i: int):
+        """Every entry of ``group`` retargeted to part ``i``, or ``None``."""
+        out = []
+        for h in group:
+            r = _retarget(h.directive, h.anchor, now_fps[i], nets, by_des)
+            if r is None:
+                return None
+            out.append(r)
+        return out
+
+    def _free(i: int, key: str) -> bool:
+        return claimed.get(i, key) == key
+
+    def _apply(group, fits, why: str) -> None:
+        for h, (new, changes, _nets) in zip(group, fits):
+            if (new.role in _SCHEMATIC_ROLES and not new.overrides_designator
+                    and (new.designator or "").strip().upper() in from_schematic):
+                report.superseded.append(HeldEntry(
+                    new, f"{new.designator} now has PDN parameters in the "
+                         "schematic, which take precedence", h.anchor))
+                continue
+            report.applied.append(new)
+            if changes:
+                report.changes[new.id] = [*changes, why]
+
+    def _hold(group, status: str, options) -> None:
+        """Hold every entry of ``group`` for review. ``options`` is a list
+        of ``(part index, fits, why, score)``; each entry gets its own
+        rewritten copy for each candidate part."""
+        for k, h in enumerate(group):
+            cands = [Candidate(now_fps[i]["designator"], fits[k][0], why,
+                               fits[k][1], score, _xy(now_fps[i]))
+                     for i, fits, why, score in options]
+            report.held.append(h)
+            report.review.append(ReviewItem(h, status, cands))
+
+    pending: dict[str, tuple] = {}
+
+    # 1. Unique ids: the same placed part, wherever its designator went.
+    for key, group in groups.items():
+        anchor = group[0].anchor or {}
+        hit = None
+        for id_key in ("source_unique_id", "unique_id"):
+            want = anchor.get(id_key) or ""
+            if not want:
+                continue
+            idx = [i for i, fp in enumerate(now_fps) if fp.get(id_key) == want]
+            if len(idx) == 1:
+                hit = idx[0]
+                break
+        if hit is None or not _free(hit, key):
+            continue
+        fits = _fit_all(group, hit)
+        if fits is None:
+            pending[key] = ("blocked", hit)
+            continue
+        if any(nets_changed for _n, _ch, nets_changed in fits):
+            # A net had to be followed by pin: the user confirms that.
+            pending[key] = ("net", hit, fits)
+            claimed[hit] = key
+            continue
+        claimed[hit] = key
+        why = ("same schematic part (Altium unique id)"
+               if hit != (by_des.get(key) or [None])[0] else "")
+        _apply(group, fits, why or "same part")
+        pending[key] = ("done",)
+
+    # 2. Same spot, same footprint and value: a re-annotation.
+    for key, group in groups.items():
+        if key in pending:
+            continue
+        anchor = group[0].anchor or {}
+        spots = []
+        for i, fp in enumerate(now_fps):
+            if not _free(i, key):
+                continue
+            score, why, same_spot = _score(anchor, fp)
+            if same_spot:
+                spots.append((i, why))
+        if len(spots) != 1:
+            continue
+        i, why = spots[0]
+        fits = _fit_all(group, i)
+        if fits is None or any(nets_changed for _n, _c, nets_changed in fits):
+            continue
+        claimed[i] = key
+        _apply(group, fits, why)
+        pending[key] = ("done",)
+
+    # 3. Everything else goes to review, with its best candidates.
+    for key, group in groups.items():
+        state = pending.get(key)
+        if state and state[0] == "done":
+            continue
+        if state and state[0] == "net":
+            _, i, fits = state
+            _hold(group, REVIEW_NET_CHANGED,
+                  [(i, fits, "same part; a net it uses was renamed", 99.0)])
+            continue
+        anchor = group[0].anchor or {}
+        schematic_roles = any(h.directive.role in _SCHEMATIC_ROLES
+                              and not h.directive.overrides_designator
+                              for h in group)
+        scored = []
+        for i, fp in enumerate(now_fps):
+            if not _free(i, key):
+                continue
+            # The schematic defines this part: the entry would only be
+            # dropped there.
+            if schematic_roles and fp["designator"].strip().upper() in from_schematic:
+                continue
+            score, why, _same = _score(anchor, fp)
+            if score < _MIN_SCORE:
+                continue
+            fits = _fit_all(group, i)
+            # A different part on different nets isn't a rename - offering
+            # every look-alike connector on the board helps no one. (The
+            # user can still pick one by hand.)
+            if fits is None or any(nets_changed for _n, _c, nets_changed in fits):
+                continue
+            scored.append((score, i, why, fits))
+        scored.sort(key=lambda t: (-t[0], now_fps[t[1]]["designator"]))
+        options = [(i, fits, why, score)
+                   for score, i, why, fits in scored[:_MAX_CANDIDATES]]
+        if not options:
+            status = REVIEW_MISSING
+        elif len(scored) > 1 and scored[0][0] - scored[1][0] < _CLEAR_LEAD:
+            status = REVIEW_AMBIGUOUS
+        else:
+            status = REVIEW_LIKELY
+        _hold(group, status, options)
+
+    # Two parts' entries whose best guess is the same part: neither is clear.
+    best: dict[str, list[ReviewItem]] = {}
+    for item in report.review:
+        if item.status == REVIEW_LIKELY and item.candidates:
+            best.setdefault(item.candidates[0].designator.upper(), []).append(item)
+    for items in best.values():
+        if len({it.entry.directive.designator.upper() for it in items
+                if it.entry.directive.designator}) > 1:
+            for it in items:
+                it.status = REVIEW_AMBIGUOUS
+
+    for h in loose:
+        report.held.append(h)
+        report.review.append(ReviewItem(h, REVIEW_MISSING, []))
+    return report
+
+
+def retarget_to(entry: HeldEntry, extracted, designator: str,
+                copper_names=()) -> Candidate | str:
+    """Move a held entry to a part the user picked. Returns the
+    :class:`Candidate`, or a sentence saying why it can't go there."""
+    pins = _pins_by_component(extracted)
+    by_des = _components_by_designator(extracted)
+    idx = by_des.get(str(designator).strip().upper(), [])
+    if len(idx) != 1:
+        return f"{designator} is not on this board."
+    d = entry.directive
+    if d.kind != "component":
+        return ("A marker placed on copper can't be moved to a part - place "
+                "it again on the board.")
+    now = _fingerprint_at(extracted, idx[0], pins)
+    nets = {n.name for n in getattr(extracted, "nets", ()) or ()}
+    nets.update(c.name for c in copper_names)
+    r = _retarget(d, entry.anchor, now, nets, by_des)
+    if r is None:
+        return (f"{now['designator']} doesn't have the pins or nets this "
+                f"{d.role.lower()} needs ({describe(d)}).")
+    new, changes, _nets = r
+    why = (_score(entry.anchor, now)[1] if entry.anchor else "picked by hand")
+    return Candidate(now["designator"], new, why, changes, 0.0, _xy(now))
+
+
 __all__ = [
-    "HeldEntry", "RestoreReport", "SIDECAR_SUFFIX", "SavedSetup",
-    "component_fingerprint", "describe", "fallback_path", "load_setup",
-    "match_exact", "save_setup", "schematic_designators", "sidecar_path",
+    "Candidate", "HeldEntry", "REVIEW_AMBIGUOUS", "REVIEW_LABELS",
+    "REVIEW_LIKELY", "REVIEW_MISSING", "REVIEW_NET_CHANGED", "RestoreReport",
+    "ReviewItem", "SIDECAR_SUFFIX", "SavedSetup", "component_fingerprint",
+    "describe", "fallback_path", "load_setup", "match_exact", "match_saved",
+    "retarget_to",
+    "save_setup", "schematic_designators", "sidecar_path",
 ]

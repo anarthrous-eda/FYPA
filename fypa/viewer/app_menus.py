@@ -142,6 +142,19 @@ def _build_help_menu(window) -> None:
 
         setup.triggered.connect(_open_setup)
         help_menu.addAction(setup)
+
+        review = QAction("&Review saved setup…", window)
+        review.setStatusTip(
+            "Decide what to do with saved setup entries this version of the "
+            "design no longer matched: move each to a part, keep it for the "
+            "next import, or remove it.")
+
+        def _open_review() -> None:
+            from fypa.viewer.setup_restore import open_setup_review
+            open_setup_review(window)
+
+        review.triggered.connect(_open_review)
+        help_menu.addAction(review)
         help_menu.addSeparator()
 
     open_log = QAction("Open &Log", window)
