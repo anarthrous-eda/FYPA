@@ -774,3 +774,34 @@ def test_report_warns_about_held_entries():
                           False)
     (f,) = [f for f in out if f.code == "setup-held"]
     assert "SINK U3" in f.detail
+
+
+# --- clean import -------------------------------------------------------------
+
+def test_clean_import_sets_the_saved_setup_aside_as_a_backup(paths):
+    prj, pcb, _ = paths
+    where = SS.save_setup(prj, pcb, [_sink()], [], extracted=_design(_comp("U1")))
+    old_bak = where.with_name(where.name + ".bak")
+    old_bak.write_text("{}")            # an older backup is replaced
+    assert SS.set_aside_setup(prj, pcb) == [old_bak]
+    assert not where.exists() and SS.load_setup(prj, pcb) is None
+    # The backup is still a setup file Import Setup can read.
+    back = SS.load_setup_file(old_bak)
+    assert [d.designator for d in back.directives] == ["U1"]
+    # Nothing saved: nothing to set aside.
+    assert SS.set_aside_setup(prj, pcb) == []
+
+
+def test_clean_import_tells_the_viewer_where_the_setup_went() -> None:
+    from fypa.viewer.setup_restore import adopt_restored_setup
+
+    shown = []
+    window = SimpleNamespace(
+        _ensure_project=lambda: None,
+        statusBar=lambda: SimpleNamespace(showMessage=lambda t, _ms: shown.append(t)))
+    metadata = {"setup_set_aside": [r"C:\b\Board.fypa-setup.json.bak"]}
+    # Nothing restored, so the caller still offers the setup chooser.
+    assert adopt_restored_setup(window, metadata, None) is False
+    assert "setup_set_aside" not in metadata
+    assert len(shown) == 1 and "Board.fypa-setup.json.bak" in shown[0]
+    assert "Import Setup from Another Design" in shown[0]

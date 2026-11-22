@@ -461,6 +461,12 @@ entry against the design as it is now. Only an entry's *anchor* - which
 part, pins and nets it sits on - is ever re-matched; its values
 (current, voltage, limits) are never changed.
 
+*Import Altium Design (Clean)* (and **Clean** in the Recent list) starts
+without it: the file is renamed to `<Board>.fypa-setup.json.bak`,
+replacing an older backup, and the design opens as if FYPA had never
+seen it. To bring the old setup back, pick the `.bak` in *File > Import
+Setup from Another Design…*.
+
 **Applied without asking** - FYPA can show it is the same part:
 
 - **Unchanged** - the same designator, pins and nets. A part that only
@@ -533,7 +539,7 @@ keep their setup.
 |------------------------------------------------------------------------------|------------------------------------------------------------------------------|------------------------------------------------------------------------------|
 | Resolve button never appears                                                  | No editor edits are pending, or none have been Applied yet.                  | Edits must be **Applied** (not just typed into the form) to mark the project dirty. |
 | `Editor rail '+5V': single-net SINK(s) with no SOURCE - no current can flow` | A single-net sink was placed on a rail with no single-net source.            | Add a single-net SOURCE on the same rail, or switch the sink to two-net mode. |
-| `A sink marker on rail '+5V' has an ideal 0 V return, but everything supplying this rail returns through copper …` | A single-net sink on a rail whose supplies all return through copper (e.g. a saved setup from before this was checked). The sink is left out of the solve. | Switch the sink to two-net mode with the rail's return net (e.g. GND) as its N net, or give the rail a single-net SOURCE. |
+| `A sink marker on rail '+5V' has an ideal return, but the rail is supplied through copper …` | A single-net sink on a rail whose supplies all return through copper (e.g. a saved setup from before this was checked). The sink is left out of the solve. | Switch the sink to two-net mode with the rail's return net (e.g. GND) as its N net, or give the rail a single-net SOURCE. |
 | `P net '+5V' not found on the board; skipped`                                | The chosen net name does not exist in the current PCB extraction.            | Re-check the net name against the dropdown options - only nets present on the PCB are listed. |
 | Form opens read-only with an Unlock button even though I want a fresh directive | The component already has a schematic `PDN_*` directive.                   | Click **Unlock** - see 2.5.                                                  |
 | `SERIES` option missing from the role dropdown                                | A free marker is selected (SERIES is component-bound only).                  | Click the component instead, or pick a different role.                       |

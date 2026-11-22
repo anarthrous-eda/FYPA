@@ -39,6 +39,8 @@ from fypa.project_file import CopperName, EditorDirective
 log = logging.getLogger(__name__)
 
 SIDECAR_SUFFIX = ".fypa-setup.json"
+# A setup set aside by a clean import (see set_aside_setup).
+BACKUP_SUFFIX = ".bak"
 SCHEMA_VERSION = 1
 
 # Fallback file name inside the per-user project cache folder.
@@ -345,6 +347,31 @@ def load_setup(prjpcb_path: Path, pcbdoc_path: Path | None) -> SavedSetup | None
         except Exception as e:  # noqa: BLE001
             log.warning("Ignoring the setup sidecar %s: %s", path, e)
     return None
+
+
+def set_aside_setup(prjpcb_path: Path, pcbdoc_path: Path | None) -> list[Path]:
+    """Rename this design's saved setup (the file beside the board and the
+    per-user copy) to ``<name>.bak``, replacing an older backup, so the next
+    import starts without it - Import Altium Design (Clean). Returns the
+    backups made; a file that can't be renamed is logged and left alone."""
+    candidates = [sidecar_path(prjpcb_path, pcbdoc_path)]
+    try:
+        candidates.append(fallback_path(prjpcb_path, pcbdoc_path))
+    except Exception:  # noqa: BLE001
+        pass
+    backups: list[Path] = []
+    for path in candidates:
+        if not path.is_file():
+            continue
+        bak = path.with_name(path.name + BACKUP_SUFFIX)
+        try:
+            path.replace(bak)
+        except OSError as e:
+            log.warning("Couldn't set the saved setup %s aside: %s", path, e)
+            continue
+        log.info("Saved setup set aside for a clean import: %s", bak)
+        backups.append(bak)
+    return backups
 
 
 # --- restore -----------------------------------------------------------------

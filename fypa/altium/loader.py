@@ -4539,12 +4539,10 @@ def _analyze_open_loop_rails(
             label = directive_label(d)
             who = ("A sink marker" if label.startswith("EDIT_")
                    else f"Sink {label}")
-            msg = (f"{who} on rail {rail!r} has an ideal 0 V return, "
-                   f"but everything supplying this rail returns through copper "
-                   f"(e.g. GND), so its current has no way back and it will NOT "
-                   f"be solved. Give it a ground net, or give the rail a source "
-                   f"with an ideal return. The sink marker is kept on the "
-                   f"design.")
+            msg = (f"{who} on rail {rail!r} has an ideal return, but the "
+                   f"rail is supplied through copper (e.g. GND), so its current "
+                   f"has no way back. Give it a ground net, or give the rail a "
+                   f"source with an ideal return.")
             key = ("noret", label)
         else:
             rail = rail_name(it.inp)

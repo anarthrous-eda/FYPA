@@ -149,7 +149,7 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
             f"<a href='open-project' style='{link_style}'>Import Altium Design&hellip;</a>"
             " (Ctrl+O) to pick a <code>.PrjPcb</code>,<br>"
             f"<a href='open-project-clean' style='{link_style}'>Import Altium Design (Clean)&hellip;</a>"
-            " (Ctrl+Shift+L) to force a fresh extract + solve,<br>"
+            " (Ctrl+Shift+L) to start fresh - no caches, no saved setup,<br>"
             f"<a href='import-gerber' style='{link_style}'>Import Gerber Files&hellip;</a>"
             " (Ctrl+G) to import Gerber (RS-274X) + Excellon drill files,<br>"
             "or "

@@ -21,7 +21,8 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
-_FILTER = ("FYPA setup or project (*.fypa-setup.json *.fypa);;"
+_FILTER = ("FYPA setup or project (*.fypa-setup.json *.fypa-setup.json.bak "
+           "*.fypa);;"
            "Altium design with a saved setup (*.PcbDoc *.PrjPcb);;"
            "All files (*)")
 

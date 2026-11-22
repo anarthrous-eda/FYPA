@@ -696,7 +696,7 @@ newest first, with a coloured tag for the type:
 
 | Tag | What it is | Icons |
 |---|---|---|
-| **Altium** | A `.PrjPcb` you imported | **Load** - import reusing the cached design info / solve; **Clean** - ignore the caches and re-extract |
+| **Altium** | A `.PrjPcb` you imported | **Load** - import reusing the cached design info / solve; **Clean** - ignore the caches and the saved setup (kept as a `.bak`, see 2.9) and re-extract |
 | **Gerber** | A Gerber file set you imported | **Load** - re-import with the same layer mapping and stackup (no dialogs) |
 | **Project** | A `.fypa` project file you opened | **Load** - open it |
 | **Solution** | A solution `.pkl` you loaded with **Load Solution…** | **Load** - load it |

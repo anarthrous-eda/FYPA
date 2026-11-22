@@ -255,8 +255,9 @@ def _maybe_show_annotation_errors(parent_win, metadata) -> None:
 
 
 def _maybe_warn_open_loop_rails(parent_win, metadata) -> None:
-    """Pop a notice listing rails that were NOT solved because they hold only
-    sources or only sinks (no current can flow). Fired on load and after
+    """Pop a notice listing rails / markers that were NOT solved because no
+    current can flow: only sources or only sinks on a rail, or a sink with an
+    ideal return on a rail supplied through copper. Fired on load and after
     Resolve. The directives' markers are kept on the design - the rail is
     simply left out of the FEM. No-op when there are no such rails.
 
@@ -271,12 +272,11 @@ def _maybe_warn_open_loop_rails(parent_win, metadata) -> None:
         return
     show_list_notice(
         parent_win, "Some rails won't be solved",
-        "These rails contain only one type of element (only sources or only "
-        "sinks), so no current can flow and they were left out of the solve:",
+        "No current can flow through these, so they were left out of the "
+        "solve:",
         list(rails),
-        "The markers are kept on the design. Add the missing element "
-        "(a sink for a source-only rail, or a source for a sink-only rail) "
-        "and press Resolve to solve the rail.",
+        "The markers are kept on the design. Make the change each line "
+        "describes and press Resolve to include them.",
         warning=True)
 
 

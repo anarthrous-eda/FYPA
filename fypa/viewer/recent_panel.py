@@ -323,7 +323,7 @@ class RecentPanel(QWidget):
                     load_icon, "Import (reuse cached design info / solve)",
                     row, clean=False))
                 table.setCellWidget(row, _COL_CLEAN, self._icon_button(
-                    clean_icon, "Clean import (ignore caches, re-extract)",
+                    clean_icon, "Clean import (ignore caches, re-extract; the saved setup is kept as a .bak)",
                     row, clean=True))
             else:
                 tips = {

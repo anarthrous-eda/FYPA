@@ -102,10 +102,12 @@ def _altium_import_clean_status_tip(auto_solve: bool) -> str:
     if auto_solve:
         return (
             "Pick a .PrjPcb; ignore any cached design info or solution and "
+            "the setup saved beside the board (kept as a .bak), and "
             "re-extract + re-solve from scratch."
         )
     return (
         "Pick a .PrjPcb; ignore any cached design info or solution and "
+        "the setup saved beside the board (kept as a .bak), and "
         "re-extract from scratch (press ↻ Solve when ready)."
     )
 
@@ -360,8 +362,10 @@ def _start_launcher_altium_solve(
         # A fresh import follows Altium's current variant unless the command
         # line picked one; never the previous project's choice.
         variant=window.__dict__.pop("_cli_variant", None),
-        # Bring back the setup saved beside this design (setup_sidecar).
-        restore_setup=True,
+        # Bring back the setup saved beside this design (setup_sidecar);
+        # a clean import sets it aside as .bak instead.
+        restore_setup=not clean,
+        set_aside_setup=clean,
         parent=window,
     )
     _stash_pending_altium_recent(
@@ -500,6 +504,11 @@ def _open_altium_project_at(
         prjpcb_path.name, clean=clean,
         auto_solve=True if force_solve else load_auto_solve_on_import(),
     )
+    if clean:
+        # A setup edit still waiting to be saved lands in the file now, so
+        # it is in the backup - not written back after the clean import.
+        from fypa.viewer.setup_restore import flush_setup_save
+        flush_setup_save(window)
     window._start_solve_worker(
         prjpcb_path, window._solve_settings,
         window._via_current_warn_a, window._display_percentile_high,
@@ -509,7 +518,8 @@ def _open_altium_project_at(
         load_only=imp["load_only"],
         adaptive_regulator_gain=load_adaptive_regulator_gain(),
         is_import=True,
-        restore_setup=True,
+        restore_setup=not clean,
+        set_aside_setup=clean,
         dialog_title=imp["dialog_title"],
         dialog_text=imp["dialog_text"],
         pending_altium_recent_pcbdoc=selected_pcbdoc,

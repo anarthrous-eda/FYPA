@@ -59,6 +59,14 @@ def adopt_restored_setup(window, metadata, solution) -> bool:
     (a re-annotated part, provably the same) are listed in a notice."""
     from fypa.setup_sidecar import RestoreReport, describe
 
+    set_aside = (metadata.pop("setup_set_aside", None)
+                 if isinstance(metadata, dict) else None)
+    if set_aside and hasattr(window, "statusBar"):
+        # A clean import: say where the setup went and how to get it back.
+        names = " and ".join(Path(p).name for p in set_aside)
+        window.statusBar().showMessage(
+            f"Clean import - the saved setup was set aside as {names}. "
+            "File > Import Setup from Another Design… brings it back.", 30000)
     raw = (metadata or {}).pop("setup_restore", None) if isinstance(
         metadata, dict) else None
     if not raw or not hasattr(window, "_ensure_project"):

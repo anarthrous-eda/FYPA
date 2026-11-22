@@ -362,8 +362,15 @@ class _SolveWorker(QThread):
                   write_solve_cache: bool = True,
                   variant: str | None = None,
                   restore_setup: bool = False,
+                  set_aside_setup: bool = False,
                   parent=None) -> None:
         super().__init__(parent)
+        # Import Altium Design (Clean): the saved setup is renamed to .bak
+        # at the start of run() and not restored - the design opens as if
+        # FYPA had never seen it. The backups go to the viewer in the
+        # metadata ("setup_set_aside") so it can say where the setup went.
+        self._set_aside_setup = bool(set_aside_setup)
+        self._set_aside: list[str] = []
         # Altium import with no project file: bring back the setup saved
         # beside the design (fypa.setup_sidecar), matched against the design
         # as loaded. Only when the caller passes no editor directives of its
@@ -707,6 +714,9 @@ class _SolveWorker(QThread):
         entries as its project's and tells the user about the rest."""
         if self._restore_report is not None and isinstance(metadata, dict):
             metadata["setup_restore"] = self._restore_report.to_metadata()
+        set_aside = getattr(self, "_set_aside", None)
+        if set_aside and isinstance(metadata, dict):
+            metadata["setup_set_aside"] = list(set_aside)
 
     def _expected_stage_count(self) -> int:
         """Best-effort count of stage_changed emissions ``run()`` will fire,
@@ -796,7 +806,16 @@ class _SolveWorker(QThread):
             # A saved setup means this solve won't match the on-disk
             # project, so read it now: it rules out the solve-cache fast
             # path below, like editor directives do.
-            if self._restore_setup:
+            if self._set_aside_setup:
+                try:
+                    from fypa.setup_sidecar import set_aside_setup
+                    self._set_aside = [str(p) for p in set_aside_setup(
+                        self._prjpcb_path, pcbdoc_resolved)]
+                except Exception as e:  # noqa: BLE001 - never block a load
+                    logging.getLogger(__name__).warning(
+                        "Couldn't set the saved setup aside (%s: %s).",
+                        type(e).__name__, e)
+            if self._restore_setup and not self._set_aside_setup:
                 try:
                     from fypa.setup_sidecar import load_setup
                     saved = load_setup(self._prjpcb_path, pcbdoc_resolved)

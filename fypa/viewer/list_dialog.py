@@ -4,6 +4,7 @@ skipped directives or unannotated bridges)."""
 
 from __future__ import annotations
 
+from PySide6.QtCore import QRect, QSize, Qt
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QStyle, QVBoxLayout,
@@ -57,6 +58,19 @@ def show_list_notice(parent, title: str, intro: str, items: list[str], outro: st
     # The list is as tall as its rows (a single item does not leave an empty box),
     # and the whole dialog stops at MAX_SCREEN_FRACTION of the screen: past that
     # the list scrolls.
+    # Wrapped rows are measured at the list's real text width: the view's own
+    # sizeHintForRow is taken before it is laid out at that width and comes
+    # up a line short, clipping the last line of a long item.
+    fm = lst.fontMetrics()
+    scroll_w = lst.style().pixelMetric(QStyle.PM_ScrollBarExtent)
+    m = outer.contentsMargins()
+    text_w = max(100, WIDTH_PX - m.left() - m.right() - 2 * lst.frameWidth()
+                 - scroll_w - 8)
+    for i in range(lst.count()):
+        it = lst.item(i)
+        h = fm.boundingRect(QRect(0, 0, text_w, 100000),
+                            int(Qt.TextWordWrap), it.text()).height()
+        it.setSizeHint(QSize(text_w, h + 6))
     rows = sum(lst.sizeHintForRow(i) + lst.spacing() for i in range(lst.count()))
     rows += 2 * lst.frameWidth() + 4
     others = dlg.sizeHint().height() - lst.sizeHint().height()

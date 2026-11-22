@@ -1189,6 +1189,7 @@ class _FileMenuMixin:
         is_resolve: bool | None = None,
         is_import: bool = False,
         restore_setup: bool = False,
+        set_aside_setup: bool = False,
         load_only: bool = False,
         adaptive_regulator_gain: bool = False,
         dialog_title: str = "Running solver",
@@ -1283,6 +1284,7 @@ class _FileMenuMixin:
             variant=getattr(getattr(self, "_project", None), "variant", None),
             # An Altium import brings back the setup saved beside the design.
             restore_setup=restore_setup,
+            set_aside_setup=set_aside_setup,
             parent=self,
         )
         if is_import:
