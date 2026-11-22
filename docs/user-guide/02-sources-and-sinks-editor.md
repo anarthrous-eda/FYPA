@@ -128,6 +128,14 @@ Two radio buttons control how the directive closes its current loop:
   copper on both the supply net and the return net. Use this for a
   normal supply-rail analysis.
 
+A single-net sink's current flows into the ideal 0 V node, and only a
+single-net source on the same rail (or one joined to it through series
+parts) can take it back. On a rail supplied through return copper - an
+Altium connector or regulator returning to GND - a single-net sink has
+no way back: **Apply** refuses it and asks for its N net. A free marker
+dropped on such a rail starts in two-net mode with the rail's return net
+(usually GND) already picked.
+
 `SERIES` always bridges two real nets, so its model is locked to
 two-net.
 
@@ -199,7 +207,11 @@ press **Esc**, to cancel.
 **Step 2 - Click any copper area in the viewport.**
 
 A marker is placed at the click point. The right-hand form populates
-the same way as for a component selection.
+the same way as for a component selection. On a rail whose sources,
+sinks and regulators all return through copper (an Altium design
+supplied from a connector or regulator to GND), the marker starts in
+two-net mode with that return net as its N net, so its current closes
+through the same copper; otherwise it starts single-net.
 
 **Step 3 - Fill in the form and Apply.**
 
@@ -459,6 +471,10 @@ part, pins and nets it sits on - is ever re-matched; its values
   footprint, value and side sits where it was, on the same nets. The
   entry follows it, and a notice lists each `U12 → U14`.
 
+A restored sink with an ideal return on a rail supplied through return
+copper (see Step 4 in 2.3) is restored but left out of the solve, and the
+notice lists it with the ground net to give it.
+
 **Dropped** - the part now has `PDN_*` parameters in the schematic. The
 schematic takes precedence for anything it defines, so the FYPA entry is
 removed. (An entry made with *Unlock to edit*, which overrides the
@@ -517,6 +533,7 @@ keep their setup.
 |------------------------------------------------------------------------------|------------------------------------------------------------------------------|------------------------------------------------------------------------------|
 | Resolve button never appears                                                  | No editor edits are pending, or none have been Applied yet.                  | Edits must be **Applied** (not just typed into the form) to mark the project dirty. |
 | `Editor rail '+5V': single-net SINK(s) with no SOURCE - no current can flow` | A single-net sink was placed on a rail with no single-net source.            | Add a single-net SOURCE on the same rail, or switch the sink to two-net mode. |
+| `A sink marker on rail '+5V' has an ideal 0 V return, but everything supplying this rail returns through copper …` | A single-net sink on a rail whose supplies all return through copper (e.g. a saved setup from before this was checked). The sink is left out of the solve. | Switch the sink to two-net mode with the rail's return net (e.g. GND) as its N net, or give the rail a single-net SOURCE. |
 | `P net '+5V' not found on the board; skipped`                                | The chosen net name does not exist in the current PCB extraction.            | Re-check the net name against the dropdown options - only nets present on the PCB are listed. |
 | Form opens read-only with an Unlock button even though I want a fresh directive | The component already has a schematic `PDN_*` directive.                   | Click **Unlock** - see 2.5.                                                  |
 | `SERIES` option missing from the role dropdown                                | A free marker is selected (SERIES is component-bound only).                  | Click the component instead, or pick a different role.                       |

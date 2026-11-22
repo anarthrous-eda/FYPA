@@ -4490,9 +4490,11 @@ def _analyze_open_loop_rails(
     items: list[OL.Item] = []
     for d in directives:
         if isinstance(d, SourceSpec):
-            items.append(OL.Item("source", out=tnets(d.p), ret=tnets(d.n)))
+            items.append(OL.Item("source", out=tnets(d.p), ret=tnets(d.n),
+                                 ideal=d.n is None))
         elif isinstance(d, SinkSpec):
-            items.append(OL.Item("sink", inp=tnets(d.p), ret=tnets(d.n)))
+            items.append(OL.Item("sink", inp=tnets(d.p), ret=tnets(d.n),
+                                 ideal=d.n is None))
         elif isinstance(d, RegulatorSpec):
             items.append(OL.Item("regulator", out=tnets(d.out_p),
                                  inp=tnets(d.in_p),
@@ -4532,6 +4534,18 @@ def _analyze_open_loop_rails(
                    f"this rail to solve it. The source marker is kept on the "
                    f"design.")
             key = ("src", rail)
+        elif why == OL.NO_RETURN:
+            rail = rail_name(it.inp)
+            label = directive_label(d)
+            who = ("A sink marker" if label.startswith("EDIT_")
+                   else f"Sink {label}")
+            msg = (f"{who} on rail {rail!r} has an ideal 0 V return, "
+                   f"but everything supplying this rail returns through copper "
+                   f"(e.g. GND), so its current has no way back and it will NOT "
+                   f"be solved. Give it a ground net, or give the rail a source "
+                   f"with an ideal return. The sink marker is kept on the "
+                   f"design.")
+            key = ("noret", label)
         else:
             rail = rail_name(it.inp)
             msg = (f"Rail {rail!r}: has a SINK but no SOURCE - no current can "

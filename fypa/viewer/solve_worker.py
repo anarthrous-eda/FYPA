@@ -686,6 +686,14 @@ class _SolveWorker(QThread):
                 "Couldn't match the saved setup to this design (%s: %s); "
                 "opening without it.", type(e).__name__, e)
             return
+        # Restored sinks the solve will skip for want of a return path: the
+        # viewer lists them so the user can give them a ground net.
+        try:
+            from fypa.editor_directives import stranded_ideal_sinks
+            report.stranded = stranded_ideal_sinks(loaded, report.applied)
+        except Exception:  # noqa: BLE001 - a notice, never a failed load
+            logging.getLogger(__name__).debug(
+                "ideal-return check of the saved setup failed", exc_info=True)
         self._restore_report = report
         self._editor_directives = list(report.applied)
         self._copper_names = list(report.copper_names)

@@ -419,7 +419,10 @@ class RestoreReport:
     has one item per held entry saying why and what it could go to.
     ``changes`` notes, per applied entry id, what the restore changed about
     it (``"U12 → U14"``) - applied without asking because the part is
-    provably the same."""
+    provably the same. ``stranded`` maps applied SINKs with an ideal return
+    on a rail supplied only through copper - the solve skips those (see
+    :func:`fypa.editor_directives.stranded_ideal_sinks`) - to the ground
+    nets to suggest for them."""
 
     applied: list[EditorDirective] = field(default_factory=list)
     copper_names: list[CopperName] = field(default_factory=list)
@@ -427,6 +430,7 @@ class RestoreReport:
     superseded: list[HeldEntry] = field(default_factory=list)
     review: list[ReviewItem] = field(default_factory=list)
     changes: dict[str, list[str]] = field(default_factory=dict)
+    stranded: dict[str, list[str]] = field(default_factory=dict)
     path: Path | None = None
 
     def to_metadata(self) -> dict[str, Any]:
@@ -439,6 +443,7 @@ class RestoreReport:
             "superseded": [h.to_dict() for h in self.superseded],
             "review": [r.to_dict() for r in self.review],
             "changes": {k: list(v) for k, v in self.changes.items()},
+            "stranded": {k: list(v) for k, v in self.stranded.items()},
         }
 
     @classmethod
@@ -453,6 +458,8 @@ class RestoreReport:
             review=[ReviewItem.from_dict(x) for x in d.get("review") or []],
             changes={str(k): list(v)
                      for k, v in (d.get("changes") or {}).items()},
+            stranded={str(k): list(v)
+                      for k, v in (d.get("stranded") or {}).items()},
             path=Path(d["path"]) if d.get("path") else None,
         )
 

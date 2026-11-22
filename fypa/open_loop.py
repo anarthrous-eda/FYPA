@@ -8,7 +8,13 @@ load:
   any regulators in between, each of which needs its own input supplied;
 * a SOURCE needs something drawing from its rail (a sink, a regulator's
   input, or a series element to ground);
-* a REGULATOR needs a supplied input *and* something drawing from its output.
+* a REGULATOR needs a supplied input *and* something drawing from its output;
+* a SINK with an ideal return (single-net, no return copper) needs a SOURCE
+  with an ideal return on its rail: that is the only way back to the ideal
+  0 V node its current flows into. Fed only by supplies that return through
+  copper (a schematic connector or regulator returning to GND), its current
+  has nowhere to go and its return node is a variable no equation touches -
+  an empty row that makes the FEM matrix singular.
 
 Dropping one directive can strand others (a regulator with an unfed input
 takes the loads it feeds with it), so the rules repeat until nothing changes.
@@ -40,18 +46,21 @@ class Item:
     nets), ``regulator`` (``out`` / ``inp`` = its OUT_P / IN_P nets) or
     ``series`` (``out`` / ``inp`` = its two sides); ``ignore`` for anything
     else. ``ret`` is the return terminal's nets (empty for an ideal return
-    and for series elements)."""
+    and for series elements). ``ideal`` marks a source or sink with an ideal
+    0 V return (single-net) rather than return copper."""
 
     kind: str
     out: set[Hashable] = field(default_factory=set)
     inp: set[Hashable] = field(default_factory=set)
     ret: set[Hashable] = field(default_factory=set)
+    ideal: bool = False
 
 
 # Why a directive was dropped.
 NO_LOAD = "no_load"              # source / regulator: nothing draws from its output
 NO_SUPPLY = "no_supply"          # sink: nothing supplies its rail
 INPUT_UNFED = "input_unfed"      # regulator: nothing supplies its input
+NO_RETURN = "no_return"          # ideal-return sink: its rail's supplies all return through copper
 
 
 class Rails:
@@ -111,9 +120,15 @@ def analyse(items: list[Item]) -> tuple[dict[int, str], Rails]:
         # input is itself supplied (a loop of regulators feeding each other
         # with no source is not supplied).
         powered: set[Hashable] = set()
+        # Rails an ideal-return source sits on: the only rails whose ideal
+        # 0 V node an ideal-return sink's current can get back from.
+        # Regulators always return through copper, so they never add one.
+        ideal_powered: set[Hashable] = set()
         for i in active:
             if items[i].kind == "source":
                 powered |= rails.of(items[i].out)
+                if items[i].ideal:
+                    ideal_powered |= rails.of(items[i].out)
         grew = True
         while grew:
             grew = False
@@ -136,6 +151,8 @@ def analyse(items: list[Item]) -> tuple[dict[int, str], Rails]:
             if it.kind == "sink":
                 if not rails.of(it.inp) & powered:
                     drop[i] = NO_SUPPLY
+                elif it.ideal and not rails.of(it.inp) & ideal_powered:
+                    drop[i] = NO_RETURN
             elif it.kind == "source":
                 if not rails.of(it.out) & loaded:
                     drop[i] = NO_LOAD

@@ -118,7 +118,7 @@ def test_bad_regulators_are_skipped_with_a_reason(kw, msg) -> None:
 
 def test_regulator_closes_the_loop_only_when_its_input_is_fed() -> None:
     sink = EditorDirective(kind="component", role="SINK", designator="U3",
-                           p_net="+1V8", current=0.5)
+                           single_net=False, p_net="+1V8", n_net="GND", current=0.5)
     reg = _reg("U2", "+1V8", "+3V3", 1.8, regulator_type="LDO")
     feed = EditorDirective(kind="component", role="SOURCE", designator="J1",
                            single_net=False, p_net="+3V3", n_net="GND", voltage=3.3)
@@ -200,3 +200,17 @@ def test_schematic_source_counts_as_supply_for_editor_smps() -> None:
         _reg("U1", "+3V3", "+12V", 3.3, regulator_type="SMPS", efficiency=1.0)])
     (reg,) = _specs(loaded, RegulatorSpec)
     assert reg.gain == pytest.approx(3.3 / 24.0)
+
+
+def test_an_ideal_return_sink_on_a_regulator_output_is_not_a_closed_loop() -> None:
+    """A regulator returns through copper: an ideal-return sink on its
+    output has no way back to its ideal 0 V node (a singular FEM matrix),
+    so it doesn't count - and is reported with the ground to give it."""
+    from fypa.editor_directives import stranded_ideal_sinks
+    sink = EditorDirective(kind="component", role="SINK", designator="U3",
+                           single_net=True, p_net="+1V8", current=0.5)
+    reg = _reg("U2", "+1V8", "+3V3", 1.8, regulator_type="LDO")
+    feed = EditorDirective(kind="component", role="SOURCE", designator="J1",
+                           single_net=False, p_net="+3V3", n_net="GND", voltage=3.3)
+    assert has_closed_pdn_loop(_loaded(), [sink, reg, feed]) is False
+    assert stranded_ideal_sinks(_loaded(), [sink, reg, feed]) == {sink.id: ["GND"]}

@@ -189,6 +189,21 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
                   extracted.nets[_old].name.upper())
 
     _rail_return_group: dict[str, int] = {}
+    # A rail the schematic already gives an ideal return (PDN_NET) keeps that
+    # group: an editor sink with an ideal return on it must close its loop
+    # through the schematic source's 0 V node, not a fresh node of its own
+    # that nothing else touches (an empty row - singular FEM matrix).
+    for _d in loaded.annotations.directives:
+        if (not isinstance(_d, (SourceSpec, SinkSpec)) or _d.n is not None
+                or getattr(_d, "return_group", None) is None):
+            continue
+        for pin in getattr(_d.p, "pins", ()):
+            ni = pin.net_index
+            if 0 <= ni < len(extracted.nets):
+                nm = getattr(extracted.nets[ni], "name", None)
+                if nm:
+                    _rail_return_group.setdefault(_uf_find(nm.upper()),
+                                                  _d.return_group)
 
     def _return_group_for(net_name: str) -> int:
         """Return-group id for the rail ``net_name`` sits on, minting a fresh
@@ -774,6 +789,112 @@ def _append_editor_regulators(loaded, pending, rail_root, warnings) -> int:
 _UNNAMED_NET = "(none)"
 
 
+def _pdn_loop_items(loaded, editor_directives, p_net_resolver=None):
+    """The :mod:`fypa.open_loop` items for the schematic + editor directives,
+    as the re-solve would see them, and the editor directive id behind each
+    item (``None`` for a schematic one). Shared by
+    :func:`has_closed_pdn_loop` and :func:`stranded_ideal_sinks`."""
+    from fypa.altium.annotations import (
+        RegulatorSpec,
+        ResistorSpec,
+        SinkSpec,
+        SourceSpec,
+    )
+    from fypa.altium.extract import NO_NET
+
+    extracted = loaded.extracted
+    nets = list(getattr(extracted, "nets", ()) or ())
+
+    def _net_key(name) -> str | None:
+        if not name or name == _UNNAMED_NET:
+            return None
+        return str(name).upper()
+
+    from fypa import open_loop as OL
+
+    def _keys(*names) -> set[str]:
+        return {k for k in (_net_key(n) for n in names) if k}
+
+    def _term_keys(term) -> set[str]:
+        out: set[str] = set()
+        pins = (getattr(term, "pins", None) or ()) if term is not None else ()
+        for pin in pins:
+            idx = pin.net_index
+            if idx != NO_NET and 0 <= idx < len(nets):
+                k = _net_key(getattr(nets[idx], "name", None))
+                if k:
+                    out.add(k)
+        return out
+
+    items: list[OL.Item] = []
+    # Editor directive id per item (None for schematic directives).
+    ids: list[str | None] = []
+
+    override_desigs = {
+        ed.overrides_designator for ed in editor_directives
+        if getattr(ed, "overrides_designator", None)
+    }
+    for d in getattr(loaded.annotations, "directives", ()):
+        if getattr(d, "designator", None) in override_desigs:
+            continue
+        n_before = len(items)
+        if isinstance(d, SourceSpec):
+            items.append(OL.Item("source", out=_term_keys(d.p), ret=_term_keys(d.n),
+                                 ideal=d.n is None))
+        elif isinstance(d, SinkSpec):
+            items.append(OL.Item("sink", inp=_term_keys(d.p), ret=_term_keys(d.n),
+                                 ideal=d.n is None))
+        elif isinstance(d, RegulatorSpec):
+            items.append(OL.Item("regulator", out=_term_keys(d.out_p),
+                                 inp=_term_keys(d.in_p),
+                                 ret=_term_keys(d.out_n) | _term_keys(d.in_n)))
+        elif isinstance(d, ResistorSpec):
+            items.append(OL.Item("series", out=_term_keys(d.p), inp=_term_keys(d.n)))
+        ids.extend([None] * (len(items) - n_before))
+
+    for ed in editor_directives:
+        if ed.role == "REGULATOR":
+            if (ed.voltage is None or ed.kind != "component"
+                    or not ed.p_net or not ed.in_p_net):
+                continue
+            items.append(OL.Item("regulator", out=_keys(ed.p_net),
+                                 inp=_keys(ed.in_p_net),
+                                 ret=_keys(ed.n_net or ed.in_n_net,
+                                           ed.in_n_net or ed.n_net)))
+            ids.append(ed.id)
+            continue
+        if ed.role == "SOURCE" and ed.voltage is None:
+            continue
+        if ed.role == "SINK" and ed.current is None:
+            continue
+        if ed.role == "SERIES" and (ed.resistance is None or ed.resistance <= 0):
+            continue
+        if ed.role not in ("SOURCE", "SINK", "SERIES"):
+            continue  # unsupported role - apply_editor_directives skips it
+        p_name = ed.p_net
+        if p_name == _UNNAMED_NET and p_net_resolver is not None:
+            try:
+                p_name = p_net_resolver(ed) or p_name
+            except Exception:  # lookup is best-effort
+                log.debug("p_net_resolver failed for %s", ed.id, exc_info=True)
+        two_net = ed.role == "SERIES" or not ed.single_net
+        names = [p_name] + ([ed.n_net] if two_net else [])
+        # A terminal on unnamed copper can't be solved - treat the whole
+        # directive as unresolved, as apply_editor_directives drops it.
+        if len(_keys(*names)) != len(names):
+            continue
+        p, n = _keys(p_name), (_keys(ed.n_net) if two_net else set())
+        if ed.role == "SOURCE":
+            items.append(OL.Item("source", out=p, ret=n, ideal=not two_net))
+        elif ed.role == "SINK":
+            items.append(OL.Item("sink", inp=p, ret=n, ideal=not two_net))
+        else:
+            items.append(OL.Item("series", out=p, inp=n))
+        ids.append(ed.id)
+
+    return items, ids, OL
+
+
 def has_closed_pdn_loop(loaded, editor_directives, *,
                         p_net_resolver=None) -> bool:
     """True when the schematic + editor directives together form at least
@@ -803,100 +924,70 @@ def has_closed_pdn_loop(loaded, editor_directives, *,
     after placing the marker still counts, exactly as the resolve path
     promotes it.
     """
-    from fypa.altium.annotations import (
-        RegulatorSpec,
-        ResistorSpec,
-        SinkSpec,
-        SourceSpec,
-    )
-    from fypa.altium.extract import NO_NET
-
-    extracted = loaded.extracted
-    if not extracted.enabled_copper_layer_ids():
+    if not loaded.extracted.enabled_copper_layer_ids():
         return False
-    nets = list(getattr(extracted, "nets", ()) or ())
-
-    def _net_key(name) -> str | None:
-        if not name or name == _UNNAMED_NET:
-            return None
-        return str(name).upper()
-
-    from fypa import open_loop as OL
-
-    def _keys(*names) -> set[str]:
-        return {k for k in (_net_key(n) for n in names) if k}
-
-    def _term_keys(term) -> set[str]:
-        out: set[str] = set()
-        pins = (getattr(term, "pins", None) or ()) if term is not None else ()
-        for pin in pins:
-            idx = pin.net_index
-            if idx != NO_NET and 0 <= idx < len(nets):
-                k = _net_key(getattr(nets[idx], "name", None))
-                if k:
-                    out.add(k)
-        return out
-
-    items: list[OL.Item] = []
-
-    override_desigs = {
-        ed.overrides_designator for ed in editor_directives
-        if getattr(ed, "overrides_designator", None)
-    }
-    for d in getattr(loaded.annotations, "directives", ()):
-        if getattr(d, "designator", None) in override_desigs:
-            continue
-        if isinstance(d, SourceSpec):
-            items.append(OL.Item("source", out=_term_keys(d.p), ret=_term_keys(d.n)))
-        elif isinstance(d, SinkSpec):
-            items.append(OL.Item("sink", inp=_term_keys(d.p), ret=_term_keys(d.n)))
-        elif isinstance(d, RegulatorSpec):
-            items.append(OL.Item("regulator", out=_term_keys(d.out_p),
-                                 inp=_term_keys(d.in_p),
-                                 ret=_term_keys(d.out_n) | _term_keys(d.in_n)))
-        elif isinstance(d, ResistorSpec):
-            items.append(OL.Item("series", out=_term_keys(d.p), inp=_term_keys(d.n)))
-
-    for ed in editor_directives:
-        if ed.role == "REGULATOR":
-            if (ed.voltage is None or ed.kind != "component"
-                    or not ed.p_net or not ed.in_p_net):
-                continue
-            items.append(OL.Item("regulator", out=_keys(ed.p_net),
-                                 inp=_keys(ed.in_p_net),
-                                 ret=_keys(ed.n_net or ed.in_n_net,
-                                           ed.in_n_net or ed.n_net)))
-            continue
-        if ed.role == "SOURCE" and ed.voltage is None:
-            continue
-        if ed.role == "SINK" and ed.current is None:
-            continue
-        if ed.role == "SERIES" and (ed.resistance is None or ed.resistance <= 0):
-            continue
-        if ed.role not in ("SOURCE", "SINK", "SERIES"):
-            continue  # unsupported role - apply_editor_directives skips it
-        p_name = ed.p_net
-        if p_name == _UNNAMED_NET and p_net_resolver is not None:
-            try:
-                p_name = p_net_resolver(ed) or p_name
-            except Exception:  # lookup is best-effort
-                log.debug("p_net_resolver failed for %s", ed.id, exc_info=True)
-        two_net = ed.role == "SERIES" or not ed.single_net
-        names = [p_name] + ([ed.n_net] if two_net else [])
-        # A terminal on unnamed copper can't be solved - treat the whole
-        # directive as unresolved, as apply_editor_directives drops it.
-        if len(_keys(*names)) != len(names):
-            continue
-        p, n = _keys(p_name), (_keys(ed.n_net) if two_net else set())
-        if ed.role == "SOURCE":
-            items.append(OL.Item("source", out=p, ret=n))
-        elif ed.role == "SINK":
-            items.append(OL.Item("sink", inp=p, ret=n))
-        else:
-            items.append(OL.Item("series", out=p, inp=n))
-
+    items, _ids, OL = _pdn_loop_items(loaded, editor_directives, p_net_resolver)
     dropped, _rails = OL.analyse(items)
     return any(it.kind == "sink" and i not in dropped for i, it in enumerate(items))
+
+
+def stranded_ideal_sinks(loaded, editor_directives, *,
+                         p_net_resolver=None) -> dict[str, list[str]]:
+    """Editor SINKs with an ideal return the solve would skip because
+    everything supplying their rail returns through copper (see
+    :data:`fypa.open_loop.NO_RETURN`): ``{directive id: [return nets]}``,
+    the return nets of the rail's supplies (e.g. ``["GND"]``) being the
+    ground to suggest for it. Empty when every ideal-return sink has an
+    ideal-return source on its rail."""
+    items, ids, OL = _pdn_loop_items(loaded, editor_directives, p_net_resolver)
+    dropped, rails = OL.analyse(items)
+    out: dict[str, list[str]] = {}
+    for i, why in dropped.items():
+        if why != OL.NO_RETURN or ids[i] is None:
+            continue
+        rail = rails.of(items[i].inp)
+        gnds: set[str] = set()
+        for it in items:
+            if it.kind in ("source", "regulator") and not it.ideal                     and rails.of(it.out) & rail:
+                gnds |= {str(n) for n in it.ret}
+        out[ids[i]] = sorted(gnds)
+    return out
+
+
+def rail_copper_return(loaded, editor_directives, net: str) -> str | None:
+    """The return net a new SOURCE / SINK marker on ``net`` should use, or
+    ``None`` for an ideal return.
+
+    ``None`` unless the rail already has sources, sinks or regulators and
+    none of them uses an ideal return - then the return net most of them
+    use (``"GND"``): a marker with an ideal return there would be cut off
+    from the rest of the rail's current loop."""
+    from collections import Counter
+
+    if not net or net == _UNNAMED_NET:
+        return None
+    items, _ids, OL = _pdn_loop_items(loaded, editor_directives)
+    rails = OL.Rails(items)
+    rail = rails.of({net.upper()})
+    if not rail:
+        return None
+    seen = Counter()
+    for it in items:
+        if it.kind not in ("source", "sink", "regulator"):
+            continue
+        if not rails.of(it.out | it.inp) & rail:
+            continue
+        if it.ideal:
+            return None
+        seen.update(it.ret)
+    if not seen:
+        return None
+    # Keys are upper-cased; hand back the net's own spelling.
+    key = seen.most_common(1)[0][0]
+    for n in getattr(loaded.extracted, "nets", ()) or ():
+        if (getattr(n, "name", "") or "").upper() == key:
+            return n.name
+    return str(key)
 
 
 # (substring of an apply_copper_names warning, short reason for the summary).

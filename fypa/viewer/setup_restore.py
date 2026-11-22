@@ -96,10 +96,16 @@ def adopt_restored_setup(window, metadata, solution) -> bool:
             if i in by_id and not all(c.startswith("moved ") for c in ch)]
     superseded = [f"{describe(h.directive)} - {h.reason}"
                   for h in report.superseded]
+    stranded = [
+        f"{describe(by_id[i])} - has an ideal return, but {by_id[i].p_net} "
+        "is supplied through copper, so it is not solved: give it "
+        + (" or ".join(g) if g else "a ground net")
+        + " as its ground (Board, or Manual setup)"
+        for i, g in report.stranded.items() if i in by_id]
     if report.review:
-        open_setup_review(window, applied_notes=auto + superseded)
+        open_setup_review(window, applied_notes=auto + superseded + stranded)
         return True
-    if not auto and not superseded:
+    if not auto and not superseded and not stranded:
         window.statusBar().showMessage(
             f"Restored {_counted(report.applied)} from {name}.", 15000)
         return True
@@ -107,14 +113,22 @@ def adopt_restored_setup(window, metadata, solution) -> bool:
     from fypa.viewer.list_dialog import show_list_notice
 
     intro = (f"Restored {_counted(report.applied)} from <b>{name}</b>. The "
-             "design has changed since it was saved:")
+             "design has changed since it was saved:" if auto or superseded
+             else f"Restored {_counted(report.applied)} from <b>{name}</b>. "
+             "Some entries need a change before they are solved:")
     outro = ("Parts that were re-annotated were followed to their new "
              "designator - their Altium unique ids, or their footprint, value "
              "and position, show they are the same part. Entries the "
              "schematic now defines are dropped: its PDN parameters take "
              "precedence.")
-    show_list_notice(window, "Saved setup restored with changes", intro,
-                     auto + superseded, outro)
+    if not auto and not superseded:
+        outro = ("A sink with an ideal return closes its loop through a "
+                 "source with an ideal return on the same rail; on a rail "
+                 "supplied through return copper it needs that ground net.")
+    title = ("Saved setup restored with changes" if auto or superseded
+             else "Saved setup restored - check these entries")
+    show_list_notice(window, title, intro,
+                     auto + superseded + stranded, outro)
     return True
 
 

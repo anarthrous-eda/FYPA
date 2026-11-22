@@ -269,7 +269,9 @@ as two lists, **Sources & regulators** and **Sinks**, each with **Add**,
   `U7  MAX38913AATD+  (3)`), then optionally its **pins** (blank = all
   of that part's pins on the net). **Ground** is the return net, or
   *(ideal return)* for a source or sink that returns through an ideal 0 V
-  node.
+  node. A sink with an ideal return needs a source with an ideal return
+  on its rail to take its current back; on a rail supplied through GND
+  copper it must have that ground net instead.
 - Empty fields fill in from the design, and nothing you typed is
   overwritten: the voltage from the net name (`+1V8` → 1.8 V), the
   ground from the part's ground pins, and a regulator's input when the
@@ -281,7 +283,8 @@ as two lists, **Sources & regulators** and **Sinks**, each with **Add**,
   **Override** turns one into an editable FYPA copy that replaces it on
   the next resolve; removing the copy brings the schematic one back.
 - Problems are listed under the tabs. Errors, such as a missing value,
-  pins that aren't on the chosen net, or input = output, must be fixed
+  pins that aren't on the chosen net, input = output, or an ideal-return
+  sink on a rail supplied through copper, must be fixed
   before **Apply**. Warnings, such as a sink on a rail nothing supplies
   yet, don't block it.
 

@@ -774,14 +774,38 @@ def validate(entries: list[Entry], view: DesignView,
     # not view.driven, which still counts editor supplies being removed here.
     supplied = {find(e.directive.p_net) for e in entries
                 if e.is_supply and e.directive.p_net}
+    # Rails a source with an ideal return sits on, and the return nets of
+    # the rest (copper-return sources and regulators) for the message.
+    ideal_supplied = {find(e.directive.p_net) for e in entries
+                      if e.directive.role == "SOURCE" and e.directive.single_net
+                      and e.directive.p_net}
+    copper_returns: dict[str, set[str]] = {}
+    for e in entries:
+        s = e.directive
+        if e.is_supply and s.p_net and not (s.role == "SOURCE" and s.single_net):
+            if s.n_net:
+                copper_returns.setdefault(find(s.p_net), set()).add(s.n_net)
     for e in entries:
         d = e.directive
         if e.locked or d.role != "SINK" or not d.p_net:
             continue
-        if find(d.p_net) not in supplied:
+        who = (f"Free marker {free_marker_where(d)}" if e.is_free
+               else d.designator or "sink")
+        rail = find(d.p_net)
+        if rail not in supplied:
             issues.append(Issue("warning", d.id,
-                                f"{d.designator or 'sink'}: nothing supplies "
-                                f"{d.p_net} yet"))
+                                f"{who}: nothing supplies {d.p_net} yet"))
+        elif d.single_net and rail not in ideal_supplied:
+            # Its current flows into an ideal 0 V node that only an
+            # ideal-return source can take it back from (see
+            # fypa.open_loop): the solve would skip it.
+            gnds = sorted(copper_returns.get(rail, ()))
+            hint = (f"pick {' or '.join(gnds)} as its ground" if gnds
+                    else "pick its ground net")
+            issues.append(Issue(
+                "error", d.id,
+                f"{who}: has an ideal return, but {d.p_net} is supplied "
+                f"through copper, so its current has no way back - {hint}"))
     return issues
 
 

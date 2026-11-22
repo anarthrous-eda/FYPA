@@ -1542,6 +1542,17 @@ class _EditorFormMixin:
             return
 
         existing = self._directive_for_selection()
+        if role == "SINK" and single:
+            stranded = self._ideal_return_stranded(existing, sel, p_net, value)
+            if stranded is not None:
+                hint = (f"pick {' or '.join(stranded)} as its N net"
+                        if stranded else "pick its N net")
+                self._ef_status.setText(
+                    f"<span style='color:{_T()['err']};'>{p_net} is supplied "
+                    "through copper, so a sink with an ideal return there has "
+                    f"no way back for its current - switch to two nets and "
+                    f"{hint}.</span>")
+                return
         d = existing if existing is not None else EditorDirective()
         d.role = role
         d.single_net = single
@@ -1611,6 +1622,41 @@ class _EditorFormMixin:
             f"<span style='color:{_T()['ok']};'>Applied - press Resolve "
             "to re-solve.</span>"
         )
+
+    def _ideal_return_stranded(self, existing, sel: dict, p_net: str,
+                               current: float) -> list[str] | None:
+        """``None`` when an ideal-return SINK on ``p_net`` can close its
+        loop; otherwise the return nets of the rail's supplies (``["GND"]``,
+        maybe empty) - the rail is supplied only through copper returns, so
+        the solve would skip the sink (:data:`fypa.open_loop.NO_RETURN`).
+        ``None`` too when there is no design to check against."""
+        import dataclasses
+
+        from fypa.editor_directives import stranded_ideal_sinks
+        from fypa.project_file import EditorDirective
+
+        loaded = getattr(self, "_loaded_project", None)
+        project = getattr(self, "_project", None)
+        if loaded is None:
+            return None
+        cand = (dataclasses.replace(existing) if existing is not None
+                else EditorDirective())
+        cand.role, cand.single_net, cand.n_net = "SINK", True, None
+        cand.p_net, cand.current = p_net, current
+        if sel.get("kind") == "component":
+            cand.kind = "component"
+            cand.designator = sel.get("designator")
+            sch = self._unlockable_schematic_directive(sel)
+            cand.overrides_designator = sch.get("designator") if sch else None
+        others = [d for d in (project.editor_directives if project else ())
+                  if d.id != cand.id]
+        try:
+            stranded = stranded_ideal_sinks(loaded, others + [cand])
+        except Exception:  # noqa: BLE001 - never block an edit on the check
+            logging.getLogger(__name__).debug(
+                "ideal-return check failed", exc_info=True)
+            return None
+        return stranded.get(cand.id)
 
     def _regulator_form_fields(self, vout: float, out_net: str,
                                gnd_net: str | None) -> tuple[dict, str | None]:
@@ -1725,6 +1771,22 @@ class _EditorFormMixin:
             current=(1.0 if role == "SINK" else None),
             resistance=(0.01 if role == "SERIES" else None),
         )
+        # On a rail whose supplies and loads all return through copper (an
+        # Altium design's connector / regulators to GND), an ideal-return
+        # marker would be cut off from that current loop - a sink's current
+        # would have no way back. Return through the same net instead.
+        gnd = None
+        if role in ("SOURCE", "SINK") and getattr(self, "_loaded_project", None):
+            try:
+                from fypa.editor_directives import rail_copper_return
+                gnd = rail_copper_return(
+                    self._loaded_project,
+                    list(self._ensure_project().editor_directives), net)
+            except Exception:  # noqa: BLE001 - placement never fails on it
+                logging.getLogger(__name__).debug(
+                    "rail return lookup failed", exc_info=True)
+        if gnd:
+            d.single_net, d.n_net = False, gnd
         self._ensure_project().upsert_directive(d)
         self._editor_pending_marker = None
         self._editor_selection = {"kind": "free", "id": d.id}
