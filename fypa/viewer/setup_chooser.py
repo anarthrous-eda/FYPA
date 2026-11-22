@@ -35,6 +35,8 @@ ROUTE_ALTIUM = "altium"
 ROUTE_BOARD = "board"
 ROUTE_AUTO = "auto"
 ROUTE_MANUAL = "manual"
+# Not a card: the link under them (File > Import Setup from Another Design…).
+ROUTE_IMPORT = "import"
 
 # Full walkthrough of the schematic parameters, linked from the how-to page.
 _ALTIUM_GUIDE_URL = (
@@ -139,6 +141,21 @@ class SetupChooserDialog(QDialog):
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         lay.addLayout(grid)
+
+        if self._has_schematic:
+            # A setup already made on another version of this board (or a
+            # similar one) is often the quickest start of all.
+            accent = t["accent"]
+            imp = QLabel(
+                "Set up another version of this board already? "
+                f"<a href='{ROUTE_IMPORT}' style='color:{accent};'>Import its "
+                "setup…</a> - each entry is matched to a part here.")
+            imp.setTextFormat(Qt.RichText)
+            imp.setWordWrap(True)
+            imp.setStyleSheet(f"color: {t['fg_muted']};")
+            imp.linkActivated.connect(self._pick)
+            self.import_link = imp
+            lay.addWidget(imp)
 
         foot = QHBoxLayout()
         if self._on_load:
@@ -325,6 +342,9 @@ def run_setup_route(window, route: str | None) -> None:
     elif route == ROUTE_MANUAL:
         _show_tab("_topology_tab_index")
         window._topology_run_manual_setup()
+    elif route == ROUTE_IMPORT:
+        from fypa.viewer.setup_import import import_setup_from_design
+        import_setup_from_design(window)
 
 
 def open_setup_chooser(window, *, on_load: bool = False) -> None:
@@ -345,6 +365,6 @@ def open_setup_chooser(window, *, on_load: bool = False) -> None:
 
 
 __all__ = [
-    "ROUTE_ALTIUM", "ROUTE_AUTO", "ROUTE_BOARD", "ROUTE_MANUAL",
+    "ROUTE_ALTIUM", "ROUTE_AUTO", "ROUTE_BOARD", "ROUTE_IMPORT", "ROUTE_MANUAL",
     "SetupChooserDialog", "open_setup_chooser", "run_setup_route",
 ]

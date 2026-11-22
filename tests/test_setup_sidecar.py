@@ -529,6 +529,143 @@ def test_solve_goes_ahead_when_nothing_is_held_or_it_was_acknowledged(
     assert confirm_solve_with_held(win) is True
 
 
+# --- importing a setup from another design --------------------------------------
+
+def test_import_source_can_be_a_setup_file_a_project_or_a_pcbdoc(paths, tmp_path):
+    from fypa.project_file import ProjectFile
+
+    prj, pcb, _ = paths
+    _saved(paths, [_sink("U1")], _design(_comp("U1")))
+    assert SS.load_setup_file(SS.sidecar_path(prj, pcb)).directives
+    assert SS.load_setup_file(pcb).directives[0].designator == "U1"
+    proj = tmp_path / "other.fypa"
+    ProjectFile(editor_directives=[_sink("U4")]).save(proj)
+    assert SS.load_setup_file(proj).directives[0].designator == "U4"
+    lonely = tmp_path / "Lonely.PcbDoc"
+    assert "no saved setup" in SS.load_setup_file(lonely)
+    junk = tmp_path / "junk.json"
+    junk.write_text("[1, 2]", encoding="utf-8")
+    assert "not a FYPA" in SS.load_setup_file(junk)
+
+
+def test_import_gives_fresh_ids_and_follows_parts(paths):
+    source = _saved(paths, [_sink("U1")], _design(_comp("U1")))
+    here = _design(_comp("U30"))                  # same unique ids, renamed
+    rep, skipped = SS.match_import(source, here)
+    (d,) = rep.applied
+    assert d.designator == "U30" and d.id != source.directives[0].id
+    assert not skipped
+
+
+def test_import_skips_copper_markers_and_parts_already_set_up(paths):
+    free = EditorDirective(kind="free", role="SOURCE", anchor_xy=(1.0, 2.0),
+                           layer_id=1, p_net="+3V3", voltage=3.3)
+    source = _saved(paths, [_sink("U1"), _sink("U2"), free],
+                    _design(_comp("U1"), _comp("U2", uid="P2", suid="S2")))
+    here = _design(_comp("U1"), _comp("U2", uid="P2", suid="S2"))
+    rep, skipped = SS.match_import(source, here, existing=[_sink("U2")])
+    assert [d.designator for d in rep.applied] == ["U1"]
+    reasons = sorted(h.reason for h in skipped)
+    assert any("already set up" in r for r in reasons)
+    assert any("placed on copper" in r for r in reasons)
+
+
+def test_import_without_fingerprints_matches_by_designator(paths, tmp_path):
+    from fypa.project_file import ProjectFile
+
+    proj = tmp_path / "other.fypa"
+    ProjectFile(editor_directives=[_sink("U1"), _sink("U9")]).save(proj)
+    source = SS.load_setup_file(proj)
+    rep, _skipped = SS.match_import(source, _design(_comp("U1")))
+    assert [d.designator for d in rep.applied] == ["U1"]
+    (item,) = rep.review
+    assert item.entry.directive.designator == "U9"
+    assert item.status == SS.REVIEW_MISSING
+
+
+def _import_window(paths, extracted):
+    win = _review_window(paths, SS.RestoreReport(), extracted)
+    win._topology_loaded_for_setup = lambda: SimpleNamespace(
+        extracted=extracted, annotations=SimpleNamespace(directives=[]))
+    return win
+
+
+def test_importing_adds_matches_and_what_the_review_accepts(
+        qapp, paths, monkeypatch, tmp_path):
+    from fypa.viewer import list_dialog, setup_restore
+    from fypa.viewer.setup_import import import_setup_from_design
+    from fypa.viewer.setup_review import ACCEPT, KEEP
+
+    other = tmp_path / "other"
+    other.mkdir()
+    o_prj, o_pcb = other / "Old.PrjPcb", other / "Old.PcbDoc"
+    SS.save_setup(o_prj, o_pcb, [_sink("U1"), _sink("U2"), _sink("U3")], [],
+                  extracted=_design(_comp("U1"),
+                                    _plain("U2", xy=(40.0, 40.0)),
+                                    _plain("U3", xy=(70.0, 70.0))))
+    here = _design(_comp("U1"), _plain("U5", xy=(41.0, 41.0)))
+    win = _import_window(paths, here)
+
+    def _decide(_w, items, **kw):
+        assert kw["importing"] == "Old.fypa-setup.json"
+        by = {it.entry.directive.designator: it for it in items}
+        return [(by["U2"], ACCEPT, by["U2"].candidates[0]),
+                (by["U3"], KEEP, None)]
+
+    monkeypatch.setattr(setup_restore, "open_review_dialog", _decide)
+    shown = []
+    monkeypatch.setattr(list_dialog, "show_list_notice",
+                        lambda *a, **k: shown.append(a))
+    import_setup_from_design(win, SS.sidecar_path(o_prj, o_pcb))
+    assert sorted(d.designator for d in win._project.editor_directives) == [
+        "U1", "U5"]
+    assert win.dirty is True
+    assert "Imported 2" in win.messages[-1] and "1 left out" in win.messages[-1]
+    assert not getattr(win, "_setup_held", [])
+
+
+def test_gerber_designs_refuse_an_import(qapp, paths, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from fypa.viewer.setup_import import import_setup_from_design
+
+    said = []
+    monkeypatch.setattr(QMessageBox, "information",
+                        staticmethod(lambda *a, **k: said.append(a[2])))
+    win = _import_window(paths, _design(_comp("U1")))
+    win.metadata["source_kind"] = "gerber"
+    import_setup_from_design(win, "whatever.fypa")
+    assert said and "Gerber" in said[0]
+
+
+def test_chooser_links_to_the_import(qapp, monkeypatch):
+    from fypa.viewer import setup_chooser as SC
+    from fypa.viewer import setup_import
+
+    assert SC.SetupChooserDialog(None, has_schematic=True).import_link
+    assert not hasattr(SC.SetupChooserDialog(None, has_schematic=False),
+                       "import_link")
+    called = []
+    monkeypatch.setattr(setup_import, "import_setup_from_design",
+                        lambda w: called.append(w))
+    SC.run_setup_route("win", SC.ROUTE_IMPORT)
+    assert called == ["win"]
+
+
+def test_review_dialog_in_import_mode_offers_dont_import(qapp, paths):
+    from fypa.viewer.setup_review import KEEP, SetupReviewDialog
+
+    source = _saved(paths, [_sink("U9")], _design(_plain("U9")))
+    rep, _ = SS.match_import(source, _design(
+        _plain("R1", fp="0402", comment="10k", xy=(80.0, 80.0)),
+        pins={"R1": {"1": "+5V", "2": "GND"}}))
+    dlg = SetupReviewDialog(None, rep.review, importing="Old.fypa-setup.json")
+    combo = dlg._combos[0]
+    labels = [combo.itemText(i) for i in range(combo.count())]
+    assert "Don't import" in labels and "Remove from the setup" not in labels
+    assert dlg.decisions()[0][1] == KEEP
+
+
 def test_report_warns_about_held_entries():
     from fypa.report.checks import design_findings
 

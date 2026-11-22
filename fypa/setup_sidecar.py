@@ -862,6 +862,102 @@ def match_saved(saved: SavedSetup, extracted, schematic_directives=()
     return report
 
 
+# --- importing a setup from another design ----------------------------------
+
+def load_setup_file(path: Path) -> SavedSetup | str:
+    """A setup to import, read from ``path``: a ``.fypa-setup.json``, a
+    ``.fypa`` project, or a ``.PcbDoc`` / ``.PrjPcb`` with a setup file
+    beside it. Returns a sentence when there is nothing to import.
+
+    A ``.fypa`` carries no part fingerprints, so its entries can only be
+    matched by designator (and offered for review otherwise)."""
+    path = Path(path)
+    name = path.name.lower()
+    if name.endswith((".pcbdoc", ".prjpcb")):
+        beside = sidecar_path(path, path if name.endswith(".pcbdoc") else None)
+        if not beside.is_file():
+            return (f"{path.name} has no saved setup beside it "
+                    f"({beside.name}). Set it up in FYPA first, or pick its "
+                    ".fypa project.")
+        path = beside
+        name = path.name.lower()
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        return f"{path.name} couldn't be read: {e}"
+    if not isinstance(doc, dict):
+        return f"{path.name} is not a FYPA setup or project file."
+    try:
+        if doc.get("kind") == "fypa-setup":
+            setup = _from_doc(doc, path)
+        elif "editor_directives" in doc:
+            from fypa.project_file import ProjectFile
+            proj = ProjectFile.load(path)
+            setup = SavedSetup(directives=list(proj.editor_directives),
+                               design=Path(proj.pcbdoc_path or path).name,
+                               path=path)
+        else:
+            return f"{path.name} is not a FYPA setup or project file."
+    except ValueError as e:
+        return str(e)
+    if not (setup.directives or setup.held):
+        return f"{path.name} has no sources, sinks or regulators to import."
+    return setup
+
+
+def _same_setup(a: EditorDirective, b: EditorDirective) -> bool:
+    return (a.kind == b.kind == "component"
+            and (a.designator or "").strip().upper()
+            == (b.designator or "").strip().upper()
+            and a.role == b.role and (a.p_net or "") == (b.p_net or ""))
+
+
+def match_import(source: SavedSetup, extracted, schematic_directives=(),
+                 existing: list[EditorDirective] | None = None
+                 ) -> tuple[RestoreReport, list[HeldEntry]]:
+    """Match a setup from another design against this one.
+
+    Returns ``(report, skipped)``: the usual :func:`match_saved` report
+    (applied / review / superseded), plus the entries skipped outright -
+    markers placed on copper (their position means nothing on another
+    board) and parts this design already has set up the same way.
+    Imported entries get fresh ids so they never collide with this
+    design's own."""
+    import uuid
+
+    skipped: list[HeldEntry] = []
+    directives: list[EditorDirective] = []
+    anchors: dict[str, dict[str, Any]] = {}
+    pool = [(d, source.anchors.get(d.id)) for d in source.directives]
+    pool += [(h.directive, h.anchor) for h in source.held]
+    for d, anchor in pool:
+        if d.kind != "component" or not d.designator:
+            skipped.append(HeldEntry(
+                d, "placed on copper, not on a part - place it again on "
+                   "this board"))
+            continue
+        new = EditorDirective.from_dict({**d.to_dict(),
+                                         "id": uuid.uuid4().hex[:12]})
+        directives.append(new)
+        if anchor:
+            anchors[new.id] = anchor
+    report = match_saved(
+        SavedSetup(directives=directives, anchors=anchors, path=source.path),
+        extracted, schematic_directives)
+    report.copper_names = []
+    existing = list(existing or [])
+    kept = []
+    for d in report.applied:
+        if any(_same_setup(d, e) for e in existing):
+            skipped.append(HeldEntry(
+                d, f"{d.designator} is already set up as a "
+                   f"{d.role.lower()} on {d.p_net or 'this net'}"))
+        else:
+            kept.append(d)
+    report.applied = kept
+    return report, skipped
+
+
 def retarget_to(entry: HeldEntry, extracted, designator: str,
                 copper_names=()) -> Candidate | str:
     """Move a held entry to a part the user picked. Returns the
@@ -892,6 +988,6 @@ __all__ = [
     "REVIEW_LIKELY", "REVIEW_MISSING", "REVIEW_NET_CHANGED", "RestoreReport",
     "ReviewItem", "SIDECAR_SUFFIX", "SavedSetup", "component_fingerprint",
     "describe", "fallback_path", "load_setup", "match_exact", "match_saved",
-    "retarget_to",
+    "load_setup_file", "match_import", "retarget_to",
     "save_setup", "schematic_designators", "sidecar_path",
 ]

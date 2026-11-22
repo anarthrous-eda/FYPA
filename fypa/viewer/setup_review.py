@@ -70,9 +70,15 @@ class SetupReviewDialog(QDialog):
                  designators: list[str] | None = None,
                  retarget: Callable[[ReviewItem, str], Candidate | str] | None = None,
                  show_on_board: Callable[[tuple | None, str | None], None] | None = None,
+                 importing: str | None = None,
                  ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Review the saved setup")
+        # ``importing``: the source's name when the entries come from
+        # another design (Import setup from another design…). Then "Keep
+        # held" means "don't import" - nothing from that board lingers here.
+        self._importing = importing
+        self.setWindowTitle("Review the imported setup" if importing
+                            else "Review the saved setup")
         self._items = list(items)
         self._designators = sorted(designators or [])
         self._retarget = retarget
@@ -85,21 +91,30 @@ class SetupReviewDialog(QDialog):
 
         outer = QVBoxLayout(self)
         n = len(self._items)
-        intro = QLabel(
-            "<h3 style='margin:0 0 4px 0;'>Review the saved setup</h3>"
-            "The design has changed since this setup was saved. "
-            f"{n} {'entry' if n == 1 else 'entries'} couldn't be matched to "
-            "the same part with certainty, so "
-            f"{'it was' if n == 1 else 'they were'} not applied. Choose what "
-            "to do with each - nothing changes until you press "
-            "<b>Apply</b>.")
+        if importing:
+            intro = QLabel(
+                "<h3 style='margin:0 0 4px 0;'>Review the imported setup</h3>"
+                f"{n} {'entry' if n == 1 else 'entries'} from "
+                f"<b>{importing}</b> couldn't be matched to a part on this "
+                "board with certainty. Choose a part for each, or leave it "
+                "out - nothing is imported until you press <b>Import</b>.")
+        else:
+            intro = QLabel(
+                "<h3 style='margin:0 0 4px 0;'>Review the saved setup</h3>"
+                "The design has changed since this setup was saved. "
+                f"{n} {'entry' if n == 1 else 'entries'} couldn't be matched "
+                "to the same part with certainty, so "
+                f"{'it was' if n == 1 else 'they were'} not applied. Choose "
+                "what to do with each - nothing changes until you press "
+                "<b>Apply</b>.")
         intro.setWordWrap(True)
         intro.setTextFormat(Qt.RichText)
         outer.addWidget(intro)
 
         if applied_notes:
             notes = QLabel(
-                "<b>Applied automatically</b> (provably the same part):<br>"
+                ("<b>Imported</b> (matched to a part):<br>" if importing else
+                 "<b>Applied automatically</b> (provably the same part):<br>")
                 + "<br>".join(f"&nbsp;&nbsp;• {s}" for s in applied_notes))
             notes.setTextFormat(Qt.RichText)
             notes.setWordWrap(True)
@@ -126,6 +141,7 @@ class SetupReviewDialog(QDialog):
         outer.addWidget(self.table, 1)
 
         hint = QLabel(
+            "⌖ shows the part on the Board." if importing else
             "<i>Keep held</i> leaves an entry in the setup file and tries it "
             "again each time the design is imported. ⌖ shows the part on "
             "the Board.")
@@ -135,11 +151,14 @@ class SetupReviewDialog(QDialog):
 
         buttons = QHBoxLayout()
         buttons.addStretch(1)
-        later = QPushButton("Decide later")
-        later.setToolTip("Keep every entry held; Help > Review saved setup… "
-                         "opens this again.")
+        later = QPushButton("Cancel" if importing else "Decide later")
+        later.setToolTip(
+            "Import none of these (the matched entries above are already in)."
+            if importing else
+            "Keep every entry held; Help > Review saved setup… opens this "
+            "again.")
         later.clicked.connect(self.reject)
-        apply_btn = QPushButton("Apply")
+        apply_btn = QPushButton("Import" if importing else "Apply")
         apply_btn.setDefault(True)
         apply_btn.clicked.connect(self.accept)
         buttons.addWidget(later)
@@ -195,8 +214,11 @@ class SetupReviewDialog(QDialog):
                 label += f" ({'; '.join(extra)})"
             combo.addItem(label, (ACCEPT, c))
             combo.setItemData(combo.count() - 1, c.why, Qt.ToolTipRole)
-        combo.addItem("Keep held", (KEEP, None))
-        combo.addItem("Remove from the setup", (REMOVE, None))
+        if self._importing:
+            combo.addItem("Don't import", (KEEP, None))
+        else:
+            combo.addItem("Keep held", (KEEP, None))
+            combo.addItem("Remove from the setup", (REMOVE, None))
         if self._retarget is not None and self._designators:
             combo.addItem("Choose another part…", (_OTHER, None))
         combo.blockSignals(False)

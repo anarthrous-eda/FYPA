@@ -136,15 +136,26 @@ def _refresh_after_setup_change(window) -> None:
 def open_setup_review(window, *, applied_notes: list[str] | None = None) -> None:
     """Open the review dialog for the window's held entries and apply what
     the user decides. Says so when there is nothing to review."""
-    from fypa.viewer.setup_review import SetupReviewDialog
-
     items = list(getattr(window, "_setup_review", None) or [])
     if not items:
         window.statusBar().showMessage(
             "Nothing to review - every saved setup entry is applied.", 8000)
         return
-    loaded = getattr(window, "_loaded_project", None)
-    extracted = getattr(loaded, "extracted", None)
+    decisions = open_review_dialog(window, items, applied_notes=applied_notes)
+    if decisions is not None:
+        apply_review_decisions(window, decisions)
+
+
+def open_review_dialog(window, items, *, applied_notes=None,
+                       importing: str | None = None, extracted=None):
+    """Show the review dialog for ``items`` over ``window``; its decisions,
+    or ``None`` when the user backed out. ``importing`` (the source's name)
+    words it for an import from another design."""
+    from fypa.viewer.setup_review import SetupReviewDialog
+
+    if extracted is None:
+        loaded = getattr(window, "_loaded_project", None)
+        extracted = getattr(loaded, "extracted", None)
     designators = sorted(
         str(c.designator)
         for c in getattr(extracted, "pcb_components", ()) or ())
@@ -164,9 +175,9 @@ def open_setup_review(window, *, applied_notes: list[str] | None = None) -> None
         window, items, applied_notes=applied_notes,
         designators=designators,
         retarget=_retarget if extracted is not None else None,
-        show_on_board=_show if hasattr(window, "_jump_to_xy") else None)
-    if dlg.exec():
-        apply_review_decisions(window, dlg.decisions())
+        show_on_board=_show if hasattr(window, "_jump_to_xy") else None,
+        importing=importing)
+    return dlg.decisions() if dlg.exec() else None
 
 
 def apply_review_decisions(window, decisions) -> None:
@@ -347,7 +358,7 @@ def flush_setup_save(window) -> None:
 
 
 __all__ = [
-    "adopt_restored_setup", "apply_review_decisions",
+    "adopt_restored_setup", "apply_review_decisions", "open_review_dialog",
     "confirm_solve_with_held", "flush_setup_save", "open_setup_review",
     "save_setup_now", "schedule_setup_save", "stamp_held",
 ]

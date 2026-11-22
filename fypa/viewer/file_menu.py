@@ -173,6 +173,21 @@ class _FileMenuMixin:
         file_menu.addAction(open_recent)
 
         file_menu.addSeparator()
+        import_setup = QAction("Import Se&tup from Another Design…", self)
+        import_setup.setStatusTip(
+            "Copy the sources, sinks and regulators set up on another design "
+            "(or another version of this one) onto this design, matching "
+            "each to a part here - from its .fypa-setup.json, .fypa or "
+            ".PcbDoc.")
+
+        def _import_setup() -> None:
+            from fypa.viewer.setup_import import import_setup_from_design
+            import_setup_from_design(self)
+
+        import_setup.triggered.connect(_import_setup)
+        file_menu.addAction(import_setup)
+
+        file_menu.addSeparator()
 
         save_proj = QAction("Save &Project", self)
         save_proj.setShortcut("Ctrl+S")

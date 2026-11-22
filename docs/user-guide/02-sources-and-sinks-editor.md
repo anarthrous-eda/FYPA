@@ -487,6 +487,24 @@ them, or solve without them. A solve that ran without them says so in
 the design report - a load left out makes the results look better than
 they are.
 
+### Importing a setup from another design
+
+*File > Import Setup from Another Design…* (also linked from the *Set up
+sources and sinks* chooser) copies a setup made on another board - or on
+another copy or revision of this one - onto the design that is open. Pick
+that design's `.fypa-setup.json`, its saved `.fypa`, or its `.PcbDoc` /
+`.PrjPcb` (the setup file beside it is used).
+
+Each entry is matched to a part here with the same rules as above. A copy
+of the same project keeps its Altium unique ids, so parts are followed
+even if they were re-annotated; entries from a `.fypa` carry no part
+details and are matched by designator only. What matches is added; the
+rest opens the review dialog, where the choice is a part or **Don't
+import** - nothing from the other board is kept for later. Entries
+placed on copper rather than on a part, and parts already set up the
+same way here, are left out and listed. Imported entries are ordinary
+setup edits: press **Solve** to include them.
+
 If the board's folder can't be written (a read-only checkout, a network
 share), the file is kept in FYPA's per-user cache folder for that project
 instead. Opening a saved `.fypa` uses the `.fypa`'s own setup and leaves
