@@ -110,7 +110,8 @@ def test_stub_with_rails_hides_only_nodes_and_vias(qapp):
     capacitor analysis has something to show."""
     v = _Viewer(stub=True)
     for stack in (v._nodes_stack, v._vias_stack):
-        assert _text(stack).startswith("Run a solve first to show ")
+        assert _text(stack).startswith("Not solved yet. Run a solve to show ")
+        assert stack.widget(1).action == "solve"
     assert _text(v._caps_stack) == ""
     assert _text(v._impedance_stack) == ""
     v.open_all()
@@ -121,20 +122,26 @@ def test_stub_with_rails_hides_only_nodes_and_vias(qapp):
 
 def test_no_rails_hides_caps_and_impedance(qapp):
     v = _Viewer(stub=True, rails=())
-    for stack in (v._caps_stack, v._impedance_stack):
+    for stack in (v._nodes_stack, v._vias_stack,
+                  v._caps_stack, v._impedance_stack):
         assert _text(stack).startswith("No sources or sinks set up yet.")
+        assert stack.widget(1).action == "setup"
     v.open_all()
     assert v.populated == []
 
 
 def test_editor_sources_need_a_solve_to_define_rails(qapp):
     v = _Viewer(stub=True, rails=(), editor_roles=("SOURCE",))
-    assert _text(v._caps_stack).startswith("Run a solve first to show ")
+    assert _text(v._caps_stack).startswith("Not solved yet. Run a solve to show ")
+    assert v._caps_stack.widget(1).action == "solve"
+    # Placed but unsolved: Nodes asks for a solve, not for a setup.
+    assert v._nodes_stack.widget(1).action == "solve"
 
 
 def test_gerber_import_says_components_are_missing(qapp):
     v = _Viewer(stub=True, rails=(), components=False)
     assert "Gerber" in _text(v._caps_stack)
+    assert v._caps_stack.widget(1).action is None
 
 
 def test_solved_shows_everything(qapp):
@@ -181,6 +188,7 @@ def test_solve_landing_swaps_placeholders_out(qapp):
 def test_mesh_failure_says_so(qapp):
     v = _Viewer(stub=True, mesh_failed=True)
     assert "failed to mesh" in _text(v._nodes_stack)
+    assert v._nodes_stack.widget(1).action is None
 
 
 class _TopologyView:
@@ -212,8 +220,8 @@ def test_topology_without_sources_or_sinks_says_so(qapp):
     v = _TopologyViewer([{"role": "RESISTOR", "designator": "R1",
                           "terminals": {}}])
     v._populate_topology()
-    assert v._topology_view.empty_message.startswith(
-        "No sources or sinks set up yet.")
+    assert v._topology_needs_setup is True
+    assert v._topology_view.empty_message == ""
     assert v._topology_view.svg is None
 
 
@@ -246,6 +254,7 @@ def test_topology_row_toggle_reuses_the_preview_metadata(qapp):
     v._topology_preview_metadata = counting
     v._populate_topology()
     assert len(calls) == 1 and v._topology_view.svg is not None
+    assert v._topology_needs_setup is False
     band = next(b for b in v._topology_model.bands if b.key)
     v._topology_toggle_row(band.key)
     assert len(calls) == 1

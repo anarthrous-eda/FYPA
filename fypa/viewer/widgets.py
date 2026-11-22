@@ -1,7 +1,7 @@
 """Small reusable widgets: sidebar toggle buttons, icon pixmaps, tooltips."""
 from __future__ import annotations
 
-from PySide6.QtCore import QMetaMethod, QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QMetaMethod, QPoint, QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QCursor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
@@ -1284,3 +1284,90 @@ def _contrasting_text_color(hex_color: str) -> str:
         return "#000000"
     luma = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
     return "#000000" if luma > 0.5 else "#ffffff"
+
+
+# --- "?" help badge ---------------------------------------------------------
+
+class HelpBadge(QWidget):
+    """Small raised "i"-in-a-circle that shows its help text while hovered.
+
+    The icon is painted (anti-aliased ring, dot and stem) rather than drawn
+    from the U+24D8 glyph, which Windows renders blurry at small sizes via
+    font fallback.
+
+    Uses its own tooltip-styled popup rather than QToolTip: Qt's tooltip
+    waits before appearing, times out on long text and is closed by any
+    click, whereas this one shows at once and stays up for exactly as long
+    as the cursor is on the badge - clicks included.
+    """
+
+    _DIAM = 11.0      # ring diameter, px
+    _RAISE = 4        # empty px under the ring - lifts it like a footnote
+
+    def __init__(self, text: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        d = int(self._DIAM) + 2
+        self.setFixedSize(d, d + self._RAISE)
+        self.setCursor(Qt.WhatsThisCursor)
+        t = _T()
+        self._col = QColor(t["fg_dim"])
+        self._col_hover = QColor(t["fg"])
+        # Same look as the app's QToolTip style (theme.py).
+        self._popup = QLabel(text, None, Qt.ToolTip | Qt.FramelessWindowHint)
+        self._popup.setAttribute(Qt.WA_ShowWithoutActivating)
+        self._popup.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._popup.setWordWrap(True)
+        self._popup.setMaximumWidth(560)
+        self._popup.setStyleSheet(
+            f"QLabel {{ background-color: {t['bg']}; color: {t['fg']};"
+            f"          border: 1px solid {t['border']}; padding: 3px 6px; }}"
+        )
+        self.destroyed.connect(self._popup.deleteLater)
+
+    def paintEvent(self, _e) -> None:  # noqa: N802 - Qt override
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        col = self._col_hover if self.underMouse() else self._col
+        cx = self.width() / 2.0
+        r = self._DIAM / 2.0
+        cy = 1.0 + r
+        pen = QPen(col, 1.1)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(QPointF(cx, cy), r - 0.55, r - 0.55)
+        p.setPen(Qt.NoPen)
+        p.setBrush(col)
+        p.drawEllipse(QPointF(cx, cy - r * 0.42), 0.85, 0.85)          # dot
+        p.drawRoundedRect(QRectF(cx - 0.65, cy - r * 0.12, 1.3, r * 0.68),
+                          0.4, 0.4)                                       # stem
+        p.end()
+
+    def _show_help(self) -> None:
+        pop = self._popup
+        pop.adjustSize()
+        pos = QCursor.pos() + QPoint(2, 16)
+        screen = QApplication.screenAt(QCursor.pos())
+        if screen is not None:
+            avail = screen.availableGeometry()
+            pos.setX(max(avail.left(), min(pos.x(), avail.right() - pop.width())))
+            if pos.y() + pop.height() > avail.bottom():
+                pos.setY(QCursor.pos().y() - pop.height() - 4)
+        pop.move(pos)
+        pop.show()
+        pop.raise_()
+
+    def event(self, e):  # noqa: D401 - Qt override
+        et = e.type()
+        if et == QEvent.ToolTip:
+            return True          # never show Qt's own tooltip as well
+        if et == QEvent.Enter:
+            self._show_help()
+            self.update()
+        elif et in (QEvent.Leave, QEvent.Hide):
+            self._popup.hide()
+            self.update()
+        elif et in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease,
+                    QEvent.MouseButtonDblClick):
+            e.accept()           # swallow: nothing to do, keep the help up
+            return True
+        return super().event(e)

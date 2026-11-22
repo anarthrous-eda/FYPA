@@ -215,14 +215,17 @@ class _FixesTabMixin:
         return bool(getattr(getattr(self, "solution", None),
                             "sensitivity", None))
 
-    def _needs_fixes_text(self, shows: str) -> str:
-        text = self._needs_solve_text(shows)
-        if text:
-            return text
+    def _needs_fixes_state(self, shows: str) -> tuple | None:
+        state = self._needs_solve_state(shows)
+        if state:
+            return state
         if not self._roi_available():
-            return ("This solution was saved before FYPA could rank copper "
-                    f"fixes, or has no SINK loads. Re-solve to show {shows}.")
-        return ""
+            from fypa.viewer.empty_state import ACTION_SOLVE
+            return ("Solve again to rank fixes",
+                    "This solution was saved before FYPA could rank copper "
+                    f"fixes, or has no SINK loads. Solve again to show {shows}.",
+                    ACTION_SOLVE)
+        return None
 
     # --- populate ---------------------------------------------------------------
 

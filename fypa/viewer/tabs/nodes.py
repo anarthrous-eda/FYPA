@@ -185,92 +185,142 @@ class _NodesTabMixin:
             return False
         return not getattr(solution, "solver_info", {}).get("stub")
 
-    def _needs_solve_text(self, shows: str) -> str:
-        """Placeholder for a tab whose every value comes from the FEM, or
-        "" once there is a solve. ``shows`` ends the sentence."""
-        if self._has_solve_results():
-            return ""
-        if (getattr(self, "metadata", None) or {}).get("mesh_failed"):
-            return ("The last solve failed to mesh - see the Messages tab. "
-                    f"Fix the reported copper and re-solve to show {shows}.")
-        return f"Run a solve first to show {shows}."
-
     def _has_editor_sources_or_sinks(self) -> bool:
         project = getattr(self, "_project", None)
         return any(
-            getattr(ed, "role", None) in ("SOURCE", "SINK")
+            getattr(ed, "role", None) in ("SOURCE", "SINK", "REGULATOR")
             for ed in (getattr(project, "editor_directives", None) or [])
         )
 
-    def _needs_rails_text(self, shows: str) -> str:
-        """Placeholder for a tab grouped by rail, or "" when rails exist.
+    def _has_any_setup(self) -> bool:
+        """True once anything defines a source, sink or regulator: rails in
+        the metadata (schematic parameters, or a past solve) or directives
+        placed in FYPA that haven't been solved yet."""
+        if getattr(self, "_rails", None):
+            return True
+        if self._has_editor_sources_or_sinks():
+            return True
+        return any(
+            isinstance(d, dict)
+            and d.get("role") in ("SOURCE", "SINK", "REGULATOR")
+            for d in ((getattr(self, "metadata", None) or {})
+                      .get("directives") or []))
+
+    def _needs_solve_state(self, shows: str) -> tuple | None:
+        """Placeholder for a tab whose every value comes from the FEM, or
+        ``None`` once there is a solve. ``shows`` ends the sentence.
+
+        A placeholder state is ``(title, body, action)``; the action is one
+        of :mod:`fypa.viewer.empty_state`'s (or ``None``)."""
+        from fypa.viewer.empty_state import (
+            ACTION_SETUP, ACTION_SOLVE, SETUP_TITLE, SOLVE_TITLE,
+        )
+
+        if self._has_solve_results():
+            return None
+        if (getattr(self, "metadata", None) or {}).get("mesh_failed"):
+            return ("The last solve failed to mesh",
+                    "See the Messages tab for the copper it couldn't mesh. "
+                    f"Fix it and solve again to show {shows}.", None)
+        if not self._has_any_setup():
+            return (SETUP_TITLE,
+                    "Define where power enters the board and where it is "
+                    f"drawn, then solve to show {shows}.", ACTION_SETUP)
+        return (SOLVE_TITLE, f"Run a solve to show {shows}.", ACTION_SOLVE)
+
+    def _needs_rails_state(self, shows: str) -> tuple | None:
+        """Placeholder for a tab grouped by rail, or ``None`` when rails
+        exist.
 
         Rails come from SOURCE / SINK / REGULATOR directives in the metadata,
         not from the solve - a schematic-annotated design has them before any
-        solve. Sources and sinks placed in the PDN editor only reach the
-        metadata on the next solve, so those need one first."""
+        solve. Sources and sinks placed in FYPA only reach the metadata on
+        the next solve, so those need one first."""
+        from fypa.viewer.empty_state import (
+            ACTION_SETUP, ACTION_SOLVE, SETUP_TITLE, SOLVE_TITLE,
+        )
+
         if getattr(self, "_rails", None):
-            return ""
+            return None
         extracted = getattr(getattr(self, "_loaded_project", None),
                             "extracted", None)
         if extracted is not None and not extracted.pcb_components:
             # No rail would help - say the thing that actually would.
-            return ("Capacitor analysis needs component data, which Gerber "
-                    "imports don't carry - import the Altium design instead.")
+            return ("Needs component data",
+                    "Capacitor analysis needs component data, which Gerber "
+                    "imports don't carry - import the Altium design instead.",
+                    None)
         if self._has_editor_sources_or_sinks():
-            return (f"Run a solve first to show {shows} - capacitors are "
-                    "grouped by rail, and the sources and sinks placed in "
-                    "the PDN editor only define rails once solved.")
-        return ("No sources or sinks set up yet. Capacitors are grouped by "
-                "the rails they define - place SOURCE and SINK directives in "
-                f"the PDN editor, then run a solve to show {shows}.")
+            return (SOLVE_TITLE,
+                    f"Run a solve to show {shows}. Capacitors are grouped by "
+                    "rail, and sources and sinks set up in FYPA define their "
+                    "rails once solved.", ACTION_SOLVE)
+        return (SETUP_TITLE,
+                "Capacitors are grouped by the rails that sources and sinks "
+                f"define. Set them up, then solve to show {shows}.",
+                ACTION_SETUP)
 
-    # (stack attribute, placeholder-text method, end of its sentence)
+    # (stack attribute, placeholder-state method, end of its sentence)
     _PLACEHOLDER_TABS: tuple[tuple[str, str, str], ...] = (
-        ("_nodes_stack", "_needs_solve_text",
-         "the voltage, drop and current density at each directive pin"),
-        ("_vias_stack", "_needs_solve_text",
+        ("_nodes_stack", "_needs_solve_state",
+         "the voltage, drop and current density at each source and sink pin"),
+        ("_vias_stack", "_needs_solve_state",
          "the current and power dissipated in each via"),
-        ("_fixes_stack", "_needs_fixes_text",
+        ("_fixes_stack", "_needs_fixes_state",
          "which copper changes would help each load most"),
-        ("_caps_stack", "_needs_rails_text",
+        ("_caps_stack", "_needs_rails_state",
          "each decoupling capacitor's loop inductance"),
-        ("_impedance_stack", "_needs_rails_text",
+        ("_impedance_stack", "_needs_rails_state",
          "each rail's impedance against its target"),
     )
 
     def _wrap_placeholder(self, content: QWidget) -> QStackedWidget:
-        """Stack *content* over a centred placeholder sentence - a table of
-        blank cells says less than a sentence saying why they're blank.
-        :meth:`_sync_placeholder_tabs` picks which one shows."""
+        """Stack *content* over an empty-state panel - a table of blank
+        cells says less than a sentence saying why they're blank, and the
+        panel's button gets the tab filled. :meth:`_sync_placeholder_tabs`
+        picks which one shows."""
+        from fypa.viewer.empty_state import EmptyStatePanel, run_empty_state_action
+
         stack = QStackedWidget(self.tabs)
         stack.addWidget(content)
-        label = QLabel("")
-        label.setAlignment(Qt.AlignCenter)
-        label.setWordWrap(True)
-        label.setStyleSheet(f"QLabel {{ color: {_T()['fg_muted']}; }}")
-        stack.addWidget(label)
+        stack.addWidget(EmptyStatePanel(
+            lambda what: run_empty_state_action(self, what)))
         return stack
 
-    def _placeholder_text(self, stack_attr: str) -> str:
-        """The placeholder a tab is showing, or "" when it shows its content.
-        Also what the lazy populate checks, so a placeholder tab isn't built."""
+    def _placeholder_state(self, stack_attr: str) -> tuple | None:
+        """``(title, body, action)`` of the placeholder a tab is showing, or
+        ``None`` when it shows its content."""
         for attr, method, shows in self._PLACEHOLDER_TABS:
             if attr == stack_attr:
                 return getattr(self, method)(shows)
-        return ""
+        return None
+
+    def _placeholder_text(self, stack_attr: str) -> str:
+        """The placeholder a tab is showing as plain text, or "" when it
+        shows its content. Also what the lazy populate checks, so a
+        placeholder tab isn't built."""
+        state = self._placeholder_state(stack_attr)
+        if not state:
+            return ""
+        title, body, _action = state
+        return " ".join(s for s in (f"{title}." if title else "", body) if s)
 
     def _sync_placeholder_tabs(self) -> None:
         """Show or hide each tab's placeholder. Run when the tab is built,
         when a solve lands, and on every tab switch (editor edits can change
         the rail-less wording)."""
+        has_schematic = ((getattr(self, "metadata", None) or {})
+                         .get("source_kind") != "gerber")
         for attr, _method, _shows in self._PLACEHOLDER_TABS:
             stack = getattr(self, attr, None)
             if stack is None or not _qt_widget_alive(stack):
                 continue
-            text = self._placeholder_text(attr)
-            stack.widget(1).setText(text)
-            stack.setCurrentIndex(1 if text else 0)
+            state = self._placeholder_state(attr)
+            if state:
+                stack.widget(1).set_state(*state, has_schematic=has_schematic)
+            else:
+                stack.widget(1).set_state("", "", None)
+            stack.setCurrentIndex(1 if state else 0)
         refresh_strip = getattr(self, "_refresh_tab_strip_state", None)
         if refresh_strip is not None:
             refresh_strip()

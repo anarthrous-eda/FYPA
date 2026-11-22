@@ -155,3 +155,98 @@ def test_chooser_switched_off_leaves_a_status_hint(qapp, monkeypatch):
     diagnostics._maybe_warn_needs_directives(win, _stub(True))
     assert opened == []
     assert any("Set up sources and sinks" in m for m in win.messages)
+
+
+# --- Empty-state panel -------------------------------------------------------
+
+def test_panel_setup_state_offers_the_chooser_and_routes(qapp):
+    from fypa.viewer.empty_state import EmptyStatePanel
+
+    got = []
+    p = EmptyStatePanel(got.append)
+    p.set_state("No sources or sinks set up yet", "Body.", "setup")
+    assert not p.button.isHidden()
+    assert p.button.text() == "Set up sources and sinks…"
+    assert p.text() == "No sources or sinks set up yet. Body."
+    for route in ("board", "auto", "manual"):
+        assert f"href='{route}'" in p._links.text()
+    p.button.click()
+    p._links.linkActivated.emit("auto")
+    assert got == ["chooser", "auto"]
+
+
+def test_panel_on_a_gerber_design_links_only_the_board(qapp):
+    from fypa.viewer.empty_state import EmptyStatePanel
+
+    p = EmptyStatePanel()
+    p.set_state("T", "B", "setup", has_schematic=False)
+    assert "href='board'" in p._links.text()
+    assert "href='auto'" not in p._links.text()
+    assert "href='manual'" not in p._links.text()
+
+
+def test_panel_solve_state_and_no_action(qapp):
+    from fypa.viewer.empty_state import EmptyStatePanel
+
+    got = []
+    p = EmptyStatePanel(got.append)
+    p.set_state("Not solved yet", "Run a solve.", "solve")
+    assert p.button.text() == "Solve" and p._links.isHidden()
+    p.button.click()
+    assert got == ["solve"]
+    p.set_state("", "Needs component data.", None)
+    assert p.button.isHidden() and p._links.isHidden()
+
+
+def test_panel_actions_reach_the_viewer(qapp, monkeypatch):
+    from fypa.viewer import empty_state
+    from fypa.viewer import setup_chooser as SC
+
+    win = _FakeWindow()
+    solves = []
+    win._on_resolve_clicked = lambda: solves.append(1)
+    opened = []
+    monkeypatch.setattr(SC, "open_setup_chooser",
+                        lambda w, **kw: opened.append(kw))
+    empty_state.run_empty_state_action(win, "chooser")
+    empty_state.run_empty_state_action(win, "solve")
+    empty_state.run_empty_state_action(win, "manual")
+    assert opened == [{}] and solves == [1] and win.calls == ["manual"]
+
+
+def test_topology_panel_covers_the_view_and_greys_out_solve_and_whatif(qapp):
+    from PySide6.QtWidgets import QMainWindow
+
+    import fypa.altium_viewer as av
+    from fypa.viewer.empty_state import EmptyStatePanel
+    from fypa.viewer.tabs.topology import _TopologyView
+
+    class _V(av.PdnViewer):
+        def __init__(self):
+            QMainWindow.__init__(self)
+            self.metadata = {}
+            self._topology_view = _TopologyView(self, None)
+            self._topology_view.resize(800, 600)
+            self._topology_view.set_empty_panel(EmptyStatePanel())
+            self._topology_whatif_btn = QPushButton("What-If")
+            self._topology_whatif_btn.setToolTip("what-if tip")
+            self._topology_resolve_btn = QPushButton("Solve")
+
+        def _resolve_button_enabled(self):
+            return False
+
+    v = _V()
+    v._topology_view.show()
+    v._topology_show_setup_panel(True)
+    panel = v._topology_view._empty_panel
+    assert panel.isVisible() and panel.action == "setup"
+    assert panel.geometry() == v._topology_view.viewport().geometry()
+    assert not v._topology_whatif_btn.isEnabled()
+    assert "set up" in v._topology_resolve_btn.toolTip().lower()
+
+    v._topology_show_setup_panel(False)
+    assert not panel.isVisible()
+    assert v._topology_whatif_btn.isEnabled()
+    assert v._topology_whatif_btn.toolTip() == "what-if tip"
+    assert "set up" not in v._topology_resolve_btn.toolTip().lower()
+    v._topology_view.close()

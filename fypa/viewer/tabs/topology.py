@@ -76,6 +76,9 @@ class _TopologyView(QGraphicsView):
         self._empty_text = QGraphicsSimpleTextItem()
         self._scene.addItem(self._empty_text)
         self._empty_text.setZValue(1.0)
+        # Widget shown over the viewport instead of a diagram (the "nothing
+        # set up yet" panel) - see set_empty_panel / show_empty_panel.
+        self._empty_panel: QWidget | None = None
 
         self.setRenderHint(QPainter.Antialiasing)
         self.setRenderHint(QPainter.TextAntialiasing)
@@ -116,6 +119,34 @@ class _TopologyView(QGraphicsView):
             ))
         else:
             self._scene.setSceneRect(QRectF(0, 0, 1, 1))
+
+    def set_empty_panel(self, panel: QWidget) -> None:
+        """Adopt ``panel`` as the widget :meth:`show_empty_panel` lays over
+        the viewport. Hidden until then."""
+        panel.setParent(self)
+        panel.hide()
+        self._empty_panel = panel
+
+    def show_empty_panel(self, on: bool) -> None:
+        panel = self._empty_panel
+        if panel is None:
+            return
+        panel.setVisible(on)
+        if on:
+            self._place_empty_panel()
+            # Keep the floating setup buttons clickable above it.
+            overlay = getattr(self._viewer, "_topology_setup_overlay", None)
+            if overlay is not None:
+                overlay.raise_()
+
+    def _place_empty_panel(self) -> None:
+        panel = self._empty_panel
+        if panel is not None and panel.isVisible():
+            panel.setGeometry(self.viewport().geometry())
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._place_empty_panel()
 
     def set_diagram_svg(self, svg_data: QByteArray, *, keep_view: bool = False) -> None:
         """Show a new diagram, fitted to the view - or, with ``keep_view``
@@ -771,6 +802,9 @@ class _TopologyTabMixin:
 
         self._topology_split = QSplitter(Qt.Horizontal, widget)
         self._topology_view = _TopologyView(self, self._topology_split)
+        from fypa.viewer.empty_state import EmptyStatePanel, run_empty_state_action
+        self._topology_view.set_empty_panel(EmptyStatePanel(
+            lambda what: run_empty_state_action(self, what)))
         # Setup + Resolve: a column floating over the diagram's top-left
         # corner (like the Board's buttons), so the diagram runs the tab's
         # full width. All four as wide as the widest. Parented to the view,
@@ -1024,6 +1058,49 @@ class _TopologyTabMixin:
         btn.setEnabled(enabled)
         awaiting = getattr(self, "_awaiting_first_solve", False)
         btn.setText("Solve" if awaiting else "Resolve")
+        btn.setToolTip(
+            "Set up a source and a sink first - there is nothing to solve yet."
+            if getattr(self, "_topology_needs_setup", False)
+            else "Re-run the solver with the current editor changes applied")
+
+    _TOPOLOGY_WHATIF_TIP_NO_SETUP = (
+        "What-Ifs compare changes against a solved result - set up sources "
+        "and sinks and solve first.")
+
+    def _topology_show_setup_panel(self, on: bool) -> None:
+        """Show (or hide) the "nothing set up yet" panel over the diagram,
+        and grey out what can't work without a setup: Solve and What-If,
+        each with a tooltip saying why."""
+        from fypa.viewer.empty_state import (
+            ACTION_SETUP, SETUP_TITLE, EmptyStatePanel,
+        )
+
+        self._topology_needs_setup = bool(on)
+        view = self._topology_view
+        panel = getattr(view, "_empty_panel", None)
+        if on and isinstance(panel, EmptyStatePanel):
+            panel.set_state(
+                SETUP_TITLE,
+                "The topology shows how power flows from each source, "
+                "through its regulators, to every load. Define at least one "
+                "source and one sink to draw it.",
+                ACTION_SETUP,
+                has_schematic=(self.metadata or {}).get("source_kind")
+                != "gerber")
+        show = getattr(view, "show_empty_panel", None)
+        if show is not None:
+            show(bool(on))
+        wbtn = getattr(self, "_topology_whatif_btn", None)
+        if wbtn is not None:
+            if on and not wbtn.isChecked():
+                if wbtn.isEnabled():
+                    self._topology_whatif_tip = wbtn.toolTip()
+                wbtn.setEnabled(False)
+                wbtn.setToolTip(self._TOPOLOGY_WHATIF_TIP_NO_SETUP)
+            elif not on and not wbtn.isEnabled():
+                wbtn.setEnabled(True)
+                wbtn.setToolTip(getattr(self, "_topology_whatif_tip", ""))
+        self._topology_refresh_resolve_btn()
 
     def _on_topology_resolve(self) -> None:
         self._topology_close_sidebar()
@@ -1466,6 +1543,7 @@ class _TopologyTabMixin:
         else:
             preview_md = self._topology_preview_metadata()
             self._topology_md_cache = (key, preview_md)
+        self._topology_show_setup_panel(False)
         if preview_md is None:
             self._topology_view.set_empty_message("No setup metadata available.")
             self._topology_hint.setText("")
@@ -1477,12 +1555,9 @@ class _TopologyTabMixin:
         ):
             # Without a source or sink there's no power flow to draw - at
             # most a few orphan SERIES boxes, which reads as a broken diagram.
-            self._topology_view.set_empty_message(
-                "No sources or sinks set up yet.\n\n"
-                "Place SOURCE and SINK directives in the PDN editor (or "
-                "annotate them on the schematic)\n"
-                "to see the PDN topology."
-            )
+            # The setup panel says so and offers the ways to fix it.
+            self._topology_view.set_empty_message("")
+            self._topology_show_setup_panel(True)
             self._topology_hint.setText("")
             self._topology_model = None
             return
