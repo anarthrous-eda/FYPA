@@ -55,6 +55,10 @@ _THEME_PRESETS: dict[str, dict[str, str]] = {
         "dielectric_dim":  "#a0a0a0",
         "separator":       "#707070",
         "tab_bar_neutral": "#d8d8d8",   # open-tab bar outside setup/results
+        # Tab strip's setup / results colours: stronger than accent / ok so
+        # the VIEWS bracket's blue-to-green fade reads as two colours.
+        "tab_bar_setup":   "#4c9aff",
+        "tab_bar_results": "#a6e22e",
         "eye_open":        "#f0f0f0",
         "eye_closed":      "#7a7a7a",
         "eye_partial":     "#b8b8b8",
@@ -94,6 +98,8 @@ _THEME_PRESETS: dict[str, dict[str, str]] = {
         "dielectric_dim":  "#666688",
         "separator":       "#9a9a9a",
         "tab_bar_neutral": "#a8a8a8",
+        "tab_bar_setup":   "#1a5fbf",   # same as accent / ok on light
+        "tab_bar_results": "#2e8b57",
         "eye_open":        "#2d2d2d",
         "eye_closed":      "#9a9a9a",
         "eye_partial":     "#5c5c5c",
@@ -227,7 +233,7 @@ def _build_app_stylesheet(mode: str) -> str:
         # padding gives back the extra border pixel so the text doesn't jump.
         f"QTabBar::tab:selected {{ background-color: {t['bg']};"
         f"                         color: {t['fg_strong']};"
-        f"                         border-top: 2px solid {t['accent']};"
+        f"                         border-top: 2px solid {t['tab_bar_setup']};"
         f"                         padding-top: 5px; }}"
         f"QTabBar::tab:hover {{ background-color: {t['bg_hover']}; }}"
         f"QComboBox {{ background-color: {t['bg_input']}; color: {t['fg']};"

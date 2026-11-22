@@ -139,7 +139,7 @@ class _EditorModeMixin:
         self._resolve_btn = rbtn
 
         # Editor mode: the three icon-only squares reveal their label after
-        # a 0.5 s hover (widen, then show the text) and shrink back on leave.
+        # a short hover (widen, then show the text) and shrink back on leave.
         # Their tooltips are suppressed in editor mode (Resolve keeps its
         # status tooltip in viewer mode).
         from fypa.viewer.editor.hover_expand import HoverExpander

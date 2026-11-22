@@ -892,8 +892,12 @@ class _ViaRenderMixin:
         if vmax <= vmin:
             vmax = vmin + 1e-12
         n_buckets = max(2, int(self._VIA_CURRENT_BUCKETS))
-        # bucket -> list of (x, y, diameter_mm)
-        buckets: dict[int, list[tuple[float, float, float]]] = {}
+        # Drawn z per visible layer: a dot's z (for marker occlusion) is the
+        # highest visible layer of its span, else its span top.
+        id_to_phys = {v: k for k, v in self._phys_name_to_layer_id.items()}
+        lid_z = {lid: self._layer_render_z(p) for lid, p in id_to_phys.items()}
+        # bucket -> list of (x, y, diameter_mm, z)
+        buckets: dict[int, list[tuple[float, float, float, float]]] = {}
         row_show_all = show_all
         for v in self.metadata.get("vias", []):
             net = v.get("net", "")
@@ -935,7 +939,10 @@ class _ViaRenderMixin:
             diameter_mm = drill if drill > 0.0 else (
                 outer if outer > 0.0 else self._VIA_MARKER_FALLBACK_DIAM_MM
             )
-            buckets.setdefault(bucket, []).append((x, y, diameter_mm))
+            span_z = [lid_z[lid] for lid in target_layer_ids
+                      if lo <= lid <= hi and lid in lid_z]
+            z = max(span_z) if span_z else lid_z.get(lo, 0.0)
+            buckets.setdefault(bucket, []).append((x, y, diameter_mm, z))
         groups: list[MarkerGroup] = []
         lut_max = lut.shape[0] - 1
         bucket_div = max(1, n_buckets - 1)
@@ -950,9 +957,12 @@ class _ViaRenderMixin:
                                   count=n)
             diam_arr = np.fromiter((it[2] for it in items), dtype=np.float64,
                                     count=n)
+            zs_arr = np.fromiter((it[3] for it in items), dtype=np.float64,
+                                 count=n)
             groups.append(MarkerGroup(
                 xs=xs_arr,
                 ys=ys_arr,
+                zs=zs_arr,
                 color=hex_color,
                 symbol="o",
                 size=8,  # ignored when world_diameters_mm is set
@@ -1250,6 +1260,31 @@ class _ViaRenderMixin:
                 # to the real footprint. The GL viewer floors the drawn
                 # size at _VIA_MARKER_MIN_PX so vias stay visible when
                 # zoomed out.
+                # Each dot's z (for marker occlusion) is the drawn z of the
+                # highest layer it was collected on: with the layer eyes
+                # that is the highest visible layer of its span, so copper
+                # hides it only above every layer it reaches. The
+                # show-everywhere eye collects at the span top, then any
+                # drawn layer in the span raises it (the 2D selected-layer
+                # lift included).
+                drawn_ids = target_layer_ids | copper_layer_ids
+                lid_z = {lid: self._layer_render_z(id_to_phys[lid])
+                         for lid in (drawn_ids
+                                     | self._via_span_layer_ids("vias")
+                                     | self._via_span_layer_ids("pths"))
+                         if lid in id_to_phys}
+
+                def _add_pts(pts: dict, lid, xs_, ys_, vals,
+                             *, raise_only: bool = False) -> None:
+                    z = lid_z.get(lid, 0.0)
+                    for x_, y_, val in zip(xs_, ys_, vals):
+                        cur = pts.get((x_, y_))
+                        if cur is None:
+                            if not raise_only:
+                                pts[(x_, y_)] = (val, z)
+                        elif z > cur[1]:
+                            pts[(x_, y_)] = (cur[0], z)
+
                 # Kinds sharing a visibility and colour draw as one group.
                 kind_groups: dict[tuple, set[str]] = {}
                 for kind, (k_vis, k_rgb) in kind_state.items():
@@ -1260,7 +1295,9 @@ class _ViaRenderMixin:
                     # No kind filter needed when the group is every kind.
                     kinds = (None if len(g_kinds) == len(kind_state)
                              else g_kinds)
-                    via_pts: dict[tuple[float, float], float] = {}
+                    # (x, y) -> (diameter_mm, z)
+                    via_pts: dict[tuple[float, float],
+                                  tuple[float, float]] = {}
                     if g_vis == "all":
                         # Every via on the board: ask once per span end with
                         # the rail filter off (a via's span always holds its
@@ -1268,22 +1305,24 @@ class _ViaRenderMixin:
                         for lid in self._via_span_layer_ids("vias"):
                             vxs, vys, vds = self._collect_via_positions(
                                 lid, set(), rail_scoped=False, kinds=kinds)
-                            for vx, vy, vd in zip(vxs, vys, vds):
-                                via_pts[(vx, vy)] = vd
+                            _add_pts(via_pts, lid, vxs, vys, vds)
+                        for lid in drawn_ids:
+                            vxs, vys, vds = self._collect_via_positions(
+                                lid, set(), rail_scoped=False, kinds=kinds)
+                            _add_pts(via_pts, lid, vxs, vys, vds,
+                                     raise_only=True)
                     elif g_vis == "rails":
                         for lid in target_layer_ids:
                             vxs, vys, vds = self._collect_via_positions(
                                 lid, rail_members, kinds=kinds)
-                            for vx, vy, vd in zip(vxs, vys, vds):
-                                via_pts[(vx, vy)] = vd
+                            _add_pts(via_pts, lid, vxs, vys, vds)
                         # All-copper (second eye) layers add their own vias
                         # without the rail filter - same rule as the 3D
                         # cylinder path in :meth:`_push_via_cylinders`.
                         for lid in copper_layer_ids:
                             vxs, vys, vds = self._collect_via_positions(
                                 lid, set(), rail_scoped=False, kinds=kinds)
-                            for vx, vy, vd in zip(vxs, vys, vds):
-                                via_pts[(vx, vy)] = vd
+                            _add_pts(via_pts, lid, vxs, vys, vds)
                     if not via_pts:
                         continue
                     n_via = len(via_pts)
@@ -1291,11 +1330,14 @@ class _ViaRenderMixin:
                                          dtype=np.float64, count=n_via)
                     via_ys = np.fromiter((p[1] for p in via_pts),
                                          dtype=np.float64, count=n_via)
-                    via_ds = np.fromiter(via_pts.values(),
+                    via_ds = np.fromiter((v[0] for v in via_pts.values()),
+                                         dtype=np.float64, count=n_via)
+                    via_zs = np.fromiter((v[1] for v in via_pts.values()),
                                          dtype=np.float64, count=n_via)
                     groups.append(MarkerGroup(
                         xs=via_xs,
                         ys=via_ys,
+                        zs=via_zs,
                         color=_rgba_hex(via_rgb, via_alpha),
                         symbol="o",
                         size=6,  # ignored when world_diameters_mm set
@@ -1308,21 +1350,26 @@ class _ViaRenderMixin:
                 # PTH (plated through-hole) markers - 2D only, like vias.
                 # (x, y) -> (diameter_mm, slot) so a slotted PTH draws as a
                 # capsule sized to its bore while round PTHs stay dots.
+                # (x, y) -> ((diameter_mm, slot), z)
                 pth_pts: dict[tuple[float, float],
-                              tuple[float, tuple[float, float, float, bool]
-                                    | None]] = {}
+                              tuple[tuple[float,
+                                          tuple[float, float, float, bool]
+                                          | None], float]] = {}
                 if pth_vis == "all":
                     for lid in self._via_span_layer_ids("pths"):
                         pxs, pys, pds, psl = self._collect_pth_positions(
                             lid, set(), rail_scoped=False)
-                        for px, py, pd, ps in zip(pxs, pys, pds, psl):
-                            pth_pts[(px, py)] = (pd, ps)
+                        _add_pts(pth_pts, lid, pxs, pys, zip(pds, psl))
+                    for lid in drawn_ids:
+                        pxs, pys, pds, psl = self._collect_pth_positions(
+                            lid, set(), rail_scoped=False)
+                        _add_pts(pth_pts, lid, pxs, pys, zip(pds, psl),
+                                 raise_only=True)
                 elif pth_vis == "rails":
                     for lid in target_layer_ids:
                         pxs, pys, pds, psl = self._collect_pth_positions(
                             lid, rail_members)
-                        for px, py, pd, ps in zip(pxs, pys, pds, psl):
-                            pth_pts[(px, py)] = (pd, ps)
+                        _add_pts(pth_pts, lid, pxs, pys, zip(pds, psl))
                     # All-copper (second eye) layers add their own PTHs
                     # without the rail filter - same rule as vias above:
                     # a PTH shows whenever any layer within its span has
@@ -1330,8 +1377,7 @@ class _ViaRenderMixin:
                     for lid in copper_layer_ids:
                         pxs, pys, pds, psl = self._collect_pth_positions(
                             lid, set(), rail_scoped=False)
-                        for px, py, pd, ps in zip(pxs, pys, pds, psl):
-                            pth_pts[(px, py)] = (pd, ps)
+                        _add_pts(pth_pts, lid, pxs, pys, zip(pds, psl))
                 if pth_pts:
                     n_pth = len(pth_pts)
                     pth_xs = np.fromiter((p[0] for p in pth_pts),
@@ -1339,9 +1385,12 @@ class _ViaRenderMixin:
                     pth_ys = np.fromiter((p[1] for p in pth_pts),
                                          dtype=np.float64, count=n_pth)
                     pth_ds = np.fromiter(
-                        (v[0] for v in pth_pts.values()),
+                        (v[0][0] for v in pth_pts.values()),
                         dtype=np.float64, count=n_pth)
-                    pth_slots = [v[1] for v in pth_pts.values()]
+                    pth_zs = np.fromiter(
+                        (v[1] for v in pth_pts.values()),
+                        dtype=np.float64, count=n_pth)
+                    pth_slots = [v[0][1] for v in pth_pts.values()]
                     # Only attach the obround list when at least one PTH
                     # is slotted - keeps the common all-round board on the
                     # plain circular-marker path.
@@ -1352,6 +1401,7 @@ class _ViaRenderMixin:
                     groups.append(MarkerGroup(
                         xs=pth_xs,
                         ys=pth_ys,
+                        zs=pth_zs,
                         color=_rgba_hex(pth_rgb, pth_alpha),
                         symbol="o",
                         size=6,  # ignored when world_diameters_mm set
@@ -1394,6 +1444,7 @@ class _ViaRenderMixin:
                 size=28,
                 edge_color="#000000",
                 edge_width=2.5,
+                occludable=False,
             ))
 
         # Editor-mode directive markers (placed sources / sinks) - only

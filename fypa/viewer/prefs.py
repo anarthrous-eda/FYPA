@@ -898,6 +898,43 @@ def save_via_no_current_opacity(opacity: float) -> None:
 
 
 
+_MARKERS_ALWAYS_ON_TOP_QS_KEY = "ui/markers_always_on_top"
+
+
+def load_markers_always_on_top() -> bool:
+    """Read whether viewport markers (sources, sinks, series parts, vias…)
+    paint over every layer. ``False`` (the default) hides a marker where
+    copper drawn above its layer covers it, in 2D and 3D."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        val = qs.value(_MARKERS_ALWAYS_ON_TOP_QS_KEY, False)
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            return val.strip().lower() in ("1", "true", "yes", "on")
+        return bool(int(val))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not read markers-always-on-top preference (%s); using "
+            "default.", e,
+        )
+    return False
+
+
+def save_markers_always_on_top(enabled: bool) -> None:
+    """Persist the markers-always-on-top preference for next launch."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        qs.setValue(_MARKERS_ALWAYS_ON_TOP_QS_KEY, bool(enabled))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not persist markers-always-on-top preference (%s); "
+            "ignoring.", e,
+        )
+
+
 def load_adaptive_regulator_gain() -> bool:
     """Read whether manual solves should iterate SMPS regulator gain."""
     try:

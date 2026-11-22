@@ -48,7 +48,7 @@ class _MarqueeMixin:
                 return None   # marker's layer is hidden
             phys = id_to_phys.get(lid)
             rc = self._layer_color_for(phys) if phys else None
-            rz = self._layer_z_for(phys) if phys else 0.0
+            rz = self._layer_render_z(phys) if phys else 0.0
             p_pts = [(float(d.anchor_xy[0]), float(d.anchor_xy[1]), rc, rz)]
         elif d.kind == "component":
             # One marker per component pin on the directive's net(s) that

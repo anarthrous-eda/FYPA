@@ -29,6 +29,7 @@ from fypa.viewer.prefs import (
     load_adaptive_regulator_gain,
     load_auto_solve_on_import,
     load_fuse_backend,
+    load_markers_always_on_top,
     load_mesh_max_workers,
     load_minres_budget_s,
     load_show_bridge_notice,
@@ -38,6 +39,7 @@ from fypa.viewer.prefs import (
     load_via_no_current_opacity,
     save_auto_solve_on_import,
     save_fuse_backend,
+    save_markers_always_on_top,
     save_mesh_max_workers,
     save_minres_budget_s,
     save_show_bridge_notice,
@@ -333,6 +335,21 @@ class _SettingsTabMixin:
             source=display_src,
             attr_prefix="settings_edit_",
         )
+        # Markers always on top - a live, persisted preference (no re-solve).
+        self._settings_markers_on_top_check = QCheckBox(
+            "Markers always on top")
+        self._settings_markers_on_top_check.setChecked(
+            load_markers_always_on_top())
+        self._settings_markers_on_top_check.setToolTip(
+            "When checked, source, sink, series and via markers paint over "
+            "every layer, so a marker on a lower layer shows through the "
+            "copper above it. When unchecked (the default), the part of a "
+            "marker that copper drawn above its layer covers is hidden, in "
+            "2D and 3D. Applies immediately; persists across launches."
+        )
+        self._settings_markers_on_top_check.toggled.connect(
+            self._on_markers_on_top_toggled)
+        display_box.layout().addRow(self._settings_markers_on_top_check)
         outer.addWidget(display_box)
 
         # ----- General options group -----
@@ -861,6 +878,13 @@ class _SettingsTabMixin:
         outer.addStretch(1)
         return self._settings_page(inner)
 
+    def _on_markers_on_top_toggled(self, checked: bool) -> None:
+        """Settings tab: persist + live-apply "Markers always on top"."""
+        save_markers_always_on_top(bool(checked))
+        gl = getattr(self, "_gl_viewer", None)
+        if gl is not None:
+            gl.set_markers_always_on_top(bool(checked))
+
     def _on_display_settings_reset(self) -> None:
         """Settings tab: restore the Display options to their defaults."""
         display_defaults = {
@@ -871,6 +895,9 @@ class _SettingsTabMixin:
             edit = getattr(self, f"settings_edit_{key}", None)
             if edit is not None:
                 edit.setText(self._fmt_settings_value(display_defaults[key]))
+        on_top = getattr(self, "_settings_markers_on_top_check", None)
+        if on_top is not None:
+            on_top.setChecked(False)   # toggled → saves + applies
         label = getattr(self, "_prefs_status_label", None)
         if label is not None and not getattr(
                 self, "_settings_launcher_mode", False):

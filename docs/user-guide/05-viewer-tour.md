@@ -468,7 +468,10 @@ shows a short "no issues" message.
 
 - **Settings** - application preferences only, which never change a
   solve result: *Appearance* (theme, high-quality zoom), *Display
-  options* (via current warning level, colour-scale clip percentile),
+  options* (via current warning level, colour-scale clip percentile,
+  *Markers always on top* - off by default, so the part of a marker
+  (source, sink, series part, via, PTH) that copper drawn above its
+  layer covers is hidden, in 2D and 3D),
   *General options*, *Performance* and *Experimental*. They persist
   across launches. The design's base properties are on the Properties tab.
 - **Help** - built-in cheatsheet of hotkeys and gestures.

@@ -610,7 +610,7 @@ class _ViewportMixin:
         :meth:`_layer_z_for`. Keeping the physical z untouched in 3D is
         deliberate - vias and the per-layer cylinder spans rely on the
         real stackup z lining up across calls."""
-        if (phys == self._selected_layer
+        if (phys == getattr(self, "_selected_layer", None)
                 and getattr(self, "view_3d_box", None) is not None
                 and not self.view_3d_box.isChecked()):
             top_z = (self._layer_z_for(self._physicals[0])
@@ -752,7 +752,9 @@ class _ViewportMixin:
             return 0.0
         layer_z = self._layer_z_for(phys)
         if self._gl_viewer.relief_z_span() <= 0.0:
-            return layer_z
+            # The z the layer's copper is drawn at (the selected layer's
+            # 2D lift included), so the marker depth-sorts with it.
+            return self._layer_render_z(phys)
         base = self._gl_viewer.relief_layer_z(layer_z)
         probes = [lp for lp in (self._layer_probes or [])
                   if lp.get("physical") == phys]

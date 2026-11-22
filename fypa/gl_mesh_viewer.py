@@ -43,13 +43,14 @@ Vector-field arrows (drawn via the line shader, in world space):
 from __future__ import annotations
 
 import ctypes
+import logging
 import math
 import sys
 from dataclasses import dataclass, field
 
 import numpy as np
 from OpenGL import GL
-from PySide6.QtCore import QElapsedTimer, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QElapsedTimer, QEvent, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -518,9 +519,15 @@ class MarkerGroup:
     ``xs``/``ys`` are world-space (mm). ``color`` is the fill (HTML hex).
     ``symbol`` is one of ``"o"``, ``"s"``, ``"d"``, ``"star"``. ``size``
     is the diameter in pixels at any zoom level (pxMode-equivalent).
-    ``zs`` is the optional per-marker world-z (mm, pre-exaggeration);
-    only consulted in 3D mode - if None or omitted, every marker is
-    treated as z=0.
+    ``zs`` is the optional per-marker world-z (mm, pre-exaggeration) -
+    the z of the copper the marker sits on, as submitted to GL (so in 2D
+    the selected layer's lifted z). It places the marker in 3D and, unless
+    markers are set always on top, decides where copper drawn above hides
+    it (2D and 3D). If None or omitted, every marker is treated as z=0
+    for placement and the group is never hidden.
+
+    ``occludable`` set False keeps the group above everything even when
+    markers are not always on top (e.g. a jump-highlight ring).
 
     ``world_diameters_mm`` opts the marker into world-space sizing:
     when set, each marker's pixel diameter is
@@ -554,6 +561,226 @@ class MarkerGroup:
     # is still floored at ``min_pixel_diameter`` so a tiny slot stays visible.
     world_obrounds: (list[tuple[float, float, float, bool] | None]
                      | None) = None
+    occludable: bool = True
+
+
+# GL marker pass. Each marker is one instance of a screen-facing quad
+# placed at its world point; the fragment shader shades the glyph from a
+# signed distance field (px, negative inside) with the same layering the
+# QPainter path used: layer-colour ring stroke, then the fill, then the
+# edge stroke centred on the outline (then the target's centre dot).
+#
+# Instance row layout (float32, _MARKER_STRIDE wide):
+#   0-2  world x, y, z (z = the marker's copper plane, pre-exaggeration)
+#   3-4  shape-centre offset from the projected point (logical px, y down)
+#   5    quad half-extent (logical px)    6  shape id    7  glyph radius r
+#   8-11 fill rgba   12-15 edge rgba   16-19 ring rgba
+#   20   edge half-width   21 ring width (0 = none)
+#   22-24 rect / capsule half-length, half-width, angle (rad, y-down)
+#   25   occludable (1 / 0)
+_MARKER_STRIDE = 26
+# (attribute location, component count, float offset)
+_MARKER_ATTRIBS = (
+    (0, 3, 0), (1, 2, 3), (2, 2, 5), (3, 1, 7), (4, 4, 8), (5, 4, 12),
+    (6, 4, 16), (7, 2, 20), (8, 4, 22),
+)
+_MARKER_SHAPES = {
+    "o": 0, "s": 1, "d": 2, "star": 3, "tri_up": 4, "tri_down": 5,
+    "_rect": 6, "_capsule": 7, "bolt": 8, "target": 9,
+}
+# Farthest the glyph reaches from its centre, in units of r (square
+# corners; the bolt's top corners sit at (+/-0.5, -1)).
+_MARKER_SHAPE_REACH = {1: 1.415, 8: 1.12}
+
+_MARKER_VERTEX_SHADER_SRC = """
+#version 330 core
+layout(location = 0) in vec3 a_world;
+layout(location = 1) in vec2 a_offset;
+layout(location = 2) in vec2 a_extent_shape;   // half-extent, shape id
+layout(location = 3) in float a_r;
+layout(location = 4) in vec4 a_fill;
+layout(location = 5) in vec4 a_edge;
+layout(location = 6) in vec4 a_ring;
+layout(location = 7) in vec2 a_widths;         // edge half-width, ring
+layout(location = 8) in vec4 a_params;         // hl, hw, angle, occludable
+uniform mat4 u_mvp;
+uniform vec2 u_viewport;                       // logical px
+out vec2 v_local;
+flat out vec3 v_world;
+flat out int v_shape;
+flat out float v_r;
+flat out vec4 v_fill;
+flat out vec4 v_edge;
+flat out vec4 v_ring;
+flat out vec2 v_widths;
+flat out vec4 v_params;
+void main() {
+    vec2 corner = vec2(float(gl_VertexID & 1),
+                       float((gl_VertexID >> 1) & 1)) * 2.0 - 1.0;
+    vec2 local = corner * a_extent_shape.x;
+    vec4 c = u_mvp * vec4(a_world, 1.0);
+    vec2 ndc = c.xy / c.w;
+    vec2 pix = local + a_offset;
+    ndc += vec2(pix.x, -pix.y) * 2.0 / u_viewport;
+    gl_Position = vec4(ndc, 0.0, 1.0);
+    v_local = local;
+    v_world = a_world;
+    v_shape = int(a_extent_shape.y + 0.5);
+    v_r = a_r;
+    v_fill = a_fill;
+    v_edge = a_edge;
+    v_ring = a_ring;
+    v_widths = a_widths;
+    v_params = a_params;
+}
+"""
+
+_MARKER_FRAGMENT_SHADER_SRC = """
+#version 330 core
+in vec2 v_local;
+flat in vec3 v_world;
+flat in int v_shape;
+flat in float v_r;
+flat in vec4 v_fill;
+flat in vec4 v_edge;
+flat in vec4 v_ring;
+flat in vec2 v_widths;
+flat in vec4 v_params;
+uniform mat4 u_mvp;
+uniform mat4 u_inv_mvp;
+uniform vec2 u_dev_viewport;   // device px of the target framebuffer
+uniform float u_px;            // device px per logical px
+uniform int u_occlude;
+uniform int u_persp;
+uniform float u_near;
+uniform float u_far;
+uniform float u_tol;
+out vec4 frag_color;
+
+const vec2 DIAMOND[4] = vec2[4](vec2(0.0, -1.0), vec2(1.0, 0.0),
+                                vec2(0.0, 1.0), vec2(-1.0, 0.0));
+const vec2 TRI_UP[3] = vec2[3](vec2(0.0, -1.0), vec2(0.866, 0.5),
+                               vec2(-0.866, 0.5));
+const vec2 TRI_DOWN[3] = vec2[3](vec2(0.0, 1.0), vec2(0.866, -0.5),
+                                 vec2(-0.866, -0.5));
+const vec2 BOLT[7] = vec2[7](vec2(-0.5, -1.0), vec2(-0.2, -0.2),
+                             vec2(0.1, -0.2), vec2(0.5, -1.0),
+                             vec2(0.2, 0.1), vec2(0.5, 0.1),
+                             vec2(-0.2, 1.0));
+
+vec2 vtx(int shape, int i) {
+    if (shape == 2) return DIAMOND[i];
+    if (shape == 4) return TRI_UP[i];
+    if (shape == 5) return TRI_DOWN[i];
+    if (shape == 8) return BOLT[i];
+    // 3: 5-pointed star, outer radius 1, inner 0.4, first point up.
+    float a = -1.5707963 + float(i) * 0.6283185;
+    float rad = (i % 2 == 0) ? 1.0 : 0.4;
+    return vec2(cos(a), sin(a)) * rad;
+}
+
+int vcount(int shape) {
+    if (shape == 2) return 4;
+    if (shape == 3) return 10;
+    if (shape == 8) return 7;
+    return 3;
+}
+
+// Signed distance to a simple (possibly concave) polygon - Inigo Quilez.
+float sd_polygon(int shape, vec2 p) {
+    int n = vcount(shape);
+    vec2 v0 = vtx(shape, 0);
+    float d = dot(p - v0, p - v0);
+    float s = 1.0;
+    int j = n - 1;
+    for (int i = 0; i < n; i++) {
+        vec2 vi = vtx(shape, i);
+        vec2 vj = vtx(shape, j);
+        vec2 e = vj - vi;
+        vec2 w = p - vi;
+        vec2 b = w - e * clamp(dot(w, e) / dot(e, e), 0.0, 1.0);
+        d = min(d, dot(b, b));
+        bvec3 c = bvec3(p.y >= vi.y, p.y < vj.y, e.x * w.y > e.y * w.x);
+        if (all(c) || all(not(c))) s = -s;
+        j = i;
+    }
+    return s * sqrt(d);
+}
+
+float sd_box(vec2 p, vec2 b) {
+    vec2 d = abs(p) - b;
+    return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
+}
+
+float glyph_sd(vec2 p) {
+    if (v_shape == 0 || v_shape == 9) return length(p) - v_r;
+    if (v_shape == 1) return sd_box(p, vec2(v_r));
+    if (v_shape == 6 || v_shape == 7) {
+        float ca = cos(v_params.z);
+        float sa = sin(v_params.z);
+        vec2 lp = vec2(ca * p.x + sa * p.y, -sa * p.x + ca * p.y);
+        if (v_shape == 6) return sd_box(lp, v_params.xy);
+        vec2 q = vec2(max(abs(lp.x) - (v_params.x - v_params.y), 0.0), lp.y);
+        return length(q) - v_params.y;
+    }
+    return sd_polygon(v_shape, p / max(v_r, 1e-6)) * v_r;
+}
+
+// Coverage of the inside of a boundary at signed distance x (logical px),
+// antialiased over one device pixel.
+float cov(float x) {
+    return clamp(0.5 - x * u_px, 0.0, 1.0);
+}
+
+vec4 over(vec4 dst, vec4 c, float a) {
+    float sa = c.a * a;
+    return vec4(c.rgb * sa + dst.rgb * (1.0 - sa), sa + dst.a * (1.0 - sa));
+}
+
+float marker_depth() {
+    if (u_occlude == 0 || v_params.w < 0.5) return 0.0;
+    vec3 p = v_world;
+    if (u_persp == 1) {
+        // Where this pixel's view ray meets the marker's copper plane, so
+        // the whole glyph lies on that plane: its own layer can't cut it
+        // at an oblique angle, copper above the plane still does.
+        vec2 ndc = gl_FragCoord.xy / u_dev_viewport * 2.0 - 1.0;
+        vec4 a = u_inv_mvp * vec4(ndc, -1.0, 1.0);
+        vec4 b = u_inv_mvp * vec4(ndc, 1.0, 1.0);
+        a /= a.w;
+        b /= b.w;
+        float dz = b.z - a.z;
+        if (abs(dz) > 1e-9) {
+            float t = (v_world.z - a.z) / dz;
+            if (t >= 0.0 && t <= 1.0) p = mix(a.xyz, b.xyz, t);
+        }
+    }
+    vec4 c = u_mvp * vec4(p, 1.0);
+    float ndc_z;
+    if (u_persp == 1) {
+        float w = max(c.w - u_tol, u_near);
+        ndc_z = (u_far + u_near) / (u_far - u_near)
+                - 2.0 * u_far * u_near / ((u_far - u_near) * w);
+    } else {
+        ndc_z = c.z / c.w - u_tol;
+    }
+    return clamp(0.5 * ndc_z + 0.5, 0.0, 1.0);
+}
+
+void main() {
+    float d = glyph_sd(v_local);
+    float eh = v_widths.x;
+    float ring_w = v_widths.y;
+    vec4 col = vec4(0.0);
+    if (ring_w > 0.0) col = over(col, v_ring, cov(abs(d) - ring_w));
+    col = over(col, v_fill, cov(d));
+    col = over(col, v_edge, cov(abs(d) - eh));
+    if (v_shape == 9) col = over(col, v_edge, cov(length(v_local) - 0.35 * v_r));
+    gl_FragDepth = marker_depth();
+    if (col.a < 0.002) discard;
+    frag_color = col;
+}
+"""
 
 
 def _install_default_surface_format() -> None:
@@ -652,6 +879,18 @@ class GLMeshViewer(QOpenGLWidget):
         super().__init__(parent)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
+        # Frame reuse: the overlay buttons (Edit, Resolve, the hover-
+        # expanding Auto / Manual setup squares...) are children of this
+        # widget, so every move / resize / repaint of one makes Qt repaint
+        # the area under it - and QOpenGLWidget answers any paint with a
+        # full paintGL. A button animation then re-rendered the whole
+        # (supersampled) scene every frame and stuttered. PartialUpdate
+        # keeps the framebuffer between frames, so paintGL can return
+        # untouched when nothing in the scene asked for a redraw: every
+        # scene change goes through update() (overridden below), resizeGL
+        # or initializeGL, which set the flag.
+        self._frame_dirty = True
+        self.setUpdateBehavior(QOpenGLWidget.UpdateBehavior.PartialUpdate)
 
         # --- GPU resources, populated in initializeGL ---
         self._program: QOpenGLShaderProgram | None = None
@@ -938,6 +1177,16 @@ class GLMeshViewer(QOpenGLWidget):
         # jump highlight as a side effect of toggling a legend row).
         self._legend_press_consumed: bool = False
         self._markers: list[MarkerGroup] = []
+        # Markers always on top (Settings > Display options). When False,
+        # the GL marker pass depth-tests each glyph pixel against the scene,
+        # so copper drawn above a marker's layer hides the part it covers.
+        self._markers_always_on_top: bool = False
+        # GL marker pass (see _MARKER_VERTEX_SHADER_SRC); built in
+        # initializeGL. ``None`` (link failure) falls back to the QPainter
+        # glyphs, always on top.
+        self._marker_program: QOpenGLShaderProgram | None = None
+        self._marker_vao: QOpenGLVertexArrayObject | None = None
+        self._marker_vbo: QOpenGLBuffer | None = None
         # Overlay text labels (reference designators for the Overlays
         # control). Each entry: ``{"x", "y", "z", "text", "color",
         # "height_mm", "rotation_deg"}``. Drawn by the QPainter overlay
@@ -2245,6 +2494,12 @@ class GLMeshViewer(QOpenGLWidget):
         z = tz + self._cam_distance * math.sin(pitch)
         return x, y, z
 
+    def _clip_planes_3d(self) -> tuple[float, float]:
+        """Near / far planes of the 3D perspective projection."""
+        near = max(self._cam_distance * 0.01, 0.1)
+        far = max(self._cam_distance * 100.0, near + 1.0)
+        return near, far
+
     def _current_mvp(self) -> QMatrix4x4:
         """Compute the MVP matrix for the current view mode. In 2D this
         is a straight orthographic projection of the visible rect (with
@@ -2256,8 +2511,7 @@ class GLMeshViewer(QOpenGLWidget):
             w_px = max(1, self.width())
             h_px = max(1, self.height())
             aspect = w_px / h_px
-            near = max(self._cam_distance * 0.01, 0.1)
-            far = max(self._cam_distance * 100.0, near + 1.0)
+            near, far = self._clip_planes_3d()
             mvp.perspective(self._cam_fov_deg, aspect, near, far)
             cam_x, cam_y, cam_z = self._camera_position()
             tx, ty, tz = self._cam_target
@@ -2320,6 +2574,19 @@ class GLMeshViewer(QOpenGLWidget):
     def clear_markers(self) -> None:
         self._markers = []
         self.update()
+
+    def set_markers_always_on_top(self, on: bool) -> None:
+        """``True`` paints every marker over every layer; ``False`` hides
+        the parts of a marker (with ``zs`` and ``occludable``) that copper
+        drawn above its layer covers, in 2D and 3D."""
+        on = bool(on)
+        if on == self._markers_always_on_top:
+            return
+        self._markers_always_on_top = on
+        self.update()
+
+    def markers_always_on_top(self) -> bool:
+        return self._markers_always_on_top
 
     def set_editor_mode(self, on: bool) -> None:
         """Toggle the editor-mode look - bluish background + faint world-mm
@@ -2742,6 +3009,7 @@ class GLMeshViewer(QOpenGLWidget):
     # ------------------------------------------------------------------
 
     def initializeGL(self) -> None:
+        self._frame_dirty = True   # fresh context: nothing kept to reuse
         # Re-entering initializeGL means Qt recreated the GL context (reparent
         # to a new top-level, driver reset, …). Every VBO/IBO/VAO built by the
         # previous context is gone, but the host-set ``_n_*`` vertex counts
@@ -2958,6 +3226,31 @@ class GLMeshViewer(QOpenGLWidget):
         self._ss_blit_vao = QOpenGLVertexArrayObject()
         self._ss_blit_vao.create()
 
+        # GL marker pass - instanced SDF glyphs, depth-tested against the
+        # scene. A link failure is not fatal: the QPainter glyphs (always on
+        # top) take over.
+        mk_prog = QOpenGLShaderProgram()
+        mk_prog.addShaderFromSourceCode(QOpenGLShader.Vertex,
+                                        _MARKER_VERTEX_SHADER_SRC)
+        mk_prog.addShaderFromSourceCode(QOpenGLShader.Fragment,
+                                        _MARKER_FRAGMENT_SHADER_SRC)
+        if mk_prog.link():
+            self._marker_program = mk_prog
+            for name in ("mvp", "inv_mvp", "viewport", "dev_viewport", "px",
+                         "occlude", "persp", "near", "far", "tol"):
+                setattr(self, f"_mk_u_{name}_loc",
+                        mk_prog.uniformLocation(f"u_{name}"))
+            self._marker_vao = QOpenGLVertexArrayObject()
+            self._marker_vao.create()
+            self._marker_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
+            self._marker_vbo.setUsagePattern(QOpenGLBuffer.DynamicDraw)
+            self._marker_vbo.create()
+        else:
+            logging.getLogger(__name__).warning(
+                "GL marker shader failed to link; markers draw on top "
+                "via QPainter. %s", mk_prog.log())
+            self._marker_program = None
+
         self._gl_initialized = True
 
     def _reset_gpu_state_for_new_context(self) -> None:
@@ -3009,7 +3302,26 @@ class GLMeshViewer(QOpenGLWidget):
             if buf.get("pending") is None:
                 del self._copper_bufs[key]
 
+    def update(self, *args) -> None:  # noqa: D401 (Qt override)
+        """Ask for a redraw, marking the frame as needing a real render
+        (see ``_frame_dirty`` in ``__init__``)."""
+        self._frame_dirty = True
+        super().update(*args)
+
+    # Events after which the kept framebuffer may be stale or gone.
+    _FRAME_INVALIDATING_EVENTS = tuple(
+        t for t in (getattr(QEvent.Type, n, None) for n in (
+            "Show", "Resize", "ScreenChangeInternal", "WindowChangeInternal",
+            "DevicePixelRatioChange", "PaletteChange", "StyleChange"))
+        if t is not None)
+
+    def event(self, e) -> bool:  # noqa: N802 (Qt override)
+        if e.type() in self._FRAME_INVALIDATING_EVENTS:
+            self._frame_dirty = True
+        return super().event(e)
+
     def resizeGL(self, w: int, h: int) -> None:
+        self._frame_dirty = True
         # Use device pixels for the GL viewport on Hi-DPI displays.
         dpr = self.devicePixelRatio()
         GL.glViewport(0, 0, int(w * dpr), int(h * dpr))
@@ -3019,6 +3331,14 @@ class GLMeshViewer(QOpenGLWidget):
         self.viewChanged.emit()
 
     def paintGL(self) -> None:
+        # Nothing changed since the last frame - this paint is Qt
+        # re-exposing the area under a child overlay widget. The kept
+        # framebuffer (PartialUpdate) already holds the right image.
+        if not self._frame_dirty:
+            return
+        # Cleared before rendering so an update() raised mid-frame (e.g.
+        # by the overlay pass) still gets its own frame.
+        self._frame_dirty = False
         # Reset the GL state the previous frame's QPainter overlay pass may
         # have left behind. QPainter on a QOpenGLWidget renders through the
         # GL paint engine, which - on some drivers - leaves GL_SCISSOR_TEST
@@ -3045,6 +3365,8 @@ class GLMeshViewer(QOpenGLWidget):
                 and self._ss_blit_program is not None
                 and self._ensure_ss_fbos()):
             self._render_scene_supersampled()
+            if self._markers_need_depth():
+                self._render_scene_depth_only()
         else:
             if self._ss_resolve_fbo is not None:
                 self._release_ss_fbos()
@@ -3052,8 +3374,27 @@ class GLMeshViewer(QOpenGLWidget):
         # Overlays (markers + text chips) drawn via QPainter - works on
         # the QOpenGLWidget because QPainter uses the GL paint engine.
         # MUST be called outside the active program's bind to avoid
-        # state corruption from the painter.
+        # state corruption from the painter. The markers themselves are
+        # drawn in GL from inside that pass (native painting), depth-tested
+        # against the scene depth left in the widget framebuffer.
         self._draw_overlays()
+
+    def _render_scene_depth_only(self) -> None:
+        """Re-render the scene into the widget framebuffer with colour
+        writes off, so its depth buffer holds the scene for the GL marker
+        pass. Only needed after a supersampled frame: that scene's depth
+        lives in the oversized multisample FBO, which can't be scaled into
+        the widget's (multisample) buffer by a blit."""
+        dpr = self.devicePixelRatio()
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER,
+                             int(self.defaultFramebufferObject()))
+        GL.glViewport(0, 0, max(1, int(self.width() * dpr)),
+                      max(1, int(self.height() * dpr)))
+        GL.glColorMask(GL.GL_FALSE, GL.GL_FALSE, GL.GL_FALSE, GL.GL_FALSE)
+        try:
+            self._render_scene()
+        finally:
+            GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE)
 
     def _render_scene_supersampled(self) -> None:
         """Render the scene oversized into the MSAA supersample FBO, then
@@ -3160,6 +3501,222 @@ class GLMeshViewer(QOpenGLWidget):
         self._ss_ms_fbo = None
         self._ss_resolve_fbo = None
         self._ss_fbo_size = (0, 0)
+
+    def _markers_need_depth(self) -> bool:
+        """Whether the GL marker pass will depth-test this frame: markers
+        not always on top, the GL marker program available, and at least
+        one group that can be hidden (per-marker z and occludable)."""
+        if self._markers_always_on_top or self._marker_program is None:
+            return False
+        return any(g.occludable and g.zs is not None and g.xs.size
+                   for g in self._markers)
+
+    def _build_marker_instances(self) -> np.ndarray:
+        """Per-marker instance rows (``_MARKER_STRIDE`` float32 each) for the
+        GL marker pass, in draw order: groups in list order, markers in
+        group order - so blending stacks them as the QPainter path did.
+
+        Projection, sizing and viewport culling run vectorised per group,
+        exactly as the QPainter path; the shader then only places a quad at
+        each world point and shades the glyph's signed-distance field."""
+        rows: list[np.ndarray] = []
+        mpp = max(float(self._mm_per_pixel), 1e-9)
+        dpr = max(float(self.devicePixelRatio()), 1e-6)
+        w_px = float(self.width())
+        h_px = float(self.height())
+        color_cache: dict[str, tuple[float, float, float, float]] = {}
+
+        def _rgba(c) -> tuple[float, float, float, float]:
+            key = str(c)
+            v = color_cache.get(key)
+            if v is None:
+                v = color_cache[key] = QColor(key).getRgbF()
+            return v
+
+        for group in self._markers:
+            n_all = int(group.xs.size)
+            if n_all == 0:
+                continue
+            zs = group.zs
+            px_arr, py_arr = self._project_points_screen(group.xs, group.ys,
+                                                         zs)
+            min_px = float(group.min_pixel_diameter)
+            if group.world_diameters_mm is not None:
+                sizes = np.maximum(np.asarray(group.world_diameters_mm,
+                                              dtype=np.float64) / mpp, min_px)
+            else:
+                sizes = np.full(n_all, float(group.size), dtype=np.float64)
+            vis = ((px_arr >= -sizes) & (px_arr <= w_px + sizes)
+                   & (py_arr >= -sizes) & (py_arr <= h_px + sizes))
+            idx = np.nonzero(vis)[0]
+            n = int(idx.size)
+            if n == 0:
+                continue
+            out = np.zeros((n, _MARKER_STRIDE), dtype=np.float32)
+            out[:, 0] = np.asarray(group.xs, dtype=np.float64)[idx]
+            out[:, 1] = np.asarray(group.ys, dtype=np.float64)[idx]
+            if zs is not None:
+                out[:, 2] = np.asarray(zs, dtype=np.float64)[idx]
+            r = 0.5 * sizes[idx]
+            # Edge: a QPainter pen is centred on the outline; width 0 is a
+            # cosmetic one-device-pixel pen.
+            ew = float(group.edge_width)
+            eh = 0.5 * ew if ew > 0.0 else 0.5 / dpr
+            out[:, 20] = eh
+            out[:, 8:12] = _rgba(group.color)
+            out[:, 12:16] = _rgba(group.edge_color)
+            shape = _MARKER_SHAPES.get(group.symbol, 0)
+            out[:, 6] = shape
+            out[:, 7] = r
+            reach = r * _MARKER_SHAPE_REACH.get(shape, 1.0)
+            if group.symbol in ("tri_up_box", "tri_down_box"):
+                # The triangle's true bounding rect plus a 2 px pad (see the
+                # QPainter _draw_symbol) - drawn as a rect off-centre.
+                pad = 2.0
+                half_w = r * 0.866 + pad
+                if group.symbol == "tri_up_box":
+                    y0, y1 = -r - pad, r * 0.5 + pad
+                else:
+                    y0, y1 = -r * 0.5 - pad, r + pad
+                out[:, 6] = _MARKER_SHAPES["_rect"]
+                out[:, 4] = 0.5 * (y0 + y1)
+                out[:, 22] = half_w
+                out[:, 23] = 0.5 * (y1 - y0)
+                reach = np.hypot(half_w, 0.5 * (y1 - y0))
+            if group.ring_width > 0.0 and group.ring_colors is not None:
+                ring_w = float(group.ring_width)
+                for k, i in enumerate(idx):
+                    rc = group.ring_colors[int(i)]
+                    if rc:
+                        out[k, 16:20] = _rgba(rc)
+                        out[k, 21] = ring_w
+            reach = np.broadcast_to(np.asarray(reach, dtype=np.float64),
+                                    (n,)).copy()
+            obs = group.world_obrounds
+            if obs is not None:
+                ob_k = [k for k, i in enumerate(idx)
+                        if obs[int(i)] is not None]
+                if ob_k:
+                    ob_k = np.asarray(ob_k, dtype=np.int64)
+                    ob_i = idx[ob_k]
+                    params = np.asarray([obs[int(i)][:3] for i in ob_i],
+                                        dtype=np.float64)
+                    rounded = np.asarray([bool(obs[int(i)][3]) for i in ob_i])
+                    th = np.radians(params[:, 2])
+                    hx = 0.5 * params[:, 0] * np.cos(th)
+                    hy = 0.5 * params[:, 0] * np.sin(th)
+                    wx = np.asarray(group.xs, dtype=np.float64)[ob_i]
+                    wy = np.asarray(group.ys, dtype=np.float64)[ob_i]
+                    wz = (np.asarray(zs, dtype=np.float64)[ob_i]
+                          if zs is not None else None)
+                    sx1, sy1 = self._project_points_screen(wx + hx, wy + hy,
+                                                           wz)
+                    sx2, sy2 = self._project_points_screen(wx - hx, wy - hy,
+                                                           wz)
+                    width_px = np.maximum(params[:, 1] / mpp, min_px)
+                    length_px = np.maximum(np.hypot(sx1 - sx2, sy1 - sy2),
+                                           width_px)
+                    out[ob_k, 6] = np.where(rounded,
+                                            _MARKER_SHAPES["_capsule"],
+                                            _MARKER_SHAPES["_rect"])
+                    out[ob_k, 22] = 0.5 * length_px
+                    out[ob_k, 23] = 0.5 * width_px
+                    out[ob_k, 24] = np.arctan2(sy1 - sy2, sx1 - sx2)
+                    out[ob_k, 21] = 0.0     # slots never carry a ring
+                    reach[ob_k] = np.hypot(0.5 * length_px, 0.5 * width_px)
+            # Quad half-extent: the glyph plus whatever strokes reach past
+            # its outline, plus a couple of pixels for the antialiased edge.
+            out[:, 5] = reach + np.maximum(eh, out[:, 21]) + 2.0
+            out[:, 25] = 1.0 if (group.occludable and zs is not None) else 0.0
+            rows.append(out)
+        if not rows:
+            return np.zeros((0, _MARKER_STRIDE), dtype=np.float32)
+        return np.concatenate(rows)
+
+    def _draw_markers_gl(self, inst: np.ndarray) -> None:
+        """Draw the marker instances (see :meth:`_build_marker_instances`)
+        into the widget framebuffer. Called inside the QPainter overlay pass
+        between ``beginNativePainting`` / ``endNativePainting``, after the
+        scene left its depth in that framebuffer.
+
+        Not always on top: each fragment takes the depth of the marker's own
+        copper plane under that pixel (nudged a little toward the eye), and
+        the depth test (LEQUAL, no depth write) cuts it wherever copper above
+        that plane was drawn - a partial cover hides just that part."""
+        prog = self._marker_program
+        n = int(inst.shape[0])
+        if prog is None or n == 0:
+            return
+        dpr = self.devicePixelRatio()
+        dev_w = max(1, int(self.width() * dpr))
+        dev_h = max(1, int(self.height() * dpr))
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER,
+                             int(self.defaultFramebufferObject()))
+        GL.glViewport(0, 0, dev_w, dev_h)
+        GL.glDisable(GL.GL_SCISSOR_TEST)
+        GL.glDisable(GL.GL_STENCIL_TEST)
+        GL.glDisable(GL.GL_CULL_FACE)
+        occlude = self._markers_need_depth()
+        if occlude:
+            GL.glEnable(GL.GL_DEPTH_TEST)
+            GL.glDepthFunc(GL.GL_LEQUAL)
+        else:
+            GL.glDisable(GL.GL_DEPTH_TEST)
+        GL.glDepthMask(GL.GL_FALSE)
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFunc(GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)
+
+        mvp = self._current_mvp()
+        inv, ok = mvp.inverted()
+        persp = self._view_mode == "3d"
+        if persp:
+            near, far = self._clip_planes_3d()
+            # Eye-space allowance: the marker rides its copper's top face.
+            tol = (0.02 * float(self._vertical_exaggeration)
+                   + 0.001 * float(self._cam_distance))
+        else:
+            near, far = -1e6, 1e6
+            # NDC allowance in 2D: ~1.25 steps of the 24-bit depth buffer
+            # over the +/-1e6 mm ortho range (~0.15 mm of layer z), so the
+            # marker's own layer never hides it.
+            tol = 1.5e-7
+
+        prog.bind()
+        prog.setUniformValue(self._mk_u_mvp_loc, mvp)
+        prog.setUniformValue(self._mk_u_inv_mvp_loc, inv)
+        # Raw glUniform* for scalars / vec2: see _draw_lines.
+        GL.glUniform2f(self._mk_u_viewport_loc, float(max(1, self.width())),
+                       float(max(1, self.height())))
+        GL.glUniform2f(self._mk_u_dev_viewport_loc, float(dev_w),
+                       float(dev_h))
+        GL.glUniform1f(self._mk_u_px_loc, float(dpr))
+        GL.glUniform1i(self._mk_u_occlude_loc, 1 if occlude else 0)
+        GL.glUniform1i(self._mk_u_persp_loc, 1 if (persp and ok) else 0)
+        GL.glUniform1f(self._mk_u_near_loc, float(near))
+        GL.glUniform1f(self._mk_u_far_loc, float(far))
+        GL.glUniform1f(self._mk_u_tol_loc, float(tol))
+
+        self._marker_vao.bind()
+        self._marker_vbo.bind()
+        data = np.ascontiguousarray(inst, dtype=np.float32)
+        self._marker_vbo.allocate(data.tobytes(), data.nbytes)
+        stride = _MARKER_STRIDE * 4
+        for loc, size, off in _MARKER_ATTRIBS:
+            GL.glEnableVertexAttribArray(loc)
+            GL.glVertexAttribPointer(loc, size, GL.GL_FLOAT, GL.GL_FALSE,
+                                     stride, ctypes.c_void_p(off * 4))
+            GL.glVertexAttribDivisor(loc, 1)
+        GL.glDrawArraysInstanced(GL.GL_TRIANGLE_STRIP, 0, 4, n)
+        for loc, _size, _off in _MARKER_ATTRIBS:
+            GL.glVertexAttribDivisor(loc, 0)
+            GL.glDisableVertexAttribArray(loc)
+        self._marker_vbo.release()
+        self._marker_vao.release()
+        prog.release()
+        GL.glDisable(GL.GL_BLEND)
+        GL.glDisable(GL.GL_DEPTH_TEST)
+        GL.glDepthMask(GL.GL_TRUE)
+        GL.glDepthFunc(GL.GL_LESS)
 
     def _render_scene(self) -> None:
         """Draw the full GL scene - copper mesh, stubs, overlays, outlines,
@@ -3892,7 +4449,20 @@ class GLMeshViewer(QOpenGLWidget):
         self._draw_pending_links(painter)
         self._draw_series_links(painter)
         self._draw_overlay_labels(painter, on_top=False)
-        self._draw_markers(painter)
+        if self._marker_program is not None:
+            # Native GL between the painter passes keeps the stacking the
+            # QPainter glyphs had (above the labels / links drawn so far,
+            # below the on-top labels and chips), while depth-testing the
+            # glyphs against the scene depth still in this framebuffer.
+            inst = self._build_marker_instances()
+            if inst.shape[0]:
+                painter.beginNativePainting()
+                try:
+                    self._draw_markers_gl(inst)
+                finally:
+                    painter.endNativePainting()
+        else:
+            self._draw_markers(painter)
         # Second label pass: ``on_top`` labels (e.g. via-span text) sit
         # above the marker dots so they stay legible inside the via.
         self._draw_overlay_labels(painter, on_top=True)
@@ -4302,6 +4872,8 @@ class GLMeshViewer(QOpenGLWidget):
         painter.restore()
 
     def _draw_markers(self, painter: QPainter) -> None:
+        """QPainter glyphs - the fallback when the GL marker program is
+        unavailable (always on top; see :meth:`_draw_markers_gl`)."""
         if not self._markers:
             return
         mpp = max(float(self._mm_per_pixel), 1e-9)

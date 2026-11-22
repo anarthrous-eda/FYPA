@@ -74,8 +74,8 @@ _GROUP_GAP = 12
 
 # caption / status tone -> theme token
 _TONES = {
-    "accent": "accent",
-    "ok": "ok",
+    "accent": "tab_bar_setup",
+    "ok": "tab_bar_results",
     "warn": "warn",
     "err": "err",
     "dim": "fg_dim",
@@ -314,7 +314,7 @@ class TabStrip(QWidget):
             # its state (a stale one keeps its italics).
             "QToolButton[stripTab=\"true\"]:checked {{"
             "  background-color: {bg}; color: {fg_strong};"
-            "  border-top: 2px solid {accent}; padding-top: 5px; }}"
+            "  border-top: 2px solid {tab_bar_setup}; padding-top: 5px; }}"
         )
         # The open tab's bar takes its group caption's colour.
         for tone, token in _TONES.items():

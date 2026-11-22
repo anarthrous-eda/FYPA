@@ -33,7 +33,7 @@ class HoverExpander(QObject):
     """
 
     def __init__(self, btn: QAbstractButton, label_fn: Callable[[], str],
-                 active_fn: Callable[[], bool], *, delay_ms: int = 500,
+                 active_fn: Callable[[], bool], *, delay_ms: int = 200,
                  collapsed: int = 34, duration_ms: int = 160) -> None:
         super().__init__(btn)
         self._btn = btn

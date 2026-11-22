@@ -176,7 +176,9 @@ class _EditorFormMixin:
                            lids[0] if lids else None)
                 phys = id_to_phys.get(lid)
                 color = self._layer_color_for(phys) if phys else None
-                z = self._layer_z_for(phys) if phys else 0.0
+                # Drawn z (2D selected-layer lift included) so the marker
+                # depth-sorts with its copper.
+                z = self._layer_render_z(phys) if phys else 0.0
                 pts.append((cx, cy, color, z))
             else:
                 pts.append((cx, cy))

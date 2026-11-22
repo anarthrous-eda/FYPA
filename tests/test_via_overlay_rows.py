@@ -73,6 +73,10 @@ def viewer(qapp):
         ],
     }
     v._phys_name_to_layer_id = {"Top": 1, "Bottom": 2}
+    # Layer z for the via dots' occlusion depth (top 0, bottom -1.6).
+    v._physicals = ["Top", "Bottom"]
+    v._phys_z_mm = {"Top": 0.0, "Bottom": -1.6}
+    v._selected_layer = None
     v.view_3d_box = _Box(False)
     v.mode_combo = _Box(text="Voltage")
     v._gl_viewer = _FakeGL()
@@ -124,6 +128,19 @@ def test_rails_eye_keeps_layer_driven_behaviour(viewer) -> None:
     assert _pths(viewer) == {(5.0, 5.0)}
     # The legend no longer carries VIA / PTH rows.
     assert not {r.key for r in viewer._gl_viewer.legend} & {"VIA", "PTH"}
+
+
+def test_via_dots_carry_highest_visible_span_layer_z(viewer) -> None:
+    """Dots carry a z so copper above them can hide them (markers not
+    always on top): the highest visible layer their span reaches."""
+    def _zs(v):
+        return sorted(float(z) for g in v._gl_viewer.markers
+                      if g.zs is not None and g.world_diameters_mm is not None
+                      for z in g.zs)
+    viewer._update_markers_and_legend(["Bottom"], ["VCC"])
+    assert _zs(viewer) == [-1.6, -1.6]          # via + PTH, bottom only
+    viewer._update_markers_and_legend(["Top", "Bottom"], ["VCC"])
+    assert _zs(viewer) == [0.0, 0.0]            # top reached, so top z
 
 
 def test_rails_eye_follows_all_copper_eye(viewer) -> None:
