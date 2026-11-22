@@ -214,7 +214,7 @@ def test_panel_actions_reach_the_viewer(qapp, monkeypatch):
     assert opened == [{}] and solves == [1] and win.calls == ["manual"]
 
 
-def test_topology_panel_covers_the_view_and_greys_out_solve_and_whatif(qapp):
+def test_topology_panel_covers_the_view_greys_solve_keeps_whatif(qapp):
     from PySide6.QtWidgets import QMainWindow
 
     import fypa.altium_viewer as av
@@ -241,7 +241,8 @@ def test_topology_panel_covers_the_view_and_greys_out_solve_and_whatif(qapp):
     panel = v._topology_view._empty_panel
     assert panel.isVisible() and panel.action == "setup"
     assert panel.geometry() == v._topology_view.viewport().geometry()
-    assert not v._topology_whatif_btn.isEnabled()
+    # What-If stays selectable, like the Board's: its panel says why.
+    assert v._topology_whatif_btn.isEnabled()
     assert "set up" in v._topology_resolve_btn.toolTip().lower()
 
     v._topology_show_setup_panel(False)

@@ -289,6 +289,42 @@ def save_setup(prjpcb_path: Path, pcbdoc_path: Path | None,
     return None
 
 
+def setup_hash(setup: SavedSetup) -> str:
+    """A key for the solve cache: changes whenever the restore could give a
+    different answer, and only then.
+
+    Covers what the matcher reads - the entries with their part
+    fingerprints, the copper names and the held entries - and the source of
+    the code that does the matching and applies the result, so a change to
+    either re-solves. Leaves out what doesn't affect it: when the file was
+    saved and where it lives (a design whose setup file moved from the
+    per-user cache to beside the board still hits)."""
+    import hashlib
+
+    content = {
+        "directives": [{**d.to_dict(), "anchor": setup.anchors.get(d.id)}
+                       for d in setup.directives],
+        "copper_names": [c.to_dict() for c in setup.copper_names],
+        "held": [h.to_dict() for h in setup.held],
+    }
+    h = hashlib.sha1(json.dumps(content, sort_keys=True).encode("utf-8"))
+    here = Path(__file__).resolve().parent
+    for src in (here / "setup_sidecar.py", here / "editor_directives.py",
+                here / "project_file.py"):
+        try:
+            h.update(src.read_bytes())
+        except OSError:
+            # A frozen build ships no .py sources; the version string below
+            # stands in for them there.
+            pass
+    try:
+        from fypa.cli import __version__
+        h.update(str(__version__).encode("utf-8"))
+    except Exception:  # noqa: BLE001
+        pass
+    return h.hexdigest()[:20]
+
+
 def load_setup(prjpcb_path: Path, pcbdoc_path: Path | None) -> SavedSetup | None:
     """The saved setup for this design, or ``None``. The file beside the
     design wins over the per-user copy. An unreadable file is logged and
@@ -989,5 +1025,5 @@ __all__ = [
     "ReviewItem", "SIDECAR_SUFFIX", "SavedSetup", "component_fingerprint",
     "describe", "fallback_path", "load_setup", "match_exact", "match_saved",
     "load_setup_file", "match_import", "retarget_to",
-    "save_setup", "schematic_designators", "sidecar_path",
+    "save_setup", "schematic_designators", "setup_hash", "sidecar_path",
 ]

@@ -109,6 +109,7 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         self.tabs = QTabWidget(self)
         self.tabs.addTab(self._build_home_tab(), "Home")
         self.tabs.addTab(self._build_settings_tab(), "Settings")
+        self._style_launcher_tabs()
         self.setCentralWidget(self.tabs)
 
         self._build_menubar()
@@ -117,6 +118,14 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         self._solve_worker: _SolveWorker | None = None
         self._solve_progress_dlg: QProgressDialog | None = None
         self._solve_progress_updater: _SolveProgressUpdater | None = None
+
+    def _style_launcher_tabs(self) -> None:
+        """Open-tab bar in the neutral APP-group colour, as Settings / Help
+        have in the main window's strip - not the app-wide accent blue,
+        which there marks the SETUP tabs."""
+        self.tabs.setStyleSheet(
+            "QTabBar::tab:selected { border-top-color: "
+            f"{_T()['tab_bar_neutral']}; }}")
 
     def _build_home_tab(self) -> QWidget:
         """Build the Home (welcome) tab. Rebuilt wholesale on a theme change
@@ -222,6 +231,7 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
                 old.deleteLater()
             tabs.insertTab(i, builder(), title)
         tabs.setCurrentIndex(keep_current)
+        self._style_launcher_tabs()
         status = getattr(self, "_theme_status_label", None)
         if status is not None:
             t = _T()

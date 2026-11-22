@@ -846,7 +846,8 @@ def _project_fingerprint(prjpcb_path: Path,
                          settings=None,
                          pdn_json=None,
                          pdn_corner: str | None = None,
-                         variant_name: str | None = None) -> dict:
+                         variant_name: str | None = None,
+                         setup_hash: str | None = None) -> dict:
     """Fingerprint for the cached solve (solve.pkl).
 
     Includes everything: project files + all tool source hashes + the
@@ -856,11 +857,18 @@ def _project_fingerprint(prjpcb_path: Path,
     ``variant_name`` is the assembly variant the solve used (resolved, not
     the request). Only a named variant adds a key, so a base-design solve
     keys the same as one cached before variants were supported.
+
+    ``setup_hash`` is :func:`fypa.setup_sidecar.setup_hash` of the setup
+    restored from beside the design, when the solve included one. Like the
+    variant it only adds a key when set, so a plain solve and a with-setup
+    solve can never be served for each other.
     """
     fp = _project_fingerprint_base(prjpcb_path, pcbdoc_path, settings,
                                    pdn_json, pdn_corner)
     if variant_name:
         fp["variant"] = variant_name
+    if setup_hash:
+        fp["setup"] = setup_hash
     return fp
 
 

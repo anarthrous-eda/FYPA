@@ -156,6 +156,11 @@ def open_review_dialog(window, items, *, applied_notes=None,
     if extracted is None:
         loaded = getattr(window, "_loaded_project", None)
         extracted = getattr(loaded, "extracted", None)
+    if extracted is None and hasattr(window, "_topology_loaded_for_setup"):
+        # Opened from the solve cache: no design in memory. Fetch it (the
+        # design-info cache, usually) so a part can be picked by hand.
+        loaded = window._topology_loaded_for_setup("Review saved setup")
+        extracted = getattr(loaded, "extracted", None)
     designators = sorted(
         str(c.designator)
         for c in getattr(extracted, "pcb_components", ()) or ())

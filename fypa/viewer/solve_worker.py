@@ -349,6 +349,9 @@ class _SolveWorker(QThread):
         self._restore_setup = bool(restore_setup) and not editor_directives
         self._saved_setup = None       # SavedSetup read at the start of run()
         self._restore_report = None    # RestoreReport once matched
+        # setup_sidecar.setup_hash of the saved setup: part of the solve-cache
+        # key, so a design reopened with the same setup reuses its solve.
+        self._setup_hash: str | None = None
         # Assembly variant request (Properties tab, persisted in the .fypa):
         # None follows Altium's CurrentVariant, "" is the base design. Acts
         # while annotations are parsed, so it reaches load_project.
@@ -774,6 +777,8 @@ class _SolveWorker(QThread):
                     saved = None
                 if saved is not None and not saved.is_empty():
                     self._saved_setup = saved
+                    from fypa.setup_sidecar import setup_hash
+                    self._setup_hash = setup_hash(saved)
 
             # Solve-cache fast path: pickle.load can take 5-10 s on large
             # boards and blocks until the file is fully read, so doing it
@@ -786,15 +791,19 @@ class _SolveWorker(QThread):
                     and pcbdoc_resolved is not None
                     and not self._stackup_overrides
                     and not self._sink_overrides
-                    and not self._editor_directives
-                    and self._saved_setup is None):
+                    and not self._editor_directives):
                 self.stage_changed.emit(
                     f"Checking solve cache for {self._prjpcb_path.name}…"
                 )
                 try:
+                    # With a saved setup the key includes it, so this only
+                    # hits a solve made with exactly this setup on exactly
+                    # these design files - the restore would match the same
+                    # way again, and its report is in the cached metadata.
                     cached = _try_solve_cache(self._prjpcb_path, pcbdoc_resolved,
                                               self._pdn_json, self._pdn_corner,
-                                              variant=self._variant)
+                                              variant=self._variant,
+                                              setup_hash=self._setup_hash)
                 except Exception as e:
                     logging.getLogger(__name__).warning(
                         "Solve-cache check failed (%s: %s); will re-solve.",
@@ -1200,7 +1209,10 @@ class _SolveWorker(QThread):
                     "keeps the base design's result).",
                 )
             elif (self._stackup_overrides or self._sink_overrides
-                    or self._editor_directives
+                    # Editor directives from a restored setup are keyed by
+                    # its hash; any others make the solve unrepeatable.
+                    or (self._editor_directives
+                        and self._restore_report is None)
                     or self._adaptive_regulator_gain):
                 _cache_log.info(
                     "Solve cache NOT written: stackup/sink overrides, "
@@ -1227,7 +1239,13 @@ class _SolveWorker(QThread):
                         pdn_json=self._pdn_json,
                         pdn_corner=self._pdn_corner,
                         variant_name=_vc.name if _vc is not None else None,
+                        setup_hash=(self._setup_hash
+                                    if self._restore_report is not None
+                                    else None),
                     )
+                    # A cache hit must hand the viewer the same restore
+                    # outcome as this solve, so it travels with the result.
+                    self._attach_restore_report(metadata)
                     cache_path = _solve_cache_path(
                         self._prjpcb_path, pcbdoc_resolved,
                     )
@@ -1606,7 +1624,9 @@ def _try_solve_cache(prjpcb_path: Path,
                      pcbdoc_path: Path | None,
                      pdn_json=None,
                      pdn_corner: str | None = None,
-                     variant: str | None = None) -> tuple[object, dict] | None:
+                     variant: str | None = None,
+                     setup_hash: str | None = None
+                     ) -> tuple[object, dict] | None:
     """Return ``(solution, metadata)`` from the FYPA solve cache if the
     fingerprint matches, else ``None``. Wraps the FYPA helpers so menu
     handlers don't have to know about fingerprints; cache misses + import
@@ -1620,7 +1640,8 @@ def _try_solve_cache(prjpcb_path: Path,
         variant_name = resolve_variant(read_variants(prjpcb_path), variant).name
         fp = _project_fingerprint(prjpcb_path, pcbdoc_path,
                                   pdn_json=pdn_json, pdn_corner=pdn_corner,
-                                  variant_name=variant_name)
+                                  variant_name=variant_name,
+                                  setup_hash=setup_hash)
         cached = _try_load_cached_solution(prjpcb_path, fp,
                                             pcbdoc_path=pcbdoc_path)
     except Exception as e:

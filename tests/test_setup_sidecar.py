@@ -585,7 +585,7 @@ def test_import_without_fingerprints_matches_by_designator(paths, tmp_path):
 
 def _import_window(paths, extracted):
     win = _review_window(paths, SS.RestoreReport(), extracted)
-    win._topology_loaded_for_setup = lambda: SimpleNamespace(
+    win._topology_loaded_for_setup = lambda _title="": SimpleNamespace(
         extracted=extracted, annotations=SimpleNamespace(directives=[]))
     return win
 
@@ -664,6 +664,107 @@ def test_review_dialog_in_import_mode_offers_dont_import(qapp, paths):
     labels = [combo.itemText(i) for i in range(combo.count())]
     assert "Don't import" in labels and "Remove from the setup" not in labels
     assert dlg.decisions()[0][1] == KEEP
+
+
+# --- solve cache ---------------------------------------------------------------
+
+def test_setup_hash_ignores_when_and_where_it_was_saved(paths, tmp_path):
+    prj, pcb, _ = paths
+    design = _design(_comp("U1"))
+    first = _saved(paths, [_sink()], design)
+    # Saved again later, and once more in another folder: same key.
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    SS.save_setup(other / "B.PrjPcb", other / "B.PcbDoc", first.directives, [],
+                  extracted=design)
+    moved = SS.load_setup(other / "B.PrjPcb", other / "B.PcbDoc")
+    assert SS.setup_hash(first) == SS.setup_hash(moved)
+
+
+def test_setup_hash_follows_what_the_restore_reads(paths):
+    design = _design(_comp("U1"))
+    base = SS.setup_hash(_saved(paths, [_sink(current=0.5)], design))
+    assert SS.setup_hash(_saved(paths, [_sink(current=0.6)], design)) != base
+    moved_part = _design(_comp("U1", xy=(99.0, 99.0)))
+    assert SS.setup_hash(_saved(paths, [_sink(current=0.5)], moved_part)) != base
+
+
+def test_cache_key_gains_the_setup_only_when_there_is_one():
+    from fypa.cli import _project_fingerprint
+
+    prj = Path("ExampleDesigns/Sandbox/Sandbox.PrjPcb")
+    plain = _project_fingerprint(prj, None)
+    keyed = _project_fingerprint(prj, None, setup_hash="abc123")
+    assert "setup" not in plain
+    assert keyed["setup"] == "abc123"
+    assert {k: v for k, v in keyed.items() if k != "setup"} == plain
+
+
+@pytest.fixture
+def sandbox_copy(tmp_path):
+    import shutil
+
+    src = Path("ExampleDesigns/Sandbox")
+    if not (src / "Sandbox.PrjPcb").exists():
+        pytest.skip("Sandbox example design not available")
+    dst = tmp_path / "Sandbox"
+    shutil.copytree(src, dst)
+    yield dst / "Sandbox.PrjPcb", dst / "Sandbox.PcbDoc"
+    from fypa.cli import _project_cache_dir
+    shutil.rmtree(_project_cache_dir(dst / "Sandbox.PrjPcb",
+                                     dst / "Sandbox.PcbDoc"),
+                  ignore_errors=True)
+
+
+def _run_import(prj, pcb, *, restore=True):
+    """One Altium import through the solve worker, run on this thread:
+    ``(stage messages, metadata)``."""
+    from fypa.altium.loader import SolveSettings
+    from fypa.viewer.solve_worker import _SolveWorker
+
+    stages, done, failed = [], [], []
+    w = _SolveWorker(prj, SolveSettings(), pcbdoc_selector=str(pcb),
+                     try_solve_cache_first=True, restore_setup=restore)
+    w.stage_changed.connect(stages.append)
+    w.finished_ok.connect(lambda sol, md, _l: done.append(md))
+    w.failed.connect(failed.append)
+    w.run()
+    assert not failed, failed[0][:2000]
+    return stages, done[0]
+
+
+def test_reopening_with_the_same_setup_reuses_the_solve(qapp, sandbox_copy):
+    from fypa.altium.loader import load_project
+
+    prj, pcb = sandbox_copy
+    loaded = load_project(prj)
+    schem = SS.schematic_designators(loaded.annotations.directives)
+    pins = SS._pins_by_component(loaded.extracted)
+    part, nets = next(
+        (c.designator, sorted({n for n in pins.get(i, {}).values() if n}))
+        for i, c in enumerate(loaded.extracted.pcb_components)
+        if c.designator.upper() not in schem
+        and len({n for n in pins.get(i, {}).values() if n}) >= 2)
+    sink = EditorDirective(kind="component", role="SINK", designator=part,
+                           single_net=False, p_net=nets[1], n_net=nets[0],
+                           current=0.05)
+    SS.save_setup(prj, pcb, [sink], [], extracted=loaded.extracted)
+
+    def hit(stages):
+        return any("Solve cache hit" in s for s in stages)
+
+    stages, md = _run_import(prj, pcb)
+    assert not hit(stages)
+    assert [d["designator"] for d in md["setup_restore"]["applied"]] == [part]
+
+    stages, md = _run_import(prj, pcb)
+    assert hit(stages)
+    assert [d["designator"] for d in md["setup_restore"]["applied"]] == [part]
+
+    # A plain import (no setup restore) must never get the with-setup solve.
+    # (A changed setup is a different key too - see the setup_hash tests.)
+    stages, md = _run_import(prj, pcb, restore=False)
+    assert not hit(stages) and "setup_restore" not in md
 
 
 def test_report_warns_about_held_entries():

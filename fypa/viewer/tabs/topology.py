@@ -1063,14 +1063,10 @@ class _TopologyTabMixin:
             if getattr(self, "_topology_needs_setup", False)
             else "Re-run the solver with the current editor changes applied")
 
-    _TOPOLOGY_WHATIF_TIP_NO_SETUP = (
-        "What-Ifs compare changes against a solved result - set up sources "
-        "and sinks and solve first.")
-
     def _topology_show_setup_panel(self, on: bool) -> None:
-        """Show (or hide) the "nothing set up yet" panel over the diagram,
-        and grey out what can't work without a setup: Solve and What-If,
-        each with a tooltip saying why."""
+        """Show (or hide) the "nothing set up yet" panel over the diagram;
+        Solve's tooltip says why it is greyed out. What-If stays selectable,
+        as on the Board: its panel itself says a solve is needed first."""
         from fypa.viewer.empty_state import (
             ACTION_SETUP, SETUP_TITLE, EmptyStatePanel,
         )
@@ -1090,16 +1086,6 @@ class _TopologyTabMixin:
         show = getattr(view, "show_empty_panel", None)
         if show is not None:
             show(bool(on))
-        wbtn = getattr(self, "_topology_whatif_btn", None)
-        if wbtn is not None:
-            if on and not wbtn.isChecked():
-                if wbtn.isEnabled():
-                    self._topology_whatif_tip = wbtn.toolTip()
-                wbtn.setEnabled(False)
-                wbtn.setToolTip(self._TOPOLOGY_WHATIF_TIP_NO_SETUP)
-            elif not on and not wbtn.isEnabled():
-                wbtn.setEnabled(True)
-                wbtn.setToolTip(getattr(self, "_topology_whatif_tip", ""))
         self._topology_refresh_resolve_btn()
 
     def _on_topology_resolve(self) -> None:
@@ -1109,8 +1095,10 @@ class _TopologyTabMixin:
 
     # --- Auto setup / click-to-add --------------------------------------------
 
-    def _topology_loaded_for_setup(self):
-        """The loaded design, or ``None`` after telling the user why not.
+    def _topology_loaded_for_setup(self, title: str = "Auto setup"):
+        """The loaded design, or ``None`` after telling the user why not
+        (in a message box titled ``title`` - Auto setup, Manual setup or
+        Import setup, whichever asked).
 
         A viewer opened through the solve cache (or from a bare solve
         pickle) carries no design in memory. Fetch it the way a Resolve
@@ -1121,22 +1109,23 @@ class _TopologyTabMixin:
         if loaded is None:
             if (self.metadata or {}).get("source_kind") == "gerber":
                 QMessageBox.information(
-                    self, "Auto setup",
-                    "This design was imported from Gerber files, which carry no "
-                    "schematic, so parts can't be classified. Add directives by "
-                    "hand in the PDN editor instead.")
+                    self, title,
+                    "This design was imported from Gerber files, which carry "
+                    "no schematic, so FYPA can't list its parts and pins. "
+                    "Place sources and sinks on the board instead: switch on "
+                    "Edit, then click copper to drop a marker.")
                 return None
             loaded = self._fetch_design_info(
-                "Auto setup", "pin names, nets and part parameters")
+                title, "pin names, nets and part parameters")
             if loaded is None:
                 return None
         ex = loaded.extracted
         if getattr(ex, "compiled_netlist", None) is None:
             QMessageBox.information(
-                self, "Auto setup",
-                "This design has no schematic netlist (e.g. a Gerber import), so "
-                "pin names are unknown and parts can't be classified. Add "
-                "directives by hand in the PDN editor instead.")
+                self, title,
+                "This design has no schematic netlist, so FYPA can't list its "
+                "parts and pins. Place sources and sinks on the board "
+                "instead: switch on Edit, then click copper to drop a marker.")
             return None
         return loaded
 
@@ -1260,7 +1249,7 @@ class _TopologyTabMixin:
         last = getattr(self, "_autosetup_last", None)
         if last is not None:
             return last
-        loaded = self._topology_loaded_for_setup()
+        loaded = self._topology_loaded_for_setup("Manual setup")
         if loaded is None:
             return None
         from fypa.autosetup import build_design_view, suggest

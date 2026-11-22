@@ -52,7 +52,7 @@ def import_setup_from_design(window, path: str | Path | None = None) -> None:
     if isinstance(source, str):
         QMessageBox.information(window, "Import setup", source)
         return
-    loaded = window._topology_loaded_for_setup()
+    loaded = window._topology_loaded_for_setup("Import setup")
     if loaded is None:
         return
 
