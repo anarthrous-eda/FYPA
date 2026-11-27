@@ -14,7 +14,7 @@ further cards above it.
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTimer
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QToolButton
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QToolButton, QWidget
 
 from fypa.viewer.theme import _T
 
@@ -139,7 +139,7 @@ class ToastBar(QObject):
         central area."""
         win = self._window
         for anchor in (getattr(win, "_gl_viewer", None), win.centralWidget()):
-            if anchor is not None and anchor.isVisible():
+            if isinstance(anchor, QWidget) and anchor.isVisible():
                 return anchor.mapTo(win, anchor.rect().bottomRight())
         return win.rect().bottomRight()
 

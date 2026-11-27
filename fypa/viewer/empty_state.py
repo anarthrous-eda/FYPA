@@ -73,7 +73,7 @@ class EmptyStatePanel(QWidget):
         self._title.setWordWrap(True)
         self._title.setStyleSheet(
             f"QLabel {{ color: {t['fg_strong']}; font-size: 13pt;"
-            " font-weight: 600; background: transparent; }}")
+            " font-weight: 600; background: transparent; }")
         lay.addWidget(self._title)
 
         self._body = QLabel("")
@@ -88,7 +88,7 @@ class EmptyStatePanel(QWidget):
         self.button.setStyleSheet(
             f"QPushButton {{ background-color: {t['accent_btn']};"
             f" color: {t['fg_strong']}; border: 1px solid {t['accent_btn_hov']};"
-            " border-radius: 6px; padding: 7px 18px; font-weight: 600; }}"
+            " border-radius: 6px; padding: 7px 18px; font-weight: 600; }"
             f"QPushButton:hover {{ background-color: {t['accent_btn_hov']}; }}")
         self.button.clicked.connect(self._on_button)
         brow = QHBoxLayout()
