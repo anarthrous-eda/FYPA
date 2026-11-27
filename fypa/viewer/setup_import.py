@@ -24,12 +24,13 @@ from PySide6.QtWidgets import QFileDialog, QMessageBox
 _FILTER = ("FYPA setup or project (*.fypa-setup.json *.fypa-setup.json.bak "
            "*.fypa);;"
            "Altium design with a saved setup (*.PcbDoc *.PrjPcb);;"
+           "KiCad design with a saved setup (*.kicad_pcb *.kicad_pro);;"
            "All files (*)")
 
 
 def import_setup_from_design(window, path: str | Path | None = None) -> None:
     """Ask for a source (unless ``path``), match it to this design and add
-    what fits. Altium designs only - a Gerber import has no parts."""
+    what fits. Altium and KiCad designs only - a Gerber import has no parts."""
     from fypa.setup_sidecar import describe, load_setup_file, match_import
     from fypa.viewer.theme import _file_dialog_options
 

@@ -54,6 +54,12 @@ a = Analysis(
         # 3Dconnexion SpaceMouse (optional extra: uv sync --extra spacemouse)
         'pynavlib',
         'pynavlib.pynavlib_interface',
+        # KiCad import (beta): imported inside functions where a KiCad path
+        # is met - named so a frozen build can't ship without it.
+        'fypa.kicad',
+        'fypa.kicad.extract',
+        'fypa.kicad.sexpr',
+        'fypa.design_source',
     ] + _altium_monkey_submodules,
     hookspath=[],
     hooksconfig={},

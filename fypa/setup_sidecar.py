@@ -1064,14 +1064,25 @@ def match_saved(saved: SavedSetup, extracted, schematic_directives=()
 
 def load_setup_file(path: Path) -> SavedSetup | str:
     """A setup to import, read from ``path``: a ``.fypa-setup.json``, a
-    ``.fypa`` project, or a ``.PcbDoc`` / ``.PrjPcb`` with a setup file
-    beside it. Returns a sentence when there is nothing to import.
+    ``.fypa`` project, or a ``.PcbDoc`` / ``.PrjPcb`` / ``.kicad_pcb`` /
+    ``.kicad_pro`` with a setup file beside it. Returns a sentence when there
+    is nothing to import.
 
     A ``.fypa`` carries no part fingerprints, so its entries can only be
     matched by designator (and offered for review otherwise)."""
     path = Path(path)
     name = path.name.lower()
-    if name.endswith((".pcbdoc", ".prjpcb")):
+    if name.endswith((".kicad_pcb", ".kicad_pro")):
+        # One board per KiCad project: the sidecar sits beside the .kicad_pcb.
+        board = path.with_suffix(".kicad_pcb")
+        beside = sidecar_path(board, board)
+        if not beside.is_file():
+            return (f"{path.name} has no saved setup beside it "
+                    f"({beside.name}). Set it up in FYPA first, or pick its "
+                    ".fypa project.")
+        path = beside
+        name = path.name.lower()
+    elif name.endswith((".pcbdoc", ".prjpcb")):
         beside = sidecar_path(path, path if name.endswith(".pcbdoc") else None)
         if not beside.is_file():
             return (f"{path.name} has no saved setup beside it "

@@ -36,6 +36,7 @@ from reportlab.platypus import (
 
 from fypa.report import html as H
 from fypa.report.model import (
+    design_rows,
     DETAIL_LEVELS,
     FAIL,
     PASS,
@@ -320,9 +321,7 @@ class _Builder:
 
     def header(self) -> list:
         r = self.r
-        rows = [("Project", r.prjpcb_path or r.project_name)]
-        if r.pcbdoc_path:
-            rows.append(("PCB", r.pcbdoc_path))
+        rows = design_rows(r)
         rows += [("Generated", r.generated), ("FYPA", r.fypa_version)]
         if r.settings.revision:
             rows.append(("Revision", r.settings.revision))

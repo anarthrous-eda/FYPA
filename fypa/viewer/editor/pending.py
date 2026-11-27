@@ -254,7 +254,7 @@ class _PendingRailsMixin:
         if not prjpcb:
             QMessageBox.warning(
                 self, "Can't solve",
-                "This solution isn't linked to an Altium project, so the "
+                "This solution isn't linked to an Altium or KiCad project, so the "
                 "design info needed for a re-solve isn't available.",
             )
             return

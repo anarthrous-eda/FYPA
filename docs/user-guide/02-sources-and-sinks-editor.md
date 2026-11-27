@@ -505,7 +505,8 @@ entry against the design as it is now. Only an entry's *anchor* - which
 part, pins and nets it sits on - is ever re-matched; its values
 (current, voltage, limits) are never changed.
 
-*Import Altium Design (Clean)* (and **Clean** in the Recent list) starts
+*Import Altium Design (Clean)* or *Import KiCad Design (beta, Clean)* (and
+**Clean** in the Recent list) starts
 without it: the file is renamed to `<Board>.fypa-setup.json.bak`,
 replacing an older backup, and the design opens as if FYPA had never
 seen it. To bring the old setup back, pick the `.bak` in *File > Import

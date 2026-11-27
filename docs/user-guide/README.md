@@ -15,6 +15,7 @@ material (every parameter, every CLI flag), see the
 7. [Importing a board from Gerber files](07-gerber-import.md)
 8. [Generating a design report](08-design-report.md)
 9. [What-If scenarios - try a change, compare it with the base](09-what-if-scenarios.md)
+10. [Importing a KiCad design (beta)](10-kicad-import.md)
 
 ## Conventions
 

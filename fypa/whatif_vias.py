@@ -520,10 +520,12 @@ EXPORT_COLUMNS: tuple[str, ...] = (
 
 
 def export_rows(vias: list[AddedVia], enabled: list[int],
-                names: dict[int, str]) -> list[list[str]]:
+                names: dict[int, str], y_sign: float = 1.0) -> list[list[str]]:
     """One row per via, :data:`EXPORT_COLUMNS` order. X / Y are board
-    coordinates as Altium shows them (relative to the board origin), so the
-    vias can be placed at exactly those spots in the layout."""
+    coordinates as the design tool shows them (Altium: relative to the board
+    origin), so the vias can be placed at exactly those spots in the layout.
+    ``y_sign`` is -1 for a KiCad design, whose Y grows down the page (see
+    :func:`fypa.design_source.display_y_sign`)."""
     from fypa.via_kinds import classify_via, via_layer_span
     pos = {lid: i for i, lid in enumerate(enabled)}
     out = []
@@ -534,8 +536,8 @@ def export_rows(vias: list[AddedVia], enabled: list[int],
         kind = classify_via(a, b, via_layer_span(a, b, list(enabled)),
                             list(enabled), v.hole_diameter_mm)
         out.append([
-            str(i), v.net, f"{v.x_mm:.4f}", f"{v.y_mm:.4f}",
-            f"{v.x_mm / 0.0254:.2f}", f"{v.y_mm / 0.0254:.2f}",
+            str(i), v.net, f"{v.x_mm:.4f}", f"{v.y_mm * y_sign:.4f}",
+            f"{v.x_mm / 0.0254:.2f}", f"{v.y_mm * y_sign / 0.0254:.2f}",
             f"{v.hole_diameter_mm:.4g}", f"{v.diameter_mm:.4g}",
             names.get(a, f"L{a}"), names.get(b, f"L{b}"), kind,
             fill_text(v.ipc4761_via_type, v.fill_material) or "none",
@@ -544,7 +546,8 @@ def export_rows(vias: list[AddedVia], enabled: list[int],
 
 
 def export_text(vias: list[AddedVia], enabled: list[int],
-                names: dict[int, str], sep: str = ",") -> str:
+                names: dict[int, str], sep: str = ",",
+                y_sign: float = 1.0) -> str:
     """The vias as CSV (``sep=","``) or tab-separated text (pastes into a
     spreadsheet as columns), with a header row."""
     import csv
@@ -552,7 +555,7 @@ def export_text(vias: list[AddedVia], enabled: list[int],
     buf = io.StringIO()
     w = csv.writer(buf, delimiter=sep, lineterminator="\n")
     w.writerow(EXPORT_COLUMNS)
-    w.writerows(export_rows(vias, enabled, names))
+    w.writerows(export_rows(vias, enabled, names, y_sign))
     return buf.getvalue()
 
 

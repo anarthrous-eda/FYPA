@@ -426,9 +426,12 @@ def test_the_properties_button_reloads_through_the_question(viewer, asked):
 
 
 @pytest.mark.parametrize("prjpcb, expect", [
-    ("gerbers/x.fypa-gerber", "come from an Altium project"),
-    ("", "come from an Altium project"),
+    ("gerbers/x.fypa-gerber", "come from an Altium or KiCad project"),
+    ("", "come from an Altium or KiCad project"),
     ("gone/away.PrjPcb", "no longer on disk"),
+    # A KiCad board is a design FYPA can read again, so it gets past the
+    # "not a project" refusal to the on-disk check.
+    ("gone/away.kicad_pcb", "no longer on disk"),
 ])
 def test_reload_says_why_it_cannot(viewer, prjpcb, expect):
     viewer.metadata = {"prjpcb_path": prjpcb}

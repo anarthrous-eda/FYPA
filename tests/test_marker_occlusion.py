@@ -99,9 +99,20 @@ def test_needs_depth_follows_setting_program_and_groups(gl):
     assert not gl._markers_need_depth()
 
 
+def _no_opengl(qapp) -> bool:
+    """True on a Qt platform that has no OpenGL at all (``offscreen``, which
+    this suite and CI run on, and ``minimal``). The render tests have
+    nothing to draw with there, and must not even show the GL widget: on
+    the GitHub Windows runner, processing that first show took the whole
+    test process down with an access violation inside Qt."""
+    return qapp.platformName() in ("offscreen", "minimal")
+
+
 def _render(qapp, on_top: bool, ss: bool):
     """Top copper over x in [0, 30]; a bottom-layer disc centred on its
     edge at x = 0. Returns (image, viewer) or None without a GL context."""
+    if _no_opengl(qapp):
+        return None
     from fypa.gl_mesh_viewer import GLMeshViewer
     v = GLMeshViewer()
     v.resize(320, 240)
@@ -149,6 +160,8 @@ def _render_see_through(qapp, kind: str, alpha: float, marker_z: float):
     edge at x = 0 and ``marker_z``. ``kind`` is "rail" (the heatmap mesh,
     per-vertex alpha) or "copper" (a yellow all-copper layer). Returns
     (image, viewer) or None without a GL context."""
+    if _no_opengl(qapp):
+        return None
     from fypa.gl_mesh_viewer import CopperDraw, GLMeshViewer
     v = GLMeshViewer()
     v.resize(320, 240)

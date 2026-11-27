@@ -139,3 +139,15 @@ def test_example_design_solution_matches_golden(design, tmp_path):
 
     current = _solve_design(prjpcb, tmp_path / f"{design}.pkl")
     _compare_to_golden(design, current)
+
+
+@pytest.mark.parametrize("design", ["KiCad_Sandbox"])
+def test_kicad_example_design_solution_matches_golden(design, tmp_path):
+    # KiCad paths are dispatched inside extract_project, so `FYPA.py solve`
+    # on a .kicad_pcb runs the whole extract -> annotations -> solve pipeline.
+    board = REPO_ROOT / "ExampleDesigns" / design / f"{design}.kicad_pcb"
+    if not board.exists():
+        pytest.skip(f"example design not present: {board}")
+
+    current = _solve_design(board, tmp_path / f"{design}.pkl")
+    _compare_to_golden(design, current)

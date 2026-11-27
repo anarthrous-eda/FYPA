@@ -14,9 +14,11 @@ the input changes.
 - You have an Altium project but want to sanity-check FYPA against a
   pure-Gerber view of the same board.
 
-If you do have an Altium project, prefer [Section 1](01-sources-and-sinks.md).
-The Altium path carries net names, pads, components, and any schematic
-`PDN_*` directives - Gerber carries none of those.
+If you do have an Altium project, prefer [Section 1](01-sources-and-sinks.md);
+for a KiCad design, import the KiCad files instead
+([Section 10](10-kicad-import.md), beta). Those paths carry net names, pads,
+components, and any schematic `PDN_*` directives - Gerber carries none of
+those.
 
 ## 7.2 What you need
 

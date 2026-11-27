@@ -266,6 +266,8 @@ def build_design_view(
         seen.add((ci, pad_name, net))
         name = (pin_names.get((part.designator.upper(), pad_name.upper()))
                 or pin_names.get((part.logical.upper(), pad_name.upper()))
+                # A KiCad board names its pins itself (no netlist).
+                or getattr(pad, "pin_name", "")
                 or pad_name)
         orig = premerge.get((ci, pad_name.strip().upper()))
         sch_net = net
@@ -276,6 +278,8 @@ def build_design_view(
         part.pins.append(Pin(pad=pad_name, name=name, net=net, sch_net=sch_net))
 
     power_ports = _netlist_power_ports(getattr(ex, "compiled_netlist", None))
+    for name in getattr(ex, "power_port_nets", ()) or ():
+        power_ports.setdefault(name.upper(), set())     # KiCad power symbols
     if scan_schdocs:
         for name, styles in scan_power_ports(
                 (getattr(ex, "schdoc_paths", {}) or {}).values(), progress).items():

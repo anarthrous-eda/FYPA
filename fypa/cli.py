@@ -111,6 +111,10 @@ __version__ = "2.1.0"
 
 # --- argparse setup -----------------------------------------------------------
 
+_PROJECT_ARG_HELP = ("Design to load: an Altium .PrjPcb, or a KiCad .kicad_pcb / "
+                     ".kicad_pro (beta)")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="FYPA",
@@ -156,21 +160,21 @@ def _build_parser() -> argparse.ArgumentParser:
         )
 
     sp = sub.add_parser("extract", help="Extract raw records from a project and summarise")
-    sp.add_argument("prjpcb", type=Path, help="Path to the .PrjPcb file")
+    sp.add_argument("prjpcb", type=Path, help=_PROJECT_ARG_HELP)
     _add_pcbdoc_arg(sp)
 
     sp = sub.add_parser("geometry", help="Build per-layer geometry and summarise")
-    sp.add_argument("prjpcb", type=Path)
+    sp.add_argument("prjpcb", type=Path, help=_PROJECT_ARG_HELP)
     sp.add_argument("--png", type=Path, default=None,
                     help="If given, save a per-layer quicklook PNG here.")
     _add_pcbdoc_arg(sp)
 
     sp = sub.add_parser("annotations", help="Parse PDN_* annotations and show terminals")
-    sp.add_argument("prjpcb", type=Path)
+    sp.add_argument("prjpcb", type=Path, help=_PROJECT_ARG_HELP)
     _add_pcbdoc_arg(sp)
 
     sp = sub.add_parser("load", help="Full pipeline; report solve-readiness")
-    sp.add_argument("prjpcb", type=Path)
+    sp.add_argument("prjpcb", type=Path, help=_PROJECT_ARG_HELP)
     sp.add_argument("--png", type=Path, default=None,
                     help="Optional path for a per-layer geometry quicklook PNG.")
     _add_pcbdoc_arg(sp)
@@ -236,7 +240,7 @@ def _build_parser() -> argparse.ArgumentParser:
         )
 
     sp = sub.add_parser("solve", help="Solve the FEM problem and pickle the solution")
-    sp.add_argument("prjpcb", type=Path)
+    sp.add_argument("prjpcb", type=Path, help=_PROJECT_ARG_HELP)
     sp.add_argument("output", type=Path, help="Path to write the pickled solution to")
     _add_mesh_args(sp)
     _add_pcbdoc_arg(sp)
@@ -249,7 +253,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "gui",
         help="Open the viewer and import a .PrjPcb (same as File > Import)",
     )
-    sp.add_argument("prjpcb", type=Path)
+    sp.add_argument("prjpcb", type=Path, help=_PROJECT_ARG_HELP)
     sp.add_argument("--no-cache", action="store_true",
                     help="Force a clean import (ignore design-info / solve "
                          "caches) - same as File > Import Altium Design "
@@ -605,6 +609,9 @@ _DESIGN_TOOL_SOURCES: tuple[Path, ...] = (
     _PKG_DIR / "altium" / "variants.py",
     _PKG_DIR / "gerber" / "extract.py",
     _PKG_DIR / "gerber" / "loader.py",
+    _PKG_DIR / "kicad" / "__init__.py",
+    _PKG_DIR / "kicad" / "extract.py",
+    _PKG_DIR / "kicad" / "sexpr.py",
 )
 
 # Additional tool-side source files whose CONTENT HASH feeds into the
@@ -741,6 +748,31 @@ def _gerber_input_fingerprints(folder: Path) -> dict[str, tuple[float, int] | No
     return files
 
 
+def _kicad_input_fingerprints(path: Path) -> dict[str, tuple[float, int] | None]:
+    """``{absolute_path: (mtime, size)}`` for a KiCad design: the board, the
+    ``.kicad_pro`` beside it, and every ``.kicad_sch`` in the board's folder
+    and below (hierarchical sheets may sit in sub-folders). KiCad's own
+    ``<name>-backups`` folders are skipped. Over-including a schematic only
+    costs a spurious re-load, never a stale reuse."""
+    board = path.with_suffix(".kicad_pcb")
+    files: dict[str, tuple[float, int] | None] = {}
+    for p in (board, board.with_suffix(".kicad_pro")):
+        fp = _stat_fingerprint(p)
+        if fp is not None:
+            files[str(p.resolve())] = fp
+    try:
+        sheets = sorted(board.parent.rglob("*.kicad_sch"))
+    except OSError:
+        sheets = []
+    for p in sheets:
+        if any(part.lower().endswith("-backups") for part in p.parent.parts):
+            continue
+        fp = _stat_fingerprint(p)
+        if fp is not None:
+            files[str(p.resolve())] = fp
+    return files
+
+
 def _project_file_fingerprints(prjpcb_path: Path) -> dict[str, tuple[float, int] | None]:
     """``{absolute_path: (mtime, size)}`` for the .PrjPcb and every
     solve-relevant document it references. Used by both the design-info
@@ -769,6 +801,9 @@ def _project_file_fingerprints(prjpcb_path: Path) -> dict[str, tuple[float, int]
     prjpcb_abs = prjpcb_path.resolve()
     if prjpcb_abs.suffix.lower() == _GERBER_PSEUDO_SUFFIX:
         return _gerber_input_fingerprints(prjpcb_abs.parent)
+    from fypa.kicad import is_kicad_path
+    if is_kicad_path(prjpcb_abs):
+        return _kicad_input_fingerprints(prjpcb_abs)
     files: dict[str, tuple[float, int] | None] = {}
     files[str(prjpcb_abs)] = _stat_fingerprint(prjpcb_abs)
     try:
@@ -2091,6 +2126,11 @@ def main(argv: list[str] | None = None) -> int:
         return altium_viewer.main(None) or 0
     args = parser.parse_args(argv)
     _setup_logging(args.debug)
+    # A KiCad design is keyed by its board everywhere (caches, recents, the
+    # .fypa), so a picked .kicad_pro becomes the .kicad_pcb beside it.
+    prj = getattr(args, "prjpcb", None)
+    if isinstance(prj, Path) and prj.suffix.lower() == ".kicad_pro":
+        args.prjpcb = prj.with_suffix(".kicad_pcb")
     return _DISPATCH[args.command](args)
 
 

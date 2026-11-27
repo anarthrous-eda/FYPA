@@ -176,6 +176,16 @@ def collect_design_issues(metadata: dict | None, *,
             designators=_find_designators(text, designators),
             nets=found_nets))
 
+    from fypa.design_source import GERBER, KICAD, source_kind
+    kind_now = source_kind(metadata)
+    fix_where = {KICAD: "in KiCad", GERBER: "in the design and export the "
+                 "Gerbers again"}.get(kind_now, "in Altium")
+    if kind_now == KICAD:
+        add(NOTE, "kicad-beta", "KiCad import (beta)",
+            "This design was read from KiCad files, which FYPA supports in "
+            "beta. Check the copper on the Board tab against KiCad - zones "
+            "must be filled before saving - and report anything that differs.")
+
     failures = [mf for mf in metadata.get("mesh_failures") or []
                 if isinstance(mf, dict)]
     for mf in failures:
@@ -187,14 +197,14 @@ def collect_design_issues(metadata: dict | None, *,
              "results are missing. ")
             + (summary + " " if summary else "")
             + "A yellow ring and red disc mark the place on the Board. Fix "
-              "the geometry there in Altium, then reload the design.",
+              f"the geometry there {fix_where}, then reload the design.",
             extra_nets=(net,))
     if metadata.get("mesh_failed") and not failures:
         add(ERROR, "mesh-failed", "Mesh failed",
             "Meshing failed, but the copper at fault could not be located, "
             "so there is no marker on the Board. This usually means a "
             "zero-area sliver or a self-intersecting polygon. The Messages "
-            "tab names the layer; fix the geometry in Altium, then reload "
+            f"tab names the layer; fix the geometry {fix_where}, then reload "
             "the design.")
 
     for msg in metadata.get("annotation_errors") or []:

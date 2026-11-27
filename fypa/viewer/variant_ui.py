@@ -69,7 +69,8 @@ def combo_entries(var: dict | None) -> list[tuple[str, str]]:
     """``(label, data)`` for the picker. ``data`` is :data:`FOLLOW_ALTIUM`,
     ``""`` (base design) or a variant name."""
     current = var.get("altium_current") if var else None
-    out = [(describe_request(None, current), FOLLOW_ALTIUM),
+    tool = (var.get("tool") or "Altium") if var else "Altium"
+    out = [(describe_request(None, current, tool), FOLLOW_ALTIUM),
            (NO_VARIATIONS_LABEL, NO_VARIATIONS)]
     for name in (var.get("available") or []) if var else []:
         out.append((name, name))
@@ -88,6 +89,14 @@ def _label(name: str) -> str:
     return name or NO_VARIATIONS_LABEL
 
 
+def _following(var: dict) -> str:
+    """How a load that follows the design tool's own choice is described."""
+    tool = var.get("tool") or "Altium"
+    if tool == "KiCad":                  # KiCad files record no current variant
+        return "KiCad default: the base design"
+    return f"following {tool}'s current variant"
+
+
 def loaded_summary(var: dict | None) -> str:
     """One line: what the design on screen was built with."""
     if var is None:
@@ -95,8 +104,7 @@ def loaded_summary(var: dict | None) -> str:
     name = var.get("name", "")
     nf = len(var.get("not_fitted") or [])
     alt = len(var.get("alternates") or [])
-    how = ("following Altium's current variant" if var.get("requested") is None
-           else "chosen in FYPA")
+    how = _following(var) if var.get("requested") is None else "chosen in FYPA"
     if not name:
         detail = "every part fitted"
     else:
@@ -121,7 +129,7 @@ def banner_html(var: dict | None, request, theme: dict) -> str:
     this table, and any change waiting for a Solve."""
     if var is None:
         return (f"<span style='color:{theme['fg_muted']};'>Assembly variant: "
-                "none - this design has no Altium variants (or was loaded "
+                "none - this design has no assembly variants (or was loaded "
                 "before FYPA read them; Solve to refresh).</span>")
     name = var.get("name", "")
     nf = len(var.get("not_fitted") or [])
@@ -129,7 +137,7 @@ def banner_html(var: dict | None, request, theme: dict) -> str:
              f"<span style='color:{theme['accent']}; font-weight:600;'>"
              f"{_esc(_label(name))}</span>"]
     parts.append(f"<span style='color:{theme['fg_muted']};'>"
-                 + ("(following Altium's current variant)"
+                 + (f"({_following(var)})"
                     if var.get("requested") is None else "(chosen in FYPA)")
                  + "</span>")
     if name:
@@ -155,7 +163,7 @@ def picker_status_html(var: dict | None, request, theme: dict) -> str:
     """Rich text under the Properties picker."""
     if var is None:
         return (f"<span style='color:{theme['fg_muted']};'>This design has no "
-                "Altium assembly variants, or was loaded before FYPA read "
+                "assembly variants (Altium, or KiCad 10), or was loaded before FYPA read "
                 "them - Solve to refresh.</span>")
     lines = [f"<span style='color:{theme['fg_dim']};'>Loaded:</span> "
              f"{_esc(loaded_summary(var))}"]

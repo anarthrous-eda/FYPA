@@ -77,9 +77,16 @@ class ProjectVariants:
 
 def read_variants(prjpcb_path: str | Path | None) -> ProjectVariants:
     """The project's variants and Altium's current selection. Empty (no
-    variants, no current) for anything that isn't a readable ``.PrjPcb``."""
+    variants, no current) for anything that isn't a readable ``.PrjPcb``.
+
+    A KiCad board or project gives its KiCad 10 design variants instead (see
+    :mod:`fypa.kicad.variants`); KiCad stores no current selection."""
     if prjpcb_path is None:
         return ProjectVariants(current=None)
+    from fypa.kicad import is_kicad_path
+    if is_kicad_path(prjpcb_path):
+        from fypa.kicad.variants import read_kicad_variants
+        return read_kicad_variants(prjpcb_path)
     path = Path(prjpcb_path)
     if path.suffix.lower() != ".prjpcb" or not path.is_file():
         return ProjectVariants(current=None)
@@ -245,15 +252,19 @@ def variant_choice_of(loaded) -> VariantChoice | None:
 
 def variant_metadata(loaded) -> dict | None:
     """JSON-safe record of the variant ``loaded`` was built with, for the
-    solve metadata. ``None`` when the load didn't record one (Gerber /
-    KiCad, or an Altium design loaded before variants were supported)."""
+    solve metadata. ``None`` when the load didn't record one (Gerber, or a
+    design loaded before variants were supported)."""
     choice = variant_choice_of(loaded)
     if choice is None:
         return None
     on_board = {c.designator.upper()
                 for c in getattr(getattr(loaded, "extracted", None),
                                  "pcb_components", ()) or ()}
+    from fypa.kicad import is_kicad_path
+    prj = getattr(getattr(loaded, "extracted", None), "prjpcb_path", None)
     return {
+        # The design's tool, for the picker's wording ("KiCad default").
+        "tool": "KiCad" if is_kicad_path(prj) else "Altium",
         "requested": choice.requested,          # None = follow Altium
         "name": choice.name,                    # "" = base design
         "label": choice.label,
@@ -268,11 +279,13 @@ def variant_metadata(loaded) -> dict | None:
     }
 
 
-def describe_request(requested: str | None, altium_current: str | None) -> str:
-    """How the Properties picker labels a request."""
+def describe_request(requested: str | None, altium_current: str | None,
+                     tool: str = "Altium") -> str:
+    """How the Properties picker labels a request. *tool* names the design's
+    tool ("KiCad" records no current variant, so its default is the base)."""
     if requested is None:
-        return (f"Altium default: {altium_current}" if altium_current
-                else f"Altium default: {NO_VARIATIONS_LABEL}")
+        return (f"{tool} default: {altium_current}" if altium_current
+                else f"{tool} default: {NO_VARIATIONS_LABEL}")
     if requested == NO_VARIATIONS:
         return NO_VARIATIONS_LABEL
     return requested

@@ -10,11 +10,11 @@ bar::
 
     File  View  Reports  Help                          DESIGN CHANGED  Reload
 
-A click reloads the design (File > Reload Design, Ctrl+R): the Altium files
-are read again and the design is solved with the same setup.
+A click reloads the design (File > Reload Design, Ctrl+R): the Altium or KiCad
+files are read again and the design is solved with the same setup.
 
-Only Altium designs are watched - a Gerber import has no project to reload
-from. A design whose record is missing (a solution saved by an older FYPA)
+Only Altium and KiCad designs are watched - a Gerber import has no project to
+reload from. A design whose record is missing (a solution saved by an older FYPA)
 shows no chip: unknown is not reported as changed.
 """
 from __future__ import annotations
@@ -27,6 +27,7 @@ from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QWidget
 
+from fypa.design_source import is_live_design_path
 from fypa.viewer.theme import _T
 
 _log = logging.getLogger(__name__)
@@ -64,7 +65,7 @@ def design_changed_tooltip(names) -> str:
         shown += f" and {len(names) - _MAX_NAMES} more"
     return ("Changed on disk since FYPA read the design: "
             f"{shown}.\nThe result on screen is for the design as it was "
-            "read. Click to read the Altium files again and solve with the "
+            "read. Click to read the design files again and solve with the "
             "same setup (File > Reload Design, Ctrl+R).")
 
 
@@ -172,7 +173,7 @@ class _DesignWatchMixin:
         baseline = md.get("design_files")
         prjpcb = md.get("prjpcb_path")
         if (not baseline or not prjpcb
-                or Path(str(prjpcb)).suffix.lower() != ".prjpcb"):
+                or not is_live_design_path(prjpcb)):
             return None
         return Path(str(prjpcb)), dict(baseline)
 

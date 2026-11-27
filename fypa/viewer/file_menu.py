@@ -105,8 +105,8 @@ def _ask_reload_unchanged(parent, project_name: str) -> bool:
                 "board files since FYPA read them.")
     box.setInformativeText(
         "Reloading reads the design again and solves it, which gives the "
-        "result already on screen. If you changed the design in Altium, "
-        "save it there first.")
+        "result already on screen. If you changed the design in Altium or "
+        "KiCad, save it there first.")
     reload_btn = box.addButton("Reload Anyway",
                                QMessageBox.ButtonRole.AcceptRole)
     cancel = box.addButton(QMessageBox.StandardButton.Cancel)
@@ -127,8 +127,13 @@ class _FileMenuMixin:
         previously-pickled solution."""
         from fypa.viewer.app_menus import _build_help_menu
         from fypa.viewer.project_open import (
+            KICAD_IMPORT_CLEAN_LABEL,
+            KICAD_IMPORT_CLEAN_SHORTCUT,
+            KICAD_IMPORT_LABEL,
+            KICAD_IMPORT_SHORTCUT,
             _altium_import_auto_solve_status_tip,
             _altium_import_clean_status_tip,
+            _kicad_import_status_tip,
         )
         mb = self.menuBar()
         file_menu = mb.addMenu("&File")
@@ -156,11 +161,27 @@ class _FileMenuMixin:
         )
         file_menu.addAction(open_proj_clean)
 
+        open_kicad = QAction(KICAD_IMPORT_LABEL, self)
+        open_kicad.setShortcut(KICAD_IMPORT_SHORTCUT)
+        open_kicad.setStatusTip(
+            _kicad_import_status_tip(load_auto_solve_on_import()))
+        open_kicad.triggered.connect(
+            lambda: self._on_menu_open_kicad(clean=False))
+        file_menu.addAction(open_kicad)
+
+        open_kicad_clean = QAction(KICAD_IMPORT_CLEAN_LABEL, self)
+        open_kicad_clean.setShortcut(KICAD_IMPORT_CLEAN_SHORTCUT)
+        open_kicad_clean.setStatusTip(
+            _kicad_import_status_tip(load_auto_solve_on_import(), clean=True))
+        open_kicad_clean.triggered.connect(
+            lambda: self._on_menu_open_kicad(clean=True))
+        file_menu.addAction(open_kicad_clean)
+
         reload_design = QAction("Reload &Design", self)
         reload_design.setShortcut("Ctrl+R")
         reload_design.setStatusTip(
-            "Read the Altium project from disk again and solve it with the "
-            "same setup - for a design edited in Altium since FYPA read it."
+            "Read the Altium or KiCad design from disk again and solve it "
+            "with the same setup - for a design edited since FYPA read it."
         )
         reload_design.triggered.connect(
             lambda: self._on_reload_design_info())
@@ -248,7 +269,7 @@ class _FileMenuMixin:
         save_sol = QAction("&Save Solution…", self)
         save_sol.setStatusTip(
             "Save just the current solution to a .pkl file (remembers the "
-            ".PrjPcb directory and selected .PcbDoc so it can be re-solved)."
+            "design it came from so it can be re-solved)."
         )
         save_sol.triggered.connect(self._on_menu_save_solution)
         file_menu.addAction(save_sol)
@@ -597,6 +618,14 @@ class _FileMenuMixin:
         if not path_str:
             return
         _open_altium_project_at(self, Path(path_str), None, clean=clean)
+
+    def _on_menu_open_kicad(self, *, clean: bool = False) -> None:
+        """File > Import KiCad Design (beta)[, Clean]: pick a .kicad_pro or
+        .kicad_pcb and load it through the Altium import path."""
+        from fypa.viewer.project_open import _open_altium_project_at, pick_kicad_design
+        path = pick_kicad_design(self, self._menu_start_dir(), clean=clean)
+        if path is not None:
+            _open_altium_project_at(self, path, None, clean=clean)
 
     def _on_menu_save_solution(self) -> None:
         """File > Save Solution…  →  prompt for a path (defaulting to this
@@ -1185,7 +1214,7 @@ class _FileMenuMixin:
     # Keyword-only: a button's clicked(bool) must not land on the flag.
     def _on_reload_design_info(self, *, ask_if_unchanged: bool = True) -> None:
         """File > Reload Design, the design-changed chip and the Properties
-        tab's Reload Design button: read the Altium project from disk again
+        tab's Reload Design button: read the Altium / KiCad design from disk again
         (ignoring the design-info cache) and solve it with the setup and
         settings this window has now. For a design edited in Altium since
         FYPA read it - a Solve alone keeps working from the design as read.
@@ -1206,10 +1235,11 @@ class _FileMenuMixin:
         if self.metadata:
             prjpcb_str = str(self.metadata.get("prjpcb_path") or "")
         prjpcb_path = Path(prjpcb_str) if prjpcb_str else None
-        if prjpcb_path is None or prjpcb_path.suffix.lower() != ".prjpcb":
+        from fypa.design_source import is_live_design_path
+        if prjpcb_path is None or not is_live_design_path(prjpcb_path):
             self._reload_design_refused(
-                "Can't reload: this design didn't come from an Altium "
-                "project, so there is nothing to read again.")
+                "Can't reload: this design didn't come from an Altium or "
+                "KiCad project, so there is nothing to read again.")
             return
         if not prjpcb_path.exists():
             self._reload_design_refused(

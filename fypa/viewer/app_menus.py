@@ -91,7 +91,7 @@ def _show_about_dialog(parent: QWidget) -> None:
     body = QLabel(
         "<div style='text-align:center;'>"
         f"<h2 style='color:{t['fg']}; margin:6px 0 0 0;'>FYPA</h2>"
-        f"<p style='color:{t['accent']}; margin:2px 0;'>Altium / Gerber PDN Analyser</p>"
+        f"<p style='color:{t['accent']}; margin:2px 0;'>{product_title_html(t)}</p>"
         f"<p style='color:{t['fg_muted']}; margin:2px 0;'>Version {fypa_version}</p>"
         f"<p style='margin:12px 0 2px 0;'>"
         f"<a href='{_GITHUB_URL}' style='color:{t['accent']};'>{_GITHUB_URL}</a>"
@@ -118,6 +118,22 @@ def _show_about_dialog(parent: QWidget) -> None:
     hint = dlg.sizeHint()
     dlg.resize(hint.width() * 2, hint.height())
     dlg.exec()
+
+
+
+
+def product_title_html(t: dict) -> str:
+    """``Altium / Gerber / KiCad (beta) PDN Analyser`` as rich text, the
+    "(beta)" set small and dimmed so it reads as a qualifier on KiCad rather
+    than part of the name. Shared by the start window and About.
+
+    ``<small>``, not a ``font-size`` on the span: inside an ``<h2>`` Qt's rich
+    text ignores an explicit font size (pt or keyword) but honours the
+    relative ``<small>``.
+    """
+    return ("Altium / Gerber / KiCad"
+            f"<small><span style='font-weight:normal; color:{t['fg_dim']};'>"
+            "&nbsp;(beta)</span></small> PDN Analyser")
 
 
 

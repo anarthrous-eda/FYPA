@@ -60,6 +60,9 @@ from fypa.viewer.widgets import SidebarToggleButton
 # dark, so the chips read the same in the light and dark themes.
 _KIND_CHIPS: dict[str, tuple[str, str]] = {
     "altium":   ("Altium",   "#f6c1b8"),
+    # Not an entry kind of its own: a KiCad design is an "altium" entry (the
+    # live-project import) whose path is a .kicad_pcb - see _chip_kind.
+    "kicad":    ("KiCad",    "#bcd8f0"),
     "gerber":   ("Gerber",   "#bfe3cc"),
     "fypa":     ("Project",  "#cdc6f2"),
     "solution": ("Solution", "#f6e2a6"),
@@ -72,6 +75,15 @@ _MAX_WIDTH = 760
 _STRIP_WIDTH = 26
 
 _COL_KIND, _COL_NAME, _COL_LOAD, _COL_CLEAN = range(4)
+
+
+def _chip_kind(entry: dict) -> str:
+    """The chip to show: an "altium" entry for a KiCad board shows KiCad."""
+    kind = entry.get("kind", "")
+    if kind == "altium":
+        from fypa.design_source import kind_of_path
+        return kind_of_path(entry.get("prjpcb_path"))
+    return kind
 
 
 def _entry_path_for_folder(entry: dict) -> Path | None:
@@ -287,7 +299,9 @@ class RecentPanel(QWidget):
         for row, entry in enumerate(self._entries):
             kind = entry.get("kind", "")
             exists = _recent_entry_exists(entry)
-            chip_text, chip_bg = _KIND_CHIPS.get(kind, (kind or "?", "#dddddd"))
+            chip_kind = _chip_kind(entry)
+            chip_text, chip_bg = _KIND_CHIPS.get(chip_kind,
+                                                 (chip_kind or "?", "#dddddd"))
 
             chip = QLabel(chip_text)
             chip.setAlignment(Qt.AlignCenter)

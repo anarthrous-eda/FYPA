@@ -162,9 +162,9 @@ class _WhatIfPunchMixin:
         exp.setText("Export   ")
         exp.setPopupMode(QToolButton.InstantPopup)
         exp.setToolTip(
-            "The added vias with their net, X / Y (as Altium shows them, "
-            "from the board origin), drill, pad, layers and fill - to place "
-            "them in the layout.")
+            "The added vias with their net, X / Y (as the design tool shows "
+            "them: Altium from the board origin, KiCad with Y down the page), "
+            "drill, pad, layers and fill - to place them in the layout.")
         exp_menu = QMenu(exp)
         exp_menu.addAction("Copy to clipboard",
                            self._on_whatif_punch_copy)
@@ -351,7 +351,8 @@ class _WhatIfPunchMixin:
         for i, v in enumerate(vias):
             cur = currents.get(i)
             props = WV.via_props_text(v, board["enabled"], board["names"])
-            cells = [str(i + 1), v.net, f"{v.x_mm:.4f}", f"{v.y_mm:.4f}",
+            cells = [str(i + 1), v.net, f"{v.x_mm:.4f}",
+                     f"{v.y_mm * self._whatif_punch_y_sign():.4f}",
                      WV.via_short_text(v, board["enabled"]),
                      "-" if cur is None else f"{cur:.4g}"]
             for col, text in enumerate(cells):
@@ -387,9 +388,10 @@ class _WhatIfPunchMixin:
         why = "" if value is not None else f"{item.text()!r} isn't a number"
         cand = None
         if value is not None:
+            # Typed as the design tool shows it (KiCad: Y down the page).
             cand = dataclasses.replace(
                 old, **({"x_mm": value} if col == self._PUNCH_COL_X
-                        else {"y_mm": value}))
+                        else {"y_mm": value * self._whatif_punch_y_sign()}))
             why = self._whatif_punch_move_problem(
                 s, idx, cand, self._whatif_punch_board())
         if why:
@@ -404,7 +406,7 @@ class _WhatIfPunchMixin:
         self._whatif_punch_changed(s)
         self.statusBar().showMessage(
             f"Moved the via on {cand.net} to ({cand.x_mm:.4f}, "
-            f"{cand.y_mm:.4f}) mm.", 4000)
+            f"{cand.y_mm * self._whatif_punch_y_sign():.4f}) mm.", 4000)
 
     def _on_whatif_punch_table_clicked(self, row: int, _col: int) -> None:
         """Show the clicked via on the Board (zoom in, yellow ring)."""
@@ -418,11 +420,21 @@ class _WhatIfPunchMixin:
                 v.layer_start, v.layer_end,
                 self._whatif_punch_board()["enabled"]))
 
+    def _whatif_punch_tool(self) -> str:
+        from fypa.design_source import tool_name
+        return tool_name(getattr(self, "metadata", None))
+
+    def _whatif_punch_y_sign(self) -> float:
+        """-1 on a KiCad design (Y shown down the page, as KiCad does)."""
+        from fypa.design_source import display_y_sign
+        return display_y_sign(getattr(self, "metadata", None))
+
     def _whatif_punch_export_text(self, sep: str) -> str:
         s = self._whatif_selected()
         board = self._whatif_punch_board()
         return WV.export_text(list(s.added_vias) if s else [],
-                              board["enabled"], board["names"], sep)
+                              board["enabled"], board["names"], sep,
+                              y_sign=self._whatif_punch_y_sign())
 
     def _on_whatif_punch_copy(self) -> None:
         s = self._whatif_selected()
@@ -431,7 +443,7 @@ class _WhatIfPunchMixin:
         QApplication.clipboard().setText(self._whatif_punch_export_text("\t"))
         self.statusBar().showMessage(
             f"Copied {len(s.added_vias)} via(s) - paste into a spreadsheet; "
-            "X / Y are as Altium shows them.", 5000)
+            f"X / Y are as {self._whatif_punch_tool()} shows them.", 5000)
 
     def _on_whatif_punch_save_csv(self) -> None:
         from pathlib import Path

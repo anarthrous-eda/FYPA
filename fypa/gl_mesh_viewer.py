@@ -587,6 +587,20 @@ class MarkerGroup:
 # QPainter path used: layer-colour ring stroke, then the fill, then the
 # edge stroke centred on the outline (then the target's centre dot).
 #
+# 2D orthographic depth range, +/- this many mm of world z. Everything drawn
+# in 2D sits within a few mm of z = 0 (layer z from the stackup, the selected
+# layer lifted 1 mm, sub-micron lifts for arrows / series bars / features),
+# so a tight range keeps depth fine even on a driver that gives an offscreen
+# buffer only 16 bits: ~3e-3 mm a step there, ~1.2e-5 mm at 24 bits. (It was
+# +/-1e6 mm - 0.12 mm a step at 24 bits, 30 mm at 16 - which left a marker's
+# lift above its own copper inside rounding: PTH and via discs showed flecks
+# of their own layer's copper that moved as the view panned, on some
+# machines only.)
+_ORTHO_2D_DEPTH_MM = 100.0
+# How far a marker rides above its own layer's copper in 2D, in mm of z, so
+# that copper never hides it while a layer above still covers it.
+_MARKER_2D_LIFT_MM = 0.15
+
 # Instance row layout (float32, _MARKER_STRIDE wide):
 #   0-2  world x, y, z (z = the marker's copper plane, pre-exaggeration)
 #   3-4  shape-centre offset from the projected point (logical px, y down)
@@ -2657,9 +2671,10 @@ class GLMeshViewer(QOpenGLWidget):
             mvp.scale(1.0, 1.0, self._vertical_exaggeration)
         else:
             x_min, x_max, y_min, y_max = self.view_range()
-            # Wide z range so any leftover non-zero z's in the buffer
-            # still pass the clip test in 2D mode.
-            mvp.ortho(x_min, x_max, y_min, y_max, -1e6, 1e6)
+            # z range: see _ORTHO_2D_DEPTH_MM (wide enough for any z drawn
+            # in 2D, tight enough for depth precision).
+            mvp.ortho(x_min, x_max, y_min, y_max,
+                      -_ORTHO_2D_DEPTH_MM, _ORTHO_2D_DEPTH_MM)
         return mvp
 
     # ------------------------------------------------------------------
@@ -3660,7 +3675,12 @@ class GLMeshViewer(QOpenGLWidget):
         self._release_ss_fbos()
         ms_fmt = QOpenGLFramebufferObjectFormat()
         ms_fmt.setSamples(self._SS_SAMPLES)
-        ms_fmt.setAttachment(QOpenGLFramebufferObject.Attachment.Depth)
+        # CombinedDepthStencil: allocated as 24-bit depth + stencil. A plain
+        # Depth attachment is unsized on desktop GL - its precision is the
+        # driver's choice, 16 bits on some - and markers need the precision
+        # to stay above their own layer's copper (_MARKER_2D_LIFT_MM).
+        ms_fmt.setAttachment(
+            QOpenGLFramebufferObject.Attachment.CombinedDepthStencil)
         ms_fbo = QOpenGLFramebufferObject(sw, sh, ms_fmt)
         resolve_fbo = QOpenGLFramebufferObject(
             sw, sh, QOpenGLFramebufferObjectFormat())
@@ -3723,7 +3743,12 @@ class GLMeshViewer(QOpenGLWidget):
         self._release_marker_fbos()
         ms_fmt = QOpenGLFramebufferObjectFormat()
         ms_fmt.setSamples(max(0, int(self.format().samples())))
-        ms_fmt.setAttachment(QOpenGLFramebufferObject.Attachment.Depth)
+        # CombinedDepthStencil: allocated as 24-bit depth + stencil. A plain
+        # Depth attachment is unsized on desktop GL - its precision is the
+        # driver's choice, 16 bits on some - and markers need the precision
+        # to stay above their own layer's copper (_MARKER_2D_LIFT_MM).
+        ms_fmt.setAttachment(
+            QOpenGLFramebufferObject.Attachment.CombinedDepthStencil)
         ms_fbo = QOpenGLFramebufferObject(w, h, ms_fmt)
         resolve_fbo = QOpenGLFramebufferObject(
             w, h, QOpenGLFramebufferObjectFormat())
@@ -4017,11 +4042,11 @@ class GLMeshViewer(QOpenGLWidget):
             tol = (0.02 * float(self._vertical_exaggeration)
                    + 0.001 * float(self._cam_distance))
         else:
-            near, far = -1e6, 1e6
-            # NDC allowance in 2D: ~1.25 steps of the 24-bit depth buffer
-            # over the +/-1e6 mm ortho range (~0.15 mm of layer z), so the
-            # marker's own layer never hides it.
-            tol = 1.5e-7
+            near, far = -_ORTHO_2D_DEPTH_MM, _ORTHO_2D_DEPTH_MM
+            # NDC allowance in 2D: _MARKER_2D_LIFT_MM of layer z (~125 steps
+            # of the 24-bit depth buffer), so the marker's own layer never
+            # hides it - well clear of float32 rounding.
+            tol = 2.0 * _MARKER_2D_LIFT_MM / (far - near)
 
         prog.bind()
         prog.setUniformValue(self._mk_u_mvp_loc, mvp)

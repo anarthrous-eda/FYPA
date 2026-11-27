@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fypa.viewer.app_menus import _build_help_menu
+from fypa.viewer.app_menus import _build_help_menu, product_title_html
 from fypa.viewer.assets import (
     _force_native_window_icon,
     _load_app_icon,
@@ -39,8 +39,14 @@ from fypa.viewer.prefs import (
     record_recent_gerber,
 )
 from fypa.viewer.project_open import (
+    KICAD_IMPORT_CLEAN_LABEL,
+    KICAD_IMPORT_CLEAN_SHORTCUT,
+    KICAD_IMPORT_LABEL,
+    KICAD_IMPORT_SHORTCUT,
     _altium_import_auto_solve_status_tip,
     _altium_import_clean_status_tip,
+    _kicad_import_status_tip,
+    pick_kicad_design,
     _headless_platform,
     _open_altium_project_at,
     _open_project_file_at,
@@ -138,7 +144,7 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         )
         label = QLabel(
             "<div style='text-align:center;'>"
-            f"<h2 style='color:{t['fg']}; margin-top:2px; margin-bottom:0;'>Altium / Gerber PDN Analyser</h2>"
+            f"<h2 style='color:{t['fg']}; margin-top:2px; margin-bottom:0;'>{product_title_html(t)}</h2>"
             f"<p style='color:{t['accent']};'>No project loaded.</p>"
             f"<p style='color:{t['fg_dim']};'>"
             f"<a href='open-project' style='{link_style}'>Import Altium Design&hellip;</a>"
@@ -147,6 +153,9 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
             " (Ctrl+Shift+L) to start fresh - no caches, no saved setup,<br>"
             f"<a href='import-gerber' style='{link_style}'>Import Gerber Files&hellip;</a>"
             " (Ctrl+G) to import Gerber (RS-274X) + Excellon drill files,<br>"
+            f"<a href='import-kicad' style='{link_style}'>Import KiCad Design&hellip;</a>"
+            "<small>&nbsp;(beta)</small>"
+            " (Ctrl+K) to pick a <code>.kicad_pro</code>,<br>"
             "or "
             f"<a href='open-solution' style='{link_style}'>Load Solution&hellip;</a>"
             " (Ctrl+Shift+O) to load a saved <code>.pkl</code>."
@@ -245,6 +254,8 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
             self._on_menu_open_project(clean=True)
         elif href == "import-gerber":
             self._on_menu_import_gerber()
+        elif href == "import-kicad":
+            self._on_menu_open_kicad(clean=False)
         elif href == "open-solution":
             self._on_menu_open_solution()
 
@@ -276,6 +287,21 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         # "Solve automatically on import" is no longer a File-menu item - it's
         # the Settings > General options entry; the import path reads the
         # persisted pref (load_auto_solve_on_import) directly.
+
+        open_kicad = QAction(KICAD_IMPORT_LABEL, self)
+        open_kicad.setShortcut(KICAD_IMPORT_SHORTCUT)
+        open_kicad.setStatusTip(
+            _kicad_import_status_tip(load_auto_solve_on_import()))
+        open_kicad.triggered.connect(lambda: self._on_menu_open_kicad(clean=False))
+        file_menu.addAction(open_kicad)
+
+        open_kicad_clean = QAction(KICAD_IMPORT_CLEAN_LABEL, self)
+        open_kicad_clean.setShortcut(KICAD_IMPORT_CLEAN_SHORTCUT)
+        open_kicad_clean.setStatusTip(
+            _kicad_import_status_tip(load_auto_solve_on_import(), clean=True))
+        open_kicad_clean.triggered.connect(
+            lambda: self._on_menu_open_kicad(clean=True))
+        file_menu.addAction(open_kicad_clean)
 
         open_gerber = QAction("Import &Gerber Files…", self)
         open_gerber.setShortcut("Ctrl+G")
@@ -372,6 +398,13 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         if not path_str:
             return
         _open_altium_project_at(self, Path(path_str), None, clean=clean)
+
+    def _on_menu_open_kicad(self, *, clean: bool = False) -> None:
+        """File > Import KiCad Design (beta)[, Clean]: the Altium import path
+        with a KiCad board (see :mod:`fypa.viewer.project_open`)."""
+        path = pick_kicad_design(self, "", clean=clean)
+        if path is not None:
+            _open_altium_project_at(self, path, None, clean=clean)
 
     def _on_solve_cancelled(self) -> None:
         """User clicked Cancel on the solve progress dialog. Forcibly kill

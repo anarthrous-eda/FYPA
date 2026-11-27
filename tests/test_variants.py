@@ -171,7 +171,7 @@ def test_bridges_banner_names_the_active_variant(prjpcb) -> None:
     assert "2 part(s) not fitted" in html and "next Solve" not in html
     pending = V.banner_html(meta, "Production", theme)
     assert "Changes to Production on the next Solve" in pending
-    assert "no Altium variants" in V.banner_html(None, None, theme)
+    assert "no assembly variants" in V.banner_html(None, None, theme)
     assert "Will load [No Variations]" in V.picker_status_html(meta, "", theme)
 
 
@@ -271,7 +271,7 @@ def test_picker_is_disabled_without_variant_metadata(viewer) -> None:
     viewer.metadata = {"bridge_candidates": []}
     viewer._refresh_variant_picker()
     assert not viewer.variant_combo.isEnabled()
-    assert "no Altium assembly variants" in viewer.variant_status_label.text()
+    assert "no assembly variants" in viewer.variant_status_label.text()
 
 
 # --- binding entries to parts the way Altium does (by UniqueId) -----------------

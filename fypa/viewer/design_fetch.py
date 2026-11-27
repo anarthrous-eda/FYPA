@@ -65,30 +65,43 @@ class _DesignFetchMixin:
 
     def _ask_for_altium_project(self, prj: Path | None, pcb: Path | None,
                                 title: str, purpose: str):
-        """Ask for the .PrjPcb when the solve's own path is missing or gone.
-        Returns ``(prjpcb, pcbdoc)``; ``(None, None)`` if cancelled."""
-        where = (f"The Altium project this solve was made from isn't at\n{prj}\n"
+        """Ask for the .PrjPcb (or, for a KiCad design, the .kicad_pro /
+        .kicad_pcb) when the solve's own path is missing or gone. Returns
+        ``(prjpcb, pcbdoc)``; ``(None, None)`` if cancelled."""
+        from fypa.design_source import tool_name
+        tool = tool_name(getattr(self, "metadata", None))
+        kicad = tool == "KiCad"
+        file_word = "board or .kicad_pro" if kicad else ".PrjPcb file"
+        where = (f"The {tool} project this solve was made from isn't at\n{prj}\n"
                  "(moved, renamed, or on another machine)." if prj is not None
-                 else "This solve doesn't record which Altium project it came from.")
+                 else f"This solve doesn't record which {tool} project it came from.")
         answer = QMessageBox.question(
-            self, "Locate the Altium project",
+            self, f"Locate the {tool} project",
             f"{where}\n\n{title} reads the design itself - {purpose}. "
-            "Locate the project's .PrjPcb file?",
+            f"Locate the project's {file_word}?",
             QMessageBox.Open | QMessageBox.Cancel, QMessageBox.Open)
         if answer != QMessageBox.Open:
             return None, None
         start = (str(prj.parent) if prj is not None and prj.parent.is_dir()
                  else self._menu_start_dir())
         path_str, _ = QFileDialog.getOpenFileName(
-            self, "Locate the Altium project", start,
-            "Altium project (*.PrjPcb);;All files (*)",
+            self, f"Locate the {tool} project", start,
+            ("KiCad project or board (*.kicad_pro *.kicad_pcb);;"
+             "Altium project (*.PrjPcb);;All files (*)") if kicad else
+            ("Altium project (*.PrjPcb);;"
+             "KiCad project or board (*.kicad_pro *.kicad_pcb);;All files (*)"),
             options=_file_dialog_options())
         if not path_str:
             return None, None
         new_prj = Path(path_str)
-        # Keep the same board in a multi-PCB project when it's beside it.
+        if new_prj.suffix.lower() == ".kicad_pro":
+            new_prj = new_prj.with_suffix(".kicad_pcb")
+        # Keep the same board in a multi-PCB project when it's beside it
+        # (a KiCad project has one board, the file just picked).
         new_pcb = None
-        if pcb is not None and (new_prj.parent / pcb.name).is_file():
+        if new_prj.suffix.lower() == ".kicad_pcb":
+            new_pcb = new_prj
+        elif pcb is not None and (new_prj.parent / pcb.name).is_file():
             new_pcb = new_prj.parent / pcb.name
         return new_prj, new_pcb
 

@@ -359,8 +359,12 @@ class _ReportExportMixin:
         metadata = with_marker_names(
             self.metadata, project.editor_directives if project else None)
         stale = bool(getattr(self, "_solve_stale", False))
-        source_kind = getattr(getattr(self, "_project", None), "source_kind",
-                              None) or "altium"
+        # The .fypa says "gerber" for a Gerber import; Altium and KiCad
+        # designs are told apart by the solve's metadata / design path.
+        from fypa.design_source import GERBER
+        from fypa.design_source import source_kind as _design_kind
+        source_kind = (GERBER if getattr(project, "source_kind", None) == GERBER
+                       else _design_kind(self.metadata))
 
         def _work():
             # Worker thread: build_report and the renderers touch no widgets.

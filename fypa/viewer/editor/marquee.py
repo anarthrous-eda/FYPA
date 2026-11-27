@@ -456,7 +456,7 @@ class _MarqueeMixin:
         if locked:
             warn = QLabel(
                 f"<span style='color:{t['warn']};'>{len(locked)} of these "
-                "still take their values from the Altium schematic. Apply "
+                "still take their values from the schematic. Apply "
                 "unlocks them and overrides it on the next solve.</span>"
             )
             warn.setWordWrap(True)
@@ -835,7 +835,7 @@ class _MarqueeMixin:
         if not pairs:
             self._multi_status(
                 f"Nothing to remove - these {noun}s are defined in the "
-                "Altium schematic, not the editor.", "err")
+                "schematic, not the editor.", "err")
             return
         note = ("" if not skipped else
                 f"\n\n{skipped} schematic-defined {noun}(s) in the selection "

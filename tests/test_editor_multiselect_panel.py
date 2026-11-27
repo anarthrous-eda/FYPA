@@ -535,7 +535,7 @@ def test_the_panel_warns_that_locked_sinks_will_be_overridden(viewer):
     viewer.metadata["directives"] = [_schematic_sink("U1", 0.5),
                                      _schematic_sink("U2", 1.0)]
     _sweep(viewer, 0, 0, 25, 20)
-    assert any("Altium schematic" in t for t in _panel_texts(viewer))
+    assert any("from the schematic" in t for t in _panel_texts(viewer))
 
 
 def test_apply_unlocks_locked_sinks_into_override_directives(viewer):

@@ -1,0 +1,27 @@
+(kicad_sch
+  (version 20241226)
+  (generator "eeschema")
+  (generator_version "9.0")
+  (paper "A4")
+  (lib_symbols)
+  (symbol
+    (lib_id "Device:R")
+    (at 100 80 0)
+    (unit 1)
+    (property "Reference" "U1")
+    (property "Value" "SOURCE_5V")
+    (property "Footprint" "Resistor_SMD:R_0805")
+    (pin "1")
+    (pin "2"))
+  (symbol
+    (lib_id "Device:R")
+    (at 140 80 0)
+    (unit 1)
+    (property "Reference" "U2")
+    (property "Value" "LOAD_1A")
+    (property "Footprint" "Resistor_SMD:R_0805")
+    (pin "1")
+    (pin "2"))
+  (sheet_instances
+    (path "/" (page "1")))
+)

@@ -14,6 +14,7 @@ import html
 import math
 
 from fypa.report.model import (
+    design_rows,
     DETAIL_LEVELS,
     FAIL,
     PASS,
@@ -213,9 +214,7 @@ def render_html(report: Report) -> str:
 
 
 def _header(r: Report) -> str:
-    rows = [("Project", r.prjpcb_path or r.project_name)]
-    if r.pcbdoc_path:
-        rows.append(("PCB", r.pcbdoc_path))
+    rows = design_rows(r)
     rows.append(("Generated", r.generated))
     rows.append(("FYPA", r.fypa_version))
     if r.settings.revision:

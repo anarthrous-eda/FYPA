@@ -457,7 +457,7 @@ class _EditorFormMixin:
                 head += f" &middot; {_esc(val)}"
             blocks.append(head + "<br>" + " &nbsp; ".join(tparts))
         box = QLabel(
-            f"<span style='color:{t['fg_muted']};'>Defined in the Altium "
+            f"<span style='color:{t['fg_muted']};'>Defined in the "
             f"schematic</span><br>{'<br><br>'.join(blocks)}"
         )
         box.setWordWrap(True)
@@ -468,7 +468,7 @@ class _EditorFormMixin:
         )
         lay.addWidget(box)
         note = QLabel(
-            "This rail is set up in the Altium schematic. Unlock it to "
+            "This rail is set up in the schematic. Unlock it to "
             "override these values in FYPA for a re-solve."
         )
         note.setWordWrap(True)
@@ -720,7 +720,7 @@ class _EditorFormMixin:
         else:
             lay.addWidget(QLabel("<b>Unnamed copper</b>"))
             hint = QLabel(
-                "This copper has no net name in Altium. Give it a name "
+                "This copper has no net name in the design. Give it a name "
                 "here to make it solvable - only this piece is named, "
                 "other disjoint unnamed copper stays as <b>(none)</b>."
             )

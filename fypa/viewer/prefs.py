@@ -376,6 +376,10 @@ def recent_project_label(entry: dict) -> str:
         parent = p.parent.name
         label = f"{p.name} - {parent}" if parent else p.name
         pcbdoc = entry.get("pcbdoc_path")
+        from fypa.kicad import is_kicad_path
+        if is_kicad_path(p):
+            # One board per KiCad project, and it is the path itself.
+            return f"{label} [KiCad]"
         if pcbdoc:
             label += f" [{Path(pcbdoc).name}]"
         return label

@@ -200,6 +200,10 @@ class RawPad:
     # Empty for ordinary uniform pads (the top-level fields then apply on every
     # copper layer the pad touches).
     layer_variations: tuple[tuple[int, int, float, float, int], ...] = ()
+    # The schematic pin's name ("VIN", "SW") when the board file carries it
+    # (KiCad's ``pinfunction``). Altium pin names come from the compiled
+    # netlist instead, so this stays empty there.
+    pin_name: str = ""
 
 
 def slot_hole_geometry(pad) -> tuple[str, float, float, float] | None:
@@ -616,6 +620,17 @@ class ExtractedProject:
     plane_relief_air_gap_mm: float = 0.0
     plane_relief_conductor_width_mm: float = 0.0
     plane_relief_entries: int = 4
+    # Warnings the reader raised about the design file itself (e.g. a KiCad
+    # board format FYPA was not checked against). ``load_project`` adds them
+    # to the annotation warnings so they reach the Design issues panel.
+    load_notes: tuple[str, ...] = ()
+    # Designators the design file itself marks as not placed (KiCad's Do not
+    # populate). ``load_project`` leaves them out like an assembly variant's
+    # Not Fitted parts. Altium's equivalent lives in its variants instead.
+    not_fitted_designators: tuple[str, ...] = ()
+    # Net names the schematic puts a power symbol on (KiCad's ``power:``
+    # symbols). Altium's come from the compiled netlist and the SchDocs.
+    power_port_nets: tuple[str, ...] = ()
 
     def __getstate__(self) -> dict:
         """Drop :attr:`sheet_netlists` from the pickle.
@@ -2105,7 +2120,16 @@ def extract_project(prjpcb_path: str | Path,
     that half; a half that is re-extracted is written back.
     ``read_cache=False`` forces both halves to be re-extracted (a clean load)
     but still refreshes the caches. ``None`` disables caching.
+
+    A KiCad ``.kicad_pcb`` / ``.kicad_pro`` path is read by
+    :func:`fypa.kicad.extract.extract_kicad_project` instead (one board per
+    project, so ``pcbdoc_selector`` is ignored; the read is fast enough that
+    it is not cached).
     """
+    from fypa.kicad import is_kicad_path
+    if is_kicad_path(prjpcb_path):
+        from fypa.kicad.extract import extract_kicad_project
+        return extract_kicad_project(prjpcb_path)
     prjpcb_path = Path(prjpcb_path)
     if not prjpcb_path.exists():
         raise FileNotFoundError(f"PrjPcb not found: {prjpcb_path}")

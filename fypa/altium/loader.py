@@ -3699,7 +3699,12 @@ def build_solve_metadata(
 
     from fypa.altium.variants import variant_metadata
 
+    from fypa.kicad import is_kicad_path
+
     return {
+        # "kicad" for a KiCad design; absent for Altium (the long-standing
+        # default) - see fypa.design_source.source_kind.
+        **({"source_kind": "kicad"} if is_kicad_path(proj.prjpcb_path) else {}),
         "project_name": proj.prjpcb_path.stem,
         "prjpcb_path": str(proj.prjpcb_path),
         "pcbdoc_path": str(proj.pcbdoc_path),
@@ -6600,6 +6605,20 @@ def load_project(prjpcb_path: str | Path,
                 for c in getattr(extracted, "pcb_components", ()) or ()}
     not_fitted = set(variant_choice.not_fitted) & on_board
     variant_notes: list[str] = []
+    # Parts the design file marks Do not populate (KiCad) - the base design's
+    # Not Fitted list. A chosen KiCad variant already starts from it (and may
+    # fit some of them: ``(dnp no)``), so it applies only to the base design.
+    file_dnp = ({d.upper() for d in
+                 getattr(extracted, "not_fitted_designators", ()) or ()} & on_board
+                if variant_choice.variant is None else set())
+    if file_dnp - not_fitted:
+        shown = ", ".join(sorted(file_dnp - not_fitted)[:8])
+        more = (f" and {len(file_dnp - not_fitted) - 8} more"
+                if len(file_dnp - not_fitted) > 8 else "")
+        variant_notes.append(
+            f"{len(file_dnp - not_fitted)} part(s) marked Do not populate in "
+            f"the design are left out ({shown}{more})")
+    not_fitted |= file_dnp
     if variant_choice.note:
         variant_notes.append(f"Variant: {variant_choice.note}")
     if variant_choice.variant is not None:
@@ -6670,6 +6689,7 @@ def load_project(prjpcb_path: str | Path,
     # WARNING level so they always appear - auto-inferred SERIES nets are
     # particularly important: a component accidentally bridging two wrong
     # nets (e.g. +3V3L → GND) shows up here and causes large phantom currents.
+    annotations.warnings.extend(getattr(extracted, "load_notes", ()) or ())
     annotations.warnings.extend(pdn_notes)
     annotations.warnings.extend(variant_notes)
     for w in annotations.warnings:

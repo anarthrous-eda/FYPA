@@ -5,8 +5,9 @@ from Help > Set up sources and sinks…. It lays out the four ways to define
 where power enters the board and where it is drawn, says when each one fits,
 and each card's button takes the user straight into that route:
 
-* **Define in Altium** - ``PDN_*`` parameters in the schematic. Opens a short
-  how-to page inside the dialog (the user has to leave FYPA for this one).
+* **Define in Altium / KiCad** - ``PDN_*`` parameters (KiCad: symbol fields)
+  in the schematic. Opens a short how-to page inside the dialog, worded for the
+  design's tool (the user has to leave FYPA for this one).
 * **Place on the board** - the Board tab's editor mode.
 * **Auto setup** - the Topology tab's Auto setup wizard.
 * **Manual setup** - the Topology tab's Manual setup tables.
@@ -42,6 +43,9 @@ ROUTE_IMPORT = "import"
 _ALTIUM_GUIDE_URL = (
     "https://github.com/anarthrous-eda/FYPA/blob/main/docs/user-guide/"
     "01-sources-and-sinks.md")
+_KICAD_GUIDE_URL = (
+    "https://github.com/anarthrous-eda/FYPA/blob/main/docs/user-guide/"
+    "10-kicad-import.md")
 
 _FYPA_STORE_NOTE = ("Saved beside the design (.fypa-setup.json) and restored "
                     "when it is imported again; changed parts are flagged.")
@@ -58,7 +62,7 @@ _CARDS = (
      "carried through every re-export.",
      "Show me how…"),
     (ROUTE_BOARD, "Place on the board",
-     "Recommended for quick setups and non-Altium designs",
+     "Recommended for quick setups and Gerber imports",
      "Turn on <b>Edit</b> and click a part to give it a role, or drop free "
      "source / sink markers straight onto copper.",
      _FYPA_STORE_NOTE,
@@ -93,8 +97,10 @@ class SetupChooserDialog(QDialog):
     and :meth:`dont_show_again` says whether the box was ticked."""
 
     def __init__(self, parent=None, *, has_schematic: bool = True,
-                 on_load: bool = True) -> None:
+                 on_load: bool = True, tool: str = "Altium") -> None:
         super().__init__(parent)
+        # "Altium" or "KiCad": names the schematic route and words its how-to.
+        self._tool = tool
         self.setWindowTitle("Set up sources and sinks")
         self.route: str | None = None
         self._has_schematic = bool(has_schematic)
@@ -174,6 +180,8 @@ class SetupChooserDialog(QDialog):
     def _build_card(self, t, route, title, badge, body, store,
                     button) -> QFrame:
         reason = None if self._has_schematic else _NO_SCHEMATIC_REASON.get(route)
+        if route == ROUTE_ALTIUM and self._has_schematic:
+            title = f"Define in {self._tool}"
         # Without a schematic the board is the only route, so it is *the*
         # recommendation rather than one of two.
         if not self._has_schematic:
@@ -246,13 +254,40 @@ class SetupChooserDialog(QDialog):
                 for k, v in rows)
             return f"<table style='margin:2px 0 8px 18px;'>{cells}</table>"
 
+        kicad = self._tool == "KiCad"
+        if kicad:
+            lead = ("Add these as fields to each symbol in the schematic "
+                    "(Symbol Properties, <b>+</b> to add a field - untick "
+                    "<i>Show</i> to keep them off the sheet; or on the library "
+                    "symbol for parts you reuse). Net names must match the "
+                    "board's net names exactly.")
+            back_in = ("<p style='margin:2px 0;'><b>4. Back in FYPA</b> - in "
+                       "KiCad choose <b>Tools &gt; Update PCB from Schematic"
+                       "</b> (F8) so the fields reach the board, save the "
+                       "board, then choose <b>File &gt; Reload Design</b> "
+                       "(Ctrl+R) here.</p>")
+            tip = (f"<p style='margin:10px 0 2px 0; color:{t['fg_muted']};'>"
+                   "KiCad import is in beta: check the copper on the Board "
+                   "tab against KiCad, and fill all zones before saving.</p>")
+            guide = _KICAD_GUIDE_URL
+        else:
+            lead = ("Add these parameters to each part in the schematic (on "
+                    "the placed part, or on the library symbol for parts you "
+                    "reuse). Net names must match the schematic exactly.")
+            back_in = ("<p style='margin:2px 0;'><b>4. Back in FYPA</b> - save "
+                       "and recompile in Altium, then choose <b>File &gt; "
+                       "Reload Design</b> (Ctrl+R).</p>")
+            tip = (f"<p style='margin:10px 0 2px 0; color:{t['fg_muted']};'>"
+                   f"Tip: the {c('FYPA_PdnParams')} script in FYPA's "
+                   f"{c('altium_scripts')} folder adds these from a dialog "
+                   "inside Altium and checks the values before writing them."
+                   "</p>")
+            guide = _ALTIUM_GUIDE_URL
         how = QLabel(
             "<h3 style='margin:0 0 6px 0;'>Define sources and sinks in "
-            "Altium</h3>"
-            "Add these parameters to each part in the schematic (on the "
-            "placed part, or on the library symbol for parts you reuse). "
-            "Net names must match the schematic exactly."
-            "<p style='margin:10px 0 2px 0;'><b>1. Where power enters</b> - "
+            f"{self._tool}</h3>"
+            + lead
+            + "<p style='margin:10px 0 2px 0;'><b>1. Where power enters</b> - "
             "a connector, battery or bench supply input:</p>"
             + table([("PDN_ROLE", "SOURCE"), ("PDN_V", "5V"),
                      ("PDN_P_NET", "+5V"), ("PDN_N_NET", "GND")])
@@ -266,14 +301,8 @@ class SetupChooserDialog(QDialog):
                      ("PDN_REGULATOR_TYPE", "LDO or SMPS"),
                      ("PDN_OUT_P_NET / PDN_OUT_N_NET", "+3V3 / GND"),
                      ("PDN_IN_P_NET / PDN_IN_N_NET", "+5V / GND")])
-            + "<p style='margin:2px 0;'><b>4. Back in FYPA</b> - save and "
-            "recompile in Altium, then choose <b>File &gt; Reload Design</b> "
-            "(Ctrl+R).</p>"
-            f"<p style='margin:10px 0 2px 0; color:{t['fg_muted']};'>"
-            f"Tip: the {c('FYPA_PdnParams')} script in FYPA's "
-            f"{c('altium_scripts')} folder adds these from a dialog inside "
-            "Altium and checks the values before writing them.</p>"
-            f"<p style='margin:6px 0 0 0;'><a href='{_ALTIUM_GUIDE_URL}' "
+            + back_in + tip
+            + f"<p style='margin:6px 0 0 0;'><a href='{guide}' "
             f"style='color:{t['accent']};'>Full guide: pin overrides, "
             "multi-channel parts, series elements…</a></p>")
         how.setTextFormat(Qt.RichText)
@@ -353,8 +382,10 @@ def open_setup_chooser(window, *, on_load: bool = False) -> None:
     offers "Don't show this again" and honours the saved preference."""
     from fypa.viewer.prefs import save_show_setup_chooser
 
+    from fypa.design_source import tool_name
     dlg = SetupChooserDialog(window, has_schematic=_has_schematic(window),
-                             on_load=on_load)
+                             on_load=on_load,
+                             tool=tool_name(getattr(window, "metadata", None)))
     dlg.exec()
     if dlg.dont_show_again():
         save_show_setup_chooser(False)

@@ -25,6 +25,10 @@ sweeps, or annotate a board whose schematic you would rather not modify.
 This section walks through annotating one source and one sink on a small
 example, then importing the project into FYPA.
 
+> **Using KiCad?** The same `PDN_*` parameters work as KiCad symbol fields;
+> [Section 10](10-kicad-import.md) covers adding them and importing the
+> design (beta).
+
 > **You will need:**
 > - An Altium project (`.PrjPcb`) that compiles cleanly.
 > - At least one component that supplies power to the board.

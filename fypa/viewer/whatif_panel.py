@@ -1375,7 +1375,7 @@ class _WhatIfMixin:
         if not prjpcb or not Path(prjpcb).exists():
             QMessageBox.warning(
                 self, "Can't run what-if",
-                "This result isn't linked to an Altium project on disk, so "
+                "This result isn't linked to an Altium or KiCad project on disk, so "
                 "the design can't be re-solved.")
             return
         settings = W.scenario_settings(self._solve_settings, s)

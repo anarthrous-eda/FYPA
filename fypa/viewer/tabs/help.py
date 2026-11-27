@@ -55,7 +55,8 @@ _HELP_SECTIONS: tuple[tuple[str, str], ...] = (
   <tr><td><kbd>Shift</kbd>+<kbd>H</kbd></td><td>Cycle <i>colour scheme</i> backward</td></tr>
   <tr><td><kbd>B</kbd></td><td>Collapse / expand the side panel</td></tr>
   <tr><td><kbd>F5</kbd></td><td><i>Solve</i> - the green button at the right-hand end of the tab row, on every tab</td></tr>
-  <tr><td><kbd>Ctrl</kbd>+<kbd>R</kbd></td><td><i>Reload Design</i> - read the Altium project from disk again and solve</td></tr>
+  <tr><td><kbd>Ctrl</kbd>+<kbd>R</kbd></td><td><i>Reload Design</i> - read the Altium or KiCad design from disk again and solve</td></tr>
+  <tr><td><kbd>Ctrl</kbd>+<kbd>K</kbd></td><td><i>Import KiCad Design (beta)</i> - <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>K</kbd> for a clean import</td></tr>
   <tr><td><kbd>Shift</kbd>+<kbd>B</kbd></td><td>Collapse / expand the right-hand editor panel (editor mode)</td></tr>
 </table>
 <p class='muted'>Shortcuts are window-scoped - they fire when the viewer
@@ -159,11 +160,11 @@ no one set of properties applies across roles.</p>
     Right-click to copy. Topology blocks with an issue carry a red or
     amber triangle; rest the mouse on one to read the message.</li>
   <li><b>Design changed</b> - a <i>DESIGN CHANGED &nbsp;Reload</i> chip at
-    the right-hand end of the menu bar says the Altium files were saved
+    the right-hand end of the menu bar says the Altium or KiCad files were saved
     since FYPA read them (hover it for which ones). Solve keeps working
     from the design as read; click the chip, or <b>File &gt; Reload
     Design</b> (<kbd>Ctrl+R</kbd>), to read the project again and solve
-    with the same setup. Altium designs only.</li>
+    with the same setup. Altium and KiCad designs only.</li>
   <li><b>Mode</b> - Voltage / Voltage Drop / Current Density /
     Power Density. Voltage Drop measures each rail from its own source
     (0 V there, negative toward the loads), so several rails shown
@@ -271,9 +272,12 @@ without changing the base, use What-Ifs. <b>Right:</b> a read-only
 report of what the solver was given: extracted records, stackup, physics
 constants, parsed PDN_* directives (collapsible), active nets, solver
 diagnostics, warnings / errors.</p>
-<p><b>Assembly variant</b> (under the PcbDoc path) picks which Altium build
-to analyse. <i>Altium default</i> uses the variant last selected in Altium;
-<i>[No Variations]</i> is the base design with every part fitted. A variant's
+<p><b>Assembly variant</b> (under the PcbDoc path) picks which build to
+analyse (Altium variants, or KiCad 10 design variants). <i>Altium
+default</i> uses the variant last selected in Altium; a KiCad design has no
+saved selection, so <i>KiCad default</i> is the base design;
+<i>[No Variations]</i> is the base design (every part fitted on an Altium
+design; a KiCad design's Do-not-populate parts stay out). A variant's
 Not Fitted parts are left open - a 0&nbsp;&Omega; link or option strap that
 isn't fitted never joins two nets - and its alternate parts' values replace
 the base ones. Saved in the .fypa; applied on the next Solve.</p>
@@ -434,7 +438,8 @@ base view; it clears the what-if's result), click one to remove it, Shift-drag a
 stop. <b>Undo</b> / <b>Redo</b> (<kbd>Ctrl+Z</kbd> / <kbd>Ctrl+Y</kbd>)
 step back through via changes. The list shows each added via (click to go
 to it, double-click X / Y to type a position, current after a run);
-<b>Export</b> copies or saves it as CSV with Altium coordinates, to place
+<b>Export</b> copies or saves it as CSV in the design tool's coordinates
+(Altium's; KiCad's with Y down the page), to place
 the vias in the layout. <b>Via</b> picks one of the board's
 via types (with a <b>Span</b> choice for blind / buried / micro types), or
 copies the nearest via on the net. With no what-if selected it makes a

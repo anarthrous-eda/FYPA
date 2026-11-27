@@ -272,7 +272,7 @@ class _SeriesInfoMixin:
     # --- Panel ---------------------------------------------------------------
 
     _SERIES_SOURCE_TEXT = {
-        "schematic": "Altium schematic (PDN_ROLE=SERIES)",
+        "schematic": "Schematic (PDN_ROLE=SERIES)",
         "editor": "Set in FYPA (editor SERIES)",
         "auto": "Auto-SERIES (set by FYPA)",
         "merged": "Auto-bridged by FYPA (nets merged)",

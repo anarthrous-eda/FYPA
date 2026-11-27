@@ -281,7 +281,7 @@ class Report:
     rails: list[RailReport]
     design_findings: list[Finding]
     solve_stale: bool = False
-    source_kind: str = "altium"
+    source_kind: str = "altium"   # "altium" | "kicad" | "gerber"
     analyses: str = ""            # "DC IR drop, via current, …"
     # Appendix
     setup_rows: list[tuple[str, str]] = field(default_factory=list)
@@ -380,3 +380,16 @@ def report_to_json(report: Report) -> str:
     data["verdict"] = {"severity": sev, "headline": head, "explanation": why}
     data["format_version"] = 1
     return json.dumps(data, indent=2, ensure_ascii=False)
+
+
+def design_rows(r: Report) -> list[tuple[str, str]]:
+    """The report header's design rows: the project, the board when it is a
+    separate file (an Altium PcbDoc; a KiCad board *is* the project path) and,
+    for a design not read from Altium, where it came from."""
+    rows = [("Project", r.prjpcb_path or r.project_name)]
+    if r.pcbdoc_path and r.pcbdoc_path != r.prjpcb_path:
+        rows.append(("PCB", r.pcbdoc_path))
+    source = {"kicad": "KiCad (beta)", "gerber": "Gerber files"}.get(r.source_kind)
+    if source:
+        rows.append(("Source", source))
+    return rows

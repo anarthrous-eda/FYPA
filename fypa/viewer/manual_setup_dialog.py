@@ -352,7 +352,7 @@ class _Editor(QWidget):
             self._sync_visibility()
             return
         if entry.locked:
-            banner = "Defined in the Altium schematic."
+            banner = "Defined in the schematic."
         elif free:
             banner = ("Free marker placed on the Board. Its net and location "
                       "are set there; its values can be edited here.")
@@ -747,7 +747,7 @@ class _RolePage(QWidget):
                 it.setData(Qt.UserRole, e.directive.id)
                 if e.locked:
                     it.setForeground(Qt.gray)
-                    it.setToolTip("Defined in the Altium schematic - select and "
+                    it.setToolTip("Defined in the schematic - select and "
                                   "Override to edit it here")
                 elif e.is_free:
                     it.setToolTip(

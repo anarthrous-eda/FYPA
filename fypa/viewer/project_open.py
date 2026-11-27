@@ -1,4 +1,10 @@
-"""Opening projects, solutions and Altium imports into a viewer window."""
+"""Opening projects, solutions and Altium / KiCad imports into a viewer window.
+
+A KiCad design goes through the same import path as an Altium one
+(:func:`_open_altium_project_at`): the solve worker, the caches, the setup saved
+beside the board and the recent list all key on the design's path, which for
+KiCad is its ``.kicad_pcb`` (see :mod:`fypa.kicad`).
+"""
 from __future__ import annotations
 
 import logging
@@ -95,6 +101,57 @@ def _altium_import_worker_options(
     }
 
 
+
+
+KICAD_IMPORT_LABEL = "Import &KiCad Design (beta)…"
+KICAD_IMPORT_CLEAN_LABEL = "Import KiCad Design (beta, Clea&n)…"
+KICAD_IMPORT_SHORTCUT = "Ctrl+K"
+KICAD_IMPORT_CLEAN_SHORTCUT = "Ctrl+Shift+K"
+
+
+def _kicad_import_status_tip(auto_solve: bool, *, clean: bool = False) -> str:
+    """Status tip for the Import KiCad Design (beta) actions."""
+    pick = "Pick a .kicad_pro or .kicad_pcb (KiCad 7 or newer; beta)"
+    if clean:
+        then = ("ignore any cached design info or solution and the setup saved "
+                "beside the board (kept as a .bak), and re-read from scratch")
+    elif auto_solve:
+        then = ("reuse the cached solution if the design is unchanged, "
+                "otherwise read + solve")
+    else:
+        then = "load the design info, then press Solve to run the simulation"
+    return f"{pick}; {then}. Fill all zones in KiCad and save first."
+
+
+def pick_kicad_design(parent, start_dir: str = "", *,
+                      clean: bool = False) -> Path | None:
+    """File dialog for a KiCad design; returns its ``.kicad_pcb`` or ``None``.
+
+    Either file of the project may be picked - the ``.kicad_pro`` is what a
+    KiCad user recognises as "the project" - but FYPA keys a KiCad design on
+    its board, so the result is always the ``.kicad_pcb`` beside it.
+    """
+    from PySide6.QtWidgets import QFileDialog
+
+    from fypa.viewer.theme import _file_dialog_options
+    path_str, _ = QFileDialog.getOpenFileName(
+        parent,
+        "Import KiCad design (beta, clean)" if clean else "Import KiCad design (beta)",
+        start_dir,
+        "KiCad project or board (*.kicad_pro *.kicad_pcb);;All files (*)",
+        options=_file_dialog_options(),
+    )
+    if not path_str:
+        return None
+    return _canonical_design_path(Path(path_str))
+
+
+def _canonical_design_path(path: Path) -> Path:
+    """A KiCad ``.kicad_pro`` becomes the ``.kicad_pcb`` beside it (FYPA's key
+    for a KiCad design); anything else is returned unchanged."""
+    if path.suffix.lower() == ".kicad_pro":
+        return path.with_suffix(".kicad_pcb")
+    return path
 
 
 def _altium_import_clean_status_tip(auto_solve: bool) -> str:
@@ -455,7 +512,8 @@ def _open_altium_project_at(
     from_recent: bool = False,
     force_solve: bool = False,
 ) -> None:
-    """Import an Altium ``.PrjPcb`` without a file dialog when possible.
+    """Import an Altium ``.PrjPcb`` or a KiCad board without a file dialog
+    when possible.
 
     ``force_solve`` overrides the persisted "Solve automatically on Altium
     import" preference. The CLI sets it when the user passed a mesh or
@@ -466,6 +524,7 @@ def _open_altium_project_at(
         return
     if _reject_if_background_load_running(window):
         return
+    prjpcb_path = _canonical_design_path(prjpcb_path)
     if not prjpcb_path.exists():
         QMessageBox.critical(
             window, "Couldn't open project",

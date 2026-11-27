@@ -366,10 +366,10 @@ class _SettingsTabMixin:
         gen_box = QGroupBox("General options")
         gen_layout = QVBoxLayout(gen_box)
         self._settings_auto_solve_check = QCheckBox(
-            "Solve automatically on Altium import")
+            "Solve automatically on Altium / KiCad import")
         self._settings_auto_solve_check.setChecked(load_auto_solve_on_import())
         self._settings_auto_solve_check.setToolTip(
-            "When checked, Import Altium Design runs the FEM solver immediately "
+            "When checked, Import Altium / KiCad Design runs the FEM solver immediately "
             "(reusing the solve cache when possible). When unchecked, only "
             "design info is loaded - press Solve in the viewer. Persists "
             "across launches."
@@ -564,9 +564,12 @@ class _SettingsTabMixin:
         form = QFormLayout(box)
         self.variant_combo = QComboBox()
         self.variant_combo.setToolTip(
-            "The Altium assembly variant to analyse. 'Altium default' uses "
+            "The assembly variant to analyse (Altium, or KiCad 10 design "
+            "variants). 'Altium default' uses "
             "whichever variant was last selected in Altium (the project's "
-            "CurrentVariant). Not Fitted parts are left open - a 0 Ω link "
+            "CurrentVariant); a KiCad design records no selection, so "
+            "'KiCad default' is the base design. Not Fitted parts are left "
+            "open - a 0 Ω link "
             "or option strap that isn't fitted never joins two nets. "
             "Applied on the next Solve.")
         self.variant_combo.activated.connect(self._on_variant_chosen)
@@ -863,10 +866,10 @@ class _SettingsTabMixin:
 
         self._settings_reload_design_btn = QPushButton("Reload Design")
         self._settings_reload_design_btn.setToolTip(
-            "Read the Altium project from disk again (geometry + annotations, "
-            "ignoring the design-info cache), then solve with the same "
-            "setup and the current inputs. Use this after editing the "
-            "design in Altium. Also File > Reload Design (Ctrl+R)."
+            "Read the Altium / KiCad design from disk again (geometry + "
+            "annotations, ignoring the design-info cache), then solve with "
+            "the same setup and the current inputs. Use this after editing "
+            "the design. Also File > Reload Design (Ctrl+R)."
         )
         self._settings_reload_design_btn.setStyleSheet(
             self._secondary_button_qss())
@@ -1105,7 +1108,7 @@ class _SettingsTabMixin:
 
         # ----- Mode combo (Auto / force All / force None) -----
         self._fill_mode_combo = QComboBox()
-        self._fill_mode_combo.addItem("Auto (from Altium IPC-4761 data)", "auto")
+        self._fill_mode_combo.addItem("Auto (from the design's IPC-4761 data)", "auto")
         self._fill_mode_combo.addItem("Force: treat all vias as filled", "all")
         self._fill_mode_combo.addItem("Force: treat no vias as filled", "none")
         self._fill_mode_combo.setToolTip(
@@ -1114,7 +1117,8 @@ class _SettingsTabMixin:
             "• Auto - decide per via from the design's IPC-4761 FILLING "
             "material string (the default).\n"
             "• Force all - treat every coupled via/through-hole as filled "
-            "(use the fab's fill spec when Altium has no IPC-4761 data).\n"
+            "(use the fab's fill spec when the design has no IPC-4761 data - "
+            "KiCad records that a via is filled, not with what).\n"
             "• Force none - ignore any fill; the plated wall is the only path."
         )
         cur_mode = getattr(self._solve_settings, "conductive_fill_mode", "auto")

@@ -598,7 +598,7 @@ class _ViewportMixin:
         return -rank * self._LAYER_Z_SPACING_MM
 
     # World-z to bump the selected layer above the topmost physical layer
-    # in 2D. The 2D ortho near/far is ±1e6 mm, so this has miles of
+    # in 2D. The 2D ortho near/far is ±100 mm, so this has plenty of
     # headroom against clipping; one full layer pitch keeps it clearly
     # above the stack without breaking the user's depth intuition.
     _SELECTED_LAYER_2D_LIFT_MM: float = 1.0

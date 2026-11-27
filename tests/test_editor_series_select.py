@@ -226,8 +226,8 @@ def test_auto_series_form_shows_the_block_and_its_actions(viewer):
 
 def test_schematic_series_form_keeps_the_unlock_path(viewer):
     labels, buttons = _form_text(viewer, "R1")
-    assert "Altium schematic (PDN_ROLE=SERIES)" in labels
-    assert "Defined in the Altium" in labels
+    assert "Schematic (PDN_ROLE=SERIES)" in labels
+    assert "Defined in the schematic" in labels
     assert any("Unlock" in b for b in buttons)
 
 

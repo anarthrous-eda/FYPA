@@ -663,7 +663,8 @@ shows its markers when clicked.
 | **S** / **L** | In editor mode, arm a free **S**OURCE / sink (**L**oad) drop - the keyboard equivalent of the red / blue triangle buttons. |
 | **Ctrl+S**   | Save the project (the dialog offers project-only or project+solution). |
 | **F5**       | Solve: run the solver with the current setup and settings (the green button at the right-hand end of the tab row). |
-| **Ctrl+R**   | Reload the design: read the Altium project from disk again and solve with the same setup (see [Section 1.6](01-sources-and-sinks.md#after-changing-the-design-in-altium)). |
+| **Ctrl+R**   | Reload the design: read the Altium or KiCad design from disk again and solve with the same setup (see [Section 1.6](01-sources-and-sinks.md#after-changing-the-design-in-altium)). |
+| **Ctrl+K**   | Import a KiCad design (beta); **Ctrl+Shift+K** for a clean import (see [Section 10](10-kicad-import.md)). |
 
 The Help tab inside the viewer has the authoritative, always-current
 list - if a hotkey here looks wrong, that tab is the source of truth.

@@ -489,9 +489,11 @@ class _SolveWorker(QThread):
         self._in_python_packaging = False
 
     def _watchable_design(self) -> bool:
-        """True for an Altium project - the only kind the viewer can reload,
-        so the only kind whose files it watches (fypa.viewer.design_watch)."""
-        return self._prjpcb_path.suffix.lower() == ".prjpcb"
+        """True for an Altium or KiCad design - the kinds the viewer can
+        reload, so the only kinds whose files it watches
+        (fypa.viewer.design_watch)."""
+        from fypa.design_source import is_live_design_path
+        return is_live_design_path(self._prjpcb_path)
 
     def _design_files_now(self) -> dict | None:
         """``{path: (modified time, size)}`` of the design's Altium files as
@@ -1793,7 +1795,17 @@ def _choose_pcbdoc(parent: QWidget | None, prjpcb_path: Path,
     Multi-PCB projects open a modal :class:`QInputDialog.getItem` so the
     user can pick. ``default``, when supplied and present in the list, is
     pre-selected (handy for re-runs of a previously-chosen board).
+
+    A KiCad project has exactly one board, the ``.kicad_pcb`` itself.
     """
+    from fypa.kicad import is_kicad_path
+    if is_kicad_path(prjpcb_path):
+        try:
+            from fypa.kicad.extract import resolve_kicad_board
+            return True, resolve_kicad_board(prjpcb_path)
+        except FileNotFoundError as e:
+            QMessageBox.critical(parent, "KiCad board not found", str(e))
+            return False, None
     try:
         from fypa.altium.extract import list_pcbdoc_paths
         paths = list_pcbdoc_paths(prjpcb_path)

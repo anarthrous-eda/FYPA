@@ -726,7 +726,7 @@ class _TopologyTabMixin:
             "Add handles",
             "Show a dashed \"+ SINK (n)\" tap under each rail's last load when "
             "more parts on the rail (ICs, connectors) could be a load. Click one "
-            "to add a SINK there in Manual setup. Needs the Altium design "
+            "to add a SINK there in Manual setup. Needs the Altium / KiCad design "
             "loaded.",
             self._topology_show_add_handles,
             self._on_topology_add_handles_toggled)
