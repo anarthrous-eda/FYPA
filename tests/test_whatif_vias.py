@@ -83,8 +83,20 @@ def test_vias_only_scenario_counts_as_changed_and_is_described():
         _via(), _via(x=208.0), _via(net="GND")])
     assert s.has_changes()
     assert W.describe_changes(s, None) == [
-        "Added vias: 2 on P1V_VIAS, 1 on GND"]
+        "Added vias: 2 on P1V_VIAS, 1 on GND (board clearance)"]
+    s.via_clearance_mm = 0.3
+    assert W.describe_changes(s, None) == [
+        "Added vias: 2 on P1V_VIAS, 1 on GND (clearance 0.3 mm)"]
     assert describe([]) == []
+
+
+def test_via_clearance_round_trips_and_bad_values_fall_back_to_the_board():
+    s = W.WhatIfScenario(name="A", added_vias=[_via()], via_clearance_mm=0.25)
+    assert W.WhatIfScenario.from_dict(s.to_dict()).via_clearance_mm == 0.25
+    assert s.copy_as("B").via_clearance_mm == 0.25
+    for bad in (None, -1, "x", float("nan")):
+        d = {**s.to_dict(), "via_clearance_mm": bad}
+        assert W.WhatIfScenario.from_dict(d).via_clearance_mm is None
 
 
 def test_added_via_report_counts_the_tail():
@@ -120,6 +132,61 @@ def test_vias_are_appended_to_a_copy(loaded):
     assert (new.layer_start, new.layer_end) == (TOP, BOTTOM)
     # Everything else about the design carries across.
     assert out.annotations is loaded.annotations
+
+
+def test_each_via_records_its_repour_clearance_hole(loaded):
+    from fypa.whatif_vias import board_clearance_mm
+    board = board_clearance_mm(loaded.extracted)
+    assert board > 0
+    out, _w, _n = apply_added_vias(loaded, [_via()])
+    (c,) = out.whatif_via_cutouts
+    assert (c.x_mm, c.y_mm) == (207.4, 19.0)
+    assert c.net_index == _idx(loaded.extracted, "P1V_VIAS")
+    assert c.radius_mm == pytest.approx(0.3 + board)
+    assert c.layer_ids == (1, 39, 40, 32)          # through every layer
+    out, _w, _n = apply_added_vias(loaded, [_via()], clearance_mm=0.1)
+    assert out.whatif_via_cutouts[0].radius_mm == pytest.approx(0.4)
+    # The design the viewer keeps never carries them.
+    assert not hasattr(loaded, "whatif_via_cutouts")
+
+
+def test_the_solve_repours_other_nets_around_the_via(loaded):
+    """Both planes the via passes through (P1V_PLANE_TEST on L2, GND on L3)
+    get a hole of pad radius + clearance; its own net keeps its copper."""
+    import shapely.geometry as sg
+
+    from fypa.altium.loader import build_problem
+    x, y, clr = 207.4, 19.0, 1.0
+    probe = sg.Point(x + 0.3 + 0.9 * clr, y)       # inside the hole's rim
+
+    def covered(loaded_, net, layer_id):
+        layers = build_problem(loaded_)[3]
+        idx = _idx(loaded.extracted, net)
+        return any(g.layer_id == layer_id and g.net_index == idx
+                   and g.shape.contains(probe) for g in layers)
+
+    assert covered(loaded, "GND", 40)
+    assert covered(loaded, "P1V_PLANE_TEST", 39)
+    punched = apply_added_vias(loaded, [_via(x, y)], clearance_mm=clr)[0]
+    assert not covered(punched, "GND", 40)
+    assert not covered(punched, "P1V_PLANE_TEST", 39)
+
+
+def test_cut_clearances_spares_the_vias_own_net_and_other_layers():
+    import shapely.geometry as sg
+
+    from fypa.altium_geometry import GeometryLayer
+    from fypa.whatif_vias import ViaCutout, cut_clearances
+
+    sq = sg.MultiPolygon([sg.box(-5, -5, 5, 5)])
+    own = GeometryLayer(1, "Top", sq, 1.0, False, -1, net_index=1)
+    other = GeometryLayer(1, "Top", sq, 1.0, False, -1, net_index=2)
+    below = GeometryLayer(32, "Bottom", sq, 1.0, False, -1, net_index=2)
+    cut = cut_clearances([own, other, below],
+                         [ViaCutout(0.0, 0.0, 1, 0.5, (1,))])
+    assert cut[0] is own and cut[2] is below
+    assert cut[1].shape.area == pytest.approx(100 - 3.14159 * 0.25, rel=1e-3)
+    assert not cut[1].shape.contains(sg.Point(0.2, 0.0))
 
 
 def test_unusable_vias_are_skipped_with_a_warning(loaded):
@@ -275,6 +342,16 @@ def test_a_parallel_via_lowers_the_drop(loaded):
     report = added_via_report(md, n)
     assert report == {"count": 1, "unconnected": 0}
     assert md["vias"][-1]["net"] == "P1V_VIAS"
+
+    # The Difference view's hover reads the added via's current from the
+    # what-if result alone: one row, for the added via, carrying current.
+    from fypa.lean_solution import to_lean_solution
+    from fypa.viewer.whatif_punch import _WhatIfPunchMixin
+    md[METADATA_KEY] = report
+    rows = _WhatIfPunchMixin._whatif_added_via_rows(to_lean_solution(sol), md)
+    assert len(rows) == 1
+    assert (rows[0]["x_mm"], rows[0]["y_mm"]) == pytest.approx((207.4, 19.0))
+    assert abs(rows[0]["current"]) > 0.01           # it carries real current
 
 
 def test_metadata_key_is_stable():

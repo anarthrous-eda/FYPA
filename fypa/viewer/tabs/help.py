@@ -412,11 +412,17 @@ copper thickness (with ½-3 oz quick picks) or resistivity. Blank fields keep
 the base value.</li>
 <li><b>Punch vias</b> adds vias to the selected what-if (2D Board, base
 view): click copper for one via, drag for a grid at the <b>Pitch</b> beside
-it, click an added via to remove it, <b>Esc</b> to stop. Each copies the
-nearest via on that net. A via is refused when its net has copper on fewer
-than two of its layers (it would carry no current), when its pad would
-touch another net on a signal layer, or when it overlaps another via. Added
-vias exist only in the what-if; <b>Clear</b> removes them.</li>
+it, drag an added via to move it (it clears the what-if's result), click
+one to remove it, <b>Esc</b> to stop. <b>Via</b> picks one of the board's
+via types (with a <b>Span</b> choice for blind / buried / micro types), or
+copies the nearest via on the net. With no what-if selected it makes a
+vias-only one. Other nets' pours and planes the via passes
+through are repoured with a hole at the <b>Clearance</b> (per what-if,
+starting at the board's PlaneClearance rule; <b>Board rule</b> resets it).
+A via is refused when its net has copper on fewer than two of its layers
+(it would carry no current), when its pad would touch another net's tracks,
+pads or fixed regions, or when it overlaps another via. Added vias exist
+only in the what-if; <b>Clear</b> removes them.</li>
 <li><b>Run</b> solves the design with those changes. The base result is
 untouched; each what-if keeps its own result.</li>
 <li><b>Show:</b> <i>Base</i>, <i>What-if</i> (every tab then shows the

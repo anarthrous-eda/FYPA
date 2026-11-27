@@ -47,7 +47,10 @@ mesh settings as the base, so the comparison reflects only your change.
 Load currents, source voltages and copper shapes can't be changed in a
 What-If. Vias can be added - see 9.3.
 
-**Save** keeps it; **Save and Run** also solves it straight away.
+**Save** keeps it; **Save and Run** also solves it straight away. A What-If
+can be saved with nothing changed, to add vias to it afterwards (9.3), but
+it can't be run until it changes something. Pressing **Punch vias** with no
+What-If selected makes a vias-only one (`Vias 1`) for you.
 
 ## 9.3 Punching vias
 
@@ -57,29 +60,62 @@ the Board. It works in 2D on the base view: pressing it switches to both.
 - **Click** on copper to add one via on that copper's net.
 - **Drag** a box to add a grid of vias at the **Pitch** set beside the
   button, all on the net under the corner you started the drag from.
+- **Drag a via you added** to move it, the same way as a SOURCE or SINK
+  marker in Edit Mode. It keeps its net, size and span, follows the cursor
+  while the spot passes the rules below, and stops at the last spot that
+  did. Moving a via clears the What-If's old result, so it shows **not
+  run** until you run it again.
 - **Click a via you added** to remove it. **Clear (n)** removes them all.
 - **Esc**, the button again, switching to 3D or to another view stops it.
 
-Each new via copies the drill, pad and layer span of the nearest via
-already on that net. If the net has no vias, it copies the board's most
-common via, and on a board with no vias it is a 0.3 / 0.6 mm through via.
-The toast says which.
+**Via** picks what is punched:
+
+- **Nearest on net (auto)**, the default: each new via copies the drill,
+  pad and layer span of the nearest via already on that net. If the net
+  has no vias it copies the board's most common via, and on a board with no
+  vias it is a 0.3 / 0.6 mm through via.
+- **One of the board's via types**, listed by drill / pad size with their
+  kind and how many the board has, most used first, for example
+  `0.3 / 0.6 mm through (1234)` or `0.1 / 0.25 mm micro (56)`.
+
+A type that doesn't run through every layer (blind, buried or micro) shows
+a **Span** choice beside it: the layer pairs the board uses that type
+between, such as `Top → L2` or `L7 → Bottom`. Only spans the board already
+uses are offered; drill, pad and span can't be edited.
+
+The line under the choice says exactly what the next via will be, the
+toast after each click repeats it, and hovering an added via shows its
+net, size and span.
+
+A via may go through another net's pour or internal plane, such as a
+ground plane poured across the whole board. The What-If does what the
+layout tool does when it repours: every pour and plane of another net that
+the via passes through gets a clearance hole around it. So a row of power
+vias through a ground pour helps the power rail and perforates the ground,
+and the comparison shows both.
+
+**Clearance** sets the gap between an added via's pad and the copper
+around it, so the hole is the pad diameter plus twice the clearance. It
+starts at the board's PlaneClearance rule (20 mil when the board has
+none), and each What-If keeps its own value. **Board rule** goes back to
+the rule. Changing it clears the What-If's old result. On an internal
+plane the hole is never smaller than the board's rule, because the plane
+already cuts that much.
 
 A via is refused, with the reason in a toast, when:
 
 - its net has copper on fewer than two of the layers it spans, so it would
   carry no current;
-- its pad would touch another net's copper on a signal layer;
-- it would overlap another net's via, or sit inside a via already on its
-  net.
+- its pad would touch another net's tracks, pads, fills or regions that
+  aren't part of a pour, which would be a short a repour can't clear;
+- it would overlap another net's via or through-hole pad, or sit inside a
+  via already on its net.
 
-Planes don't refuse a via: the plane's own sheet gets a clearance hole
-for it, just as it has for the board's existing vias. Poured copper on a
-signal layer doesn't, which is why a via touching another net's pour is
-refused rather than drawn through it.
+On a Gerber import nothing records which copper is a pour, so every
+filled area counts as pour; tracks and pads still refuse.
 
-Added vias are drawn as orange pads with a dark drill while the panel is
-open, and exist only in that What-If. Its Run solves the board with them;
+Added vias are drawn as orange pads with a dark drill and an orange ring
+at the clearance while the panel is open, and exist only in that What-If. Its Run solves the board with them;
 the base, the report and the solve caches never see them. Adding or
 removing a via clears the What-If's old result. A What-If with added vias
 can't be **made the base** (9.6), because the vias aren't on the board: add
@@ -110,7 +146,9 @@ each net's voltage measured from its source return. Via Current and Copper
 ROI can't be shown as a difference; the banner says so and the base is
 drawn instead. Current arrows, series-part bars and via cylinders are hidden
 in the Difference view, because they would show base values on a
-difference scale.
+difference scale. Hovering a via still reads its current in the bottom bar:
+the base value for the board's own vias, and the What-If's value, labelled
+**Added via (what-if)**, for a via the What-If added.
 
 Editing directives, saving, exporting a report or running a solve always
 switches the viewer back to **Base** first.

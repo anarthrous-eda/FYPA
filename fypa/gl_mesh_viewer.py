@@ -2753,6 +2753,9 @@ class GLMeshViewer(QOpenGLWidget):
             return
         self._punch_mode = on
         self._marquee_px = None
+        # Leaving punch mode cancels an in-progress punched-via drag.
+        if not on and not self._editor_mode:
+            self._editor_drag_active = False
         self._apply_editor_cursor("default")
         self.update()
 
@@ -5709,8 +5712,10 @@ class GLMeshViewer(QOpenGLWidget):
                 ev.accept()
                 return
             # Editor mode: a left press that lands on a draggable free
-            # marker becomes a marker drag rather than a pan / click.
-            if (self._editor_mode and self._view_mode == "2d"
+            # marker becomes a marker drag rather than a pan / click. Same
+            # for a What-If punched via while punching.
+            if ((self._editor_mode or self._punch_mode)
+                    and self._view_mode == "2d"
                     and self._editor_drag_hit_test is not None):
                 wx, wy = self.screen_to_world(ev.position().x(),
                                               ev.position().y())
@@ -5789,7 +5794,8 @@ class GLMeshViewer(QOpenGLWidget):
                 and self._middle_press_origin is None):
             if self._legend_row_key_at(pos) is not None:
                 self._apply_editor_cursor("pointing")
-            elif (self._editor_mode and self._view_mode == "2d"
+            elif ((self._editor_mode or self._punch_mode)
+                    and self._view_mode == "2d"
                     and self._editor_drag_hit_test is not None):
                 hx, hy = self.screen_to_world(pos.x(), pos.y())
                 try:

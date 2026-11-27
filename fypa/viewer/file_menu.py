@@ -1203,6 +1203,7 @@ class _FileMenuMixin:
         write_solve_cache: bool = True,
         dialog_width_text: str | None = None,
         added_vias: list | None = None,
+        via_clearance_mm: float | None = None,
     ) -> None:
         """Show an indeterminate progress dialog and run :class:`_SolveWorker`
         off-thread; on success, refresh this viewer in place via
@@ -1288,6 +1289,7 @@ class _FileMenuMixin:
             set_aside_setup=set_aside_setup,
             # What-If punched vias (this solve only).
             added_vias=added_vias,
+            via_clearance_mm=via_clearance_mm,
             parent=self,
         )
         if is_import:

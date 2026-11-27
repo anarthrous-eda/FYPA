@@ -364,12 +364,15 @@ class _SolveWorker(QThread):
                   restore_setup: bool = False,
                   set_aside_setup: bool = False,
                   added_vias: list | None = None,
+                  via_clearance_mm: float | None = None,
                   parent=None) -> None:
         super().__init__(parent)
         # What-If punched vias (fypa.whatif_vias.AddedVia), appended to the
-        # extract for this solve only. Set only by the What-If runner, which
-        # also passes write_solve_cache=False.
+        # extract for this solve only, with the clearance the pours they
+        # pass through are repoured with (None = board rule). Set only by
+        # the What-If runner, which also passes write_solve_cache=False.
         self._added_vias = list(added_vias or [])
+        self._via_clearance_mm = via_clearance_mm
         self._n_added_vias = 0
         # Import Altium Design (Clean): the saved setup is renamed to .bak
         # at the start of run() and not restored - the design opens as if
@@ -1122,7 +1125,7 @@ class _SolveWorker(QThread):
                     f"Adding {len(self._added_vias)} what-if via(s)…")
                 from fypa.whatif_vias import apply_added_vias
                 loaded, av_warnings, self._n_added_vias = apply_added_vias(
-                    loaded, self._added_vias)
+                    loaded, self._added_vias, self._via_clearance_mm)
                 for w in av_warnings:
                     logging.getLogger(__name__).warning("%s", w)
 

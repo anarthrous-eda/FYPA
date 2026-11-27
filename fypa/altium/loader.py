@@ -784,8 +784,9 @@ def replace_loaded(
         geometry = (loaded.__dict__.get("geometry")
                     if extracted is None else None)
     out = _new_loaded_project(loaded, extracted, annotations, geometry)
-    # Plain attributes load_project sets after construction.
-    for attr in ("variant_applied", "variant_choice"):
+    # Plain attributes load_project sets after construction, and the
+    # What-If punched vias' repour clearances (fypa.whatif_vias).
+    for attr in ("variant_applied", "variant_choice", "whatif_via_cutouts"):
         if attr in loaded.__dict__:
             setattr(out, attr, loaded.__dict__[attr])
     return out
@@ -3725,6 +3726,10 @@ def build_solve_metadata(
             "sch_components": len(proj.sch_components),
         },
         "enabled_copper_layer_ids": enabled,
+        # Altium PlaneClearance rule (anti-pad gap around a foreign-net
+        # via): the What-If via punch tool's default repour clearance.
+        "plane_clearance_mm": float(getattr(proj, "plane_clearance_mm", 0.0)
+                                    or 0.0),
         "stackup": stackup_rows,
         "physics_constants": {
             # Read the *current* module-level values so a Settings-tab
@@ -5438,6 +5443,16 @@ def build_problem(
         log.info("build_problem: active-net geometry built in %.2fs "
                  "(non-active nets unioning in background)",
                  time.monotonic() - _t_geom)
+    # What-If punched vias: other nets' copper repoured around them (a
+    # clearance hole cut in each pour / plane they pass through). Done on
+    # the copper as built or read from the cache, so the cache stays the
+    # board's own.
+    _cutouts = getattr(loaded, "whatif_via_cutouts", None)
+    if _cutouts:
+        from fypa.whatif_vias import CutFuture, cut_clearances
+        active_layers = cut_clearances(active_layers, _cutouts)
+        _rest_geom_future = CutFuture(_rest_geom_future, _cutouts)
+        _t_mark = _stage("What-If via clearances", _t_mark)
     pp_layers: list[_pp.Layer] = []
     layer_by_layer_and_net: dict[tuple[int, int], _pp.Layer] = {}
     stub_pieces_by_pair: dict[tuple[int, int], list] = {}

@@ -96,16 +96,105 @@ def vias_from_dicts(raw: Any) -> list[AddedVia]:
     return out
 
 
-def describe(vias: list[AddedVia]) -> list[str]:
-    """``["Added vias: 3 on GND, 1 on +3V3"]`` (empty when none), nets in
-    the order first used."""
+def describe(vias: list[AddedVia],
+             clearance_mm: float | None = None) -> list[str]:
+    """``["Added vias: 3 on GND, 1 on +3V3 (clearance 0.3 mm)"]`` (empty
+    when none), nets in the order first used. ``clearance_mm`` None reads
+    "board clearance"."""
     if not vias:
         return []
     counts: dict[str, int] = {}
     for v in vias:
         counts[v.net] = counts.get(v.net, 0) + 1
     parts = [f"{n} on {net}" for net, n in counts.items()]
-    return [f"Added vias: {', '.join(parts)}"]
+    clr = ("board clearance" if clearance_mm is None
+           else f"clearance {clearance_mm:.3g} mm")
+    return [f"Added vias: {', '.join(parts)} ({clr})"]
+
+
+# --- repour: clearance holes in other nets' copper ----------------------------
+#
+# A via dropped into another net's pour makes the layout tool repour that
+# pour with a clearance hole around it. The what-if solve does the same: each
+# punched via cuts a disc of (pad radius + clearance) out of every OTHER net's
+# copper on the layers it spans - pours and internal-plane sheets alike. The
+# punch tool refuses a via whose pad touches another net's tracks, pads or
+# fixed regions, so the disc only ever bites into copper a repour would move.
+
+# Altium's default PlaneClearance (20 mil): used when the board carries no
+# value (a Gerber import, or a result saved before the rule was recorded).
+DEFAULT_CLEARANCE_MM = 0.508
+
+
+def board_clearance_mm(metadata_or_extracted) -> float:
+    """The board's PlaneClearance rule in mm (``metadata["plane_clearance_mm"]``
+    or ``ExtractedProject.plane_clearance_mm``), else the Altium default."""
+    if isinstance(metadata_or_extracted, dict):
+        v = metadata_or_extracted.get("plane_clearance_mm")
+    else:
+        v = getattr(metadata_or_extracted, "plane_clearance_mm", None)
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return DEFAULT_CLEARANCE_MM
+    return v if v > 0.0 and math.isfinite(v) else DEFAULT_CLEARANCE_MM
+
+
+@dataclass(frozen=True)
+class ViaCutout:
+    """One punched via's clearance hole: centre, the via's net (index) and
+    the hole radius, on the layers it spans."""
+
+    x_mm: float
+    y_mm: float
+    net_index: int
+    radius_mm: float
+    layer_ids: tuple[int, ...]
+
+
+def cut_clearances(layers, cutouts) -> list:
+    """``layers`` (GeometryLayers) with each cutout's disc removed from every
+    OTHER net's copper on the cutout's layers. Layers it doesn't touch are
+    returned as the same objects; the input list is not changed."""
+    import shapely
+    import shapely.geometry as sg
+
+    from fypa.altium_geometry import _ensure_multipolygon
+
+    by_layer: dict[int, list[tuple[object, int]]] = {}
+    for c in cutouts or ():
+        disc = sg.Point(c.x_mm, c.y_mm).buffer(c.radius_mm, 32)
+        for lid in c.layer_ids:
+            by_layer.setdefault(int(lid), []).append((disc, int(c.net_index)))
+    out = []
+    for gl in layers:
+        holes = [d for d, net in by_layer.get(int(gl.layer_id), ())
+                 if net != gl.net_index]
+        if not holes or gl.shape is None or gl.shape.is_empty:
+            out.append(gl)
+            continue
+        cut = shapely.union_all(holes)
+        if not gl.shape.intersects(cut):
+            out.append(gl)
+            continue
+        out.append(dataclasses.replace(
+            gl, shape=_ensure_multipolygon(gl.shape.difference(cut))))
+    return out
+
+
+class CutFuture:
+    """Stand-in for a future of GeometryLayers whose ``result()`` has the
+    clearance holes cut (the non-active nets' display copper)."""
+
+    def __init__(self, future, cutouts) -> None:
+        self._future = future
+        self._cutouts = cutouts
+
+    def result(self, timeout=None):
+        return cut_clearances(self._future.result(timeout), self._cutouts)
+
+    def done(self) -> bool:
+        return self._future.done()
 
 
 def _span_positions(v: AddedVia, enabled: list[int]) -> tuple[int, int] | None:
@@ -154,9 +243,13 @@ def resolve_added_vias(extracted, vias: list[AddedVia]):
     return raw, warnings
 
 
-def apply_added_vias(loaded, vias: list[AddedVia]):
+def apply_added_vias(loaded, vias: list[AddedVia],
+                     clearance_mm: float | None = None):
     """``(new_loaded, warnings, n_added)``: ``loaded`` with the usable vias
-    appended to its extract's ``vias``.
+    appended to its extract's ``vias``, and their repour clearance holes
+    recorded as ``new_loaded.whatif_via_cutouts`` (cut by ``build_problem``,
+    see :func:`cut_clearances`). ``clearance_mm`` None = the board's
+    PlaneClearance rule.
 
     ``loaded`` itself is left untouched (a fresh ExtractedProject and
     LoadedProject are built), so the pristine design the viewer keeps is
@@ -168,9 +261,22 @@ def apply_added_vias(loaded, vias: list[AddedVia]):
     if not raw:
         return loaded, warnings, 0
     from fypa.altium.loader import replace_loaded
+    ext = loaded.extracted
+    clr = (board_clearance_mm(ext) if clearance_mm is None
+           else max(0.0, float(clearance_mm)))
+    enabled = list(ext.enabled_copper_layer_ids())
+    cutouts = tuple(
+        ViaCutout(x_mm=float(v.center.x), y_mm=float(v.center.y),
+                  net_index=int(v.net_index),
+                  radius_mm=float(v.diameter_mm) / 2.0 + clr,
+                  layer_ids=tuple(span_layer_ids(
+                      v.layer_start, v.layer_end, enabled)))
+        for v in raw)
     new_extracted = dataclasses.replace(
-        loaded.extracted, vias=tuple(loaded.extracted.vias) + tuple(raw))
-    return replace_loaded(loaded, extracted=new_extracted), warnings, len(raw)
+        ext, vias=tuple(ext.vias) + tuple(raw))
+    out = replace_loaded(loaded, extracted=new_extracted)
+    out.whatif_via_cutouts = cutouts
+    return out, warnings, len(raw)
 
 
 # --- placing ("punching") -----------------------------------------------------
@@ -245,6 +351,115 @@ def via_template(md_vias: list[dict], net: str, x_mm: float, y_mm: float,
                        "(the board has no vias to copy)")
 
 
+# --- the board's via types (the punch tool's Via / Span choice) ---------------
+#
+# A board usually carries a handful of via types: a through via, perhaps a
+# smaller one, and on an HDI board blind / buried / micro vias that run only
+# between certain layers. The punch tool offers them as a choice: the TYPE is
+# the drill + pad size, and for a type that doesn't run through every layer
+# the SPAN (which layers it joins) is a sub-choice - the spans that type is
+# actually used with on the board.
+
+
+@dataclass(frozen=True)
+class ViaSpan:
+    """One span a via type is used with: its end layers (top first), how
+    many of the board's vias use it, and its kind (through / blind / ...)."""
+
+    layer_start: int
+    layer_end: int
+    count: int
+    kind: str
+
+
+@dataclass(frozen=True)
+class ViaType:
+    """One drill + pad size used by the board's vias, with its spans
+    (most used first)."""
+
+    diameter_mm: float
+    hole_diameter_mm: float
+    count: int
+    spans: tuple[ViaSpan, ...]
+
+    @property
+    def key(self) -> tuple[float, float]:
+        return (round(self.hole_diameter_mm, 4), round(self.diameter_mm, 4))
+
+    @property
+    def needs_span_choice(self) -> bool:
+        """True when some span doesn't run through every layer - the
+        punch tool then shows the Span sub-choice."""
+        return any(sp.kind != "through" for sp in self.spans)
+
+    def template(self, span: ViaSpan) -> ViaTemplate:
+        return ViaTemplate(span.layer_start, span.layer_end,
+                           self.diameter_mm, self.hole_diameter_mm,
+                           f"the chosen {span.kind} via type")
+
+
+def board_via_types(md_vias: list[dict], enabled: list[int]
+                    ) -> list[ViaType]:
+    """The board's via types from ``metadata["vias"]``, most used first.
+    Vias on layers that aren't enabled copper are left out."""
+    from fypa.via_kinds import via_record_kind
+    pos = {lid: i for i, lid in enumerate(enabled)}
+    sizes: dict[tuple, dict] = {}
+    for r in md_vias or []:
+        if not _usable_md_via(r, enabled):
+            continue
+        a, b = int(r["layer_start"]), int(r["layer_end"])
+        if pos[a] > pos[b]:
+            a, b = b, a                       # top first
+        d, h = float(r["diameter_mm"]), float(r["hole_diameter_mm"])
+        entry = sizes.setdefault((round(h, 4), round(d, 4)),
+                                 {"d": d, "h": h, "n": 0, "spans": {}})
+        entry["n"] += 1
+        sp = entry["spans"].setdefault(
+            (a, b), [0, via_record_kind(r, enabled)])
+        sp[0] += 1
+    out = []
+    for e in sizes.values():
+        spans = sorted(
+            (ViaSpan(a, b, n, kind) for (a, b), (n, kind) in e["spans"].items()),
+            key=lambda sp: (-sp.count, pos[sp.layer_start]))
+        out.append(ViaType(e["d"], e["h"], e["n"], tuple(spans)))
+    out.sort(key=lambda t: (-t.count, t.hole_diameter_mm))
+    return out
+
+
+def via_type_label(t: ViaType) -> str:
+    """``"0.3 / 0.6 mm through (1234)"`` - drill / pad, the kinds it is
+    used as, and how many the board has."""
+    kinds: list[str] = []
+    for sp in t.spans:
+        if sp.kind not in kinds:
+            kinds.append(sp.kind)
+    return (f"{t.hole_diameter_mm:.3g} / {t.diameter_mm:.3g} mm "
+            f"{'/'.join(kinds)} ({t.count})")
+
+
+def span_label(layer_start: int, layer_end: int,
+               names: dict[int, str]) -> str:
+    """``"Top → L2"`` from layer ids."""
+    return (f"{names.get(layer_start, f'L{layer_start}')} → "
+            f"{names.get(layer_end, f'L{layer_end}')}")
+
+
+def via_props_text(via: AddedVia, enabled: list[int],
+                   names: dict[int, str]) -> str:
+    """``"0.3 / 0.6 mm, Top → Bottom (through)"`` for one via."""
+    from fypa.via_kinds import classify_via, via_layer_span
+    a, b = via.layer_start, via.layer_end
+    pos = {lid: i for i, lid in enumerate(enabled)}
+    if a in pos and b in pos and pos[a] > pos[b]:
+        a, b = b, a
+    kind = classify_via(a, b, via_layer_span(a, b, list(enabled)),
+                        list(enabled), via.hole_diameter_mm)
+    return (f"{via.hole_diameter_mm:.3g} / {via.diameter_mm:.3g} mm, "
+            f"{span_label(a, b, names)} ({kind})")
+
+
 def span_layer_ids(layer_start: int, layer_end: int,
                    enabled: list[int]) -> list[int]:
     """Enabled layers a barrel from ``layer_start`` to ``layer_end``
@@ -263,17 +478,20 @@ def punch_problem(via: AddedVia, survey: dict[int, tuple[bool, set]],
                   other_vias=()) -> str:
     """Why ``via`` can't be punched, or ``""``.
 
-    ``survey`` maps each layer in the via's span to ``(own, others)``:
-    whether ``via.net``'s copper covers the via centre there, and the
-    other nets whose copper the pad would touch. ``other_vias`` are
-    ``(x, y, net, diameter_mm)`` of the vias already there (the board's
-    and earlier punched ones).
+    ``survey`` maps each layer in the via's span to ``(own, fixed)`` or
+    ``(own, fixed, pour)``: whether ``via.net``'s copper covers the via
+    centre there, the other nets whose FIXED copper (tracks, arcs, pads,
+    fills, regions not part of a pour) the pad would touch, and the other
+    nets whose pour it would land in. ``other_vias`` are
+    ``(x, y, net, diameter_mm)`` of the vias and through-hole pads already
+    there (the board's and earlier punched ones).
 
     Refused: a via reaching its net's copper on fewer than two layers (it
-    would carry no current); a pad touching another net's copper on a
-    signal layer (planes are fine: their sheet cuts an anti-pad for it);
-    a pad overlapping another net's via; a centre inside a via already on
-    the same net."""
+    would carry no current); a pad touching another net's fixed copper on
+    a signal layer - a real short a repour wouldn't clear; a pad
+    overlapping another net's via; a centre inside a via already on the
+    same net. Another net's pour or internal plane is fine: the solve
+    repours it with a clearance hole (:func:`cut_clearances`)."""
     why = via.problem()
     if why:
         return why
@@ -291,10 +509,10 @@ def punch_problem(via: AddedVia, survey: dict[int, tuple[bool, set]],
     for lid in span:
         if lid in plane_layer_ids:
             continue
-        _own, others = survey.get(lid, (False, set()))
-        if others:
+        fixed = survey.get(lid, (False, set()))[1]
+        if fixed:
             name = layer_names.get(lid, f"layer {lid}")
-            return (f"its pad would touch {', '.join(sorted(others))} "
+            return (f"its pad would touch {', '.join(sorted(fixed))} "
                     f"on {name}")
     reach = [lid for lid in span if survey.get(lid, (False, set()))[0]]
     if len(reach) < 2:

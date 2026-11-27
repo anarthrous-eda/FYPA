@@ -428,12 +428,14 @@ class WhatIfDialog(QDialog):
             if abs(val - base_rho.get(lid, board_rho)) > 1e-12:
                 rho[lid] = val
         s = self._scenario
-        # Added vias are placed on the board, not in this form; they count
-        # as a change on their own.
-        if not (overrides or thick or rho or s.added_vias):
+        # A what-if may be saved with nothing changed here: its change can
+        # be vias punched on the Board afterwards. It can't be RUN with
+        # nothing to compare, though.
+        if (self.run_requested
+                and not (overrides or thick or rho or s.added_vias)):
             raise ValueError(
-                "Nothing is changed from the base yet - set at least one "
-                "value.")
+                "Nothing is changed from the base yet - set a value to run "
+                "it, or press Save and add vias with Punch vias.")
         changed = (overrides != s.settings_overrides
                    or thick != s.stackup_thickness_mm
                    or rho != s.layer_resistivity)
@@ -1006,7 +1008,8 @@ class _WhatIfMixin:
         elif not self._whatifs:
             hint = ("Try a change without losing this result: press "
                     "<b>New…</b>, e.g. thinner copper to save cost or a "
-                    "hotter enclosure.")
+                    "hotter enclosure, or <b>Punch vias</b> to try extra "
+                    "vias on the Board.")
         else:
             hint = ""
         self._whatif_hint.setText(hint)
@@ -1250,6 +1253,12 @@ class _WhatIfMixin:
         s = self._whatif_selected()
         if s is None or self._whatif_running_id is not None:
             return
+        if not s.has_changes():
+            QMessageBox.information(
+                self, "Nothing to run",
+                f"“{s.name}” doesn't change anything yet. Edit it to change "
+                "a value, or add vias with Punch vias.")
+            return
         if getattr(self, "_solve_worker", None) is not None:
             QMessageBox.information(
                 self, "Solver busy", "Another solve is running - wait for "
@@ -1329,6 +1338,7 @@ class _WhatIfMixin:
             on_cancelled=lambda: self._on_whatif_cancelled(sid),
             write_solve_cache=False,
             added_vias=list(s.added_vias),
+            via_clearance_mm=s.via_clearance_mm,
         )
         # _start_solve_worker may refuse (another solve running).
         if getattr(self, "_solve_worker", None) is None:

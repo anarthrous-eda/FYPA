@@ -31,10 +31,22 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import (
+    QEvent,
+    QObject,
+    QPoint,
+    QPointF,
+    QRectF,
+    QSize,
+    Qt,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import (
     QColor,
     QFont,
+    QFontMetricsF,
+    QIcon,
     QPainter,
     QPainterPath,
     QPen,
@@ -191,6 +203,29 @@ def make_focus_eye_pixmap(size: int = 18, *, active: bool,
     return px
 
 
+def make_close_pixmap(width: int, height: int, center_y: float, arm: float,
+                      color: str, scale: float = 2.0) -> QPixmap:
+    """A painted x of half-size ``arm`` centred at (width / 2, ``center_y``)
+    in a ``width`` x ``height`` pixmap. The chip puts ``center_y`` on the
+    middle of the rail name's capitals, so the x lines up with the letters
+    rather than with the label's box (a capital sits off the box's centre,
+    and a text "×" sits on the baseline, lower still)."""
+    px = QPixmap(round(width * scale), round(height * scale))
+    px.setDevicePixelRatio(scale)
+    px.fill(Qt.transparent)
+    p = QPainter(px)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    pen = QPen(QColor(color))
+    pen.setWidthF(max(1.3, arm * 0.38))
+    pen.setCapStyle(Qt.RoundCap)
+    p.setPen(pen)
+    cx = width / 2.0
+    p.drawLine(QPointF(cx - arm, center_y - arm), QPointF(cx + arm, center_y + arm))
+    p.drawLine(QPointF(cx + arm, center_y - arm), QPointF(cx - arm, center_y + arm))
+    p.end()
+    return px
+
+
 # --- The control ---------------------------------------------------------------
 
 class GlobalFocusChip(QWidget):
@@ -201,6 +236,7 @@ class GlobalFocusChip(QWidget):
     exit_requested = Signal()
 
     _ICON_PX = 16
+    _CLOSE_PX = 12
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -209,7 +245,7 @@ class GlobalFocusChip(QWidget):
         self.setCursor(Qt.PointingHandCursor)
         self._rail: str | None = None
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(6, 0, 2, 0)
+        lay.setContentsMargins(6, 2, 4, 2)
         lay.setSpacing(5)
         self._icon = QLabel(self)
         self._caption = QLabel(CAPTION, self)
@@ -223,8 +259,10 @@ class GlobalFocusChip(QWidget):
         rail_font.setBold(True)
         self._rail_label.setFont(rail_font)
         self._close = QToolButton(self)
-        self._close.setText("×")
         self._close.setAutoRaise(True)
+        # Sized and padded in restyle(): exactly the rail name's height, so
+        # the x painted on the name's capital line lands level with it (the
+        # app theme's button padding made it taller than the chip before).
         self._close.setFocusPolicy(Qt.NoFocus)
         self._close.setCursor(Qt.PointingHandCursor)
         self._close.setToolTip("Exit Global Focus - show every rail again")
@@ -272,14 +310,29 @@ class GlobalFocusChip(QWidget):
         self._caption.setStyleSheet(f"QLabel {{ color: {gold}; }}")
         self._rail_label.setStyleSheet(
             f"QLabel {{ color: {gold if active else t['fg_dim']}; }}")
+        fm = QFontMetricsF(self._rail_label.font())
+        line_h = max(1, self._rail_label.sizeHint().height())
+        text_top = (line_h - fm.height()) / 2.0
+        cap_mid = text_top + fm.ascent() - fm.capHeight() / 2.0
+        # Measured on screen: the x reads 1 px low at the computed centre.
+        cap_mid -= 1.0
+        arm = max(2.5, fm.capHeight() * 0.36)
+        w = self._CLOSE_PX
+        icon = QIcon()
+        for mode, colour in ((QIcon.Normal, gold),
+                             (QIcon.Active, t["fg_strong"])):
+            icon.addPixmap(make_close_pixmap(w, line_h, cap_mid, arm, colour),
+                           mode)
+        self._close.setIcon(icon)
+        self._close.setIconSize(QSize(w, line_h))
+        self._close.setFixedSize(w + 4, line_h)
         border = gold if active else "transparent"
         self.setStyleSheet(
             f"QWidget#fypaGlobalFocus {{ border: 1px solid {border};"
             f" border-radius: 3px; background: transparent; }}"
             f"QWidget#fypaGlobalFocus:hover {{ background: {t['bg_hover']}; }}"
-            f"QToolButton {{ color: {gold}; border: none; padding: 0 3px;"
-            f" font-weight: bold; }}"
-            f"QToolButton:hover {{ color: {t['fg_strong']}; }}")
+            f"QToolButton {{ border: none; padding: 0; margin: 0;"
+            f" min-width: 0; min-height: 0; background: transparent; }}")
         self.adjustSize()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt name

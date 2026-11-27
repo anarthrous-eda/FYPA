@@ -22,6 +22,7 @@ _TEXT_WIDTH_PX = 300   # widest a card's text gets before it wraps
 _EDGE_GAP_PX = 14      # gap to the right and bottom edges of the anchor
 _STACK_GAP_PX = 8      # gap between stacked cards
 _CLOSE_PX = 22
+_STRIPE_PX = 4         # the stripe down a card's left edge
 
 
 class _Toast(QFrame):
@@ -54,14 +55,16 @@ class _Toast(QFrame):
     def set_message(self, text: str, timeout_ms: int) -> None:
         t = _T()
         self.setStyleSheet(
-            f"QFrame#fypaToast {{ background: {t['bg_alt']}; "
-            f"border: 1px solid {t['border']}; border-radius: 6px; }}"
-            f"QFrame#fypaToast QLabel {{ color: {t['fg']}; "
+            f"QFrame#fypaToast {{ background: {t['toast_bg']}; "
+            f"border: 1px solid {t['toast_border']}; "
+            f"border-left: {_STRIPE_PX}px solid {t['toast_stripe']}; "
+            "border-radius: 6px; }"
+            f"QFrame#fypaToast QLabel {{ color: {t['toast_fg']}; "
             "background: transparent; border: none; }"
             "QFrame#fypaToast QToolButton { background: transparent; "
-            f"border: none; border-radius: 4px; color: {t['fg_muted']}; }}"
+            f"border: none; border-radius: 4px; color: {t['toast_close']}; }}"
             "QFrame#fypaToast QToolButton:hover { "
-            f"background: {t['bg_hover_strong']}; color: {t['fg_strong']}; }}"
+            f"background: {t['toast_hover']}; color: {t['toast_fg']}; }}"
         )
         self.label.setText(text)
         # A short message keeps its own width; a long one wraps into a card.

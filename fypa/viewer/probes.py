@@ -1129,8 +1129,20 @@ class _ProbeMixin:
         return self._pick_hovered_via_2d(world_x, world_y)
 
     def _via_hover_info(self, world_x: float, world_y: float) -> str:
-        """Bottom-bar suffix for the picked via, or empty string."""
+        """Bottom-bar suffix for the picked via, or empty string. In the
+        What-If Difference view a via the what-if added (absent from the
+        base result on screen) reports its what-if current instead,
+        whichever of the two sits closer to the cursor."""
         row = self._pick_hovered_via(world_x, world_y)
+        added_hit = getattr(self, "_whatif_added_via_hover", None)
+        added = added_hit(world_x, world_y) if added_hit else None
+        if added is not None:
+            if row is None:
+                return added[1]
+            d2 = ((float(row["x_mm"]) - world_x) ** 2
+                  + (float(row["y_mm"]) - world_y) ** 2)
+            if added[0] < d2:
+                return added[1]
         if row is None:
             return ""
         return self._format_via_hover_text(row)

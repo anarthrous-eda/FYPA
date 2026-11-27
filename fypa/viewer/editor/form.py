@@ -2148,7 +2148,11 @@ class _EditorFormMixin:
         """GL-viewer hook - True when a draggable free marker sits under
         the point, so the viewer claims the press as a move gesture.
         Disabled while a marker-drop is armed (that press places a new
-        marker instead)."""
+        marker instead). Outside editor mode, while What-If via punching
+        is armed, the draggable things are the punched vias."""
+        if (not self._editor_mode
+                and getattr(self, "_whatif_punch_armed", False)):
+            return self._whatif_punch_drag_hit_test(world_x, world_y)
         if not self._editor_mode or self._editor_pending_marker is not None:
             return False
         return self._free_marker_at(world_x, world_y) is not None
@@ -2157,6 +2161,10 @@ class _EditorFormMixin:
                                 world_y: float) -> None:
         """Begin a free-marker drag - record the start anchor / net and
         select the grabbed marker (a press with no drag still selects)."""
+        if (not self._editor_mode
+                and getattr(self, "_whatif_punch_armed", False)):
+            self._whatif_punch_drag_started(world_x, world_y)
+            return
         marker = self._free_marker_at(world_x, world_y)
         if marker is None or marker.anchor_xy is None:
             self._marker_drag = None
@@ -2176,6 +2184,9 @@ class _EditorFormMixin:
         """Track a free-marker drag - move the marker to the cursor while
         it stays on copper of its layer, else hold it at the last valid
         spot so it can't be dragged off copper."""
+        if getattr(self, "_whatif_punch_drag", None) is not None:
+            self._whatif_punch_drag_moved(world_x, world_y)
+            return
         drag = self._marker_drag
         if drag is None or self._project is None:
             return
@@ -2199,6 +2210,9 @@ class _EditorFormMixin:
                                  world_y: float) -> None:
         """Finish a free-marker drag - commit the move (recording it for
         undo) when it actually moved, else just leave it selected."""
+        if getattr(self, "_whatif_punch_drag", None) is not None:
+            self._whatif_punch_drag_released(world_x, world_y)
+            return
         drag = self._marker_drag
         self._marker_drag = None
         if drag is None or self._project is None:

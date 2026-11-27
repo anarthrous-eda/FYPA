@@ -66,6 +66,16 @@ _THEME_PRESETS: dict[str, dict[str, str]] = {
         # gold: "warn" amber means a warning and #ffff00 is the jump ring.
         "focus_gold":      "#f2c14e",
         "focus_gold_dim":  "#8a7440",
+        # Toast cards (fypa.viewer.toast). A slate card with a white stripe
+        # down its left edge, the same in both themes: it has to stand out
+        # over the board view (dark in either theme), over copper in any
+        # colour-scale colour and over the panels. Only the outline differs.
+        "toast_bg":        "#4a5568",
+        "toast_fg":        "#ffffff",
+        "toast_border":    "#8090a8",
+        "toast_stripe":    "#ffffff",
+        "toast_close":     "#d5dbe5",   # the dismiss button, at rest
+        "toast_hover":     "#5d6a80",   # the dismiss button's hover fill
     },
     "light": {
         # Core surfaces
@@ -109,6 +119,12 @@ _THEME_PRESETS: dict[str, dict[str, str]] = {
         "eye_partial":     "#5c5c5c",
         "focus_gold":      "#a87400",
         "focus_gold_dim":  "#b8a070",
+        "toast_bg":        "#4a5568",
+        "toast_fg":        "#ffffff",
+        "toast_border":    "#2f3847",   # darker: has to show on light panels
+        "toast_stripe":    "#ffffff",
+        "toast_close":     "#d5dbe5",
+        "toast_hover":     "#5d6a80",
     },
 }
 

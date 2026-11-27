@@ -99,6 +99,9 @@ class WhatIfScenario:
     # Vias this scenario adds to the board (fypa.whatif_vias). They exist
     # only in this scenario's solve.
     added_vias: list[AddedVia] = field(default_factory=list)
+    # Clearance (mm) the pours / planes those vias pass through are repoured
+    # with; None = the board's PlaneClearance rule.
+    via_clearance_mm: float | None = None
     # Absolute path of the result pickle (made relative on project save).
     result_pickle: str | None = None
     # base_fingerprint() of the base the result was solved against.
@@ -126,6 +129,7 @@ class WhatIfScenario:
             stackup_thickness_mm=dict(self.stackup_thickness_mm),
             layer_resistivity=dict(self.layer_resistivity),
             added_vias=list(self.added_vias),
+            via_clearance_mm=self.via_clearance_mm,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -141,6 +145,7 @@ class WhatIfScenario:
                 str(int(k)): float(v)
                 for k, v in sorted(self.layer_resistivity.items())},
             "added_vias": [v.to_dict() for v in self.added_vias],
+            "via_clearance_mm": self.via_clearance_mm,
             "result_pickle": self.result_pickle,
             "base_fingerprint": self.base_fingerprint,
             "status": self.status,
@@ -176,6 +181,7 @@ class WhatIfScenario:
             stackup_thickness_mm=_int_map(d.get("stackup_thickness_mm")),
             layer_resistivity=_int_map(d.get("layer_resistivity")),
             added_vias=vias_from_dicts(d.get("added_vias")),
+            via_clearance_mm=_clearance(d.get("via_clearance_mm")),
             result_pickle=(None if not d.get("result_pickle")
                            else str(d["result_pickle"])),
             base_fingerprint=(None if d.get("base_fingerprint") is None
@@ -186,6 +192,16 @@ class WhatIfScenario:
                     else None),
             summary=dict(d.get("summary") or {}),
         )
+
+
+def _clearance(v) -> float | None:
+    """A stored via clearance (mm): a finite number >= 0, else None (board
+    rule)."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) and f >= 0.0 else None
 
 
 def _json_safe(obj):
@@ -330,7 +346,8 @@ def describe_changes(scenario: WhatIfScenario, base_settings,
         old = base_rho.get(lid, board_rho)
         lines.append(f"{names.get(lid, f'L{lid}')} resistivity: "
                      f"{_fmt_num(old)} → {_fmt_num(rho)} µΩ·cm")
-    lines.extend(describe_added_vias(scenario.added_vias))
+    lines.extend(describe_added_vias(scenario.added_vias,
+                                     scenario.via_clearance_mm))
     return lines
 
 
