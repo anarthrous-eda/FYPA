@@ -717,7 +717,7 @@ _GERBER_INPUT_RE: re.Pattern[str] = re.compile(
 )
 
 # Suffix of the synthetic pseudo-path a Gerber import uses in place of a real
-# .PrjPcb (see fypa.altium_viewer._pick_gerber_inputs).
+# .PrjPcb (see fypa.viewer.gerber_import._pseudo_project_path).
 _GERBER_PSEUDO_SUFFIX: str = ".fypa-gerber"
 
 

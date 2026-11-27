@@ -525,6 +525,8 @@ class _UiBuildMixin:
         self._gl_viewer = GLMeshViewer()
         from fypa.viewer.prefs import load_markers_always_on_top
         self._gl_viewer.set_markers_always_on_top(load_markers_always_on_top())
+        from fypa.viewer.prefs import load_show_board_origin
+        self._gl_viewer.set_show_board_origin(load_show_board_origin())
         # Push the colormap LUT once - every render reuses it via uniform.
         self._gl_viewer.set_colormap(_build_cmap_lut(self._cmap_name))
         # Resize / pan / zoom all flow through this signal - we use it to

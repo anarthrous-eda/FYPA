@@ -5,12 +5,13 @@ regulator input with a dropout or ``PDN_VIN_MIN``. It sits under the block's
 port rows, in one of two styles:
 
 ``"bar"`` (three lines)
-    * a bar shaded by zone: green where the voltage is allowed (minimum to
-      maximum, or to the end with no maximum), red outside it;
-    * a dashed tick at the supply's setpoint, or a dashed box over its range
+    * a slim track shaded by zone: green where the voltage is allowed
+      (minimum to maximum, or to the end with no maximum), faded red
+      outside it, with a tick at each limit;
+    * a caret above it at the supply's setpoint, or a bracket over its range
       (``PDN_V_TOL`` / ``PDN_V_MIN`` / ``PDN_V_MAX``), before any drop;
-    * a solid band where the voltage at the load's pins can sit over that
-      range - so the gap to the dashed mark is the drop in the copper;
+    * a dot (or a capsule over that range) where the voltage at the load's
+      pins sits - so the gap to the caret is the drop in the copper;
     * ``min`` / ``max`` / ``supply`` values printed under their marks;
     * the voltage at the pins and the margin, e.g. ``0.975 V  ✓ +74.5 mV to
       min``.
@@ -50,7 +51,7 @@ BAR_ROW_H = 12.0        # the bar itself
 MARGIN_ROW_H = 10.0     # bar style: the margin line above the bar
 TICK_ROW_H = 11.0       # min / max / supply values under the bar
 LINE_H = 13.0           # one text line
-BAR_H = 8.0
+TRACK_H = 4.0          # the slim track
 VALUE_FONT = 8.0
 MARGIN_FONT = 6.0       # bar style's margin line (whole px: Qt rounds)
 SMALL_FONT = 7.0
@@ -58,9 +59,7 @@ LO_FRAC = 0.18          # minimum's position along the bar
 HI_FRAC = 0.82          # maximum's (or the supply top's) position
 
 LIMIT_COLOR = "#2ca92c"
-PASS_COLOR = "#a8b8cc"
 WARN_COLOR = "#e0a030"
-_ZONE_OPACITY = 0.22
 _FONT = "Segoe UI,sans-serif"
 _VERDICT_MARK = {"PASS": "✓", "WARN": "⚠", "FAIL": "✗"}
 
@@ -349,12 +348,20 @@ def _limits_line(parts: list[str], g: NodeGauge, top: float, *,
     _text(parts, g.x, top + 9.0, text, color=fg_dim, size=SMALL_FONT)
 
 
-def _bar(parts: list[str], g: NodeGauge, top: float, *, bg: str,
-         fg_dim: str, border: str, err: str) -> list[tuple[float, str, str]]:
-    """The shaded bar; returns ``(x, text, color)`` labels for under it."""
+def _bar(parts: list[str], g: NodeGauge, top: float, *, fg: str,
+         fg_dim: str, surface: str, err: str) -> list[tuple[float, str, str]]:
+    """The slim track; returns ``(x, text, color)`` labels for under it.
+
+    A 4 px track, faded red outside the allowed window and green inside it,
+    with a tick at each limit. Above it, the supply before any drop: a small
+    caret, or a bracket over its range. On it, where the pins sit: a dot, or a
+    capsule over a range, in the text colour when it passes, amber for a low
+    margin, red for what pokes past a limit.
+    """
+    from fypa.topology.style import mix
+
     x0, w = g.x, g.width
     yc = top + BAR_ROW_H / 2
-    bar_top = yc - BAR_H / 2
     lo_v, hi_v = _scale(g)
     span = hi_v - lo_v
 
@@ -367,17 +374,26 @@ def _bar(parts: list[str], g: NodeGauge, top: float, *, bg: str,
 
     lo_x = px(g.min_v)[0]
     hi_x = px(g.max_v)[0] if g.max_v is not None else x0 + w
+    t_top = yc - TRACK_H / 2
     parts.append(
-        f'<rect x="{x0:.1f}" y="{bar_top:.1f}" width="{w:.1f}"'
-        f' height="{BAR_H:.1f}" fill="{esc(bg)}"/>')
+        f'<rect x="{x0:.1f}" y="{t_top:.1f}" width="{w:.1f}"'
+        f' height="{TRACK_H:g}" rx="2" fill="{esc(mix(fg, surface, 0.14))}"/>')
     # Zones: red below the minimum (and above a maximum), green between.
-    for a, b, color in ((x0, lo_x, err), (lo_x, hi_x, LIMIT_COLOR),
-                        (hi_x, x0 + w, err)):
+    for a, b, color, op in ((x0, lo_x, err, 0.5), (lo_x, hi_x, LIMIT_COLOR, 0.62),
+                            (hi_x, x0 + w, err, 0.5)):
         if b - a > 0.05:
             parts.append(
-                f'<rect x="{a:.1f}" y="{bar_top:.1f}" width="{b - a:.1f}"'
-                f' height="{BAR_H:.1f}" fill="{esc(color)}"'
-                f' fill-opacity="{_ZONE_OPACITY}"/>')
+                f'<rect x="{a:.1f}" y="{t_top:.1f}" width="{b - a:.1f}"'
+                f' height="{TRACK_H:g}" rx="2" fill="{esc(color)}"'
+                f' fill-opacity="{op:g}"/>')
+    # Limits: green ticks through the track.
+    for v in (g.min_v, g.max_v):
+        if v is not None:
+            lx, _ = px(v)
+            parts.append(
+                f'<line x1="{lx:.1f}" y1="{yc - 4.5:.1f}" x2="{lx:.1f}"'
+                f' y2="{yc + 4.5:.1f}" stroke="{LIMIT_COLOR}" stroke-width="1.4"'
+                f' stroke-linecap="round"/>')
 
     labels = [(lo_x, f"min {_fv(g.min_v)} V", LIMIT_COLOR)]
     if g.max_v is not None:
@@ -385,40 +401,44 @@ def _bar(parts: list[str], g: NodeGauge, top: float, *, bg: str,
 
     r = g.reading
     if r is not None:
-        # The supply before any drop: a dashed tick, or a box over its range.
+        # The supply before any drop: a caret, or a bracket over its range.
         if r.src_low is not None and r.src_high is not None:
             sx0, _ = px(r.src_low)
             sx1, _ = px(r.src_high)
             if sx1 - sx0 < 1.0:
                 parts.append(
-                    f'<line x1="{sx0:.1f}" y1="{bar_top - 2.5:.1f}"'
-                    f' x2="{sx0:.1f}" y2="{bar_top + BAR_H + 2.5:.1f}"'
-                    f' stroke="{esc(fg_dim)}" stroke-width="1.2"'
-                    f' stroke-dasharray="1.5 1.2"/>')
+                    f'<path class="topo-gauge-supply" d="M {sx0 - 2.6:.1f},{yc - 7:.1f}'
+                    f' h 5.2 l -2.6,3.8 Z" fill="{esc(fg_dim)}"/>')
             else:
                 parts.append(
-                    f'<rect x="{sx0 - 1:.1f}" y="{bar_top - 1.5:.1f}"'
-                    f' width="{sx1 - sx0 + 2:.1f}" height="{BAR_H + 3:.1f}"'
-                    f' rx="1" fill="none" stroke="{esc(fg_dim)}"'
-                    f' stroke-width="0.8" stroke-dasharray="2 1.5"/>')
+                    f'<path class="topo-gauge-supply" d="M {sx0:.1f},{yc - 4.5:.1f}'
+                    f' V {yc - 6.5:.1f} H {sx1:.1f} V {yc - 4.5:.1f}" fill="none"'
+                    f' stroke="{esc(fg_dim)}" stroke-width="1.1"/>')
             sv = r.setpoint if r.setpoint is not None else r.src_high
             labels.append((px(sv)[0], f"supply {_fv(sv)} V", fg_dim))
         # Where the pins sit: the verdict colour inside the window, red
         # only for what pokes past a limit.
         ax0, off_lo = px(r.low)
         ax1, off_hi = px(r.high)
-        if ax1 - ax0 < 3.0:   # no range: a bar, not a sliver
+        inside = WARN_COLOR if r.status == "WARN" else fg
+        if ax1 - ax0 < 3.0:   # no range: a dot
             mid = min(max((ax0 + ax1) / 2, x0 + 1.5), x0 + w - 1.5)
-            ax0, ax1 = mid - 1.5, mid + 1.5
-        inside = WARN_COLOR if r.status == "WARN" else PASS_COLOR
-        cuts = sorted({ax0, ax1, *(c for c in (lo_x, hi_x) if ax0 < c < ax1)})
-        for a, b in zip(cuts, cuts[1:]):
-            m = (a + b) / 2
-            out = m < lo_x or (g.max_v is not None and m > hi_x)
+            out = mid < lo_x or (g.max_v is not None and mid > hi_x)
             fill = err if out and r.status == "FAIL" else inside
             parts.append(
-                f'<rect x="{a:.1f}" y="{bar_top + 1:.1f}" width="{b - a:.1f}"'
-                f' height="{BAR_H - 2:.1f}" fill="{esc(fill)}"/>')
+                f'<circle class="topo-gauge-pin" cx="{mid:.1f}" cy="{yc:.1f}"'
+                f' r="3.6" fill="{esc(fill)}" stroke="{esc(surface)}"'
+                f' stroke-width="1.4"/>')
+        else:
+            cuts = sorted({ax0, ax1, *(c for c in (lo_x, hi_x) if ax0 < c < ax1)})
+            for a, b in zip(cuts, cuts[1:]):
+                m = (a + b) / 2
+                out = m < lo_x or (g.max_v is not None and m > hi_x)
+                fill = err if out and r.status == "FAIL" else inside
+                parts.append(
+                    f'<rect class="topo-gauge-pin" x="{a:.1f}" y="{yc - 3.5:.1f}"'
+                    f' width="{b - a:.1f}" height="7" rx="3.5" fill="{esc(fill)}"'
+                    f' stroke="{esc(surface)}" stroke-width="1"/>')
         color = _verdict_color(r.status, err) if r.status != "PASS" else inside
         for off, edge, sign in ((off_lo == -1, x0, -1),
                                 (off_hi == 1, x0 + w, 1)):
@@ -427,18 +447,6 @@ def _bar(parts: list[str], g: NodeGauge, top: float, *, bg: str,
                 parts.append(
                     f'<polygon points="{edge:.1f},{yc - 3.5:.1f} {tip:.1f},{yc:.1f}'
                     f' {edge:.1f},{yc + 3.5:.1f}" fill="{esc(color)}"/>')
-    # Limits: solid green ticks through the bar.
-    for v in (g.min_v, g.max_v):
-        if v is not None:
-            lx, _ = px(v)
-            parts.append(
-                f'<line x1="{lx:.1f}" y1="{bar_top - 2.5:.1f}" x2="{lx:.1f}"'
-                f' y2="{bar_top + BAR_H + 2.5:.1f}" stroke="{LIMIT_COLOR}"'
-                f' stroke-width="1.6"/>')
-    parts.append(
-        f'<rect x="{x0:.1f}" y="{bar_top:.1f}" width="{w:.1f}"'
-        f' height="{BAR_H:.1f}" rx="1.5" fill="none"'
-        f' stroke="{esc(border)}" stroke-width="0.8"/>')
     return labels
 
 
@@ -458,7 +466,11 @@ def _tick_labels(parts: list[str], g: NodeGauge,
 
 
 def draw_gauge(parts: list[str], g: NodeGauge, *, bg: str, fg: str,
-               fg_dim: str, border: str, err: str) -> None:
+               fg_dim: str, border: str, err: str,
+               surface: str | None = None) -> None:
+    """Draw ``g``; ``surface`` is the block body behind it (``bg`` when
+    not given)."""
+    surface = surface or bg
     opacity = ' opacity="0.45"' if g.stale else ""
     parts.append(f'<g class="topo-gauge"{opacity}>')
     if g.style == "text":
@@ -466,8 +478,8 @@ def draw_gauge(parts: list[str], g: NodeGauge, *, bg: str, fg: str,
         _limits_line(parts, g, g.y + LINE_H, fg_dim=fg_dim)
     else:
         _margin_line(parts, g, g.y, fg_dim=fg_dim, err=err)
-        labels = _bar(parts, g, g.y + MARGIN_ROW_H, bg=bg, fg_dim=fg_dim,
-                      border=border, err=err)
+        labels = _bar(parts, g, g.y + MARGIN_ROW_H, fg=fg, fg_dim=fg_dim,
+                      surface=surface, err=err)
         _tick_labels(parts, g, labels, g.y + MARGIN_ROW_H + BAR_ROW_H)
     parts.append("</g>")
 
@@ -475,7 +487,7 @@ def draw_gauge(parts: list[str], g: NodeGauge, *, bg: str, fg: str,
 # --- port voltages ------------------------------------------------------------------
 
 PORT_V_FONT = 8.0
-_PORT_V_PAD = 2.5
+_PORT_V_PAD = 4.5
 _PORT_V_GAP = 7.0      # port centre to the label's near edge
 # Run of wire one port-voltage label needs beside its port, worst case
 # ("-12.345 V", bold, so 10 % over the estimate) plus 4 px clear. The rows
@@ -489,26 +501,29 @@ def port_voltage_text(v: float) -> str:
     return f"{fmt_volts(v)} V"
 
 
-def draw_port_voltage(parts: list[str], port, *, bg: str, fg: str) -> None:
-    """The solved voltage under the wire beside ``port``, on a background
-    patch: right of an output port, left of an input."""
+def draw_port_voltage(parts: list[str], port, *, bg: str, fg: str,
+                      surface: str | None = None, border: str | None = None,
+                      ) -> None:
+    """The solved voltage under the wire beside ``port``, on a pill: right
+    of an output port, left of an input."""
     if port.voltage is None:
         return
     text = port_voltage_text(port.voltage)
-    tw = estimate_text_width(text, PORT_V_FONT)
+    w = estimate_text_width(text, PORT_V_FONT) + 2 * _PORT_V_PAD
     if port.side == "right":
         x0 = port.x + _PORT_V_GAP
     else:
-        x0 = port.x - _PORT_V_GAP - tw - 2 * _PORT_V_PAD
-    top = port.y + 4.0
+        x0 = port.x - _PORT_V_GAP - w
+    top = port.y + 4.5
     h = PORT_V_FONT + 4.0
     opacity = ' opacity="0.45"' if port.voltage_stale else ""
+    edge = f' stroke="{esc(border)}" stroke-width="0.7"' if border else ""
     parts.append(f'<g class="topo-port-v"{opacity}>')
     parts.append(
-        f'<rect x="{x0:.1f}" y="{top:.1f}" width="{tw + 2 * _PORT_V_PAD:.1f}"'
-        f' height="{h:.1f}" rx="2" fill="{esc(bg)}"/>')
-    _text(parts, x0 + _PORT_V_PAD, top + h - 3.0, text, color=fg,
-          size=PORT_V_FONT, bold=True)
+        f'<rect x="{x0:.1f}" y="{top:.1f}" width="{w:.1f}"'
+        f' height="{h:.1f}" rx="{h / 2:g}" fill="{esc(surface or bg)}"{edge}/>')
+    _text(parts, x0 + w / 2, top + h - 3.2, text, color=fg,
+          size=PORT_V_FONT, anchor="middle", bold=True)
     parts.append("</g>")
 
 

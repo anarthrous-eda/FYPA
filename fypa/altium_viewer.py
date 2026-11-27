@@ -459,8 +459,12 @@ from fypa.viewer.gerber_import import (
     _finish_gerber_import,
     _GerberImportCancelled,
     _GerberImportWorker,
-    _perform_gerber_import,
-    _pick_gerber_inputs,
+    GerberImportRun,
+    run_gerber_import_with_progress,
+)
+from fypa.viewer.gerber_import_wizard import (
+    GerberImportWizard,
+    run_gerber_import_wizard,
 )
 from fypa.viewer.app_menus import (
     _build_help_menu,

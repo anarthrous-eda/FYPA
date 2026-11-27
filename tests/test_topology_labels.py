@@ -426,7 +426,7 @@ def test_topology_project_b_hub_labels_clear_bridges():
                 f"{w.net} label too close to bridge at ({bridge.x}, {bridge.y})"
             )
     svg = render_topology_svg(model)
-    assert 'fill-opacity="0.5"' in svg
+    assert all(f">{w.label}</text>" in svg for w in labeled)
 
 
 def test_label_search_space_yields_ordered_candidates():

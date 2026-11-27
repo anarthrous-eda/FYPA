@@ -1215,6 +1215,10 @@ class GLMeshViewer(QOpenGLWidget):
         # ``None`` when no measurement is active. Drawn by the QPainter
         # overlay pass as a thin white line on top of everything else.
         self._measurement_line: tuple[float, float, float, float] | None = None
+        # View > Board origin: draw a fixed-size circle-and-cross glyph at
+        # world (0 mm, 0 mm) - the board's user origin, since every
+        # coordinate is already relative to it.
+        self._show_board_origin: bool = False
 
         # --- Background (clear) colour - dark theme to match the rest ---
         self._bg_r = 0x1f / 255.0
@@ -2609,6 +2613,17 @@ class GLMeshViewer(QOpenGLWidget):
 
     def markers_always_on_top(self) -> bool:
         return self._markers_always_on_top
+
+    def set_show_board_origin(self, on: bool) -> None:
+        """Show or hide the board origin glyph at (0 mm, 0 mm)."""
+        on = bool(on)
+        if on == self._show_board_origin:
+            return
+        self._show_board_origin = on
+        self.update()
+
+    def show_board_origin(self) -> bool:
+        return self._show_board_origin
 
     def set_editor_mode(self, on: bool) -> None:
         """Toggle the editor-mode look - bluish background + faint world-mm
@@ -4690,6 +4705,7 @@ class GLMeshViewer(QOpenGLWidget):
         # Second label pass: ``on_top`` labels (e.g. via-span text) sit
         # above the marker dots so they stay legible inside the via.
         self._draw_overlay_labels(painter, on_top=True)
+        self._draw_board_origin(painter)
         self._draw_measurement_line(painter)
         self._draw_overlay_chip(
             painter, self._overlay_top_left_html, anchor_right=False
@@ -4988,6 +5004,37 @@ class GLMeshViewer(QOpenGLWidget):
                 continue
             painter.drawPolygon(QPolygonF(
                 [QPointF(x, y) for x, y in zip(px, py)]))
+        painter.restore()
+
+    def _draw_board_origin(self, painter: QPainter) -> None:
+        """Draw the board origin glyph - a circle with a cross through it,
+        a fixed size in pixels - at world (0 mm, 0 mm), projected through
+        :meth:`world_to_screen` so it tracks pan / zoom and the 3D camera.
+        White over a dark halo so it reads on copper and background alike.
+        Nothing is drawn when the origin is behind the 3D camera or off
+        screen."""
+        if not self._show_board_origin:
+            return
+        x_px, y_px = self.world_to_screen(0.0, 0.0)
+        r = 7.0
+        arm = 12.0
+        if (x_px < -arm or y_px < -arm
+                or x_px > self.width() + arm
+                or y_px > self.height() + arm):
+            return
+        c = QPointF(x_px, y_px)
+        painter.save()
+        painter.setBrush(Qt.NoBrush)
+        for colour, width in (("#000000", 3.0), ("#ffffff", 1.2)):
+            pen = QPen(QColor(colour))
+            pen.setWidthF(width)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            painter.drawEllipse(c, r, r)
+            painter.drawLine(QPointF(x_px - arm, y_px),
+                             QPointF(x_px + arm, y_px))
+            painter.drawLine(QPointF(x_px, y_px - arm),
+                             QPointF(x_px, y_px + arm))
         painter.restore()
 
     def _draw_measurement_line(self, painter: QPainter) -> None:

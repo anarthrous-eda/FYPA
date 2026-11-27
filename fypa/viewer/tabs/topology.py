@@ -100,9 +100,54 @@ class _TopologyView(QGraphicsView):
         self._click_anchor: QPointF | None = None
 
     def set_background(self, color: str) -> None:
+        """Canvas colour; the diagram is drawn on it transparently, over a
+        dot grid in a faint tint of the text colour."""
+        from fypa.topology.style import mix
+
         self.setStyleSheet(
             f"QGraphicsView {{ background-color: {color}; border: none; }}"
         )
+        self._grid_color = QColor(mix(current_theme()["fg"], color, 0.16))
+        self.viewport().update()
+
+    def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
+        """Dot grid behind the diagram, pinned to diagram coordinates so it
+        pans and zooms with it; thinned out (every 2nd, 4th... dot) when
+        zoomed far enough out that the dots would crowd."""
+        super().drawBackground(painter, rect)
+        color = getattr(self, "_grid_color", None)
+        if color is None or not self._diagram_loaded:
+            return
+        from PySide6.QtGui import QPen, QPolygonF
+
+        from fypa.topology.render import GRID_STEP
+
+        scale = self._current_scale()
+        if scale <= 0:
+            return
+        step = GRID_STEP
+        while step * scale < 12.0:
+            step *= 2
+        x0 = (int(rect.left() // step)) * step + step / 2
+        y0 = (int(rect.top() // step)) * step + step / 2
+        pts = []
+        y = y0
+        while y <= rect.bottom():
+            x = x0
+            while x <= rect.right():
+                pts.append(QPointF(x, y))
+                x += step
+            y += step
+        if not pts:
+            return
+        pen = QPen(color)
+        pen.setCosmetic(True)
+        pen.setWidthF(max(1.2, min(2.0, 1.8 * scale)))
+        pen.setCapStyle(Qt.RoundCap)
+        painter.save()
+        painter.setPen(pen)
+        painter.drawPoints(QPolygonF(pts))
+        painter.restore()
 
     def set_empty_message(self, message: str) -> None:
         self.resetTransform()
@@ -697,9 +742,9 @@ class _TopologyTabMixin:
         self._topology_gauge_text_act = _toggle(
             "Gauges as text",
             "Show each gauge as two lines of text (voltage and margin, then "
-            "the limits and supply) instead of the bar: green zone allowed, "
-            "red outside, dashed mark the supply before any drop, solid band "
-            "the voltage at the pins.",
+            "the limits and supply) instead of the track: green zone "
+            "allowed, red outside, the caret the supply before any drop, the "
+            "dot the voltage at the pins.",
             self._topology_gauge_style == "text",
             self._on_topology_gauge_text_toggled)
         self._topology_gauge_text_act.setEnabled(self._topology_show_gauges)
@@ -1621,7 +1666,8 @@ class _TopologyTabMixin:
                            ports=res[1] if res else None,
                            stale=bool(getattr(self, "_solve_stale", False)))
         self._topology_model = model
-        svg = render_topology_svg(model, theme=current_theme())
+        # Transparent: the view paints the canvas and its dot grid behind.
+        svg = render_topology_svg(model, theme=current_theme(), background=False)
         keep = getattr(self, "_topology_keep_view_once", False)
         self._topology_keep_view_once = False
         self._topology_view.set_diagram_svg(

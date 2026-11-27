@@ -1,4 +1,11 @@
-"""SVG rendering for the topology schematic."""
+"""SVG rendering for the topology schematic.
+
+Blocks are "tonal": a role-tinted header band with the role word in the role
+colour, a role-tinted outline and ring ports. Wiring is "soft": thin muted
+rails with rounded corners, ringed junction dots, row panels, pill-shaped net
+and voltage labels and tinted port tags. Colours come from
+:mod:`fypa.topology.style`, resolved per theme.
+"""
 
 from __future__ import annotations
 
@@ -6,9 +13,9 @@ from collections.abc import Callable
 from typing import NamedTuple
 
 from fypa.topology.constants import (
+    BRIDGE_R,
     GND_NET,
     GND_SYMBOL_OFFSET,
-    GND_WIRE_COLOR,
     HEADER_FONT_SIZE,
     HEADER_FONT_STEP,
     HEADER_H,
@@ -16,39 +23,17 @@ from fypa.topology.constants import (
     HEADER_LABEL_SHRINK_FLOOR,
     HEADER_TEXT_GAP,
     HEADER_TEXT_PAD,
-    JUNCTION_R,
-    NON_GND_WIRE_COLOR,
-    PORT_R,
-    CHIP_STRIP_COLORS,
-    ROLE_COLORS,
-    SINGLE_NET_ROLE_COLORS,
+    TAG_POINT,
+    TAG_TEXT_PAD,
     WIRE_EPS,
 )
-from fypa.topology.hit_test import JUMP_ICON_R, jump_icon_center
 from fypa.topology.geometry import (
+    SchematicGeometry,
     compute_schematic_geometry,
     vertical_bridge_path,
 )
-
-
-def _wire_stroke(net: str) -> str:
-    """All wires are power nets: ground draws green, non-ground rails draw red."""
-    return GND_WIRE_COLOR if net == GND_NET else NON_GND_WIRE_COLOR
-
-
-def _segment_net_at(segments, x: float, y: float) -> str:
-    """Net of a wire segment incident to ``(x, y)`` (for colouring junction dots)."""
-    for s in segments:
-        if s.orient == "H" and abs(s.y1 - y) < WIRE_EPS:
-            if min(s.x1, s.x2) - WIRE_EPS <= x <= max(s.x1, s.x2) + WIRE_EPS:
-                return s.net
-        elif s.orient == "V" and abs(s.x1 - x) < WIRE_EPS:
-            if min(s.y1, s.y2) - WIRE_EPS <= y <= max(s.y1, s.y2) + WIRE_EPS:
-                return s.net
-    return ""
-
-
-from fypa.topology.constants import TAG_POINT, TAG_TEXT_PAD
+from fypa.topology.hit_test import JUMP_ICON_R, jump_icon_center
+from fypa.topology.style import Palette, mix, palette
 from fypa.topology.types import (
     TopologyBand,
     TopologyModel,
@@ -68,75 +53,140 @@ from fypa.topology.util import (
     truncate_text_to_width,
 )
 
+SANS = "Segoe UI,sans-serif"
+MONO = "Consolas,monospace"
 
-def _draw_wire(
-    parts: list[str],
-    wire: TopologyWire,
-) -> None:
-    dash = ' stroke-dasharray="5 4"' if wire.dashed else ""
-    parts.append(
-        f'<path d="{wire.path_d}" fill="none" stroke="{esc(_wire_stroke(wire.net))}"'
-        f' stroke-width="2" stroke-linecap="round" stroke-linejoin="round"'
-        f"{dash}/>"
-    )
+WIRE_W = 1.6            # every wire, power and ground
+CORNER_R = 7.0          # bend radius where a wire turns a corner
+JUNCTION_DOT_R = 3.2    # junction dot, ringed in the canvas colour
+NODE_RX = 7.0           # block corner radius
+CHIP_RX = 6.0
+PORT_RING_R = 4.4       # block port ring
+CHIP_PORT_R = 3.8
+GRID_STEP = 16.0        # dot grid pitch, in diagram units (the viewer's too)
 
 
-def _draw_jump_icon(parts: list[str], center: tuple[float, float], *, color: str) -> None:
-    """Small "locate" crosshair: a ring with four ticks (show on Board)."""
-    cx, cy = center
-    r = JUMP_ICON_R
-    c = esc(color)
-    parts.append(
-        f'<circle class="topo-jump" cx="{cx:.1f}" cy="{cy:.1f}" r="{r - 1.5:.1f}"'
-        f' fill="none" stroke="{c}" stroke-width="1.2"/>'
-    )
-    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-        parts.append(
-            f'<line x1="{cx + dx * (r - 3):.1f}" y1="{cy + dy * (r - 3):.1f}"'
-            f' x2="{cx + dx * (r + 1):.1f}" y2="{cy + dy * (r + 1):.1f}"'
-            f' stroke="{c}" stroke-width="1.2" stroke-linecap="round"/>'
-        )
+def _text(x: float, y: float, text: str, *, fill: str, size: float,
+          anchor: str | None = None, weight: int | None = None,
+          font: str = SANS, italic: bool = False, cls: str = "") -> str:
+    attrs = [f'class="{cls}"'] if cls else []
+    attrs.append(f'x="{x:.1f}" y="{y:.1f}"')
+    if anchor:
+        attrs.append(f'text-anchor="{anchor}"')
+    attrs.append(f'fill="{esc(fill)}" font-family="{font}" font-size="{size:g}"')
+    if weight:
+        attrs.append(f'font-weight="{weight}"')
+    if italic:
+        attrs.append('font-style="italic"')
+    return f"<text {' '.join(attrs)}>{esc(text)}</text>"
+
+
+def _segment_net_at(segments, x: float, y: float) -> str:
+    """Net of a wire segment incident to ``(x, y)`` (for colouring junction dots)."""
+    for s in segments:
+        if s.orient == "H" and abs(s.y1 - y) < WIRE_EPS:
+            if min(s.x1, s.x2) - WIRE_EPS <= x <= max(s.x1, s.x2) + WIRE_EPS:
+                return s.net
+        elif s.orient == "V" and abs(s.x1 - x) < WIRE_EPS:
+            if min(s.y1, s.y2) - WIRE_EPS <= y <= max(s.y1, s.y2) + WIRE_EPS:
+                return s.net
+    return ""
+
+
+# --- wires --------------------------------------------------------------------------
+
+
+def _wire_paths(geo: SchematicGeometry) -> list[tuple[str, str]]:
+    """``(net, path_d)`` for every wire piece, with each plain corner (one
+    horizontal meeting one vertical of the same net, no junction) cut back
+    and rounded off with a quarter curve. Bridge hops stay on the verticals."""
+
+    def key(x: float, y: float) -> tuple[float, float]:
+        return round(x, 1), round(y, 1)
+
+    junctions = {key(x, y) for x, y in geo.junctions}
+    ends: dict[tuple[str, float, float], list[tuple[str, int, int]]] = {}
+    for orient, segs in (("H", geo.horizontals), ("V", geo.verticals)):
+        for i, s in enumerate(segs):
+            for e, (x, y) in enumerate(((s.x1, s.y1), (s.x2, s.y2))):
+                ends.setdefault((s.net, *key(x, y)), []).append((orient, i, e))
+    hops = [(geo.verticals[b.vertical_index].x1, b.y) for b in geo.bridges]
+
+    trim_h = [[0.0, 0.0] for _ in geo.horizontals]
+    trim_v = [[0.0, 0.0] for _ in geo.verticals]
+    curves: list[tuple[str, str]] = []
+    for (net, x, y), hits in ends.items():
+        if (x, y) in junctions or len(hits) != 2:
+            continue
+        hs = [(i, e) for o, i, e in hits if o == "H"]
+        vs = [(i, e) for o, i, e in hits if o == "V"]
+        if len(hs) != 1 or len(vs) != 1:
+            continue
+        (hi, he), (vi, ve) = hs[0], vs[0]
+        h, v = geo.horizontals[hi], geo.verticals[vi]
+        hx = h.x2 if he == 0 else h.x1      # the horizontal's far end
+        vy = v.y2 if ve == 0 else v.y1      # the vertical's far end
+        r = min(CORNER_R, abs(hx - x) / 2, abs(vy - y) / 2)
+        # Keep the curve clear of a bridge hop on either leg.
+        for bx, by in hops:
+            if abs(bx - x) < WIRE_EPS:
+                r = min(r, abs(by - y) - BRIDGE_R - 1.0)
+            if abs(by - y) < WIRE_EPS:
+                r = min(r, abs(bx - x) - BRIDGE_R - 1.0)
+        if r < 1.0:
+            continue
+        trim_h[hi][he] = r
+        trim_v[vi][ve] = r
+        dh = 1.0 if hx > x else -1.0
+        dv = 1.0 if vy > y else -1.0
+        curves.append((net, f"M {x + dh * r:.1f},{y:.1f} Q {x:.1f},{y:.1f}"
+                            f" {x:.1f},{y + dv * r:.1f}"))
+
+    out: list[tuple[str, str]] = []
+    for h, (t1, t2) in zip(geo.horizontals, trim_h):
+        d = 1.0 if h.x2 >= h.x1 else -1.0
+        out.append((h.net, f"M {h.x1 + d * t1:.1f},{h.y1:.1f} H {h.x2 - d * t2:.1f}"))
+    for vi, (v, (t1, t2)) in enumerate(zip(geo.verticals, trim_v)):
+        if v.y1 <= v.y2:
+            lo, hi = v.y1 + t1, v.y2 - t2
+        else:
+            lo, hi = v.y2 + t2, v.y1 - t1
+        crosses = sorted(set(geo.vert_crossings.get(vi, [])))
+        out.append((v.net, vertical_bridge_path(v.x1, lo, hi, crosses)))
+    return out + curves
 
 
 def _draw_wires_schematic(
     parts: list[str],
     wires: list[TopologyWire],
+    pal: Palette,
     *,
-    bg: str,
     gnd_symbol_x: float | None = None,
     gnd_bus_y: float | None = None,
 ) -> None:
-    """Draw wires with schematic junction dots and vertical-over-horizontal bridges."""
-    dashed = [w for w in wires if w.dashed]
+    """Draw wires with rounded corners, junction dots and bridge hops."""
     geo = compute_schematic_geometry(
-        wires,
-        gnd_symbol_x=gnd_symbol_x,
-        gnd_bus_y=gnd_bus_y,
+        wires, gnd_symbol_x=gnd_symbol_x, gnd_bus_y=gnd_bus_y,
     )
-
-    sw = 2.0
-    for h in geo.horizontals:
-        stroke = esc(_wire_stroke(h.net))
+    for net, d in _wire_paths(geo):
         parts.append(
-            f'<line x1="{h.x1:.1f}" y1="{h.y1:.1f}" x2="{h.x2:.1f}" y2="{h.y2:.1f}"'
-            f' stroke="{stroke}" stroke-width="{sw}" stroke-linecap="round"/>'
+            f'<path d="{d}" fill="none" stroke="{esc(pal.wire(net))}"'
+            f' stroke-width="{WIRE_W:g}" stroke-linecap="round"'
+            f' stroke-linejoin="round"/>'
         )
-
-    for vi, v in enumerate(geo.verticals):
-        crosses = sorted(set(geo.vert_crossings.get(vi, [])))
-        d = vertical_bridge_path(v.x1, v.y1, v.y2, crosses)
-        stroke = esc(_wire_stroke(v.net))
-        parts.append(
-            f'<path d="{d}" fill="none" stroke="{stroke}"'
-            f' stroke-width="{sw}" stroke-linecap="round" stroke-linejoin="round"/>'
-        )
-
+    for w in wires:
+        if w.dashed:
+            parts.append(
+                f'<path d="{w.path_d}" fill="none" stroke="{esc(pal.wire(w.net))}"'
+                f' stroke-width="{WIRE_W:g}" stroke-linecap="round"'
+                f' stroke-linejoin="round" stroke-dasharray="5 4"/>'
+            )
     for jx, jy in geo.junctions:
-        stroke = esc(_wire_stroke(_segment_net_at(geo.segments, jx, jy)))
-        parts.append(f'<circle cx="{jx:.1f}" cy="{jy:.1f}" r="{JUNCTION_R:.1f}" fill="{stroke}"/>')
-
-    for w in dashed:
-        _draw_wire(parts, w)
+        color = pal.wire(_segment_net_at(geo.segments, jx, jy))
+        parts.append(
+            f'<circle cx="{jx:.1f}" cy="{jy:.1f}" r="{JUNCTION_DOT_R:g}"'
+            f' fill="{esc(color)}" stroke="{esc(pal.bg)}" stroke-width="1.5"/>'
+        )
 
 
 def _net_highlight_fragment(
@@ -146,7 +196,8 @@ def _net_highlight_fragment(
     stroke: str,
     stroke_width: float = 5.0,
 ) -> str:
-    """SVG shapes highlighting every segment of ``net`` (schematic geometry)."""
+    """SVG shapes highlighting every piece of ``net``, on the same rounded
+    paths the diagram draws."""
     parts: list[str] = []
     stroke_esc = esc(stroke)
     sw = stroke_width
@@ -156,25 +207,13 @@ def _net_highlight_fragment(
         gnd_symbol_x=model.gnd_symbol_x,
         gnd_bus_y=model.gnd_bus_y,
     )
-
-    for h in geo.horizontals:
-        if h.net != net:
+    for wnet, d in _wire_paths(geo):
+        if wnet != net:
             continue
-        parts.append(
-            f'<line x1="{h.x1:.1f}" y1="{h.y1:.1f}" x2="{h.x2:.1f}" y2="{h.y2:.1f}"'
-            f' stroke="{stroke_esc}" stroke-width="{sw}" stroke-linecap="round"{op}/>'
-        )
-
-    for vi, v in enumerate(geo.verticals):
-        if v.net != net:
-            continue
-        crosses = sorted(set(geo.vert_crossings.get(vi, [])))
-        d = vertical_bridge_path(v.x1, v.y1, v.y2, crosses)
         parts.append(
             f'<path d="{d}" fill="none" stroke="{stroke_esc}" stroke-width="{sw}"'
             f' stroke-linecap="round" stroke-linejoin="round"{op}/>'
         )
-
     for tag in model.tags:
         if tag.net != net:
             continue
@@ -187,17 +226,14 @@ def _net_highlight_fragment(
             f'<line x1="{gx - 8:.1f}" y1="{gy:.1f}" x2="{gx + 8:.1f}" y2="{gy:.1f}"'
             f' stroke="{stroke_esc}" stroke-width="3" stroke-linecap="round"{op}/>'
         )
-
     for wire in model.wires:
         if wire.net != net or not wire.dashed:
             continue
-        dash = ' stroke-dasharray="5 4"'
         parts.append(
             f'<path d="{wire.path_d}" fill="none" stroke="{stroke_esc}"'
             f' stroke-width="{sw}" stroke-linecap="round" stroke-linejoin="round"'
-            f"{dash}{op}/>"
+            f' stroke-dasharray="5 4"{op}/>'
         )
-
     return "".join(parts)
 
 
@@ -223,55 +259,39 @@ def render_net_highlight_svg(
     )
 
 
-def _draw_wire_label(
-    parts: list[str],
-    wire: TopologyWire,
-    *,
-    fg: str,
-    bg: str,
-) -> None:
+def _draw_wire_label(parts: list[str], wire: TopologyWire, pal: Palette) -> None:
+    """Net name on a pill outlined in a faded wire colour."""
     if not wire.label:
         return
     x, y = wire.label_x, wire.label_y
     if x == 0.0 and y == 0.0:
         return
     text = wire.label
-    tw = max(len(text) * 5.4, 18.0)
-    th = 12.0
+    w = estimate_text_width(text, 8) + 10.0
+    h = 12.0
+    edge = esc(mix(pal.wire(wire.net), pal.bg, 0.5))
     if wire.label_vertical:
-        parts.append(f'<g transform="translate({x:.1f},{y:.1f})">')
+        parts.append(f'<g transform="translate({x:.1f},{y:.1f}) rotate(-90)">')
         parts.append(
-            f'<rect x="{-th / 2 - 2:.1f}" y="{-tw / 2:.1f}"'
-            f' width="{th + 4:.1f}" height="{tw:.1f}" fill="{esc(bg)}"'
-            f' fill-opacity="0.5" stroke="none" rx="2"/>'
+            f'<rect x="{-w / 2:.1f}" y="{-h / 2:.1f}" width="{w:.1f}" height="{h:g}"'
+            f' rx="6" fill="{esc(pal.bg)}" stroke="{edge}" stroke-width="0.8"/>'
         )
-        parts.append(
-            f'<text transform="rotate(-90)" text-anchor="middle"'
-            f' dominant-baseline="middle" fill="{esc(fg)}"'
-            f' font-family="Segoe UI,sans-serif" font-size="8">'
-            f"{esc(text)}</text>"
-        )
+        parts.append(_text(0.0, 3.0, text, fill=pal.fg, size=8, anchor="middle"))
         parts.append("</g>")
         return
     anchor = wire.label_text_anchor or "middle"
     if anchor == "start":
-        rx = x - 2.0
+        rx = x - 5.0
     elif anchor == "end":
-        rx = x - tw - 2.0
+        rx = x - w + 5.0
     else:
-        rx = x - tw / 2 - 2.0
-    ry = y - th / 2
+        rx = x - w / 2
     parts.append(
-        f'<rect x="{rx:.1f}" y="{ry:.1f}"'
-        f' width="{tw + 4:.1f}" height="{th:.1f}" fill="{esc(bg)}"'
-        f' fill-opacity="0.5" stroke="none" rx="2"/>'
+        f'<rect x="{rx:.1f}" y="{y - h / 2:.1f}" width="{w:.1f}" height="{h:g}"'
+        f' rx="6" fill="{esc(pal.bg)}" stroke="{edge}" stroke-width="0.8"/>'
     )
-    parts.append(
-        f'<text x="{x:.1f}" y="{y:.1f}" text-anchor="{esc(anchor)}"'
-        f' dominant-baseline="middle" fill="{esc(fg)}"'
-        f' font-family="Segoe UI,sans-serif"'
-        f' font-size="8">{esc(text)}</text>'
-    )
+    parts.append(_text(rx + w / 2, y + 3.0, text, fill=pal.fg, size=8,
+                       anchor="middle"))
 
 
 def _draw_gnd_symbol(
@@ -283,26 +303,26 @@ def _draw_gnd_symbol(
     fg: str,
 ) -> None:
     """IEC-style ground symbol (three decreasing bars) below the return rail."""
-    sw = 2.0
+    sw = WIRE_W
     top_y = bus_y + GND_SYMBOL_OFFSET
     parts.append(
         f'<line x1="{cx:.1f}" y1="{bus_y:.1f}" x2="{cx:.1f}"'
         f' y2="{top_y:.1f}" stroke="{esc(stroke)}"'
-        f' stroke-width="{sw}" stroke-linecap="round"/>'
+        f' stroke-width="{sw:g}" stroke-linecap="round"/>'
     )
     base_y = top_y + 4.0
     for i, half_w in enumerate((14.0, 9.0, 5.5)):
         y = base_y + i * 5.0
         parts.append(
             f'<line x1="{cx - half_w:.1f}" y1="{y:.1f}" x2="{cx + half_w:.1f}"'
-            f' y2="{y:.1f}" stroke="{esc(stroke)}" stroke-width="{sw}"'
+            f' y2="{y:.1f}" stroke="{esc(stroke)}" stroke-width="{sw:g}"'
             f' stroke-linecap="round"/>'
         )
-    parts.append(
-        f'<text x="{cx:.1f}" y="{base_y + 24:.1f}" text-anchor="middle"'
-        f' fill="{esc(fg)}" font-family="Segoe UI,sans-serif"'
-        f' font-size="9" font-weight="600">GND</text>'
-    )
+    parts.append(_text(cx, base_y + 24, "GND", fill=fg, size=9, anchor="middle",
+                       weight=600))
+
+
+# --- blocks -------------------------------------------------------------------------
 
 
 def _role_display_title(role: str) -> str:
@@ -311,12 +331,6 @@ def _role_display_title(role: str) -> str:
     if role == "AUTO_BRIDGE":
         return "BRIDGE"
     return role
-
-
-def _role_color(role: str, *, single_net: bool, fg: str) -> str:
-    if single_net:
-        return SINGLE_NET_ROLE_COLORS.get(role, ROLE_COLORS.get(role, fg))
-    return ROLE_COLORS.get(role, fg)
 
 
 def _largest_font_size(
@@ -346,11 +360,14 @@ def _fit_header_texts(role_title: str, label: str | None, w: float) -> _HeaderTe
     """Fit the role word and designator into a header band of width ``w``.
 
     Nodes are a fixed width, so a long designator would otherwise run straight
-    through the role word. Both texts shrink together (keeping the band's text
-    one size) until that would make them too small to read; past that point the
-    designator wins, taking the whole band on its own - the band colour still
-    names the role via the legend. Only a designator too long for the full band
-    is truncated, and the hover tooltip always carries the untruncated name.
+    through the role word. Both texts shrink together until that would make
+    them too small to read; past that point the designator wins, taking the
+    whole band on its own - the band's tint still names the role via the
+    legend. Only a designator too long for the full band is truncated, and the
+    hover tooltip always carries the untruncated name.
+
+    The role word is drawn :func:`_role_word_size` (smaller than the fitted
+    size), so it always takes no more room than fitted here.
     """
     full = w - 2 * HEADER_TEXT_PAD
     if not label:
@@ -382,6 +399,20 @@ def _fit_header_texts(role_title: str, label: str | None, w: float) -> _HeaderTe
     )
 
 
+def _role_word_size(fitted_size: float) -> float:
+    """The role word sits two sizes under the designator (whole px: Qt
+    rounds a fractional font size)."""
+    return max(HEADER_LABEL_MIN_FONT, fitted_size - 2.0)
+
+
+def _top_rounded(x: float, y: float, w: float, h: float, r: float) -> str:
+    return (
+        f"M {x:.1f},{y + h:.1f} V {y + r:.1f} Q {x:.1f},{y:.1f} {x + r:.1f},{y:.1f}"
+        f" H {x + w - r:.1f} Q {x + w:.1f},{y:.1f} {x + w:.1f},{y + r:.1f}"
+        f" V {y + h:.1f} Z"
+    )
+
+
 def _draw_section_header(
     parts: list[str],
     *,
@@ -392,209 +423,158 @@ def _draw_section_header(
     label: str | None,
     color: str,
     round_top: bool,
+    pal: Palette,
 ) -> None:
-    """Draw one role header band - square bottom, optional rounded top.
-
-    Used for every band of a composite symbol and (with ``round_top=True``)
-    for a single-role node's header.
-    """
+    """One role header band: a tint of the role colour, the role word in that
+    colour on the left, the designator on the right. Rounded on top for a
+    block's first band."""
+    fill = esc(pal.header_fill(color))
     if round_top:
-        parts.append(
-            f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{HEADER_H:.1f}"'
-            f' rx="6" fill="{esc(color)}"/>'
-        )
-        parts.append(
-            f'<rect x="{x:.1f}" y="{y + HEADER_H - 6:.1f}" width="{w:.1f}"'
-            f' height="6" fill="{esc(color)}"/>'
-        )
+        parts.append(f'<path d="{_top_rounded(x, y, w, HEADER_H, NODE_RX)}"'
+                     f' fill="{fill}"/>')
     else:
         parts.append(
             f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{HEADER_H:.1f}"'
-            f' fill="{esc(color)}"/>'
+            f' fill="{fill}"/>'
         )
+    parts.append(
+        f'<line x1="{x:.1f}" y1="{y + HEADER_H:.1f}" x2="{x + w:.1f}"'
+        f' y2="{y + HEADER_H:.1f}" stroke="{esc(pal.header_rule(color))}"/>'
+    )
     fitted = _fit_header_texts(_role_display_title(role), label, w)
-    size = fitted.font_size
     if fitted.role:
-        parts.append(
-            f'<text x="{x + HEADER_TEXT_PAD:.1f}" y="{y + 15:.1f}" fill="#ffffff"'
-            f' font-family="Segoe UI,sans-serif" font-size="{size:g}"'
-            f' font-weight="600">{esc(fitted.role)}</text>'
-        )
+        parts.append(_text(
+            x + HEADER_TEXT_PAD, y + 14.5, fitted.role,
+            fill=pal.role_text(color), size=_role_word_size(fitted.font_size),
+            weight=700, cls="topo-head",
+        ))
     if fitted.label:
+        parts.append(_text(
+            x + w - HEADER_TEXT_PAD, y + 15, fitted.label, fill=pal.fg,
+            size=fitted.font_size, anchor="end", weight=600, cls="topo-head",
+        ))
+
+
+def _draw_jump_icon(parts: list[str], center: tuple[float, float], *, color: str) -> None:
+    """Small "locate" crosshair: a ring with four ticks (show on Board)."""
+    cx, cy = center
+    r = JUMP_ICON_R
+    c = esc(color)
+    parts.append(
+        f'<circle class="topo-jump" cx="{cx:.1f}" cy="{cy:.1f}" r="{r - 1.5:.1f}"'
+        f' fill="none" stroke="{c}" stroke-width="1.2"/>'
+    )
+    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
         parts.append(
-            f'<text x="{x + w - HEADER_TEXT_PAD:.1f}" y="{y + 15:.1f}" fill="#ffffff"'
-            f' text-anchor="end" font-family="Segoe UI,sans-serif"'
-            f' font-size="{size:g}" font-weight="600">{esc(fitted.label)}</text>'
+            f'<line x1="{cx + dx * (r - 3):.1f}" y1="{cy + dy * (r - 3):.1f}"'
+            f' x2="{cx + dx * (r + 1):.1f}" y2="{cy + dy * (r + 1):.1f}"'
+            f' stroke="{c}" stroke-width="1.2" stroke-linecap="round"/>'
         )
 
 
-def _draw_node(
-    parts: list[str],
-    node: TopologyNode,
-    *,
-    bg: str,
-    bg_alt: str,
-    fg: str,
-    fg_dim: str,
-    border: str,
-    err: str,
-) -> None:
+def _draw_warning(parts: list[str], x: float, y: float, color: str) -> None:
+    """Outlined warning triangle, 11 px wide, bottom-left corner at ``(x, y)``
+    (drawn, so it never depends on a font having the glyph)."""
+    c = esc(color)
+    parts.append(
+        f'<g class="topo-warn"><path d="M {x:.1f},{y:.1f} l 5.5,-9.5 l 5.5,9.5 Z"'
+        f' fill="none" stroke="{c}" stroke-width="1.3" stroke-linejoin="round"/>'
+        f'<path d="M {x + 5.5:.1f},{y - 6:.1f} v 2.8 M {x + 5.5:.1f},{y - 1.7:.1f}'
+        f' v 0.2" stroke="{c}" stroke-width="1.3" stroke-linecap="round"/></g>'
+    )
+
+
+def _port_ring(px: float, py: float, r: float, color: str, pal: Palette) -> str:
+    return (f'<circle cx="{px:.1f}" cy="{py:.1f}" r="{r:g}" fill="{esc(pal.bg)}"'
+            f' stroke="{esc(color)}" stroke-width="1.8"/>')
+
+
+def _draw_node(parts: list[str], node: TopologyNode, pal: Palette) -> None:
     x, y, w, h = node.x, node.y, node.width, node.height
-    stroke = err if node.has_error else border
-    sw = 1.0
 
     if node.compact:
-        _draw_chip(parts, node, bg_alt=bg_alt, fg=fg, fg_dim=fg_dim, border=border,
-                   err=err)
+        _draw_chip(parts, node, pal)
         return
+
+    if node.sections:
+        port_colors = {sec.role: pal.role(sec.role) for sec in node.sections}
+        frame_color = port_colors[node.sections[0].role]
+    else:
+        frame_color = pal.role(node.role, single_net=node.single_net)
+        port_colors = {node.role: frame_color}
 
     parts.append(
         f'<rect class="topo-hit" data-label="{esc(node.label)}"'
         f' x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}"'
-        f' rx="6" fill="{esc(bg_alt)}" stroke="{esc(stroke)}"'
-        f' stroke-width="{sw}"/>'
+        f' rx="{NODE_RX:g}" fill="{esc(pal.surface)}"/>'
     )
-
     if node.sections:
-        port_colors = {
-            sec.role: _role_color(sec.role, single_net=False, fg=fg)
-            for sec in node.sections
-        }
         for i, sec in enumerate(node.sections):
             _draw_section_header(
-                parts,
-                x=x,
-                y=y + sec.y,
-                w=w,
-                role=sec.role,
+                parts, x=x, y=y + sec.y, w=w, role=sec.role,
                 label=node.label if i == 0 else None,
-                color=port_colors[sec.role],
-                round_top=(i == 0),
+                color=port_colors[sec.role], round_top=(i == 0), pal=pal,
             )
     else:
-        color = _role_color(node.role, single_net=node.single_net, fg=fg)
-        port_colors = {node.role: color}
         _draw_section_header(
-            parts,
-            x=x,
-            y=y,
-            w=w,
-            role=node.role,
-            label=node.label,
-            color=color,
-            round_top=True,
+            parts, x=x, y=y, w=w, role=node.role, label=node.label,
+            color=frame_color, round_top=True, pal=pal,
         )
+    stroke = pal.err if node.has_error else pal.outline(frame_color)
+    parts.append(
+        f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}"'
+        f' rx="{NODE_RX:g}" fill="none" stroke="{esc(stroke)}"'
+        f' stroke-width="{1.3 if node.has_error else 1:g}"/>'
+    )
 
     icon = jump_icon_center(node)
     if node.has_error:
         # Bottom-right normally; bottom-left when the jump icon is there.
-        ex, anchor = (x + 6, "start") if icon is not None else (x + w - 6, "end")
-        parts.append(
-            f'<text x="{ex:.1f}" y="{y + h - 6:.1f}" text-anchor="{anchor}"'
-            f' fill="{esc(err)}" font-size="12">⚠</text>'
-        )
+        _draw_warning(parts, x + 7 if icon is not None else x + w - 18,
+                      y + h - 5, pal.err)
     if icon is not None:
-        _draw_jump_icon(parts, icon, color=fg_dim)
+        _draw_jump_icon(parts, icon, color=pal.fg_dim)
 
     if node.value_str:
-        parts.append(
-            f'<text x="{x + w / 2:.1f}" y="{y + h - 8:.1f}" text-anchor="middle"'
-            f' fill="{esc(fg)}" font-family="Segoe UI,sans-serif"'
-            f' font-size="9">{esc(truncate_label(node.value_str, max_len=26))}</text>'
-        )
+        parts.append(_text(
+            x + w / 2, y + h - 8, truncate_label(node.value_str, max_len=26),
+            fill=pal.fg, size=9, anchor="middle", weight=500,
+        ))
 
     if node.gauges:
         from fypa.topology.gauges import draw_gauge
 
         for g in node.gauges:
-            draw_gauge(parts, g, bg=bg, fg=fg, fg_dim=fg_dim, border=border,
-                       err=err)
+            draw_gauge(parts, g, bg=pal.bg, fg=pal.fg, fg_dim=pal.fg_dim,
+                       border=pal.border, err=pal.err, surface=pal.surface)
 
     for port in node.ports:
         px, py = port.x, port.y
-        color = port_colors.get(port.role or node.role, fg)
+        color = port_colors.get(port.role or node.role, frame_color)
         if port.side == "bottom":
-            color = GND_WIRE_COLOR
-        parts.append(
-            f'<circle cx="{px:.1f}" cy="{py:.1f}" r="{PORT_R:.1f}"'
-            f' fill="{esc(color)}" stroke="{esc(border)}" stroke-width="1"/>'
-        )
+            color = pal.gnd
+        parts.append(_port_ring(px, py, PORT_RING_R, color, pal))
         if port.side == "bottom":
             continue
-        text_x = px + 8.0 if port.side == "left" else px - 8.0
-        anchor = "start" if port.side == "left" else "end"
-        line = truncate_label(port.label)
-        parts.append(
-            f'<text x="{text_x:.1f}" y="{py + 3:.1f}" text-anchor="{anchor}"'
-            f' fill="{esc(fg_dim)}" font-family="Consolas,monospace"'
-            f' font-size="8">{esc(line)}</text>'
-        )
+        left = port.side == "left"
+        parts.append(_text(
+            px + 9.0 if left else px - 9.0, py + 3, truncate_label(port.label),
+            fill=pal.fg_dim, size=8, anchor=None if left else "end", font=MONO,
+        ))
 
 
-def _draw_legend(parts: list[str], y: float, *, fg_dim: str) -> None:
-    items = (
-        ("SOURCE", ROLE_COLORS["SOURCE"]),
-        ("SINK", ROLE_COLORS["SINK"]),
-        ("SERIES", ROLE_COLORS["RESISTOR"]),
-        ("REGULATOR", ROLE_COLORS["REGULATOR"]),
-    )
-    x = 12.0
-    for name, color in items:
-        parts.append(
-            f'<rect x="{x:.1f}" y="{y - 10:.1f}" width="10" height="10"'
-            f' rx="2" fill="{esc(color)}"/>'
-        )
-        parts.append(
-            f'<text x="{x + 14:.1f}" y="{y:.1f}" fill="{esc(fg_dim)}"'
-            f' font-family="Segoe UI,sans-serif" font-size="10">{name}</text>'
-        )
-        x += 78.0
-    parts.append(
-        f'<line x1="{x:.1f}" y1="{y - 4:.1f}" x2="{x + 18:.1f}" y2="{y - 4:.1f}"'
-        f' stroke="{esc(fg_dim)}" stroke-width="2" stroke-dasharray="5 4"/>'
-    )
-    parts.append(
-        f'<text x="{x + 24:.1f}" y="{y:.1f}" fill="{esc(fg_dim)}"'
-        f' font-family="Segoe UI,sans-serif" font-size="10">extern</text>'
-    )
-
-
-# --- rows layout ------------------------------------------------------------
-
-TAG_COLORS: dict[str, str] = {
-    "net": NON_GND_WIRE_COLOR,
-    "feed": NON_GND_WIRE_COLOR,
-    "ref": ROLE_COLORS["REGULATOR"],
-    "undriven": "#e0a030",
-    "end": "#8a8f98",
-    "add": ROLE_COLORS["SINK"],   # "+ SINK (n)" handle (viewer only)
-}
-_DASHED_TAGS = ("undriven", "add")
-
-
-def _draw_chip(
-    parts: list[str],
-    node: TopologyNode,
-    *,
-    bg_alt: str,
-    fg: str,
-    fg_dim: str,
-    border: str,
-    err: str,
-) -> None:
+def _draw_chip(parts: list[str], node: TopologyNode, pal: Palette) -> None:
     """One-line symbol for a two-terminal SERIES part or a 0 Ω auto-bridge:
-    coloured lead-in (green = SERIES, grey = BRIDGE), designator, value."""
+    a pill tinted with its role (green = SERIES, grey = BRIDGE), designator,
+    value."""
     x, y, w, h = node.x, node.y, node.width, node.height
-    color = CHIP_STRIP_COLORS.get(node.role) or ROLE_COLORS.get(node.role, fg_dim)
-    stroke = err if node.has_error else border
+    color = pal.role(node.role)
+    stroke = pal.err if node.has_error else pal.chip_outline(color)
     parts.append(
         f'<rect class="topo-hit" data-label="{esc(node.label)}"'
         f' x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}"'
-        f' rx="4" fill="{esc(bg_alt)}" stroke="{esc(stroke)}" stroke-width="1"/>'
-    )
-    parts.append(
-        f'<rect x="{x:.1f}" y="{y:.1f}" width="6" height="{h:.1f}" rx="2"'
-        f' fill="{esc(color)}"/>'
+        f' rx="{CHIP_RX:g}" fill="{esc(pal.chip_fill(color))}"'
+        f' stroke="{esc(stroke)}" stroke-width="1"/>'
     )
     icon = jump_icon_center(node)
     # The layout sizes the chip to fit both texts (chip_width); only past
@@ -605,86 +585,100 @@ def _draw_chip(
     if value:
         label_room -= CHIP_TEXT_GAP + estimate_text_width(value, CHIP_VALUE_FONT)
     label = truncate_text_to_width(node.label, label_room, CHIP_LABEL_FONT)
-    parts.append(
-        f'<text x="{x + CHIP_LABEL_X:.1f}" y="{y + h / 2 + 3.5:.1f}" fill="{esc(fg)}"'
-        f' font-family="Segoe UI,sans-serif" font-size="{CHIP_LABEL_FONT:g}"'
-        f' font-weight="600">{esc(label)}</text>'
-    )
+    parts.append(_text(x + CHIP_LABEL_X, y + h / 2 + 3.5, label, fill=pal.fg,
+                       size=CHIP_LABEL_FONT, weight=600))
     if icon is not None:
-        _draw_jump_icon(parts, icon, color=fg_dim)
+        _draw_jump_icon(parts, icon, color=pal.fg_dim)
     if value:
-        parts.append(
-            f'<text x="{value_end:.1f}" y="{y + h / 2 + 3.5:.1f}" text-anchor="end"'
-            f' fill="{esc(fg_dim)}" font-family="Segoe UI,sans-serif"'
-            f' font-size="{CHIP_VALUE_FONT:g}">{esc(value)}</text>'
-        )
+        parts.append(_text(value_end, y + h / 2 + 3.5, value, fill=pal.fg_dim,
+                           size=CHIP_VALUE_FONT, anchor="end"))
     for port in node.ports:
+        parts.append(_port_ring(port.x, port.y, CHIP_PORT_R, color, pal))
+
+
+# --- legend (columns layout) ----------------------------------------------------------
+
+
+def _draw_legend(parts: list[str], y: float, pal: Palette) -> None:
+    x = 12.0
+    for name in ("SOURCE", "SINK", "SERIES", "REGULATOR"):
         parts.append(
-            f'<circle cx="{port.x:.1f}" cy="{port.y:.1f}" r="{PORT_R - 1:.1f}"'
-            f' fill="{esc(color)}" stroke="{esc(border)}" stroke-width="1"/>'
+            f'<rect x="{x:.1f}" y="{y - 10:.1f}" width="10" height="10"'
+            f' rx="3" fill="{esc(pal.role(name))}"/>'
         )
+        parts.append(_text(x + 14, y, name, fill=pal.fg_dim, size=10))
+        x += 78.0
+    parts.append(
+        f'<line x1="{x:.1f}" y1="{y - 4:.1f}" x2="{x + 18:.1f}" y2="{y - 4:.1f}"'
+        f' stroke="{esc(pal.fg_dim)}" stroke-width="{WIRE_W:g}"'
+        f' stroke-dasharray="5 4"/>'
+    )
+    parts.append(_text(x + 24, y, "extern", fill=pal.fg_dim, size=10))
 
 
-def _tag_path(tag: TopologyTag) -> str:
-    """Pentagon pointing right: flat left edge, arrow point on the right."""
-    x0, x1 = tag.x, tag.x + tag.width
-    top, bot = tag.y - tag.height / 2, tag.y + tag.height / 2
+# --- rows layout ------------------------------------------------------------------------
+
+_DASHED_TAGS = ("undriven", "add")
+
+
+def _tag_path(tag: TopologyTag, inset: float = 0.0) -> str:
+    """Pentagon pointing right: flat left edge, arrow point on the right
+    (``inset`` shrinks it inside its box)."""
+    i = inset
+    x0, x1 = tag.x + i, tag.x + tag.width - i * 1.3
+    top, bot = tag.y - tag.height / 2 + i, tag.y + tag.height / 2 - i
+    point = TAG_POINT - i * 0.4
     return (
-        f"M {x0:.1f},{top:.1f} H {x1 - TAG_POINT:.1f} L {x1:.1f},{tag.y:.1f}"
-        f" L {x1 - TAG_POINT:.1f},{bot:.1f} H {x0:.1f} Z"
+        f"M {x0:.1f},{top:.1f} H {x1 - point:.1f} L {x1:.1f},{tag.y:.1f}"
+        f" L {x1 - point:.1f},{bot:.1f} H {x0:.1f} Z"
     )
 
 
-def _draw_tag(parts: list[str], tag: TopologyTag, *, bg_alt: str, fg: str) -> None:
-    color = TAG_COLORS.get(tag.kind, fg)
-    dash = ' stroke-dasharray="3 2"' if tag.kind in _DASHED_TAGS else ""
+def _draw_tag(parts: list[str], tag: TopologyTag, pal: Palette) -> None:
+    """Tinted pentagon with a thin edge in the tag's colour (dashed for an
+    undriven rail or the "+ SINK" handle)."""
+    color = pal.tag(tag.kind)
+    fill = esc(mix(color, pal.bg, 0.22))
+    dashed = tag.kind in _DASHED_TAGS
+    # A dashed edge stays at full strength: the dashes are the message.
+    edge = ' stroke-dasharray="3 2"' if dashed else ' opacity="0.55"'
     parts.append(
-        f'<path class="topo-tag" d="{_tag_path(tag)}" fill="{esc(bg_alt)}"'
-        f' stroke="{esc(color)}" stroke-width="1.5" stroke-linejoin="round"{dash}/>'
+        f'<path class="topo-tag" d="{_tag_path(tag, 1.5)}" fill="{fill}"'
+        f' stroke="{fill}" stroke-width="3" stroke-linejoin="round"/>'
+    )
+    parts.append(
+        f'<path d="{_tag_path(tag, 0.4)}" fill="none" stroke="{esc(color)}"'
+        f' stroke-width="0.9" stroke-linejoin="round"{edge}/>'
     )
     text_x = tag.x + TAG_TEXT_PAD + (tag.width - TAG_POINT - 2 * TAG_TEXT_PAD) / 2
-    parts.append(
-        f'<text x="{text_x:.1f}" y="{tag.y + 3:.1f}" text-anchor="middle"'
-        f' fill="{esc(fg)}" font-family="Consolas,monospace" font-size="8"'
-        f' font-weight="600">{esc(tag.text)}</text>'
-    )
+    parts.append(_text(text_x, tag.y + 3, tag.text, fill=pal.fg, size=8,
+                       anchor="middle", weight=600, font=MONO))
 
 
-def _draw_local_gnd(parts: list[str], x: float, y: float) -> None:
+def _draw_local_gnd(parts: list[str], x: float, y: float, color: str) -> None:
     """Small three-bar ground symbol whose top centre is at ``(x, y)``."""
     for i, half_w in enumerate((7.0, 4.5, 2.0)):
         yy = y + i * 3.5
         parts.append(
             f'<line x1="{x - half_w:.1f}" y1="{yy:.1f}" x2="{x + half_w:.1f}"'
-            f' y2="{yy:.1f}" stroke="{GND_WIRE_COLOR}" stroke-width="1.6"'
+            f' y2="{yy:.1f}" stroke="{esc(color)}" stroke-width="1.5"'
             f' stroke-linecap="round"/>'
         )
 
 
-def _draw_band(
-    parts: list[str], band: TopologyBand, *, fg: str, fg_dim: str, border: str,
-) -> None:
+def _draw_band(parts: list[str], band: TopologyBand, pal: Palette) -> None:
+    """Row header: a dot in the row's colour, the collapse toggle, the rail
+    name and what drives it."""
     if band.kind == "bridge_group":
-        parts.append(
-            f'<text x="{band.x:.1f}" y="{band.y + 11:.1f}" fill="{esc(fg_dim)}"'
-            f' font-family="Consolas,monospace" font-size="9">{esc(band.title)}</text>'
-        )
+        parts.append(_text(band.x, band.y + 11, band.title, fill=pal.fg_dim,
+                           size=9, font=MONO))
         return
-    accent = {
-        "source": ROLE_COLORS["SOURCE"],
-        "regulator": ROLE_COLORS["REGULATOR"],
-        "undriven": TAG_COLORS["undriven"],
-    }.get(band.kind, fg_dim)
     y = band.y
     parts.append(
-        f'<line x1="{band.x:.1f}" y1="{y:.1f}" x2="{band.x + band.width:.1f}"'
-        f' y2="{y:.1f}" stroke="{esc(border)}" stroke-width="1"/>'
+        f'<circle cx="{band.x + 4:.1f}" cy="{y + 11.5:.1f}" r="3.5"'
+        f' fill="{esc(pal.band_accent(band.kind))}"/>'
     )
-    parts.append(
-        f'<rect x="{band.x:.1f}" y="{y + 5:.1f}" width="3" height="13" rx="1"'
-        f' fill="{esc(accent)}"/>'
-    )
-    title_x = band.x + 9
+    title_x = band.x + 14
     if band.key:
         # Collapse toggle: ▾ open, ▸ collapsed (the viewer's header click).
         cx, cy = title_x + 4.0, y + 11.5
@@ -693,27 +687,45 @@ def _draw_band(
             if band.collapsed else
             f"{cx - 4:.1f},{cy - 2.5:.1f} {cx + 4:.1f},{cy - 2.5:.1f} {cx:.1f},{cy + 2.5:.1f}"
         )
-        parts.append(f'<polygon points="{tri}" fill="{esc(fg_dim)}"/>')
+        parts.append(f'<polygon points="{tri}" fill="{esc(pal.fg_dim)}"/>')
         title_x += 13
-    parts.append(
-        f'<text x="{title_x:.1f}" y="{y + 15.5:.1f}" fill="{esc(fg)}"'
-        f' font-family="Segoe UI,sans-serif" font-size="11" font-weight="600">'
-        f"{esc(band.title)}</text>"
-    )
+    parts.append(_text(title_x, y + 15.5, band.title, fill=pal.fg, size=11,
+                       weight=600))
     if band.subtitle or band.collapsed:
         sub = band.subtitle + ("   (collapsed)" if band.collapsed else "")
         sub_x = title_x + estimate_text_width(band.title, 11) + 12
         # An undriven rail's note is a warning, not a part description.
-        italic = ' font-style="italic"' if band.kind == "undriven" else ""
-        parts.append(
-            f'<text x="{sub_x:.1f}" y="{y + 15.5:.1f}" fill="{esc(fg_dim)}"'
-            f' font-family="Segoe UI,sans-serif" font-size="10"{italic}>'
-            f"{esc(sub.strip())}</text>"
-        )
+        parts.append(_text(sub_x, y + 15.5, sub.strip(), fill=pal.fg_dim, size=10,
+                           italic=band.kind == "undriven"))
+
+
+def _row_panels(model: TopologyModel) -> list[tuple[float, float, float, float]]:
+    """``(x, y, w, h)`` of the panel behind each row: from just above its
+    header to just below the lowest thing drawn in it."""
+    rows = [b for b in model.bands if b.kind != "bridge_group"]
+    if not rows:
+        return []
+    content_end = model.height - 52.0 - 20.0 * len(model.notes)
+    bottoms: list[float] = []
+    for n in model.nodes:
+        bottoms.append(n.y + n.height)
+        for p in n.ports:
+            if p.voltage is not None:
+                bottoms.append(p.y + 17.0)
+    bottoms += [gy + 9.0 for _, gy in model.gnd_glyphs]
+    bottoms += [t.y + t.height / 2 for t in model.tags]
+    tops = [b.y for b in rows] + [content_end + 14.0]
+    out = []
+    for i, band in enumerate(rows):
+        y0, limit = band.y - 6.0, tops[i + 1] - 8.0
+        inside = [v for v in bottoms if band.y < v <= tops[i + 1]]
+        y1 = min(limit, max(inside, default=band.y + 18.0) + 12.0)
+        x0 = band.x - 10.0
+        out.append((x0, y0, band.x + band.width + 10.0 - x0, y1 - y0))
+    return out
 
 
 _ROWS_LEGEND_ROLES = ("REGULATOR", "SOURCE", "SINK", "SERIES", "BRIDGE")
-_LEGEND_CHIP_W = 18.0   # SERIES / BRIDGE legend swatch: a mini chip
 _ROWS_LEGEND_TAGS = (
     ("net", "power port"),
     ("ref", "regulator port"),
@@ -724,108 +736,70 @@ _ROWS_LEGEND_TAGS = (
 
 def rows_legend_width() -> float:
     """Widest line of the rows-layout legend (the model is made at least this wide)."""
-    roles = sum(
-        (_LEGEND_CHIP_W if n in ("SERIES", "BRIDGE") else 10.0) + 4
-        + estimate_text_width(n, 10) + 16
-        for n in _ROWS_LEGEND_ROLES
-    )
-    tags = sum(24 + estimate_text_width(t, 10) + 16 for _, t in _ROWS_LEGEND_TAGS)
+    roles = sum(10.0 + 4 + estimate_text_width(n, 10) + 16 for n in _ROWS_LEGEND_ROLES)
+    tags = sum(26 + estimate_text_width(t, 10) + 16 for _, t in _ROWS_LEGEND_TAGS)
     return 12.0 + max(roles, tags + 20 + estimate_text_width("ground", 10))
 
 
-def _draw_rows_legend(parts: list[str], y: float, *, fg_dim: str, bg_alt: str) -> None:
+def _draw_rows_legend(parts: list[str], y: float, pal: Palette) -> None:
     x = 12.0
-    chip_colors = {
-        "SERIES": CHIP_STRIP_COLORS["RESISTOR"],
-        "BRIDGE": CHIP_STRIP_COLORS["AUTO_BRIDGE"],
-    }
     for name in _ROWS_LEGEND_ROLES:
-        color = chip_colors.get(name) or ROLE_COLORS[name]
-        sw = 10.0
-        if name in ("SERIES", "BRIDGE"):
-            # Drawn as chips, so the swatch is a mini chip: body + strip.
-            sw = _LEGEND_CHIP_W
-            parts.append(
-                f'<rect x="{x:.1f}" y="{y - 10:.1f}" width="{sw:g}" height="10"'
-                f' rx="2" fill="{esc(bg_alt)}" stroke="{esc(fg_dim)}"'
-                f' stroke-width="0.8"/>'
-            )
-            parts.append(
-                f'<rect x="{x:.1f}" y="{y - 10:.1f}" width="4" height="10"'
-                f' rx="1" fill="{esc(color)}"/>'
-            )
-        else:
-            parts.append(
-                f'<rect x="{x:.1f}" y="{y - 10:.1f}" width="10" height="10"'
-                f' rx="2" fill="{esc(color)}"/>'
-            )
         parts.append(
-            f'<text x="{x + sw + 4:.1f}" y="{y:.1f}" fill="{esc(fg_dim)}"'
-            f' font-family="Segoe UI,sans-serif" font-size="10">{name}</text>'
+            f'<rect x="{x:.1f}" y="{y - 10:.1f}" width="10" height="10"'
+            f' rx="3" fill="{esc(pal.role(name))}"/>'
         )
-        x += sw + 4 + estimate_text_width(name, 10) + 16
+        parts.append(_text(x + 14, y, name, fill=pal.fg_dim, size=10))
+        x += 10 + 4 + estimate_text_width(name, 10) + 16
     x = 12.0
     y += 18.0
     for kind, text in _ROWS_LEGEND_TAGS:
-        color = TAG_COLORS[kind]
-        dash = ' stroke-dasharray="3 2"' if kind == "undriven" else ""
-        parts.append(
-            f'<path d="M {x:.1f},{y - 10:.1f} H {x + 14:.1f} L {x + 19:.1f},{y - 5:.1f}'
-            f' L {x + 14:.1f},{y:.1f} H {x:.1f} Z" fill="{esc(bg_alt)}"'
-            f' stroke="{esc(color)}" stroke-width="1.5"{dash}/>'
-        )
-        parts.append(
-            f'<text x="{x + 24:.1f}" y="{y:.1f}" fill="{esc(fg_dim)}"'
-            f' font-family="Segoe UI,sans-serif" font-size="10">{esc(text)}</text>'
-        )
-        x += 24 + estimate_text_width(text, 10) + 16
-    _draw_local_gnd(parts, x + 7, y - 9)
-    parts.append(
-        f'<text x="{x + 20:.1f}" y="{y:.1f}" fill="{esc(fg_dim)}"'
-        f' font-family="Segoe UI,sans-serif" font-size="10">ground</text>'
-    )
+        _draw_tag(parts, TopologyTag(net="", text="", kind=kind, x=x, y=y - 5,
+                                     width=21.0, height=11.0), pal)
+        parts.append(_text(x + 26, y, text, fill=pal.fg_dim, size=10))
+        x += 26 + estimate_text_width(text, 10) + 16
+    _draw_local_gnd(parts, x + 7, y - 9, pal.gnd)
+    parts.append(_text(x + 20, y, "ground", fill=pal.fg_dim, size=10))
 
 
-def _render_rows(
-    parts: list[str],
-    model: TopologyModel,
-    *,
-    bg: str,
-    bg_alt: str,
-    fg: str,
-    fg_dim: str,
-    err: str,
-    border: str,
-) -> None:
+def _render_rows(parts: list[str], model: TopologyModel, pal: Palette) -> None:
+    for x, y, w, h in _row_panels(model):
+        parts.append(
+            f'<rect class="topo-row" x="{x:.1f}" y="{y:.1f}" width="{w:.1f}"'
+            f' height="{h:.1f}" rx="10" fill="{esc(pal.lane_fill)}"'
+            f' stroke="{esc(pal.lane_stroke)}"/>'
+        )
     for band in model.bands:
-        _draw_band(parts, band, fg=fg, fg_dim=fg_dim, border=border)
-    _draw_wires_schematic(parts, model.wires, bg=bg)
+        _draw_band(parts, band, pal)
+    _draw_wires_schematic(parts, model.wires, pal)
     for gx, gy in model.gnd_glyphs:
-        _draw_local_gnd(parts, gx, gy)
+        _draw_local_gnd(parts, gx, gy, pal.gnd)
     for node in model.nodes:
-        _draw_node(
-            parts, node, bg=bg, bg_alt=bg_alt, fg=fg, fg_dim=fg_dim,
-            border=border, err=err,
-        )
+        _draw_node(parts, node, pal)
     for tag in model.tags:
-        _draw_tag(parts, tag, bg_alt=bg_alt, fg=fg)
+        _draw_tag(parts, tag, pal)
     for wire in model.wires:
-        _draw_wire_label(parts, wire, fg=fg, bg=bg)
+        _draw_wire_label(parts, wire, pal)
     if model.port_voltages:
         from fypa.topology.gauges import draw_port_voltage
 
         for node in model.nodes:
             for port in node.ports:
-                draw_port_voltage(parts, port, bg=bg, fg=fg)
+                draw_port_voltage(parts, port, bg=pal.bg, fg=pal.fg,
+                                  surface=pal.surface, border=pal.border)
     y = model.height - 52.0 - 20.0 * len(model.notes)
     for note in model.notes:
         y += 20.0
-        parts.append(
-            f'<text x="12" y="{y - 6:.1f}" fill="{esc(fg_dim)}"'
-            f' font-family="Segoe UI,sans-serif" font-size="10"'
-            f' font-style="italic">{esc(note)}</text>'
-        )
-    _draw_rows_legend(parts, model.height - 30, fg_dim=fg_dim, bg_alt=bg_alt)
+        parts.append(_text(12, y - 6, note, fill=pal.fg_dim, size=10, italic=True))
+    _draw_rows_legend(parts, model.height - 30, pal)
+
+
+def _dot_grid(parts: list[str], w: float, h: float, pal: Palette) -> None:
+    parts.append(
+        f'<defs><pattern id="topo-grid" width="{GRID_STEP:g}" height="{GRID_STEP:g}"'
+        f' patternUnits="userSpaceOnUse"><circle cx="{GRID_STEP / 2:g}"'
+        f' cy="{GRID_STEP / 2:g}" r="0.9" fill="{esc(pal.grid_dot)}"/></pattern></defs>'
+        f'<rect width="{w:.0f}" height="{h:.0f}" fill="url(#topo-grid)"/>'
+    )
 
 
 def render_topology_svg(
@@ -833,65 +807,44 @@ def render_topology_svg(
     *,
     theme: dict[str, str] | None = None,
     width: float | None = None,
+    background: bool = True,
+    grid: bool = False,
 ) -> str:
-    """Render the topology model as an SVG document string."""
-    theme = theme or {}
-    bg = theme.get("bg", "#2b2b2b")
-    bg_alt = theme.get("bg_alt", "#333333")
-    fg = theme.get("fg", "#e6e6e6")
-    fg_dim = theme.get("fg_dim", "#909090")
-    err = theme.get("err", "#ff7070")
-    border = theme.get("border", "#555555")
+    """Render the topology model as an SVG document string.
 
+    ``background=False`` leaves the canvas transparent: the viewer paints its
+    own background (and dot grid) behind the diagram. ``grid`` draws the dot
+    grid into the SVG itself, for a standalone file.
+    """
+    pal = palette(theme)
     w = width if width is not None else model.width
     h = model.height
 
     parts: list[str] = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{w:.0f}"'
         f' height="{h:.0f}" viewBox="0 0 {w:.0f} {h:.0f}">',
-        f'<rect width="100%" height="100%" fill="{esc(bg)}"/>',
     ]
+    if background:
+        parts.append(f'<rect width="100%" height="100%" fill="{esc(pal.bg)}"/>')
+    if grid:
+        _dot_grid(parts, w, h, pal)
 
     if model.layout == "rows":
-        _render_rows(
-            parts, model, bg=bg, bg_alt=bg_alt, fg=fg, fg_dim=fg_dim,
-            err=err, border=border,
-        )
+        _render_rows(parts, model, pal)
         parts.append("</svg>")
         return "\n".join(parts)
 
     _draw_wires_schematic(
-        parts,
-        model.wires,
-        bg=bg,
-        gnd_symbol_x=model.gnd_symbol_x,
-        gnd_bus_y=model.gnd_bus_y,
+        parts, model.wires, pal,
+        gnd_symbol_x=model.gnd_symbol_x, gnd_bus_y=model.gnd_bus_y,
     )
-
     if model.gnd_symbol_x is not None and model.gnd_bus_y is not None:
-        _draw_gnd_symbol(
-            parts,
-            model.gnd_symbol_x,
-            model.gnd_bus_y,
-            stroke=fg_dim,
-            fg=fg,
-        )
-
+        _draw_gnd_symbol(parts, model.gnd_symbol_x, model.gnd_bus_y,
+                         stroke=pal.gnd, fg=pal.fg)
     for node in model.nodes:
-        _draw_node(
-            parts,
-            node,
-            bg=bg,
-            bg_alt=bg_alt,
-            fg=fg,
-            fg_dim=fg_dim,
-            border=border,
-            err=err,
-        )
-
+        _draw_node(parts, node, pal)
     for wire in model.wires:
-        _draw_wire_label(parts, wire, fg=fg, bg=bg)
-
-    _draw_legend(parts, h - 16, fg_dim=fg_dim)
+        _draw_wire_label(parts, wire, pal)
+    _draw_legend(parts, h - 16, pal)
     parts.append("</svg>")
     return "\n".join(parts)

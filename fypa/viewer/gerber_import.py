@@ -5,11 +5,9 @@ import logging
 import time
 from pathlib import Path
 import numpy as np
-from PySide6.QtCore import QThread, Signal
-from PySide6.QtWidgets import QFileDialog
+from PySide6.QtCore import QObject, QThread, Signal
 
 from fypa.viewer.solve_worker import _build_stub_lean_solution_from_loaded
-from fypa.viewer.theme import _file_dialog_options
 
 
 class _GerberImportCancelled(Exception):
@@ -29,9 +27,9 @@ class _GerberImportWorker(QThread):
     """Background worker that runs :func:`_finish_gerber_import` off the
     GUI thread so a fresh-import doesn't freeze the application.
 
-    The picker + layer-mapping dialogs must run on the main thread (Qt
-    modal widgets can't live on a worker), so the caller fans those out
-    first and only hands the chosen inputs to the worker. The worker
+    The import window must run on the main thread (Qt widgets can't live
+    on a worker), so it collects the inputs first and only hands them to
+    the worker (through :class:`GerberImportRun`). The worker
     emits ``stage_changed`` / ``substage_changed`` to drive the progress
     dialog, then ``finished_ok`` with the import result tuple or
     ``failed`` with an error message.
@@ -88,38 +86,163 @@ class _GerberImportWorker(QThread):
 
 
 
-def _pick_gerber_inputs(parent_window):
-    """Run the Gerber file picker + layer/stackup dialogs on the main
-    GUI thread (modal Qt widgets cannot run on a worker thread).
+def _pseudo_project_path(first_file: Path) -> Path:
+    """Synthesise a pseudo-PrjPcb path next to the Gerbers - the cache key
+    + project identity rely on having a stable Path, but no file of that
+    name needs to exist on disk. Named after the folder of the first file
+    in the import window's list."""
+    folder = Path(first_file).parent.resolve()
+    return folder / f"{folder.name}.fypa-gerber"
 
-    Returns ``(result, pseudo_prjpcb_path)`` on success, ``None`` if the
-    user cancelled at any point. The caller then hands ``result`` to a
-    :class:`_GerberImportWorker` for the heavy off-thread work.
+
+class GerberImportRun(QObject):
+    """One off-thread Gerber import: owns the :class:`_GerberImportWorker`,
+    passes its progress signals on, and handles cancel and clean-up the
+    same way for every caller (the import window, and a Recent replay's
+    progress dialog).
+
+    ``succeeded`` carries the ``(stub_sol, metadata, loaded, pf)`` tuple.
+    After :meth:`cancel` neither ``succeeded`` nor ``failed`` fires.
     """
-    from fypa.gerber.import_ui import (
-        GERBER_FILE_FILTER,
-        run_gerber_import_dialogs,
-    )
 
-    paths_str, _ = QFileDialog.getOpenFileNames(
-        parent_window,
-        "Pick Gerber + drill files to import",
-        "",
-        GERBER_FILE_FILTER,
-        options=_file_dialog_options(),
-    )
-    if not paths_str:
-        return None
-    picked = [Path(p) for p in paths_str]
-    result = run_gerber_import_dialogs(picked, parent=parent_window)
-    if result is None:
-        return None
-    # Synthesise a pseudo-PrjPcb path next to the gerbers - the cache
-    # key + project identity rely on having a stable Path, but no file
-    # of that name needs to exist on disk.
-    folder = picked[0].parent.resolve()
-    pseudo = folder / f"{folder.name}.fypa-gerber"
-    return result, pseudo
+    stage_changed = Signal(str)
+    substage_changed = Signal(str)
+    total_stages = Signal(int)
+    succeeded = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, result, pseudo, parent=None) -> None:
+        super().__init__(parent)
+        self.result = result
+        self.pseudo = pseudo
+        self._worker: _GerberImportWorker | None = None
+
+    def is_running(self) -> bool:
+        return self._worker is not None
+
+    def start(self) -> None:
+        worker = _GerberImportWorker(self.result, self.pseudo, parent=self)
+        worker.stage_changed.connect(self.stage_changed)
+        worker.substage_changed.connect(self.substage_changed)
+        worker.total_stages.connect(self.total_stages)
+        worker.finished_ok.connect(self._on_ok)
+        worker.failed.connect(self._on_fail)
+        self._worker = worker
+        worker.start()
+
+    def _release(self) -> None:
+        from fypa.viewer.session import _retire_thread
+        worker, self._worker = self._worker, None
+        if worker is None:
+            return
+        for sig in (worker.stage_changed, worker.substage_changed,
+                    worker.total_stages, worker.finished_ok, worker.failed):
+            try:
+                sig.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+        # The worker may still be inside the non-interruptible ProcessPool
+        # render phase (or just past emitting its result); retire it safely
+        # rather than deleteLater()-ing a running QThread (which would
+        # qFatal the app).
+        _retire_thread(worker)
+
+    def _on_ok(self, res) -> None:
+        if self._worker is None:
+            return
+        self._release()
+        self.succeeded.emit(res)
+
+    def _on_fail(self, msg: str) -> None:
+        if self._worker is None:
+            return
+        self._release()
+        self.failed.emit(msg)
+
+    def cancel(self) -> None:
+        """Ask the worker to unwind at its next stage boundary (the
+        pure-Python packaging phase honours isInterruptionRequested()) and
+        tear down the render pool so queued layers stop instead of running
+        to completion as orphans burning every core. The worker's signals
+        are dropped: whether it stops early or runs to completion, its
+        result is discarded."""
+        worker = self._worker
+        if worker is None:
+            return
+        worker.requestInterruption()
+        try:
+            from fypa.gerber.extract import cancel_active_gerber_pool
+            cancel_active_gerber_pool()
+        except Exception:
+            pass
+        self._release()
+
+
+def run_gerber_import_with_progress(parent, result, pseudo, on_ok) -> None:
+    """Run an import for already-chosen inputs (a replayed Recent entry)
+    behind a modal progress dialog with a Cancel button. ``on_ok(res)``
+    gets the result tuple; a failure is shown in a message box."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication, QMessageBox, QProgressDialog
+
+    from fypa.viewer.solve_worker import _SolveProgressUpdater
+
+    dlg = QProgressDialog("Starting Gerber import…", "Cancel", 0, 0, parent)
+    dlg.setWindowTitle("Importing Gerber files")
+    dlg.setWindowModality(Qt.ApplicationModal)
+    dlg.setMinimumDuration(0)
+    dlg.setAutoClose(False)
+    dlg.setAutoReset(False)
+    dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+    dlg.show()
+    QApplication.processEvents()
+    _sz = dlg.size()
+    # 2.5x Qt's default width - Gerber import stage labels are longer
+    # than the solve dialog's ("Rendering 16 Gerber layers…", etc.)
+    # and Qt's auto-sized width clips them.
+    dlg.setFixedSize(int(_sz.width() * 2.5), _sz.height())
+
+    run = GerberImportRun(result, pseudo, parent=parent)
+    updater = _SolveProgressUpdater(dlg, run, parent)
+    # Keep the run reachable from its window while it's in flight.
+    parent._gerber_run = run
+
+    def _cleanup() -> None:
+        try:
+            updater.stop()
+            updater.deleteLater()
+        except Exception:
+            pass
+        try:
+            dlg.canceled.disconnect()
+        except (RuntimeError, TypeError):
+            pass
+        dlg.close()
+        # close() only hides the parented dialog - delete it so imports
+        # don't leak one QProgressDialog each.
+        dlg.deleteLater()
+        run.deleteLater()
+        if getattr(parent, "_gerber_run", None) is run:
+            parent._gerber_run = None
+
+    def _on_ok(res) -> None:
+        _cleanup()
+        on_ok(res)
+
+    def _on_fail(msg: str) -> None:
+        _cleanup()
+        QMessageBox.critical(
+            parent, "Gerber import failed",
+            f"Could not finish the Gerber import:\n\n{msg}")
+
+    def _on_cancel() -> None:
+        run.cancel()
+        _cleanup()
+
+    run.succeeded.connect(_on_ok)
+    run.failed.connect(_on_fail)
+    dlg.canceled.connect(_on_cancel)
+    run.start()
 
 
 
@@ -127,7 +250,7 @@ def _pick_gerber_inputs(parent_window):
 def _finish_gerber_import(result, pseudo, progress_cb=None,
                           cancel_cb=None) -> tuple:
     """Heavy-lifting half of the Gerber import, safe to run on a worker
-    thread. Takes the result of :func:`_pick_gerber_inputs` plus an
+    thread. Takes the import window's :class:`GerberImportResult` plus an
     optional ``progress_cb(stage, substage)`` that receives stage label
     updates the GUI can show in a progress dialog.
 
@@ -369,17 +492,3 @@ def _finish_gerber_import(result, pseudo, progress_cb=None,
     _imp_log.info("Gerber import: total _finish_gerber_import took %.2fs",
                   time.monotonic() - _imp_t0)
     return stub_solution, metadata, loaded, pf
-
-
-
-
-def _perform_gerber_import(parent_window) -> tuple | None:
-    """Legacy synchronous helper kept for callers that still expect a
-    blocking import. New code should use :func:`_pick_gerber_inputs`
-    plus a :class:`_GerberImportWorker` so the GUI doesn't freeze.
-    """
-    picked = _pick_gerber_inputs(parent_window)
-    if picked is None:
-        return None
-    result, pseudo = picked
-    return _finish_gerber_import(result, pseudo)

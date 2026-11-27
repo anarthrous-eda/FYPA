@@ -29,6 +29,9 @@ class _FakeGL:
     def markers_always_on_top(self) -> bool:
         return self._on
 
+    def show_board_origin(self) -> bool:
+        return False
+
 
 @pytest.fixture
 def viewer(qapp):

@@ -935,6 +935,42 @@ def save_markers_always_on_top(enabled: bool) -> None:
         )
 
 
+_SHOW_BOARD_ORIGIN_QS_KEY = "ui/show_board_origin"
+
+
+def load_show_board_origin() -> bool:
+    """Read whether the board view shows the origin glyph at
+    (0 mm, 0 mm). ``False`` (the default)."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        val = qs.value(_SHOW_BOARD_ORIGIN_QS_KEY, False)
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            return val.strip().lower() in ("1", "true", "yes", "on")
+        return bool(int(val))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not read show-board-origin preference (%s); using "
+            "default.", e,
+        )
+    return False
+
+
+def save_show_board_origin(enabled: bool) -> None:
+    """Persist the show-board-origin preference for next launch."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        qs.setValue(_SHOW_BOARD_ORIGIN_QS_KEY, bool(enabled))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not persist show-board-origin preference (%s); "
+            "ignoring.", e,
+        )
+
+
 def load_adaptive_regulator_gain() -> bool:
     """Read whether manual solves should iterate SMPS regulator gain."""
     try:

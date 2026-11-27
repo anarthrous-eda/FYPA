@@ -36,7 +36,8 @@ from fypa.viewer.diagnostics import (
     _maybe_warn_unannotated_bridges,
 )
 from fypa.viewer.display import _DISPLAY_PERCENTILE_HIGH, _VIA_CURRENT_WARN_A
-from fypa.viewer.gerber_import import _GerberImportWorker, _pick_gerber_inputs
+from fypa.viewer.gerber_import import run_gerber_import_with_progress
+from fypa.viewer.gerber_import_wizard import run_gerber_import_wizard
 from fypa.viewer.prefs import (
     _record_recent_altium_from_metadata,
     load_auto_solve_on_import,
@@ -55,7 +56,6 @@ from fypa.viewer.session import (
     _clear_pending_altium_recent,
     _drop_pending_altium_recent,
     _register_viewer,
-    _retire_thread,
 )
 from fypa.viewer.settings_tab import _SettingsTabMixin
 from fypa.viewer.solve_worker import _abort_solve_worker, _SolveProgressUpdater
@@ -323,13 +323,11 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         _build_help_menu(self)
 
     def _on_menu_import_gerber(self) -> None:
-        """File > Import Gerber Files…  -  picks Gerber + drill files,
-        runs the layer-mapping + stackup dialogs, then hands the heavy
-        per-layer render + geometry build off to a background
-        :class:`_GerberImportWorker` (so Windows doesn't flag the app
-        as not responding). A modal :class:`QProgressDialog` shows the
-        per-stage progress; on completion, the resulting viewer opens
-        and the launcher closes."""
+        """File > Import Gerber Files…  -  opens the import window (files
+        and roles, stackup, review). The window runs the heavy per-layer
+        render + geometry build on a background worker with its progress
+        on the Review step; on success the viewer opens and the launcher
+        closes."""
         if _any_gerber_import_running():
             QMessageBox.information(
                 self, "Import already running",
@@ -337,16 +335,15 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
                 "background. Please wait a moment before starting another.",
             )
             return
-        picked = _pick_gerber_inputs(self)
-        if picked is None:
+        out = run_gerber_import_wizard(self)
+        if out is None:
             return
-        result, pseudo = picked
-        self._start_gerber_import(result, pseudo)
+        res, result, pseudo = out
+        self._open_gerber_result(res, result, pseudo)
 
     def _start_gerber_import(self, result, pseudo) -> None:
         """Run the off-thread half of a Gerber import for already-chosen
-        inputs - from the picker dialogs above, or replayed from a Recent
-        entry. Records the import in the recent list once the viewer opens."""
+        inputs (replayed from a Recent entry) behind a progress dialog."""
         if _any_gerber_import_running():
             QMessageBox.information(
                 self, "Import already running",
@@ -354,95 +351,20 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
                 "background. Please wait a moment before starting another.",
             )
             return
-        dlg = QProgressDialog(
-            "Starting Gerber import…", "Cancel", 0, 0, self,
+        run_gerber_import_with_progress(
+            self, result, pseudo,
+            lambda res: self._open_gerber_result(res, result, pseudo))
+
+    def _open_gerber_result(self, res, result, pseudo) -> None:
+        """Open the viewer on a finished Gerber import, close the launcher
+        and record the import in the recent list."""
+        stub_solution, metadata, loaded, pf = res
+        new_win = self._open_viewer_and_close(
+            stub_solution, metadata,
+            loaded_project=loaded, project=pf,
         )
-        dlg.setWindowTitle("Importing Gerber files")
-        dlg.setWindowModality(Qt.ApplicationModal)
-        dlg.setMinimumDuration(0)
-        dlg.setAutoClose(False)
-        dlg.setAutoReset(False)
-        dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-        dlg.show()
-        QApplication.processEvents()
-        _sz = dlg.size()
-        # 2.5x Qt's default width - Gerber import stage labels are longer
-        # than the solve dialog's ("Rendering 16 Gerber layers…", etc.)
-        # and Qt's auto-sized width clips them.
-        dlg.setFixedSize(int(_sz.width() * 2.5), _sz.height())
-
-        worker = _GerberImportWorker(result, pseudo, parent=self)
-        updater = _SolveProgressUpdater(dlg, worker, self)
-        self._gerber_worker = worker
-        self._gerber_dlg = dlg
-        self._gerber_updater = updater
-
-        def _cleanup() -> None:
-            try:
-                updater.stop()
-                updater.deleteLater()
-            except Exception:
-                pass
-            try:
-                dlg.canceled.disconnect()
-            except (RuntimeError, TypeError):
-                pass
-            dlg.close()
-            # close() only hides the parented dialog - delete it so imports
-            # don't leak one QProgressDialog each.
-            dlg.deleteLater()
-            # The worker may still be inside the non-interruptible ProcessPool
-            # render phase; retire it safely rather than deleteLater()-ing a
-            # running QThread (which would qFatal the app).
-            _retire_thread(worker)
-            self._gerber_worker = None
-            self._gerber_dlg = None
-            self._gerber_updater = None
-
-        def _on_ok(res) -> None:
-            stub_solution, metadata, loaded, pf = res
-            _cleanup()
-            new_win = self._open_viewer_and_close(
-                stub_solution, metadata,
-                loaded_project=loaded, project=pf,
-            )
-            if new_win is not None:
-                record_recent_gerber(result, pseudo)
-
-        def _on_fail(msg: str) -> None:
-            _cleanup()
-            QMessageBox.critical(
-                self, "Gerber import failed",
-                f"Could not finish the Gerber import:\n\n{msg}",
-            )
-
-        def _on_cancel() -> None:
-            # Ask the worker to unwind at its next stage boundary (the
-            # pure-Python packaging phase honours isInterruptionRequested()).
-            # The ProcessPoolExecutor render phase can't be interrupted
-            # cooperatively, so also drop the worker's signals: whether it
-            # stops early or runs to completion, its result is discarded and
-            # the dialog closes immediately for the user.
-            if self._gerber_worker is not None:
-                self._gerber_worker.requestInterruption()
-                # Tear down the render pool so queued layers stop instead of
-                # running to completion as orphans burning every core.
-                try:
-                    from fypa.gerber.extract import cancel_active_gerber_pool
-                    cancel_active_gerber_pool()
-                except Exception:
-                    pass
-                try:
-                    self._gerber_worker.finished_ok.disconnect(_on_ok)
-                    self._gerber_worker.failed.disconnect(_on_fail)
-                except (RuntimeError, TypeError):
-                    pass
-            _cleanup()
-
-        worker.finished_ok.connect(_on_ok)
-        worker.failed.connect(_on_fail)
-        dlg.canceled.connect(_on_cancel)
-        worker.start()
+        if new_win is not None:
+            record_recent_gerber(result, pseudo)
 
     def _on_menu_open_project(self, *, clean: bool = False) -> None:
         path_str, _ = QFileDialog.getOpenFileName(

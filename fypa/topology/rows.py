@@ -304,6 +304,13 @@ class _TreeBuilder:
         # Port voltage labels are drawn: keep wire runs long enough for them.
         self.port_voltages = False
 
+    def tag_stub(self, has_voltage: bool) -> float:
+        """Wire between a port and its tag: long enough for the port's
+        voltage label (drawn under the stub) when it gets one."""
+        if self.port_voltages and has_voltage:
+            return max(TAG_STUB, PORT_V_ROOM)
+        return TAG_STUB
+
     def add_sink_count(self, net: str, branch: _Branch | None = None) -> int:
         """Candidate loads on ``net`` not already drawn on it (any role) -
         only those on ``branch``'s side of a merged rail's links."""
@@ -694,26 +701,33 @@ def _node_shape(child: _Child, builder: _TreeBuilder) -> _Shape:
 
     shape = _Shape(node_w, h, extent, port_xy, sides,
                    gauges=gauges, gauge_top=gauge_top)
+    # A side with a voltage label: every tag on it keeps clear of the label
+    # (it hangs under its own port's wire, over the next row's tag).
+    volt_sides = {sides[p.name] for p in part.ports if _carries_voltage(part, p.name)}
     for p in part.ports:
         if p.net == GND_NET:
             continue
         if p.name in child.in_ports or p.name in branch_ports:
             continue
         shape.tagged.append(p.name)
-        reach = TAG_STUB + tag_width(truncate_label(p.net))
+        reach = (builder.tag_stub(sides[p.name] in volt_sides)
+                 + tag_width(truncate_label(p.net)))
         if sides[p.name] == "left":
             shape.left_tags = max(shape.left_tags, reach)
         else:
             shape.right_tags = max(shape.right_tags, reach)
     # Branches with nothing on them are tagged once placement is done; keep
     # room for those tags too so wire labels don't land on them.
-    shape.right_tags = max(shape.right_tags, _empty_branch_reach(child, builder))
+    shape.right_tags = max(shape.right_tags, _empty_branch_reach(
+        child, builder, volts="right" in volt_sides))
     return shape
 
 
-def _empty_branch_reach(child: _Child, builder: _TreeBuilder) -> float:
+def _empty_branch_reach(child: _Child, builder: _TreeBuilder, *,
+                        volts: bool = False) -> float:
     """How far right the end tag / "+ SINK" handle of ``child``'s load-less
-    branches reach past its body."""
+    branches reach past its body (``volts``: the right side has a voltage
+    label, so its tags sit further out)."""
     reach = 0.0
     for branch in child.branches.values():
         if branch.children:
@@ -722,9 +736,18 @@ def _empty_branch_reach(child: _Child, builder: _TreeBuilder) -> float:
         if n_add:
             r = add_stub_len(branch.label) + tag_width(add_sink_text(n_add))
         else:
-            r = TAG_STUB + tag_width(truncate_label(branch.label))
+            r = builder.tag_stub(volts) + tag_width(truncate_label(branch.label))
         reach = max(reach, r)
     return reach
+
+
+def _carries_voltage(part, port_name: str) -> bool:
+    """Whether a card's port gets a solved voltage label (the same rule as
+    the port's ``vkey``: the supply side of a SOURCE / SINK / REGULATOR)."""
+    pd = (part.spec.get("port_directives") or {}).get(port_name)
+    return (pd is not None
+            and base_terminal(port_name) in ("P", "IN_P", "OUT_P")
+            and pd.get("role") in ("SOURCE", "SINK", "REGULATOR"))
 
 
 def _port_order(child: _Child):
@@ -1062,18 +1085,28 @@ class _Placer:
                 routing_kind="row_tap",
             ))
 
+    def _side_has_voltage(self, port: TopologyPort) -> bool:
+        """Whether any port on ``port``'s side of its block gets a voltage
+        label (the same rule the shape used to reserve room)."""
+        if port.vkey:
+            return True
+        return any(
+            p.vkey for node in self.nodes if node.node_id == port.node_id
+            for p in node.ports if p.side == port.side)
+
     def _add_tag_at_port(
         self, port: TopologyPort, net: str, label: str, *, kind: str,
         tooltip: str = "", target: tuple[float, float] | None = None,
     ) -> TopologyTag:
         text = truncate_label(label)
         w = tag_width(text)
+        stub = self.builder.tag_stub(self._side_has_voltage(port))
         if port.side == "left":
-            tip = port.x - TAG_STUB
+            tip = port.x - stub
             x0 = tip - w
             path = f"M {tip:.1f},{port.y:.1f} H {port.x:.1f}"
         else:
-            x0 = port.x + TAG_STUB
+            x0 = port.x + stub
             path = f"M {port.x:.1f},{port.y:.1f} H {x0:.1f}"
         self.wires.append(TopologyWire(
             net=net, path_d=path, routing_kind="tag_stub",

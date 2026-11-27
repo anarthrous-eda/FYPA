@@ -27,7 +27,6 @@ from fypa.viewer.session import (
     _register_viewer,
     _reject_if_background_load_running,
     _reject_if_solve_running,
-    _retire_thread,
     _retire_viewer,
     _stash_pending_altium_recent,
 )
@@ -341,6 +340,17 @@ class _FileMenuMixin:
                 not self._gl_viewer.markers_always_on_top()))
         view_menu.addAction(self._act_markers_on_top)
 
+        self._act_board_origin = QAction(self)
+        self._act_board_origin.setStatusTip(
+            "Mark the board origin (0 mm, 0 mm) - the design's user origin, "
+            "which every coordinate shown is measured from - with a circle "
+            "and cross. Remembered across launches."
+        )
+        self._act_board_origin.triggered.connect(
+            lambda: self._set_show_board_origin(
+                not self._gl_viewer.show_board_origin()))
+        view_menu.addAction(self._act_board_origin)
+
         view_menu.addSeparator()
         fit_act = QAction("Fit to board", self)
         fit_act.setStatusTip(
@@ -384,6 +394,22 @@ class _FileMenuMixin:
                 "Markers always on top [enabled]"
                 if gl.markers_always_on_top()
                 else "Markers always on top [disabled]")
+        act = getattr(self, "_act_board_origin", None)
+        if act is not None and gl is not None:
+            act.setText(
+                "Board origin (0, 0) [shown]"
+                if gl.show_board_origin()
+                else "Board origin (0, 0) [hidden]")
+
+    def _set_show_board_origin(self, on: bool) -> None:
+        """View > Board origin: persist + live-apply the origin glyph."""
+        from fypa.viewer.prefs import save_show_board_origin
+        on = bool(on)
+        save_show_board_origin(on)
+        gl = getattr(self, "_gl_viewer", None)
+        if gl is not None:
+            gl.set_show_board_origin(on)
+        self._refresh_view_menu_labels()
 
     def _menu_start_dir(self) -> str:
         """Best-effort starting directory for the file dialogs: the folder
@@ -418,16 +444,15 @@ class _FileMenuMixin:
             return ""
 
     def _on_menu_import_gerber(self) -> None:
-        """File > Import Gerber Files…  -  same flow as the launcher's
-        handler, but the resulting viewer replaces the current one.
+        """File > Import Gerber Files…  -  opens the import window (files
+        and roles, stackup, review), which runs the import itself; the
+        resulting viewer replaces this one.
 
         PdnViewer doesn't share LauncherWindow's ``_open_viewer_and_close``
-        helper, so we open the new viewer directly and retire this one
-        (the same pattern ``_on_solve_finished`` / ``_on_resolve_finished``
-        use). The heavy work runs on a :class:`_GerberImportWorker` with
-        a modal progress dialog so the existing viewer stays responsive
-        while the import is running."""
-        from fypa.viewer.gerber_import import _pick_gerber_inputs
+        helper, so :meth:`_open_gerber_result` opens the new viewer directly
+        and retires this one (the same pattern ``_on_solve_finished`` /
+        ``_on_resolve_finished`` use)."""
+        from fypa.viewer.gerber_import_wizard import run_gerber_import_wizard
         if _any_gerber_import_running():
             QMessageBox.information(
                 self, "Import already running",
@@ -435,19 +460,17 @@ class _FileMenuMixin:
                 "background. Please wait a moment before starting another.",
             )
             return
-        picked = _pick_gerber_inputs(self)
-        if picked is None:
+        out = run_gerber_import_wizard(self)
+        if out is None:
             return
-        result, pseudo = picked
-        self._start_gerber_import(result, pseudo)
+        res, result, pseudo = out
+        self._open_gerber_result(res, result, pseudo)
 
     def _start_gerber_import(self, result, pseudo) -> None:
         """Run the off-thread half of a Gerber import for already-chosen
-        inputs (picker dialogs, or a replayed Recent entry); the resulting
-        viewer replaces this one and the import is recorded as recent."""
-        from fypa.viewer.gerber_import import _GerberImportWorker
-        from fypa.viewer.prefs import record_recent_gerber
-        from fypa.viewer.window import PdnViewer
+        inputs (a replayed Recent entry) behind a progress dialog; the
+        resulting viewer replaces this one."""
+        from fypa.viewer.gerber_import import run_gerber_import_with_progress
         if _any_gerber_import_running():
             QMessageBox.information(
                 self, "Import already running",
@@ -455,122 +478,49 @@ class _FileMenuMixin:
                 "background. Please wait a moment before starting another.",
             )
             return
+        run_gerber_import_with_progress(
+            self, result, pseudo,
+            lambda res: self._open_gerber_result(res, result, pseudo))
+
+    def _open_gerber_result(self, res, result, pseudo) -> None:
+        """Open a viewer on a finished Gerber import, record it as recent
+        and retire this window."""
+        from fypa.viewer.prefs import record_recent_gerber
+        from fypa.viewer.window import PdnViewer
         log = logging.getLogger(__name__)
-
-        dlg = QProgressDialog(
-            "Starting Gerber import…", "Cancel", 0, 0, self,
-        )
-        dlg.setWindowTitle("Importing Gerber files")
-        dlg.setWindowModality(Qt.ApplicationModal)
-        dlg.setMinimumDuration(0)
-        dlg.setAutoClose(False)
-        dlg.setAutoReset(False)
-        dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-        dlg.show()
-        QApplication.processEvents()
-        _sz = dlg.size()
-        # 2.5x Qt's default width - Gerber import stage labels are longer
-        # than the solve dialog's ("Rendering 16 Gerber layers…", etc.)
-        # and Qt's auto-sized width clips them.
-        dlg.setFixedSize(int(_sz.width() * 2.5), _sz.height())
-
-        worker = _GerberImportWorker(result, pseudo, parent=self)
-        updater = _SolveProgressUpdater(dlg, worker, self)
-        self._gerber_worker = worker
-        self._gerber_dlg = dlg
-        self._gerber_updater = updater
-
-        def _cleanup() -> None:
-            try:
-                updater.stop()
-                updater.deleteLater()
-            except Exception:
-                pass
-            try:
-                dlg.canceled.disconnect()
-            except (RuntimeError, TypeError):
-                pass
-            dlg.close()
-            # close() only hides the parented dialog - delete it so imports
-            # don't leak one QProgressDialog each.
-            dlg.deleteLater()
-            # The worker may still be inside the non-interruptible ProcessPool
-            # render phase; retire it safely rather than deleteLater()-ing a
-            # running QThread (which would qFatal the app).
-            _retire_thread(worker)
-            self._gerber_worker = None
-            self._gerber_dlg = None
-            self._gerber_updater = None
-
-        def _on_ok(res) -> None:
-            stub_solution, metadata, loaded, pf = res
-            _cleanup()
-            prev_geometry = self.geometry()
-            prev_maximized = self.isMaximized()
-            prev_fullscreen = self.isFullScreen()
-            try:
-                new_win = PdnViewer(
-                    stub_solution,
-                    metadata=metadata,
-                    loaded_project=loaded,
-                    project=pf,
-                )
-                new_win._mark_awaiting_first_solve()
-                _register_viewer(new_win)
-                new_win.setGeometry(prev_geometry)
-                if prev_fullscreen:
-                    new_win.showFullScreen()
-                elif prev_maximized:
-                    new_win.showMaximized()
-                else:
-                    new_win._pending_maximize = False
-                    new_win.show()
-                _force_native_window_icon(new_win)
-                _set_window_aumid(new_win)
-            except Exception as e:
-                log.exception("Failed to open viewer after Gerber import")
-                QMessageBox.critical(
-                    self, "Couldn't open viewer",
-                    "Gerber import succeeded but the viewer failed to "
-                    f"open:\n\n{type(e).__name__}: {e}",
-                )
-                return
-            record_recent_gerber(result, pseudo)
-            QTimer.singleShot(0, lambda: _retire_viewer(self))
-
-        def _on_fail(msg: str) -> None:
-            _cleanup()
-            QMessageBox.critical(
-                self, "Gerber import failed",
-                f"Could not finish the Gerber import:\n\n{msg}",
+        stub_solution, metadata, loaded, pf = res
+        prev_geometry = self.geometry()
+        prev_maximized = self.isMaximized()
+        prev_fullscreen = self.isFullScreen()
+        try:
+            new_win = PdnViewer(
+                stub_solution,
+                metadata=metadata,
+                loaded_project=loaded,
+                project=pf,
             )
-
-        def _on_cancel() -> None:
-            # Ask the worker to unwind at its next stage boundary (the
-            # pure-Python packaging phase honours isInterruptionRequested()).
-            # The ProcessPoolExecutor render phase can't be interrupted
-            # cooperatively, so also drop the worker's signals: whether it
-            # stops early or runs to completion, its result is discarded.
-            if self._gerber_worker is not None:
-                self._gerber_worker.requestInterruption()
-                # Tear down the render pool so queued layers stop instead of
-                # running to completion as orphans burning every core.
-                try:
-                    from fypa.gerber.extract import cancel_active_gerber_pool
-                    cancel_active_gerber_pool()
-                except Exception:
-                    pass
-                try:
-                    self._gerber_worker.finished_ok.disconnect(_on_ok)
-                    self._gerber_worker.failed.disconnect(_on_fail)
-                except (RuntimeError, TypeError):
-                    pass
-            _cleanup()
-
-        worker.finished_ok.connect(_on_ok)
-        worker.failed.connect(_on_fail)
-        dlg.canceled.connect(_on_cancel)
-        worker.start()
+            new_win._mark_awaiting_first_solve()
+            _register_viewer(new_win)
+            new_win.setGeometry(prev_geometry)
+            if prev_fullscreen:
+                new_win.showFullScreen()
+            elif prev_maximized:
+                new_win.showMaximized()
+            else:
+                new_win._pending_maximize = False
+                new_win.show()
+            _force_native_window_icon(new_win)
+            _set_window_aumid(new_win)
+        except Exception as e:
+            log.exception("Failed to open viewer after Gerber import")
+            QMessageBox.critical(
+                self, "Couldn't open viewer",
+                "Gerber import succeeded but the viewer failed to "
+                f"open:\n\n{type(e).__name__}: {e}",
+            )
+            return
+        record_recent_gerber(result, pseudo)
+        QTimer.singleShot(0, lambda: _retire_viewer(self))
 
     def _on_menu_open_project(self, *, clean: bool = False) -> None:
         """File > Import Altium Design[ (Clean)]  →  pick a .PrjPcb and

@@ -12,7 +12,6 @@ from fypa.report.model import PASS, LoadResult, RailReport
 from fypa.topology import build_topology_model, render_topology_svg
 from fypa.topology.gauges import (
     LIMIT_COLOR,
-    PASS_COLOR,
     WARN_COLOR,
     apply_readings,
     draw_gauge,
@@ -26,6 +25,7 @@ from fypa.topology.types import NodeGauge
 from topology_fixtures import project_b_compact_metadata
 
 ERR = "#ff7070"
+FG = "#eee"      # a passing reading is drawn in the text colour
 
 
 def _metadata(**sink):
@@ -154,14 +154,14 @@ def _gauge(reading=None, *, max_v=None, style="bar", label=""):
 
 def _draw(g):
     parts: list[str] = []
-    draw_gauge(parts, g, bg="#000", fg="#eee", fg_dim="#888", border="#555",
-               err=ERR)
+    draw_gauge(parts, g, bg="#000", fg=FG, fg_dim="#888", border="#555",
+               err=ERR, surface="#333")
     return "\n".join(parts)
 
 
 def _band_fills(svg):
-    """Fills of the at-pins band (the rects inset 1 px in the bar)."""
-    return re.findall(r'<rect [^>]*height="6.0" fill="([^"]+)"', svg)
+    """Fills of the at-pins marks (a dot, or capsule pieces over a range)."""
+    return re.findall(r'class="topo-gauge-pin"[^>]* fill="([^"]+)"', svg)
 
 
 def _texts(svg):
@@ -187,9 +187,9 @@ def test_only_the_part_past_a_limit_is_red():
     ld = _load(1.15, max_v=1.25, v_low=1.11, v_high=1.26)
     fills = _band_fills(_draw(_gauge(reading_for(ld, _rail(1.16, 1.26)),
                                      max_v=1.25)))
-    assert PASS_COLOR in fills and ERR in fills
+    assert FG in fills and ERR in fills
     ok = _draw(_gauge(reading_for(_load(1.15), _rail())))
-    assert _band_fills(ok) == [PASS_COLOR]
+    assert _band_fills(ok) == [FG]
     warn = _draw(_gauge(reading_for(_load(1.005), _rail())))
     assert _band_fills(warn) == [WARN_COLOR]
 
@@ -230,12 +230,16 @@ def test_tick_labels_under_the_bar_skip_what_would_overlap():
     assert "max 1.2 V" in texts and "supply 1.2 V" not in texts
 
 
-def test_supply_without_a_range_is_a_dashed_tick_not_a_box():
-    flat = _draw(_gauge(reading_for(_load(1.15), _rail())))
-    assert 'stroke-dasharray="1.5 1.2"' in flat
-    assert 'stroke-dasharray="2 1.5"' not in flat
-    ranged = _draw(_gauge(reading_for(_load(1.15), _rail(1.14, 1.26))))
-    assert 'stroke-dasharray="2 1.5"' in ranged and "1.5 1.2" not in ranged
+def _supply_marks(svg):
+    return re.findall(r'<path class="topo-gauge-supply" d="([^"]+)"', svg)
+
+
+def test_supply_without_a_range_is_a_caret_not_a_bracket():
+    flat = _supply_marks(_draw(_gauge(reading_for(_load(1.15), _rail()))))
+    assert len(flat) == 1 and flat[0].endswith("Z")       # closed caret
+    ranged = _supply_marks(_draw(_gauge(reading_for(_load(1.15),
+                                                    _rail(1.14, 1.26)))))
+    assert len(ranged) == 1 and not ranged[0].endswith("Z")   # open bracket
 
 
 def test_value_off_the_scale_gets_one_arrow_on_its_side():
@@ -326,6 +330,27 @@ def test_port_voltage_labels_never_overlap(cascade):
         for bx, by, bw, bh in boxes[i + 1:]:
             assert (ax + aw <= bx or bx + bw <= ax
                     or ay + ah <= by or by + bh <= ay), "labels overlap"
+
+
+@pytest.mark.parametrize("cascade", [False, True])
+def test_port_voltage_labels_clear_the_port_tags(cascade):
+    """Regression: a regulator's input tag (``VIN ▷``) sat 14 px from its port,
+    so the input voltage drawn under that stub ran over the tag."""
+    md = _metadata(min_voltage=1.0)
+    model = build_topology_model(md, layout="rows", gauges="bar",
+                                 cascade=cascade, port_voltages=True)
+    ports = {p.vkey: -12.345 for n in model.nodes for p in n.ports if p.vkey}
+    apply_readings(model, None, ports=ports)
+    svg = render_topology_svg(model)
+    boxes = [tuple(float(v) for v in m) for m in re.findall(
+        r'<g class="topo-port-v">\s*<rect x="([-\d.]+)" y="([-\d.]+)"'
+        r' width="([\d.]+)" height="([\d.]+)"', svg)]
+    assert model.tags and boxes
+    for t in model.tags:
+        tx0, ty0, tx1, ty1 = t.x, t.y - t.height / 2, t.x + t.width, t.y + t.height / 2
+        for bx, by, bw, bh in boxes:
+            assert (bx + bw <= tx0 or tx1 <= bx or by + bh <= ty0 or ty1 <= by), (
+                f"port voltage over the {t.text} tag")
 
 
 def test_port_voltages_widen_the_gap_between_blocks():

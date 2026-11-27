@@ -30,50 +30,75 @@ The Altium path carries net names, pads, components, and any schematic
 FYPA recognises Altium (`.GTL` / `.GBL` / `.G<n>` / `.GKO` / `.GTO`),
 KiCad (`F.Cu` / `B.Cu` / `In<n>.Cu` / `Edge.Cuts`), and several common
 generic naming conventions automatically. You can correct any
-miscategorised file in the layer-mapping dialog.
+miscategorised file in the import window's first step.
 
 ## 7.3 The import flow
 
-1. **File → Import Gerber Files…** (`Ctrl+G`) in either the launcher
-   window or an already-open viewer.
-2. **File picker.** Multi-select every Gerber and drill file in one go.
-   Files outside the recognised extensions can still be picked - they
-   will appear as "Ignore" in the next dialog and you can re-assign
-   them.
-3. **Layer-mapping dialog.** One row per picked file. Adjust any rows
-   that came out wrong:
+**File → Import Gerber Files…** (`Ctrl+G`), in either the launcher window
+or an already-open viewer, opens the **Import Gerber Files** window. The
+steps are listed down the left; the current step is on the right.
+
+- **< Back** always works, and nothing you entered is lost by going back.
+- **Next >** only goes on once the current step has no problems. Problems
+  are listed in red under the step and update as you edit; notes that don't
+  block the import are shown in orange.
+- You can click any step in the list that you have already reached. Steps
+  you haven't reached yet, and steps after one that now has a problem, are
+  greyed out.
+- **Cancel** (or Esc, or closing the window) asks before throwing away the
+  files you listed.
+
+The steps:
+
+1. **Files & roles.** Click **Add Files...** and multi-select every Gerber
+   and drill file, or drop them onto the window. Click **Add Files...**
+   again to bring in files from another folder; files already in the list
+   are skipped. Select rows and click **Remove** to take files out. Each
+   file's role is worked out from its name; change any that came out wrong:
    - **Top** / **Inner 1..N** / **Bottom** - copper layers (must have
-     exactly one Top and one Bottom; inner layers must be assigned
-     contiguously from Inner 1).
+     exactly one Top and one Bottom; inner layers must be numbered from
+     Inner 1 with no gaps).
    - **Top Silk** / **Bottom Silk** - accepted but currently unused.
    - **Outline** - the board boundary (only the first such file is
      used).
-   - **Drill (Excellon)** - every Excellon file is parsed.
+   - **Drill (Excellon)** - every Excellon file is parsed. Without one,
+     the step notes that copper on different layers won't connect.
    - **Ignore** - file is dropped from the import.
 
-   If your files are spread across several folders, click **Add Files...**
-   (top right) to pick more files from another folder. They are added as
-   new rows with their roles auto-detected; files already in the list are
-   skipped.
-4. **Stackup dialog.** Pre-filled defaults:
+   Files outside the recognised extensions can still be added - they
+   start as "Ignore" and you can re-assign them.
+2. **Stackup.** One row per copper layer from step 1, pre-filled with:
    - 1.6 mm total board thickness.
    - 1 oz copper (0.035 mm per layer).
    - Dielectric split evenly across the gaps.
+
    Edit the per-layer copper / dielectric thicknesses; click
    **"Apply weight + re-distribute dielectric"** to reset after a
    change. The values feed directly into the FEM conductance for each
    layer, so they don't have to be exact - they just have to be in the
-   right ballpark.
-5. **Viewer opens** with a blank heatmap (no solve has run yet) and
-   the copper visible on every layer.
+   right ballpark. If the layers don't add up to the total thickness you
+   get a note, not a block (asymmetric stackups are common). If you go
+   back and change the copper layers, the values you typed are kept for
+   the layers that are still there.
+3. **Review & import.** A summary of the copper layers and their files,
+   the drill and outline files, how many files are ignored, the total
+   thickness, and anything worth checking. Click **Import**. The import
+   runs in the window with its progress shown on the page; **Cancel
+   import** stops it and leaves you on this step. If the import fails, the
+   error is shown here and you can go back, fix the files or stackup, and
+   click **Try again**.
+
+When the import finishes, the window closes and the **viewer opens** with
+a blank heatmap (no solve has run yet) and the copper visible on every
+layer.
 
 FYPA remembers the files, layer mapping and stackup of each successful
 import. To re-import the same set later (for example after re-exporting
 the Gerbers), pick it from the start window's **Recent** panel: the
-import re-runs straight away without the
-picker, mapping or stackup dialogs. If any copper, drill or outline file
-has gone, FYPA lists the missing files and drops the entry. To change
-the mapping or stackup, use **File → Import Gerber Files…** again.
+import re-runs straight away without the import window. If any copper,
+drill or outline file has gone, FYPA lists the missing files and drops the
+entry. To change the mapping or stackup, use **File → Import Gerber
+Files…** again.
 
 ## 7.4 Adding sources and sinks
 
@@ -110,8 +135,7 @@ records:
 - Every editor directive and copper-name rename you placed.
 
 Opening the `.fypa` later via **File → Open Project File…** re-imports
-the Gerbers using the saved settings - the layer-mapping and stackup
-dialogs are skipped.
+the Gerbers using the saved settings - the import window is skipped.
 
 ## 7.6 Limitations
 

@@ -1,62 +1,71 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="250" height="368" viewBox="0 0 250 368">
 <rect width="100%" height="100%" fill="#2b2b2b"/>
-<line x1="164" y1="111" x2="178" y2="111" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
-<line x1="24" y1="231" x2="178" y2="231" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
-<line x1="24" y1="231" x2="36" y2="231" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
-<line x1="164" y1="93" x2="196" y2="93" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
-<line x1="20" y1="213" x2="196" y2="213" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
-<line x1="20" y1="213" x2="36" y2="213" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
-<line x1="164" y1="75" x2="214" y2="75" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
-<line x1="16" y1="195" x2="214" y2="195" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
-<line x1="16" y1="195" x2="36" y2="195" stroke="#ff3030" stroke-width="2" stroke-linecap="round"/>
-<line x1="24" y1="249" x2="36" y2="249" stroke="#088b00" stroke-width="2" stroke-linecap="round"/>
-<path d="M 178,111 V 189.5 A 5.5,5.5 0 0 1 178,200.5 V 207.5 A 5.5,5.5 0 0 1 178,218.5 V 231" fill="none" stroke="#ff3030" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-<path d="M 196,93 V 189.5 A 5.5,5.5 0 0 1 196,200.5 V 213" fill="none" stroke="#ff3030" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-<path d="M 214,75 V 195" fill="none" stroke="#ff3030" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-<path d="M 24,249 V 288" fill="none" stroke="#088b00" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-<line x1="24" y1="288" x2="24" y2="298" stroke="#909090" stroke-width="2" stroke-linecap="round"/>
-<line x1="10" y1="302" x2="38" y2="302" stroke="#909090" stroke-width="2" stroke-linecap="round"/>
-<line x1="15" y1="307" x2="33" y2="307" stroke="#909090" stroke-width="2" stroke-linecap="round"/>
-<line x1="18.5" y1="312" x2="29.5" y2="312" stroke="#909090" stroke-width="2" stroke-linecap="round"/>
+<path d="M 164,111 H 171" fill="none" stroke="#ef6f5e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 24,231 H 171" fill="none" stroke="#ef6f5e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 24,231 H 36" fill="none" stroke="#ef6f5e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 164,93 H 189" fill="none" stroke="#ef6f5e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 20,213 H 189" fill="none" stroke="#ef6f5e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 20,213 H 36" fill="none" stroke="#ef6f5e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 164,75 H 207" fill="none" stroke="#ef6f5e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 16,195 H 207" fill="none" stroke="#ef6f5e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 16,195 H 36" fill="none" stroke="#ef6f5e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 30,249 H 36" fill="none" stroke="#58a96f" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 178,118 V 189.5 A 5.5,5.5 0 0 1 178,200.5 V 207.5 A 5.5,5.5 0 0 1 178,218.5 V 224" fill="none" stroke="#ef6f5e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 196,100 V 189.5 A 5.5,5.5 0 0 1 196,200.5 V 206" fill="none" stroke="#ef6f5e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 214,82 V 188" fill="none" stroke="#ef6f5e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 24,255 V 288" fill="none" stroke="#58a96f" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 171,111 Q 178,111 178,118" fill="none" stroke="#ef6f5e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 171,231 Q 178,231 178,224" fill="none" stroke="#ef6f5e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 189,93 Q 196,93 196,100" fill="none" stroke="#ef6f5e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 189,213 Q 196,213 196,206" fill="none" stroke="#ef6f5e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 207,75 Q 214,75 214,82" fill="none" stroke="#ef6f5e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 207,195 Q 214,195 214,188" fill="none" stroke="#ef6f5e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 30,249 Q 24,249 24,255" fill="none" stroke="#58a96f" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+<line x1="24" y1="288" x2="24" y2="298" stroke="#58a96f" stroke-width="1.6" stroke-linecap="round"/>
+<line x1="10" y1="302" x2="38" y2="302" stroke="#58a96f" stroke-width="1.6" stroke-linecap="round"/>
+<line x1="15" y1="307" x2="33" y2="307" stroke="#58a96f" stroke-width="1.6" stroke-linecap="round"/>
+<line x1="18.5" y1="312" x2="29.5" y2="312" stroke="#58a96f" stroke-width="1.6" stroke-linecap="round"/>
 <text x="24" y="326" text-anchor="middle" fill="#e6e6e6" font-family="Segoe UI,sans-serif" font-size="9" font-weight="600">GND</text>
-<rect class="topo-hit" data-label="D1" x="36" y="36" width="128" height="92" rx="6" fill="#333333" stroke="#555555" stroke-width="1"/>
-<rect x="36" y="36" width="128" height="22" rx="6" fill="#1a7a3c"/>
-<rect x="36" y="52" width="128" height="6" fill="#1a7a3c"/>
-<text x="44" y="51" fill="#ffffff" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">SERIES</text>
-<text x="156" y="51" fill="#ffffff" text-anchor="end" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">D1</text>
-<circle cx="36" cy="75" r="5" fill="#1a7a3c" stroke="#555555" stroke-width="1"/>
-<text x="44" y="78" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD</text>
-<circle cx="164" cy="75" r="5" fill="#1a7a3c" stroke="#555555" stroke-width="1"/>
-<text x="156" y="78" text-anchor="end" fill="#909090" font-family="Consolas,monospace" font-size="8">LED_R</text>
-<circle cx="164" cy="93" r="5" fill="#1a7a3c" stroke="#555555" stroke-width="1"/>
-<text x="156" y="96" text-anchor="end" fill="#909090" font-family="Consolas,monospace" font-size="8">LED_G</text>
-<circle cx="164" cy="111" r="5" fill="#1a7a3c" stroke="#555555" stroke-width="1"/>
-<text x="156" y="114" text-anchor="end" fill="#909090" font-family="Consolas,monospace" font-size="8">LED_B</text>
-<rect class="topo-hit" data-label="U4" x="36" y="156" width="128" height="110" rx="6" fill="#333333" stroke="#555555" stroke-width="1"/>
-<rect x="36" y="156" width="128" height="22" rx="6" fill="#3aa8ff"/>
-<rect x="36" y="172" width="128" height="6" fill="#3aa8ff"/>
-<text x="44" y="171" fill="#ffffff" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">SINK</text>
-<text x="156" y="171" fill="#ffffff" text-anchor="end" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">U4</text>
-<circle cx="36" cy="195" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
-<text x="44" y="198" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">LED_R</text>
-<circle cx="36" cy="213" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
-<text x="44" y="216" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">LED_G</text>
-<circle cx="36" cy="231" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
-<text x="44" y="234" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">LED_B</text>
-<circle cx="36" cy="249" r="5" fill="#3aa8ff" stroke="#555555" stroke-width="1"/>
-<text x="44" y="252" text-anchor="start" fill="#909090" font-family="Consolas,monospace" font-size="8">GND</text>
-<rect x="172.5" y="87" width="31" height="12" fill="#2b2b2b" fill-opacity="0.5" stroke="none" rx="2"/>
-<text x="188" y="93" text-anchor="middle" dominant-baseline="middle" fill="#e6e6e6" font-family="Segoe UI,sans-serif" font-size="8">LED_G</text>
-<rect x="173.5" y="69" width="31" height="12" fill="#2b2b2b" fill-opacity="0.5" stroke="none" rx="2"/>
-<text x="189" y="75" text-anchor="middle" dominant-baseline="middle" fill="#e6e6e6" font-family="Segoe UI,sans-serif" font-size="8">LED_R</text>
-<rect x="12" y="342" width="10" height="10" rx="2" fill="#ff3030"/>
+<rect class="topo-hit" data-label="D1" x="36" y="36" width="128" height="92" rx="7" fill="#333333"/>
+<path d="M 36,58 V 43 Q 36,36 43,36 H 157 Q 164,36 164,43 V 58 Z" fill="#365045"/>
+<line x1="36" y1="58" x2="164" y2="58" stroke="#3c8363"/>
+<text class="topo-head" x="44" y="50.5" fill="#7bcda8" font-family="Segoe UI,sans-serif" font-size="8" font-weight="700">SERIES</text>
+<text class="topo-head" x="156" y="51" text-anchor="end" fill="#e6e6e6" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">D1</text>
+<rect x="36" y="36" width="128" height="92" rx="7" fill="none" stroke="#4e7865" stroke-width="1"/>
+<circle cx="36" cy="75" r="4.4" fill="#2b2b2b" stroke="#42b883" stroke-width="1.8"/>
+<text x="45" y="78" fill="#909090" font-family="Consolas,monospace" font-size="8">VDD</text>
+<circle cx="164" cy="75" r="4.4" fill="#2b2b2b" stroke="#42b883" stroke-width="1.8"/>
+<text x="155" y="78" text-anchor="end" fill="#909090" font-family="Consolas,monospace" font-size="8">LED_R</text>
+<circle cx="164" cy="93" r="4.4" fill="#2b2b2b" stroke="#42b883" stroke-width="1.8"/>
+<text x="155" y="96" text-anchor="end" fill="#909090" font-family="Consolas,monospace" font-size="8">LED_G</text>
+<circle cx="164" cy="111" r="4.4" fill="#2b2b2b" stroke="#42b883" stroke-width="1.8"/>
+<text x="155" y="114" text-anchor="end" fill="#909090" font-family="Consolas,monospace" font-size="8">LED_B</text>
+<rect class="topo-hit" data-label="U4" x="36" y="156" width="128" height="110" rx="7" fill="#333333"/>
+<path d="M 36,178 V 163 Q 36,156 43,156 H 157 Q 164,156 164,163 V 178 Z" fill="#394b5c"/>
+<line x1="36" y1="178" x2="164" y2="178" stroke="#4374a2"/>
+<text class="topo-head" x="44" y="170.5" fill="#82bcf2" font-family="Segoe UI,sans-serif" font-size="8" font-weight="700">SINK</text>
+<text class="topo-head" x="156" y="171" text-anchor="end" fill="#e6e6e6" font-family="Segoe UI,sans-serif" font-size="10" font-weight="600">U4</text>
+<rect x="36" y="156" width="128" height="110" rx="7" fill="none" stroke="#526f8a" stroke-width="1"/>
+<circle cx="36" cy="195" r="4.4" fill="#2b2b2b" stroke="#4d9fec" stroke-width="1.8"/>
+<text x="45" y="198" fill="#909090" font-family="Consolas,monospace" font-size="8">LED_R</text>
+<circle cx="36" cy="213" r="4.4" fill="#2b2b2b" stroke="#4d9fec" stroke-width="1.8"/>
+<text x="45" y="216" fill="#909090" font-family="Consolas,monospace" font-size="8">LED_G</text>
+<circle cx="36" cy="231" r="4.4" fill="#2b2b2b" stroke="#4d9fec" stroke-width="1.8"/>
+<text x="45" y="234" fill="#909090" font-family="Consolas,monospace" font-size="8">LED_B</text>
+<circle cx="36" cy="249" r="4.4" fill="#2b2b2b" stroke="#4d9fec" stroke-width="1.8"/>
+<text x="45" y="252" fill="#909090" font-family="Consolas,monospace" font-size="8">GND</text>
+<rect x="171" y="87" width="34" height="12" rx="6" fill="#2b2b2b" stroke="#8d4d44" stroke-width="0.8"/>
+<text x="188" y="96" text-anchor="middle" fill="#e6e6e6" font-family="Segoe UI,sans-serif" font-size="8">LED_G</text>
+<rect x="172.2" y="69" width="33.7" height="12" rx="6" fill="#2b2b2b" stroke="#8d4d44" stroke-width="0.8"/>
+<text x="189" y="78" text-anchor="middle" fill="#e6e6e6" font-family="Segoe UI,sans-serif" font-size="8">LED_R</text>
+<rect x="12" y="342" width="10" height="10" rx="3" fill="#e8644f"/>
 <text x="26" y="352" fill="#909090" font-family="Segoe UI,sans-serif" font-size="10">SOURCE</text>
-<rect x="90" y="342" width="10" height="10" rx="2" fill="#3aa8ff"/>
+<rect x="90" y="342" width="10" height="10" rx="3" fill="#4d9fec"/>
 <text x="104" y="352" fill="#909090" font-family="Segoe UI,sans-serif" font-size="10">SINK</text>
-<rect x="168" y="342" width="10" height="10" rx="2" fill="#1a7a3c"/>
+<rect x="168" y="342" width="10" height="10" rx="3" fill="#42b883"/>
 <text x="182" y="352" fill="#909090" font-family="Segoe UI,sans-serif" font-size="10">SERIES</text>
-<rect x="246" y="342" width="10" height="10" rx="2" fill="#ff66ff"/>
+<rect x="246" y="342" width="10" height="10" rx="3" fill="#c77ddf"/>
 <text x="260" y="352" fill="#909090" font-family="Segoe UI,sans-serif" font-size="10">REGULATOR</text>
-<line x1="324" y1="348" x2="342" y2="348" stroke="#909090" stroke-width="2" stroke-dasharray="5 4"/>
+<line x1="324" y1="348" x2="342" y2="348" stroke="#909090" stroke-width="1.6" stroke-dasharray="5 4"/>
 <text x="348" y="352" fill="#909090" font-family="Segoe UI,sans-serif" font-size="10">extern</text>
 </svg>

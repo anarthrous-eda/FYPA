@@ -27,10 +27,10 @@ def _long_designator_metadata(name: str) -> dict:
 
 
 _HEADER_TEXT_RE = re.compile(
-    r'<text x="(?P<x>[-\d.]+)" y="(?P<y>[-\d.]+)" fill="#ffffff"'
+    r'<text class="topo-head" x="(?P<x>[-\d.]+)" y="(?P<y>[-\d.]+)"'
     r'(?P<anchor> text-anchor="end")?'
-    r' font-family="Segoe UI,sans-serif" font-size="(?P<size>[\d.]+)"'
-    r' font-weight="600">(?P<text>[^<]*)</text>'
+    r' fill="[^"]+" font-family="Segoe UI,sans-serif" font-size="(?P<size>[\d.]+)"'
+    r' font-weight="\d+">(?P<text>[^<]*)</text>'
 )
 
 
@@ -111,5 +111,6 @@ def test_rendered_header_texts_do_not_overlap():
 
 def test_rendered_short_designators_keep_the_role_word():
     svg = render_topology_svg(build_topology_model(project_b_compact_metadata()))
-    assert 'font-size="10" font-weight="600">SOURCE<' in svg
-    assert 'font-weight="600">J1</text>' in svg
+    # The role word sits two sizes under the designator.
+    assert 'font-size="8" font-weight="700">SOURCE<' in svg
+    assert 'font-size="10" font-weight="600">J1</text>' in svg

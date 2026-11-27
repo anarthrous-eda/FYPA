@@ -112,12 +112,14 @@ for a moment and it widens to show its name.
 
 - **Rows** - each SOURCE starts a row, and each REGULATOR gets its own
   row directly under the row that feeds it, indented one step per
-  conversion stage, so reading top to bottom follows the power tree. A
-  header line names the row and summarises it (`+12V → BUCK · 1 V → +VDD`).
+  conversion stage, so reading top to bottom follows the power tree. Each
+  row sits on its own panel, under a header line that names the row and
+  summarises it (`+12V → BUCK · 1 V → +VDD`); click the header to collapse
+  the row.
   Within a row power flows left to right: a net's driver on the left, the
   parts it feeds stacked in the next column.
 - **Tags** - a rail that leaves the row is not drawn as a long wire. It
-  ends in a pentagon **tag** instead: `U6` (magenta) where a rail feeds a
+  ends in a pentagon **tag** instead: `U6` (purple) where a rail feeds a
   regulator, the input net (red) on the regulator's own row, the net name
   where a rail loops back to a part drawn elsewhere. **Click a tag** to
   jump to the other end; hovering one highlights the whole net. A dashed
@@ -126,12 +128,12 @@ for a moment and it widens to show its name.
 - **Ground** - every part with a return gets its own ground symbol under
   it; there is no shared return rail.
 - **SERIES chips** - a two-pin SERIES part (fuse, shunt, ferrite,
-  inductor DCR) is drawn as a one-line chip with a **green** strip:
+  inductor DCR) is drawn as a one-line **green** chip:
   designator, resistance, input rail on the left, output rail on the
   right. Its two nets stay separate and it has its own drop in the solve.
   SERIES parts with more channels, or with a return, keep the full card.
 - **Bridges** - 0 Ω auto-bridges on a powered rail show as the same
-  one-line chip with a **grey** strip. FYPA merges the two nets a link joins into one, but the
+  one-line chip, tinted **grey**. FYPA merges the two nets a link joins into one, but the
   chip still shows the far side: `VOUT_2V5 → R106 → +ETH_2V5`, with the
   parts on `+ETH_2V5` (and its `+ SINK` handle) hanging off the chip
   rather than the regulator. This needs the design in memory, or a
@@ -158,30 +160,30 @@ for a moment and it widens to show its name.
 - **Voltage gauges** (under **View options**, on by default) - each SINK
   with a `PDN_MIN_V`, and each regulator input with a dropout or
   `PDN_VIN_MIN`, gets a gauge under its ports (the block is drawn wider
-  to fit it). A load with only a maximum gets none. The bar reads left
-  (lower voltage) to right:
+  to fit it). A load with only a maximum gets none. The slim track reads
+  left (lower voltage) to right:
   - **zones** - green where the voltage is allowed (minimum to maximum,
-    or to the end when there is no maximum), red outside it. Solid green
+    or to the end when there is no maximum), faded red outside it. Green
     ticks mark the limits, labelled `min` / `max` underneath. Every gauge
     is scaled to its own window, so healthy gauges look alike and an
     outlier stands out.
-  - **dashed mark** - the supply before any drop, labelled `supply`: a
-    dashed tick at its setpoint, or a dashed box over its range
+  - **caret above the track** - the supply before any drop, labelled
+    `supply`: a small caret at its setpoint, or a bracket over its range
     (`PDN_V_TOL` / `PDN_V_MIN` / `PDN_V_MAX`). A label that would overlap
     another is left out; hover for every number.
-  - **solid band** - where the voltage at the load's pins can sit, from
-    the supply at its minimum to the supply at its maximum with the rail
-    lightly loaded. With no range it is a single bar. The gap between the
-    dashed mark and the band is the drop in the copper. Inside the window
-    the band is grey (pass) or amber (margin under the report's warning
-    share); only the part past a limit is red. A value off the scale
-    pins to that end with an arrow.
-  - **line above the bar** - the worst margin with the limit it is to:
+  - **dot on the track** - where the voltage at the load's pins sits.
+    When the supply has a range it becomes a capsule, from the supply at
+    its minimum to the supply at its maximum with the rail lightly loaded.
+    The gap between the caret and the dot is the drop in the copper.
+    Inside the window the dot is the text colour (pass) or amber (margin
+    under the report's warning share); only the part past a limit is red.
+    A value off the scale pins to that end with an arrow.
+  - **line above the track** - the worst margin with the limit it is to:
     `✓ +74.5 mV to min`, `⚠` for a low margin, `✗` for a fail (a negative
     margin is past the limit by that much). With **Port voltages** off it
     is led by the voltage at the pins: `0.975 V · ✓ +74.5 mV to min`.
 
-  **Gauges as text** (under **View options**) swaps the bar for two lines:
+  **Gauges as text** (under **View options**) swaps the track for two lines:
   the margin (`✓ +74.5 mV to min`, with the voltage at the pins in front
   when **Port voltages** is off), then the limits and supply, e.g.
   `min 0.9 V · max 1.04 V · supply 0.97–1.05 V`. It is shorter, and easier
@@ -197,14 +199,17 @@ for a moment and it widens to show its name.
 - **Port voltages** (under **View options**, on by default) - the solved
   voltage on the wire beside each SOURCE, REGULATOR and SINK supply port:
   right of an output, left of an input, e.g. `1.000 V` at a regulator's
-  output and `0.991 V` at the sink it feeds. It is the port's pins minus
+  output and `0.991 V` at the sink it feeds, each on a small pill. Tags on
+  the same side of the block sit further out so a pill never covers one.
+  It is the port's pins minus
   their return pins (a load's lowest pin, an output's average), so the
   two ends of a wire differ by that rail's drop, ground rise included.
   Hover the port for the same figure. Faded, like the gauges, while edits
   are pending.
 - **Nodes** - one box per directive (SOURCE, SINK, REGULATOR, SERIES);
-  the header shows the role colour and designator; the body shows the
-  configured value (`PDN_V`, `PDN_I`, `PDN_R`, regulator gain).
+  the header is tinted in the role colour and shows the role name and
+  designator, and the outline and ports take the same colour; the body
+  shows the configured value (`PDN_V`, `PDN_I`, `PDN_R`, regulator gain).
 - **Ports** - small connectors on the left (inputs) and right (outputs).
   Each port is labelled with the **physical PCB net name** from the pad
   assignment (the same names you see on the Board and in the Nodes
@@ -488,7 +493,10 @@ shows a short "no issues" message.
   a marker that copper drawn above its layer covers is hidden, in 2D and
   3D - rail and other copper alike - and copper given some transparency
   shows the marker through it at that transparency. The same setting is
-  in the **View** menu as *Markers always on top [enabled / disabled]*),
+  in the **View** menu as *Markers always on top [enabled / disabled]*;
+  the View menu's *Board origin (0, 0) [shown / hidden]* marks the
+  design's origin - the point every coordinate is measured from - with a
+  circle and cross, off by default and remembered),
   *General options*, *Performance* and *Experimental*. They persist
   across launches. The design's base properties are on the Properties tab.
 - **Help** - built-in cheatsheet of hotkeys and gestures.
