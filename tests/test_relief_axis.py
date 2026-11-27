@@ -38,7 +38,7 @@ def test_ticks_read_in_the_colour_bar_unit():
     # -18.3 mV .. +4.2 mV with the colour bar on "mV" (divisor 1e-3).
     ticks = relief_axis_ticks(-0.0183, 0.0042, divisor=1e-3)
     assert [text for _t, text in ticks] == ["-15", "-10", "-5", "0"]
-    zero_t = dict((text, t) for t, text in ticks)["0"]
+    zero_t = {text: t for t, text in ticks}["0"]
     assert zero_t == pytest.approx(0.0183 / 0.0225)
 
 

@@ -141,11 +141,13 @@ def board_clearance_mm(metadata_or_extracted) -> float:
         v = metadata_or_extracted.get("plane_clearance_mm")
     else:
         v = getattr(metadata_or_extracted, "plane_clearance_mm", None)
+    if v is None:
+        return DEFAULT_CLEARANCE_MM
     try:
-        v = float(v)
+        f = float(v)
     except (TypeError, ValueError):
         return DEFAULT_CLEARANCE_MM
-    return v if v > 0.0 and math.isfinite(v) else DEFAULT_CLEARANCE_MM
+    return f if f > 0.0 and math.isfinite(f) else DEFAULT_CLEARANCE_MM
 
 
 @dataclass(frozen=True)
@@ -233,10 +235,11 @@ def resolve_added_vias(extracted, vias: list[AddedVia]):
         if not why and v.net not in index_of:
             why = "that net is not on the board"
         span = None if why else _span_positions(v, enabled)
-        if not why and span is None:
-            why = "an end layer is not an enabled copper layer"
-        if not why and span[0] == span[1]:
-            why = "it starts and ends on the same layer"
+        if not why:
+            if span is None:
+                why = "an end layer is not an enabled copper layer"
+            elif span[0] == span[1]:
+                why = "it starts and ends on the same layer"
         if why:
             warnings.append(f"{where} skipped: {why}.")
             continue
@@ -285,7 +288,10 @@ def apply_added_vias(loaded, vias: list[AddedVia],
     new_extracted = dataclasses.replace(
         ext, vias=tuple(ext.vias) + tuple(raw))
     out = replace_loaded(loaded, extracted=new_extracted)
-    out.whatif_via_cutouts = cutouts
+    # A plain attribute, not a LoadedProject field: only a what-if solve's
+    # copy ever carries it (build_problem reads it with getattr), and
+    # replace_loaded carries it across.
+    setattr(out, "whatif_via_cutouts", cutouts)
     return out, warnings, len(raw)
 
 

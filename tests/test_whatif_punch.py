@@ -360,7 +360,7 @@ def viewer(qapp):
     v._whatif_selected_id = scen.id
     v._whatif_open = {"board": True, "topology": False}
     v._non_editor_marker_groups = []
-    v._editor_marker_groups = lambda: []
+    v._editor_marker_groups = list
     v._gl_viewer = _FakeGL()
     v.toasts = _Toasts()
     v.statusBar = lambda: v.toasts
