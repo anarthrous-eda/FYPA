@@ -124,6 +124,10 @@ class TopologyNode:
     # A free marker dropped on the Board, not a part: drawn dashed, and
     # ``label`` is its name (``designator`` stays its ``EDIT_<id>`` key).
     marker: bool = False
+    # A design issue of warning severity names this part or its rail
+    # (fypa.design_issues.apply_to_topology): an amber triangle, where
+    # ``has_error`` draws a red one.
+    has_warning: bool = False
 
 
 @dataclass

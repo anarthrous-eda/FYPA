@@ -522,19 +522,22 @@ def _draw_node(parts: list[str], node: TopologyNode, pal: Palette) -> None:
             parts, x=x, y=y, w=w, role=node.role, label=node.label,
             color=frame_color, round_top=True, pal=pal,
         )
-    stroke = pal.err if node.has_error else pal.outline(frame_color)
+    # A design issue on the part: red for an error, amber for a warning.
+    flag = (pal.err if node.has_error
+            else pal.warn if node.has_warning else None)
+    stroke = flag or pal.outline(frame_color)
     parts.append(
         f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}"'
         f' rx="{NODE_RX:g}" fill="none" stroke="{esc(stroke)}"'
-        f' stroke-width="{1.3 if node.has_error or node.marker else 1:g}"'
+        f' stroke-width="{1.3 if flag or node.marker else 1:g}"'
         f'{_MARKER_DASH if node.marker else ""}/>'
     )
 
     icon = jump_icon_center(node)
-    if node.has_error:
+    if flag:
         # Bottom-right normally; bottom-left when the jump icon is there.
         _draw_warning(parts, x + 7 if icon is not None else x + w - 18,
-                      y + h - 5, pal.err)
+                      y + h - 5, flag)
     if icon is not None:
         _draw_jump_icon(parts, icon, color=pal.fg_dim)
 
@@ -572,7 +575,8 @@ def _draw_chip(parts: list[str], node: TopologyNode, pal: Palette) -> None:
     value."""
     x, y, w, h = node.x, node.y, node.width, node.height
     color = pal.role(node.role)
-    stroke = pal.err if node.has_error else pal.chip_outline(color)
+    stroke = (pal.err if node.has_error
+              else pal.warn if node.has_warning else pal.chip_outline(color))
     parts.append(
         f'<rect class="topo-hit" data-label="{esc(node.label)}"'
         f' x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}"'

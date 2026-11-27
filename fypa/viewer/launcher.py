@@ -28,12 +28,7 @@ from fypa.viewer.assets import (
     _set_window_aumid,
 )
 from fypa.viewer.diagnostics import (
-    _maybe_show_annotation_errors,
-    _maybe_show_mesh_failures,
-    _maybe_warn_connectivity_breaks,
     _maybe_warn_needs_directives,
-    _maybe_warn_open_loop_rails,
-    _maybe_warn_unannotated_bridges,
 )
 from fypa.viewer.display import _DISPLAY_PERCENTILE_HIGH, _VIA_CURRENT_WARN_A
 from fypa.viewer.gerber_import import run_gerber_import_with_progress
@@ -439,14 +434,11 @@ class LauncherWindow(_SettingsTabMixin, QMainWindow):
         if new_win is not None:
             _record_recent_altium_from_metadata(metadata)
         _clear_pending_altium_recent(self)
-        _maybe_show_annotation_errors(new_win or self, metadata)
-        _maybe_show_mesh_failures(new_win or self, metadata)
-        # Rails with only sources or only sinks were skipped - tell the user.
-        _maybe_warn_open_loop_rails(new_win or self, metadata)
-        # Nets whose source & sink landed on disconnected copper - tell the user.
-        _maybe_warn_connectivity_breaks(new_win or self, metadata)
-        # Parts joining a solved rail to copper outside the FEM - advisory.
-        _maybe_warn_unannotated_bridges(new_win or self, metadata)
+        # Skipped directives, unsolved rails, disconnected copper, a failed
+        # mesh: listed in the viewer's Design issues panel, with one pop-up
+        # to say they are there.
+        if new_win is not None:
+            new_win._refresh_design_issues(announce=True, new_design=True)
         # An Altium project with no SOURCE/REGULATOR loads as an editor-mode
         # stub instead of failing - offer the ways to set it up. Last, so a
         # wizard the user picks doesn't open underneath the notices above.

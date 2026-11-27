@@ -15,11 +15,7 @@ from fypa.viewer.copper_pick import _CopperPickMixin
 from fypa.viewer.design_fetch import _DesignFetchMixin
 from fypa.viewer.diagnostics import (
     _activate_mesh_failure_layer,
-    _maybe_show_annotation_errors,
-    _maybe_show_mesh_failures,
-    _maybe_warn_connectivity_breaks,
     _maybe_warn_needs_directives,
-    _maybe_warn_open_loop_rails,
 )
 from fypa.viewer.display import (
     _DEFAULT_CMAP_NAME,
@@ -38,6 +34,7 @@ from fypa.viewer.editor.series_info import _SeriesInfoMixin
 from fypa.viewer.file_menu import _FileMenuMixin
 from fypa.viewer.design_watch import _DesignWatchMixin
 from fypa.viewer.global_focus import _GlobalFocusMixin
+from fypa.viewer.issues_panel import _DesignIssuesMixin
 from fypa.viewer.markers import _MarkerOverlayMixin
 from fypa.viewer.copper_layers import _CopperLayersMixin
 from fypa.viewer.panels.layers import _LayerPanelMixin
@@ -111,6 +108,7 @@ class PdnViewer(
     _WhatIfPunchMixin,
     _GlobalFocusMixin,
     _DesignWatchMixin,
+    _DesignIssuesMixin,
     QMainWindow,
 ):
     """Main window - composes the side panel and the matplotlib plot area.
@@ -972,10 +970,11 @@ class PdnViewer(
             # a different board re-fits.
             self._render()
 
-            _maybe_show_annotation_errors(self, metadata)
-            _maybe_show_mesh_failures(self, metadata)
-            _maybe_warn_open_loop_rails(self, metadata)
-            _maybe_warn_connectivity_breaks(self, metadata)
+            # The Design issues panel takes what was skipped, left out or
+            # can't be trusted, and one pop-up says so when something is
+            # new (fypa.viewer.issues_panel).
+            self._refresh_design_issues(announce=True,
+                                        new_design=project_swap)
             # Last, so a wizard picked in the setup chooser doesn't open
             # underneath the notices above. A setup restored from beside the
             # design (or one that couldn't be) replaces the chooser.

@@ -141,7 +141,10 @@ class ToastBar(QObject):
         readout strip under it and the panels beside it; else the window's
         central area."""
         win = self._window
-        for anchor in (getattr(win, "_gl_viewer", None), win.centralWidget()):
+        # The tab pages rather than the whole central area: the Design
+        # issues panel sits under them.
+        for anchor in (getattr(win, "_gl_viewer", None),
+                       getattr(win, "tabs", None), win.centralWidget()):
             if isinstance(anchor, QWidget) and anchor.isVisible():
                 return anchor.mapTo(win, anchor.rect().bottomRight())
         return win.rect().bottomRight()

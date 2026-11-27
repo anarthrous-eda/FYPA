@@ -5631,7 +5631,7 @@ def build_problem(
     # them. Surfaced through the same open_loop_rails pipeline as the
     # net-name-based open-loop check so the GUI pops a dialog rather than the
     # solve silently returning ~0 V at the sink (and a large ground-balancing
-    # current). See _maybe_warn_open_loop_rails in altium_viewer.
+    # current). The viewer lists them in its Design issues panel.
     connectivity_warnings: list[str] = []
     for ni, pieces in pieces_by_net.items():
         # Union-Find over piece indices for this net.
@@ -5766,7 +5766,7 @@ def build_problem(
                 )
 
     # Surface connectivity breaks to the user (-> metadata ->
-    # _maybe_warn_connectivity_breaks dialog). Assigned, not appended: this
+    # the Design issues panel). Assigned, not appended: this
     # block re-derives them from scratch from the current geometry on every
     # build_problem call, so cycling Edit -> Solve can never stack duplicates
     # or leave a stale break behind after the user reconnects the copper. Also

@@ -1813,6 +1813,8 @@ class _ProbeMixin:
         self._restyle_editor_overlay_buttons()
         if getattr(self, "_design_changed_chip", None) is not None:
             self._sync_design_changed_chip()
+        if getattr(self, "_issues_panel", None) is not None:
+            self._issues_panel.restyle()
         if getattr(self, "_sidebar_scroll", None) is not None:
             self._apply_sidebar_scroll_theme()
         self._apply_editor_panel_theme()

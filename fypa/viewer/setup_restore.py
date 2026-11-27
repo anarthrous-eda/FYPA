@@ -269,6 +269,10 @@ def stamp_held(window) -> None:
                             for h in held]
     else:
         md.pop("setup_held", None)
+    # Held entries are one of the Design issues panel's rows.
+    refresh = getattr(window, "_refresh_design_issues", None)
+    if refresh is not None:
+        refresh()
 
 
 def confirm_solve_with_held(window) -> bool:

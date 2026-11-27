@@ -77,6 +77,7 @@ class Palette:
     single: dict[str, str] = field(default_factory=dict)
     undriven: str = ""
     end: str = ""
+    warn: str = "#ffb84d"   # a block with a design warning
 
     def role(self, role: str, *, single_net: bool = False) -> str:
         if single_net and role in self.single:
@@ -167,4 +168,5 @@ def palette(theme: dict[str, str] | None) -> Palette:
         single=dict(_SINGLE_NET[mode]),
         undriven=w["undriven"],
         end=w["end"],
+        warn=theme.get("warn", "#ffb84d"),
     )

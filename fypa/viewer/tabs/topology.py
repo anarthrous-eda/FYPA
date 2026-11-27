@@ -1671,6 +1671,11 @@ class _TopologyTabMixin:
             apply_readings(model, res[0] if res else None,
                            ports=res[1] if res else None,
                            stale=bool(getattr(self, "_solve_stale", False)))
+        # Design issues: a red / amber triangle on the blocks they are
+        # about, and the message in the block's hover text.
+        from fypa.design_issues import apply_to_topology
+        apply_to_topology(model, getattr(self, "_design_issues", ()),
+                          preview_md.get("directives") or [])
         self._topology_model = model
         # Transparent: the view paints the canvas and its dot grid behind.
         svg = render_topology_svg(model, theme=current_theme(), background=False)

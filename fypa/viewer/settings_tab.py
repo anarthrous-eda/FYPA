@@ -280,6 +280,13 @@ class _SettingsTabMixin:
         )
         return widget
 
+    def _on_bridge_notice_toggled(self, checked: bool) -> None:
+        save_show_bridge_notice(bool(checked))
+        # Warnings <-> notes in the Design issues panel (viewer only).
+        refresh = getattr(self, "_refresh_design_issues", None)
+        if refresh is not None:
+            refresh()
+
     def _secondary_button_qss(self) -> str:
         t = _T()
         return (
@@ -373,15 +380,16 @@ class _SettingsTabMixin:
 
 
         self._settings_bridge_notice_check = QCheckBox(
-            "Show the unannotated net bridges notice")
+            "Count unannotated net bridges as design warnings")
         self._settings_bridge_notice_check.setChecked(load_show_bridge_notice())
         self._settings_bridge_notice_check.setToolTip(
-            "When checked, a notice lists the parts that join a solved rail "
-            "to copper outside the solve. The Bridges and Messages tabs list "
-            "them either way. Persists across launches."
+            "When checked, the parts that join a solved rail to copper "
+            "outside the solve are warnings in the Design issues panel. "
+            "Unchecked, they are listed there as notes. The Bridges tab "
+            "lists them either way. Persists across launches."
         )
         self._settings_bridge_notice_check.toggled.connect(
-            lambda checked: save_show_bridge_notice(bool(checked)))
+            self._on_bridge_notice_toggled)
         gen_layout.addWidget(self._settings_bridge_notice_check)
 
         self._settings_setup_chooser_check = QCheckBox(

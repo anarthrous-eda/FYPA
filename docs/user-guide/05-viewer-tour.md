@@ -90,6 +90,54 @@ when another design is opened or the focused rail no longer exists
 after a solve. The **Messages** and **Settings** tabs, and the design
 report, are not filtered.
 
+### Design issues - the strip along the bottom
+
+When a design loads, or a solve finishes, some things may need your
+attention: a directive that was skipped, a rail left out of the solve, a
+source and sink on copper that is not connected, copper that could not be
+meshed. These are listed in the **Design issues** panel, a strip along
+the bottom of the window that stays there whichever tab is open:
+
+```
+> Design issues   (x) 1 Error   (!) 2 Warnings   (i) 14 Notes
+```
+
+- The strip is shown only while the design has an error or a warning. A
+  clean design gives the board its full height.
+- It starts closed. Click the strip to open the list, and again to close
+  it; drag its top edge to resize it.
+- The three counts are also filters. **Errors** and **Warnings** start
+  on. **Notes** are what FYPA worked out by itself (a local net it
+  matched, a 0 Ω link it bridged) and start off.
+- Each row says what kind of issue it is, the part or rail it is about,
+  and the full message.
+- **Double-click** a row to go to that part or rail: on the Topology
+  diagram when that tab is open, otherwise on the Board. A mesh failure
+  goes to its marker; an unapplied saved setup opens the review.
+- **Right-click** for *Copy* (`Ctrl+C`, the description) or *Copy Row*
+  (tab-separated, for pasting into a spreadsheet or a bug report).
+
+| Shown as | Means |
+|---|---|
+| **Error** | Part of the design was left out of the solve, or a result can't be trusted: a skipped directive, disconnected copper, a failed mesh. |
+| **Warning** | Worth checking, the solve is otherwise sound: a rail with a source but no sink, an unknown `PDN_*` parameter, a saved setup entry that could not be applied, an unannotated bridge. |
+| **Note** | For information only. |
+
+After a load, one pop-up says how many errors and warnings there are and
+points at the panel; **Show Issues** opens the list. It comes back after
+a solve only when the solve turned up something new, not every time.
+
+Parts that join a solved rail to copper outside the solve (a ferrite to
+an unannotated net, say) count as warnings. If on your boards those parts
+really are open at DC, untick **Count unannotated net bridges as design
+warnings** in *Settings > General options* and they are listed as notes
+instead. The Bridges tab lists them either way.
+
+The panel is for problems with how the design is set up. A result that
+misses a limit - a load below its minimum voltage, a via over its current
+limit - is counted on its own tab and in the design report, and the
+**Messages** tab remains the program's log.
+
 ## 5.2 The Properties tab
 
 The Properties tab holds everything that defines **this design's solve**.
@@ -161,6 +209,11 @@ for a moment and it widens to show its name.
   row, headed by the rail name and *no source feeds this rail*); a grey tag marks a rail with no sink or regulator.
 - **Ground** - every part with a return gets its own ground symbol under
   it; there is no shared return rail.
+- **Issue icons** - a block with a
+  [design issue](#design-issues---the-strip-along-the-bottom) is outlined
+  and carries a small triangle: red for an error, amber for a warning.
+  Rest the mouse on the block to read the message. An issue about a whole
+  rail is shown on the sources, sinks and regulators on that rail.
 - **SERIES chips** - a two-pin SERIES part (fuse, shunt, ferrite,
   inductor DCR) is drawn as a one-line **green** chip:
   designator, resistance, input rail on the left, output rail on the
@@ -538,6 +591,11 @@ did not abort the run but is worth knowing about. Examples:
 
 Worth a glance after every solve. If everything is healthy, the tab
 shows a short "no issues" message.
+
+This is the program's log, so design problems sit among everything else
+it wrote. The ones you need to act on are picked out in the
+[Design issues panel](#design-issues---the-strip-along-the-bottom) at the
+bottom of the window.
 
 ## 5.8 The Settings and Help tabs
 

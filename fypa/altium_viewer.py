@@ -380,12 +380,7 @@ from fypa.viewer.solve_worker import (
 from fypa.viewer.diagnostics import (
     _activate_mesh_failure_layer,
     _apply_mesh_failure_highlights,
-    _maybe_show_annotation_errors,
-    _maybe_show_mesh_failures,
-    _maybe_warn_connectivity_breaks,
     _maybe_warn_needs_directives,
-    _maybe_warn_open_loop_rails,
-    _maybe_warn_unannotated_bridges,
     _MESH_FAILURE_LOCAL_OUTLINE_MAX_SPAN_MM,
     _MESH_FAILURE_MARKER_RADIUS_MM,
     _mesh_failure_marker_xy,

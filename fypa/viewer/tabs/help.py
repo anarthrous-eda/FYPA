@@ -148,6 +148,14 @@ no one set of properties applies across roles.</p>
     picker is unchanged), and a new regulator can't be added. Click the
     rail name to switch, <b>&times;</b> to show every rail again. Focus is
     not saved and goes off when another design is opened.</li>
+  <li><b>Design issues</b> - the strip along the bottom of the window, on
+    every tab, while the design has an error or a warning: a skipped
+    directive, a rail left out of the solve, disconnected copper, a failed
+    mesh. Click the strip to open the list; the counts are filters
+    (Notes start off). Double-click an issue to go to its part or rail -
+    on the Topology diagram when that tab is open, else on the Board.
+    Right-click to copy. Topology blocks with an issue carry a red or
+    amber triangle; rest the mouse on one to read the message.</li>
   <li><b>Design changed</b> - a <i>DESIGN CHANGED &nbsp;Reload</i> chip at
     the right-hand end of the menu bar says the Altium files were saved
     since FYPA read them (hover it for which ones). Solve keeps working

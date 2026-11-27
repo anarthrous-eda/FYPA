@@ -6,7 +6,6 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QMessageBox, QProgressDialog
 
-from fypa.viewer.diagnostics import _maybe_warn_connectivity_breaks, _maybe_warn_open_loop_rails
 from fypa.viewer.prefs import (
     _remove_recent_project_entry,
     load_adaptive_regulator_gain,
@@ -188,8 +187,9 @@ def _open_project_file_at(window, path: Path, *, from_recent: bool = False) -> N
             )
             if new_win is not None:
                 record_recent_project({"kind": "fypa", "path": str(path)})
-            _maybe_warn_open_loop_rails(new_win or window, metadata)
-            _maybe_warn_connectivity_breaks(new_win or window, metadata)
+            if new_win is not None:
+                new_win._refresh_design_issues(announce=True,
+                                               new_design=True)
             return
         ok = window._apply_solve_result(
             solution, metadata, None,

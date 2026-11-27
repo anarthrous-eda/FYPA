@@ -11,7 +11,6 @@ from fypa.viewer.assets import (
     _set_window_aumid,
     _set_windows_app_user_model_id,
 )
-from fypa.viewer.diagnostics import _maybe_show_mesh_failures
 from fypa.viewer.launcher import LauncherWindow
 from fypa.viewer.prefs import _apply_performance_prefs
 from fypa.viewer.project_open import _schedule_cli_altium_import
@@ -84,12 +83,13 @@ def main(solution, warnings_list=None, metadata=None,
     # to the window so Windows uses our icon for the taskbar grouping.
     _force_native_window_icon(win)
     _set_window_aumid(win)
-    # ``show`` / a direct solution open: still pop the mesh-failure notice
+    # ``show`` / a direct solution open: say that the design has issues
     # (launcher import uses ``_on_solve_finished`` instead).
-    if solution is not None and (metadata or {}).get("mesh_failed"):
+    if solution is not None:
         from PySide6.QtCore import QTimer
         QTimer.singleShot(
-            0, lambda: _maybe_show_mesh_failures(win, metadata),
+            0, lambda: win._refresh_design_issues(announce=True,
+                                                  new_design=True),
         )
     if owns_app:
         code = app.exec()

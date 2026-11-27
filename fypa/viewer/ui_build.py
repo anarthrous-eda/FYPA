@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSlider,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
@@ -69,7 +70,17 @@ class _UiBuildMixin:
         self._global_focus_rule.hide()
         shell_lay.addWidget(self._global_focus_rule)
         shell_lay.addWidget(self._tab_strip)
-        shell_lay.addWidget(self.tabs, 1)
+        # The tab pages, with the Design issues panel under them: the same
+        # strip along the bottom whichever tab is open (issues_panel).
+        self._issues_split = QSplitter(Qt.Vertical, shell)
+        self._issues_split.setChildrenCollapsible(False)
+        self._issues_split.setHandleWidth(3)
+        self._issues_split.addWidget(self.tabs)
+        self._issues_split.addWidget(
+            self._build_issues_panel(self._issues_split))
+        self._issues_split.setStretchFactor(0, 1)
+        self._issues_split.setStretchFactor(1, 0)
+        shell_lay.addWidget(self._issues_split, 1)
         self.setCentralWidget(shell)
 
         heatmap_tab = QWidget(self.tabs)
@@ -791,6 +802,8 @@ class _UiBuildMixin:
         self._sync_global_focus()
         # Says, on the menu bar, when the Altium files changed on disk.
         self._init_design_watch()
+        # The design's setup problems, along the bottom of every tab.
+        self._refresh_design_issues()
         self._init_log.info(
             "PdnViewer init: all tabs done (total %.2fs)",
             time.monotonic() - self._init_t0,
