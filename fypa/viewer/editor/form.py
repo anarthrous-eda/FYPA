@@ -2148,10 +2148,11 @@ class _EditorFormMixin:
         """GL-viewer hook - True when a draggable free marker sits under
         the point, so the viewer claims the press as a move gesture.
         Disabled while a marker-drop is armed (that press places a new
-        marker instead). Outside editor mode, while What-If via punching
-        is armed, the draggable things are the punched vias."""
+        marker instead). Outside editor mode, while the What-If panel shows
+        a what-if's punched vias, those are the draggable things."""
         if (not self._editor_mode
-                and getattr(self, "_whatif_punch_armed", False)):
+                and getattr(self, "_whatif_punch_drag_available",
+                            lambda: False)()):
             return self._whatif_punch_drag_hit_test(world_x, world_y)
         if not self._editor_mode or self._editor_pending_marker is not None:
             return False
@@ -2162,7 +2163,8 @@ class _EditorFormMixin:
         """Begin a free-marker drag - record the start anchor / net and
         select the grabbed marker (a press with no drag still selects)."""
         if (not self._editor_mode
-                and getattr(self, "_whatif_punch_armed", False)):
+                and getattr(self, "_whatif_punch_drag_available",
+                            lambda: False)()):
             self._whatif_punch_drag_started(world_x, world_y)
             return
         marker = self._free_marker_at(world_x, world_y)

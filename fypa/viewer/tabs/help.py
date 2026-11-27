@@ -412,8 +412,8 @@ copper thickness (with ½-3 oz quick picks) or resistivity. Blank fields keep
 the base value.</li>
 <li><b>Punch vias</b> adds vias to the selected what-if (2D Board, base
 view): click copper for one via, drag for a grid at the <b>Pitch</b> beside
-it, drag an added via to move it (it clears the what-if's result), click
-one to remove it, Shift-drag a box to remove those inside, <b>Esc</b> to
+it, drag an added via to move it (any time the panel shows it on the 2D
+base view; it clears the what-if's result), click one to remove it, Shift-drag a box to remove those inside, <b>Esc</b> to
 stop. <b>Undo</b> / <b>Redo</b> (<kbd>Ctrl+Z</kbd> / <kbd>Ctrl+Y</kbd>)
 step back through via changes. The list shows each added via (click to go
 to it, double-click X / Y to type a position, current after a run);

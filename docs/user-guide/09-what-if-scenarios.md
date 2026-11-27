@@ -54,6 +54,9 @@ What-If selected makes a vias-only one (`Vias 1`) for you.
 
 ## 9.3 Punching vias
 
+The Fixes tab can also make a vias What-If for you: **Try as what-if** on
+its **Add via** fixes (section 5).
+
 **Punch vias** in the panel adds vias to the selected What-If by clicking
 the Board. It works in 2D on the base view: pressing it switches to both.
 
@@ -61,12 +64,14 @@ the Board. It works in 2D on the base view: pressing it switches to both.
 - **Drag** a box to add a grid of vias at the **Pitch** set beside the
   button, all on the net under the corner you started the drag from.
 - **Drag a via you added** to move it, the same way as a SOURCE or SINK
-  marker in Edit Mode. It keeps its net, size and span, follows the cursor
-  while the spot passes the rules below, and stops at the last spot that
-  did. Moving a via clears the What-If's old result, so it shows **not
-  run** until you run it again.
-- **Click a via you added** to remove it. **Shift-drag** a box to remove
-  every added via inside it. **Clear (n)** removes them all.
+  marker in Edit Mode. This works whenever the panel shows the What-If on
+  the 2D Board's base view, whether or not **Punch vias** is on. It keeps
+  its net, size and span, follows the cursor while the spot passes the
+  rules below, and stops at the last spot that did. Moving a via clears
+  the What-If's old result, so it shows **not run** until you run it again.
+- **Click a via you added** while **Punch vias** is on to remove it; with
+  it off, a click picks the via out in the list. **Shift-drag** a box to
+  remove every added via inside it. **Clear (n)** removes them all.
 - **Esc**, the button again, switching to 3D or to another view stops it.
 
 **Undo** / **Redo** (or **Ctrl+Z** / **Ctrl+Y** while the panel is open,
@@ -136,7 +141,11 @@ On a Gerber import nothing records which copper is a pour, so every
 filled area counts as pour; tracks and pads still refuse.
 
 Added vias are drawn as orange pads with a dark drill and an orange ring
-at the clearance while the panel is open, and exist only in that What-If. Its Run solves the board with them;
+at the clearance while the panel is open, and exist only in that What-If.
+With **Show: What-if** the Vias tab lists them with the board's own vias,
+tinted orange, and **Added by the what-if only** filters to just them. In
+the Base and Difference views (which show the base result) they aren't in
+the Vias tab. Its Run solves the board with them;
 the base, the report and the solve caches never see them. Adding or
 removing a via clears the What-If's old result. A What-If with added vias
 can't be **made the base** (9.6), because the vias aren't on the board: add
@@ -170,6 +179,13 @@ in the Difference view, because they would show base values on a
 difference scale. Hovering a via still reads its current in the bottom bar:
 the base value for the board's own vias, and the What-If's value, labelled
 **Added via (what-if)**, for a via the What-If added.
+
+While a What-If is on screen, a chip on the menu bar, right of **Global
+Focus**, says so on every tab: **VIEWING WHAT-IF** *name* when every tab
+shows the What-If, and **WHAT-IF DIFFERENCE** *name − base* in the
+Difference view, where the heatmap shows the difference and the other tabs
+show the base result. Click the chip to open the What-If panel on the
+Board; its **×** goes back to Base.
 
 Editing directives, saving, exporting a report or running a solve always
 switches the viewer back to **Base** first.

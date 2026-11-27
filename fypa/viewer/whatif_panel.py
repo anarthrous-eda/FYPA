@@ -26,7 +26,7 @@ import math
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -456,6 +456,82 @@ class WhatIfDialog(QDialog):
 # Viewer mixin
 # ---------------------------------------------------------------------------
 
+class FitColumnsTable(QTableWidget):
+    """A table whose columns always fit its width - no sideways scroll, so
+    the right-hand columns (Δ, current) never slide off a narrow panel.
+
+    Number columns get the width their contents need; the ``elide_cols``
+    (labels: Headline, Rail, Node, Net, …) share what is left, in proportion
+    to what they'd like, and elide ("P1V_PLAN…") when it is short. Only when
+    even the numbers don't fit do they shrink too. Re-fitted whenever the
+    viewport changes size (panel resized, vertical scrollbar appearing) and
+    after the caller refills it (:meth:`fit_columns`)."""
+
+    _MIN_TEXT_COL = 36
+
+    def __init__(self, rows: int, cols: int, elide_cols, parent=None):
+        super().__init__(rows, cols, parent)
+        self._elide_cols = tuple(int(c) for c in elide_cols)
+        hdr = self.horizontalHeader()
+        hdr.setStretchLastSection(False)
+        hdr.setMinimumSectionSize(12)
+        hdr.setSectionResizeMode(QHeaderView.Fixed)
+        self.setTextElideMode(Qt.ElideRight)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+    def _want(self, col: int) -> int:
+        hdr = self.horizontalHeader()
+        return max(self.sizeHintForColumn(col), hdr.sectionSizeHint(col)) + 2
+
+    def fit_columns(self) -> None:
+        vw = self.viewport().width()
+        n = self.columnCount()
+        if vw <= 0 or n == 0:
+            return
+        want = [self._want(c) for c in range(n)]
+        text = [c for c in range(n) if c in self._elide_cols]
+        nums = [c for c in range(n) if c not in self._elide_cols]
+        widths = list(want)
+        num_w = sum(want[c] for c in nums)
+        text_want = sum(want[c] for c in text) or 1
+        avail = vw - num_w
+        floor = self._MIN_TEXT_COL * len(text)
+        if text and avail >= text_want:
+            # Room to spare: the labels get it (the first one most).
+            extra = avail - text_want
+            for c in text:
+                widths[c] = want[c]
+            widths[text[0]] += extra
+        elif text and avail >= floor:
+            for c in text:
+                widths[c] = max(self._MIN_TEXT_COL,
+                                int(avail * want[c] / text_want))
+        else:
+            # Very narrow: labels at their floor, numbers squeezed to fit.
+            for c in text:
+                widths[c] = self._MIN_TEXT_COL
+            room = max(vw - floor, 12 * max(len(nums), 1))
+            for c in nums:
+                widths[c] = max(12, int(room * want[c] / (num_w or 1)))
+        # Rounding: the last column takes up the slack so the row is exact.
+        widths[-1] = max(12, widths[-1] + vw - sum(widths))
+        for c, w in enumerate(widths):
+            if self.columnWidth(c) != w:
+                self.setColumnWidth(c, w)
+            # A squeezed header reads from its start ("Headli") rather than
+            # being clipped on both sides ("eadlir").
+            item = self.horizontalHeaderItem(c)
+            if item is not None:
+                item.setTextAlignment(int(
+                    (Qt.AlignLeft if w < want[c] else Qt.AlignHCenter)
+                    | Qt.AlignVCenter))
+
+    def viewportEvent(self, event) -> bool:
+        if event.type() == QEvent.Resize:
+            self.fit_columns()
+        return super().viewportEvent(event)
+
+
 class _WhatIfSidePanel(_ClickAbsorbingPanel):
     """The What-If panel: left edge drag-resizable, and its width is a
     preference rather than a fixed size.
@@ -641,11 +717,11 @@ class _WhatIfMixin:
         show_row.addStretch(1)
         lay.addLayout(show_row)
 
-        self._whatif_summary_table = QTableWidget(0, 5)
+        self._whatif_summary_table = FitColumnsTable(0, 5, elide_cols=(0, 1))
         self._whatif_summary_table.setHorizontalHeaderLabels(
             ["Headline", "Rail", "Base", "What-if", "Δ"])
         self._setup_compare_table(self._whatif_summary_table)
-        self._whatif_summary_table.setMaximumHeight(170)
+        self._fit_table_height(self._whatif_summary_table, 6)
         lay.addWidget(self._whatif_summary_table)
 
         metric_row = QHBoxLayout()
@@ -664,7 +740,7 @@ class _WhatIfMixin:
         metric_row.addWidget(self._whatif_changed_only)
         lay.addLayout(metric_row)
 
-        self._whatif_table = QTableWidget(0, 5)
+        self._whatif_table = FitColumnsTable(0, 5, elide_cols=(0, 1))
         self._whatif_table.setHorizontalHeaderLabels(
             ["Node", "Net", "Base", "What-if", "Δ"])
         self._setup_compare_table(self._whatif_table)
@@ -701,10 +777,21 @@ class _WhatIfMixin:
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         table.setSelectionBehavior(QAbstractItemView.SelectRows)
         table.setWordWrap(False)
-        hdr = table.horizontalHeader()
-        hdr.setSectionResizeMode(QHeaderView.ResizeToContents)
-        hdr.setStretchLastSection(True)
+        # Column widths: FitColumnsTable (numbers fit, labels give way).
+        # Before, every column fitted its contents and the LAST (Δ)
+        # stretched: Δ sat far right of a wide blank, and a narrower panel
+        # scrolled it off the edge.
         table.verticalHeader().setDefaultSectionSize(20)
+
+    @staticmethod
+    def _fit_table_height(table: QTableWidget, max_rows: int) -> None:
+        """Make ``table`` as tall as its rows (up to ``max_rows``, then it
+        scrolls) - no empty band under a short table."""
+        rows = min(table.rowCount(), max_rows)
+        table.setFixedHeight(
+            table.horizontalHeader().sizeHint().height()
+            + table.verticalHeader().defaultSectionSize() * max(rows, 1)
+            + 2 * table.frameWidth() + 2)
 
     def _on_whatif_panel_resized(self, proposed_w: int) -> None:
         """Apply a user-dragged What-If panel width, clamped to the min
@@ -905,6 +992,8 @@ class _WhatIfMixin:
         banner = getattr(self, "_whatif_banner", None)
         if banner is not None:
             banner.hide()
+        if getattr(self, "_whatif_view_chip", None) is not None:
+            self._sync_whatif_view_chip()
 
     def _whatif_after_base_solve(self, *, project=None,
                                  is_import: bool = False) -> None:
@@ -1052,6 +1141,9 @@ class _WhatIfMixin:
             b.setChecked(key == self._whatif_view)
             b.blockSignals(False)
         self._sync_whatif_punch_controls()
+        # A renamed what-if: the menu-bar chip names it.
+        if getattr(self, "_whatif_view_chip", None) is not None:
+            self._sync_whatif_view_chip()
         self._refresh_whatif_compare()
 
     def _whatif_has_result(self, s: W.WhatIfScenario) -> bool:
@@ -1553,7 +1645,64 @@ class _WhatIfMixin:
             self._on_tabs_current_changed(idx)
         self._update_whatif_banner()
 
+    def _sync_whatif_view_chip(self) -> None:
+        """The menu-bar chip (fypa.viewer.whatif_chip) that says, on every
+        tab, that a what-if (or its difference) is what's on screen."""
+        try:
+            mb = self.menuBar()
+        except RuntimeError:
+            return
+        chip = getattr(self, "_whatif_view_chip", None)
+        if chip is None:
+            from fypa.viewer.whatif_chip import WhatIfViewChip
+            chip = WhatIfViewChip(mb)
+            chip.open_requested.connect(self._on_whatif_chip_open)
+            chip.base_requested.connect(
+                lambda: self._whatif_set_view("base"))
+            self._whatif_view_chip = chip
+        s = self._whatif_selected()
+        view = getattr(self, "_whatif_view", "base")
+        chip.set_view(view if s is not None else "base",
+                      s.name if s is not None else "")
+        positioner = getattr(self, "_global_focus_positioner", None)
+        if positioner is not None:
+            positioner.schedule()
+        else:
+            self._position_whatif_view_chip()
+
+    def _position_whatif_view_chip(self, anchor=None) -> None:
+        """Just right of the Global Focus chip (or after the menus)."""
+        chip = getattr(self, "_whatif_view_chip", None)
+        if chip is None or chip.isHidden():
+            return
+        try:
+            mb = self.menuBar()
+            chip.adjustSize()
+            h = min(chip.sizeHint().height(), max(1, mb.height() - 2))
+            w = chip.sizeHint().width()
+            chip.resize(w, h)
+            if anchor is not None and not anchor.isHidden():
+                x = anchor.x() + anchor.width() + 10
+            else:
+                x = 16
+                for act in mb.actions():
+                    if act.isVisible():
+                        x = max(x, mb.actionGeometry(act).right() + 17)
+            x = max(0, min(x, mb.width() - w - 4))
+            chip.move(x, max(0, (mb.height() - h) // 2))
+            chip.raise_()
+        except RuntimeError:  # a widget went away mid-rebuild
+            pass
+
+    def _on_whatif_chip_open(self) -> None:
+        """Chip clicked: the Board with the What-If panel open."""
+        tabs = getattr(self, "tabs", None)
+        if tabs is not None and hasattr(self, "_heatmap_tab_index"):
+            tabs.setCurrentIndex(self._heatmap_tab_index)
+        self._set_whatif_panel_visible(True, where="board")
+
     def _update_whatif_banner(self) -> None:
+        self._sync_whatif_view_chip()
         banner = getattr(self, "_whatif_banner", None)
         if banner is None:
             return
@@ -1674,6 +1823,7 @@ class _WhatIfMixin:
         summ = self._whatif_summary_table
         table.setRowCount(0)
         summ.setRowCount(0)
+        self._fit_table_height(summ, 6)
         status = ""
         if s is None or s.status != W.STATUS_OK or not self._whatif_base_is_solved():
             if s is not None and s.status == W.STATUS_NOT_RUN:
@@ -1729,8 +1879,11 @@ class _WhatIfMixin:
 
         heads = W.compare_summaries(base_summary, scen_summary)
         summ.setRowCount(len(heads))
+        self._fit_table_height(summ, 6)
         for r, h in enumerate(heads):
-            summ.setItem(r, 0, _cell(h["label"], align=Qt.AlignLeft))
+            head = _cell(h["label"], align=Qt.AlignLeft)
+            head.setToolTip(h["label"])        # it may be elided
+            summ.setItem(r, 0, head)
             rail_item = _cell(h["rail"], align=Qt.AlignLeft)
             if h["rail_tip"]:
                 rail_item.setToolTip(h["rail_tip"])
@@ -1741,6 +1894,7 @@ class _WhatIfMixin:
             arrow = {"better": " ▲", "worse": " ▼"}.get(h["verdict"], "")
             summ.setItem(r, 4, _cell(_fmt_delta(h["delta"]) + arrow,
                                      h["verdict"]))
+        summ.fit_columns()
 
         metric = self._whatif_metric_combo.currentData() or "drop"
         _key, _label, unit, scale, _d = next(
@@ -1768,7 +1922,9 @@ class _WhatIfMixin:
             node = f"{row['designator']}.{row['pad'] or '?'}"
             if row.get("terminal") and row["terminal"] != "P":
                 node += f" ({row['terminal']})"
-            table.setItem(r, 0, _cell(node, align=Qt.AlignLeft))
+            node_item = _cell(node, align=Qt.AlignLeft)
+            node_item.setToolTip(node)         # it may be elided
+            table.setItem(r, 0, node_item)
             table.setItem(r, 1, _cell(str(row.get("net") or ""),
                                       align=Qt.AlignLeft))
             table.setItem(r, 2, _cell(_fmt(row["base"], scale),
@@ -1778,6 +1934,11 @@ class _WhatIfMixin:
             arrow = {"better": " ▲", "worse": " ▼"}.get(v, "")
             table.setItem(r, 4, _cell(_fmt_delta(row["delta"], scale) + arrow,
                                       v, sort=(row["delta"] or 0.0) * scale))
+        # New contents, new widths (the vertical scrollbar may have come or
+        # gone too - a deferred pass catches that).
+        for tbl in (summ, table):
+            tbl.fit_columns()
+            QTimer.singleShot(0, tbl.fit_columns)
         stale = s.is_stale(self._whatif_base_fp)
         status = (f"{n_better} node(s) better, {n_worse} worse "
                   f"(of {len(base_rows)}).")

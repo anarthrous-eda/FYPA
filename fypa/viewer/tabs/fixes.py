@@ -87,15 +87,29 @@ class _FixesTabMixin:
         rl.addWidget(self.fixes_summary)
         self.fixes_table = self._fixes_table(_FIX_COLUMNS)
         self.fixes_table.setWordWrap(True)
+        # Several "Add via" fixes can be tried together in one what-if.
+        self.fixes_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.fixes_table.itemSelectionChanged.connect(
             self._on_fixes_fix_selected)
         self.fixes_table.cellClicked.connect(self._on_fixes_cell_clicked)
+        self.fixes_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.fixes_table.customContextMenuRequested.connect(
+            self._on_fixes_context_menu)
         self.fixes_table.setToolTip(
             "Widen: push that copper edge out. Add layer: a stitched parallel "
             "copy of the copper, same weight, on the named free layer. Add "
             "via: another via beside this one. Greyed fixes run into other "
             "copper.")
         rl.addWidget(self.fixes_table, 1)
+
+        try_row = QHBoxLayout()
+        self.fixes_try_btn = QPushButton("Try as what-if")
+        self.fixes_try_btn.setToolTip(self._FIXES_TRY_TIP)
+        self.fixes_try_btn.clicked.connect(self._on_fixes_try_as_whatif)
+        self.fixes_try_btn.setEnabled(False)
+        try_row.addWidget(self.fixes_try_btn)
+        try_row.addStretch(1)
+        rl.addLayout(try_row)
 
         opts = QHBoxLayout()
         self.fixes_show_box = QCheckBox("Show fixes on the heatmap")
@@ -378,13 +392,86 @@ class _FixesTabMixin:
         tbl.resizeColumnsToContents()
         tbl.resizeRowsToContents()
         tbl.blockSignals(False)
+        self._sync_fixes_try_button()
 
     # --- fixes on the board -----------------------------------------------------
 
     def _on_fixes_fix_selected(self) -> None:
         rows = self.fixes_table.selectionModel().selectedRows()
-        self._roi_selected = rows[0].row() if rows else -1
+        cur = self.fixes_table.currentRow()
+        self._roi_selected = (cur if cur in {r.row() for r in rows}
+                              else (rows[0].row() if rows else -1))
         self._refresh_roi_highlights()
+        self._sync_fixes_try_button()
+
+    # --- try a fix as a what-if ---------------------------------------------------
+
+    _FIXES_TRY_TIP = (
+        "Make a what-if with a via punched beside each selected Add via fix "
+        "(a copy of that via, at the nearest free spot) and run it, to see "
+        "the real change next to the estimate. Ctrl- or Shift-click to "
+        "select several. Widen and Add layer fixes change copper shapes, "
+        "which a what-if can't.")
+
+    def _selected_via_fixes(self) -> list:
+        opps = getattr(self._roi_result, "opportunities", None) or []
+        rows = sorted({r.row() for r in
+                       self.fixes_table.selectionModel().selectedRows()})
+        return [opps[r] for r in rows
+                if 0 <= r < len(opps) and opps[r].kind == "via"]
+
+    def _sync_fixes_try_button(self) -> None:
+        btn = getattr(self, "fixes_try_btn", None)
+        if btn is None or not _qt_widget_alive(btn):
+            return
+        n = len(self._selected_via_fixes())
+        editor = bool(getattr(self, "_editor_mode", False))
+        blocked = self._fixes_try_blocked()
+        btn.setEnabled(n > 0 and not editor and not blocked)
+        btn.setText("Try as what-if" if n <= 1
+                    else f"Try {n} vias as a what-if")
+        btn.setToolTip(self._FIXES_TRY_TIP + (
+            "\n\nLeave Edit Mode first." if editor else
+            f"\n\n{blocked}" if blocked else
+            "" if n else "\n\nSelect an Add via fix."))
+
+    def _fixes_try_blocked(self) -> str:
+        """Why the fixes on screen can't become a what-if, or ``""``.
+
+        A what-if is built on the base design. While a What-If's own result
+        is shown, these fixes are ranked for THAT result - a suggestion can
+        sit beside a via the what-if punched, which the base doesn't have.
+        (The Difference view shows the base, so its fixes are fine.)"""
+        if getattr(self, "_whatif_view", "base") == "whatif":
+            return ("These fixes are for the what-if's result. Show Base in "
+                    "the What-If panel and run the report again to try one.")
+        return ""
+
+    def _on_fixes_try_as_whatif(self) -> None:
+        fixes = self._selected_via_fixes()
+        if fixes:
+            self._whatif_try_fixes(fixes, self._roi_key or "")
+
+    def _on_fixes_context_menu(self, pos) -> None:
+        from PySide6.QtWidgets import QMenu
+        item = self.fixes_table.itemAt(pos)
+        if item is None:
+            return
+        if not self.fixes_table.selectionModel().isRowSelected(
+                item.row(), self.fixes_table.rootIndex()):
+            self.fixes_table.selectRow(item.row())
+        fixes = self._selected_via_fixes()
+        menu = QMenu(self)
+        act = menu.addAction(
+            "Try as what-if" if len(fixes) <= 1
+            else f"Try {len(fixes)} vias as a what-if",
+            self._on_fixes_try_as_whatif)
+        act.setEnabled(bool(fixes)
+                       and not getattr(self, "_editor_mode", False)
+                       and not self._fixes_try_blocked())
+        menu.addAction("Show on Board",
+                       lambda: self._go_to_fix(item.row()))
+        menu.exec(self.fixes_table.viewport().mapToGlobal(pos))
 
     def _on_fixes_cell_clicked(self, row: int, col: int) -> None:
         if col == _FIX_GO_COL:

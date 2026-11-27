@@ -474,6 +474,18 @@ tab runs it straight away.
   Fixes that would run into another net's copper are greyed and listed
   last. Click **Go** to jump to a fix on the heatmap.
 
+**Try as what-if** (or right-click a fix) turns the selected **Add via**
+fixes into a What-If and runs it, so the real change sits next to the
+estimate. Each gets a copy of its via (drill, pad, layers and fill) at the
+nearest free spot beside it, found with the same rules as punching a via by
+hand (see 9.3). Ctrl- or Shift-click several to try them together in one
+What-If. The What-If's notes keep the tab's estimate, and its comparison
+shows what the solve made of it. A fix with no free spot nearby is
+reported and left out. Widen and Add layer fixes change copper shapes,
+which a What-If can't. While the What-If panel shows a What-If's own
+result, the Fixes tab ranks fixes for that result, so **Try as what-if**
+is off there: show **Base** and run the report again first.
+
 **Show fixes on the heatmap** draws every fix of the selected sink over
 whatever mode the heatmap is in - a line along an edge to widen, a dashed
 outline round copper to parallel, a ring on a via - numbered as in the

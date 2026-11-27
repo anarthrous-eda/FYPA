@@ -31,11 +31,9 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QMenu,
     QPushButton,
-    QTableWidget,
     QTableWidgetItem,
     QToolButton,
 )
@@ -180,17 +178,17 @@ class _WhatIfPunchMixin:
         lay.addLayout(row3)
 
         # The added vias: click a row to go to it; X / Y are editable.
-        table = QTableWidget(0, len(self._PUNCH_TABLE_COLUMNS))
+        # Net and Via give way (elide) on a narrow panel; the numbers - and
+        # the current column, last - always stay in view.
+        from fypa.viewer.whatif_panel import FitColumnsTable
+        table = FitColumnsTable(0, len(self._PUNCH_TABLE_COLUMNS),
+                                elide_cols=(1, 4))
         table.setHorizontalHeaderLabels(list(self._PUNCH_TABLE_COLUMNS))
         table.verticalHeader().setVisible(False)
         table.setSelectionBehavior(QAbstractItemView.SelectRows)
         table.setSelectionMode(QAbstractItemView.SingleSelection)
         table.setWordWrap(False)
         table.verticalHeader().setDefaultSectionSize(20)
-        hdr = table.horizontalHeader()
-        hdr.setSectionResizeMode(QHeaderView.ResizeToContents)
-        hdr.setStretchLastSection(True)
-        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         table.setToolTip(
             "This what-if's added vias. Click a row to show it on the "
             "Board; double-click X or Y to type a new position (it must "
@@ -206,6 +204,99 @@ class _WhatIfPunchMixin:
         sig = getattr(gl, "punchBandSwept", None)
         if sig is not None:
             sig.connect(self._on_whatif_punch_band)
+
+    # --- from the Fixes tab: "Try as what-if" -------------------------------
+    #
+    # An "Add via" fix names an existing via another one beside it would
+    # help. Trying it makes a what-if with that via punched beside it - a copy
+    # of it (size, span, fill), at the first spot on rings around it that
+    # passes the same rules as a hand-placed via - and runs it, so the real
+    # change at the load sits next to the tab's first-order estimate.
+
+    def _whatif_vias_beside(self, opps, s) -> tuple[list, list[str]]:
+        """``(placed, problems)``: ``(fix, via)`` for each "Add via" fix in
+        ``opps`` a via could be punched beside (checked against each other
+        and the board; appended to ``s``), and a line for each fix no free
+        spot was found for."""
+        board = self._whatif_punch_board()
+        placed: list = []
+        problems: list[str] = []
+        for o in opps:
+            tmpl = WV.via_template(board["vias"], o.net, o.x_mm, o.y_mm,
+                                   board["enabled"])
+            last = ""
+            for px, py in WV.beside_points(o.x_mm, o.y_mm, tmpl.diameter_mm):
+                via, why, _rp = self._whatif_punch_try(
+                    px, py, o.net, board, s, tmpl)
+                if via is not None:
+                    s.added_vias.append(via)   # later fixes check against it
+                    placed.append((o, via))
+                    break
+                last = why
+            else:
+                problems.append(
+                    f"No free spot beside the {o.net} via at ({o.x_mm:.1f}, "
+                    f"{o.y_mm:.1f}){': ' + last if last else ''}")
+        return placed, problems
+
+    def _whatif_try_fixes(self, opps, load_label: str = "") -> bool:
+        """Make (and run) a what-if from the Fixes tab's selected "Add via"
+        fixes. Returns True when one was made."""
+        opps = [o for o in opps if getattr(o, "kind", "") == "via"]
+        if not opps:
+            return False
+        if getattr(self, "_editor_mode", False):
+            self.statusBar().showMessage(
+                "Leave Edit Mode to try a fix as a what-if.", 5000)
+            return False
+        if getattr(self, "_whatif_running_id", None) is not None:
+            self.statusBar().showMessage(
+                "Wait for the what-if solve to finish.", 5000)
+            return False
+        if getattr(self, "_whatif_view", "base") == "whatif":
+            # The fixes were ranked for the what-if's result; one may sit
+            # beside a via only that what-if has. A what-if builds on base.
+            self.statusBar().showMessage(
+                "These fixes are for the what-if's result - show Base and "
+                "run the fixes report again to try one.", 7000)
+            return False
+        self._init_whatif_state()
+        self._whatif_ensure_base()
+        if len(opps) == 1:
+            o = opps[0]
+            name = f"Via beside {o.net} ({o.x_mm:.1f}, {o.y_mm:.1f})"
+        else:
+            nets = sorted({o.net for o in opps})
+            name = f"{len(opps)} vias on {', '.join(nets)}"
+        s = W.WhatIfScenario(name=W.unique_name(
+            [x.name for x in self._whatifs], stem=name)
+            if name in {x.name for x in self._whatifs} else name)
+        placed, problems = self._whatif_vias_beside(opps, s)
+        if not placed:
+            self.statusBar().showMessage(
+                "No what-if made: " + "; ".join(problems) + ".", 8000)
+            return False
+        # Summed first-order estimates: optimistic when fixes share a path.
+        est = sum(float(o.value_v) for o, _v in placed)
+        for_load = f" for {load_label}" if load_label else ""
+        s.notes = (f"From the Fixes tab{for_load}: estimated "
+                   f"+{est * 1e3:.2g} mV from {len(placed)} via(s) beside "
+                   "the suggested ones. Compare with the run below.")
+        self._whatifs.append(s)
+        self._whatif_selected_id = s.id
+        self._whatif_mark_unsaved()
+        tabs = getattr(self, "tabs", None)
+        if tabs is not None and hasattr(self, "_heatmap_tab_index"):
+            tabs.setCurrentIndex(self._heatmap_tab_index)
+        self._set_whatif_panel_visible(True, where="board")
+        self._refresh_whatif_panel()
+        self._refresh_whatif_punch_markers()
+        msg = f"Made “{s.name}” with {len(placed)} via(s); running it"
+        if problems:
+            msg += " - " + "; ".join(problems)
+        self.statusBar().showMessage(msg + ".", 8000)
+        self._on_whatif_run()
+        return True
 
     # --- the list of added vias, and export ---------------------------------
 
@@ -273,6 +364,7 @@ class _WhatIfPunchMixin:
                 table.setItem(i, col, item)
         table.blockSignals(False)
         table.setVisible(bool(vias))
+        table.fit_columns()
         # As tall as its rows (up to 6 before it scrolls), no empty space.
         rows_h = table.verticalHeader().defaultSectionSize() * min(
             len(vias), 6)
@@ -497,6 +589,7 @@ class _WhatIfPunchMixin:
             editable and s.via_clearance_mm is not None)
         self._whatif_punch_export_btn.setEnabled(n > 0)
         self._sync_whatif_punch_undo_buttons()
+        self._sync_whatif_punch_drag()
         self._fill_whatif_punch_table()
         # Panel opened / closed, another what-if selected or deleted: the
         # markers on the Board follow.
@@ -727,6 +820,25 @@ class _WhatIfPunchMixin:
     # Cursor travel (px) before a press on a via counts as a drag.
     _PUNCH_DRAG_PX = 3.0
 
+    def _whatif_punch_drag_available(self) -> bool:
+        """Punched vias can be dragged whenever they're shown on the 2D
+        Board's base view - the What-If panel open there, outside Edit
+        Mode, no what-if solve running - whether or not Punch vias is on,
+        just as an editor SOURCE / SINK marker can always be dragged."""
+        if getattr(self, "_editor_mode", False):
+            return False
+        if getattr(self, "_whatif_view", "base") != "base":
+            return False
+        if getattr(self, "_whatif_running_id", None) is not None:
+            return False
+        return self._whatif_punch_shown() is not None
+
+    def _sync_whatif_punch_drag(self) -> None:
+        gl = getattr(self, "_gl_viewer", None)
+        setter = getattr(gl, "set_punch_drag_enabled", None)
+        if setter is not None:
+            setter(self._whatif_punch_drag_available())
+
     def _whatif_punch_drag_hit_test(self, x: float, y: float) -> bool:
         s = self._whatif_selected()
         return (s is not None
@@ -781,12 +893,25 @@ class _WhatIfPunchMixin:
         if s is None or d["idx"] >= len(s.added_vias):
             return
         if not d["moved"]:
-            # A click on the via: remove it.
-            self._whatif_punch_record(s, d["snap"])
-            v = s.added_vias.pop(d["idx"])
-            self._whatif_punch_changed(s)
-            self.statusBar().showMessage(
-                f"Removed the added via on {v.net}.", 3000)
+            if getattr(self, "_whatif_punch_armed", False):
+                # A click on the via while punching: remove it.
+                self._whatif_punch_record(s, d["snap"])
+                v = s.added_vias.pop(d["idx"])
+                self._whatif_punch_changed(s)
+                self.statusBar().showMessage(
+                    f"Removed the added via on {v.net}.", 3000)
+            else:
+                # Not punching: a click just picks it out in the list.
+                v = s.added_vias[d["idx"]]
+                table = getattr(self, "_whatif_punch_table", None)
+                if table is not None and d["idx"] < table.rowCount():
+                    table.selectRow(d["idx"])
+                board = d["board"]
+                self.statusBar().showMessage(
+                    f"Added via #{d['idx'] + 1} on {v.net}: "
+                    + WV.via_props_text(v, board["enabled"], board["names"])
+                    + " - drag to move it; Punch vias to add or remove.",
+                    5000)
             return
         start, final = d["start"], d["last_valid"]
         s.added_vias[d["idx"]] = final
@@ -896,12 +1021,15 @@ class _WhatIfPunchMixin:
             return []
 
     def _whatif_punch_try(self, x: float, y: float, net: str, board: dict,
-                          s) -> tuple[WV.AddedVia | None, str, set]:
+                          s, tmpl: WV.ViaTemplate | None = None
+                          ) -> tuple[WV.AddedVia | None, str, set]:
         """``(via, "", repoured_nets)`` when a via may go at ``(x, y)`` on
         ``net``, else ``(None, reason, set())``. ``repoured_nets`` are the
         other nets whose pour (or plane) the solve will cut a clearance
-        hole in."""
-        tmpl = self._whatif_punch_template(board, net, x, y)
+        hole in. ``tmpl`` (default: the panel's Via choice) sets its size,
+        span and fill."""
+        if tmpl is None:
+            tmpl = self._whatif_punch_template(board, net, x, y)
         via = tmpl.make(x, y, net)
         span = WV.span_layer_ids(via.layer_start, via.layer_end,
                                  board["enabled"])

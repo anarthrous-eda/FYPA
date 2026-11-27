@@ -524,6 +524,10 @@ class _GlobalFocusMixin:
             chip.show()
         except RuntimeError:  # a widget went away mid-rebuild
             pass
+        # The What-If chip rides just right of this one.
+        place = getattr(self, "_position_whatif_view_chip", None)
+        if place is not None:
+            place(chip)
 
     def _sync_global_focus_chip(self) -> None:
         chip = self._global_focus_chip

@@ -305,11 +305,15 @@ BOARD_MD = {
 class _FakeGL:
     def __init__(self):
         self.punch = False
+        self.punch_drag = False
         self.armed = None
         self.markers = None
 
     def set_punch_mode(self, on):
         self.punch = on
+
+    def set_punch_drag_enabled(self, on):
+        self.punch_drag = on
 
     def set_armed_marker(self, role, color=None):
         self.armed = role
@@ -619,10 +623,47 @@ def test_stopping_the_tool_mid_drag_puts_the_via_back(armed):
     assert armed._whatif_punch_drag is None
 
 
-def test_vias_only_drag_while_punching(armed):
+def test_vias_drag_without_punching_like_editor_markers(armed):
+    """Like a SOURCE / SINK marker: no tool to switch on first."""
+    armed._whatif_punch_disarm()
+    armed._sync_whatif_punch_controls()
+    assert armed._gl_viewer.punch_drag is True
+    _drag_via(armed, [(2.0, 2.0), (3.0, 2.0)])
+    assert armed.scen.added_vias[0].x_mm == pytest.approx(3.0)
+    assert armed.scen.status == W.STATUS_NOT_RUN
+
+
+def test_a_click_without_punching_selects_rather_than_removes(armed):
+    armed._whatif_punch_disarm()
+    armed._sync_whatif_punch_controls()
+    _drag_via(armed, [(2.0, 2.0), (2.00001, 2.0)])
+    assert len(armed.scen.added_vias) == 1
+    assert armed._whatif_punch_table.currentRow() == 0
+    assert "Added via #1 on GND" in armed.toasts.messages[-1]
+    assert armed.scen.status == W.STATUS_OK              # nothing changed
+
+
+def test_no_via_drag_with_the_panel_closed_or_in_another_view(armed):
     import fypa.altium_viewer as V
     armed._whatif_punch_disarm()
+    armed._whatif_open["board"] = False
     assert not V.PdnViewer._marker_drag_hit_test(armed, 2.0, 2.0)
+    armed._whatif_open["board"] = True
+    armed._whatif_view = "diff"
+    assert not V.PdnViewer._marker_drag_hit_test(armed, 2.0, 2.0)
+    armed._whatif_view = "base"
+    assert V.PdnViewer._marker_drag_hit_test(armed, 2.0, 2.0)
+
+
+def test_gl_viewer_drags_punched_vias_when_enabled(gl):
+    starts = []
+    gl.editorDragStarted.connect(lambda *a: starts.append(a))
+    gl.set_editor_drag_hit_test(lambda wx, wy: True)
+    gl.set_punch_drag_enabled(True)
+    _mouse(gl, "press", 50, 50)
+    _mouse(gl, "move", 90, 50)
+    _mouse(gl, "release", 90, 50)
+    assert len(starts) == 1 and gl.bands == []
 
 
 def test_gl_viewer_starts_a_marker_drag_in_punch_mode(gl):
@@ -670,6 +711,17 @@ def test_hover_picks_the_added_via_when_no_base_via_is_closer(viewer):
         "   Via: I = 1.5 A")
     viewer._pick_hovered_via = lambda x, y: None
     assert "I = 0.42 A" in V.PdnViewer._via_hover_info(viewer, 2.0, 2.0)
+
+
+def test_the_real_hover_handler_goes_through_the_via_hover_part():
+    """The added-via text once lived in a helper the bottom-bar hover never
+    called. Pin the handler to the one entry point."""
+    import inspect
+
+    import fypa.altium_viewer as V
+    src = inspect.getsource(V.PdnViewer._on_gl_mouse_hovered)
+    assert "_via_hover_part(" in src
+    assert "_pick_hovered_via(" not in src
 
 
 def test_added_via_hover_is_only_for_the_difference_view(viewer):
@@ -969,6 +1021,186 @@ def test_the_list_shows_current_after_a_run(viewer, monkeypatch):
             {"x_mm": 2.0, "y_mm": 2.0, "current": 0.731}]))
     viewer._sync_whatif_punch_controls()
     assert viewer._whatif_punch_table.item(0, 5).text() == "0.731"
+
+
+# --- Fixes tab: Try as what-if ----------------------------------------------------
+
+def _fix(x=0.0, y=0.0, net="GND", kind="via", value=0.0004):
+    from fypa.copper_roi import Opportunity
+    return Opportunity(kind=kind, value_v=value, layer="Top", net=net,
+                       x_mm=x, y_mm=y, bbox=(x - 1, y - 1, x + 1, y + 1),
+                       title=f"Add a {net} via beside ({x}, {y})")
+
+
+def test_beside_points_ring_out_from_the_via():
+    pts = WV.beside_points(1.0, 2.0, 0.5, rings=2)
+    assert len(pts) == 8 + 16
+    pitch = 0.5 + WV.BESIDE_GAP_MM
+    assert pts[0] == pytest.approx((1.0 + pitch, 2.0))        # due east
+    d = [((x - 1) ** 2 + (y - 2) ** 2) ** 0.5 for x, y in pts]
+    assert d[:8] == pytest.approx([pitch] * 8)
+    assert d[8:] == pytest.approx([2 * pitch] * 16)
+
+
+@pytest.fixture
+def tried(viewer):
+    runs = []
+    viewer._on_whatif_run = lambda: runs.append(viewer._whatif_selected())
+    viewer.runs = runs
+    return viewer
+
+
+def test_trying_a_fix_makes_and_runs_a_whatif_with_a_via_beside(tried):
+    assert tried._whatif_try_fixes([_fix()], "U3")
+    s = tried._whatif_selected()
+    assert s is not tried.scen and s.name == "Via beside GND (0.0, 0.0)"
+    (v,) = s.added_vias
+    # A copy of the suggested via, one pitch east of it.
+    assert (v.x_mm, v.y_mm) == pytest.approx((0.5 + WV.BESIDE_GAP_MM, 0.0))
+    assert (v.net, v.diameter_mm, v.hole_diameter_mm) == ("GND", 0.5, 0.25)
+    assert "for U3: estimated +0.4 mV from 1 via(s)" in s.notes
+    assert tried.runs == [s]
+
+
+def test_several_fixes_go_into_one_whatif_without_colliding(tried):
+    assert tried._whatif_try_fixes(
+        [_fix(value=0.0004), _fix(value=0.0002)], "U3")
+    s = tried._whatif_selected()
+    assert s.name == "2 vias on GND"
+    a, b = s.added_vias
+    assert (a.x_mm, a.y_mm) != (b.x_mm, b.y_mm)       # second took the next spot
+    assert "+0.6 mV from 2 via(s)" in s.notes
+
+
+def test_a_fix_with_no_free_spot_is_reported(tried):
+    # The microvia type joins Top and L2; GND has no copper on L2 here.
+    assert not tried._whatif_try_fixes([_fix(-10.0, -4.0)])
+    msg = tried.toasts.messages[-1]
+    assert "No what-if made" in msg and "no current" in msg
+    assert tried.runs == []
+
+
+def test_only_add_via_fixes_become_whatifs(tried):
+    assert not tried._whatif_try_fixes([_fix(kind="widen")])
+    tried._editor_mode = True
+    assert not tried._whatif_try_fixes([_fix()])
+    assert "Leave Edit Mode" in tried.toasts.messages[-1]
+
+
+def test_trying_fixes_ranked_for_a_whatifs_result_is_refused(tried):
+    tried._whatif_view = "whatif"
+    assert not tried._whatif_try_fixes([_fix()])
+    assert "for the what-if's result" in tried.toasts.messages[-1]
+    assert tried.runs == []
+    import fypa.altium_viewer as V
+    assert V.PdnViewer._fixes_try_blocked(tried)
+    tried._whatif_view = "diff"                        # shows the base
+    assert V.PdnViewer._fixes_try_blocked(tried) == ""
+
+
+# --- Vias tab: which vias the what-if added ---------------------------------------
+
+def test_vias_tab_knows_which_rows_a_whatif_added(viewer):
+    import fypa.altium_viewer as V
+    md = dict(BOARD_MD)
+    md["vias"] = list(BOARD_MD["vias"]) + [_md_via(2.0, 2.0),
+                                           _md_via(3.0, 3.0)]
+    md[WV.METADATA_KEY] = {"count": 2, "unconnected": 0}
+    viewer.metadata = md
+    rows = [{"x_mm": 0.0, "y_mm": 0.0, "net": "GND"},       # board's own
+            {"x_mm": 3.0, "y_mm": 3.0, "net": "GND"},       # added
+            {"x_mm": 2.0, "y_mm": 2.0, "net": "GND"}]       # added
+    viewer._whatif_view = "whatif"
+    assert V.PdnViewer._vias_added_by_whatif(viewer, rows) == {1, 2}
+    # The base and the Difference view (which shows the base) have none.
+    for view in ("base", "diff"):
+        viewer._whatif_view = view
+        assert V.PdnViewer._vias_added_by_whatif(viewer, rows) == set()
+    viewer._whatif_view = "whatif"
+    del md[WV.METADATA_KEY]                            # a plain result
+    assert V.PdnViewer._vias_added_by_whatif(viewer, rows) == set()
+
+
+# --- the menu-bar What-If chip ------------------------------------------------------
+
+def test_chip_text_for_each_view():
+    from fypa.viewer.whatif_chip import whatif_chip_text
+    cap, name, tip = whatif_chip_text("whatif", "Vias 1")
+    assert (cap, name) == ("VIEWING WHAT-IF", "Vias 1")
+    assert "Every tab shows" in tip
+    cap, name, tip = whatif_chip_text("diff", "Vias 1")
+    assert (cap, name) == ("WHAT-IF DIFFERENCE", "Vias 1 − base")
+    assert "other tabs show the BASE" in tip
+    assert whatif_chip_text("base", "Vias 1") == ("", "", "")
+
+
+def test_chip_follows_the_view_and_x_goes_back_to_base(viewer):
+    views = []
+    viewer._whatif_set_view = lambda v, **k: views.append(v)
+    viewer._whatif_view = "whatif"
+    viewer._sync_whatif_view_chip()
+    chip = viewer._whatif_view_chip
+    assert not chip.isHidden() and chip.caption_text() == "VIEWING WHAT-IF"
+    assert chip.name_text() == viewer.scen.name
+    assert chip.parent() is viewer.menuBar()           # on every tab
+    viewer._whatif_view = "diff"
+    viewer._sync_whatif_view_chip()
+    assert chip.caption_text() == "WHAT-IF DIFFERENCE"
+    chip.close_button().click()
+    assert views == ["base"]
+    viewer._whatif_view = "base"
+    viewer._sync_whatif_view_chip()
+    assert chip.isHidden()
+
+
+def test_chip_sits_right_of_global_focus(viewer):
+    from PySide6.QtWidgets import QWidget
+    viewer._whatif_view = "whatif"
+    viewer._sync_whatif_view_chip()
+    chip = viewer._whatif_view_chip
+    viewer.menuBar().resize(1200, 30)
+    anchor = QWidget(viewer.menuBar())
+    anchor.setGeometry(300, 2, 150, 24)
+    anchor.show()
+    viewer._position_whatif_view_chip(anchor)
+    assert chip.x() == 300 + 150 + 10
+
+
+# --- tables that always fit -----------------------------------------------------
+
+@pytest.mark.parametrize("width", [600, 300, 220, 140])
+def test_fit_columns_table_keeps_the_last_column_in_view(qapp, width):
+    """The What-If comparison bug: shrinking the panel slid Δ off the
+    right edge. Every column must end inside the viewport at any width."""
+    from PySide6.QtWidgets import QTableWidgetItem
+    from fypa.viewer.whatif_panel import FitColumnsTable
+    t = FitColumnsTable(0, 5, elide_cols=(0, 1))
+    t.setHorizontalHeaderLabels(["Headline", "Rail", "Base", "What-if", "Δ"])
+    t.setRowCount(2)
+    for r, row in enumerate([
+            ("Worst margin to min V", "P1V_PLANE_TEST", "171.9 mV",
+             "175 mV", "+3.07 ▲"),
+            ("Copper I²R loss", "All rails", "1.892e+05 W", "1.892e+05 W",
+             "+0.159")]):
+        for c, text in enumerate(row):
+            t.setItem(r, c, QTableWidgetItem(text))
+    t.resize(width, 200)
+    t.show()
+    qapp.processEvents()
+    t.fit_columns()
+    hdr = t.horizontalHeader()
+    vw = t.viewport().width()
+    right = hdr.sectionPosition(4) + hdr.sectionSize(4)
+    assert right == vw                                  # exactly fills
+    assert not t.horizontalScrollBar().isVisible()
+    need = sum(t.sizeHintForColumn(c) for c in (2, 3, 4))
+    if need + 2 * FitColumnsTable._MIN_TEXT_COL + 10 <= vw:
+        # Room for the numbers: they get their natural width, the labels
+        # give way.
+        for c in (2, 3, 4):
+            assert t.columnWidth(c) >= t.sizeHintForColumn(c)
+        assert t.columnWidth(0) < t.sizeHintForColumn(0) or width >= 600
+    t.close()
 
 
 def test_a_whatif_with_added_vias_cannot_become_the_base(viewer, monkeypatch):

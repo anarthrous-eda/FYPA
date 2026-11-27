@@ -1267,6 +1267,8 @@ class GLMeshViewer(QOpenGLWidget):
         self._marquee_mods: tuple[bool, bool] = (False, False)
         # What-If via punching (see set_punch_mode).
         self._punch_mode = False
+        # What-If punched vias can be dragged (see set_punch_drag_enabled).
+        self._punch_drag_enabled = False
         # World-mm closed rings outlining a click-selected copper primitive
         # (viewer mode). Drawn as a dashed yellow polygon over the copper.
         # ``None`` when nothing is selected. A track / arc gets one ring; a
@@ -2760,6 +2762,18 @@ class GLMeshViewer(QOpenGLWidget):
             self._editor_drag_active = False
         self._apply_editor_cursor("default")
         self.update()
+
+    def set_punch_drag_enabled(self, on: bool) -> None:
+        """Let a 2D left press on a What-If punched via drag it (through
+        the editor-drag hit test and signals) outside editor and punch
+        mode - like an editor SOURCE / SINK marker."""
+        self._punch_drag_enabled = bool(on)
+        if not on and not (self._editor_mode or self._punch_mode):
+            self._editor_drag_active = False
+
+    def _marker_drag_allowed(self) -> bool:
+        return (self._editor_mode or self._punch_mode
+                or self._punch_drag_enabled)
 
     def set_armed_marker(self, role: str | None,
                          color: str | None = None) -> None:
@@ -5716,7 +5730,7 @@ class GLMeshViewer(QOpenGLWidget):
             # Editor mode: a left press that lands on a draggable free
             # marker becomes a marker drag rather than a pan / click. Same
             # for a What-If punched via while punching.
-            if ((self._editor_mode or self._punch_mode)
+            if (self._marker_drag_allowed()
                     and self._view_mode == "2d"
                     and self._editor_drag_hit_test is not None):
                 wx, wy = self.screen_to_world(ev.position().x(),
@@ -5796,7 +5810,7 @@ class GLMeshViewer(QOpenGLWidget):
                 and self._middle_press_origin is None):
             if self._legend_row_key_at(pos) is not None:
                 self._apply_editor_cursor("pointing")
-            elif ((self._editor_mode or self._punch_mode)
+            elif (self._marker_drag_allowed()
                     and self._view_mode == "2d"
                     and self._editor_drag_hit_test is not None):
                 hx, hy = self.screen_to_world(pos.x(), pos.y())

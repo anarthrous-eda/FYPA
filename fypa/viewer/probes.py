@@ -409,9 +409,7 @@ class _ProbeMixin:
                 stub_hit = self._probe_at_stub_3d(px_, py_)
             else:
                 stub_hit = self._probe_at_stub(world_x, world_y)
-            via_row = self._pick_hovered_via(world_x, world_y)
-            via_part = (self._format_via_hover_text(via_row)
-                        if via_row is not None else "")
+            via_row, via_part = self._via_hover_part(world_x, world_y)
             marker_row = self._pick_hovered_marker(world_x, world_y)
             marker_part = (self._format_marker_hover_text(marker_row)
                            if marker_row is not None else "")
@@ -498,9 +496,7 @@ class _ProbeMixin:
         net_part = f"   Net = {lp['net']}" if lp.get("net") else ""
         layer_part = (f"   Layer = {lp['physical']}"
                       if lp.get("physical") else "")
-        via_row = self._pick_hovered_via(world_x, world_y)
-        via_part = (self._format_via_hover_text(via_row)
-                    if via_row is not None else "")
+        via_row, via_part = self._via_hover_part(world_x, world_y)
         marker_row = self._pick_hovered_marker(world_x, world_y)
         marker_part = (self._format_marker_hover_text(marker_row)
                        if marker_row is not None else "")
@@ -1129,23 +1125,33 @@ class _ProbeMixin:
         return self._pick_hovered_via_2d(world_x, world_y)
 
     def _via_hover_info(self, world_x: float, world_y: float) -> str:
-        """Bottom-bar suffix for the picked via, or empty string. In the
-        What-If Difference view a via the what-if added (absent from the
-        base result on screen) reports its what-if current instead,
-        whichever of the two sits closer to the cursor."""
+        """Bottom-bar suffix for the via under the cursor, or ``""``."""
+        return self._via_hover_part(world_x, world_y)[1]
+
+    def _via_hover_part(self, world_x: float, world_y: float
+                        ) -> tuple[dict | None, str]:
+        """``(via_row, suffix)`` for the bottom bar - the hover handlers'
+        one entry point for vias. ``via_row`` is the board via picked (for
+        the cursor tooltip), else ``None``.
+
+        A What-If punched via isn't in the result on screen in the base
+        and Difference views, so it is checked too
+        (:meth:`_whatif_added_via_hover`): its size and span, and in the
+        Difference view its what-if current - reported when it sits closer
+        to the cursor than any board via."""
         row = self._pick_hovered_via(world_x, world_y)
         added_hit = getattr(self, "_whatif_added_via_hover", None)
         added = added_hit(world_x, world_y) if added_hit else None
         if added is not None:
             if row is None:
-                return added[1]
+                return None, added[1]
             d2 = ((float(row["x_mm"]) - world_x) ** 2
                   + (float(row["y_mm"]) - world_y) ** 2)
             if added[0] < d2:
-                return added[1]
+                return None, added[1]
         if row is None:
-            return ""
-        return self._format_via_hover_text(row)
+            return None, ""
+        return row, self._format_via_hover_text(row)
 
     def _pick_hovered_via_2d(self, world_x: float,
                               world_y: float) -> dict | None:

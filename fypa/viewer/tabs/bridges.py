@@ -1055,6 +1055,17 @@ class _BridgesTabMixin:
         self.vias_warn_only_box.toggled.connect(self._apply_vias_filter)
         filter_row.addWidget(self.vias_warn_only_box)
 
+        # Shown only while a What-If's own result is on screen and it added
+        # vias: list just those (they're tinted orange in the table).
+        filter_row.addSpacing(12)
+        self.vias_added_only_box = QCheckBox("Added by the what-if only")
+        self.vias_added_only_box.setToolTip(
+            "Show only the vias this what-if punched onto the board. They "
+            "are tinted orange in the table; the rest are the board's own.")
+        self.vias_added_only_box.toggled.connect(self._apply_vias_filter)
+        self.vias_added_only_box.setVisible(False)
+        filter_row.addWidget(self.vias_added_only_box)
+
         filter_row.addStretch(1)
         self.vias_summary_label = QLabel("")
         self.vias_summary_label.setStyleSheet(
@@ -1172,6 +1183,14 @@ class _BridgesTabMixin:
         # columns 1..N. Stays aligned with _VIAS_TABLE_COLUMNS and the
         # NET_COL / CURRENT_COL constants in _apply_vias_filter.
         ACTION_COL = 0
+        NET_COL = 1
+
+        # Vias a What-If punched (its result on screen): tinted, and
+        # filterable with "Added by the what-if only".
+        self._vias_added_idx = self._vias_added_by_whatif(rows)
+        added_bg = QBrush(QColor(255, 154, 60, 70))
+        added_tip = (f"Added by the what-if “{self._vias_whatif_name()}” "
+                     "- not on the board.")
 
         self.vias_table.setSortingEnabled(False)
         self.vias_table.setRowCount(len(rows))
@@ -1235,7 +1254,13 @@ class _BridgesTabMixin:
                 if is_warn and col_label in ("|I| max (A)", "Power (mW)"):
                     item.setBackground(warn_bg)
                     item.setForeground(warn_fg)
+                elif r in self._vias_added_idx:
+                    item.setBackground(added_bg)
+                    if c == NET_COL:
+                        item.setToolTip(added_tip)
                 self.vias_table.setItem(r, c, item)
+            if r in self._vias_added_idx:
+                action_item.setBackground(added_bg)
         log.info("Vias populate: items+styling %.2fs", time.monotonic() - _t1)
         _t2 = time.monotonic()
         self.vias_table.setSortingEnabled(True)
@@ -1261,6 +1286,13 @@ class _BridgesTabMixin:
             self._vias_click_handler_wired = True
         self._vias_warn_count = warn_count
         self._update_vias_tab_title(warn_count)
+        box = getattr(self, "vias_added_only_box", None)
+        if box is not None:
+            if not self._vias_added_idx and box.isChecked():
+                box.blockSignals(True)
+                box.setChecked(False)
+                box.blockSignals(False)
+            box.setVisible(bool(self._vias_added_idx))
         self._apply_vias_filter()
         log.info("Vias populate: tail (filter etc) %.2fs",
                  time.monotonic() - _t4)
@@ -1310,9 +1342,14 @@ class _BridgesTabMixin:
         CURRENT_COL = next(i for i, (n, _) in enumerate(
             self._VIAS_TABLE_COLUMNS) if n == "|I| max (A)")
         col_filter = getattr(self, "vias_col_filter", None)
+        added = getattr(self, "_vias_added_idx", set()) or set()
+        added_box = getattr(self, "vias_added_only_box", None)
+        added_only = (added_box is not None and added_box.isChecked()
+                      and bool(added))
 
         visible = 0
         warn_visible = 0
+        added_visible = 0
         for r in range(self.vias_table.rowCount()):
             net_item = self.vias_table.item(r, NET_COL)
             cur_item = self.vias_table.item(r, CURRENT_COL)
@@ -1323,17 +1360,50 @@ class _BridgesTabMixin:
                 cur = 0.0
             rail_ok = allowed_nets is None or net in allowed_nets
             warn_ok = (not warn_only) or abs(cur) >= self._via_current_warn_a
-            hide = not (rail_ok and warn_ok
+            # The row's original index (rows may be sorted): on the Go cell.
+            go = self.vias_table.item(r, 0)
+            orig = go.data(Qt.UserRole) if go is not None else None
+            is_added = orig in added
+            added_ok = (not added_only) or is_added
+            hide = not (rail_ok and warn_ok and added_ok
                         and (col_filter is None or col_filter.accepts(r)))
             self.vias_table.setRowHidden(r, hide)
             if not hide:
                 visible += 1
+                added_visible += is_added
                 if abs(cur) >= self._via_current_warn_a:
                     warn_visible += 1
-        self.vias_summary_label.setText(
+        summary = (
             f"{visible} via(s) shown of {self.vias_table.rowCount()} total - "
-            f"{warn_visible} at or above {self._via_current_warn_a:g} A"
-        )
+            f"{warn_visible} at or above {self._via_current_warn_a:g} A")
+        if added:
+            summary += f" - {added_visible} added by the what-if"
+        self.vias_summary_label.setText(summary)
+
+    def _vias_whatif_name(self) -> str:
+        s = getattr(self, "_whatif_selected", lambda: None)()
+        return s.name if s is not None else "what-if"
+
+    def _vias_added_by_whatif(self, rows: list[dict]) -> set[int]:
+        """Indexes into ``rows`` of the vias a What-If punched - only while
+        that what-if's own result is on screen (its metadata records how
+        many of its last ``vias`` it added). Empty for the base, the
+        Difference view (which shows the base) and plain results."""
+        if getattr(self, "_whatif_view", "base") != "whatif":
+            return set()
+        from fypa.whatif_vias import METADATA_KEY
+        md = self.metadata or {}
+        n = int((md.get(METADATA_KEY) or {}).get("count") or 0)
+        vias = list(md.get("vias") or [])
+        if n <= 0 or n > len(vias):
+            return set()
+        keys = {(round(float(v.get("x_mm", 0.0)), 6),
+                 round(float(v.get("y_mm", 0.0)), 6), v.get("net", ""))
+                for v in vias[-n:]}
+        return {i for i, r in enumerate(rows)
+                if (round(float(r.get("x_mm", 0.0)), 6),
+                    round(float(r.get("y_mm", 0.0)), 6),
+                    r.get("net", "")) in keys}
 
     def _compute_via_report(self) -> list[dict]:
         """One row per via with per-segment current + total power dissipation.

@@ -656,6 +656,29 @@ def grid_points(x0: float, y0: float, x1: float, y1: float,
     return [(x, y) for y in reversed(ys) for x in xs]
 
 
+# --- "beside" an existing via (the Fixes tab's Try as what-if) -----------------
+
+# Gap between the pads of a via and one punched beside it.
+BESIDE_GAP_MM = 0.2
+
+
+def beside_points(x_mm: float, y_mm: float, pad_mm: float,
+                  rings: int = 3) -> list[tuple[float, float]]:
+    """Candidate centres for a via beside the one at ``(x, y)``: ring ``k``
+    is ``k`` pitches out (pitch = pad + :data:`BESIDE_GAP_MM`) with ``8k``
+    points, nearest ring first, each ring starting due east and going
+    anticlockwise."""
+    pitch = float(pad_mm) + BESIDE_GAP_MM
+    out: list[tuple[float, float]] = []
+    for k in range(1, rings + 1):
+        n = 8 * k
+        for j in range(n):
+            a = 2.0 * math.pi * j / n
+            out.append((x_mm + k * pitch * math.cos(a),
+                        y_mm + k * pitch * math.sin(a)))
+    return out
+
+
 def added_via_report(metadata: dict, n_added: int) -> dict[str, int]:
     """``{"count", "unconnected"}`` for the last ``n_added`` entries of
     ``metadata["vias"]``: an added via with no coupling segments reached
