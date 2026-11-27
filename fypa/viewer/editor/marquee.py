@@ -119,7 +119,7 @@ class _MarqueeMixin:
                     claimed.add(d.overrides_designator)
                 out.append(MarqueeCandidate(
                     key=("directive", d.id), role=d.role, points=xy,
-                    label=d.designator or f"marker {d.id[:6]}",
+                    label=d.display_name,
                 ))
         for sd in (self.metadata or {}).get("directives") or []:
             # Directives the editor itself synthesised are already covered
@@ -212,7 +212,7 @@ class _MarqueeMixin:
         d = self._directive_for_selection()
         if d is not None:
             return [{"kind": "directive", "id": d.id, "role": d.role,
-                     "label": d.designator or f"marker {d.id[:6]}"}]
+                     "label": d.display_name}]
         if sel.get("kind") == "component":
             des = sel.get("designator")
             sch = self._unlockable_schematic_directive(sel)

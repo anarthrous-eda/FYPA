@@ -210,6 +210,8 @@ for a moment and it widens to show its name.
   the header is tinted in the role colour and shows the role name and
   designator, and the outline and ports take the same colour; the body
   shows the configured value (`PDN_V`, `PDN_I`, `PDN_R`, regulator gain).
+  A free marker dropped on the copper has a **dashed** outline and shows
+  its name (`SRC1`, or one you typed) where a part shows its designator.
 - **Ports** - small connectors on the left (inputs) and right (outputs).
   Each port is labelled with the **physical PCB net name** from the pad
   assignment (the same names you see on the Board and in the Nodes

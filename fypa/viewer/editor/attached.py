@@ -153,7 +153,8 @@ class _AttachedPdnMixin:
                 ed_id = getattr(ed, "id", "") or ""
                 rows.append({
                     "role": ed.role,
-                    "label": ed.designator or f"free {ed_id[:6]}",
+                    "label": (getattr(ed, "name", None) or ed.designator
+                              or f"free {ed_id[:6]}"),
                     "value": (format_directive_value(
                         {"role": ed.role, "value": value, "unit": unit})
                         if value is not None else ""),

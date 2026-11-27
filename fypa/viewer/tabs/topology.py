@@ -1260,6 +1260,7 @@ class _TopologyTabMixin:
         tag) it opens on a new entry for that net, prefilled from the
         auto-setup classifier's pick when it has one."""
         from fypa.autosetup import manual as M
+        from fypa.project_file import ensure_marker_names
         from fypa.viewer.manual_setup_dialog import ManualSetupDialog
 
         pair = self._topology_design_view()
@@ -1302,6 +1303,7 @@ class _TopologyTabMixin:
             elif d.id in edited:
                 merged.append(edited.pop(d.id))
         project.editor_directives = merged + list(edited.values())
+        ensure_marker_names(project.editor_directives)   # names left blank
         if [d.to_dict() for d in project.editor_directives] != before:
             self._topology_close_sidebar()
             self._topology_directives_changed()
@@ -1589,11 +1591,12 @@ class _TopologyTabMixin:
 
     def _topology_preview_metadata(self) -> dict | None:
         """Metadata dict shown on the Topology tab (incl. pending editor edits)."""
+        from fypa.project_file import with_marker_names
         from fypa.topology.preview import metadata_for_topology
 
         if self.metadata is None:
             return None
-        return metadata_for_topology(
+        md = metadata_for_topology(
             self.metadata,
             loaded=self._loaded_project,
             editor_directives=(
@@ -1606,6 +1609,9 @@ class _TopologyTabMixin:
             ),
             live_preview=self._topology_live_preview_needed(),
         )
+        # Free markers show their names, not their EDIT_<id> keys.
+        return with_marker_names(
+            md, self._project.editor_directives if self._project is not None else None)
 
     def _populate_topology(self, *, reuse_metadata: bool = False) -> None:
         """Render the topology SVG from setup metadata.

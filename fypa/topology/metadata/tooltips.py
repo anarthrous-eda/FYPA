@@ -42,6 +42,8 @@ def component_tooltip(
 ) -> str:
     display_role = "SERIES" if role in ("RESISTOR", "SERIES") else role
     lines = [f"{display_role} {designator}"]
+    if directives and directives[0].get("marker"):
+        lines[0] += " - marker dropped on the copper (no part)"
     for d in directives:
         ch_label = str(d.get("label") or "")
         if len(directives) > 1 and ch_label:

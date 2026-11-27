@@ -63,7 +63,8 @@ class Entry:
         elif d.voltage is not None:
             val = f" · {_fmt(d.voltage, 'V')}"
         if self.is_free:
-            return f"◎ {free_marker_where(d)}  {kind}  {net}{val}"
+            name = f"{d.name} " if d.name else ""
+            return f"◎ {name}{free_marker_where(d)}  {kind}  {net}{val}"
         lock = "🔒 " if self.locked else ""
         return f"{lock}{d.designator or '?'}  {kind}  {net}{val}"
 

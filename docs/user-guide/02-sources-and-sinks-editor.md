@@ -231,8 +231,17 @@ through the same copper; otherwise it starts single-net.
 
 **Step 3 - Fill in the form and Apply.**
 
-The flow is identical to 2.3, with two differences:
+The flow is identical to 2.3, with these differences:
 
+- **A name** - a free marker has no designator, so it gets an automatic
+  name when you drop it: `SRC1`, `SRC2` ... for sources, `SNK1` ... for
+  sinks. Type your own in the **Name** box at the top of the panel (for
+  example `Bench PSU`) and **Apply**; clear the box to go back to the
+  automatic name. The name is what the Topology tab, Manual setup, the
+  Board hover and the design report call the marker. An automatic name
+  follows the role: switch `SRC3` to a sink and it becomes the next free
+  `SNK` number. Projects saved before markers had names number them in
+  the order they were placed.
 - **SERIES is not offered** - a free marker is a single point on one
   net, which cannot express a two-net bridge. Use a component for
   SERIES.

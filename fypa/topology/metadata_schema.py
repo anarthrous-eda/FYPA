@@ -88,6 +88,8 @@ class NodeSpec(TypedDict):
     # have sibling rows on the same terminal. Their pad set spans the whole
     # part, so the label shows the row's own net rather than every pad net.
     channel_ports: NotRequired[list[str]]
+    # A free marker dropped on the Board (no part behind it).
+    marker: NotRequired[bool]
 
 
 class TopologyMetadata(TypedDict, total=False):

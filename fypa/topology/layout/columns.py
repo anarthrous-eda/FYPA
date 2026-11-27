@@ -155,6 +155,7 @@ def _place_columns(
                 height=nh,
                 config_label="",
                 has_error=s["has_error"],
+                marker=bool(s.get("marker")),
                 tooltip=s.get("tooltip", ""),
                 single_net=is_single_net_node(role, s["port_defs"]) if not sections else False,
                 bounds=(nx, ny, NODE_W, nh),

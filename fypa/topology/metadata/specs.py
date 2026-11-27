@@ -538,18 +538,22 @@ def component_spec_from_directives(
         channel_ports=channel_ports,
     )
 
+    # A free marker shows its name; its designator (``EDIT_<id>``) stays the
+    # node's key.
+    shown = str(channels[0].get("display_name") or designator)
     return {
         "node_id": designator,
-        "label": designator,
+        "label": shown,
         "designator": designator,
         "role": role,
         "config_label": "",
         "has_error": has_error,
+        "marker": bool(channels[0].get("marker")),
         "terms": terms,
         "port_defs": port_defs,
         "port_directives": port_directives,
         "channel_ports": sorted(channel_ports),
-        "tooltip": component_tooltip(role, designator, channels),
+        "tooltip": component_tooltip(role, shown, channels),
         "directive": channels[0],
         "directives": channels,
     }

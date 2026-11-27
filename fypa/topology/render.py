@@ -64,6 +64,8 @@ CHIP_RX = 6.0
 PORT_RING_R = 4.4       # block port ring
 CHIP_PORT_R = 3.8
 GRID_STEP = 16.0        # dot grid pitch, in diagram units (the viewer's too)
+# A free marker's outline: dashed, so it never reads as a real part.
+_MARKER_DASH = ' stroke-dasharray="5 3"'
 
 
 def _text(x: float, y: float, text: str, *, fill: str, size: float,
@@ -524,7 +526,8 @@ def _draw_node(parts: list[str], node: TopologyNode, pal: Palette) -> None:
     parts.append(
         f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}"'
         f' rx="{NODE_RX:g}" fill="none" stroke="{esc(stroke)}"'
-        f' stroke-width="{1.3 if node.has_error else 1:g}"/>'
+        f' stroke-width="{1.3 if node.has_error or node.marker else 1:g}"'
+        f'{_MARKER_DASH if node.marker else ""}/>'
     )
 
     icon = jump_icon_center(node)
@@ -574,7 +577,8 @@ def _draw_chip(parts: list[str], node: TopologyNode, pal: Palette) -> None:
         f'<rect class="topo-hit" data-label="{esc(node.label)}"'
         f' x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}"'
         f' rx="{CHIP_RX:g}" fill="{esc(pal.chip_fill(color))}"'
-        f' stroke="{esc(stroke)}" stroke-width="1"/>'
+        f' stroke="{esc(stroke)}" stroke-width="{1.3 if node.marker else 1:g}"'
+        f'{_MARKER_DASH if node.marker else ""}/>'
     )
     icon = jump_icon_center(node)
     # The layout sizes the chip to fit both texts (chip_width); only past

@@ -863,7 +863,21 @@ class _EditorFormMixin:
         self._ef_undo_move = None
         self._ef_redo_move = None
         self._ef_layer_combo = None
+        self._ef_name = None
         if sel["kind"] == "free" and existing is not None:
+            from fypa.project_file import MARKER_NAME_MAX
+
+            name_form = QFormLayout()
+            name_form.setContentsMargins(0, 0, 0, 0)
+            self._ef_name = QLineEdit(existing.name or "")
+            self._ef_name.setMaxLength(MARKER_NAME_MAX)
+            self._ef_name.setPlaceholderText("automatic (SRC1, SNK2 ...)")
+            self._ef_name.setToolTip(
+                "What this marker is called on the Topology tab, in Manual "
+                "setup, in the report and on the Board. Leave blank for an "
+                "automatic name. Saved with Apply.")
+            name_form.addRow("Name", self._ef_name)
+            lay.addLayout(name_form)
             self._build_free_marker_location(lay, existing)
 
         # A component carrying PDN_* directives in the Altium schematic is
@@ -1761,6 +1775,11 @@ class _EditorFormMixin:
             )
         else:
             d.kind = "free"
+            if getattr(self, "_ef_name", None) is not None:
+                from fypa.project_file import clean_marker_name
+
+                # Blank: upsert_directive gives it its automatic name.
+                d.name = clean_marker_name(self._ef_name.text())
             d.p_pins = None
             d.n_pins = None
             d.p_des = None
@@ -1770,6 +1789,8 @@ class _EditorFormMixin:
             self._editor_selection = {"kind": "free", "id": d.id}
 
         self._ensure_project().upsert_directive(d)
+        if d.kind == "free" and getattr(self, "_ef_name", None) is not None:
+            self._ef_name.setText(d.name or "")   # show the automatic one
         self._mark_project_dirty()
         self._apply_editor_highlight(self._connected_nets(p_net))
         self._update_pending_rails()

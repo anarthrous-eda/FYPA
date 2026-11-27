@@ -141,6 +141,17 @@ class EditorDirective:
     # Where the directive came from when a tool proposed it (e.g.
     # ``"autosetup"``), so the UI can say so. ``None`` = placed by hand.
     origin: str | None = None
+    # Free markers only: the name shown for it everywhere (diagram, Manual
+    # setup, report, hover). Set automatically on placement (``SRC1``,
+    # ``SNK2`` ...; see :func:`ensure_marker_names`) or typed by the user.
+    # Display only: the solve still keys the marker as ``EDIT_<id>``.
+    name: str | None = None
+
+    @property
+    def display_name(self) -> str:
+        """What to call this directive in the UI: a free marker's name, a
+        component directive's designator."""
+        return self.name or self.designator or f"marker {self.id[:6]}"
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -215,7 +226,88 @@ class EditorDirective:
             smps_topology=(str(d["smps_topology"]).upper()
                            if d.get("smps_topology") else None),
             origin=d.get("origin"),
+            name=clean_marker_name(d.get("name")),
         )
+
+
+# --- free-marker names ----------------------------------------------------------
+
+# Automatic names: a role prefix and a number (``SRC1``, ``SNK2``).
+MARKER_NAME_PREFIX = {"SOURCE": "SRC", "SINK": "SNK", "SERIES": "SER",
+                      "REGULATOR": "REG"}
+MARKER_NAME_MAX = 24
+
+
+def clean_marker_name(raw: Any) -> str | None:
+    """A typed or stored marker name, trimmed to :data:`MARKER_NAME_MAX`;
+    ``None`` when blank."""
+    if raw is None:
+        return None
+    text = " ".join(str(raw).split())[:MARKER_NAME_MAX].strip()
+    return text or None
+
+
+def _auto_name_prefix(name: str) -> str | None:
+    """The role prefix of an automatic name (``"SNK"`` for ``SNK12``)."""
+    for prefix in MARKER_NAME_PREFIX.values():
+        rest = name[len(prefix):]
+        if name.startswith(prefix) and rest.isdigit() and not rest.startswith("0"):
+            return prefix
+    return None
+
+
+def ensure_marker_names(directives: list[EditorDirective]) -> bool:
+    """Give every free marker a name, in list order: the next unused
+    ``SRC<n>`` / ``SNK<n>`` / ``SER<n>`` for its role. An automatic name
+    whose prefix no longer matches the role (a source switched to a sink)
+    is replaced; a name the user typed is kept. Returns whether anything
+    changed."""
+    taken = {d.name.upper() for d in directives if d.kind == "free" and d.name}
+    changed = False
+    for d in directives:
+        if d.kind != "free":
+            continue
+        want = MARKER_NAME_PREFIX.get(d.role, "MKR")
+        if d.name:
+            prefix = _auto_name_prefix(d.name)
+            if prefix is None or prefix == want:
+                continue
+            taken.discard(d.name.upper())
+        n = 1
+        while f"{want}{n}" in taken:
+            n += 1
+        d.name = f"{want}{n}"
+        taken.add(d.name)
+        changed = True
+    return changed
+
+
+def marker_names(directives: list[EditorDirective]) -> dict[str, str]:
+    """``{solve designator: name}`` for the free markers (``EDIT_<id>`` is
+    how the solve and its metadata know a marker)."""
+    ensure_marker_names(directives)
+    return {f"EDIT_{d.id}": d.name for d in directives
+            if d.kind == "free" and d.name}
+
+
+def with_marker_names(metadata: dict | None,
+                      directives: list[EditorDirective] | None) -> dict | None:
+    """A copy of solve ``metadata`` whose free-marker directives carry
+    ``display_name`` (the marker's name) and ``marker: True``. The
+    ``designator`` / ``label`` keys are untouched: results are keyed on
+    them."""
+    if not metadata or not directives:
+        return metadata
+    names = marker_names(directives)
+    if not names:
+        return metadata
+    out = dict(metadata)
+    out["directives"] = [
+        {**d, "display_name": names[d.get("designator")], "marker": True}
+        if d.get("designator") in names else d
+        for d in metadata.get("directives") or []
+    ]
+    return out
 
 
 @dataclass
@@ -473,7 +565,7 @@ class ProjectFile:
                 "Please update FYPA."
             )
 
-        return cls(
+        project = cls(
             prjpcb_path=_abs(doc.get("prjpcb_path"), base),
             pcbdoc_path=_abs(doc.get("pcbdoc_path"), base),
             design_info_pickle=_abs(doc.get("design_info_pickle"), base),
@@ -517,6 +609,10 @@ class ProjectFile:
             layer_assignments=dict(doc.get("layer_assignments", {})),
             gerber_stackup=[dict(d) for d in doc.get("gerber_stackup", [])],
         )
+        # Markers saved before they had names get them now (in file order,
+        # so the same file always gives the same names).
+        ensure_marker_names(project.editor_directives)
+        return project
 
     # ------------------------------------------------------------------
     # Editor-directive helpers
@@ -529,12 +625,15 @@ class ProjectFile:
         return None
 
     def upsert_directive(self, directive: EditorDirective) -> None:
-        """Replace the directive with the same ``id`` if present, else append."""
+        """Replace the directive with the same ``id`` if present, else append.
+        A free marker without a name gets its automatic one."""
         for i, d in enumerate(self.editor_directives):
             if d.id == directive.id:
                 self.editor_directives[i] = directive
-                return
-        self.editor_directives.append(directive)
+                break
+        else:
+            self.editor_directives.append(directive)
+        ensure_marker_names(self.editor_directives)
 
     def remove_directive(self, directive_id: str) -> bool:
         before = len(self.editor_directives)

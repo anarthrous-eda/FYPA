@@ -44,7 +44,12 @@ from PySide6.QtWidgets import (
 )
 
 from fypa.autosetup import manual as M
-from fypa.project_file import EditorDirective
+from fypa.project_file import (
+    MARKER_NAME_MAX,
+    EditorDirective,
+    clean_marker_name,
+    ensure_marker_names,
+)
 from fypa.viewer.autosetup_dialog import format_value, parse_value
 from fypa.viewer.pin_picker import PinPicker as _PinPicker
 from fypa.viewer.theme import _T
@@ -183,7 +188,16 @@ class _Editor(QWidget):
         else:
             self.part_row = self.part
             form.addRow(self.part_label, self.part)
-        # Free markers: where it sits instead of a part (moved on the Board).
+        # Free markers: a name, and where it sits instead of a part (moved
+        # on the Board).
+        self.name = QLineEdit()
+        self.name.setMaxLength(MARKER_NAME_MAX)
+        self.name.setToolTip(
+            "What this marker is called on the Topology tab, in the report "
+            "and on the Board. Leave blank for an automatic name (SRC1, SNK2).")
+        self.name.editingFinished.connect(self._on_name)
+        self.name_label = QLabel("Name")
+        form.addRow(self.name_label, self.name)
         self.location = QLabel("")
         self.location.setToolTip("Set on the Board: drag the marker there to "
                                  "move it, or onto other copper to change its net.")
@@ -290,6 +304,7 @@ class _Editor(QWidget):
         has = entry is not None
         editable = has and not (entry and entry.locked)
         for w in (self.type, self.net, self.part, self.show_all, self.pins, self.value,
+                  self.name,
                   self.gnd, self.in_net, self.in_pins, self.eff, self.topo, self.min_v,
                   self.max_v, self.v_range, *self._limit_edits.values()):
             w.setEnabled(editable)
@@ -320,6 +335,8 @@ class _Editor(QWidget):
             self.type.setCurrentText(M.supply_type(d) if self.mode == "supply" else "Source")
         self.net.set_net(d.p_net)
         self.location.setText(M.free_marker_where(d, layer=True) if free else "")
+        with QSignalBlocker(self.name):
+            self.name.setText((d.name or "") if free else "")
         if free:
             with QSignalBlocker(self.part):
                 self.part.clear()
@@ -406,7 +423,7 @@ class _Editor(QWidget):
         free = bool(self.entry and self.entry.is_free)
         for w in (self.part_label, self.part_row, self.pins_label, self.pins):
             w.setVisible(not free)
-        for w in (self.location_label, self.location):
+        for w in (self.name_label, self.name, self.location_label, self.location):
             w.setVisible(free)
         reg = bool(d and d.role == "REGULATOR")
         smps = reg and (d.regulator_type or "") == "SMPS"
@@ -471,6 +488,15 @@ class _Editor(QWidget):
         if (d := self._d()) is not None:
             d.p_pins = self.pins.value()
             self._edited()
+
+    def _on_name(self) -> None:
+        if (d := self._d()) is None or not (self.entry and self.entry.is_free):
+            return
+        name = clean_marker_name(self.name.text())
+        if name == d.name:
+            return
+        d.name = name      # blank: the list gives it its automatic name
+        self._edited()
 
     def _on_value(self) -> None:
         if (d := self._d()) is None:
@@ -678,6 +704,7 @@ class _RolePage(QWidget):
             self.locate.emit(self.editor.entry.directive.id)
 
     def _on_edit(self) -> None:
+        ensure_marker_names([x.directive for x in self.entries])
         e = self.editor.entry
         row = self.list.currentRow()
         if e is not None and 0 <= row < self.list.count():

@@ -121,6 +121,9 @@ class TopologyNode:
     # Rows layout: voltage gauges (a SINK with PDN_MIN_V, a regulator input
     # with a dropout / PDN_VIN_MIN), one row each under the port rows.
     gauges: list[NodeGauge] = field(default_factory=list)
+    # A free marker dropped on the Board, not a part: drawn dashed, and
+    # ``label`` is its name (``designator`` stays its ``EDIT_<id>`` key).
+    marker: bool = False
 
 
 @dataclass

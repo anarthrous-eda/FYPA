@@ -351,7 +351,13 @@ class _ReportExportMixin:
 
         messages = [(m.level_name, m.message) for m in log_buffer.records()
                     if m.level >= _MESSAGE_LEVEL][-_MAX_MESSAGES:]
-        solution, metadata = self.solution, self.metadata
+        from fypa.project_file import with_marker_names
+
+        project = getattr(self, "_project", None)
+        solution = self.solution
+        # Free markers appear under their names, not their EDIT_<id> keys.
+        metadata = with_marker_names(
+            self.metadata, project.editor_directives if project else None)
         stale = bool(getattr(self, "_solve_stale", False))
         source_kind = getattr(getattr(self, "_project", None), "source_kind",
                               None) or "altium"

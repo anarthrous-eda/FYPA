@@ -402,7 +402,8 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
     # or regulator feeds its input - possibly another editor directive.
     pending_regulators: list[tuple] = []
     for ed in editor_directives:
-        label = ed.designator or f"editor:{ed.id}"
+        label = (ed.designator
+                 or (f"marker {ed.name}" if ed.name else f"editor:{ed.id}"))
         if ed.role == "REGULATOR":
             terms, reg_warn = _resolve_regulator_terminals(
                 ed, label, _component_center, _resolve_terminal, top_layer)

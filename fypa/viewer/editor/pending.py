@@ -378,18 +378,41 @@ class _PendingRailsMixin:
         component / copper selection and free-marker placement; in viewer
         mode it clears the Vias-tab jump highlight and runs the
         copper-primitive picker - a hit opens the properties panel, a
-        miss closes any open one."""
+        miss closes any open one. In either mode a click anywhere but on
+        the yellow jump ring (Go / "show on Board") takes the ring away."""
+        ring_cleared = False
+        if (self._highlight_via_xy is not None
+                and not self._click_on_jump_ring(_world_x, _world_y)):
+            self._highlight_via_xy = None
+            ring_cleared = True
         if self._editor_mode:
             self._on_editor_click(_world_x, _world_y)
+            if ring_cleared:
+                self._render()
             return
-        if self._highlight_via_xy is not None:
-            self._highlight_via_xy = None
+        if ring_cleared:
             self._render()
         hit = self._primitive_at_point(_world_x, _world_y)
         if hit is not None:
             self._select_copper_primitive(hit)
         else:
             self._clear_copper_selection()
+
+    # Screen radius (px) of the jump ring: half its 28 px marker plus the
+    # edge, so a click on the ring's outline still counts as on the ring.
+    _JUMP_RING_HIT_PX: float = 16.0
+
+    def _click_on_jump_ring(self, world_x: float, world_y: float) -> bool:
+        """True when ``(world_x, world_y)`` lands on the yellow jump ring."""
+        if self._highlight_via_xy is None or self._gl_viewer is None:
+            return False
+        try:
+            mm_per_pixel = float(self._gl_viewer.view_center_scale()[2])
+        except Exception:
+            return False
+        hx, hy = self._highlight_via_xy
+        r = self._JUMP_RING_HIT_PX * mm_per_pixel
+        return (world_x - hx) ** 2 + (world_y - hy) ** 2 <= r * r
 
     def _on_legend_row_clicked(self, key: str) -> None:
         """Toggle visibility of the marker category whose legend row was

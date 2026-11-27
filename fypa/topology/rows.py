@@ -1136,6 +1136,7 @@ class _Placer:
             height=shape.height,
             config_label="",
             has_error=s["has_error"],
+            marker=bool(s.get("marker")),
             tooltip=_node_tooltip(part),
             single_net=(
                 is_single_net_node(s["role"], s["port_defs"])

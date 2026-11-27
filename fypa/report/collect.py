@@ -471,7 +471,8 @@ class _Context:
             src_di, src, setpoint = max(sources, key=lambda s: s[2])
             rail.nominal_v = setpoint
             src_ret = self.source_return_v(src_di, src)
-            label = str(src.get("label") or src.get("designator"))
+            label = str(src.get("display_name") or src.get("label")
+                        or src.get("designator"))
             if src.get("role") == "REGULATOR":
                 in_rail = self.rail_of(src, "IN_P")
                 rail.source_label = (f"{label} ({_regulator_kind(src)}"
@@ -516,6 +517,8 @@ class _Context:
             n_volts = self.volts(di, n_term)
             label = str(d.get("label") or d.get("designator") or "?")
             key = f"{role}:{label}"
+            # A free marker is keyed by its EDIT_<id> label but shown by name.
+            label = str(d.get("display_name") or label)
             nets = sorted(_pin_nets(d, p_term) & members)
             limits: dict = {}
             if role == "SINK":
@@ -602,7 +605,8 @@ class _Context:
                 i = dv / r if dv is not None and r else None
                 nets = " → ".join(sorted(_pin_nets(d, "P")) +
                                   sorted(_pin_nets(d, "N")))
-                desig = str(d.get("label") or d.get("designator") or "?")
+                desig = str(d.get("display_name") or d.get("label")
+                            or d.get("designator") or "?")
                 rail.series.append(SeriesResult(
                     designator=desig, kind=_series_kind(desig),
                     resistance_ohm=r or 0.0, nets=nets, current_a=i,

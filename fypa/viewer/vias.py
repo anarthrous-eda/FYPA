@@ -1076,6 +1076,11 @@ class _ViaRenderMixin:
             # overrides - their hover rows are suppressed so the bottom
             # bar reports the (pending) editor value, not the stale one.
             overridden = self._overridden_designators()
+            # Free markers hover with their names, not their EDIT_<id> keys.
+            from fypa.project_file import marker_names
+            project = getattr(self, "_project", None)
+            marker_name_of = (marker_names(project.editor_directives)
+                              if project is not None else {})
             for d in self.metadata.get("directives", []):
                 role = d.get("role")
                 if role not in self._ROLE_MARKER_STYLE:
@@ -1090,8 +1095,9 @@ class _ViaRenderMixin:
                     continue
                 directive_overridden = d.get("designator") in overridden
                 directive_current = self._directive_current_for_hover(d)
-                directive_label = str(d.get("label") or d.get("designator")
-                                      or "")
+                directive_label = str(
+                    marker_name_of.get(d.get("designator"))
+                    or d.get("label") or d.get("designator") or "")
                 # (P-side, N-side) marker points of a series part, joined
                 # by a dashed link below so it's clear which two squares
                 # belong together when several series parts sit close.
