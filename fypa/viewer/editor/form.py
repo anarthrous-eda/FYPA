@@ -27,6 +27,7 @@ from fypa.viewer.overlays import (
     _MARKER_LAYER_RING_W,
     _N_NET_MARKER_EDGE,
 )
+from fypa.viewer.pin_picker import PinPicker
 from fypa.viewer.theme import _T
 from fypa.viewer.vias import _centroid3
 from fypa.viewer.widgets import _esc
@@ -1037,26 +1038,26 @@ class _EditorFormMixin:
         self._ef_nnet.addItems(self._all_net_names())
         self._ef_nnet_label = QLabel("N net")
         form2.addRow(self._ef_nnet_label, self._ef_nnet)
-        # Optional pin restriction (PDN_PINS equivalent) - comma-separated pad
-        # designators the terminal couples to. Only meaningful for a
-        # component-bound directive: a free marker is a single anchor point, so
-        # the fields are hidden for it. Blank ⇒ every pad of the component on
-        # the net (the placement default).
-        self._ef_pins = QLineEdit()
-        self._ef_pins.setPlaceholderText("all pins on net")
+        # Optional pin restriction (PDN_PINS equivalent): a checkbox list of
+        # the component's pads on the picked net, as in Manual setup. Only
+        # meaningful for a component-bound directive - a free marker is a
+        # single anchor point, so the pickers are hidden for it. "All" stores
+        # None (every pad of the component on the net, the placement default).
+        # Each picker's net / selection lives in _ef_pin_state so a net change
+        # resets it to All while a re-fill on the same net keeps the ticks.
+        self._ef_pin_fill_ready = False
+        self._ef_pin_state = {k: {"net": None, "sel": None}
+                              for k in ("p", "n", "in")}
+        self._ef_pins = PinPicker()
         self._ef_pins.setToolTip(
-            "Optional: comma-separated pad numbers this terminal couples to "
-            "(the PDN_PINS equivalent, e.g. \"1\" or \"1, 3\"). Leave blank "
-            "to use every pad of the component that sits on the net."
-        )
+            "Which of the component's pads on the net this terminal couples "
+            "to (the PDN_PINS equivalent). All = every pad on the net.")
         self._ef_pins_label = QLabel("Pins")
         form2.addRow(self._ef_pins_label, self._ef_pins)
-        self._ef_npins = QLineEdit()
-        self._ef_npins.setPlaceholderText("all pins on N net")
+        self._ef_npins = PinPicker()
         self._ef_npins.setToolTip(
-            "Optional: comma-separated pad numbers the N terminal couples to. "
-            "Leave blank to use every pad of the component on the N net."
-        )
+            "Which of the component's pads on the N net the N terminal "
+            "couples to. All = every pad on the N net.")
         self._ef_npins_label = QLabel("N pins")
         form2.addRow(self._ef_npins_label, self._ef_npins)
         # REGULATOR input pair (PDN_IN_P_NET / PDN_IN_P_PINS). The return is
@@ -1065,13 +1066,20 @@ class _EditorFormMixin:
         self._ef_innet.addItems(self._form_p_nets(sel))
         self._ef_innet_label = QLabel("IN net")
         form2.addRow(self._ef_innet_label, self._ef_innet)
-        self._ef_inpins = QLineEdit()
-        self._ef_inpins.setPlaceholderText("all pins on IN net")
+        self._ef_inpins = PinPicker()
         self._ef_inpins.setToolTip(
-            "Optional: comma-separated pad numbers of the regulator's input "
-            "(PDN_IN_P_PINS). Blank = every pad on the IN net.")
+            "Which of the regulator's pads on the IN net are its input "
+            "(PDN_IN_P_PINS). All = every pad on the IN net.")
         self._ef_inpins_label = QLabel("IN pins")
         form2.addRow(self._ef_inpins_label, self._ef_inpins)
+        for _key, _picker, _combo in (("p", self._ef_pins, self._ef_pnet),
+                                      ("n", self._ef_npins, self._ef_nnet),
+                                      ("in", self._ef_inpins, self._ef_innet)):
+            _picker.changed.connect(
+                lambda k=_key, w=_picker: self._ef_pin_state[k].update(
+                    sel=w.value()))
+            _combo.currentTextChanged.connect(
+                lambda _t, k=_key: self._refresh_pin_picker(k))
         # Multi-connector designator lists (PDN_P_DES / PDN_N_DES) - CSV of
         # other component designators whose pads feed this terminal. Two-net
         # SOURCE/SINK only; host is not auto-included when set.
@@ -1093,6 +1101,11 @@ class _EditorFormMixin:
         )
         self._ef_ndes_label = QLabel("N DES")
         form2.addRow(self._ef_ndes_label, self._ef_ndes)
+        # The P / N pin lists come from the DES parts when those are set.
+        self._ef_pdes.editingFinished.connect(
+            lambda: self._refresh_pin_picker("p"))
+        self._ef_ndes.editingFinished.connect(
+            lambda: self._refresh_pin_picker("n"))
         # Remote sense (PDN_SENSE_DES / PDN_SENSE_N_DES) - SOURCE only.
         self._ef_sense = QLineEdit()
         self._ef_sense.setPlaceholderText("local (at the source)")
@@ -1172,8 +1185,8 @@ class _EditorFormMixin:
             if existing.n_net:
                 self._set_combo(self._ef_nnet, existing.n_net)
                 self._ef_nnet_keep = existing.n_net
-            self._ef_pins.setText(", ".join(existing.p_pins or []))
-            self._ef_npins.setText(", ".join(existing.n_pins or []))
+            self._seed_pin_picker("p", existing.p_net, existing.p_pins)
+            self._seed_pin_picker("n", existing.n_net, existing.n_pins)
             self._ef_pdes.setText(", ".join(
                 getattr(existing, "p_des", None) or []))
             self._ef_ndes.setText(", ".join(
@@ -1237,10 +1250,10 @@ class _EditorFormMixin:
             # an Altium PDN_PINS source (e.g. J23 pin 1 only) stays on those
             # pins through the override - instead of spreading to every pad on
             # the net once it resolves as an editor directive.
-            self._ef_pins.setText(
-                ", ".join(self._terminal_pin_pads(terms.get("P"))))
-            self._ef_npins.setText(
-                ", ".join(self._terminal_pin_pads(n_term)))
+            self._seed_pin_picker(
+                "p", p_net, self._terminal_pin_pads(terms.get("P")) or None)
+            self._seed_pin_picker(
+                "n", n_net, self._terminal_pin_pads(n_term) or None)
             # Seed P/N DES from the components that actually contributed pins
             # (multi-connector PDN_*_DES). Host-only → leave blank.
             host_des = sel.get("designator")
@@ -1255,6 +1268,9 @@ class _EditorFormMixin:
             )
         else:
             self._ef_remove.setEnabled(False)
+        # Pickers fill from here on: the seeding above set their nets and
+        # ticks without each combo change rebuilding a list half-way.
+        self._ef_pin_fill_ready = True
         self._on_editor_role_changed(self._ef_role.currentText())
         self._on_editor_model_changed()
         self._update_editor_panel()
@@ -1275,7 +1291,133 @@ class _EditorFormMixin:
         self._ef_topo.setCurrentText(topo if topo else "-")
         if in_net:
             self._set_combo(self._ef_innet, in_net)
-        self._ef_inpins.setText(", ".join(in_pins or []))
+        self._seed_pin_picker("in", in_net, in_pins or None)
+
+    # --- Pin pickers -----------------------------------------------------------
+
+    def _seed_pin_picker(self, key: str, net: str | None,
+                         pins: list[str] | None) -> None:
+        """Record the saved pin selection of picker ``key`` ("p" / "n" /
+        "in") on ``net``; ``None`` = all pins. The list fills later, in
+        :meth:`_refresh_pin_picker`."""
+        state = getattr(self, "_ef_pin_state", None)
+        if state is not None:
+            state[key] = {"net": net or None,
+                          "sel": list(pins) if pins else None}
+
+    def _pin_picker_parts(self, key: str) -> list[str]:
+        """Designators whose pads picker ``key`` lists: the P / N DES parts
+        when set and in use (two-net SOURCE / SINK - the solve applies the
+        pin filter to them, not the host), else the selected component."""
+        sel = self._editor_selection or {}
+        host = sel.get("designator")
+        if key in ("p", "n") and hasattr(self, "_ef_pdes"):
+            role = self._ef_role.currentText()
+            if role in ("SOURCE", "SINK") and self._ef_two.isChecked():
+                field = self._ef_pdes if key == "p" else self._ef_ndes
+                des = self._parse_pin_field(field.text())
+                if des:
+                    return des
+        return [host] if host else []
+
+    def _pin_names_by_pad(self, designator: str) -> dict[str, str]:
+        """Pad (upper) -> schematic pin name for ``designator``, from the
+        design view when one is in memory; ``{}`` otherwise (the list then
+        shows pad numbers alone)."""
+        fn = getattr(self, "_topology_view_in_memory", None)
+        try:
+            view = fn() if fn is not None else None
+        except Exception:  # noqa: BLE001 - names are a nicety
+            logging.getLogger(__name__).debug(
+                "No design view for pin names", exc_info=True)
+            view = None
+        if view is None:
+            return {}
+        want = designator.upper()
+        for part in getattr(view, "parts", ()) or ():
+            if (part.designator or "").upper() == want:
+                return {str(p.pad).upper(): p.name for p in part.pins
+                        if p.pad and p.name}
+        return {}
+
+    def _net_pins_of(self, designators: list[str], net: str | None
+                     ) -> tuple[list[tuple[str, str]], bool]:
+        """``([(pad, label)], several)`` - the pads of ``designators`` on
+        ``net`` in natural pad order, from the board's pad records (what the
+        solve couples to). One part labels each pad with its pin name; several
+        label it with the parts carrying that pad number, since the pin
+        filter applies to all of them."""
+        import re
+
+        if not net or not designators or not self.metadata:
+            return [], False
+        several = len(designators) > 1
+        owners: dict[str, list[str]] = {}
+        pad_text: dict[str, str] = {}
+        for des in designators:
+            prefix = f"{des}-"
+            for rec in self.metadata.get("pads", []):
+                full = rec.get("designator") or ""
+                if not full.startswith(prefix) or rec.get("net") != net:
+                    continue
+                pad = full[len(prefix):]
+                key = pad.upper()
+                pad_text.setdefault(key, pad)
+                who = owners.setdefault(key, [])
+                if des not in who:
+                    who.append(des)
+
+        def order(pad: str) -> list:
+            return [(0, int(t)) if t.isdigit() else (1, t)
+                    for t in re.split(r"(\d+)", pad) if t]
+
+        names = {} if several else self._pin_names_by_pad(designators[0])
+        out = []
+        for key in sorted(pad_text, key=order):
+            label = (", ".join(owners[key]) if several
+                     else names.get(key, ""))
+            out.append((pad_text[key], label))
+        return out, several
+
+    def _refresh_pin_picker(self, key: str) -> None:
+        """Re-list picker ``key`` for its net combo's current net. A new net
+        starts at All; the same net keeps the ticks. A net with none of the
+        part's pads shows All (nothing to pick from)."""
+        if not getattr(self, "_ef_pin_fill_ready", False):
+            return
+        picker, combo = {
+            "p": (getattr(self, "_ef_pins", None),
+                  getattr(self, "_ef_pnet", None)),
+            "n": (getattr(self, "_ef_npins", None),
+                  getattr(self, "_ef_nnet", None)),
+            "in": (getattr(self, "_ef_inpins", None),
+                   getattr(self, "_ef_innet", None)),
+        }[key]
+        if picker is None or combo is None:
+            return
+        state = self._ef_pin_state[key]
+        net = combo.currentText() or None
+        if state["net"] is not None and net != state["net"]:
+            state["sel"] = None
+        state["net"] = net
+        pins, several = self._net_pins_of(self._pin_picker_parts(key), net)
+        if not pins:
+            state["sel"] = None
+        picker.set_pins(pins, state["sel"], net,
+                        whose="their" if several else "its")
+
+    def _refresh_pin_pickers(self) -> None:
+        for key in ("p", "n", "in"):
+            self._refresh_pin_picker(key)
+
+    def _picked_pins(self, picker, label: str) -> tuple[list[str] | None,
+                                                         str | None]:
+        """A picker's value, or an error when it has nothing ticked."""
+        value = picker.value()
+        if value is not None and not value:
+            return None, (f"Tick at least one of the {label}, or tick "
+                          "All.")
+        return value, None
 
     def _seed_limit_fields(self, *, max_v=None, v_tol=None, v_min=None,
                            v_max=None, dropout=None, vin_min=None,
@@ -1463,6 +1605,10 @@ class _EditorFormMixin:
             self._ef_nnet_label.setText("N net")
             if hasattr(self, "_ef_npins_label"):
                 self._ef_npins_label.setText("N pins")
+        # A role / model change can move a net combo with its signals blocked
+        # (the N picker's repopulate) or switch the DES lists in or out.
+        if getattr(self, "_ef_pins_apply", False):
+            self._refresh_pin_pickers()
 
     def _on_editor_apply(self) -> None:
         """Commit the form into an :class:`EditorDirective` on the project,
@@ -1540,6 +1686,17 @@ class _EditorFormMixin:
                 f"<span style='color:{_T()['err']};'>Max V is below Min V."
                 "</span>")
             return
+        p_pins = n_pins = None
+        if sel["kind"] == "component":
+            p_pins, pin_err = self._picked_pins(
+                self._ef_pins, self._ef_pins_label.text())
+            if pin_err is None and not single:
+                n_pins, pin_err = self._picked_pins(
+                    self._ef_npins, self._ef_npins_label.text())
+            if pin_err:
+                self._ef_status.setText(
+                    f"<span style='color:{_T()['err']};'>{pin_err}</span>")
+                return
 
         existing = self._directive_for_selection()
         if role == "SINK" and single:
@@ -1576,11 +1733,10 @@ class _EditorFormMixin:
         if sel["kind"] == "component":
             d.kind = "component"
             d.designator = sel.get("designator")
-            # Pin restriction (PDN_PINS equivalent). Blank ⇒ None ⇒ every pad
-            # on the net. The N field only applies in two-net mode.
-            d.p_pins = self._parse_pin_field(self._ef_pins.text())
-            d.n_pins = (None if single
-                        else self._parse_pin_field(self._ef_npins.text()))
+            # Pin restriction (PDN_PINS equivalent). All ⇒ None ⇒ every pad
+            # on the net. The N picker only applies in two-net mode.
+            d.p_pins = p_pins
+            d.n_pins = None if single else n_pins
             # Multi-connector DES lists (PDN_*_DES). Two-net SOURCE/SINK only.
             if single or role not in ("SOURCE", "SINK"):
                 d.p_des = None
@@ -1687,10 +1843,13 @@ class _EditorFormMixin:
             topo_txt = self._ef_topo.currentText()
             topo = topo_txt if topo_txt in (
                 "BUCK", "BOOST", "BUCKBOOST", "INVERTER") else None
+        in_pins, pin_err = self._picked_pins(self._ef_inpins, "IN pins")
+        if pin_err:
+            return {}, pin_err
         return {
             "in_p_net": in_net,
             "in_n_net": gnd_net,
-            "in_p_pins": self._parse_pin_field(self._ef_inpins.text()),
+            "in_p_pins": in_pins,
             "regulator_type": reg_type,
             "efficiency": eff,
             "smps_topology": topo,

@@ -63,8 +63,10 @@ class _EditorModeMixin:
         # here instead of falling through to the viewport and selecting /
         # deselecting copper. Shown only in editor mode (see
         # _position_editor_overlays).
+        # The wheel still zooms here, as it does over the buttons themselves.
         bg = _ClickAbsorbingPanel(
-            self._gl_viewer, enable_left_edge_resize=False)
+            self._gl_viewer, enable_left_edge_resize=False,
+            absorb_wheel=False)
         bg.hide()
         self._editor_overlay_bg = bg
 

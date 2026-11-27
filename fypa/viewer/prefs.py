@@ -903,12 +903,12 @@ _MARKERS_ALWAYS_ON_TOP_QS_KEY = "ui/markers_always_on_top"
 
 def load_markers_always_on_top() -> bool:
     """Read whether viewport markers (sources, sinks, series parts, vias…)
-    paint over every layer. ``False`` (the default) hides a marker where
-    copper drawn above its layer covers it, in 2D and 3D."""
+    paint over every layer. ``True`` (the default); ``False`` hides a
+    marker where copper drawn above its layer covers it, in 2D and 3D."""
     try:
         from PySide6.QtCore import QSettings
         qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
-        val = qs.value(_MARKERS_ALWAYS_ON_TOP_QS_KEY, False)
+        val = qs.value(_MARKERS_ALWAYS_ON_TOP_QS_KEY, True)
         if isinstance(val, bool):
             return val
         if isinstance(val, str):
@@ -919,7 +919,7 @@ def load_markers_always_on_top() -> bool:
             "Could not read markers-always-on-top preference (%s); using "
             "default.", e,
         )
-    return False
+    return True
 
 
 def save_markers_always_on_top(enabled: bool) -> None:

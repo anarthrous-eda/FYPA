@@ -341,11 +341,12 @@ class _SettingsTabMixin:
         self._settings_markers_on_top_check.setChecked(
             load_markers_always_on_top())
         self._settings_markers_on_top_check.setToolTip(
-            "When checked, source, sink, series and via markers paint over "
-            "every layer, so a marker on a lower layer shows through the "
-            "copper above it. When unchecked (the default), the part of a "
+            "When checked (the default), source, sink, series and via "
+            "markers paint over every layer, so a marker on a lower layer "
+            "shows through the copper above it. When unchecked, the part of a "
             "marker that copper drawn above its layer covers is hidden, in "
-            "2D and 3D. Applies immediately; persists across launches."
+            "2D and 3D; copper with some transparency shows the marker "
+            "through it. Applies immediately; persists across launches."
         )
         self._settings_markers_on_top_check.toggled.connect(
             self._on_markers_on_top_toggled)
@@ -880,10 +881,24 @@ class _SettingsTabMixin:
 
     def _on_markers_on_top_toggled(self, checked: bool) -> None:
         """Settings tab: persist + live-apply "Markers always on top"."""
-        save_markers_always_on_top(bool(checked))
+        self._set_markers_always_on_top(bool(checked))
+
+    def _set_markers_always_on_top(self, on: bool) -> None:
+        """Persist + live-apply "Markers always on top" and keep both of its
+        controls in step - the Settings checkbox and the View menu item."""
+        on = bool(on)
+        save_markers_always_on_top(on)
         gl = getattr(self, "_gl_viewer", None)
         if gl is not None:
-            gl.set_markers_always_on_top(bool(checked))
+            gl.set_markers_always_on_top(on)
+        check = getattr(self, "_settings_markers_on_top_check", None)
+        if check is not None and check.isChecked() != on:
+            check.blockSignals(True)
+            check.setChecked(on)
+            check.blockSignals(False)
+        refresh = getattr(self, "_refresh_view_menu_labels", None)
+        if refresh is not None:
+            refresh()
 
     def _on_display_settings_reset(self) -> None:
         """Settings tab: restore the Display options to their defaults."""
@@ -897,7 +912,7 @@ class _SettingsTabMixin:
                 edit.setText(self._fmt_settings_value(display_defaults[key]))
         on_top = getattr(self, "_settings_markers_on_top_check", None)
         if on_top is not None:
-            on_top.setChecked(False)   # toggled → saves + applies
+            on_top.setChecked(True)    # toggled → saves + applies
         label = getattr(self, "_prefs_status_label", None)
         if label is not None and not getattr(
                 self, "_settings_launcher_mode", False):

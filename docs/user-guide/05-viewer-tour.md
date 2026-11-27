@@ -483,9 +483,12 @@ shows a short "no issues" message.
 - **Settings** - application preferences only, which never change a
   solve result: *Appearance* (theme, high-quality zoom), *Display
   options* (via current warning level, colour-scale clip percentile,
-  *Markers always on top* - off by default, so the part of a marker
-  (source, sink, series part, via, PTH) that copper drawn above its
-  layer covers is hidden, in 2D and 3D),
+  *Markers always on top* - on by default, so markers (source, sink,
+  series part, via, PTH) paint over every layer; turned off, the part of
+  a marker that copper drawn above its layer covers is hidden, in 2D and
+  3D - rail and other copper alike - and copper given some transparency
+  shows the marker through it at that transparency. The same setting is
+  in the **View** menu as *Markers always on top [enabled / disabled]*),
   *General options*, *Performance* and *Experimental*. They persist
   across launches. The design's base properties are on the Properties tab.
 - **Help** - built-in cheatsheet of hotkeys and gestures.

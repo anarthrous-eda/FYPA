@@ -152,6 +152,21 @@ two-net.
 - In single-net mode, the second dropdown is hidden and the remaining
   one is just labelled **Net**.
 
+Under each net of a component (**Pins** / **P pins**, **N pins**, and a
+regulator's **OUT pins**, **GND pins** and **IN pins**) is a pin list,
+the same one Manual setup uses. **All of its pins on NET (n)** is ticked
+to start with: the directive uses every pad of the part on that net,
+including pads a later pinout change adds. Untick it to see the part's
+pads on the net (pad number and, when the design is loaded, pin name),
+all ticked, and untick the ones the current shouldn't use - the
+`PDN_*_PINS` equivalent. A directive you set up earlier opens with its
+own pins ticked. Picking a different net starts that list at **All**
+again. When **P DES** / **N DES** name other parts, the list shows those
+parts' pads instead (each labelled with the parts that have that pad
+number), since the pins filter applies to them. **Apply** refuses a
+list with nothing ticked. Free markers have no pads, so they have no pin
+lists.
+
 **Step 6 - (SINK only) Optional Min V.**
 
 If the role is `SINK`, a **Min V (V)** field appears. This is the

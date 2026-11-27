@@ -127,12 +127,19 @@ in float v_norm;
 in float v_alpha;
 in float v_neutral;
 uniform sampler1D u_cmap;
+// 0: every fragment (the normal scene pass). 1: opaque copper only (the
+// marker layer's occluder depth). 2: see-through copper only, premultiplied
+// (laid over the markers it sits above - see _render_marker_layer).
+uniform int u_alpha_pass;
 out vec4 frag_color;
 const vec3 NO_CURRENT_GREY = vec3(0.376, 0.376, 0.376);
 void main() {
+    if (u_alpha_pass == 1 && v_alpha < 0.999) discard;
+    if (u_alpha_pass == 2 && v_alpha >= 0.999) discard;
     vec4 c = texture(u_cmap, v_norm);
     vec3 rgb = mix(c.rgb, NO_CURRENT_GREY, clamp(v_neutral, 0.0, 1.0));
     frag_color = vec4(rgb, c.a * v_alpha);
+    if (u_alpha_pass == 2) frag_color.rgb *= frag_color.a;
 }
 """
 
@@ -1072,6 +1079,18 @@ class GLMeshViewer(QOpenGLWidget):
         self._ss_ms_fbo: QOpenGLFramebufferObject | None = None
         self._ss_resolve_fbo: QOpenGLFramebufferObject | None = None
         self._ss_fbo_size: tuple[int, int] = (0, 0)
+        # Marker layer (see _render_marker_layer): markers drawn offscreen
+        # with the see-through copper above them laid over, then composited.
+        # Only used while some copper is see-through; native resolution.
+        self._mk_ms_fbo: QOpenGLFramebufferObject | None = None
+        self._mk_resolve_fbo: QOpenGLFramebufferObject | None = None
+        self._mk_fbo_size: tuple[int, int] = (0, 0)
+        self._mk_layer_ready: bool = False
+        self._mk_inst: np.ndarray | None = None
+        self._mesh_alpha_partial: bool = False
+        # Set while _render_scene fills the marker layer's occluder depth:
+        # see-through copper is left out, so it can't hide a marker.
+        self._opaque_depth_only: bool = False
 
         # --- Data extents ---
         self._data_bounds: tuple[float, float, float, float] | None = None
@@ -1826,6 +1845,9 @@ class GLMeshViewer(QOpenGLWidget):
             )
         self._pending_alpha = arr
         self._n_alpha = arr.size
+        # Whether any copper is see-through - the marker pass then lays it
+        # over the markers beneath it (see _render_marker_layer).
+        self._mesh_alpha_partial = bool(arr.size and float(arr.min()) < 0.999)
         self.update()
 
     def set_vertex_neutral(self, neutral: np.ndarray | None) -> None:
@@ -3039,6 +3061,7 @@ class GLMeshViewer(QOpenGLWidget):
         self._u_relief_loc = prog.uniformLocation("u_relief")
         self._u_z_pivot_loc = prog.uniformLocation("u_z_pivot")
         self._u_z_scale_loc = prog.uniformLocation("u_z_scale")
+        self._u_alpha_pass_loc = prog.uniformLocation("u_alpha_pass")
 
         # VAO + VBOs. We allocate Qt wrappers (cleanup at destruction)
         # and use raw GL calls through them for the actual data uploads.
@@ -3361,16 +3384,30 @@ class GLMeshViewer(QOpenGLWidget):
         # then render oversized and downsample. The QPainter overlay pass
         # always runs last, at native resolution, so text / markers / chips
         # stay crisp regardless of the supersample factor.
-        if (self._supersample
-                and self._ss_blit_program is not None
-                and self._ensure_ss_fbos()):
+        supersampled = (self._supersample
+                        and self._ss_blit_program is not None
+                        and self._ensure_ss_fbos())
+        if supersampled:
             self._render_scene_supersampled()
-            if self._markers_need_depth():
-                self._render_scene_depth_only()
         else:
             if self._ss_resolve_fbo is not None:
                 self._release_ss_fbos()
             self._render_scene()
+        # Markers. With see-through copper on screen they are drawn into
+        # their own layer (occluded by opaque copper only, with the see-
+        # through copper above each one laid over it); otherwise straight
+        # into the widget, depth-tested against the scene left there.
+        self._mk_layer_ready = False
+        self._mk_inst = (self._build_marker_instances()
+                         if self._marker_program is not None else None)
+        has_markers = self._mk_inst is not None and self._mk_inst.shape[0] > 0
+        need_depth = has_markers and self._markers_need_depth()
+        if need_depth and self._has_see_through_copper():
+            self._mk_layer_ready = self._render_marker_layer(self._mk_inst)
+        elif self._mk_resolve_fbo is not None:
+            self._release_marker_fbos()
+        if need_depth and supersampled and not self._mk_layer_ready:
+            self._render_scene_depth_only()
         # Overlays (markers + text chips) drawn via QPainter - works on
         # the QOpenGLWidget because QPainter uses the GL paint engine.
         # MUST be called outside the active program's bind to avoid
@@ -3501,6 +3538,151 @@ class GLMeshViewer(QOpenGLWidget):
         self._ss_ms_fbo = None
         self._ss_resolve_fbo = None
         self._ss_fbo_size = (0, 0)
+
+    def _release_marker_fbos(self) -> None:
+        """Drop the marker layer's FBOs (paint path only, as above)."""
+        self._mk_ms_fbo = None
+        self._mk_resolve_fbo = None
+        self._mk_fbo_size = (0, 0)
+
+    def _has_see_through_copper(self) -> bool:
+        """Whether any copper drawn this frame is partly transparent - the
+        rail mesh (per-vertex alpha) or a layer's all-copper colour."""
+        if (self._mesh_alpha_partial and self._n_alpha > 0
+                and self._n_alpha == self._n_vertices
+                and self._mesh_has_visible()):
+            return True
+        return any(float(rgba[3]) < 0.999
+                   for d in self._copper_draws
+                   for rgba, _f, _c in d.passes)
+
+    def _ensure_marker_fbos(self) -> bool:
+        """Create or resize the marker layer's FBOs at the widget's device
+        size: a multisample colour + depth target (same sample count as the
+        widget, so occlusion edges antialias as the copper does) and a
+        single-sample texture it resolves into for compositing."""
+        dpr = self.devicePixelRatio()
+        w = max(1, int(self.width() * dpr))
+        h = max(1, int(self.height() * dpr))
+        if (self._mk_ms_fbo is not None and self._mk_resolve_fbo is not None
+                and self._mk_fbo_size == (w, h)):
+            return True
+        self._release_marker_fbos()
+        ms_fmt = QOpenGLFramebufferObjectFormat()
+        ms_fmt.setSamples(max(0, int(self.format().samples())))
+        ms_fmt.setAttachment(QOpenGLFramebufferObject.Attachment.Depth)
+        ms_fbo = QOpenGLFramebufferObject(w, h, ms_fmt)
+        resolve_fbo = QOpenGLFramebufferObject(
+            w, h, QOpenGLFramebufferObjectFormat())
+        if not (ms_fbo.isValid() and resolve_fbo.isValid()):
+            return False
+        GL.glBindTexture(GL.GL_TEXTURE_2D, resolve_fbo.texture())
+        for pname, val in ((GL.GL_TEXTURE_MIN_FILTER, GL.GL_NEAREST),
+                           (GL.GL_TEXTURE_MAG_FILTER, GL.GL_NEAREST),
+                           (GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_EDGE),
+                           (GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE)):
+            GL.glTexParameteri(GL.GL_TEXTURE_2D, pname, val)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
+        self._mk_ms_fbo = ms_fbo
+        self._mk_resolve_fbo = resolve_fbo
+        self._mk_fbo_size = (w, h)
+        return True
+
+    def _render_marker_layer(self, inst: np.ndarray) -> bool:
+        """Render the markers into their own layer, for frames where some
+        copper is see-through. Returns ``False`` (caller falls back to the
+        direct pass) when the FBOs can't be had.
+
+        1. Depth of the scene's *opaque* copper only - see-through copper
+           must not hide a marker outright the way it would in the scene's
+           own depth buffer (rail mesh), nor be ignored (all-copper, which
+           draws without depth in 2D).
+        2. The markers, depth-tested against that and leaving their depth.
+        3. The see-through copper again, depth-tested against the markers'
+           depth so only copper above a marker passes, blended onto the
+           marker colour alone (the layer's own alpha as coverage): each
+           marker comes out as "that copper over the marker".
+        The layer (premultiplied) is composited by _composite_marker_layer
+        where the direct pass would draw; there, a fully covered marker
+        pixel reads as copper-over-marker and the rest is untouched."""
+        if self._ss_blit_program is None or not self._ensure_marker_fbos():
+            return False
+        w, h = self._mk_fbo_size
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self._mk_ms_fbo.handle())
+        GL.glViewport(0, 0, w, h)
+        # 1. Opaque-only occluder depth (colour writes off; _render_scene
+        #    clears depth, the colour is cleared to transparent below).
+        GL.glColorMask(GL.GL_FALSE, GL.GL_FALSE, GL.GL_FALSE, GL.GL_FALSE)
+        self._opaque_depth_only = True
+        try:
+            self._render_scene()
+        finally:
+            self._opaque_depth_only = False
+            GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE)
+        GL.glClearColor(0.0, 0.0, 0.0, 0.0)
+        GL.glClear(GL.GL_COLOR_BUFFER_BIT)
+        # 2. Markers, writing their depth.
+        self._draw_markers_gl(inst, fbo=int(self._mk_ms_fbo.handle()),
+                              write_depth=True)
+        # 3. See-through copper strictly above each marker. Colour:
+        #    src (premultiplied) x marker coverage + dst x (1 - src alpha);
+        #    the layer's alpha (marker coverage) is kept.
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self._mk_ms_fbo.handle())
+        GL.glViewport(0, 0, w, h)
+        GL.glEnable(GL.GL_DEPTH_TEST)
+        GL.glDepthFunc(GL.GL_LESS)
+        GL.glDepthMask(GL.GL_FALSE)
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFuncSeparate(GL.GL_DST_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA,
+                               GL.GL_ZERO, GL.GL_ONE)
+        try:
+            # Same order as the scene: in 2D the transparent all-copper
+            # draws after the mesh; in 3D too (after-mesh pass).
+            if self._mesh_has_visible() and self._program is not None:
+                self._draw_mesh(cover=True)
+            if self._copper_draws:
+                self._draw_copper(under=None, cover=True)
+        finally:
+            GL.glDisable(GL.GL_BLEND)
+            GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
+            GL.glDisable(GL.GL_DEPTH_TEST)
+            GL.glDepthFunc(GL.GL_LESS)
+            GL.glDepthMask(GL.GL_TRUE)
+        # Resolve the multisample layer into the texture.
+        GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, self._mk_ms_fbo.handle())
+        GL.glBindFramebuffer(GL.GL_DRAW_FRAMEBUFFER,
+                             self._mk_resolve_fbo.handle())
+        GL.glBlitFramebuffer(0, 0, w, h, 0, 0, w, h,
+                             GL.GL_COLOR_BUFFER_BIT, GL.GL_NEAREST)
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER,
+                             int(self.defaultFramebufferObject()))
+        GL.glViewport(0, 0, w, h)
+        return True
+
+    def _composite_marker_layer(self) -> None:
+        """Blend the marker layer (premultiplied) over the widget - the
+        stand-in for :meth:`_draw_markers_gl` on see-through frames."""
+        if self._mk_resolve_fbo is None or self._ss_blit_program is None:
+            return
+        w, h = self._mk_fbo_size
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER,
+                             int(self.defaultFramebufferObject()))
+        GL.glViewport(0, 0, w, h)
+        GL.glDisable(GL.GL_SCISSOR_TEST)
+        GL.glDisable(GL.GL_STENCIL_TEST)
+        GL.glDisable(GL.GL_DEPTH_TEST)
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFunc(GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)
+        self._ss_blit_program.bind()
+        GL.glActiveTexture(GL.GL_TEXTURE0)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, self._mk_resolve_fbo.texture())
+        self._ss_blit_program.setUniformValue(self._ss_blit_u_tex_loc, 0)
+        self._ss_blit_vao.bind()
+        GL.glDrawArrays(GL.GL_TRIANGLES, 0, 3)
+        self._ss_blit_vao.release()
+        GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
+        self._ss_blit_program.release()
+        GL.glDisable(GL.GL_BLEND)
 
     def _markers_need_depth(self) -> bool:
         """Whether the GL marker pass will depth-test this frame: markers
@@ -3633,7 +3815,8 @@ class GLMeshViewer(QOpenGLWidget):
             return np.zeros((0, _MARKER_STRIDE), dtype=np.float32)
         return np.concatenate(rows)
 
-    def _draw_markers_gl(self, inst: np.ndarray) -> None:
+    def _draw_markers_gl(self, inst: np.ndarray, *, fbo: int | None = None,
+                         write_depth: bool = False) -> None:
         """Draw the marker instances (see :meth:`_build_marker_instances`)
         into the widget framebuffer. Called inside the QPainter overlay pass
         between ``beginNativePainting`` / ``endNativePainting``, after the
@@ -3642,7 +3825,11 @@ class GLMeshViewer(QOpenGLWidget):
         Not always on top: each fragment takes the depth of the marker's own
         copper plane under that pixel (nudged a little toward the eye), and
         the depth test (LEQUAL, no depth write) cuts it wherever copper above
-        that plane was drawn - a partial cover hides just that part."""
+        that plane was drawn - a partial cover hides just that part.
+
+        ``fbo`` draws into the marker layer instead of the widget, and
+        ``write_depth`` leaves each glyph's depth there, so the see-through
+        copper laid over afterwards covers only the markers it is above."""
         prog = self._marker_program
         n = int(inst.shape[0])
         if prog is None or n == 0:
@@ -3651,7 +3838,8 @@ class GLMeshViewer(QOpenGLWidget):
         dev_w = max(1, int(self.width() * dpr))
         dev_h = max(1, int(self.height() * dpr))
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER,
-                             int(self.defaultFramebufferObject()))
+                             int(self.defaultFramebufferObject()
+                                 if fbo is None else fbo))
         GL.glViewport(0, 0, dev_w, dev_h)
         GL.glDisable(GL.GL_SCISSOR_TEST)
         GL.glDisable(GL.GL_STENCIL_TEST)
@@ -3662,7 +3850,8 @@ class GLMeshViewer(QOpenGLWidget):
             GL.glDepthFunc(GL.GL_LEQUAL)
         else:
             GL.glDisable(GL.GL_DEPTH_TEST)
-        GL.glDepthMask(GL.GL_FALSE)
+        GL.glDepthMask(GL.GL_TRUE if (write_depth and occlude)
+                       else GL.GL_FALSE)
         GL.glEnable(GL.GL_BLEND)
         GL.glBlendFunc(GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)
 
@@ -4035,9 +4224,16 @@ class GLMeshViewer(QOpenGLWidget):
             buf["vbo"].release()
             buf["pending"] = None
 
-    def _draw_mesh(self) -> None:
+    def _draw_mesh(self, *, cover: bool = False) -> None:
+        """Draw the heatmap mesh. ``cover`` draws only its see-through
+        copper, premultiplied and under the caller's blend state (the marker
+        layer's cover pass); the occluder-depth pass of that layer
+        (``_opaque_depth_only``) draws only its opaque copper."""
         prog = self._program
         prog.bind()
+        alpha_pass = 2 if cover else (1 if self._opaque_depth_only else 0)
+        if self._u_alpha_pass_loc >= 0:
+            GL.glUniform1i(self._u_alpha_pass_loc, alpha_pass)
         prog.setUniformValue(self._u_mvp_loc, self._current_mvp())
         prog.setUniformValue(self._u_levels_loc,
                               float(self._levels[0]),
@@ -4076,8 +4272,9 @@ class GLMeshViewer(QOpenGLWidget):
             GL.glEnableVertexAttribArray(2)
             GL.glVertexAttribPointer(2, 1, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
             self._alpha_vbo.release()
-            GL.glEnable(GL.GL_BLEND)
-            GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
+            if not cover:
+                GL.glEnable(GL.GL_BLEND)
+                GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
         else:
             GL.glDisableVertexAttribArray(2)
             GL.glVertexAttrib1f(2, 1.0)
@@ -4103,7 +4300,8 @@ class GLMeshViewer(QOpenGLWidget):
             GL.glDisableVertexAttribArray(3)
         if use_alpha:
             GL.glDisableVertexAttribArray(2)
-            GL.glDisable(GL.GL_BLEND)
+            if not cover:
+                GL.glDisable(GL.GL_BLEND)
         self._vao.release()
         self._cmap_tex.release()
         prog.release()
@@ -4310,24 +4508,40 @@ class GLMeshViewer(QOpenGLWidget):
         self._ovl_vao.release()
         prog.release()
 
-    def _draw_copper(self, *, under: bool) -> None:
+    def _draw_copper(self, *, under: bool | None,
+                     cover: bool = False) -> None:
         """Draw the per-layer all-copper buffers routed to one pass (see
         :class:`CopperDraw`), in list order. Each layer is one buffer bind
         plus a multi-draw per colour, so the cost of a frame follows what is
-        visible and hidden layers cost nothing."""
+        visible and hidden layers cost nothing.
+
+        ``under=None`` takes both passes. ``cover`` draws only see-through
+        colours, premultiplied and under the caller's blend state (the
+        marker layer's cover pass); while ``_opaque_depth_only`` is set only
+        opaque colours draw."""
         prog = self._copper_program
         if prog is None:
             return
-        draws = [d for d in self._copper_draws if bool(d.under) == under]
+        draws = [d for d in self._copper_draws
+                 if under is None or bool(d.under) == under]
         if not draws:
             return
+        opaque_only = self._opaque_depth_only and not cover
         prog.bind()
         prog.setUniformValue(self._copper_u_mvp_loc, self._current_mvp())
         self._copper_vao.bind()
         GL.glEnableVertexAttribArray(0)
-        GL.glEnable(GL.GL_BLEND)
-        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
+        if not cover:
+            GL.glEnable(GL.GL_BLEND)
+            GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
         for d in draws:
+            if cover or opaque_only:
+                passes = [p for p in d.passes
+                          if (float(p[0][3]) < 0.999) == cover]
+                if not passes:
+                    continue
+            else:
+                passes = d.passes
             buf = self._copper_bufs.get(d.key)
             if buf is None or buf["vbo"] is None or buf["n"] <= 0:
                 continue
@@ -4338,9 +4552,11 @@ class GLMeshViewer(QOpenGLWidget):
             # Raw glUniform*: PySide6's scalar setUniformValue overload
             # resolves to the int path (see _draw_lines).
             GL.glUniform1f(self._copper_u_z_loc, float(d.z))
-            for rgba, firsts, counts in d.passes:
-                GL.glUniform4f(self._copper_u_color_loc, float(rgba[0]),
-                               float(rgba[1]), float(rgba[2]), float(rgba[3]))
+            for rgba, firsts, counts in passes:
+                a = float(rgba[3])
+                k = a if cover else 1.0      # cover: premultiplied
+                GL.glUniform4f(self._copper_u_color_loc, float(rgba[0]) * k,
+                               float(rgba[1]) * k, float(rgba[2]) * k, a)
                 if firsts is None:
                     GL.glDrawArrays(GL.GL_TRIANGLES, 0, n)
                 elif len(firsts) == 1:
@@ -4349,7 +4565,8 @@ class GLMeshViewer(QOpenGLWidget):
                 elif len(firsts):
                     GL.glMultiDrawArrays(GL.GL_TRIANGLES, firsts, counts,
                                          len(firsts))
-        GL.glDisable(GL.GL_BLEND)
+        if not cover:
+            GL.glDisable(GL.GL_BLEND)
         GL.glDisableVertexAttribArray(0)
         self._copper_vao.release()
         prog.release()
@@ -4453,12 +4670,19 @@ class GLMeshViewer(QOpenGLWidget):
             # Native GL between the painter passes keeps the stacking the
             # QPainter glyphs had (above the labels / links drawn so far,
             # below the on-top labels and chips), while depth-testing the
-            # glyphs against the scene depth still in this framebuffer.
-            inst = self._build_marker_instances()
-            if inst.shape[0]:
+            # glyphs against the scene depth still in this framebuffer -
+            # or, with see-through copper, compositing the marker layer
+            # paintGL rendered (see _render_marker_layer).
+            inst = self._mk_inst
+            if inst is None:
+                inst = self._build_marker_instances()
+            if self._mk_layer_ready or inst.shape[0]:
                 painter.beginNativePainting()
                 try:
-                    self._draw_markers_gl(inst)
+                    if self._mk_layer_ready:
+                        self._composite_marker_layer()
+                    else:
+                        self._draw_markers_gl(inst)
                 finally:
                     painter.endNativePainting()
         else:

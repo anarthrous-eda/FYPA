@@ -328,6 +328,19 @@ class _FileMenuMixin:
             lambda: self.show_mesh_box.toggle())
         view_menu.addAction(self._act_show_mesh)
 
+        # Same preference as Settings > Display options (persisted there).
+        self._act_markers_on_top = QAction(self)
+        self._act_markers_on_top.setStatusTip(
+            "Paint source, sink, series and via markers over every layer, "
+            "or let copper drawn above a marker's layer hide it (copper "
+            "with some transparency shows the marker through it). "
+            "Remembered across launches."
+        )
+        self._act_markers_on_top.triggered.connect(
+            lambda: self._set_markers_always_on_top(
+                not self._gl_viewer.markers_always_on_top()))
+        view_menu.addAction(self._act_markers_on_top)
+
         view_menu.addSeparator()
         fit_act = QAction("Fit to board", self)
         fit_act.setStatusTip(
@@ -364,6 +377,13 @@ class _FileMenuMixin:
         self._act_show_mesh.setText(
             "Hide Mesh" if self.show_mesh_box.isChecked()
             else "Show Mesh")
+        act = getattr(self, "_act_markers_on_top", None)
+        gl = getattr(self, "_gl_viewer", None)
+        if act is not None and gl is not None:
+            act.setText(
+                "Markers always on top [enabled]"
+                if gl.markers_always_on_top()
+                else "Markers always on top [disabled]")
 
     def _menu_start_dir(self) -> str:
         """Best-effort starting directory for the file dialogs: the folder

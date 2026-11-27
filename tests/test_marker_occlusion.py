@@ -142,3 +142,85 @@ def test_copper_above_cuts_the_marker_partially(qapp, ss):
     assert right.blue() < 200                        # covered half hidden
     img_top, _v_top = _render(qapp, on_top=True, ss=ss)
     assert px(img_top, sx + off, sy).blue() > 200    # always on top: whole
+
+
+def _render_see_through(qapp, kind: str, alpha: float, marker_z: float):
+    """See-through copper over x in [0, 30] at z = 0, a disc centred on its
+    edge at x = 0 and ``marker_z``. ``kind`` is "rail" (the heatmap mesh,
+    per-vertex alpha) or "copper" (a yellow all-copper layer). Returns
+    (image, viewer) or None without a GL context."""
+    from fypa.gl_mesh_viewer import CopperDraw, GLMeshViewer
+    v = GLMeshViewer()
+    v.resize(320, 240)
+    v.show()
+    v.set_supersampling(False)
+    if kind == "rail":
+        xs = np.array([0., 30., 0., 30., -30.])
+        ys = np.array([-20., -20., 20., 20., 0.])
+        v.set_mesh(xs, ys, np.array([[0, 1, 2], [1, 3, 2]], np.int32),
+                   zs=np.zeros(5, np.float32))
+        if alpha < 1.0:
+            v.set_vertex_alpha(np.full(5, alpha, np.float32))
+    else:
+        # Bounds only - a triangle on a far lower layer.
+        v.set_mesh(np.array([-30., 30., -30.]), np.array([-20., -20., 20.]),
+                   np.array([[0, 1, 2]], np.int32),
+                   zs=np.full(3, -5.0, np.float32))
+        quad = np.array([[0, -20], [30, -20], [0, 20],
+                         [30, -20], [30, 20], [0, 20]], np.float32)
+        v.set_copper_geometry("k", quad, 1)
+        # As the layers panel routes it in 2D: opaque before the mesh,
+        # see-through after.
+        v.set_copper_draws([CopperDraw("k", 0.0, alpha >= 1.0,
+                                       [((1.0, 1.0, 0.0, alpha), None, None)])])
+    v.fit_to_data()
+    v.set_markers([_group([0.0], [marker_z], color="#0000ff", edge_width=0.0,
+                          world_diameters_mm=np.array([10.0]))])
+    for _ in range(3):
+        qapp.processEvents()
+    img = v.grabFramebuffer()
+    if v._marker_program is None:
+        return None
+    return img, v
+
+
+def _covered_px(img, v):
+    sx, sy = v.world_to_screen(0.0, 0.0)
+    dpr = img.devicePixelRatio()
+    off = 2.0 / v._mm_per_pixel
+    return (img.pixelColor(int((sx - off) * dpr), int(sy * dpr)),
+            img.pixelColor(int((sx + off) * dpr), int(sy * dpr)))
+
+
+@pytest.mark.parametrize("kind", ["rail", "copper"])
+def test_opaque_copper_above_hides_marker_whichever_kind(qapp, kind):
+    got = _render_see_through(qapp, kind, 1.0, -1.6)
+    if got is None:
+        pytest.skip("no GL marker program in this environment")
+    left, right = _covered_px(*got)
+    assert left.blue() > 200
+    assert right.blue() < 60                         # copper, no marker
+
+
+@pytest.mark.parametrize("kind", ["rail", "copper"])
+def test_marker_shows_through_see_through_copper_above(qapp, kind):
+    got = _render_see_through(qapp, kind, 0.5, -1.6)
+    if got is None:
+        pytest.skip("no GL marker program in this environment")
+    img, v = got
+    left, right = _covered_px(img, v)
+    assert left.blue() > 200                         # uncovered half
+    # Half copper over the blue marker: neither hidden nor drawn on top.
+    assert 90 < right.blue() < 170
+    if kind == "copper":
+        assert 90 < right.red() < 170                # yellow tint kept
+    assert v._mk_layer_ready                         # took the layer path
+
+
+@pytest.mark.parametrize("kind", ["rail", "copper"])
+def test_see_through_copper_below_marker_leaves_it_whole(qapp, kind):
+    got = _render_see_through(qapp, kind, 0.5, 0.5)  # marker above copper
+    if got is None:
+        pytest.skip("no GL marker program in this environment")
+    _left, right = _covered_px(*got)
+    assert right.blue() > 200 and right.red() < 60

@@ -1185,9 +1185,13 @@ class _ClickAbsorbingPanel(QWidget):
     _GRIP_W: int = 6  # width (px) of the left-edge resize hot zone
 
     def __init__(self, *args, enable_left_edge_resize: bool = True,
-                 **kwargs) -> None:
+                 absorb_wheel: bool = True, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.setAttribute(Qt.WA_StyledBackground, True)
+        # A wheel turn the panel's children don't use (blank space, a label,
+        # a list already scrolled to its end) would otherwise propagate up to
+        # the GL viewer and zoom the board under the panel.
+        self._absorb_wheel = absorb_wheel
         self._resizing = False
         self._resize_start_global_x = 0.0
         self._resize_start_w = 0
@@ -1230,6 +1234,12 @@ class _ClickAbsorbingPanel(QWidget):
         if self._grip_zone is not None:
             self._grip_zone.setGeometry(0, 0, self._GRIP_W + 1, self.height())
             self._grip_zone.raise_()
+
+    def wheelEvent(self, ev) -> None:  # noqa: N802 (Qt naming)
+        if self._absorb_wheel:
+            ev.accept()
+        else:
+            super().wheelEvent(ev)
 
     def mousePressEvent(self, ev) -> None:
         if ev.button() == Qt.LeftButton and self._in_grip(ev.position().x()):
