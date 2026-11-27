@@ -14,7 +14,8 @@ out as a pipeline, left to right::
   date, or not there yet, and takes a colour to match;
 * a results tab is dimmed while it has nothing to show and italic while its
   numbers pre-date a setup change; one whose analysis runs on demand carries
-  a pending icon (a ring with three dots) until it has run.
+  a pending icon (a ring with three dots) until it has run;
+* the window's Solve button is pinned at the right-hand end, on every tab.
 
 The pages still live in a ``QTabWidget`` (:class:`GroupedTabWidget`, whose own
 bar is hidden), so every ``tabs.setCurrentIndex`` / ``tabs.setTabText`` call
@@ -244,6 +245,13 @@ class TabStrip(QWidget):
         outer.addWidget(self._left, 0, Qt.AlignBottom)
         outer.addWidget(self._scroll, 1)
         outer.addWidget(self._right, 0, Qt.AlignBottom)
+        # A widget pinned at the right-hand end, outside the scrolling tabs
+        # (the window's Solve button): see set_corner_widget.
+        self._corner: QWidget | None = None
+        self._corner_box = QHBoxLayout()
+        self._corner_box.setContentsMargins(0, 0, 0, 0)
+        self._corner_box.setSpacing(0)
+        outer.addLayout(self._corner_box)
         self._sync_arrows()
 
         tabs.currentChanged.connect(self._on_current_changed)
@@ -258,6 +266,27 @@ class TabStrip(QWidget):
         btn.setToolTip("Scroll the tabs")
         btn.clicked.connect(lambda: self._scroll_by(direction * 120))
         return btn
+
+    def set_corner_widget(self, widget: QWidget | None) -> None:
+        """Pin *widget* at the right-hand end of the strip, level with the
+        tabs. It sits outside the scrolling part, so it stays in view however
+        narrow the window gets, and it survives :meth:`rebuild`."""
+        old = self._corner
+        if old is not None:
+            self._corner_box.removeWidget(old)
+            old.setParent(None)
+        self._corner = widget
+        if widget is None:
+            self._corner_box.setContentsMargins(0, 0, 0, 0)
+        else:
+            # Clear of the last tab, and off the window edge and the pages.
+            self._corner_box.setContentsMargins(12, 0, 8, 3)
+            widget.setParent(self)
+            self._corner_box.addWidget(widget, 0, Qt.AlignBottom)
+            widget.show()
+
+    def corner_widget(self) -> QWidget | None:
+        return self._corner
 
     def rebuild(self, items: list) -> None:
         """Lay the strip out from *items*: :class:`TabGroup` entries plus the
@@ -333,6 +362,12 @@ class TabStrip(QWidget):
         self._right.setStyleSheet(arrow_qss)
         self._scroll.setStyleSheet(
             f"QScrollArea {{ background-color: {t['bg']}; }}")
+        # The same colour behind the pinned corner widget, so the row reads
+        # as one band from the first tab to the window edge.
+        self.setObjectName("fypaTabStripRow")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet(
+            f"QWidget#fypaTabStripRow {{ background-color: {t['bg']}; }}")
 
         old = self._scroll.takeWidget()
         if old is not None:

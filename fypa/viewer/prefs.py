@@ -25,7 +25,7 @@ _SSAA_QS_KEY = "ui/supersampling"
 
 # When enabled, File > Import Altium Design (non-clean) runs extract + FEM
 # solve (with solve-cache fast path). When disabled, only design info loads
-# and the user presses ↻ Solve in the viewer.
+# and the user presses Solve in the viewer.
 _AUTO_SOLVE_IMPORT_QS_KEY = "import/auto_solve_on_altium"
 
 

@@ -19,8 +19,7 @@ Typical uses:
 
 ## 9.1 Opening the panel
 
-The **What-If** button at the top-left of the heatmap, next to **↻
-Solve**, shows and hides the panel on the right of the heatmap (hotkey
+The **What-If** button at the top-left of the heatmap shows and hides the panel on the right of the heatmap (hotkey
 **W** does the same). The panel is always hidden when a design loads.
 
 What-Ifs are a viewer-mode tool: in editor mode the button is hidden, and

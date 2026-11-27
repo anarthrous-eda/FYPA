@@ -150,7 +150,7 @@ The Properties tab holds everything that defines **this design's solve**.
   (per-layer copper thickness and resistivity). A collapsed *Advanced*
   section holds *Mesh* (accuracy and speed, not physics) and the
   *Capacitor loop inductance* knobs. A changed field is outlined;
-  **Re-run Solver** (or **↻ Solve**) replaces the base result with one
+  **Re-run Solver** (or **Solve**) replaces the base result with one
   solved from the new values. To try an alternative *without* changing
   the base, make a What-If instead ([Section 9](09-what-if-scenarios.md)).
 - **Right - design report** (read-only): what the solver was actually
@@ -189,8 +189,9 @@ labelled input/output ports; wires connect ports that share the same net.
 This is **not** the PCB layout; for spatial placement use the Board tab.
 
 The icon-only squares at the diagram's top-left are **Auto setup**,
-**Manual setup**, **What-If** and **↻ Solve**; rest the mouse on one
-for a moment and it widens to show its name.
+**Manual setup** and **What-If**; rest the mouse on one
+for a moment and it widens to show its name. **Solve** is at the
+right-hand end of the tab row, as on every tab.
 
 - **Rows** - each SOURCE starts a row, and each REGULATOR gets its own
   row directly under the row that feeds it, indented one step per
@@ -317,9 +318,9 @@ for a moment and it widens to show its name.
   right: the same form as the Board's PDN editor panel. A part set up in
   the schematic shows its values read-only with **🔓 Unlock to edit**; a
   part with several FYPA directives (one per rail) gets a picker above the
-  form. **Apply** updates the diagram straight away; **↻ Solve** on the
-  toolbar re-solves.
-- **What-If** (under **Manual setup…**, above **↻ Solve**; or **W**) -
+  form. **Apply** updates the diagram straight away; **Solve** on the
+  tab row re-solves.
+- **What-If** (under **Manual setup…**; or **W**) -
   shows the What-If panel on the right of this tab, the same panel as on
   the Board. It shares that side with the part sidebar: whichever you
   opened last is shown. Open / closed is remembered separately for the
@@ -434,7 +435,7 @@ review it before anything changes:
    like any other.
 
 Auto setup only reads the design and proposes values; nothing is solved
-until you press **↻ Solve**. Datasheet values are typical figures pulled
+until you press **Solve**. Datasheet values are typical figures pulled
 from the text, so treat every suggestion as a starting point to check.
 
 ### Navigation and zoom
@@ -642,7 +643,7 @@ shows its markers when clicked.
 | Click a piece of copper         | Selects it - the bottom bar reports the net, the area, and (where applicable) the layer-local current. |
 | Click a marker                  | Reports the directive value (source voltage, sink current, etc.) in the bottom bar. |
 | Left-drag on empty board (editor mode, 2D) | Rubber-band selects every PDN marker fully inside the box, for editing several sinks at once (see [Section 2.6](02-sources-and-sinks-editor.md#26-editing-several-sinks-at-once)). |
-| Solve after editor edits        | Click the green **↻ Solve** button at the top-left of the viewport (see [Section 2.7](02-sources-and-sinks-editor.md#27-re-solving-and-saving)). |
+| Solve after editor edits        | Click the green **Solve** button at the right-hand end of the tab row, or press `F5` (see [Section 2.7](02-sources-and-sinks-editor.md#27-re-solving-and-saving)). |
 
 ## 5.11 Hotkeys worth remembering
 
@@ -661,6 +662,7 @@ shows its markers when clicked.
 | **E**        | Toggle editor mode (see [Section 2.2](02-sources-and-sinks-editor.md#22-entering-editor-mode)). |
 | **S** / **L** | In editor mode, arm a free **S**OURCE / sink (**L**oad) drop - the keyboard equivalent of the red / blue triangle buttons. |
 | **Ctrl+S**   | Save the project (the dialog offers project-only or project+solution). |
+| **F5**       | Solve: run the solver with the current setup and settings (the green button at the right-hand end of the tab row). |
 | **Ctrl+R**   | Reload the design: read the Altium project from disk again and solve with the same setup (see [Section 1.6](01-sources-and-sinks.md#after-changing-the-design-in-altium)). |
 
 The Help tab inside the viewer has the authoritative, always-current

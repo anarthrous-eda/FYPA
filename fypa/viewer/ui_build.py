@@ -63,6 +63,9 @@ class _UiBuildMixin:
         self.tabs = GroupedTabWidget(shell)
         self._tab_strip = TabStrip(self.tabs, shell)
         self.tabs.strip = self._tab_strip
+        # Solve: one button for the window, at the right-hand end of the
+        # tab row, in the same place whichever tab is open.
+        self._tab_strip.set_corner_widget(self._build_solve_button())
         # Thin gold rule under the menu bar while Global Focus is on, so a
         # filtered window never passes for the whole board.
         self._global_focus_rule = QFrame(shell)
@@ -651,7 +654,7 @@ class _UiBuildMixin:
         outer.addWidget(plot_widget, 1)
 
         # What-If panel - right of the plot; shown / hidden by the What-If
-        # button beside Solve (or W), viewer mode only.
+        # button on the Board (or W), viewer mode only.
         self._build_whatif_panel(outer)
 
         # Right-hand panel - overlaid on the GL viewer's right edge

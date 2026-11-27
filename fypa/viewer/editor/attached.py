@@ -459,16 +459,16 @@ class _AttachedPdnMixin:
         self._refresh_solve_stale_overlay()
 
     def _mark_awaiting_first_solve(self) -> None:
-        """Stub loaded with design info but no FEM run yet - show ↻ Solve."""
+        """Stub loaded with design info but no FEM run yet - Solve is on."""
         self._awaiting_first_solve = True
         self._set_solve_stale(True)
 
     def _refresh_solve_stale_overlay(self) -> None:
-        """Recompute ``_solve_stale`` and refresh the solve / adaptive overlay."""
+        """Recompute ``_solve_stale`` and refresh the Solve button, the
+        adaptive-gain box and the tab strip's results state."""
         self._solve_stale = (bool(self._project_dirty)
                              or bool(self._settings_dirty)
                              or bool(self._initial_solve_stale))
-        visible = self._solve_overlay_visible()
         has_smps = _viewer_has_adaptive_smps(
             getattr(self, "metadata", None),
             getattr(self, "_loaded_project", None),
@@ -491,43 +491,103 @@ class _AttachedPdnMixin:
                     "using the solved input voltage (includes SERIES and "
                     "copper IR drop). LDO regulators are unaffected."
                 )
-        rbtn = getattr(self, "_resolve_btn", None)
-        if rbtn is not None:
-            rbtn.setVisible(visible)
-            if visible:
-                enabled = self._resolve_button_enabled()
-                rbtn.setEnabled(enabled)
-                solveable = enabled or self._has_solveable_directives()
-                # Label ("Solve", shown on hover) is set
-                # by _position_editor_overlays -> _sync_resolve_label below.
-                if self._awaiting_first_solve:
-                    rbtn.setToolTip(
-                        "Run the FEM solver on the loaded design"
-                        if solveable else self._NOTHING_TO_SOLVE_TIP
-                    )
-                else:
-                    if enabled and not self._has_solveable_directives():
-                        rbtn.setToolTip(
-                            "Rebuild the design with the Bridges-tab changes "
-                            "(nothing to solve yet: the design needs a SOURCE "
-                            "and a SINK on the same rail)"
-                        )
-                    elif enabled:
-                        rbtn.setToolTip(
-                            "Re-run the solver with the current editor "
-                            "changes and settings applied"
-                        )
-                    elif not solveable:
-                        rbtn.setToolTip(self._NOTHING_TO_SOLVE_TIP)
-                    else:
-                        rbtn.setToolTip(
-                            "Check Adaptive SMPS gain to re-solve, or edit "
-                            "directives / settings"
-                        )
-            self._position_editor_overlays()
+        self._refresh_solve_button()
+        self._position_editor_overlays()
         refresh_strip = getattr(self, "_refresh_tab_strip_state", None)
         if refresh_strip is not None:
             refresh_strip()
+
+    # --- the Solve button -----------------------------------------------------
+    #
+    # One button for the whole window, pinned at the right-hand end of the
+    # tab row so it is in the same place on every tab. Always there and
+    # always called Solve: green when there is something to solve, greyed
+    # with a tooltip that says why when there is not.
+
+    _SOLVE_GREEN = "#2ca92c"
+
+    def _build_solve_button(self):
+        from PySide6.QtCore import QSize, Qt
+        from PySide6.QtWidgets import QPushButton
+
+        btn = QPushButton("Solve")
+        btn.setObjectName("fypaSolveButton")
+        btn.setIconSize(QSize(18, 18))
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setFocusPolicy(Qt.NoFocus)
+        btn.setEnabled(False)
+        btn.clicked.connect(lambda _checked=False: self._on_solve_requested())
+        self._solve_btn = btn
+        self._restyle_solve_button()
+        return btn
+
+    def _restyle_solve_button(self) -> None:
+        """Theme the Solve button (build time and a live theme switch)."""
+        btn = getattr(self, "_solve_btn", None)
+        if btn is None:
+            return
+        from fypa.viewer.assets import _solve_icon
+        from fypa.viewer.theme import _T
+
+        t = _T()
+        green = self._SOLVE_GREEN
+        # A fixed "go" green (not a theme token) so Solve reads as the
+        # thing to press in both themes.
+        btn.setIcon(_solve_icon(green, t["bg"], t["fg_dim"]))
+        btn.setStyleSheet(
+            "QPushButton#fypaSolveButton {{ border: 1px solid {green};"
+            "  border-radius: 6px; padding: 4px 14px 4px 8px;"
+            "  font-weight: bold; background-color: {bg}; color: {green}; }}"
+            "QPushButton#fypaSolveButton:hover:enabled {{"
+            "  background-color: {hover}; }}"
+            "QPushButton#fypaSolveButton:pressed {{"
+            "  background-color: {green}; color: {bg}; }}"
+            "QPushButton#fypaSolveButton:disabled {{ color: {dim};"
+            "  border-color: {dim}; }}"
+            .format(green=green, bg=t["bg"], hover=t["bg_hover"],
+                    dim=t["fg_dim"]))
+
+    def _solve_button_state(self) -> tuple[bool, str]:
+        """``(enabled, tooltip)`` for the Solve button."""
+        if not self._has_design_to_solve():
+            return False, ("This result isn't linked to a design, so there "
+                           "is nothing to solve it from.")
+        enabled = bool(self._resolve_button_enabled())
+        solveable = self._has_solveable_directives()
+        if enabled and not solveable:
+            tip = ("Rebuild the design with the Bridges-tab changes "
+                   "(nothing to solve yet: the design needs a SOURCE "
+                   "and a SINK on the same rail)")
+        elif enabled and self._awaiting_first_solve:
+            tip = "Run the solver on the loaded design"
+        elif enabled:
+            tip = ("Run the solver again with the current setup and "
+                   "settings")
+        elif not solveable:
+            tip = self._NOTHING_TO_SOLVE_TIP
+        else:
+            tip = ("The result is up to date. Change the setup or a "
+                   "setting, or check Adaptive SMPS gain, to solve again.")
+        return enabled, tip + (" (F5)" if enabled else "")
+
+    def _refresh_solve_button(self) -> None:
+        btn = getattr(self, "_solve_btn", None)
+        if btn is None:
+            return
+        try:
+            enabled, tip = self._solve_button_state()
+        except Exception:  # noqa: BLE001 - a window without editor state
+            enabled, tip = False, ""
+        btn.setEnabled(enabled)
+        btn.setToolTip(tip)
+
+    def _on_solve_requested(self) -> None:
+        """The Solve button, File > Solve and F5."""
+        # The Topology part sidebar shows the result being replaced.
+        if (self.tabs.currentIndex() == getattr(self, "_topology_tab_index", -1)
+                and hasattr(self, "_topology_close_sidebar")):
+            self._topology_close_sidebar()
+        self._on_resolve_clicked()
 
     def _mark_project_dirty(self) -> None:
         """Record that an editor edit happened: the project file is now

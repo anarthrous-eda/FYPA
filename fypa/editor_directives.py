@@ -928,7 +928,7 @@ def has_closed_pdn_loop(loaded, editor_directives, *,
     sink (``SinkSpec`` or an editor SINK). This is the condition
     :attr:`fypa.altium.loader.LoadedProject.is_solveable` checks *after*
     :func:`apply_editor_directives` has run, evaluated here without mutating
-    ``loaded`` so the viewer can grey out ↻ Solve when a click would only
+    ``loaded`` so the viewer can grey out Solve when a click would only
     produce the "Project is not solveable" dialog.
 
     Mirrors the two functions it stands in for:

@@ -230,10 +230,18 @@ def test_topology_panel_covers_the_view_greys_solve_keeps_whatif(qapp):
             self._topology_view.set_empty_panel(EmptyStatePanel())
             self._topology_whatif_btn = QPushButton("What-If")
             self._topology_whatif_btn.setToolTip("what-if tip")
-            self._topology_resolve_btn = QPushButton("Solve")
+            # The window's one Solve button (on the tab row).
+            self._solve_btn = QPushButton("Solve")
+            self.solveable = False
 
         def _resolve_button_enabled(self):
             return False
+
+        def _has_design_to_solve(self):
+            return True
+
+        def _has_solveable_directives(self):
+            return self.solveable
 
     v = _V()
     v._topology_view.show()
@@ -243,11 +251,14 @@ def test_topology_panel_covers_the_view_greys_solve_keeps_whatif(qapp):
     assert panel.geometry() == v._topology_view.viewport().geometry()
     # What-If stays selectable, like the Board's: its panel says why.
     assert v._topology_whatif_btn.isEnabled()
-    assert "set up" in v._topology_resolve_btn.toolTip().lower()
+    # Solve is greyed out and says what is missing.
+    assert not v._solve_btn.isEnabled()
+    assert "nothing to solve yet" in v._solve_btn.toolTip().lower()
 
+    v.solveable = True
     v._topology_show_setup_panel(False)
     assert not panel.isVisible()
     assert v._topology_whatif_btn.isEnabled()
     assert v._topology_whatif_btn.toolTip() == "what-if tip"
-    assert "set up" not in v._topology_resolve_btn.toolTip().lower()
+    assert "nothing to solve yet" not in v._solve_btn.toolTip().lower()
     v._topology_view.close()

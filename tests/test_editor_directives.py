@@ -465,7 +465,7 @@ def test_unlock_strips_legacy_compound_pad():
 
 # ---------------------------------------------------------------------------
 # has_closed_pdn_loop - the read-only "would the solver accept this?" check
-# behind the viewer's greyed-out ↻ Solve button.
+# behind the viewer's greyed-out Solve button.
 # ---------------------------------------------------------------------------
 
 from fypa.altium.annotations import TerminalPin, TerminalSpec  # noqa: E402

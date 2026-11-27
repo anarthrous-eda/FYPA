@@ -1,8 +1,8 @@
 """Hover-to-reveal labels for icon-only overlay buttons.
 
-In Board editor mode Auto setup, Manual setup and Solve are 34 x 34
-icon-only squares, as are the Topology tab's Auto setup, Manual setup,
-What-If and Solve. Resting the mouse on one for a moment widens it and then shows its
+In Board editor mode Auto setup and Manual setup are 34 x 34
+icon-only squares, as are the Topology tab's Auto setup, Manual setup
+and What-If. Resting the mouse on one for a moment widens it and then shows its
 label; leaving it hides the label and shrinks it back to the icon.
 
 The button's stylesheet is expected to keep the icon left-aligned at the

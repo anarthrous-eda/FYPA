@@ -901,7 +901,7 @@ class GLMeshViewer(QOpenGLWidget):
         super().__init__(parent)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
-        # Frame reuse: the overlay buttons (Edit, Solve, the hover-
+        # Frame reuse: the overlay buttons (Edit, What-If, the hover-
         # expanding Auto / Manual setup squares...) are children of this
         # widget, so every move / resize / repaint of one makes Qt repaint
         # the area under it - and QOpenGLWidget answers any paint with a

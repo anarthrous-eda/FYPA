@@ -1807,8 +1807,9 @@ class _ProbeMixin:
         if getattr(self, "overlay_list", None) is not None:
             _restyle_eye_list(self.overlay_list)
 
-        # Editor overlay buttons (edit toggle, free SOURCE/SINK, Solve and
-        # their click-absorbing backdrop) pin their colours inline at build
+        # Editor overlay buttons (edit toggle, free SOURCE/SINK and their
+        # click-absorbing backdrop) and the tab row's Solve button pin
+        # their colours inline at build
         # time, so re-apply the active theme to them here.
         self._restyle_editor_overlay_buttons()
         if getattr(self, "_design_changed_chip", None) is not None:

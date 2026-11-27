@@ -56,9 +56,9 @@ These things change when editor mode is active:
    (**SOURCE**) and a blue down-triangle (**SINK**). These are the free
    marker buttons, covered in 2.4.
 3. **Auto setup…** (yellow sparkle) and **Manual setup…** (wrench)
-   appear above **Solve** in the button column - the same two wizards
+   appear in the button column - the same two wizards
    as on the Topology tab. Like every button in that column (and the
-   Edit, What-If and Solve buttons in viewer mode) they are icon-only
+   Edit and What-If buttons in viewer mode) they are icon-only
    squares; rest the mouse on one for a moment and it widens to show
    its name, shrinking back when the mouse leaves. The What-If button is
    hidden until you leave editor mode.
@@ -437,10 +437,11 @@ click a single object to edit it.
 Editor edits do not run the solver themselves - they queue up changes
 that the **Solve** button then applies.
 
-**Solve.** A green **↻ Solve** button appears at the top-left of
-the viewport whenever there are unsolved edits (just the green ↻ icon;
-hover it to see its name). Click it to re-run the
-solver with the current editor directives applied. The solve reuses
+**Solve.** The green **Solve** button sits at the right-hand end of
+the tab row, in the same place on every tab. It lights up whenever there
+are unsolved edits and is greyed out while the result is up to date (its
+tooltip says why). Click it, press `F5`, or choose **File > Solve** to
+re-run the solver with the current editor directives applied. The solve reuses
 the cached design extraction (geometry, net lookup, mesh) so it is
 significantly faster than a cold load - typically a few seconds rather
 than the tens of seconds of the first launch.

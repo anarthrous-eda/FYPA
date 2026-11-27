@@ -32,7 +32,7 @@ def _altium_import_auto_solve_status_tip(auto_solve: bool) -> str:
             "unchanged, otherwise extract + solve."
         )
     return (
-        "Pick a .PrjPcb; load the design info, then press ↻ Solve "
+        "Pick a .PrjPcb; load the design info, then press Solve "
         "in the viewer to run the simulation."
     )
 
@@ -66,7 +66,7 @@ def _altium_import_worker_options(
             "dialog_title": "Loading project (clean)",
             "dialog_text": (
                 f"Loading design info for {prjpcb_name} (ignoring cache)…\n"
-                "Press ↻ Solve in the viewer when you're ready to run the "
+                "Press Solve in the viewer when you're ready to run the "
                 "simulation."
             ),
         }
@@ -89,7 +89,7 @@ def _altium_import_worker_options(
         "dialog_title": "Loading project",
         "dialog_text": (
             f"Loading design info for {prjpcb_name}…\n"
-            "Press ↻ Solve in the viewer when you're ready to run the "
+            "Press Solve in the viewer when you're ready to run the "
             "simulation."
         ),
     }
@@ -107,7 +107,7 @@ def _altium_import_clean_status_tip(auto_solve: bool) -> str:
     return (
         "Pick a .PrjPcb; ignore any cached design info or solution and "
         "the setup saved beside the board (kept as a .bak), and "
-        "re-extract from scratch (press ↻ Solve when ready)."
+        "re-extract from scratch (press Solve when ready)."
     )
 
 

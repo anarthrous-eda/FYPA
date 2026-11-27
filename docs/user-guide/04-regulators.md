@@ -152,8 +152,8 @@ Initial gain: `3.3 / (5 × 0.9) = 0.73`.
 
 ### Adaptive SMPS gain in the viewer
 
-After the first solve, check **Adaptive SMPS gain** next to **↻ Solve**
-and re-solve. FYPA iterates the SMPS gain using the **solved** input
+After the first solve, check **Adaptive SMPS gain** (*Settings*) and
+press **Solve**. FYPA iterates the SMPS gain using the **solved** input
 voltage at the regulator pads (includes SERIES drop and input-side copper
 IR drop). LDO regulators stay at `PDN_GAIN = 1.0`.
 

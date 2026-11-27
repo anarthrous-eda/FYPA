@@ -54,6 +54,8 @@ _HELP_SECTIONS: tuple[tuple[str, str], ...] = (
   <tr><td><kbd>H</kbd></td><td>Cycle <i>colour scheme</i> forward (Viridis &rarr; Blue&nbsp;&rarr;&nbsp;Red &rarr; &hellip;)</td></tr>
   <tr><td><kbd>Shift</kbd>+<kbd>H</kbd></td><td>Cycle <i>colour scheme</i> backward</td></tr>
   <tr><td><kbd>B</kbd></td><td>Collapse / expand the side panel</td></tr>
+  <tr><td><kbd>F5</kbd></td><td><i>Solve</i> - the green button at the right-hand end of the tab row, on every tab</td></tr>
+  <tr><td><kbd>Ctrl</kbd>+<kbd>R</kbd></td><td><i>Reload Design</i> - read the Altium project from disk again and solve</td></tr>
   <tr><td><kbd>Shift</kbd>+<kbd>B</kbd></td><td>Collapse / expand the right-hand editor panel (editor mode)</td></tr>
 </table>
 <p class='muted'>Shortcuts are window-scoped - they fire when the viewer
@@ -295,7 +297,8 @@ design and, optionally, a folder of datasheets, for you to review and apply.
 edit by hand: pick the net, the part on it and its pins.
 <b>What-If</b> (or <b>W</b>) shows the What-If panel on the right, in place of
 the part sidebar - open / closed is kept separately from the Board's.
-<b>&#8635; Solve</b> runs the solver again with your changes.</p>
+<b>Solve</b>, at the right-hand end of the tab row (or <kbd>F5</kbd>),
+runs the solver again with your changes.</p>
 
 <h3>Keyboard shortcuts</h3>
 <table>
@@ -415,7 +418,7 @@ base properties are on the Properties tab.</p>
     ("What-Ifs", """
 <p>Try a change and see whether it helps or hurts, without losing the
 current (base) result. The <b>What-If</b> button at the top-left of the
-heatmap, next to Solve, shows and hides the panel on the right (<b>W</b>
+heatmap shows and hides the panel on the right (<b>W</b>
 does the same). It is not available in editor mode: the button is hidden
 there, and entering editor mode closes the panel. Drag the panel's left
 edge to make it wider if the tables don't fit.</p>

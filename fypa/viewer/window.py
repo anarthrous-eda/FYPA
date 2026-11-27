@@ -840,7 +840,7 @@ class PdnViewer(
 
             # A returned stub (load-only import, or a project still missing
             # SOURCE/REGULATOR directives) hasn't been through the FEM yet -
-            # keep the ↻ Solve overlay up rather than clearing it. Derive the
+            # keep the Solve button lit rather than clearing it. Derive the
             # state from the solution so every caller stays consistent instead
             # of each one having to remember _mark_awaiting_first_solve().
             was_awaiting = self._awaiting_first_solve

@@ -760,7 +760,7 @@ class _TopologyTabMixin:
         toolbar.addWidget(view_btn)
         toolbar.addStretch()
 
-        # Setup, What-If + Solve: 34 x 34 icon-only squares (6 px radius,
+        # Setup + What-If: 34 x 34 icon-only squares (6 px radius,
         # bold, the Board's badge icons) that widen on hover to reveal their
         # label, like the Board's editor-mode column (hover_expand). The
         # icon is held left at its centred spot (1 + 8 + 16 + 8 + 1) so it
@@ -769,7 +769,6 @@ class _TopologyTabMixin:
         from fypa.viewer.assets import (
             _autosetup_icon,
             _manual_setup_icon,
-            _resolve_icon,
             _whatif_icon,
         )
 
@@ -843,19 +842,12 @@ class _TopologyTabMixin:
         wbtn.toggled.connect(
             lambda on: self._set_whatif_panel_visible(on, where="topology"))
         self._topology_whatif_btn = wbtn
-        # Same green and refresh badge as the Board's Solve button.
-        self._topology_resolve_btn = _big_btn(
-            "Solve", _resolve_icon("#2ca92c", _t["bg"], _t["fg_dim"]),
-            "#2ca92c",
-            "Re-run the solver with the current editor changes applied",
-            self._on_topology_resolve)
-
         self._topology_split = QSplitter(Qt.Horizontal, widget)
         self._topology_view = _TopologyView(self, self._topology_split)
         from fypa.viewer.empty_state import EmptyStatePanel, run_empty_state_action
         self._topology_view.set_empty_panel(EmptyStatePanel(
             lambda what: run_empty_state_action(self, what)))
-        # Setup, What-If + Solve: a column of squares floating over the
+        # Setup + What-If: a column of squares floating over the
         # diagram's top-left corner (like the Board's buttons), so the
         # diagram runs the tab's full width. Parented straight to the view
         # (not its viewport, so they stay put while the diagram scrolls, and
@@ -864,7 +856,7 @@ class _TopologyTabMixin:
         from fypa.viewer.editor.hover_expand import HoverExpander
 
         setup_btns = (self._topology_autosetup_btn, self._topology_manual_btn,
-                      self._topology_whatif_btn, self._topology_resolve_btn)
+                      self._topology_whatif_btn)
         y = 8
         for b in setup_btns:
             b.setParent(self._topology_view)
@@ -879,8 +871,6 @@ class _TopologyTabMixin:
             self._topology_manual_btn: HoverExpander(
                 self._topology_manual_btn, lambda: "Manual setup…", always),
             wbtn: HoverExpander(wbtn, lambda: "What-If", always),
-            self._topology_resolve_btn: HoverExpander(
-                self._topology_resolve_btn, lambda: "Solve", always),
         }
         self._topology_setup_btns = setup_btns
         self._topology_view.set_background(_t["bg"])
@@ -1102,29 +1092,6 @@ class _TopologyTabMixin:
             place()
         if index != getattr(self, "_topology_tab_index", -1):
             self._topology_close_sidebar()
-        else:
-            self._topology_refresh_resolve_btn()
-
-    # --- Solve ------------------------------------------------------------
-
-    def _topology_refresh_resolve_btn(self) -> None:
-        btn = getattr(self, "_topology_resolve_btn", None)
-        if btn is None:
-            return
-        try:
-            enabled = bool(self._resolve_button_enabled())
-        except Exception:  # noqa: BLE001 - viewer without editor state
-            enabled = False
-        btn.setEnabled(enabled)
-        # Icon-only; the label ("Solve") shows only while a hover has the
-        # button expanded.
-        exp = getattr(self, "_topology_expanders", {}).get(btn)
-        if exp is not None:
-            btn.setText(exp.current_label())
-        btn.setToolTip(
-            "Set up a source and a sink first - there is nothing to solve yet."
-            if getattr(self, "_topology_needs_setup", False)
-            else "Re-run the solver with the current editor changes applied")
 
     def _topology_show_setup_panel(self, on: bool) -> None:
         """Show (or hide) the "nothing set up yet" panel over the diagram;
@@ -1149,12 +1116,7 @@ class _TopologyTabMixin:
         show = getattr(view, "show_empty_panel", None)
         if show is not None:
             show(bool(on))
-        self._topology_refresh_resolve_btn()
-
-    def _on_topology_resolve(self) -> None:
-        self._topology_close_sidebar()
-        self._on_resolve_clicked()
-
+        self._refresh_solve_button()
 
     # --- Auto setup / click-to-add --------------------------------------------
 
@@ -1233,7 +1195,7 @@ class _TopologyTabMixin:
             added += 1
         if added:
             self._topology_directives_changed()
-        self._topology_refresh_resolve_btn()
+        self._refresh_solve_button()
         return added, skipped
 
     def _topology_directives_changed(self) -> None:
@@ -1248,7 +1210,7 @@ class _TopologyTabMixin:
                 except Exception:  # noqa: BLE001 - cosmetic refresh
                     pass
         self._schedule_topology_refresh()
-        self._topology_refresh_resolve_btn()
+        self._refresh_solve_button()
 
     def _topology_run_manual_setup(self, *, net: str | None = None,
                                    role: str | None = None) -> None:
@@ -1651,7 +1613,7 @@ class _TopologyTabMixin:
             self._topology_model = None
             return
 
-        self._topology_refresh_resolve_btn()
+        self._refresh_solve_button()
         model = build_topology_model(
             preview_md,
             layout="rows",

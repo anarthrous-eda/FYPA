@@ -1,7 +1,7 @@
 """The What-If panel: try a change, re-solve it, compare against the base.
 
 The panel sits on the right of the heatmap, shown / hidden by the What-If
-button beside Solve (or W). It is viewer-mode only: entering editor mode
+button on the Board (or W). It is viewer-mode only: entering editor mode
 closes it and hides the button. It lists the saved what-ifs, runs one, and switches the viewer between
 
 * **Base** - the design's own result (what every tab normally shows),
@@ -602,7 +602,7 @@ class _WhatIfMixin:
 
     def _build_whatif_panel(self, outer_layout) -> None:
         """Add the panel to the heatmap tab's outer row, right of the plot.
-        Shown / hidden by the What-If button beside Solve (or W)."""
+        Shown / hidden by the What-If button on the Board (or W)."""
         self._init_whatif_state()
         t = _T()
         # Left edge is a drag-to-resize grip (same as the editor panel).

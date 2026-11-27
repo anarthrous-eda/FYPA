@@ -167,6 +167,16 @@ class _FileMenuMixin:
         file_menu.addAction(reload_design)
         self._act_reload_design = reload_design
 
+        solve = QAction("Sol&ve", self)
+        solve.setShortcut("F5")
+        solve.setStatusTip(
+            "Run the solver with the current setup and settings - the Solve "
+            "button at the right-hand end of the tab row."
+        )
+        solve.triggered.connect(lambda: self._on_solve_requested())
+        file_menu.addAction(solve)
+        self._act_solve = solve
+
         # "Solve automatically on import" is set in Settings > General options,
         # not the File menu; the import flow reads the persisted pref directly.
 

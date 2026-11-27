@@ -371,7 +371,7 @@ class _SettingsTabMixin:
         self._settings_auto_solve_check.setToolTip(
             "When checked, Import Altium Design runs the FEM solver immediately "
             "(reusing the solve cache when possible). When unchecked, only "
-            "design info is loaded - press ↻ Solve in the viewer. Persists "
+            "design info is loaded - press Solve in the viewer. Persists "
             "across launches."
         )
         self._settings_auto_solve_check.toggled.connect(

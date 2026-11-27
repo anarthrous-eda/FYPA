@@ -208,11 +208,10 @@ def _question_badge_pixmap(badge: str, mark: str) -> QPixmap:
     return pm
 
 
-def _refresh_badge_pixmap(badge: str, mark: str) -> QPixmap:
-    """A filled circle with a clockwise circular arrow knocked out of it -
-    the Solve icon, drawn in the same style as the What-If
-    question badge. 20 x 20 logical px at 2x."""
-    import math
+def _play_badge_pixmap(badge: str, mark: str) -> QPixmap:
+    """A filled circle with a play triangle knocked out of it - the Solve
+    icon, drawn in the same style as the What-If question badge. 20 x 20
+    logical px at 2x."""
     scale = 2
     pm = QPixmap(20 * scale, 20 * scale)
     pm.setDevicePixelRatio(scale)
@@ -222,42 +221,21 @@ def _refresh_badge_pixmap(badge: str, mark: str) -> QPixmap:
     p.setPen(Qt.NoPen)
     p.setBrush(QColor(badge))
     p.drawEllipse(QRectF(1.5, 1.5, 17.0, 17.0))
-    # Arc: from 20 deg, clockwise 280 deg round to the top (100 deg), leaving
-    # a gap at the top-right that the arrowhead points into.
-    cx, cy, r = 10.0, 10.0, 4.4
-    start, sweep = 20.0, -280.0
-    arc = QPainterPath()
-    oval = QRectF(cx - r, cy - r, 2 * r, 2 * r)
-    arc.arcMoveTo(oval, start)
-    arc.arcTo(oval, start, sweep)
-    pen = QPen(QColor(mark), 1.8)
-    pen.setCapStyle(Qt.FlatCap)
-    p.setPen(pen)
-    p.setBrush(Qt.NoBrush)
-    p.drawPath(arc)
-    # Arrowhead at the arc's end, pointing along the clockwise direction.
-    end = math.radians(start + sweep)
-    ex, ey = cx + r * math.cos(end), cy - r * math.sin(end)
-    dx, dy = math.sin(end), math.cos(end)        # clockwise tangent (screen)
-    nx, ny = -dy, dx                             # normal to it
-    tip = QPointF(ex + dx * 3.3, ey + dy * 3.3)
-    w = 3.0
-    head = QPolygonF([tip,
-                      QPointF(ex + nx * w, ey + ny * w),
-                      QPointF(ex - nx * w, ey - ny * w)])
-    p.setPen(Qt.NoPen)
+    # Pointing right, set a touch right of centre: a triangle centred on
+    # its bounding box looks pushed to the left.
     p.setBrush(QColor(mark))
-    p.drawPolygon(head)
+    p.drawPolygon(QPolygonF([QPointF(7.5, 5.7), QPointF(14.6, 10.0),
+                             QPointF(7.5, 14.3)]))
     p.end()
     return pm
 
 
-def _resolve_icon(green: str, bg: str, dim: str) -> QIcon:
-    """Icon for the Solve buttons: a green refresh badge, grey
-    when the button is disabled."""
+def _solve_icon(green: str, bg: str, dim: str) -> QIcon:
+    """Icon for the Solve button: a green play badge, grey when the button
+    is disabled."""
     icon = QIcon()
-    icon.addPixmap(_refresh_badge_pixmap(green, bg), QIcon.Normal)
-    icon.addPixmap(_refresh_badge_pixmap(dim, bg), QIcon.Disabled)
+    icon.addPixmap(_play_badge_pixmap(green, bg), QIcon.Normal)
+    icon.addPixmap(_play_badge_pixmap(dim, bg), QIcon.Disabled)
     return icon
 
 
