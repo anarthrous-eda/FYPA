@@ -189,6 +189,19 @@ def test_cut_clearances_spares_the_vias_own_net_and_other_layers():
     assert not cut[1].shape.contains(sg.Point(0.2, 0.0))
 
 
+def test_a_filled_added_via_is_solved_as_filled(loaded):
+    """The fill reaches the solve: the result's via record (what the barrel
+    model reads too) says conductive fill."""
+    from fypa.altium.loader import build_solve_metadata
+    filled = dataclasses.replace(_via(), ipc4761_via_type=10,
+                                 fill_material="Copper")
+    out = apply_added_vias(loaded, [filled])[0]
+    raw = out.extracted.vias[-1]
+    assert (raw.ipc4761_via_type, raw.fill_material) == (10, "Copper")
+    md = build_solve_metadata(out, None)
+    assert md["vias"][-1]["is_conductive_fill"] is True
+
+
 def test_unusable_vias_are_skipped_with_a_warning(loaded):
     out, warnings, n = apply_added_vias(loaded, [
         _via(net="NO_SUCH_NET"),

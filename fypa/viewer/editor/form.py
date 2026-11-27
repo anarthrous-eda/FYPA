@@ -2282,7 +2282,14 @@ class _EditorFormMixin:
         self._on_editor_remove()
 
     def _undo_marker_action(self) -> None:
-        """Undo the most recent free-marker edit (move or delete)."""
+        """Undo the most recent free-marker edit (move or delete). Outside
+        Edit Mode, with the What-If panel open on the Board, it undoes the
+        selected what-if's last punched-via change instead."""
+        if (not self._editor_mode
+                and getattr(self, "_whatif_punch_undo_available",
+                            lambda: False)()):
+            self._whatif_punch_undo()
+            return
         if not self._editor_mode or not self._marker_undo:
             return
         rec = self._marker_undo[-1]
@@ -2324,7 +2331,13 @@ class _EditorFormMixin:
             self._after_marker_undo_redo(d, rec.get("prev_selection"))
 
     def _redo_marker_action(self) -> None:
-        """Redo the most recently undone free-marker edit."""
+        """Redo the most recently undone free-marker edit (or, outside Edit
+        Mode with the What-If panel open, the last undone via change)."""
+        if (not self._editor_mode
+                and getattr(self, "_whatif_punch_undo_available",
+                            lambda: False)()):
+            self._whatif_punch_undo(redo=True)
+            return
         if not self._editor_mode or not self._marker_redo:
             return
         rec = self._marker_redo[-1]

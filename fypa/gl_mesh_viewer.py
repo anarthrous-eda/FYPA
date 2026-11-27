@@ -869,8 +869,10 @@ class GLMeshViewer(QOpenGLWidget):
     #   x0_mm, y0_mm, x1_mm, y1_mm, additive, toggle
     editorMarqueeSelected = Signal(float, float, float, float, bool, bool)
     # The same rubber band in What-If punch mode (set_punch_mode): the box
-    # in world mm, press corner first. x0_mm, y0_mm, x1_mm, y1_mm
-    punchBandSwept = Signal(float, float, float, float)
+    # in world mm, press corner first, and whether Shift was held at the
+    # press (remove the punched vias in the box rather than add a grid).
+    # x0_mm, y0_mm, x1_mm, y1_mm, shift
+    punchBandSwept = Signal(float, float, float, float, bool)
     # Top-right legend chip row clicked. Carries the row's ``key`` as
     # supplied via :meth:`set_overlay_top_right_legend`. The host uses it
     # to toggle the corresponding marker category's visibility.
@@ -5948,7 +5950,7 @@ class GLMeshViewer(QOpenGLWidget):
                     self.editorMarqueeSelected.emit(
                         wx0, wy0, wx1, wy1, additive, toggle)
                 else:
-                    self.punchBandSwept.emit(wx0, wy0, wx1, wy1)
+                    self.punchBandSwept.emit(wx0, wy0, wx1, wy1, additive)
                 ev.accept()
                 return
             if not was_panning:

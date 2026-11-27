@@ -413,7 +413,12 @@ the base value.</li>
 <li><b>Punch vias</b> adds vias to the selected what-if (2D Board, base
 view): click copper for one via, drag for a grid at the <b>Pitch</b> beside
 it, drag an added via to move it (it clears the what-if's result), click
-one to remove it, <b>Esc</b> to stop. <b>Via</b> picks one of the board's
+one to remove it, Shift-drag a box to remove those inside, <b>Esc</b> to
+stop. <b>Undo</b> / <b>Redo</b> (<kbd>Ctrl+Z</kbd> / <kbd>Ctrl+Y</kbd>)
+step back through via changes. The list shows each added via (click to go
+to it, double-click X / Y to type a position, current after a run);
+<b>Export</b> copies or saves it as CSV with Altium coordinates, to place
+the vias in the layout. <b>Via</b> picks one of the board's
 via types (with a <b>Span</b> choice for blind / buried / micro types), or
 copies the nearest via on the net. With no what-if selected it makes a
 vias-only one. Other nets' pours and planes the via passes

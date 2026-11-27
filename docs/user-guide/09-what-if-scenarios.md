@@ -65,18 +65,39 @@ the Board. It works in 2D on the base view: pressing it switches to both.
   while the spot passes the rules below, and stops at the last spot that
   did. Moving a via clears the What-If's old result, so it shows **not
   run** until you run it again.
-- **Click a via you added** to remove it. **Clear (n)** removes them all.
+- **Click a via you added** to remove it. **Shift-drag** a box to remove
+  every added via inside it. **Clear (n)** removes them all.
 - **Esc**, the button again, switching to 3D or to another view stops it.
+
+**Undo** / **Redo** (or **Ctrl+Z** / **Ctrl+Y** while the panel is open,
+outside Edit Mode) step back through the What-If's via changes: a click,
+a whole grid, a move, a box removal or **Clear** is one step each. Undoing
+a change made after a run brings that run's result back, as long as the
+What-If hasn't been run again or had its clearance changed since.
+
+The **list** under the panel buttons shows each added via: its net, X / Y,
+size and span, and after a run its current. Click a row to zoom to the via
+on the Board. Double-click X or Y to type an exact position; a position
+that breaks the placement rules is refused, with the reason in a toast.
+
+**Export** copies the list to the clipboard (paste it into a spreadsheet)
+or saves it as CSV, with each via's net, X / Y in mm and mil, drill, pad,
+start and end layer, kind and fill. X / Y are the coordinates Altium shows,
+measured from the board origin, so the vias can be placed at exactly those
+spots in the layout.
 
 **Via** picks what is punched:
 
 - **Nearest on net (auto)**, the default: each new via copies the drill,
-  pad and layer span of the nearest via already on that net. If the net
+  pad, layer span and fill (IPC-4761 type and material) of the nearest via
+  already on that net. If the net
   has no vias it copies the board's most common via, and on a board with no
   vias it is a 0.3 / 0.6 mm through via.
 - **One of the board's via types**, listed by drill / pad size with their
-  kind and how many the board has, most used first, for example
-  `0.3 / 0.6 mm through (1234)` or `0.1 / 0.25 mm micro (56)`.
+  kind, fill and how many the board has, most used first, for example
+  `0.3 / 0.6 mm through (1234)` or `0.1 / 0.25 mm micro (56)`. A filled
+  and an unfilled via of the same size are listed as two types, because a
+  conductive fill lowers the via's resistance in the solve.
 
 A type that doesn't run through every layer (blind, buried or micro) shows
 a **Span** choice beside it: the layer pairs the board uses that type

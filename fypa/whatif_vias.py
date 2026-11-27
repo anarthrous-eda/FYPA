@@ -38,6 +38,10 @@ class AddedVia:
     layer_end: int
     diameter_mm: float
     hole_diameter_mm: float
+    # IPC-4761 protection / fill, copied from the via it was modelled on:
+    # a conductive fill shunts the barrel, so it changes the solve.
+    ipc4761_via_type: int = 0
+    fill_material: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -48,6 +52,8 @@ class AddedVia:
             "layer_end": int(self.layer_end),
             "diameter_mm": float(self.diameter_mm),
             "hole_diameter_mm": float(self.hole_diameter_mm),
+            "ipc4761_via_type": int(self.ipc4761_via_type),
+            "fill_material": str(self.fill_material),
         }
 
     @classmethod
@@ -66,6 +72,8 @@ class AddedVia:
                 layer_end=int(d["layer_end"]),
                 diameter_mm=float(d["diameter_mm"]),
                 hole_diameter_mm=float(d["hole_diameter_mm"]),
+                ipc4761_via_type=int(d.get("ipc4761_via_type") or 0),
+                fill_material=str(d.get("fill_material") or ""),
             )
         except (KeyError, TypeError, ValueError):
             return None
@@ -239,6 +247,8 @@ def resolve_added_vias(extracted, vias: list[AddedVia]):
             layer_start=int(v.layer_start),
             layer_end=int(v.layer_end),
             net_index=index_of[v.net],
+            ipc4761_via_type=int(v.ipc4761_via_type),
+            fill_material=str(v.fill_material),
         ))
     return raw, warnings
 
@@ -304,13 +314,36 @@ class ViaTemplate:
     diameter_mm: float
     hole_diameter_mm: float
     source: str     # human-readable, e.g. "nearest via on GND"
+    ipc4761_via_type: int = 0
+    fill_material: str = ""
 
     def make(self, x_mm: float, y_mm: float, net: str) -> AddedVia:
         return AddedVia(x_mm=float(x_mm), y_mm=float(y_mm), net=net,
                         layer_start=self.layer_start,
                         layer_end=self.layer_end,
                         diameter_mm=self.diameter_mm,
-                        hole_diameter_mm=self.hole_diameter_mm)
+                        hole_diameter_mm=self.hole_diameter_mm,
+                        ipc4761_via_type=self.ipc4761_via_type,
+                        fill_material=self.fill_material)
+
+
+def _md_fill(r: dict) -> tuple[int, str]:
+    """``(ipc4761_via_type, fill_material)`` of a ``metadata["vias"]``
+    record (0 / "" when it carries none)."""
+    try:
+        t = int(r.get("ipc4761_via_type") or 0)
+    except (TypeError, ValueError):
+        t = 0
+    return t, str(r.get("fill_material") or "")
+
+
+def fill_text(ipc4761_via_type: int, fill_material: str = "") -> str:
+    """``""`` for an unprotected via, else its IPC-4761 label (e.g.
+    ``"V (fill) · Copper"``) - the Vias tab's wording."""
+    if not int(ipc4761_via_type or 0):
+        return ""
+    from fypa.altium.loader import ipc4761_label
+    return ipc4761_label(int(ipc4761_via_type), str(fill_material or ""))
 
 
 def _usable_md_via(r: dict, enabled: list[int]) -> bool:
@@ -335,17 +368,19 @@ def via_template(md_vias: list[dict], net: str, x_mm: float, y_mm: float,
         return ViaTemplate(int(r["layer_start"]), int(r["layer_end"]),
                            float(r["diameter_mm"]),
                            float(r["hole_diameter_mm"]),
-                           f"copied from the nearest via on {net}")
+                           f"copied from the nearest via on {net}",
+                           *_md_fill(r))
     if usable:
         counts: dict[tuple, int] = {}
         for r in usable:
             k = (int(r["layer_start"]), int(r["layer_end"]),
                  round(float(r["diameter_mm"]), 4),
-                 round(float(r["hole_diameter_mm"]), 4))
+                 round(float(r["hole_diameter_mm"]), 4)) + _md_fill(r)
             counts[k] = counts.get(k, 0) + 1
         k = max(counts, key=lambda k: (counts[k], -k[3]))
         return ViaTemplate(k[0], k[1], k[2], k[3],
-                           f"the board's most common via ({net} has none)")
+                           f"the board's most common via ({net} has none)",
+                           k[4], k[5])
     return ViaTemplate(enabled[0], enabled[-1], DEFAULT_DIAMETER_MM,
                        DEFAULT_HOLE_MM, "a 0.3 / 0.6 mm through via "
                        "(the board has no vias to copy)")
@@ -381,10 +416,14 @@ class ViaType:
     hole_diameter_mm: float
     count: int
     spans: tuple[ViaSpan, ...]
+    # IPC-4761 fill: a filled and an unfilled via of one size are two types.
+    ipc4761_via_type: int = 0
+    fill_material: str = ""
 
     @property
-    def key(self) -> tuple[float, float]:
-        return (round(self.hole_diameter_mm, 4), round(self.diameter_mm, 4))
+    def key(self) -> tuple:
+        return (round(self.hole_diameter_mm, 4), round(self.diameter_mm, 4),
+                int(self.ipc4761_via_type), self.fill_material)
 
     @property
     def needs_span_choice(self) -> bool:
@@ -395,7 +434,8 @@ class ViaType:
     def template(self, span: ViaSpan) -> ViaTemplate:
         return ViaTemplate(span.layer_start, span.layer_end,
                            self.diameter_mm, self.hole_diameter_mm,
-                           f"the chosen {span.kind} via type")
+                           f"the chosen {span.kind} via type",
+                           self.ipc4761_via_type, self.fill_material)
 
 
 def board_via_types(md_vias: list[dict], enabled: list[int]
@@ -412,8 +452,10 @@ def board_via_types(md_vias: list[dict], enabled: list[int]
         if pos[a] > pos[b]:
             a, b = b, a                       # top first
         d, h = float(r["diameter_mm"]), float(r["hole_diameter_mm"])
-        entry = sizes.setdefault((round(h, 4), round(d, 4)),
-                                 {"d": d, "h": h, "n": 0, "spans": {}})
+        fill = _md_fill(r)
+        entry = sizes.setdefault((round(h, 4), round(d, 4)) + fill,
+                                 {"d": d, "h": h, "n": 0, "spans": {},
+                                  "fill": fill})
         entry["n"] += 1
         sp = entry["spans"].setdefault(
             (a, b), [0, via_record_kind(r, enabled)])
@@ -423,7 +465,8 @@ def board_via_types(md_vias: list[dict], enabled: list[int]
         spans = sorted(
             (ViaSpan(a, b, n, kind) for (a, b), (n, kind) in e["spans"].items()),
             key=lambda sp: (-sp.count, pos[sp.layer_start]))
-        out.append(ViaType(e["d"], e["h"], e["n"], tuple(spans)))
+        out.append(ViaType(e["d"], e["h"], e["n"], tuple(spans),
+                           *e["fill"]))
     out.sort(key=lambda t: (-t.count, t.hole_diameter_mm))
     return out
 
@@ -435,8 +478,9 @@ def via_type_label(t: ViaType) -> str:
     for sp in t.spans:
         if sp.kind not in kinds:
             kinds.append(sp.kind)
+    fill = fill_text(t.ipc4761_via_type, t.fill_material)
     return (f"{t.hole_diameter_mm:.3g} / {t.diameter_mm:.3g} mm "
-            f"{'/'.join(kinds)} ({t.count})")
+            f"{'/'.join(kinds)}{', ' + fill if fill else ''} ({t.count})")
 
 
 def span_label(layer_start: int, layer_end: int,
@@ -456,8 +500,75 @@ def via_props_text(via: AddedVia, enabled: list[int],
         a, b = b, a
     kind = classify_via(a, b, via_layer_span(a, b, list(enabled)),
                         list(enabled), via.hole_diameter_mm)
+    fill = fill_text(via.ipc4761_via_type, via.fill_material)
     return (f"{via.hole_diameter_mm:.3g} / {via.diameter_mm:.3g} mm, "
-            f"{span_label(a, b, names)} ({kind})")
+            f"{span_label(a, b, names)} ({kind}"
+            f"{', ' + fill if fill else ''})")
+
+
+# --- export (to add the vias in the layout tool) --------------------------------
+
+EXPORT_COLUMNS: tuple[str, ...] = (
+    "#", "Net", "X (mm)", "Y (mm)", "X (mil)", "Y (mil)", "Drill (mm)",
+    "Pad (mm)", "Start layer", "End layer", "Kind", "Fill")
+
+
+def export_rows(vias: list[AddedVia], enabled: list[int],
+                names: dict[int, str]) -> list[list[str]]:
+    """One row per via, :data:`EXPORT_COLUMNS` order. X / Y are board
+    coordinates as Altium shows them (relative to the board origin), so the
+    vias can be placed at exactly those spots in the layout."""
+    from fypa.via_kinds import classify_via, via_layer_span
+    pos = {lid: i for i, lid in enumerate(enabled)}
+    out = []
+    for i, v in enumerate(vias, 1):
+        a, b = v.layer_start, v.layer_end
+        if a in pos and b in pos and pos[a] > pos[b]:
+            a, b = b, a
+        kind = classify_via(a, b, via_layer_span(a, b, list(enabled)),
+                            list(enabled), v.hole_diameter_mm)
+        out.append([
+            str(i), v.net, f"{v.x_mm:.4f}", f"{v.y_mm:.4f}",
+            f"{v.x_mm / 0.0254:.2f}", f"{v.y_mm / 0.0254:.2f}",
+            f"{v.hole_diameter_mm:.4g}", f"{v.diameter_mm:.4g}",
+            names.get(a, f"L{a}"), names.get(b, f"L{b}"), kind,
+            fill_text(v.ipc4761_via_type, v.fill_material) or "none",
+        ])
+    return out
+
+
+def export_text(vias: list[AddedVia], enabled: list[int],
+                names: dict[int, str], sep: str = ",") -> str:
+    """The vias as CSV (``sep=","``) or tab-separated text (pastes into a
+    spreadsheet as columns), with a header row."""
+    import csv
+    import io
+    buf = io.StringIO()
+    w = csv.writer(buf, delimiter=sep, lineterminator="\n")
+    w.writerow(EXPORT_COLUMNS)
+    w.writerows(export_rows(vias, enabled, names))
+    return buf.getvalue()
+
+
+def vias_in_box(vias: list[AddedVia], x0: float, y0: float, x1: float,
+                y1: float) -> list[int]:
+    """Indices of the vias whose centre lies in the box (any corner order)."""
+    lo_x, hi_x = sorted((x0, x1))
+    lo_y, hi_y = sorted((y0, y1))
+    return [i for i, v in enumerate(vias)
+            if lo_x <= v.x_mm <= hi_x and lo_y <= v.y_mm <= hi_y]
+
+
+def via_short_text(via: AddedVia, enabled: list[int]) -> str:
+    """``"0.3/0.6 through"`` (``+fill`` when filled) - for a narrow column;
+    :func:`via_props_text` has the layers and fill in full."""
+    from fypa.via_kinds import classify_via, via_layer_span
+    a, b = via.layer_start, via.layer_end
+    kind = classify_via(a, b, via_layer_span(a, b, list(enabled)),
+                        list(enabled), via.hole_diameter_mm)
+    fill = " +fill" if via.ipc4761_via_type else ""
+    return (f"{via.hole_diameter_mm:.3g}/{via.diameter_mm:.3g} {kind}"
+            f"{fill}")
 
 
 def span_layer_ids(layer_start: int, layer_end: int,

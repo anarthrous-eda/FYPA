@@ -23,12 +23,21 @@ import dataclasses
 
 import numpy as np
 import shapely.geometry as _sg
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
+    QMenu,
     QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QToolButton,
 )
 
 from fypa import whatif as W
@@ -139,10 +148,223 @@ class _WhatIfPunchMixin:
         row2.addWidget(board_btn)
         row2.addStretch(1)
         lay.addLayout(row2)
+
+        # Undo / Redo (also Ctrl+Z / Ctrl+Y) and Export of the added vias.
+        row3 = QHBoxLayout()
+        self._whatif_punch_undo_btn = QPushButton("Undo")
+        self._whatif_punch_undo_btn.setToolTip(
+            "Undo the last change to this what-if's vias (Ctrl+Z).")
+        self._whatif_punch_undo_btn.clicked.connect(
+            lambda: self._whatif_punch_undo())
+        self._whatif_punch_redo_btn = QPushButton("Redo")
+        self._whatif_punch_redo_btn.setToolTip("Redo (Ctrl+Y).")
+        self._whatif_punch_redo_btn.clicked.connect(
+            lambda: self._whatif_punch_undo(redo=True))
+        exp = QToolButton()
+        exp.setText("Export   ")
+        exp.setPopupMode(QToolButton.InstantPopup)
+        exp.setToolTip(
+            "The added vias with their net, X / Y (as Altium shows them, "
+            "from the board origin), drill, pad, layers and fill - to place "
+            "them in the layout.")
+        exp_menu = QMenu(exp)
+        exp_menu.addAction("Copy to clipboard",
+                           self._on_whatif_punch_copy)
+        exp_menu.addAction("Save as CSV…", self._on_whatif_punch_save_csv)
+        exp.setMenu(exp_menu)
+        self._whatif_punch_export_btn = exp
+        for b in (self._whatif_punch_undo_btn, self._whatif_punch_redo_btn,
+                  exp):
+            row3.addWidget(b)
+        row3.addStretch(1)
+        lay.addLayout(row3)
+
+        # The added vias: click a row to go to it; X / Y are editable.
+        table = QTableWidget(0, len(self._PUNCH_TABLE_COLUMNS))
+        table.setHorizontalHeaderLabels(list(self._PUNCH_TABLE_COLUMNS))
+        table.verticalHeader().setVisible(False)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SingleSelection)
+        table.setWordWrap(False)
+        table.verticalHeader().setDefaultSectionSize(20)
+        hdr = table.horizontalHeader()
+        hdr.setSectionResizeMode(QHeaderView.ResizeToContents)
+        hdr.setStretchLastSection(True)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        table.setToolTip(
+            "This what-if's added vias. Click a row to show it on the "
+            "Board; double-click X or Y to type a new position (it must "
+            "still pass the placement rules). I is the via's current from "
+            "the last run.")
+        table.itemChanged.connect(self._on_whatif_punch_table_edited)
+        table.cellClicked.connect(self._on_whatif_punch_table_clicked)
+        self._whatif_punch_table = table
+        self._whatif_punch_table_sig = None
+        lay.addWidget(table)
+        table.setVisible(False)          # shown once there are vias
         gl = getattr(self, "_gl_viewer", None)
         sig = getattr(gl, "punchBandSwept", None)
         if sig is not None:
             sig.connect(self._on_whatif_punch_band)
+
+    # --- the list of added vias, and export ---------------------------------
+
+    _PUNCH_TABLE_COLUMNS = ("#", "Net", "X (mm)", "Y (mm)", "Via", "I (A)")
+    _PUNCH_COL_X, _PUNCH_COL_Y = 2, 3
+
+    def _whatif_punch_currents(self, s) -> dict[int, float]:
+        """``{via index: current (A)}`` from ``s``'s result when it is in
+        memory and still belongs to these vias (status OK)."""
+        if s is None or s.status != W.STATUS_OK or not s.added_vias:
+            return {}
+        pair = None
+        loaded = getattr(self, "_whatif_loaded", None)
+        if loaded is not None and loaded[0] == s.id:
+            pair = (loaded[1], loaded[2])
+        if pair is None:
+            return {}
+        cache = getattr(self, "_whatif_punch_current_cache", None)
+        key = (s.id, s.run_at)
+        if cache is None or cache[0] != key:
+            rows = self._whatif_added_via_rows(pair[0], pair[1])
+            cache = self._whatif_punch_current_cache = (key, rows)
+        out: dict[int, float] = {}
+        for r in cache[1]:
+            cur = r.get("current")
+            if cur is None:
+                continue
+            for i, v in enumerate(s.added_vias):
+                if (abs(v.x_mm - float(r["x_mm"])) < 1e-6
+                        and abs(v.y_mm - float(r["y_mm"])) < 1e-6):
+                    out[i] = float(cur)
+                    break
+        return out
+
+    def _fill_whatif_punch_table(self) -> None:
+        """List the selected what-if's added vias (refilled only when they,
+        or their currents, changed - so an edit in progress isn't lost)."""
+        table = getattr(self, "_whatif_punch_table", None)
+        if table is None:
+            return
+        s = self._whatif_selected()
+        vias = list(s.added_vias) if s is not None else []
+        currents = self._whatif_punch_currents(s)
+        sig = (s.id if s is not None else None, tuple(vias),
+               tuple(sorted(currents.items())))
+        if sig == self._whatif_punch_table_sig:
+            return
+        self._whatif_punch_table_sig = sig
+        board = self._whatif_punch_board()
+        table.blockSignals(True)
+        table.setRowCount(len(vias))
+        for i, v in enumerate(vias):
+            cur = currents.get(i)
+            props = WV.via_props_text(v, board["enabled"], board["names"])
+            cells = [str(i + 1), v.net, f"{v.x_mm:.4f}", f"{v.y_mm:.4f}",
+                     WV.via_short_text(v, board["enabled"]),
+                     "-" if cur is None else f"{cur:.4g}"]
+            for col, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                item.setToolTip(props)
+                flags = item.flags() & ~Qt.ItemIsEditable
+                if col in (self._PUNCH_COL_X, self._PUNCH_COL_Y):
+                    flags |= Qt.ItemIsEditable
+                item.setFlags(flags)
+                table.setItem(i, col, item)
+        table.blockSignals(False)
+        table.setVisible(bool(vias))
+        # As tall as its rows (up to 6 before it scrolls), no empty space.
+        rows_h = table.verticalHeader().defaultSectionSize() * min(
+            len(vias), 6)
+        table.setFixedHeight(table.horizontalHeader().sizeHint().height()
+                             + rows_h + 2 * table.frameWidth() + 2)
+
+    def _on_whatif_punch_table_edited(self, item) -> None:
+        """A typed X or Y: move the via there if it passes the rules."""
+        col = item.column()
+        s = self._whatif_selected()
+        if (s is None or col not in (self._PUNCH_COL_X, self._PUNCH_COL_Y)
+                or not 0 <= item.row() < len(s.added_vias)):
+            return
+        idx = item.row()
+        old = s.added_vias[idx]
+        try:
+            value = float(item.text().strip().replace(",", "."))
+        except ValueError:
+            value = None
+        why = "" if value is not None else f"{item.text()!r} isn't a number"
+        cand = None
+        if value is not None:
+            cand = dataclasses.replace(
+                old, **({"x_mm": value} if col == self._PUNCH_COL_X
+                        else {"y_mm": value}))
+            why = self._whatif_punch_move_problem(
+                s, idx, cand, self._whatif_punch_board())
+        if why:
+            self.statusBar().showMessage(f"Via not moved: {why}.", 6000)
+            self._whatif_punch_table_sig = None      # put the old value back
+            self._fill_whatif_punch_table()
+            return
+        if cand == old:
+            return
+        self._whatif_punch_record(s)
+        s.added_vias[idx] = cand
+        self._whatif_punch_changed(s)
+        self.statusBar().showMessage(
+            f"Moved the via on {cand.net} to ({cand.x_mm:.4f}, "
+            f"{cand.y_mm:.4f}) mm.", 4000)
+
+    def _on_whatif_punch_table_clicked(self, row: int, _col: int) -> None:
+        """Show the clicked via on the Board (zoom in, yellow ring)."""
+        s = self._whatif_selected()
+        if s is None or not 0 <= row < len(s.added_vias):
+            return
+        v = s.added_vias[row]
+        jump = getattr(self, "_jump_to_xy", None)
+        if jump is not None:
+            jump(v.x_mm, v.y_mm, WV.span_layer_ids(
+                v.layer_start, v.layer_end,
+                self._whatif_punch_board()["enabled"]))
+
+    def _whatif_punch_export_text(self, sep: str) -> str:
+        s = self._whatif_selected()
+        board = self._whatif_punch_board()
+        return WV.export_text(list(s.added_vias) if s else [],
+                              board["enabled"], board["names"], sep)
+
+    def _on_whatif_punch_copy(self) -> None:
+        s = self._whatif_selected()
+        if s is None or not s.added_vias:
+            return
+        QApplication.clipboard().setText(self._whatif_punch_export_text("\t"))
+        self.statusBar().showMessage(
+            f"Copied {len(s.added_vias)} via(s) - paste into a spreadsheet; "
+            "X / Y are as Altium shows them.", 5000)
+
+    def _on_whatif_punch_save_csv(self) -> None:
+        from pathlib import Path
+
+        from fypa.viewer.theme import _file_dialog_options
+        s = self._whatif_selected()
+        if s is None or not s.added_vias:
+            return
+        _sol, md = self._whatif_base_pair()
+        folder = Path(str((md or {}).get("prjpcb_path") or ".")).parent
+        safe = "".join(c if c.isalnum() or c in " -_" else "_"
+                       for c in s.name).strip() or "what-if"
+        path_str, _ = QFileDialog.getSaveFileName(
+            self, "Save added vias", str(folder / f"{safe} vias.csv"),
+            "CSV (*.csv);;All files (*)", options=_file_dialog_options())
+        if not path_str:
+            return
+        try:
+            with open(path_str, "w", encoding="utf-8", newline="") as f:
+                f.write(self._whatif_punch_export_text(","))
+        except OSError as e:
+            self.statusBar().showMessage(f"Couldn't save: {e}", 8000)
+            return
+        self.statusBar().showMessage(
+            f"Saved {len(s.added_vias)} via(s) to {path_str}.", 5000)
 
     # --- via type choice -----------------------------------------------------
 
@@ -273,6 +495,9 @@ class _WhatIfPunchMixin:
         spin.setEnabled(editable)
         self._whatif_punch_clearance_reset_btn.setEnabled(
             editable and s.via_clearance_mm is not None)
+        self._whatif_punch_export_btn.setEnabled(n > 0)
+        self._sync_whatif_punch_undo_buttons()
+        self._fill_whatif_punch_table()
         # Panel opened / closed, another what-if selected or deleted: the
         # markers on the Board follow.
         if self._whatif_punch_marker_sig() != getattr(
@@ -518,6 +743,8 @@ class _WhatIfPunchMixin:
             "sid": s.id, "idx": idx, "start": v, "last_valid": v,
             "press": (float(x), float(y)), "moved": False, "why": "",
             "board": self._whatif_punch_board(),
+            # Undo point: taken before the drag touches the via.
+            "snap": self._whatif_punch_snapshot(s),
         }
 
     def _whatif_punch_drag_moved(self, x: float, y: float) -> None:
@@ -555,6 +782,7 @@ class _WhatIfPunchMixin:
             return
         if not d["moved"]:
             # A click on the via: remove it.
+            self._whatif_punch_record(s, d["snap"])
             v = s.added_vias.pop(d["idx"])
             self._whatif_punch_changed(s)
             self.statusBar().showMessage(
@@ -567,6 +795,7 @@ class _WhatIfPunchMixin:
             self.statusBar().showMessage(
                 f"Via not moved: {d['why'] or 'no valid spot'}.", 6000)
             return
+        self._whatif_punch_record(s, d["snap"])
         self._whatif_punch_changed(s)
         msg = (f"Moved the via on {final.net} to ({final.x_mm:.3f}, "
                f"{final.y_mm:.3f}) mm")
@@ -641,7 +870,9 @@ class _WhatIfPunchMixin:
                 via = WV.AddedVia(
                     float(src["x_mm"]), float(src["y_mm"]), str(src["net"]),
                     int(src["layer_start"]), int(src["layer_end"]),
-                    float(src["diameter_mm"]), float(src["hole_diameter_mm"]))
+                    float(src["diameter_mm"]), float(src["hole_diameter_mm"]),
+                    int(src.get("ipc4761_via_type") or 0),
+                    str(src.get("fill_material") or ""))
                 text += "   (" + WV.via_props_text(
                     via, [int(i) for i in md.get(
                         "enabled_copper_layer_ids") or []], names) + ")"
@@ -712,6 +943,7 @@ class _WhatIfPunchMixin:
             return
         hit = self._whatif_punched_index_at(s, x, y)
         if hit is not None:
+            self._whatif_punch_record(s)
             v = s.added_vias.pop(hit)
             self._whatif_punch_changed(s)
             self.statusBar().showMessage(
@@ -732,6 +964,7 @@ class _WhatIfPunchMixin:
         if via is None:
             self.statusBar().showMessage(f"No via added: {why}.", 6000)
             return
+        self._whatif_punch_record(s)
         s.added_vias.append(via)
         self._whatif_punch_changed(s)
         tmpl = self._whatif_punch_template(board, net, x, y)
@@ -744,14 +977,30 @@ class _WhatIfPunchMixin:
         self.statusBar().showMessage(msg + ".", 5000)
 
     def _on_whatif_punch_band(self, x0: float, y0: float,
-                              x1: float, y1: float) -> None:
+                              x1: float, y1: float,
+                              remove: bool = False) -> None:
         """A drag in punch mode: a grid of vias over the swept box, on the
         net under the corner the drag started from (else the first copper
-        a grid point lands on)."""
+        a grid point lands on). With Shift held (``remove``), the added
+        vias inside the box are removed instead."""
         if not getattr(self, "_whatif_punch_armed", False):
             return
         s = self._whatif_selected()
         if s is None:
+            return
+        if remove:
+            hits = WV.vias_in_box(s.added_vias, x0, y0, x1, y1)
+            if not hits:
+                self.statusBar().showMessage(
+                    "No added vias in that box.", 4000)
+                return
+            self._whatif_punch_record(s)
+            for i in reversed(hits):
+                s.added_vias.pop(i)
+            self._whatif_punch_changed(s)
+            self.statusBar().showMessage(
+                f"Removed {len(hits)} added via(s) - Ctrl+Z to restore.",
+                5000)
             return
         pitch = float(self._whatif_punch_pitch.value())
         try:
@@ -771,6 +1020,7 @@ class _WhatIfPunchMixin:
         board = self._whatif_punch_board()
         added, skipped = 0, 0
         repoured: set = set()
+        before = self._whatif_punch_snapshot(s)
         for px, py in pts:
             via, _why, rp = self._whatif_punch_try(px, py, net, board, s)
             if via is None:
@@ -781,6 +1031,7 @@ class _WhatIfPunchMixin:
             repoured |= rp
             added += 1
         if added:
+            self._whatif_punch_record(s, before)     # one undo step
             self._whatif_punch_changed(s)
         msg = (f"Added {added} via(s) on {net} at {pitch:g} mm pitch"
                if added else f"No vias added on {net}")
@@ -797,9 +1048,102 @@ class _WhatIfPunchMixin:
         if s is None or not s.added_vias:
             return
         n = len(s.added_vias)
+        self._whatif_punch_record(s)
         s.added_vias.clear()
         self._whatif_punch_changed(s)
-        self.statusBar().showMessage(f"Removed {n} added via(s).", 4000)
+        self.statusBar().showMessage(
+            f"Removed {n} added via(s) - Ctrl+Z to restore.", 4000)
+
+    # --- undo / redo ---------------------------------------------------------
+    #
+    # Per what-if: each change to its added vias (place, grid, move, remove,
+    # clear, a typed X / Y) is one step. A step restores the vias AND, when
+    # nothing was run or re-tuned since, the result state they had - so
+    # undoing a slip after a run brings the run back rather than "not run".
+
+    _PUNCH_UNDO_LIMIT = 200
+
+    @staticmethod
+    def _whatif_punch_snapshot(s) -> dict:
+        return {"vias": list(s.added_vias), "status": s.status,
+                "summary": dict(s.summary),
+                "base_fingerprint": s.base_fingerprint, "error": s.error,
+                "run_at": s.run_at, "clearance": s.via_clearance_mm}
+
+    def _whatif_punch_stacks(self, s) -> tuple[list, list]:
+        hist = getattr(self, "_whatif_punch_history", None)
+        if hist is None:
+            hist = self._whatif_punch_history = {}
+        return hist.setdefault(s.id, ([], []))
+
+    def _whatif_punch_record(self, s, snapshot: dict | None = None) -> None:
+        """Remember ``s``'s vias (and result state) before a change."""
+        undo, redo = self._whatif_punch_stacks(s)
+        undo.append(snapshot or self._whatif_punch_snapshot(s))
+        del undo[:-self._PUNCH_UNDO_LIMIT]
+        redo.clear()
+
+    def _whatif_punch_restore(self, s, snap: dict) -> None:
+        s.added_vias = list(snap["vias"])
+        # The old result fits only if nothing ran and the clearance is the
+        # same as when the snapshot was taken.
+        if (snap["run_at"] == s.run_at
+                and snap["clearance"] == s.via_clearance_mm):
+            s.status = snap["status"]
+            s.summary = dict(snap["summary"])
+            s.base_fingerprint = snap["base_fingerprint"]
+            s.error = snap["error"]
+        else:
+            s.status, s.summary = W.STATUS_NOT_RUN, {}
+            s.base_fingerprint, s.error = None, ""
+        loaded = getattr(self, "_whatif_loaded", None)
+        if loaded is not None and loaded[0] == s.id:
+            self._whatif_loaded = None
+        self._whatif_rows_cache = {}
+        self._whatif_mark_unsaved()
+        self._refresh_whatif_panel()
+        self._refresh_whatif_punch_markers()
+
+    def _whatif_punch_undo_available(self) -> bool:
+        """Ctrl+Z / Ctrl+Y act on punched vias while the What-If panel is
+        open on the Board outside Edit Mode."""
+        return (not getattr(self, "_editor_mode", False)
+                and getattr(self, "_whatif_open", {}).get("board", False)
+                and self._whatif_selected() is not None
+                and getattr(self, "_whatif_running_id", None) is None)
+
+    def _whatif_punch_undo(self, redo: bool = False) -> bool:
+        """Undo (or redo) the selected what-if's last via change. Returns
+        False when there was nothing to do."""
+        if not self._whatif_punch_undo_available():
+            return False
+        s = self._whatif_selected()
+        self._whatif_punch_cancel_drag()
+        undo, redo_stack = self._whatif_punch_stacks(s)
+        src, dst = (redo_stack, undo) if redo else (undo, redo_stack)
+        if not src:
+            self.statusBar().showMessage(
+                "Nothing to redo." if redo else "Nothing to undo.", 2500)
+            return False
+        if self._whatif_view != "base":
+            self._whatif_set_view("base")
+        dst.append(self._whatif_punch_snapshot(s))
+        self._whatif_punch_restore(s, src.pop())
+        self.statusBar().showMessage(
+            f"{'Redone' if redo else 'Undone'}: {len(s.added_vias)} added "
+            f"via(s) on “{s.name}”.", 3000)
+        self._sync_whatif_punch_undo_buttons()
+        return True
+
+    def _sync_whatif_punch_undo_buttons(self) -> None:
+        s = self._whatif_selected()
+        ok = s is not None and self._whatif_punch_undo_available()
+        undo, redo = self._whatif_punch_stacks(s) if s else ([], [])
+        for attr, stack in (("_whatif_punch_undo_btn", undo),
+                            ("_whatif_punch_redo_btn", redo)):
+            b = getattr(self, attr, None)
+            if b is not None:
+                b.setEnabled(ok and bool(stack))
 
     def _whatif_punch_changed(self, s) -> None:
         """The scenario's vias changed: its result no longer belongs to it."""

@@ -182,7 +182,19 @@ def test_punch_mode_turns_a_drag_into_a_punch_band(gl):
     gl.set_punch_mode(True)
     _drag(gl, 10, 10, 100, 80)
     assert gl.marquees == [] and gl.clicks == []
-    assert gl.bands == [pytest.approx((-190.0, 140.0, -100.0, 70.0))]
+    assert gl.bands == [pytest.approx((-190.0, 140.0, -100.0, 70.0, False))]
+
+
+def test_shift_held_at_the_press_marks_the_punch_band_a_removal(gl):
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    gl.set_punch_mode(True)
+    gl.mousePressEvent(QMouseEvent(
+        QEvent.MouseButtonPress, QPointF(10, 10), QPointF(10, 10),
+        Qt.LeftButton, Qt.LeftButton, Qt.ShiftModifier))
+    _mouse(gl, "move", 100, 80)
+    _mouse(gl, "release", 100, 80)
+    assert gl.bands[0][4] is True
 
 
 def test_without_punch_mode_a_viewer_drag_does_nothing(gl):
@@ -758,6 +770,205 @@ def test_the_dialog_saves_a_whatif_with_nothing_changed_but_wont_run_it(qapp):
     dlg.run_requested = True
     with pytest.raises(ValueError, match="Punch vias"):
         dlg._apply()                               # Save and Run: refused
+
+
+# --- fill is copied -------------------------------------------------------------
+
+def _filled(x=0.0, y=0.0, net="GND"):
+    return {**_md_via(x, y, net), "ipc4761_via_type": 10,
+            "fill_material": "Copper"}
+
+
+def test_a_copied_via_keeps_its_ipc4761_fill():
+    t = WV.via_template([_filled()], "GND", 1.0, 1.0, ENABLED)
+    v = t.make(1.0, 1.0, "GND")
+    assert (v.ipc4761_via_type, v.fill_material) == (10, "Copper")
+    assert WV.AddedVia.from_dict(v.to_dict()) == v
+    # Saved before fill was kept: unfilled.
+    d = v.to_dict()
+    del d["ipc4761_via_type"], d["fill_material"]
+    assert WV.AddedVia.from_dict(d).ipc4761_via_type == 0
+
+
+def test_filled_and_unfilled_vias_of_one_size_are_two_types():
+    types = WV.board_via_types([_filled(), _filled(1, 0), _md_via(2, 0)],
+                               ENABLED)
+    assert [t.count for t in types] == [2, 1]
+    assert types[0].template(types[0].spans[0]).ipc4761_via_type == 10
+    label = WV.via_type_label(types[0])
+    assert label.startswith("0.25 / 0.5 mm through, ") and "Copper" in label
+    assert WV.via_type_label(types[1]) == "0.25 / 0.5 mm through (1)"
+
+
+# --- export ---------------------------------------------------------------------
+
+def test_export_lists_each_via_for_the_layout():
+    vias = [WV.AddedVia(2.0, 2.54, "GND", 1, 32, 0.5, 0.25),
+            WV.AddedVia(1.0, 1.0, "GND", 39, 32, 0.25, 0.1, 10, "Copper")]
+    rows = WV.export_rows(vias, ENABLED, NAMES)
+    assert rows[0] == ["1", "GND", "2.0000", "2.5400", "78.74", "100.00",
+                       "0.25", "0.5", "Top", "Bottom", "through", "none"]
+    assert rows[1][8:11] == ["L2", "Bottom", "micro"]
+    assert "Copper" in rows[1][11]
+    text = WV.export_text(vias, ENABLED, NAMES, sep="\t")
+    lines = text.splitlines()
+    assert lines[0].split("\t") == list(WV.EXPORT_COLUMNS)
+    assert len(lines) == 3
+
+
+def test_vias_in_box_any_corner_order():
+    vias = [WV.AddedVia(x, 0.0, "GND", 1, 32, 0.5, 0.25) for x in (0, 1, 2)]
+    assert WV.vias_in_box(vias, 1.5, -1, 0.5, 1) == [1]
+
+
+def test_export_copies_tab_separated_text(viewer):
+    viewer._whatif_punch_click(2.0, 2.0)
+    viewer._on_whatif_punch_copy()
+    from PySide6.QtWidgets import QApplication
+    text = QApplication.clipboard().text()
+    assert text.splitlines()[1].split("\t")[:4] == [
+        "1", "GND", "2.0000", "2.0000"]
+    assert "Copied 1 via(s)" in viewer.toasts.messages[-1]
+
+
+def test_export_saves_csv(viewer, tmp_path, monkeypatch):
+    import fypa.viewer.whatif_punch as P
+    out = tmp_path / "vias.csv"
+    monkeypatch.setattr(P.QFileDialog, "getSaveFileName",
+                        lambda *a, **k: (str(out), ""))
+    viewer._whatif_punch_click(2.0, 2.0)
+    viewer._on_whatif_punch_save_csv()
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert lines[0].startswith("#,Net,X (mm)") and len(lines) == 2
+
+
+# --- undo / redo ----------------------------------------------------------------
+
+def test_undo_and_redo_a_placement(viewer):
+    viewer._whatif_punch_click(2.0, 2.0)
+    viewer._whatif_punch_click(-2.0, -2.0)
+    assert viewer._whatif_punch_undo()
+    assert [(v.x_mm, v.y_mm) for v in viewer.scen.added_vias] == [(2.0, 2.0)]
+    assert viewer._whatif_punch_undo(redo=True)
+    assert len(viewer.scen.added_vias) == 2
+    assert not viewer._whatif_punch_undo(redo=True)     # nothing left
+
+
+def test_a_grid_is_one_undo_step(viewer):
+    viewer._whatif_punch_armed = True
+    viewer._whatif_punch_pitch.setValue(2.0)
+    viewer._on_whatif_punch_band(-4.0, -4.0, 4.0, 4.0)
+    assert len(viewer.scen.added_vias) == 24
+    viewer._whatif_punch_undo()
+    assert viewer.scen.added_vias == []
+
+
+def test_undoing_a_slip_after_a_run_brings_the_run_back(viewer):
+    viewer._whatif_punch_click(2.0, 2.0)
+    # ... it is run ...
+    s = viewer.scen
+    s.status, s.summary, s.run_at, s.base_fingerprint = (
+        W.STATUS_OK, {"fails": 0}, 123.0, "fp")
+    viewer._whatif_punch_click(-2.0, -2.0)              # the slip
+    assert s.status == W.STATUS_NOT_RUN
+    viewer._whatif_punch_undo()
+    assert len(s.added_vias) == 1
+    assert (s.status, s.summary, s.base_fingerprint) == (
+        W.STATUS_OK, {"fails": 0}, "fp")
+
+
+def test_undo_keeps_not_run_once_the_whatif_has_run_again(viewer):
+    s = viewer.scen
+    s.status, s.run_at = W.STATUS_OK, 1.0
+    viewer._whatif_punch_click(2.0, 2.0)
+    s.status, s.run_at = W.STATUS_OK, 2.0              # run with the via
+    viewer._whatif_punch_undo()
+    assert s.added_vias == [] and s.status == W.STATUS_NOT_RUN
+
+
+def test_undo_restores_a_drag_and_a_clear(armed):
+    _drag_via(armed, [(2.0, 2.0), (3.0, 2.0)])
+    armed._whatif_punch_undo()
+    assert armed.scen.added_vias[0].x_mm == 2.0
+    armed._on_whatif_punch_clear()
+    armed._whatif_punch_undo()
+    assert len(armed.scen.added_vias) == 1
+
+
+def test_ctrl_z_undoes_vias_outside_edit_mode(viewer):
+    import fypa.altium_viewer as V
+    viewer._whatif_punch_click(2.0, 2.0)
+    V.PdnViewer._undo_marker_action(viewer)
+    assert viewer.scen.added_vias == []
+    V.PdnViewer._redo_marker_action(viewer)
+    assert len(viewer.scen.added_vias) == 1
+    assert viewer._whatif_punch_undo_btn.isEnabled()
+
+
+# --- remove a box ---------------------------------------------------------------
+
+def test_a_shift_drag_removes_the_added_vias_in_the_box(viewer):
+    for x in (-2.0, 0.6, 2.0):
+        viewer._whatif_punch_click(x, 2.0)
+    viewer._whatif_punch_armed = True
+    viewer._on_whatif_punch_band(0.0, 3.0, 3.0, 1.0, True)
+    assert [v.x_mm for v in viewer.scen.added_vias] == [-2.0]
+    assert "Removed 2 added via(s)" in viewer.toasts.messages[-1]
+    viewer._whatif_punch_undo()                         # one step back
+    assert len(viewer.scen.added_vias) == 3
+
+
+# --- the list -------------------------------------------------------------------
+
+def test_the_list_shows_each_added_via(viewer):
+    table = viewer._whatif_punch_table
+    assert table.isHidden()                            # nothing yet
+    viewer._whatif_punch_click(2.0, 2.0)
+    viewer._whatif_punch_click(-2.0, -2.0)
+    assert not table.isHidden() and table.rowCount() == 2
+    assert [table.item(0, c).text() for c in range(6)] == [
+        "1", "GND", "2.0000", "2.0000", "0.25/0.5 through", "-"]
+    assert table.item(0, 4).toolTip() == (
+        "0.25 / 0.5 mm, Top → Bottom (through)")
+
+
+def test_typing_x_moves_the_via_when_it_fits(viewer):
+    viewer._whatif_punch_click(2.0, 2.0)
+    viewer._whatif_punch_table.item(0, 2).setText("2.5")
+    assert viewer.scen.added_vias[0].x_mm == 2.5
+    viewer._whatif_punch_undo()
+    assert viewer.scen.added_vias[0].x_mm == 2.0
+
+
+def test_typing_a_spot_that_breaks_the_rules_is_refused(viewer):
+    viewer._whatif_punch_click(2.0, 2.0)
+    viewer._whatif_punch_table.item(0, 3).setText("2.9")   # onto the track
+    assert viewer.scen.added_vias[0].y_mm == 2.0
+    assert "touch VCC on Top" in viewer.toasts.messages[-1]
+    assert viewer._whatif_punch_table.item(0, 3).text() == "2.0000"
+    viewer._whatif_punch_table.item(0, 3).setText("abc")
+    assert "isn't a number" in viewer.toasts.messages[-1]
+
+
+def test_clicking_a_row_goes_to_the_via(viewer):
+    jumps = []
+    viewer._jump_to_xy = lambda x, y, lids: jumps.append((x, y, lids))
+    viewer._whatif_punch_click(2.0, 2.0)
+    viewer._on_whatif_punch_table_clicked(0, 1)
+    assert jumps == [(2.0, 2.0, [1, 39, 32])]
+
+
+def test_the_list_shows_current_after_a_run(viewer, monkeypatch):
+    viewer._whatif_punch_click(2.0, 2.0)
+    s = viewer.scen
+    s.status, s.run_at = W.STATUS_OK, 5.0
+    viewer._whatif_loaded = (s.id, object(), {})
+    monkeypatch.setattr(
+        type(viewer), "_whatif_added_via_rows",
+        staticmethod(lambda sol, md: [
+            {"x_mm": 2.0, "y_mm": 2.0, "current": 0.731}]))
+    viewer._sync_whatif_punch_controls()
+    assert viewer._whatif_punch_table.item(0, 5).text() == "0.731"
 
 
 def test_a_whatif_with_added_vias_cannot_become_the_base(viewer, monkeypatch):
