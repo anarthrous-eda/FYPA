@@ -8,7 +8,7 @@ sources, regulators, series parts and every load's current and minimum supply vo
 * With none open, the project the file names (``project_file``, in the file's folder or
   up to two above it) is opened with it; when it is not found, the user picks the ``.PrjPcb``.
 
-The choice rides on the window (and its ``.fypa`` project) so every later Resolve /
+The choice rides on the window (and its ``.fypa`` project) so every later Solve /
 Re-run keeps it.
 """
 
@@ -160,6 +160,8 @@ def on_load_tomachie_pdn(window) -> None:
     if project is not None and hasattr(project, "pdn_json"):
         project.pdn_json, project.pdn_corner = str(pdn_path), corner
     if open_prj is not None and hasattr(window, "_on_reload_design_info"):
-        window._on_reload_design_info()     # re-extract with the file, re-solve
+        # Re-extract with the file, re-solve. The Altium files are unchanged
+        # here by design, so don't ask whether to reload.
+        window._on_reload_design_info(ask_if_unchanged=False)
         return
     _open_altium_project_at(window, prj, None, clean=False, force_solve=True)

@@ -1,12 +1,12 @@
 """A Bridges-tab change must be appliable even with nothing to solve yet.
 
 Disabling an auto-bridge (or changing the auto-SERIES limit) changes which
-nets exist, and only a rebuild of the design applies it. Resolve used to stay
+nets exist, and only a rebuild of the design applies it. Solve used to stay
 greyed out whenever the design had no SOURCE + SINK rail, so the Bridges tab
-said "press Resolve" while offering no way to - and a transistor whose drain
+said "press Solve" while offering no way to - and a transistor whose drain
 had been merged into its source could never be set up. Now:
 
-* Resolve is enabled while such a change is pending, solveable or not;
+* Solve is enabled while such a change is pending, solveable or not;
 * that click rebuilds the design without solving (load-only);
 * a load-only run opens the rebuilt design even when editor directives exist
   but do not form a closed rail, instead of failing "not solveable".

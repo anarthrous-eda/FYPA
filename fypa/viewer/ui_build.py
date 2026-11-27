@@ -640,7 +640,7 @@ class _UiBuildMixin:
         outer.addWidget(plot_widget, 1)
 
         # What-If panel - right of the plot; shown / hidden by the What-If
-        # button beside Resolve (or W), viewer mode only.
+        # button beside Solve (or W), viewer mode only.
         self._build_whatif_panel(outer)
 
         # Right-hand panel - overlaid on the GL viewer's right edge
@@ -789,6 +789,8 @@ class _UiBuildMixin:
         # The Global Focus control rides on the menu bar above the Nodes tab.
         self._build_global_focus_chip()
         self._sync_global_focus()
+        # Says, on the menu bar, when the Altium files changed on disk.
+        self._init_design_watch()
         self._init_log.info(
             "PdnViewer init: all tabs done (total %.2fs)",
             time.monotonic() - self._init_t0,
@@ -978,7 +980,7 @@ class _UiBuildMixin:
                 strip.set_tab_state(
                     index, "stale",
                     "Results shown are from the last solve. The setup has "
-                    "changed since - resolve to bring them up to date.")
+                    "changed since - press Solve to bring them up to date.")
             else:
                 strip.set_tab_state(index, "")
 
@@ -1020,7 +1022,7 @@ class _UiBuildMixin:
                 strip.set_tab_state(
                     index, "stale",
                     "From the last solve. The setup has changed since - "
-                    "resolve to bring this up to date.")
+                    "press Solve to bring this up to date.")
             else:
                 strip.set_tab_state(index, "")
 

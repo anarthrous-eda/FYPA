@@ -786,7 +786,8 @@ def replace_loaded(
     out = _new_loaded_project(loaded, extracted, annotations, geometry)
     # Plain attributes load_project sets after construction, and the
     # What-If punched vias' repour clearances (fypa.whatif_vias).
-    for attr in ("variant_applied", "variant_choice", "whatif_via_cutouts"):
+    for attr in ("variant_applied", "variant_choice", "whatif_via_cutouts",
+                 "design_files"):
         if attr in loaded.__dict__:
             setattr(out, attr, loaded.__dict__[attr])
     return out
@@ -2695,7 +2696,7 @@ def _retune_problem_regulator_gains(problem, loaded) -> bool:
 def _report_open_diodes(loaded: LoadedProject, names: list[str]) -> None:
     """One warning per diode solved as open, in ``loaded.annotations.warnings`` (the
     viewer's warning list). This solve's warnings replace the previous solve's, since the
-    viewer hands the same LoadedProject back on every Resolve."""
+    viewer hands the same LoadedProject back on every Solve."""
     notes = [f"Diode {n} is reverse-biased: solved as open (no current through it)"
              for n in names]
     annotations = loaded.annotations
@@ -3702,6 +3703,12 @@ def build_solve_metadata(
         "project_name": proj.prjpcb_path.stem,
         "prjpcb_path": str(proj.prjpcb_path),
         "pcbdoc_path": str(proj.pcbdoc_path),
+        # The Altium files this design was read from, path -> (modified
+        # time, size), as set by the solve worker; None when not recorded.
+        # The viewer compares them with the disk to say the design changed
+        # (fypa.viewer.design_watch).
+        "design_files": (dict(getattr(loaded, "design_files", None) or {})
+                         or None),
         # Assembly variant this design was loaded with (Properties picker,
         # Bridges banner); None for designs without Altium variants.
         "variant": variant_metadata(loaded),
@@ -3841,12 +3848,12 @@ def build_solve_metadata(
         "annotation_warnings": list(loaded.annotations.warnings),
         "annotation_errors": list(loaded.annotations.errors),
         # Per-rail "won't be solved" notices (single-type rails) - surfaced as
-        # an active popup by the viewer on load / after Resolve.
+        # an active popup by the viewer on load / after Solve.
         "open_loop_rails": list(
             getattr(loaded.annotations, "open_loop_rails", [])
         ),
         # Per-net "source & sink on disconnected copper" notices - surfaced as
-        # an active popup by the viewer on load / after Resolve.
+        # an active popup by the viewer on load / after Solve.
         "connectivity_breaks": list(
             getattr(loaded.annotations, "connectivity_breaks", [])
         ),
@@ -5189,11 +5196,11 @@ def _flag_open_loop_rails(loaded: LoadedProject) -> list[str]:
     excluded_idx, warnings = _analyze_open_loop_rails(directives, nets)
 
     # Reconcile (don't accumulate). The GUI hands the worker its in-memory
-    # LoadedProject back for every Resolve, so this can run repeatedly on the
+    # LoadedProject back for every Solve, so this can run repeatedly on the
     # same annotations object. Re-derive each directive's solve_excluded flag
     # from scratch - clearing it on rails the user has since closed - and
     # replace this run's open-loop warnings rather than appending, so cycling
-    # Edit -> Resolve doesn't stack duplicate flags / messages.
+    # Edit -> Solve doesn't stack duplicate flags / messages.
     rebuilt = []
     changed = False
     for i, d in enumerate(directives):
@@ -5761,7 +5768,7 @@ def build_problem(
     # Surface connectivity breaks to the user (-> metadata ->
     # _maybe_warn_connectivity_breaks dialog). Assigned, not appended: this
     # block re-derives them from scratch from the current geometry on every
-    # build_problem call, so cycling Edit -> Resolve can never stack duplicates
+    # build_problem call, so cycling Edit -> Solve can never stack duplicates
     # or leave a stale break behind after the user reconnects the copper. Also
     # drop the previous run's break messages from ``warnings`` before re-adding
     # this run's, for the same reason.
@@ -5776,7 +5783,7 @@ def build_problem(
     # Parts that conduct between a solved rail and copper the active-net
     # filter excluded. Re-derived from scratch every build_problem call and
     # assigned (not appended) for the same reason as the breaks above:
-    # annotating the part must make the notice disappear on the next Resolve.
+    # annotating the part must make the notice disappear on the next Solve.
     prev_bridges = set(getattr(loaded.annotations, "unannotated_bridges", []))
     if prev_bridges:
         loaded.annotations.warnings = [
@@ -6561,7 +6568,7 @@ def load_project(prjpcb_path: str | Path,
                                        read_pdn_for_board)
         # Any failure reading or applying the file (missing, malformed, an
         # unexpected shape anywhere in it) must leave the design loadable: the
-        # path is saved in the .fypa and applied on every Resolve, so a raise
+        # path is saved in the .fypa and applied on every Solve, so a raise
         # here would stop the project opening at all. ``extracted`` is only
         # replaced once everything has succeeded.
         try:

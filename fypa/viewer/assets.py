@@ -210,7 +210,7 @@ def _question_badge_pixmap(badge: str, mark: str) -> QPixmap:
 
 def _refresh_badge_pixmap(badge: str, mark: str) -> QPixmap:
     """A filled circle with a clockwise circular arrow knocked out of it -
-    the Resolve / Solve icon, drawn in the same style as the What-If
+    the Solve icon, drawn in the same style as the What-If
     question badge. 20 x 20 logical px at 2x."""
     import math
     scale = 2
@@ -253,7 +253,7 @@ def _refresh_badge_pixmap(badge: str, mark: str) -> QPixmap:
 
 
 def _resolve_icon(green: str, bg: str, dim: str) -> QIcon:
-    """Icon for the Resolve / Solve buttons: a green refresh badge, grey
+    """Icon for the Solve buttons: a green refresh badge, grey
     when the button is disabled."""
     icon = QIcon()
     icon.addPixmap(_refresh_badge_pixmap(green, bg), QIcon.Normal)
@@ -264,7 +264,7 @@ def _resolve_icon(green: str, bg: str, dim: str) -> QIcon:
 def _sparkle_badge_pixmap(badge: str, mark: str) -> QPixmap:
     """A filled circle with a four-point sparkle (plus a small one) knocked
     out of it - the Auto setup icon, drawn in the same style as the
-    Resolve / What-If badges. 20 x 20 logical px at 2x."""
+    Solve / What-If badges. 20 x 20 logical px at 2x."""
     scale = 2
     pm = QPixmap(20 * scale, 20 * scale)
     pm.setDevicePixelRatio(scale)
@@ -292,7 +292,7 @@ def _sparkle_badge_pixmap(badge: str, mark: str) -> QPixmap:
 
 def _spanner_badge_pixmap(badge: str, mark: str) -> QPixmap:
     """A filled circle with a diagonal open-ended spanner knocked out of
-    it - the Manual setup icon, in the Resolve / What-If badge style.
+    it - the Manual setup icon, in the Solve / What-If badge style.
     20 x 20 logical px at 2x."""
     scale = 2
     pm = QPixmap(20 * scale, 20 * scale)

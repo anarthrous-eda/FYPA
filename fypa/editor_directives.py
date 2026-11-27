@@ -336,8 +336,12 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
             for ci in indices:
                 des_pins.extend(_pads_on_component(ci, nidx, wanted_pins))
             if not des_pins:
+                on_net = wanted_pins is not None and any(
+                    _pads_on_component(ci, nidx, None) for ci in indices)
+                what = (f"none of pins {sorted(wanted_pins)}" if on_net
+                        else "no pad")
                 return None, (
-                    f"{label}: designator {des!r} has no pad on net "
+                    f"{label}: designator {des!r} has {what} on net "
                     f"{net_name!r}; skipped."
                 )
             all_pins.extend(des_pins)
@@ -355,6 +359,35 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
             TerminalSpec(pins=tuple(all_pins), requested_net=net_name),
             None,
         )
+
+    def _resolve_sense(ed, p_net, n_net, two_net, label):
+        """Remote-sense terminals of an editor SOURCE / REGULATOR output
+        (the ``PDN_SENSE_DES`` / ``PDN_SENSE_N_DES`` equivalent): pads of the
+        listed parts on the output P (N) net, narrowed by ``sense_pins`` /
+        ``sense_n_pins``. A side left blank senses locally (``None``); the N
+        side needs a copper return. Free markers always sense locally.
+
+        Returns ``((sense_p, sense_n), None)`` or ``(None, warning)``."""
+        out = []
+        for des_list, pins, net, side, two_only in (
+                (ed.sense_des, ed.sense_pins, p_net, "sense +", False),
+                (ed.sense_n_des, ed.sense_n_pins, n_net, "sense −", True)):
+            if ed.kind == "free" or (two_only and not two_net):
+                out.append(None)
+                continue
+            if not des_list:
+                if pins:
+                    return None, (f"{label}: {side} pins are set but not the "
+                                  "part they are on; skipped.")
+                out.append(None)
+                continue
+            term, warn = _resolve_terminal_multi_des(
+                net, designators=des_list, pin_filter=pins, label=label,
+                side=side)
+            if warn:
+                return None, warn
+            out.append(term)
+        return (out[0], out[1]), None
 
     warnings: list[str] = []
 
@@ -410,7 +443,13 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
             if reg_warn:
                 warnings.append(reg_warn)
                 continue
-            pending_regulators.append((ed, label, terms, channel_of.get(ed.id)))
+            sense, sense_warn = _resolve_sense(
+                ed, ed.p_net, ed.n_net or ed.in_n_net, True, label)
+            if sense_warn:
+                warnings.append(sense_warn)
+                continue
+            pending_regulators.append(
+                (ed, label, terms, channel_of.get(ed.id), sense))
             continue
         if ed.role not in ("SOURCE", "SINK", "SERIES"):
             warnings.append(
@@ -543,33 +582,17 @@ def apply_editor_directives(loaded, editor_directives) -> list[str]:
             if ed.voltage is None:
                 warnings.append(f"{label}: SOURCE has no voltage; skipped.")
                 continue
-            # Remote sense (PDN_SENSE_DES equivalent): pads of the listed
-            # parts on the P (N) net; component-bound only, and the N side
-            # needs a copper return (two-net).
-            sense_terms = []
-            bad_sense = False
-            for des_list, net, side in (
-                    (getattr(ed, "sense_des", None), ed.p_net, "sense +"),
-                    (getattr(ed, "sense_n_des", None) if two_net else None,
-                     ed.n_net, "sense −")):
-                if not des_list or ed.kind == "free":
-                    sense_terms.append(None)
-                    continue
-                term, des_warn = _resolve_terminal_multi_des(
-                    net, designators=des_list, label=label, side=side)
-                if des_warn:
-                    warnings.append(des_warn)
-                    bad_sense = True
-                    break
-                sense_terms.append(term)
-            if bad_sense:
+            sense, sense_warn = _resolve_sense(
+                ed, ed.p_net, ed.n_net, two_net, label)
+            if sense_warn:
+                warnings.append(sense_warn)
                 continue
             v_min, v_max = _editor_voltage_range(ed, label, warnings)
             spec = SourceSpec(
                 designator=spec_designator, schdoc_name=_EDITOR_SCHDOC,
                 voltage=float(ed.voltage), p=p_term, n=n_term,
                 channel_index=channel_of.get(ed.id), return_group=return_group,
-                sense_p=sense_terms[0], sense_n=sense_terms[1],
+                sense_p=sense[0], sense_n=sense[1],
                 v_min=v_min, v_max=v_max,
             )
         elif ed.role == "SINK":
@@ -720,7 +743,7 @@ def _append_editor_regulators(loaded, pending, rail_root, warnings) -> int:
     # cascade (12 V → 3.3 V → 1.8 V) resolves in any list order.
     for _ in range(len(pending)):
         changed = False
-        for ed, _label, terms, _ch in pending:
+        for ed, _label, terms, _ch, _sense in pending:
             key = _rail(terms[0])
             if key and key not in supply:
                 supply[key] = float(ed.voltage)
@@ -729,7 +752,7 @@ def _append_editor_regulators(loaded, pending, rail_root, warnings) -> int:
             break
 
     count = 0
-    for ed, label, terms, channel in pending:
+    for ed, label, terms, channel, sense in pending:
         reg_type = (ed.regulator_type or "").upper() or None
         if reg_type is None:
             reg_type = "SMPS" if (ed.efficiency or ed.smps_topology) else "LDO"
@@ -777,6 +800,7 @@ def _append_editor_regulators(loaded, pending, rail_root, warnings) -> int:
             efficiency=eff,
             adaptive_gain_eligible=adaptive,
             smps_topology=topo,
+            out_sense_p=sense[0], out_sense_n=sense[1],
             v_min=v_min, v_max=v_max,
             dropout=_opt_float(getattr(ed, "dropout", None)),
             vin_min=_opt_float(getattr(ed, "vin_min", None)),

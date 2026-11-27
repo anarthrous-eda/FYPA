@@ -360,6 +360,7 @@ class _SolveWorker(QThread):
                   pdn_corner: str = "typ",
                   auto_series_max_ohm: float | None = None,
                   write_solve_cache: bool = True,
+                  refresh_design_cache: bool = False,
                   variant: str | None = None,
                   restore_setup: bool = False,
                   set_aside_setup: bool = False,
@@ -383,7 +384,7 @@ class _SolveWorker(QThread):
         # Altium import with no project file: bring back the setup saved
         # beside the design (fypa.setup_sidecar), matched against the design
         # as loaded. Only when the caller passes no editor directives of its
-        # own - an opened .fypa or a Resolve already has them.
+        # own - an opened .fypa or a Solve already has them.
         self._restore_setup = bool(restore_setup) and not editor_directives
         self._saved_setup = None       # SavedSetup read at the start of run()
         self._restore_report = None    # RestoreReport once matched
@@ -428,10 +429,16 @@ class _SolveWorker(QThread):
         # Selects one of several .PcbDoc files in a multi-PCB project.
         # None = altium_monkey default (first PcbDoc in project order).
         self._pcbdoc_selector = pcbdoc_selector
-        # False = "Import Altium Design (Clean)" / "Reload Design Info" path:
+        # False = "Import Altium Design (Clean)" / "Reload Design" path:
         # always run extract+geometry+annotations from disk. True = try the
         # FYPA design-info cache first and fall back to a fresh load on miss.
         self._use_design_cache = bool(use_design_cache)
+        # True = write the design-info cache even though this load doesn't
+        # read it (Reload Design). The cache on disk is then the design as
+        # reloaded, not the one from before: a later Solve from a window with
+        # no design in memory reads that cache without checking it against
+        # the Altium files, and would otherwise solve the older board.
+        self._refresh_design_cache = bool(refresh_design_cache)
         # True = try the FYPA SOLVE cache first; on hit, emit finished_ok
         # immediately with the cached (solution, metadata) and skip
         # extract/mesh/solve entirely. The pickle.load can take 5-10 s for
@@ -451,7 +458,7 @@ class _SolveWorker(QThread):
         # time directives are matched, and so the FEM bucketer sees the
         # renamed copper as part of those new nets instead of dropping it.
         self._copper_names = list(copper_names or [])
-        # In-memory LoadedProject handed in by the editor 'Resolve' path:
+        # In-memory LoadedProject handed in by the editor 'Solve' path:
         # the pristine design info the viewer already holds. When set, the
         # worker re-solves against it directly - no design-info cache read,
         # no project-file stat, no re-extract. None for every other flow
@@ -480,6 +487,27 @@ class _SolveWorker(QThread):
         # terminate() while this is set - it would kill the thread mid-GIL and
         # hang the whole app. It waits for the flag to clear instead.
         self._in_python_packaging = False
+
+    def _watchable_design(self) -> bool:
+        """True for an Altium project - the only kind the viewer can reload,
+        so the only kind whose files it watches (fypa.viewer.design_watch)."""
+        return self._prjpcb_path.suffix.lower() == ".prjpcb"
+
+    def _design_files_now(self) -> dict | None:
+        """``{path: (modified time, size)}`` of the design's Altium files as
+        they are on disk now, or ``None`` when they can't be listed or the
+        design isn't an Altium project. Recorded on the loaded design so the
+        viewer can tell when the files change afterwards."""
+        if not self._watchable_design():
+            return None
+        try:
+            from fypa.cli import _project_file_fingerprints
+            return dict(_project_file_fingerprints(self._prjpcb_path)) or None
+        except Exception as e:  # noqa: BLE001 - a hint, never a failed load
+            logging.getLogger(__name__).debug(
+                "Couldn't list the design files (%s: %s).",
+                type(e).__name__, e)
+            return None
 
     def _per_net_geometry_key(self, loaded):
         """``(cache_path, fingerprint)`` for the per-net geometry cache, or
@@ -884,6 +912,11 @@ class _SolveWorker(QThread):
                     self.stage_changed.emit(
                         "Solve cache hit - opening viewer…"
                     )
+                    # The hit was keyed on the design files as they are now.
+                    if isinstance(cached[1], dict):
+                        files_now = self._design_files_now()
+                        if files_now:
+                            cached[1]["design_files"] = files_now
                     # Solve-cache hit skips the extract entirely, so there's
                     # no LoadedProject to hand on - a later resolve from this
                     # viewer falls back to the design-info cache.
@@ -901,7 +934,7 @@ class _SolveWorker(QThread):
 
             loaded = None
             if self._loaded_project is not None:
-                # In-memory reuse - the editor 'Resolve' path hands us the
+                # In-memory reuse - the editor 'Solve' path hands us the
                 # LoadedProject the viewer already holds. No cache read, no
                 # project-file stat, no re-extract: take the object as-is.
                 self.stage_changed.emit("Reusing loaded design info…")
@@ -936,6 +969,13 @@ class _SolveWorker(QThread):
                             self._prjpcb_path, design_fp,
                             pcbdoc_path=pcbdoc_resolved,
                         )
+                    # A hit checked against the files as they are now is a
+                    # design read from exactly these files. (A resolve skips
+                    # that check, and keeps the record the cached design
+                    # carries.)
+                    if (loaded is not None and design_fp is not None
+                            and self._watchable_design()):
+                        loaded.design_files = dict(design_fp["files"])
                 except Exception as e:
                     logging.getLogger(__name__).warning(
                         "Design-info cache check failed (%s); re-extracting.",
@@ -948,7 +988,7 @@ class _SolveWorker(QThread):
             # time anything here could veto it - so a LoadedProject built
             # with a different set cannot be patched up, only rebuilt. This
             # is what makes the Bridges tab's "Disable auto-bridge" button
-            # take effect on the very next Resolve, as its hint promises.
+            # take effect on the very next Solve, as its hint promises.
             if loaded is not None:
                 _want_open = frozenset(
                     d.strip().upper() for d in (self._no_auto_bridge or ()))
@@ -995,6 +1035,9 @@ class _SolveWorker(QThread):
                     from fypa.cli import _project_cache_dir
                     _extract_cache_dir = _project_cache_dir(
                         self._prjpcb_path, pcbdoc_resolved)
+                # Taken before the read, so a save in Altium while it runs
+                # still shows as a change afterwards (design_watch).
+                _files_before = self._design_files_now()
                 with _timer.stage("Extract + load project"):
                     loaded = load_project(
                         self._prjpcb_path,
@@ -1006,6 +1049,8 @@ class _SolveWorker(QThread):
                         cache_dir=_extract_cache_dir,
                         read_cache=self._use_design_cache,
                         variant=self._variant)
+                if _files_before:
+                    loaded.design_files = _files_before
                 # Persist the freshly-loaded design info so the next run
                 # (e.g. a Re-run that only changes physics) can skip the
                 # extract step. Failures are non-fatal.
@@ -1015,7 +1060,8 @@ class _SolveWorker(QThread):
                 # writing one - ~5 s of pickling the ExtractedProject on a
                 # big board - is pure dead weight on the critical path. The
                 # first subsequent *non-clean* load repopulates it.
-                if self._use_design_cache and pcbdoc_resolved is not None:
+                if ((self._use_design_cache or self._refresh_design_cache)
+                        and pcbdoc_resolved is not None):
                     # Pickling the whole LoadedProject runs 10+ s on a big
                     # board and only speeds up the NEXT load, so it runs on
                     # its own thread instead of holding the progress dialog.
@@ -1058,14 +1104,14 @@ class _SolveWorker(QThread):
             # place. Adaptive SMPS gain likewise rewrites regulator gains on
             # ``loaded.annotations`` during the solve. Clone first so the
             # pristine in-memory LoadedProject the viewer retains (reused by
-            # the next Resolve) is never touched.
+            # the next Solve) is never touched.
             #
             # This clone must run WHENEVER a mutating step will - the previous
             # ``loaded is pristine_loaded`` gate skipped it after a stackup
             # override, but ``_apply_stackup_overrides`` returns a fresh
             # LoadedProject that still SHARES ``annotations`` with the pristine
             # copy. Mutating that shared annotations in place appended a
-            # duplicate of every editor SOURCE/SINK on each Resolve (~2× sink
+            # duplicate of every editor SOURCE/SINK on each Solve (~2× sink
             # current, compounding). ``clone_loaded_for_edit`` copies only the
             # annotations (fresh directives list) and shares the override'd
             # extracted/geometry, so the override is preserved.
@@ -1168,11 +1214,11 @@ class _SolveWorker(QThread):
                 # REGULATOR directive (see LoadedProject.is_solveable). Rather
                 # than refuse to load, open the viewer in editor mode with a
                 # stub solution - exactly how a Gerber import opens - so the
-                # user can place a SOURCE marker by hand and then Resolve.
+                # user can place a SOURCE marker by hand and then Solve.
                 # Restricted to a plain initial load: overrides / editor
                 # directives mean the user explicitly asked for a re-solve, so
                 # a missing source there is still a hard failure. A load-only
-                # run never asked to solve (e.g. a Resolve that only rebuilds
+                # run never asked to solve (e.g. a Solve that only rebuilds
                 # the design after a Bridges-tab change), so it always opens.
                 # A restored setup is not an explicit request: if it still
                 # has no source, open for setup like an unconfigured design.
@@ -1640,7 +1686,7 @@ def record_stackup_overrides(metadata, pristine_loaded, overrides) -> None:
     override from the design value. The Settings tab needs both: the solved
     value to show and to mark a field dirty against, the extracted one to
     decide whether the field is an override at all. Without it a reopened
-    project showed the override as the design value and the next Resolve
+    project showed the override as the design value and the next Solve
     silently solved with the design thickness.
 
     Writes ``extracted_copper_thickness_mm`` on each stackup row and

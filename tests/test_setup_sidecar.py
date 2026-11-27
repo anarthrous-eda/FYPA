@@ -379,6 +379,89 @@ def test_reannotation_without_ids_matches_the_same_spot(paths):
     assert [d.designator for d in rep.applied] == ["U7"]
 
 
+# --- parts an entry names (remote sense, P / N DES) ---------------------------
+
+def _sensed(des="U1", sense="U6", **kw):
+    """A source on ``des`` regulating at ``sense``'s pins."""
+    return _sink(des, role="SOURCE", current=None, voltage=3.3,
+                 sense_des=[sense], sense_pins=["1"], **kw)
+
+
+def _parts(*specs):
+    """``(designator, uid, xy)`` -> parts with distinct ids."""
+    return [_comp(d, uid=f"PCB-{u}", suid=f"SCH-{u}", xy=xy) for d, u, xy in specs]
+
+
+def test_a_renamed_sense_part_follows_its_unique_id(paths):
+    saved = _saved(paths, [_sensed()], _design(
+        *_parts(("U1", "a", (0.0, 0.0)), ("U6", "b", (30.0, 0.0)))))
+    assert set(saved.anchors[saved.directives[0].id]["related"]) == {"U6"}
+    rep = SS.match_saved(saved, _design(
+        *_parts(("U1", "a", (0.0, 0.0)), ("U16", "b", (30.0, 0.0)))))
+    (d,) = rep.applied
+    assert d.designator == "U1" and d.sense_des == ["U16"] and d.sense_pins == ["1"]
+    assert any("U6 → U16" in c for c in rep.changes[d.id])
+    assert not rep.held
+
+
+def test_a_renamed_sense_part_without_ids_matches_the_same_spot(paths):
+    saved = _saved(paths, [_sensed()], _design(
+        _plain("U1"), _plain("U6", xy=(30.0, 0.0))))
+    rep = SS.match_saved(saved, _design(
+        _plain("U1"), _plain("U16", xy=(30.0, 0.0)), _plain("U17", xy=(90.0, 0.0))))
+    assert [d.sense_des for d in rep.applied] == [["U16"]]
+
+
+def test_a_gone_or_replaced_sense_part_holds_the_entry(paths):
+    saved = _saved(paths, [_sensed()], _design(
+        *_parts(("U1", "a", (0.0, 0.0)), ("U6", "b", (30.0, 0.0)))))
+    gone = SS.match_saved(saved, _design(*_parts(("U1", "a", (0.0, 0.0)))))
+    assert not gone.applied
+    assert any("U6 is not on this board" in h.reason for h in gone.held)
+    # Another schematic part now carries U6, and the old one is nowhere.
+    swapped = SS.match_saved(saved, _design(
+        *_parts(("U1", "a", (0.0, 0.0)), ("U6", "c", (60.0, 0.0)))))
+    assert not swapped.applied
+    assert any("U6 is now a different schematic part" in h.reason
+               for h in swapped.held)
+
+
+def test_host_and_sense_part_renamed_together(paths):
+    saved = _saved(paths, [_sensed()], _design(
+        *_parts(("U1", "a", (0.0, 0.0)), ("U6", "b", (30.0, 0.0)))))
+    rep = SS.match_saved(saved, _design(
+        *_parts(("U2", "a", (0.0, 0.0)), ("U16", "b", (30.0, 0.0)))))
+    (d,) = rep.applied
+    assert (d.designator, d.sense_des) == ("U2", ["U16"])
+    notes = " | ".join(rep.changes[d.id])
+    assert "U1 → U2" in notes and "U6 → U16" in notes
+
+
+def test_a_followed_sense_part_is_saved_under_its_new_name(paths):
+    prj, pcb, _ = paths
+    now = _design(*_parts(("U1", "a", (0.0, 0.0)), ("U16", "b", (30.0, 0.0))))
+    saved = _saved(paths, [_sensed()], _design(
+        *_parts(("U1", "a", (0.0, 0.0)), ("U6", "b", (30.0, 0.0)))))
+    rep = SS.match_saved(saved, now)
+    SS.save_setup(prj, pcb, rep.applied, [], extracted=now)
+    again = SS.load_setup(prj, pcb)
+    assert set(again.anchors[again.directives[0].id]["related"]) == {"U16"}
+    # And with no design to read (a viewer opened from the solve cache)
+    # the fingerprints carry over.
+    SS.save_setup(prj, pcb, again.directives, [], previous=again)
+    kept = SS.load_setup(prj, pcb)
+    assert set(kept.anchors[kept.directives[0].id]["related"]) == {"U16"}
+
+
+def test_n_des_parts_are_followed_too(paths):
+    entry = _sink("J1", role="SOURCE", current=None, voltage=5.0, n_des=["J3"])
+    saved = _saved(paths, [entry], _design(
+        *_parts(("J1", "a", (0.0, 0.0)), ("J3", "b", (30.0, 0.0)))))
+    rep = SS.match_saved(saved, _design(
+        *_parts(("J1", "a", (0.0, 0.0)), ("J30", "b", (30.0, 0.0)))))
+    assert [d.n_des for d in rep.applied] == [["J30"]]
+
+
 def test_a_renamed_net_on_the_same_part_is_proposed_not_applied(paths):
     saved = _saved(paths, [_sink("U1")], _design(_comp("U1")))
     now = _design(_comp("U1"), nets=("+3V3_MAIN", "GND"),

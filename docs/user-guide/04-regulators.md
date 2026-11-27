@@ -152,7 +152,7 @@ Initial gain: `3.3 / (5 × 0.9) = 0.73`.
 
 ### Adaptive SMPS gain in the viewer
 
-After the first solve, check **Adaptive SMPS gain** next to **↻ Resolve**
+After the first solve, check **Adaptive SMPS gain** next to **↻ Solve**
 and re-solve. FYPA iterates the SMPS gain using the **solved** input
 voltage at the regulator pads (includes SERIES drop and input-side copper
 IR drop). LDO regulators stay at `PDN_GAIN = 1.0`.
@@ -167,6 +167,11 @@ A regulator whose feedback is taken at the load takes the same
 SOURCE, on its OUT nets: the solve holds `PDN_V` across the sense pads and
 the OUT pins rise by the output copper's drop. See
 [Remote sense](01-sources-and-sinks.md#remote-sense-pdn_sense_des).
+For a regulator whose FB divider taps the rail at the far end, name the
+divider's top resistor (and its pin on the OUT net) as the sense point.
+An editor regulator takes the same setting on the Board
+(Step 6c of [Section 2.3](02-sources-and-sinks-editor.md#23-attaching-a-source-or-sink-to-a-component))
+or in Manual setup.
 
 ### Quiescent current (`PDN_QUIESCENT`)
 

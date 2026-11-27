@@ -1503,7 +1503,7 @@ class _ViaRenderMixin:
         self._refresh_pending_links()
 
         # Hover index = solved-directive rows + editor-directive rows, so
-        # the bottom bar reports pending editor edits before a Resolve.
+        # the bottom bar reports pending editor edits before a Solve.
         self._metadata_marker_hover_rows = hover_rows
         self._set_marker_hover_rows(
             hover_rows + self._editor_marker_hover_rows())

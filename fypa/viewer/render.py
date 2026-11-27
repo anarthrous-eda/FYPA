@@ -1463,10 +1463,9 @@ class _RenderMixin:
             if not phys_list:
                 self.summary_label.setText("(no layers selected)")
             elif is_stub:
-                action = self._stub_action_word()
                 self.summary_label.setText(
-                    f"(import complete - add Source / Sink directives "
-                    f"and press {action} to compute voltage distribution)"
+                    "(import complete - add Source / Sink directives "
+                    "and press Solve to compute voltage distribution)"
                 )
             else:
                 self.summary_label.setText("(no rails selected)")
@@ -1512,9 +1511,8 @@ class _RenderMixin:
                 self._gl_viewer.clear_cylinders()
             self._refresh_board_outline()
             if is_stub:
-                action = self._stub_action_word()
                 self.summary_label.setText(
-                    f"(import complete - press {action} to compute "
+                    "(import complete - press Solve to compute "
                     "voltage distribution for the placed directives)"
                 )
             else:

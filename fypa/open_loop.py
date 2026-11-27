@@ -28,7 +28,7 @@ element from a rail to a return net (a shunt) counts as a load on that rail.
 
 Pure logic over hashable net keys (net indices in the solver, upper-cased
 names in the editor), shared by :func:`fypa.altium.loader._analyze_open_loop_rails`
-and :func:`fypa.editor_directives.has_closed_pdn_loop` so the Resolve button
+and :func:`fypa.editor_directives.has_closed_pdn_loop` so the Solve button
 and the solve can never disagree.
 """
 

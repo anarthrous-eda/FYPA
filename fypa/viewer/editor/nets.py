@@ -481,7 +481,7 @@ class _EditorNetsMixin:
             existing_names.add(name)
         self._all_net_names_cache = None
         # Naming copper no directive uses doesn't change the solve: needs a
-        # save, but mustn't light up Resolve on merely entering editor mode.
+        # save, but mustn't light up Solve on merely entering editor mode.
         self._mark_project_names_dirty()
 
     def _compute_net_table_rows(self) -> list[dict]:

@@ -135,9 +135,9 @@ def test_badge_tooltip_says_what_a_click_does(qapp):
 
 def test_custom_tooltip_survives_state_changes(qapp):
     eye = EyeButton(visible=False)
-    eye.setToolTip("Unsolved rail - press Resolve to compute it.")
+    eye.setToolTip("Unsolved rail - press Solve to compute it.")
     eye.setVisibleState(True, emit=False)
-    assert eye.toolTip() == "Unsolved rail - press Resolve to compute it."
+    assert eye.toolTip() == "Unsolved rail - press Solve to compute it."
 
 
 def test_press_without_click_does_not_arm_next_activation(qapp):

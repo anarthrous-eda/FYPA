@@ -89,7 +89,7 @@ class _AttachedPdnMixin:
 
         directives = (self.metadata or {}).get("directives") or []
         # Editor directives the last solve actually applied - the rest are
-        # still pending a Resolve, and say so in the panel.
+        # still pending a Solve, and say so in the panel.
         solved_editor = {d.get("designator") for d in directives
                          if d.get("schdoc") == _EDITOR_SCHDOC}
         overridden = self._overridden_designators()
@@ -247,7 +247,7 @@ class _AttachedPdnMixin:
         if hidden > 0:
             foot.append(f"+ {hidden} more not shown")
         if any(r.get("pending") for r in rows):
-            foot.append("* pending - press Resolve")
+            foot.append("* pending - press Solve")
 
         html = (f"{head} <span style='color:{muted};'>"
                 f"{' &middot; '.join(bits)}</span>"
@@ -463,10 +463,6 @@ class _AttachedPdnMixin:
         self._awaiting_first_solve = True
         self._set_solve_stale(True)
 
-    def _stub_action_word(self) -> str:
-        """Button / hint label for the next FEM run from a stub viewer."""
-        return "Solve" if self._awaiting_first_solve else "Resolve"
-
     def _refresh_solve_stale_overlay(self) -> None:
         """Recompute ``_solve_stale`` and refresh the solve / adaptive overlay."""
         self._solve_stale = (bool(self._project_dirty)
@@ -502,7 +498,7 @@ class _AttachedPdnMixin:
                 enabled = self._resolve_button_enabled()
                 rbtn.setEnabled(enabled)
                 solveable = enabled or self._has_solveable_directives()
-                # Label ("Solve" / "Resolve", or none in editor mode) is set
+                # Label ("Solve", shown on hover) is set
                 # by _position_editor_overlays -> _sync_resolve_label below.
                 if self._awaiting_first_solve:
                     rbtn.setToolTip(
@@ -547,7 +543,7 @@ class _AttachedPdnMixin:
         """Record a project change that needs saving but leaves the solve
         valid - e.g. auto-minted names for no-net copper, which no
         directive uses yet. Unlike :meth:`_mark_project_dirty` it doesn't
-        enable Resolve; a later edit that puts a directive on that copper
+        enable Solve; a later edit that puts a directive on that copper
         marks the project dirty itself."""
         self._display_dirty = True
         self._invalidate_topology()

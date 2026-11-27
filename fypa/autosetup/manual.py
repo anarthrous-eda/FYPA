@@ -182,11 +182,53 @@ def set_ground(d: EditorDirective, gnd: str | None) -> None:
     if gnd == IDEAL_RETURN and d.role != "REGULATOR":
         d.single_net = True
         d.n_net = None
+        # An ideal return has no copper to sense.
+        d.sense_n_des = d.sense_n_pins = None
     else:
         d.single_net = False
         d.n_net = gnd or None
         if d.role == "REGULATOR":
             d.in_n_net = gnd or None
+
+
+def sense_pin_choices(view: DesignView, designators: list[str] | None,
+                      net: str | None) -> list[tuple[str, str]]:
+    """``[(pad, label)]`` the sense parts have on ``net``: pad and pin name
+    for one part, pad and the parts carrying it for several (the sense pin
+    filter applies to all of them, as ``PDN_SENSE_PINS`` does)."""
+    if not designators or not net:
+        return []
+    several = len(designators) > 1
+    owners: dict[str, list[str]] = {}
+    names: dict[str, str] = {}
+    order: list[str] = []
+    for des in designators:
+        for pad, name in pins_of(view.part(des), net):
+            if pad.upper() not in owners:
+                owners[pad.upper()] = []
+                names[pad.upper()] = name
+                order.append(pad)
+            owners[pad.upper()].append(des)
+    return [(pad, ", ".join(owners[pad.upper()]) if several else names[pad.upper()])
+            for pad in order]
+
+
+def drop_stale_sense(d: EditorDirective, view: DesignView) -> None:
+    """Back to local sense on a side whose sense parts no longer have a pin
+    on its net (after the output or ground net changed), or whose net is
+    gone (an ideal return has no copper to sense)."""
+    for des_attr, pins_attr, net in (
+            ("sense_des", "sense_pins", d.p_net),
+            ("sense_n_des", "sense_n_pins",
+             None if d.single_net and d.role != "REGULATOR" else d.n_net)):
+        des = getattr(d, des_attr)
+        if not des:
+            continue
+        on_net = bool(net) and all(
+            (part := view.part(x)) is not None and part.pins_on(net) for x in des)
+        if not on_net:
+            setattr(d, des_attr, None)
+            setattr(d, pins_attr, None)
 
 
 def ground_of(d: EditorDirective) -> str | None:
@@ -554,9 +596,56 @@ def _term_pads(term: dict | None) -> list[str] | None:
     return pads or None
 
 
-def from_schematic(md: dict) -> EditorDirective | None:
+def sense_from_terminal(term: dict | None, all_pads=None
+                        ) -> tuple[list[str] | None, list[str] | None]:
+    """``(designators, pins)`` of a metadata remote-sense terminal (one side
+    of a directive's ``remote_sense``), as an editor directive's
+    ``sense_des`` / ``sense_pins``; ``(None, None)`` when that side senses
+    locally.
+
+    ``all_pads(designators)`` - every pad those parts have on the sense net,
+    or ``None`` when unknown - lets a sense point on all of them come back
+    as ``pins=None`` ("all of its pins") rather than as a hand-picked list
+    that happens to hold every pad."""
+    if not term:
+        return None, None
+    des: list[str] = []
+    pads: list[str] = []
+    for p in term.get("pins") or []:
+        comp, pad = p.get("component"), p.get("pad")
+        if comp and comp not in des:
+            des.append(str(comp))
+        if pad and not str(pad).startswith("(") and str(pad) not in pads:
+            pads.append(str(pad))
+    if not des:
+        return None, None
+    if all_pads is not None and pads:
+        every = all_pads(des)
+        if every and {x.upper() for x in pads} >= {x.upper() for x in every}:
+            return des, None
+    return des, pads or None
+
+
+def _part_pads(view: DesignView | None, net: str | None):
+    """``all_pads`` for :func:`sense_from_terminal` from a design view."""
+    if view is None or not net:
+        return None
+
+    def every(designators: list[str]) -> list[str] | None:
+        out: list[str] = []
+        for des in designators:
+            part = view.part(des)
+            if part is None:
+                return None
+            out += [p.pad for p in part.pins_on(net)]
+        return out
+    return every
+
+
+def from_schematic(md: dict, view: DesignView | None = None
+                   ) -> EditorDirective | None:
     """Editable copy of a schematic SOURCE / SINK / REGULATOR (metadata
-    dict) that overrides it on the next resolve - the wizard's Override."""
+    dict) that overrides it on the next solve - the wizard's Override."""
     role = md.get("role")
     terms = md.get("terminals") or {}
     des = md.get("designator")
@@ -597,11 +686,19 @@ def from_schematic(md: dict) -> EditorDirective | None:
         # comes across as explicit limits.
         d.v_min = md.get("v_min")
         d.v_max = md.get("v_max")
+        # Remote sense comes across as the parts and pads it landed on.
+        sense = md.get("remote_sense") or {}
+        d.sense_des, d.sense_pins = sense_from_terminal(
+            sense.get("P"), _part_pads(view, d.p_net))
+        if not d.single_net:
+            d.sense_n_des, d.sense_n_pins = sense_from_terminal(
+                sense.get("N"), _part_pads(view, d.n_net))
     d.overrides_designator = des
     return d
 
 
-def schematic_entries(metadata: dict | None, editor_directives) -> list[Entry]:
+def schematic_entries(metadata: dict | None, editor_directives,
+                      view: DesignView | None = None) -> list[Entry]:
     """Locked rows for schematic supplies / loads not already overridden."""
     overridden = {ed.overrides_designator for ed in editor_directives
                   if getattr(ed, "overrides_designator", None)}
@@ -613,7 +710,7 @@ def schematic_entries(metadata: dict | None, editor_directives) -> list[Entry]:
             continue
         if md.get("designator") in overridden:
             continue
-        d = from_schematic(md)
+        d = from_schematic(md, view)
         if d is not None:
             out.append(Entry(directive=d, locked=True, schematic=md))
     return out
@@ -764,6 +861,8 @@ def validate(entries: list[Entry], view: DesignView,
             elif (d.vin_min is not None and d.vin_max is not None
                   and d.vin_max < d.vin_min):
                 err("input max is below input min")
+        if d.role in SUPPLY_ROLES:
+            _check_sense(err, view, d)
         key = (d.designator, d.role, d.p_net)
         if key in seen:
             err(f"duplicates another {d.role.lower()} on {d.p_net}")
@@ -832,6 +931,42 @@ def _validate_free(err, d: EditorDirective) -> None:
             err("pick the ground / return net")
         elif d.n_net == d.p_net:
             err("ground and supply are the same net")
+
+
+def _check_sense(err, view: DesignView, d: EditorDirective) -> None:
+    """A supply's remote-sense parts and pins: what the resolve would refuse
+    (see ``_resolve_sense`` in :mod:`fypa.editor_directives`)."""
+    two_net = not d.single_net or d.role == "REGULATOR"
+    for what, des_list, pins, net in (
+            ("sense", d.sense_des, d.sense_pins, d.p_net),
+            ("return sense", d.sense_n_des, d.sense_n_pins,
+             d.n_net if two_net else None)):
+        if not net:
+            continue
+        if not des_list:
+            if pins:
+                err(f"{what} pins are set but not the part they're on")
+            continue
+        have: set[str] = set()
+        bad = False
+        for des in des_list:
+            part = view.part(des)
+            if part is None:
+                err(f"{what} part {des} isn't on the board")
+                bad = True
+            elif not part.pins_on(net):
+                err(f"{what} part {des} has no pin on {net}")
+                bad = True
+            else:
+                have |= {p.pad.upper() for p in part.pins_on(net)}
+        if bad or pins is None:
+            continue
+        if not pins:
+            err(f"tick at least one {what} pin on {net} (or tick All)")
+            continue
+        missing = [p for p in pins if p.upper() not in have]
+        if missing:
+            err(f"{what} pins {', '.join(missing)} aren't on {net}")
 
 
 def _check_pins(err, part: Part, net: str, pins: list[str] | None, what: str) -> None:

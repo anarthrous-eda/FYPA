@@ -393,7 +393,7 @@ class _CapacitorsTabMixin:
         real board - and both the Capacitors table and the Tier-2/3 solve need
         exactly the same shapes. Keying the cache on the extracted project
         object (held by reference, so its identity can't be recycled by the
-        GC) means a Reload Design Info / re-solve naturally misses, while a
+        GC) means a Reload Design / re-solve naturally misses, while a
         settings or override change - which invalidates the *rows*, not the
         geometry - reuses it. Qt-free, so it is safe to call from a worker
         thread.
@@ -435,7 +435,7 @@ class _CapacitorsTabMixin:
         if extracted is None:
             self._caps_empty_reason = (
                 "Capacitor analysis needs the design info, which could not "
-                "be loaded - press Reload Design Info on the Settings tab.")
+                "be loaded - choose File > Reload Design (Ctrl+R).")
             return []
         if not extracted.pcb_components:
             self._caps_empty_reason = (

@@ -2,7 +2,7 @@
 
 They used to live only in the Settings-tab fields. The solve pickle kept the
 overridden thickness as if it were the design's, so a reopened project showed
-the override, treated it as the baseline, and the next Resolve silently solved
+the override, treated it as the baseline, and the next Solve silently solved
 with the design thickness again. Now the ``.fypa`` stores them, each solve
 records the design thickness next to the solved one, and the Settings tab
 keeps the two apart.
@@ -128,7 +128,7 @@ def test_solved_override_is_an_override_but_not_dirty(qapp):
     v = _viewer(qapp, {"stackup": _rows(L6_OVER, recorded=True),
                        "stackup_overrides": {6: L6_OVER}}, ProjectFile())
     assert _l6_text(v) == pytest.approx(L6_OVER * 1000)
-    # Next Resolve keeps sending it ...
+    # Next Solve keeps sending it ...
     assert v._gather_stackup_overrides() == {6: pytest.approx(L6_OVER)}
     # ... but it is already solved in, so nothing is pending.
     assert v._update_settings_field_styles() is False

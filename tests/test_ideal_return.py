@@ -5,7 +5,7 @@ return can take it back from there. On a rail supplied only through return
 copper (an Altium connector or regulator to GND) that node is a variable no
 equation touches - an empty row that left every direct solve failing and the
 load stuck in the iterative fallback. The rule lives in fypa.open_loop and
-is applied by the solve, the Resolve button, Manual setup, the Board form
+is applied by the solve, the Solve button, Manual setup, the Board form
 and the saved-setup restore.
 """
 from __future__ import annotations

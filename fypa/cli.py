@@ -565,7 +565,7 @@ def _load_solution_pickle(path, *, lean_ify: bool = True
 #
 # "Import Altium Design" tries the solve cache first, then the design-info
 # cache, then a full extract+solve. "Import Altium Design (Clean)" and
-# "Reload Design Info" both bypass the cache reads and force a fresh
+# "Reload Design" both bypass the cache reads and force a fresh
 # extract+solve. Both writes always happen so the next run can still use
 # the cache.
 
@@ -1284,7 +1284,7 @@ def per_net_geometry_for_solve(extracted, cache_path: Path,
 
     ``write_cache=False`` (What-If solves) reads the cache but never writes
     it: there is one cache file per board and it must stay the base
-    design's, or the next plain Resolve would rebuild every net too.
+    design's, or the next plain Solve would rebuild every net too.
     """
     log = logging.getLogger(__name__)
     if read_cache:
@@ -1678,7 +1678,7 @@ def _try_load_cached_design_info(
 
     Pass ``current_fp=None`` to skip the fingerprint comparison entirely
     and return the cached design info as-is (an absent / corrupt cache is
-    still a ``None`` miss). The editor 'Resolve' path uses this: a resolve
+    still a ``None`` miss). The editor 'Solve' path uses this: a resolve
     re-solves against the design that's already loaded, so re-stat'ing the
     Altium project files to revalidate the cache would be pointless work.
     """
@@ -1787,7 +1787,7 @@ def save_cached_design_info_in_background(
     """Write the design-info cache on a background thread.
 
     The cache only speeds up the *next* load, yet pickling a big board's
-    LoadedProject takes 10+ s (13 s on Mangala) - time a Resolve used to make
+    LoadedProject takes 10+ s (13 s on Mangala) - time a Solve used to make
     the user wait for with the progress dialog up. Saving after the result is
     handed over takes it off that path.
 
@@ -1870,7 +1870,7 @@ def save_solution_file(path: Path, solution, metadata: dict | None,
     fingerprint. ``metadata`` already carries ``prjpcb_path`` and
     ``pcbdoc_path`` (set by :func:`build_solve_metadata`), so reloading
     the file later re-attaches the solution to the right project +
-    board for Re-run / Reload Design Info.
+    board for Re-run / Reload Design.
 
     ``status`` (optional, a :class:`fypa.viewer.save_progress.SaveStatus`)
     is fed the byte count as the pickle is written, for the save dialog.

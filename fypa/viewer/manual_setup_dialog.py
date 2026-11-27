@@ -139,7 +139,7 @@ class _Editor(QWidget):
         self._override_btn = QPushButton("🔓  Override - edit in FYPA")
         self._override_btn.setToolTip(
             "Copy this schematic directive into an editable FYPA one that "
-            "replaces it on the next resolve.")
+            "replaces it on the next solve.")
         self._override_btn.clicked.connect(self.override.emit)
         lay.addWidget(self._override_btn)
 
@@ -231,6 +231,35 @@ class _Editor(QWidget):
         self.gnd.setToolTip(f"The return path. {M.IDEAL_RETURN}: an ideal 0 V "
                             "return instead of copper (sources and sinks only).")
         form.addRow("Ground", self.gnd)
+        # Supplies: remote sense (PDN_SENSE_DES / _PINS, and the _N_ pair
+        # on the ground net) - the part(s) whose pins the supply regulates at.
+        self._sense_rows: list[tuple[QLabel, QComboBox, QLabel, _PinPicker]] = []
+        for side, label, pins_label, tip in (
+                ("p", "Sense at", "Sense pins",
+                 "Where the supply holds its voltage. At its own pins (local "
+                 "sense), or at a part on the output net - usually the load, "
+                 "or the top resistor of a feedback divider tapped at the far "
+                 "end. The supply's pins then rise by whatever the copper "
+                 "drops on the way."),
+                ("n", "Sense return at", "Return sense pins",
+                 "Where the supply senses its return. At its own ground pins "
+                 "(local), or at a part's pins on the ground net - the − "
+                 "line of a remote-sense pair.")):
+            combo = QComboBox()
+            combo.setStyle(self._part_style)
+            combo.setMaxVisibleItems(20)
+            combo.setToolTip(tip)
+            combo.activated.connect(lambda _i, s=side: self._on_sense(s))
+            lab = QLabel(label)
+            picker = _PinPicker()
+            picker.setToolTip("Which of the sense part's pins on the net are "
+                              "the sense point: all of them, or a hand-picked set.")
+            picker.changed.connect(lambda s=side: self._on_sense_pins(s))
+            pins_lab = QLabel(pins_label)
+            if mode == "supply":
+                form.addRow(lab, combo)
+                form.addRow(pins_lab, picker)
+            self._sense_rows.append((lab, combo, pins_lab, picker))
         # The input net is one of the regulator's own nets - filled per part
         # in load(), so it can't be pointed at a net the part isn't on.
         self.in_net = _NetCombo([])
@@ -306,7 +335,8 @@ class _Editor(QWidget):
         for w in (self.type, self.net, self.part, self.show_all, self.pins, self.value,
                   self.name,
                   self.gnd, self.in_net, self.in_pins, self.eff, self.topo, self.min_v,
-                  self.max_v, self.v_range, *self._limit_edits.values()):
+                  self.max_v, self.v_range, *self._limit_edits.values(),
+                  *(w for row in self._sense_rows for w in (row[1], row[3]))):
             w.setEnabled(editable)
         self._override_btn.setVisible(bool(entry and entry.locked))
         free = bool(entry and entry.is_free)
@@ -364,6 +394,8 @@ class _Editor(QWidget):
         for attr, edit in self._limit_edits.items():
             v = getattr(d, attr)
             edit.setText(format_value(v, "voltage") if v is not None else "")
+        if self.mode == "supply" and not free:
+            self._fill_sense(d)
         self._sync_visibility()
         self._filled.setText(
             f"Filled in from the design: {', '.join(filled)}." if filled else "")
@@ -397,6 +429,55 @@ class _Editor(QWidget):
                 self.part.insertItem(0, pick, None)
                 idx = 0
             self.part.setCurrentIndex(idx)
+
+    def _sense_side(self, d, side: str):
+        """``(net, designators, pins, attr names)`` of one remote-sense side."""
+        if side == "p":
+            return d.p_net, d.sense_des, d.sense_pins, ("sense_des", "sense_pins")
+        return d.n_net, d.sense_n_des, d.sense_n_pins, ("sense_n_des", "sense_n_pins")
+
+    def _fill_sense(self, d) -> None:
+        """List the parts on each sense side's net (the supply itself
+        aside: sensing there is local sense), and their pins."""
+        for side, (_lab, combo, _plab, picker) in zip("pn", self._sense_rows):
+            net, des, pins, _attrs = self._sense_side(d, side)
+            with QSignalBlocker(combo):
+                combo.clear()
+                combo.addItem("at its own pins (local sense)", "")
+                host = (d.designator or "").upper()
+                if net:
+                    for part_des, label in M.parts_on_net(self.view, net, prefer="load"):
+                        if part_des.upper() != host:
+                            combo.addItem(label, part_des)
+                cur = ",".join(des or [])
+                idx = combo.findData(cur) if cur else 0
+                if idx < 0:
+                    # Several parts (from the schematic), or one off the net.
+                    combo.addItem(", ".join(des or []), cur)
+                    idx = combo.count() - 1
+                combo.setCurrentIndex(idx)
+            choices = M.sense_pin_choices(self.view, des, net)
+            picker.set_pins(choices, pins, net,
+                            whose="their" if des and len(des) > 1 else "its")
+
+    def _on_sense(self, side: str) -> None:
+        if (d := self._d()) is None:
+            return
+        combo = self._sense_rows[0 if side == "p" else 1][1]
+        data = combo.currentData() or ""
+        des = [x for x in data.split(",") if x] or None
+        _net, _des, _pins, (des_attr, pins_attr) = self._sense_side(d, side)
+        setattr(d, des_attr, des)
+        setattr(d, pins_attr, None)
+        self._edited(reload=True)
+
+    def _on_sense_pins(self, side: str) -> None:
+        if (d := self._d()) is None:
+            return
+        picker = self._sense_rows[0 if side == "p" else 1][3]
+        _net, des, _pins, (_des_attr, pins_attr) = self._sense_side(d, side)
+        setattr(d, pins_attr, picker.value() if des else None)
+        self._edited()
 
     def _on_show_all(self, _checked: bool) -> None:
         if self.entry is not None:
@@ -433,6 +514,17 @@ class _Editor(QWidget):
             w.setVisible(smps)
         for w in (*self._limit_edits.values(), *self._limit_labels):
             w.setVisible(reg)
+        # Remote sense: component-bound supplies; the return side needs a
+        # copper ground, and the pin list a sense part.
+        for side, (lab, combo, plab, picker) in zip("pn", self._sense_rows):
+            show = has_part = False
+            if d is not None and self.mode == "supply" and not free:
+                show = side == "p" or (bool(d.n_net) and (reg or not d.single_net))
+                has_part = show and bool(self._sense_side(d, side)[1])
+            for w in (lab, combo):
+                w.setVisible(show)
+            for w in (plab, picker):
+                w.setVisible(has_part)
         if self.mode == "supply":
             self.value_label.setText("Output voltage" if reg else "Voltage")
 
@@ -469,6 +561,7 @@ class _Editor(QWidget):
         if part is None or not part.pins_on(net):
             d.designator = None
             d.p_pins = None
+        M.drop_stale_sense(d, self.view)
         self._edited(reload=True)
 
     def _on_part(self, _i: int) -> None:
@@ -511,7 +604,9 @@ class _Editor(QWidget):
     def _on_gnd(self, _i: int) -> None:
         if (d := self._d()) is not None:
             M.set_ground(d, self.gnd.currentText() or None)
-            self._edited()
+            M.drop_stale_sense(d, self.view)
+            # The return-sense rows follow the ground: refill them.
+            self._edited(reload=True)
 
     def _on_in_net(self, net: str) -> None:
         if (d := self._d()) is not None:
@@ -736,8 +831,9 @@ class _RolePage(QWidget):
         self.entries.remove(e)
         if e.directive.overrides_designator and e.schematic is not None:
             # Dropping an override brings the schematic row back.
-            self.entries.append(M.Entry(directive=M.from_schematic(e.schematic),
-                                        locked=True, schematic=e.schematic))
+            self.entries.append(M.Entry(
+                directive=M.from_schematic(e.schematic, self.view),
+                locked=True, schematic=e.schematic))
         self.refresh()
         self.changed.emit()
 
@@ -820,7 +916,7 @@ class ManualSetupDialog(QDialog):
                        if m.get("designator") == e.directive.overrides_designator
                        and m.get("schdoc") not in ("(editor)", "(auto-bridge)")), None)
             e.schematic = md
-        self.entries += M.schematic_entries(metadata, editor_directives)
+        self.entries += M.schematic_entries(metadata, editor_directives, view)
         if preset is not None:
             self.entries.append(M.Entry(directive=preset))
 

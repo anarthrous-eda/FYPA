@@ -90,7 +90,7 @@ def test_cap_report_empty_without_design_info():
     v = _viewer()
     v._loaded_project = None
     assert v._get_or_compute_cap_rows() == []
-    assert "Reload Design Info" in v._caps_empty_reason
+    assert "Reload Design" in v._caps_empty_reason
 
 
 def test_cap_report_explains_gerber_projects():

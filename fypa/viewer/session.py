@@ -58,7 +58,7 @@ _LIVE_VIEWERS: list[QMainWindow] = []
 
 def _restore_bundled_design_info(proj) -> None:
     """Copy a project's bundled ``design-info`` pickle into this machine's
-    design cache, so a later editor *Resolve* can reuse the extract instead
+    design cache, so a later editor *Solve* can reuse the extract instead
     of re-reading Altium source that may not have travelled with a shared
     project.
 

@@ -456,13 +456,13 @@ class _ProbeMixin:
                 bare_hit["is_bare"] = True
                 # An unnamed copper polygon the user has renamed in
                 # editor mode reports the new name with a "[pending
-                # resolve]" suffix until the next Resolve actually
+                # solve]" suffix until the next Solve actually
                 # rebuilds the solution against the renamed net.
                 if bare_hit.get("net") == "(none)":
                     c = self._copper_name_at(
                         world_x, world_y, bare_hit.get("layer_id"))
                     if c is not None:
-                        bare_hit["net"] = f"{c.name}  [pending resolve]"
+                        bare_hit["net"] = f"{c.name}  [pending solve]"
                 bare_hit = self._with_original_net(bare_hit, world_x, world_y)
                 net_part = (f"   Net = {bare_hit['net']}"
                             if bare_hit.get("net") else "")
@@ -1553,7 +1553,7 @@ class _ProbeMixin:
         if per_pin is None or not np.isfinite(per_pin):
             lines.append("I: (n/a)")
             if pending:
-                lines.append("(pending - press Resolve)")
+                lines.append("(pending - press Solve)")
             return lines
         prefix = "I ≈" if role == "SOURCE" else "I ="
         lines.append(f"{prefix} {per_pin:.4g} A")
@@ -1563,7 +1563,7 @@ class _ProbeMixin:
         if role == "SOURCE":
             lines.append("(rail load)")
         if pending:
-            lines.append("(pending - press Resolve)")
+            lines.append("(pending - press Solve)")
         return lines
 
     def _format_marker_hover_text(self, row: dict) -> str:
@@ -1573,14 +1573,14 @@ class _ProbeMixin:
         report the whole load on each marker. SOURCE values are tagged
         ``≈ … (rail load)`` to flag they're derived from KCL rather than
         prescribed by the user. Editor edits not yet resolved get a
-        trailing ``[pending - Resolve]`` so the user knows the figure is
+        trailing ``[pending - Solve]`` so the user knows the figure is
         their unsolved input, not a solved value."""
         role = row.get("role", "")
         label = row.get("label", "") or "?"
         per_pin = row.get("current_a")
         total = row.get("directive_current_a")
         n_pins = int(row.get("terminal_pin_count") or 1)
-        pend = "  [pending - Resolve]" if row.get("pending") else ""
+        pend = "  [pending - Solve]" if row.get("pending") else ""
         if per_pin is None or not np.isfinite(per_pin):
             return f"   {role} {label}: I = (n/a){pend}"
         prefix = "I ≈" if role == "SOURCE" else "I ="
@@ -1807,10 +1807,12 @@ class _ProbeMixin:
         if getattr(self, "overlay_list", None) is not None:
             _restyle_eye_list(self.overlay_list)
 
-        # Editor overlay buttons (edit toggle, free SOURCE/SINK, Resolve and
+        # Editor overlay buttons (edit toggle, free SOURCE/SINK, Solve and
         # their click-absorbing backdrop) pin their colours inline at build
         # time, so re-apply the active theme to them here.
         self._restyle_editor_overlay_buttons()
+        if getattr(self, "_design_changed_chip", None) is not None:
+            self._sync_design_changed_chip()
         if getattr(self, "_sidebar_scroll", None) is not None:
             self._apply_sidebar_scroll_theme()
         self._apply_editor_panel_theme()
@@ -2202,7 +2204,7 @@ class _ProbeMixin:
         old.hide()
         old.deleteLater()
         # Updates _settings_dirty too, so a saved override the opened
-        # solution was not solved with raises the Resolve prompt.
+        # solution was not solved with raises the Solve prompt.
         self._on_settings_field_changed()
 
     def _stackup_override_entries(

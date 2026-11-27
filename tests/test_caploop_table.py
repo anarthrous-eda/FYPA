@@ -437,7 +437,7 @@ def test_cold_build_loads_the_design_when_the_viewer_holds_none(qapp,
     assert len(v._caps_rows_cache) == 1
 
 
-def test_failed_design_load_points_at_the_settings_tab(qapp, monkeypatch):
+def test_failed_design_load_points_at_reload_design(qapp, monkeypatch):
     v = _worker_viewer()
     v._loaded_project = None
     monkeypatch.setattr(av.PdnViewer, "_fetch_design_info",
@@ -447,7 +447,7 @@ def test_failed_design_load_points_at_the_settings_tab(qapp, monkeypatch):
 
     assert _pump(qapp, lambda: bool(done)), "worker never finished"
     assert v._caps_rows_cache == []
-    assert "Settings tab" in v._caps_empty_reason
+    assert "File > Reload Design" in v._caps_empty_reason
 
 
 def test_warm_rows_skip_the_worker_entirely(viewer):

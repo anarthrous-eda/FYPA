@@ -56,7 +56,7 @@ class _EditorFormMixin:
                 self._project.prjpcb_path = self.metadata.get("prjpcb_path")
                 self._project.pcbdoc_path = self.metadata.get("pcbdoc_path")
                 # Keep the variant the design was loaded with, so the next
-                # Resolve doesn't switch builds behind the user's back.
+                # Solve doesn't switch builds behind the user's back.
                 var = self.metadata.get("variant")
                 if isinstance(var, dict):
                     self._project.variant = var.get("requested")
@@ -482,7 +482,7 @@ class _EditorFormMixin:
             unlock = QPushButton("🔓  Unlock to edit")
             unlock.setToolTip(
                 "Edit these PDN values in FYPA - the edited directive "
-                "overrides the schematic one on the next resolve."
+                "overrides the schematic one on the next solve."
             )
             unlock.clicked.connect(self._on_editor_unlock)
             lay.addWidget(unlock)
@@ -1092,7 +1092,7 @@ class _EditorFormMixin:
         # resets it to All while a re-fill on the same net keeps the ticks.
         self._ef_pin_fill_ready = False
         self._ef_pin_state = {k: {"net": None, "sel": None}
-                              for k in ("p", "n", "in")}
+                              for k in ("p", "n", "in", "sp", "sn")}
         self._ef_pins = PinPicker()
         self._ef_pins.setToolTip(
             "Which of the component's pads on the net this terminal couples "
@@ -1151,26 +1151,53 @@ class _EditorFormMixin:
             lambda: self._refresh_pin_picker("p"))
         self._ef_ndes.editingFinished.connect(
             lambda: self._refresh_pin_picker("n"))
-        # Remote sense (PDN_SENSE_DES / PDN_SENSE_N_DES) - SOURCE only.
+        # Remote sense of a SOURCE / REGULATOR output (PDN_SENSE_DES /
+        # PDN_SENSE_PINS, and the _N_ pair on the return net).
         self._ef_sense = QLineEdit()
-        self._ef_sense.setPlaceholderText("local (at the source)")
+        self._ef_sense.setPlaceholderText("local (at its own pins)")
         self._ef_sense.setToolTip(
             "Optional remote sense (PDN_SENSE_DES): comma-separated "
-            "designators whose pads on the P net are where the source holds "
-            "its voltage - usually the load. The source's own pins then rise "
-            "by whatever the copper drops on the way. Blank = sense locally."
+            "designators whose pads on the P / OUT net are where the supply "
+            "holds its voltage - usually the load, or the top resistor of a "
+            "feedback divider tapped at the far end. The supply's own pins "
+            "then rise by whatever the copper drops on the way. Blank = "
+            "sense locally."
         )
         self._ef_sense_label = QLabel("Sense DES")
         form2.addRow(self._ef_sense_label, self._ef_sense)
+        self._ef_spins = PinPicker()
+        self._ef_spins.setToolTip(
+            "Which of the sense parts' pads on the net are the sense point "
+            "(PDN_SENSE_PINS). All = every one of their pads on the net.")
+        self._ef_spins_label = QLabel("Sense pins")
+        form2.addRow(self._ef_spins_label, self._ef_spins)
         self._ef_nsense = QLineEdit()
-        self._ef_nsense.setPlaceholderText("local (at the source)")
+        self._ef_nsense.setPlaceholderText("local (at its own pins)")
         self._ef_nsense.setToolTip(
             "Optional remote sense of the return (PDN_SENSE_N_DES): "
-            "designators whose pads on the N net are the − sense point. "
-            "Two-net only. Blank = sense the return locally."
+            "designators whose pads on the N / GND net are the − sense "
+            "point. Two-net only. Blank = sense the return locally."
         )
         self._ef_nsense_label = QLabel("Sense N DES")
         form2.addRow(self._ef_nsense_label, self._ef_nsense)
+        self._ef_snpins = PinPicker()
+        self._ef_snpins.setToolTip(
+            "Which of the return-sense parts' pads on the N net are the − "
+            "sense point (PDN_SENSE_N_PINS). All = every one of their pads "
+            "on the net.")
+        self._ef_snpins_label = QLabel("Sense N pins")
+        form2.addRow(self._ef_snpins_label, self._ef_snpins)
+        for _key, _picker, _combo, _field in (
+                ("sp", self._ef_spins, self._ef_pnet, self._ef_sense),
+                ("sn", self._ef_snpins, self._ef_nnet, self._ef_nsense)):
+            _picker.changed.connect(
+                lambda k=_key, w=_picker: self._ef_pin_state[k].update(
+                    sel=w.value()))
+            _combo.currentTextChanged.connect(
+                lambda _t, k=_key: self._refresh_pin_picker(k))
+            # A new sense part: list its pads (from All) and show the list.
+            _field.editingFinished.connect(
+                lambda k=_key: self._on_sense_des_edited(k))
         # Pins / DES apply to a real component's pads only.
         self._ef_pins_apply = sel["kind"] == "component"
         for _w in (self._ef_pins, self._ef_pins_label,
@@ -1178,7 +1205,9 @@ class _EditorFormMixin:
                    self._ef_pdes, self._ef_pdes_label,
                    self._ef_ndes, self._ef_ndes_label,
                    self._ef_sense, self._ef_sense_label,
-                   self._ef_nsense, self._ef_nsense_label):
+                   self._ef_spins, self._ef_spins_label,
+                   self._ef_nsense, self._ef_nsense_label,
+                   self._ef_snpins, self._ef_snpins_label):
             _w.setVisible(self._ef_pins_apply)
         lay.addLayout(form2)
 
@@ -1236,10 +1265,9 @@ class _EditorFormMixin:
                 getattr(existing, "p_des", None) or []))
             self._ef_ndes.setText(", ".join(
                 getattr(existing, "n_des", None) or []))
-            self._ef_sense.setText(", ".join(
-                getattr(existing, "sense_des", None) or []))
-            self._ef_nsense.setText(", ".join(
-                getattr(existing, "sense_n_des", None) or []))
+            self._seed_sense_fields(
+                existing.p_net, existing.sense_des, existing.sense_pins,
+                existing.n_net, existing.sense_n_des, existing.sense_n_pins)
             self._ef_remove.setEnabled(True)
             if existing.overrides_designator:
                 self._ef_status.setText(
@@ -1306,10 +1334,19 @@ class _EditorFormMixin:
                 ", ".join(self._terminal_des_list(terms.get("P"), host_des)))
             self._ef_ndes.setText(
                 ", ".join(self._terminal_des_list(n_term, host_des)))
+            # Remote sense comes across as the parts and pads it landed on.
+            from fypa.autosetup.manual import sense_from_terminal
+
+            sense = sch_unlock.get("remote_sense") or {}
+            s_des, s_pins = sense_from_terminal(
+                sense.get("P"), self._all_pads_on(p_net))
+            sn_des, sn_pins = ((None, None) if single else sense_from_terminal(
+                sense.get("N"), self._all_pads_on(n_net)))
+            self._seed_sense_fields(p_net, s_des, s_pins, n_net, sn_des, sn_pins)
             self._ef_remove.setEnabled(False)
             self._ef_status.setText(
                 f"<span style='color:{t['warn']};'>Unlocked - Apply "
-                "replaces the schematic directive on the next resolve.</span>"
+                "replaces the schematic directive on the next solve.</span>"
             )
         else:
             self._ef_remove.setEnabled(False)
@@ -1326,6 +1363,35 @@ class _EditorFormMixin:
         self._on_editor_role_changed(self._ef_role.currentText())
         self._on_editor_model_changed()
         self._update_editor_panel()
+
+    def _seed_sense_fields(self, p_net, sense_des, sense_pins,
+                           n_net, sense_n_des, sense_n_pins) -> None:
+        """Fill the remote-sense DES fields and record their pin picks."""
+        self._ef_sense.setText(", ".join(sense_des or []))
+        self._ef_nsense.setText(", ".join(sense_n_des or []))
+        self._seed_pin_picker("sp", p_net, sense_pins)
+        self._seed_pin_picker("sn", n_net, sense_n_pins)
+        for key, des in (("sp", sense_des), ("sn", sense_n_des)):
+            self._ef_pin_state[key]["parts"] = list(des) if des else None
+
+    def _all_pads_on(self, net: str | None):
+        """``all_pads`` for :func:`fypa.autosetup.manual.sense_from_terminal`:
+        every pad the given parts have on ``net``, from the board's pads."""
+        def every(designators: list[str]) -> list[str]:
+            return [pad for pad, _label in self._net_pins_of(designators, net)[0]]
+        return every
+
+    def _on_sense_des_edited(self, key: str) -> None:
+        """A sense DES field changed: list the new parts' pads, from All."""
+        state = self._ef_pin_state.get(key)
+        field = self._ef_sense if key == "sp" else self._ef_nsense
+        parts = self._parse_pin_field(field.text())
+        if state is not None and parts != state.get("parts"):
+            state["sel"] = None
+        if state is not None:
+            state["parts"] = parts
+        self._refresh_pin_picker(key)
+        self._on_editor_model_changed()
 
     def _seed_regulator_fields(self, *, reg_type=None, efficiency=None,
                                topology=None, in_net=None, in_pins=None) -> None:
@@ -1363,6 +1429,11 @@ class _EditorFormMixin:
         pin filter to them, not the host), else the selected component."""
         sel = self._editor_selection or {}
         host = sel.get("designator")
+        if key in ("sp", "sn"):
+            # Sense pins are the sense parts' pads, never the host's.
+            field = getattr(self, "_ef_sense" if key == "sp" else "_ef_nsense",
+                            None)
+            return (self._parse_pin_field(field.text()) or []) if field else []
         if key in ("p", "n") and hasattr(self, "_ef_pdes"):
             role = self._ef_role.currentText()
             if role in ("SOURCE", "SINK") and self._ef_two.isChecked():
@@ -1444,6 +1515,10 @@ class _EditorFormMixin:
                   getattr(self, "_ef_nnet", None)),
             "in": (getattr(self, "_ef_inpins", None),
                    getattr(self, "_ef_innet", None)),
+            "sp": (getattr(self, "_ef_spins", None),
+                   getattr(self, "_ef_pnet", None)),
+            "sn": (getattr(self, "_ef_snpins", None),
+                   getattr(self, "_ef_nnet", None)),
         }[key]
         if picker is None or combo is None:
             return
@@ -1459,7 +1534,7 @@ class _EditorFormMixin:
                         whose="their" if several else "its")
 
     def _refresh_pin_pickers(self) -> None:
-        for key in ("p", "n", "in"):
+        for key in ("p", "n", "in", "sp", "sn"):
             self._refresh_pin_picker(key)
 
     def _picked_pins(self, picker, label: str) -> tuple[list[str] | None,
@@ -1643,20 +1718,33 @@ class _EditorFormMixin:
             role = (self._ef_role.currentText()
                     if hasattr(self, "_ef_role") else "")
             show_sense = (getattr(self, "_ef_pins_apply", False)
-                          and role == "SOURCE")
-            self._ef_sense.setVisible(show_sense)
-            self._ef_sense_label.setVisible(show_sense)
-            self._ef_nsense.setVisible(show_sense and two)
-            self._ef_nsense_label.setVisible(show_sense and two)
+                          and role in ("SOURCE", "REGULATOR"))
+            show_n = show_sense and two
+            # Each pin list only once its side names a sense part.
+            show_sp = show_sense and bool(self._ef_sense.text().strip())
+            show_sn = show_n and bool(self._ef_nsense.text().strip())
+            for widgets, show in (
+                    ((self._ef_sense, self._ef_sense_label), show_sense),
+                    ((self._ef_nsense, self._ef_nsense_label), show_n),
+                    ((self._ef_spins, self._ef_spins_label), show_sp),
+                    ((self._ef_snpins, self._ef_snpins_label), show_sn)):
+                for w in widgets:
+                    w.setVisible(show)
         if hasattr(self, "_ef_role") and self._ef_role.currentText() == "REGULATOR":
             self._ef_pnet_label.setText("OUT net")
             self._ef_nnet_label.setText("GND net")
             self._ef_pins_label.setText("OUT pins")
             self._ef_npins_label.setText("GND pins")
+            if hasattr(self, "_ef_nsense_label"):
+                self._ef_nsense_label.setText("Sense GND DES")
+                self._ef_snpins_label.setText("Sense GND pins")
         elif hasattr(self, "_ef_nnet_label"):
             self._ef_nnet_label.setText("N net")
             if hasattr(self, "_ef_npins_label"):
                 self._ef_npins_label.setText("N pins")
+            if hasattr(self, "_ef_nsense_label"):
+                self._ef_nsense_label.setText("Sense N DES")
+                self._ef_snpins_label.setText("Sense N pins")
         # A role / model change can move a net combo with its signals blocked
         # (the N picker's repopulate) or switch the DES lists in or out.
         if getattr(self, "_ef_pins_apply", False):
@@ -1739,12 +1827,30 @@ class _EditorFormMixin:
                 "</span>")
             return
         p_pins = n_pins = None
+        # Remote sense (PDN_SENSE_*): SOURCE / REGULATOR only; N side
+        # two-net only; pins only with a sense part.
+        sense: dict[str, list[str] | None] = dict.fromkeys(
+            ("sense_des", "sense_pins", "sense_n_des", "sense_n_pins"))
         if sel["kind"] == "component":
             p_pins, pin_err = self._picked_pins(
                 self._ef_pins, self._ef_pins_label.text())
             if pin_err is None and not single:
                 n_pins, pin_err = self._picked_pins(
                     self._ef_npins, self._ef_npins_label.text())
+            if pin_err is None and role in ("SOURCE", "REGULATOR"):
+                for des_key, pins_key, field, picker, label, on in (
+                        ("sense_des", "sense_pins", self._ef_sense,
+                         self._ef_spins, self._ef_spins_label, True),
+                        ("sense_n_des", "sense_n_pins", self._ef_nsense,
+                         self._ef_snpins, self._ef_snpins_label, not single)):
+                    des = self._parse_pin_field(field.text()) if on else None
+                    if not des:
+                        continue
+                    sense[des_key] = des
+                    sense[pins_key], pin_err = self._picked_pins(
+                        picker, label.text())
+                    if pin_err:
+                        break
             if pin_err:
                 self._ef_status.setText(
                     f"<span style='color:{_T()['err']};'>{pin_err}</span>")
@@ -1803,14 +1909,8 @@ class _EditorFormMixin:
             else:
                 d.p_des = self._parse_pin_field(self._ef_pdes.text())
                 d.n_des = self._parse_pin_field(self._ef_ndes.text())
-            # Remote sense (PDN_SENSE_*_DES). SOURCE only; N side two-net.
-            if role == "SOURCE":
-                d.sense_des = self._parse_pin_field(self._ef_sense.text())
-                d.sense_n_des = (None if single else
-                                 self._parse_pin_field(self._ef_nsense.text()))
-            else:
-                d.sense_des = None
-                d.sense_n_des = None
+            for _name, _value in sense.items():
+                setattr(d, _name, _value)
             # If this component has a schematic directive, mark the editor
             # directive as its override so the re-solve drops the schematic
             # one instead of stamping both.
@@ -1829,8 +1929,8 @@ class _EditorFormMixin:
             d.n_pins = None
             d.p_des = None
             d.n_des = None
-            d.sense_des = None
-            d.sense_n_des = None
+            for _name, _value in sense.items():
+                setattr(d, _name, _value)
             self._editor_selection = {"kind": "free", "id": d.id}
 
         self._ensure_project().upsert_directive(d)
@@ -1841,8 +1941,8 @@ class _EditorFormMixin:
         self._update_pending_rails()
         self._render()
         self._ef_status.setText(
-            f"<span style='color:{_T()['ok']};'>Applied - press Resolve "
-            "to re-solve.</span>"
+            f"<span style='color:{_T()['ok']};'>Applied - press Solve "
+            "to update the results.</span>"
         )
 
     def _ideal_return_stranded(self, existing, sel: dict, p_net: str,

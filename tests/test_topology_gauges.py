@@ -278,7 +278,7 @@ def test_render_and_hover_through_the_model():
     assert 'class="topo-gauge" opacity="0.45"' in svg
     assert find_gauge_at(model, g.x + 1, g.y + g.height / 2) is g
     tip = topology_tooltip_at(model, g.x + 1, g.y + g.height / 2)
-    assert "U1: 1.15 V at its pins" in tip and "Resolve" in tip
+    assert "U1: 1.15 V at its pins" in tip and "Solve" in tip
 
 
 def test_voltages_drop_trailing_zeros():

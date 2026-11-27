@@ -1,7 +1,7 @@
 """The What-If panel: try a change, re-solve it, compare against the base.
 
 The panel sits on the right of the heatmap, shown / hidden by the What-If
-button beside Resolve (or W). It is viewer-mode only: entering editor mode
+button beside Solve (or W). It is viewer-mode only: entering editor mode
 closes it and hides the button. It lists the saved what-ifs, runs one, and switches the viewer between
 
 * **Base** - the design's own result (what every tab normally shows),
@@ -602,7 +602,7 @@ class _WhatIfMixin:
 
     def _build_whatif_panel(self, outer_layout) -> None:
         """Add the panel to the heatmap tab's outer row, right of the plot.
-        Shown / hidden by the What-If button beside Resolve (or W)."""
+        Shown / hidden by the What-If button beside Solve (or W)."""
         self._init_whatif_state()
         t = _T()
         # Left edge is a drag-to-resize grip (same as the editor panel).
@@ -973,7 +973,7 @@ class _WhatIfMixin:
         return Path(tempfile.gettempdir()) / "fypa_whatifs"
 
     def _whatif_mark_unsaved(self) -> None:
-        # Cosmetic for the solve (so no Resolve prompt) but an unsaved change.
+        # Cosmetic for the solve (so no Solve prompt) but an unsaved change.
         self._display_dirty = True
 
     # --- base changes / project load ------------------------------------------
@@ -1366,7 +1366,7 @@ class _WhatIfMixin:
             QMessageBox.information(
                 self, "Unsolved changes",
                 "The design has editor changes that aren't solved yet. "
-                "Press Resolve first, so the what-if and the base are "
+                "Press Solve first, so the what-if and the base are "
                 "solved from the same design.")
             return
         self._whatif_ensure_base()
@@ -1420,7 +1420,7 @@ class _WhatIfMixin:
             dialog_title="Running what-if",
             dialog_text=(f"Solving what-if “{s.name}”…\n"
                          "The base result is kept."),
-            # Same width as the Resolve pop-up (see _on_resolve_clicked), so
+            # Same width as the Solve pop-up (see _on_resolve_clicked), so
             # the per-stage status lines aren't cut off.
             dialog_width_scale=3.199392,
             dialog_width_text=RESOLVE_DIALOG_TEXT,

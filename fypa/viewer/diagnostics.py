@@ -258,7 +258,7 @@ def _maybe_warn_open_loop_rails(parent_win, metadata) -> None:
     """Pop a notice listing rails / markers that were NOT solved because no
     current can flow: only sources or only sinks on a rail, or a sink with an
     ideal return on a rail supplied through copper. Fired on load and after
-    Resolve. The directives' markers are kept on the design - the rail is
+    Solve. The directives' markers are kept on the design - the rail is
     simply left out of the FEM. No-op when there are no such rails.
 
     Reads ``metadata['open_loop_rails']`` (a list of human-readable per-rail
@@ -276,7 +276,7 @@ def _maybe_warn_open_loop_rails(parent_win, metadata) -> None:
         "solve:",
         list(rails),
         "The markers are kept on the design. Make the change each line "
-        "describes and press Resolve to include them.",
+        "describes and press Solve to include them.",
         warning=True)
 
 
@@ -287,7 +287,7 @@ def _maybe_warn_connectivity_breaks(parent_win, metadata) -> None:
     that isn't electrically connected. Unlike the open-loop-rail case the rail
     IS solved, but the result is unreliable: no copper path closes the current
     loop, so the sink reads ~0 V and the FEM injects a large ground-balancing
-    current. Fired on load and after Resolve. No-op when there are none.
+    current. Fired on load and after Solve. No-op when there are none.
 
     Reads ``metadata['connectivity_breaks']`` (built by
     :func:`fypa.altium.loader.build_problem`), which round-trips through the
@@ -305,7 +305,7 @@ def _maybe_warn_connectivity_breaks(parent_win, metadata) -> None:
         "solved but the result is unreliable (the sink reads about 0 V):",
         list(breaks),
         "Move the markers onto the same copper island, or connect the "
-        "islands (a via or a SERIES link), then press Resolve.",
+        "islands (a via or a SERIES link), then press Solve.",
         warning=True)
 
 

@@ -469,7 +469,7 @@ the board:
 - A component that already carries schematic `PDN_*` directives can be
   *unlocked* and overridden, for quick "what-if" values without editing
   Altium.
-- Hit **Resolve** to re-run the solver with your edits applied - it reuses
+- Hit **Solve** to re-run the solver with your edits applied - it reuses
   the cached design extraction, so it's far quicker than a cold load.
 
 Editor edits are stored in a small `.fypa` project file beside the board, so
@@ -490,7 +490,7 @@ losing that result. Typical questions:
 - **Fabrication:** IPC Class 2 instead of Class 3 via plating, or vias
   filled with conductive paste?
 
-Press **What-If** on the heatmap (next to Resolve) to open the panel, then
+Press **What-If** on the heatmap (next to Solve) to open the panel, then
 **New…** to make one. A What-If can change any of:
 
 - board temperature, copper resistivity and its temperature coefficient;

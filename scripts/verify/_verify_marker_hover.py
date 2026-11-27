@@ -2,7 +2,7 @@
 
 Reproduces the reported bug: after an Altium-defined component is unlocked
 and given a new value in editor mode, the bottom-bar marker hover kept
-showing the *old* solved value until a Resolve. Builds the real PdnViewer
+showing the *old* solved value until a Solve. Builds the real PdnViewer
 from a cached solve, applies an editor override exactly as the Apply button
 does, then hit-tests the hover index the bottom bar uses.
 

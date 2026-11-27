@@ -56,9 +56,9 @@ These things change when editor mode is active:
    (**SOURCE**) and a blue down-triangle (**SINK**). These are the free
    marker buttons, covered in 2.4.
 3. **Auto setup…** (yellow sparkle) and **Manual setup…** (wrench)
-   appear above **Resolve** in the button column - the same two wizards
+   appear above **Solve** in the button column - the same two wizards
    as on the Topology tab. Like every button in that column (and the
-   Edit, What-If and Resolve buttons in viewer mode) they are icon-only
+   Edit, What-If and Solve buttons in viewer mode) they are icon-only
    squares; rest the mouse on one for a moment and it widens to show
    its name, shrinking back when the mouse leaves. The What-If button is
    hidden until you leave editor mode.
@@ -192,10 +192,28 @@ input range, checked against the solved input voltage - see
 [Input headroom](04-regulators.md#input-headroom-pdn_dropout-pdn_vin_min-pdn_vin_max).
 All of these are optional.
 
+**Step 6c - (SOURCE / REGULATOR) Optional remote sense.**
+
+**Sense DES** names the part(s) whose pads on the P net (a regulator's
+OUT net) are where the supply holds its voltage - usually the load, or
+the top resistor of an FB divider tapped at the far end of the rail.
+Leave it blank to sense locally, at the supply's own pins. Once it names
+a part, **Sense pins** lists that part's pads on the net, with the same
+**All** box as the other pin lists; untick it to sense at particular
+pins only (the `PDN_SENSE_PINS` equivalent). **Sense N DES** (**Sense
+GND DES** on a regulator) and **Sense N pins** do the same for the
+return, in two-net mode only - an ideal return has no copper to sense.
+The supply's own pins then rise by whatever the copper drops on the way
+to the sense point; see
+[Remote sense](01-sources-and-sinks.md#remote-sense-pdn_sense_des).
+A sense part that isn't on the net, or a sense pin it doesn't have,
+skips the directive at Solve with a warning, as in the schematic.
+Free markers always sense locally.
+
 **Step 7 - Click Apply.**
 
 The status line at the bottom of the form turns green: *Applied - press
-Resolve to re-solve.* A marker appears on the viewport showing the new
+Solve to update the results.* A marker appears on the viewport showing the new
 directive, the connected copper is highlighted, and the project is
 marked dirty.
 
@@ -269,16 +287,16 @@ on a side whose copper is hidden.
 Clicking **Unlock** swaps the read-only view for the editable form,
 pre-populated from the schematic values. From here it behaves like a
 fresh editor directive - change whatever you need, click **Apply**,
-then **Resolve**.
+then **Solve**.
 
 A status line in the form turns orange while unlocked: *Unlocked -
-Apply replaces the schematic directive on the next resolve.* After
+Apply replaces the schematic directive on the next solve.* After
 Apply it changes to: *Overrides the schematic directive.*
 
 > The schematic file on disk is **never modified**. The override lives
 > only in the `.fypa` project file. To revert to the schematic value,
 > select the component and click **Remove** - the schematic directive
-> takes over again on the next resolve.
+> takes over again on the next solve.
 
 ### Series elements
 
@@ -294,7 +312,7 @@ fields:
   share of the rail's set voltage), and loss. For a chip resistor the
   loss is compared with the typical rating for its size (e.g. 63 mW for
   an 0402). Values go italic and are marked out of date after an edit,
-  until you Resolve.
+  until you Solve.
 - **A merged link** has no current or drop of its own, because its two
   nets were joined into one. The block says so.
 
@@ -417,19 +435,19 @@ click a single object to edit it.
 ## 2.7 Re-solving and saving
 
 Editor edits do not run the solver themselves - they queue up changes
-that the **Resolve** button then applies.
+that the **Solve** button then applies.
 
-**Resolve.** A green **↻ Resolve** button appears at the top-left of
+**Solve.** A green **↻ Solve** button appears at the top-left of
 the viewport whenever there are unsolved edits (just the green ↻ icon;
-hover it to see **Solve** or **Resolve**). Click it to re-run the
-solver with the current editor directives applied. The resolve reuses
+hover it to see its name). Click it to re-run the
+solver with the current editor directives applied. The solve reuses
 the cached design extraction (geometry, net lookup, mesh) so it is
 significantly faster than a cold load - typically a few seconds rather
 than the tens of seconds of the first launch.
 
-![Resolve button visible after an edit](screenshots/02-resolve-button.png)
+![Solve button visible after an edit](screenshots/02-resolve-button.png)
 
-**Save.** Editor edits and the resolved solution are not written to
+**Save.** Editor edits and the new solution are not written to
 disk until you save. Press **`Ctrl+S`** to bring up the save dialog:
 
 - **Project only** (`S`) - writes the `.fypa` file with your editor
@@ -442,7 +460,7 @@ On subsequent saves it overwrites the existing file silently. *File >
 Save Project As…* writes to a new location.
 
 > Closing the viewer with unsaved edits prompts before discarding
-> them. The Resolve action itself does not save - you can resolve as
+> them. The Solve action itself does not save - you can solve as
 > many times as you like during one session and only save when you
 > are happy with the result.
 
@@ -562,7 +580,7 @@ keep their setup.
 
 | Message or symptom                                                           | Likely cause                                                                 | Fix                                                                          |
 |------------------------------------------------------------------------------|------------------------------------------------------------------------------|------------------------------------------------------------------------------|
-| Resolve button never appears                                                  | No editor edits are pending, or none have been Applied yet.                  | Edits must be **Applied** (not just typed into the form) to mark the project dirty. |
+| Solve button never appears                                                    | No editor edits are pending, or none have been Applied yet.                  | Edits must be **Applied** (not just typed into the form) to mark the project dirty. |
 | `Editor rail '+5V': single-net SINK(s) with no SOURCE - no current can flow` | A single-net sink was placed on a rail with no single-net source.            | Add a single-net SOURCE on the same rail, or switch the sink to two-net mode. |
 | `A sink marker on rail '+5V' has an ideal return, but the rail is supplied through copper …` | A single-net sink on a rail whose supplies all return through copper (e.g. a saved setup from before this was checked). The sink is left out of the solve. | Switch the sink to two-net mode with the rail's return net (e.g. GND) as its N net, or give the rail a single-net SOURCE. |
 | `P net '+5V' not found on the board; skipped`                                | The chosen net name does not exist in the current PCB extraction.            | Re-check the net name against the dropdown options - only nets present on the PCB are listed. |

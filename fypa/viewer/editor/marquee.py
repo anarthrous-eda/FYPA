@@ -457,7 +457,7 @@ class _MarqueeMixin:
             warn = QLabel(
                 f"<span style='color:{t['warn']};'>{len(locked)} of these "
                 "still take their values from the Altium schematic. Apply "
-                "unlocks them and overrides it on the next resolve.</span>"
+                "unlocks them and overrides it on the next solve.</span>"
             )
             warn.setWordWrap(True)
             lay.addWidget(warn)
@@ -620,18 +620,17 @@ class _MarqueeMixin:
             and role != "SERIES"
         value = sch.get("value")
         two_net_terminal = (not single) and role in ("SOURCE", "SINK")
-        # Remote sense carries over as the designators its pads sit on.
-        sense = (sch.get("remote_sense") or {}) if role == "SOURCE" else {}
+        # Remote sense carries over as the parts and pads it landed on.
+        from fypa.autosetup.manual import sense_from_terminal
 
-        def _sense_des(term) -> list[str] | None:
-            if not term:
-                return None
-            names = []
-            for pin in term.get("pins") or []:
-                comp = pin.get("component")
-                if comp and comp not in names:
-                    names.append(comp)
-            return names or None
+        sense = (sch.get("remote_sense") or {}) if role == "SOURCE" else {}
+        p_net = self._terminal_primary_net(terms.get("P"))
+        n_net = None if single else self._terminal_primary_net(n_term)
+        sense_des, sense_pins = sense_from_terminal(
+            sense.get("P"), self._all_pads_on(p_net))
+        sense_n_des, sense_n_pins = ((None, None) if single else
+                                     sense_from_terminal(
+                                         sense.get("N"), self._all_pads_on(n_net)))
         return EditorDirective(
             kind="component",
             role=role,
@@ -646,8 +645,8 @@ class _MarqueeMixin:
                    if two_net_terminal else None),
             n_des=(self._terminal_des_list(n_term, designator) or None
                    if two_net_terminal else None),
-            sense_des=_sense_des(sense.get("P")),
-            sense_n_des=None if single else _sense_des(sense.get("N")),
+            sense_des=sense_des, sense_pins=sense_pins,
+            sense_n_des=sense_n_des, sense_n_pins=sense_n_pins,
             voltage=value if role == "SOURCE" else None,
             current=value if role == "SINK" else None,
             resistance=value if role == "SERIES" else None,
@@ -811,8 +810,8 @@ class _MarqueeMixin:
         self._populate_editor_form()
         rows = ", ".join(sorted(edits))
         self._multi_status(
-            f"Applied {_esc(rows)} to {len(targets)} {noun}s - press Resolve "
-            "to re-solve.", "ok")
+            f"Applied {_esc(rows)} to {len(targets)} {noun}s - press Solve "
+            "to update the results.", "ok")
 
     def _on_editor_multi_remove(self) -> None:
         """Delete every selected sink's editor directive in one undoable

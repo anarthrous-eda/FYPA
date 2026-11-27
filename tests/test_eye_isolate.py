@@ -116,9 +116,9 @@ def test_eye_button_keeps_caller_tooltip_across_state_change(qapp) -> None:
     """An unsolved-rail eye explains why it is disabled; a later state change
     must not replace that with generic show/hide text."""
     eye = EyeButton(visible=False)
-    eye.setToolTip("Unsolved rail - press Resolve to compute it.")
+    eye.setToolTip("Unsolved rail - press Solve to compute it.")
     eye.setVisibleState(True)
-    assert eye.toolTip() == "Unsolved rail - press Resolve to compute it."
+    assert eye.toolTip() == "Unsolved rail - press Solve to compute it."
 
 
 def test_eye_button_does_not_latch_shift_from_cancelled_press(qapp) -> None:

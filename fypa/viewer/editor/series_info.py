@@ -326,7 +326,7 @@ class _SeriesInfoMixin:
                     "it as SERIES to see what it carries.</span>"]
         if info["pending"]:
             return [f"<span style='color:{t['warn']};'>Not solved at this "
-                    "value yet - Resolve to see its current and drop."
+                    "value yet - Solve to see its current and drop."
                     "</span>"]
         if not info.get("solved"):
             if info.get("off_mesh"):
@@ -362,7 +362,7 @@ class _SeriesInfoMixin:
         if getattr(self, "_solve_stale", False):
             rows = [f"<i>{r}</i>" for r in rows]
             rows.append(f"<span style='color:{t['warn']};'>Out of date - "
-                        "Resolve to refresh.</span>")
+                        "Solve to refresh.</span>")
         return rows
 
     def _build_series_buttons(self, lay, info: dict) -> None:
@@ -372,7 +372,7 @@ class _SeriesInfoMixin:
         btns: list[QPushButton] = []
         if source in ("auto", "merged"):
             b = QPushButton("Disable auto-SERIES")
-            b.setToolTip("Leave this part open at DC on the next Resolve "
+            b.setToolTip("Leave this part open at DC on the next Solve "
                          "(same as Disable in the Bridges tab).")
             b.clicked.connect(lambda: self._on_series_disable_auto(des))
             btns.append(b)
@@ -385,7 +385,7 @@ class _SeriesInfoMixin:
         elif source == "off":
             b = QPushButton("Re-enable auto-SERIES")
             b.setToolTip("Let FYPA model this part again on the next "
-                         "Resolve.")
+                         "Solve.")
             b.clicked.connect(lambda: self._on_series_revert(des))
             btns.append(b)
         if row is not None:

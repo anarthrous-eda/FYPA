@@ -76,7 +76,7 @@ class _BridgesTabMixin:
             "Parts that electrically join two nets. Set a resistance to model "
             "one as a SERIES element, or switch off an automatic short. "
             "Changes are saved to the project file and applied on the next "
-            "Resolve."
+            "Solve."
         )
         blurb.setWordWrap(True)
         blurb.setStyleSheet(f"QLabel {{ color: {_T()['fg_muted']}; }}")
@@ -127,7 +127,7 @@ class _BridgesTabMixin:
             "this (ohms) are modelled as SERIES with their own value - "
             "current-sense shunts, mostly. 0 turns it off. Values under "
             f"{self._BRIDGE_MERGE_THRESHOLD_OHM * 1e3:g} mΩ merge the two "
-            "nets like a 0 Ω link. Applied on the next Resolve.")
+            "nets like a 0 Ω link. Applied on the next Solve.")
         self.bridges_auto_series_edit.editingFinished.connect(
             self._on_bridge_auto_series_changed)
         filter_row.addWidget(self.bridges_auto_series_edit)
@@ -236,7 +236,7 @@ class _BridgesTabMixin:
         self.bridges_apply_btn = QPushButton("Model as SERIES")
         self.bridges_apply_btn.setToolTip(
             "Add an editor SERIES directive for the selected part with this "
-            "resistance. Saved to the .fypa; press Resolve to apply it.")
+            "resistance. Saved to the .fypa; press Solve to apply it.")
         self.bridges_apply_btn.clicked.connect(self._on_bridge_apply)
         edit_row.addWidget(self.bridges_apply_btn)
 
@@ -715,14 +715,14 @@ class _BridgesTabMixin:
                     msg += (
                         f" You have already changed {', '.join(pending)} in "
                         f"this tab, which breaks that chain, but it only takes "
-                        f"effect when the design is rebuilt: press Resolve, "
+                        f"effect when the design is rebuilt: press Solve, "
                         f"then set up {des}.")
                 elif len(links) > 1:
                     later = p["merge_path"][0]["net"]
                     msg += (
                         f" Break any link in that chain: give it its real "
                         f"resistance in this tab, or disable its auto-bridge, "
-                        f"then Resolve. Either way {des} can then be set up. "
+                        f"then Solve. Either way {des} can then be set up. "
                         f"{links[0]} is the one that keeps {orig} on its own; "
                         f"breaking a later link leaves {orig} joined to "
                         f"{later}.")
@@ -730,7 +730,7 @@ class _BridgesTabMixin:
                     first = links[0] if links else "the link"
                     msg += (
                         f" Give {first} its real resistance in this tab, or "
-                        f"disable its auto-bridge, and Resolve; {orig} is then "
+                        f"disable its auto-bridge, and Solve; {orig} is then "
                         f"a separate net again and {des} can be set up.")
             else:
                 msg += " Pick pads on two different nets."
@@ -882,7 +882,7 @@ class _BridgesTabMixin:
             getattr(project, "no_auto_bridge", []) or []) + [des]
         self._after_bridge_edit(
             f"{des}: auto-bridge disabled. It will be left open at DC on the "
-            f"next Resolve.")
+            f"next Solve.")
 
     def _apply_bridge_series(self, rec: dict, resistance: float | None) -> None:
         """Write (or drop) an editor SERIES directive for this part.
@@ -1021,7 +1021,7 @@ class _BridgesTabMixin:
             refresh()
         self.bridges_hint_label.setText(
             f"<span style='color:{_T()['fg_muted']};'>{_esc(message)} "
-            f"Press Resolve to apply.</span>")
+            f"Press Solve to apply.</span>")
 
 
     def _build_vias_tab(self) -> QWidget:

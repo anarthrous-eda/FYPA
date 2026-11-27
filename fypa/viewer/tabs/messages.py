@@ -271,7 +271,7 @@ class _MessagesTabMixin:
         Adding each record as it arrived re-sorted the whole table and
         recounted every row per record - ~16 ms each on a table of a few
         thousand rows. A solve logs hundreds of records, and that GUI work
-        held the GIL against the solve worker: a Resolve's annotation
+        held the GIL against the solve worker: a Solve's annotation
         warnings alone took 4 s to log instead of 30 ms.
         """
         pending = getattr(self, "_messages_pending", None)

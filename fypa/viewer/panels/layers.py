@@ -502,7 +502,7 @@ class _LayerPanelMixin:
                 subnet_row.setStyleSheet(muted_qss)
             if pending:
                 tip = (
-                    f"Unsolved subnet of rail {rail} - press Resolve to "
+                    f"Unsolved subnet of rail {rail} - press Solve to "
                     f"compute it."
                 )
             elif self._is_merged_section(net):

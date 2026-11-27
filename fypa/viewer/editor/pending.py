@@ -9,7 +9,7 @@ from fypa.viewer.theme import _T
 from fypa.viewer.widgets import _qt_widget_alive, EyeButton
 
 
-# The Resolve progress pop-up's message. The What-If runner sizes its own
+# The Solve progress pop-up's message. The What-If runner sizes its own
 # pop-up from it too, so the two come up the same width.
 RESOLVE_DIALOG_TEXT = (
     "Re-solving with your editor changes…\n"
@@ -125,7 +125,7 @@ class _PendingRailsMixin:
             has_subnets = len(members) > 1
             eye = EyeButton(visible=False)
             eye.setEnabled(False)
-            eye.setToolTip("Unsolved rail - press Resolve to compute it.")
+            eye.setToolTip("Unsolved rail - press Solve to compute it.")
             expand_btn = None
             expanded = bool(self._pending_rail_expanded.get(name, False))
             if has_subnets:
@@ -227,7 +227,7 @@ class _PendingRailsMixin:
         this viewer has no in-memory LoadedProject (e.g. opened from a
         pickle).
 
-        Resolve is also reachable when only the Settings tab is dirty (no
+        Solve is also reachable when only the Settings tab is dirty (no
         editor directives) - in that case the editor-directive list is
         simply empty and the solve runs with the new parameters."""
         if not self._resolve_button_enabled():
@@ -236,82 +236,30 @@ class _PendingRailsMixin:
                     self, "Nothing to solve",
                     "The design has no closed PDN rail to solve: it needs a "
                     "<b>SOURCE</b> and a <b>SINK</b> on the same rail.\n\n"
-                    "Switch on Edit to place them, then press "
-                    f"{self._stub_action_word()}.",
+                    "Switch on Edit to place them, then press Solve.",
                 )
                 return
             QMessageBox.information(
-                self, "Nothing to resolve",
+                self, "Solve is up to date",
                 "The current solve is up to date. Check "
                 "<b>Adaptive SMPS gain</b> to re-solve with iterative "
                 "regulator gain, or edit directives / settings first.",
             )
             return
-        # Saved setup entries the design no longer matched: review them, or
-        # solve knowingly without them.
-        from fypa.viewer.setup_restore import confirm_solve_with_held
-        if not confirm_solve_with_held(self):
+        setup = self._solve_setup_or_none()
+        if setup is None:
             return
-        editor_directives = (
-            list(self._project.editor_directives)
-            if self._project is not None else []
-        )
-        copper_names = (
-            list(self._project.copper_names)
-            if self._project is not None else []
-        )
-        unnamed = self._unnamed_copper_directives() if editor_directives else []
-        if unnamed:
-            lines = []
-            for d in unnamed:
-                if d.kind == "free" and d.anchor_xy is not None:
-                    where = (f"free {d.role} at "
-                             f"({d.anchor_xy[0]:g}, {d.anchor_xy[1]:g}) mm"
-                             f" on {d.layer or '?'}")
-                else:
-                    where = f"{d.role} on {d.designator or '?'}"
-                lines.append(f"  • {where}")
-            # Gerber-sourced projects have no Altium schematic to edit,
-            # so omit the "name it in Altium and re-import" option and
-            # collapse the two-bullet wording to a single-action instruction.
-            is_gerber = self._is_gerber_source()
-            if is_gerber:
-                fix_text = (
-                    "To fix this:\n"
-                    "  • Click the copper in editor mode and use the "
-                    "<b>Unnamed copper</b> form on the right to give it a "
-                    "name here, then click Apply and Resolve again."
-                )
-            else:
-                fix_text = (
-                    "Fix this one of two ways:\n"
-                    "  • Click the copper in editor mode and use the "
-                    "<b>Unnamed copper</b> form on the right to give it a "
-                    "name here, then click Apply and Resolve again.\n"
-                    "  • Or name the net in Altium and re-import the design "
-                    "before resolving."
-                )
-            QMessageBox.warning(
-                self, "Name the copper first",
-                "These editor directives are placed on copper that has no "
-                "net name:\n\n"
-                + "\n".join(lines)
-                + "\n\nThe solver can't include an unnamed net in the "
-                "result - and any other unnamed copper on the board would "
-                "be lumped onto the same rail.\n\n"
-                + fix_text,
-            )
-            return
+        editor_directives, copper_names = setup
         prjpcb = self.metadata.get("prjpcb_path") if self.metadata else None
         if not prjpcb:
             QMessageBox.warning(
-                self, "Can't resolve",
+                self, "Can't solve",
                 "This solution isn't linked to an Altium project, so the "
                 "design info needed for a re-solve isn't available.",
             )
             return
         pcbdoc = self.metadata.get("pcbdoc_path") if self.metadata else None
-        # Pick up any Settings-tab edits the user made before clicking Resolve
+        # Pick up any Settings-tab edits the user made before clicking Solve
         # - mirrors the Re-run Solver path so the post-resolve viewer reflects
         # exactly what was solved.
         try:
@@ -320,7 +268,7 @@ class _PendingRailsMixin:
         except ValueError as e:
             QMessageBox.warning(
                 self, "Invalid solve parameter",
-                f"Can't resolve: {e}\n\n"
+                f"Can't solve: {e}\n\n"
                 "Fix the highlighted field on the Properties tab and try again.",
             )
             return
@@ -339,7 +287,7 @@ class _PendingRailsMixin:
             )
             dialog_width_scale = 1.44
         else:
-            dialog_title = "Resolving with editor changes"
+            dialog_title = "Solving with editor changes"
             dialog_text = RESOLVE_DIALOG_TEXT
             # ~3.20x Qt's auto-sized width: the standard solve dialog's 1.44x,
             # widened for the longer editor-changes message and then another
@@ -376,6 +324,68 @@ class _PendingRailsMixin:
             dialog_text=dialog_text,
             dialog_width_scale=dialog_width_scale,
         )
+
+    def _solve_setup_or_none(self) -> tuple[list, list] | None:
+        """``(editor directives, copper names)`` to solve with, or ``None``
+        after telling the user why not: saved setup entries they chose to
+        review first, or a directive on copper that has no net name yet.
+        Shared by Solve and Reload Design."""
+        # Saved setup entries the design no longer matched: review them, or
+        # solve knowingly without them.
+        from fypa.viewer.setup_restore import confirm_solve_with_held
+        if not confirm_solve_with_held(self):
+            return None
+        editor_directives = (
+            list(self._project.editor_directives)
+            if self._project is not None else []
+        )
+        copper_names = (
+            list(self._project.copper_names)
+            if self._project is not None else []
+        )
+        unnamed = self._unnamed_copper_directives() if editor_directives else []
+        if unnamed:
+            lines = []
+            for d in unnamed:
+                if d.kind == "free" and d.anchor_xy is not None:
+                    where = (f"free {d.role} at "
+                             f"({d.anchor_xy[0]:g}, {d.anchor_xy[1]:g}) mm"
+                             f" on {d.layer or '?'}")
+                else:
+                    where = f"{d.role} on {d.designator or '?'}"
+                lines.append(f"  • {where}")
+            # Gerber-sourced projects have no Altium schematic to edit,
+            # so omit the "name it in Altium and re-import" option and
+            # collapse the two-bullet wording to a single-action instruction.
+            is_gerber = self._is_gerber_source()
+            if is_gerber:
+                fix_text = (
+                    "To fix this:\n"
+                    "  • Click the copper in editor mode and use the "
+                    "<b>Unnamed copper</b> form on the right to give it a "
+                    "name here, then click Apply and Solve again."
+                )
+            else:
+                fix_text = (
+                    "Fix this one of two ways:\n"
+                    "  • Click the copper in editor mode and use the "
+                    "<b>Unnamed copper</b> form on the right to give it a "
+                    "name here, then click Apply and Solve again.\n"
+                    "  • Or name the net in Altium and re-import the design "
+                    "before solving."
+                )
+            QMessageBox.warning(
+                self, "Name the copper first",
+                "These editor directives are placed on copper that has no "
+                "net name:\n\n"
+                + "\n".join(lines)
+                + "\n\nThe solver can't include an unnamed net in the "
+                "result - and any other unnamed copper on the board would "
+                "be lumped onto the same rail.\n\n"
+                + fix_text,
+            )
+            return None
+        return editor_directives, copper_names
 
     def _on_gl_clicked(self, _world_x: float, _world_y: float) -> None:
         """Left-click in the viewport (no drag). In editor mode this drives

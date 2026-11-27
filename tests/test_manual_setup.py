@@ -327,6 +327,88 @@ def test_schematic_rows_are_locked_and_override_round_trips() -> None:
     assert len(M.schematic_entries(md, [u6])) == 1
 
 
+# --- remote sense -------------------------------------------------------------
+
+
+def _ldo_u2(**kw) -> M.EditorDirective:
+    """U2 an LDO from +3V3 to +1V8; U3 (the MCU) has pin 2 on +1V8."""
+    d = M.new_supply()
+    M.set_supply_type(d, "LDO")
+    d.p_net, d.designator, d.voltage, d.in_p_net = "+1V8", "U2", 1.8, "+3V3"
+    M.set_ground(d, "GND")
+    for k, v in kw.items():
+        setattr(d, k, v)
+    return d
+
+
+def _sense_errors(d) -> list[str]:
+    return [i.text for i in M.validate([_entry(d)], _board())
+            if i.level == "error" and "sense" in i.text]
+
+
+def test_remote_sense_on_a_regulator_validates() -> None:
+    assert _sense_errors(_ldo_u2(sense_des=["U3"], sense_pins=["2"],
+                                 sense_n_des=["U3"])) == []
+
+
+def test_remote_sense_mistakes_are_errors() -> None:
+    assert any("sense part R7 has no pin on +1V8" in t
+               for t in _sense_errors(_ldo_u2(sense_des=["R7"])))
+    assert any("sense pins 9 aren't on +1V8" in t
+               for t in _sense_errors(_ldo_u2(sense_des=["U3"], sense_pins=["9"])))
+    assert any("return sense pins are set but not the part" in t
+               for t in _sense_errors(_ldo_u2(sense_n_pins=["3"])))
+    assert any("tick at least one sense pin" in t
+               for t in _sense_errors(_ldo_u2(sense_des=["U3"], sense_pins=[])))
+
+
+def test_moving_the_output_or_ground_drops_sense_that_no_longer_fits() -> None:
+    view = _board()
+    d = _ldo_u2(sense_des=["U3"], sense_pins=["2"], sense_n_des=["U3"])
+    M.drop_stale_sense(d, view)
+    assert d.sense_des == ["U3"] and d.sense_n_des == ["U3"]   # still fits
+    d.p_net = "+3V3"                                           # U3 isn't on it
+    M.drop_stale_sense(d, view)
+    assert d.sense_des is None and d.sense_pins is None and d.sense_n_des == ["U3"]
+    src = M.new_supply()
+    src.p_net, src.designator, src.voltage = "+12V", "J1", 12.0
+    src.single_net, src.n_net, src.sense_n_des = False, "GND", ["U1"]
+    M.set_ground(src, M.IDEAL_RETURN)                          # no copper return
+    assert src.sense_n_des is None
+
+
+def test_sense_from_terminal_reads_parts_and_narrowed_pins() -> None:
+    term = {"pins": [{"pad": "1", "component": "J1", "net": "+12V"}]}
+    every = {"J1": ["1", "2"], "U1": ["1"]}
+
+    def all_pads(des):
+        return [p for x in des for p in every[x]]
+    assert M.sense_from_terminal(term, all_pads) == (["J1"], ["1"])
+    term["pins"].append({"pad": "2", "component": "J1", "net": "+12V"})
+    assert M.sense_from_terminal(term, all_pads) == (["J1"], None)   # all of them
+    assert M.sense_from_terminal(None) == (None, None)
+
+
+def test_override_carries_remote_sense_across() -> None:
+    md = {"role": "REGULATOR", "designator": "U2", "schdoc": "a.SchDoc", "value": 1.8,
+          "regulator_type": "LDO",
+          "terminals": {
+              "OUT_P": {"requested_net": "+1V8", "pins": [{"pad": "2", "net": "+1V8"}]},
+              "OUT_N": {"requested_net": "GND", "pins": [{"pad": "4", "net": "GND"}]},
+              "IN_P": {"requested_net": "+3V3", "pins": [{"pad": "1", "net": "+3V3"}]},
+              "IN_N": {"requested_net": "GND", "pins": []}},
+          "remote_sense": {
+              "P": {"pins": [{"pad": "2", "component": "U3", "net": "+1V8"}]},
+              "N": {"pins": [{"pad": "3", "component": "U3", "net": "GND"}]}}}
+    d = M.from_schematic(md, _board())
+    assert d is not None
+    assert (d.sense_des, d.sense_pins) == (["U3"], None)       # U3's only +1V8 pin
+    assert (d.sense_n_des, d.sense_n_pins) == (["U3"], None)
+    # Without a design view the pads come across as picked.
+    d = M.from_schematic(md)
+    assert d is not None and d.sense_pins == ["2"]
+
+
 def test_preset_from_classifier_pick_fills_the_regulator() -> None:
     from fypa.autosetup import candidates_for_net, suggest
 
@@ -448,3 +530,32 @@ def test_dialog_lists_copper_markers_with_location_and_values_only(qapp) -> None
     ed.locate_btn.click()
     from PySide6.QtWidgets import QDialog
     assert dlg.result() == QDialog.Accepted and dlg.locate_id == src.id
+
+
+def test_dialog_sets_remote_sense_on_a_regulator(qapp) -> None:
+    from fypa.viewer.manual_setup_dialog import ManualSetupDialog
+
+    reg = _ldo_u2()
+    dlg = ManualSetupDialog(None, view=_board(), editor_directives=[reg], metadata=None)
+    ed = dlg.supplies.editor
+    assert ed.entry.directive.id == reg.id
+    (lab, combo, plab, picker), (nlab, ncombo, _nplab, _npicker) = ed._sense_rows
+    # Rows show for a component-bound supply; pin lists only once a part is picked.
+    assert not combo.isHidden() and not ncombo.isHidden() and picker.isHidden()
+    assert combo.currentData() == "" and "local" in combo.currentText()
+    choices = [combo.itemData(i) for i in range(combo.count())]
+    assert "U3" in choices and "U2" not in choices      # not the supply itself
+    combo.setCurrentIndex(combo.findData("U3"))
+    ed._on_sense("p")
+    d = ed.entry.directive
+    assert d.sense_des == ["U3"] and d.sense_pins is None
+    picker = ed._sense_rows[0][3]
+    assert not picker.isHidden() and picker.all.isChecked()
+    picker.all.setChecked(False)                           # pick by hand
+    assert d.sense_pins == ["2"]
+    out = {x.id: x for x in dlg.result_directives()}
+    assert out[reg.id].sense_des == ["U3"] and reg.sense_des is None
+    # Back to local sense clears the pins too.
+    combo.setCurrentIndex(0)
+    ed._on_sense("p")
+    assert d.sense_des is None and d.sense_pins is None

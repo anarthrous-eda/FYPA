@@ -211,7 +211,7 @@ def merge_rail_tree_metadata(
     aliases off directives of *every* role. Dropping the others made the
     pending tree nest differently from the solved one built straight from
     ``metadata``, so a subnet reachable only through such an alias jumped
-    levels the moment the user pressed Resolve.
+    levels the moment the user pressed Solve.
     """
     meta = dict(metadata) if isinstance(metadata, dict) else {}
     directives = list(meta.get("directives") or [])

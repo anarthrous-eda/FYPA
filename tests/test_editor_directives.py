@@ -80,7 +80,7 @@ def test_series_non_positive_resistance_is_skipped():
 
 
 def test_resolve_is_idempotent_via_clone(monkeypatch):
-    """Round-2 finding #2: each Resolve must clone before applying editor
+    """Round-2 finding #2: each Solve must clone before applying editor
     directives so the pristine (viewer-retained) annotations are never
     mutated and directives don't accumulate across Resolves.
 
@@ -643,3 +643,102 @@ def test_editor_sense_round_trips_and_defaults_to_local():
     assert (restored.sense_des, restored.sense_n_des) == (["U1"], ["U1"])
     bare = EditorDirective.from_dict({"role": "SOURCE", "p_net": "VIN"})
     assert bare.sense_des is None and bare.sense_n_des is None
+
+
+def _loaded_with_regulator():
+    """Board stand-in: U5 an LDO from VIN to +3V3; U6 a load on +3V3 with
+    two supply pads (1, 3) and a ground pad (2)."""
+    from fypa.altium.extract import Pt2D
+
+    nets = [SimpleNamespace(name="GND"), SimpleNamespace(name="VIN"),
+            SimpleNamespace(name="+3V3")]
+    comps = [SimpleNamespace(designator="U5"), SimpleNamespace(designator="U6")]
+
+    def pad(ci, des, ni, x):
+        return SimpleNamespace(component_index=ci, net_index=ni, designator=des,
+                               center=Pt2D(x, 0), layer_id=1,
+                               is_through_hole=False)
+    pads = [pad(0, "1", 1, 0), pad(0, "2", 0, 1), pad(0, "3", 2, 2),
+            pad(1, "1", 2, 20), pad(1, "2", 0, 21), pad(1, "3", 2, 22)]
+    extracted = SimpleNamespace(
+        nets=nets, pcb_components=comps, pads=pads,
+        enabled_copper_layer_ids=lambda: [1],
+    )
+    return SimpleNamespace(extracted=extracted, annotations=AnnotationResult())
+
+
+def _editor_ldo(**kw) -> EditorDirective:
+    return EditorDirective(
+        kind="component", role="REGULATOR", designator="U5", single_net=False,
+        p_net="+3V3", n_net="GND", in_p_net="VIN", in_n_net="GND",
+        voltage=3.3, regulator_type="LDO", **kw)
+
+
+def _pads(term) -> list[tuple[str, str]]:
+    return [(p.component_designator, p.pad_designator) for p in term.pins]
+
+
+def test_editor_regulator_remote_senses_at_the_load():
+    from fypa.altium.annotations import RegulatorSpec
+
+    loaded = _loaded_with_regulator()
+    eds = [_editor_ldo(sense_des=["U6"], sense_pins=["3"], sense_n_des=["U6"])]
+    assert apply_editor_directives(loaded, eds) == []
+    (reg,) = [d for d in loaded.annotations.directives
+              if isinstance(d, RegulatorSpec)]
+    assert _pads(reg.out_sense_p) == [("U6", "3")]          # narrowed to pin 3
+    assert _pads(reg.out_sense_n) == [("U6", "2")]          # all U6's GND pads
+
+
+def test_editor_regulator_without_sense_senses_locally():
+    from fypa.altium.annotations import RegulatorSpec
+
+    loaded = _loaded_with_regulator()
+    assert apply_editor_directives(loaded, [_editor_ldo()]) == []
+    (reg,) = [d for d in loaded.annotations.directives
+              if isinstance(d, RegulatorSpec)]
+    assert reg.out_sense_p is None and reg.out_sense_n is None
+
+
+def test_editor_regulator_bad_sense_is_skipped_with_a_warning():
+    for kw, expect in (
+            ({"sense_des": ["U6"], "sense_pins": ["9"]}, "none of pins ['9']"),
+            ({"sense_n_pins": ["2"]}, "pins are set but not the part"),
+            ({"sense_des": ["U9"]}, "'U9' not found")):
+        loaded = _loaded_with_regulator()
+        warnings = apply_editor_directives(loaded, [_editor_ldo(**kw)])
+        assert loaded.annotations.directives == [], kw
+        assert any(expect in w for w in warnings), (kw, warnings)
+
+
+def test_editor_source_sense_pins_narrow_the_sense_pads():
+    loaded = _loaded_with_regulator()
+    eds = [EditorDirective(kind="component", role="SOURCE", designator="U5",
+                           single_net=False, p_net="+3V3", n_net="GND",
+                           voltage=3.3, sense_des=["U6"], sense_pins=["1"])]
+    assert apply_editor_directives(loaded, eds) == []
+    src = next(s for s in loaded.annotations.directives
+               if isinstance(s, SourceSpec))
+    assert _pads(src.sense_p) == [("U6", "1")] and src.sense_n is None
+
+
+def test_editor_single_net_source_ignores_return_sense():
+    loaded = _loaded_with_regulator()
+    eds = [EditorDirective(kind="component", role="SOURCE", designator="U5",
+                           single_net=True, p_net="+3V3", voltage=3.3,
+                           sense_n_des=["U6"])]
+    assert apply_editor_directives(loaded, eds) == []
+    src = next(s for s in loaded.annotations.directives
+               if isinstance(s, SourceSpec))
+    assert src.sense_n is None
+
+
+def test_editor_sense_pins_round_trip():
+    d = _editor_ldo(sense_des=["U6"], sense_pins=["3"],
+                    sense_n_des=["U6"], sense_n_pins=["2"])
+    restored = EditorDirective.from_dict(d.to_dict())
+    assert (restored.sense_des, restored.sense_pins,
+            restored.sense_n_des, restored.sense_n_pins) == (
+        ["U6"], ["3"], ["U6"], ["2"])
+    bare = EditorDirective.from_dict({"role": "REGULATOR", "p_net": "+3V3"})
+    assert bare.sense_pins is None and bare.sense_n_pins is None

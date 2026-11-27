@@ -432,7 +432,7 @@ class _CopperPickMixin:
         """Net label for the properties form. Unnamed copper (net
         ``"(none)"`` / empty) that the user has named in editor mode via a
         :class:`~fypa.project_file.CopperName` - or that touches a real
-        net - shows that name instead, with "[pending resolve]" on a rename
+        net - shows that name instead, with "[pending solve]" on a rename
         the solution hasn't been rebuilt against yet (matching the hover
         probe). Lookup failures fall back to the raw net."""
         rec = hit.get("record") or {}
@@ -455,7 +455,7 @@ class _CopperPickMixin:
                 exc_info=True)
             return net
         if c is not None and c.name:
-            return f"{c.name}  [pending resolve]"
+            return f"{c.name}  [pending solve]"
         return net
 
     def _populate_copper_props_form(self, hit: dict) -> None:

@@ -7,7 +7,7 @@ Two states matter and can differ:
   the solve metadata (``metadata["variant"]``, see
   :func:`fypa.altium.variants.variant_metadata`);
 * **requested** - the project's ``variant`` setting, which a change in the
-  Properties picker updates. It takes effect on the next Resolve (Not Fitted
+  Properties picker updates. It takes effect on the next Solve (Not Fitted
   parts act while annotations are parsed, so the design has to reload).
 
 No Qt here: plain strings and lists, so it is testable without a display.
@@ -58,7 +58,7 @@ def resolved_name(request, var: dict) -> str:
 
 
 def is_pending(request, var: dict | None) -> bool:
-    """True when the next Resolve would load a different build."""
+    """True when the next Solve would load a different build."""
     if var is None:
         return False
     return (request != var.get("requested")
@@ -118,11 +118,11 @@ def renamed_text(var: dict) -> str:
 
 def banner_html(var: dict | None, request, theme: dict) -> str:
     """Rich text for the Bridges tab: the active variant, what it does to
-    this table, and any change waiting for a Resolve."""
+    this table, and any change waiting for a Solve."""
     if var is None:
         return (f"<span style='color:{theme['fg_muted']};'>Assembly variant: "
                 "none - this design has no Altium variants (or was loaded "
-                "before FYPA read them; Resolve to refresh).</span>")
+                "before FYPA read them; Solve to refresh).</span>")
     name = var.get("name", "")
     nf = len(var.get("not_fitted") or [])
     parts = [f"<b>Assembly variant:</b> "
@@ -145,7 +145,7 @@ def banner_html(var: dict | None, request, theme: dict) -> str:
     if is_pending(request, var):
         parts.append(f"<br><span style='color:{theme['warn']}; font-weight:600;'>"
                      f"Changes to {_esc(_label(resolved_name(request, var)))} on "
-                     "the next Resolve.</span>")
+                     "the next Solve.</span>")
     parts.append(f"<span style='color:{theme['fg_muted']};'>"
                  "Change it in the Properties tab.</span>")
     return " ".join(parts)
@@ -156,7 +156,7 @@ def picker_status_html(var: dict | None, request, theme: dict) -> str:
     if var is None:
         return (f"<span style='color:{theme['fg_muted']};'>This design has no "
                 "Altium assembly variants, or was loaded before FYPA read "
-                "them - Resolve to refresh.</span>")
+                "them - Solve to refresh.</span>")
     lines = [f"<span style='color:{theme['fg_dim']};'>Loaded:</span> "
              f"{_esc(loaded_summary(var))}"]
     if var.get("note"):
@@ -167,7 +167,7 @@ def picker_status_html(var: dict | None, request, theme: dict) -> str:
     if is_pending(request, var):
         lines.append(f"<span style='color:{theme['warn']}; font-weight:600;'>"
                      f"Will load {_esc(_label(resolved_name(request, var)))} - "
-                     "press Resolve to apply.</span>")
+                     "press Solve to apply.</span>")
     if not var.get("available"):
         lines.append(f"<span style='color:{theme['fg_muted']};'>The project "
                      "defines no assembly variants.</span>")

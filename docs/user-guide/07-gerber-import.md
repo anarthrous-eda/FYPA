@@ -121,7 +121,7 @@ Gerber-imported board are:
   a SERIES directive bridging the two layers or a second source / sink
   on each layer.
 
-Press **Resolve** to solve. The first Resolve replaces the
+Press **Solve**. The first solve replaces the
 blank stub solution with a real heatmap.
 
 ## 7.5 Saving the project

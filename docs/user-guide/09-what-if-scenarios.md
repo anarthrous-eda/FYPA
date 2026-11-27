@@ -20,7 +20,7 @@ Typical uses:
 ## 9.1 Opening the panel
 
 The **What-If** button at the top-left of the heatmap, next to **↻
-Resolve**, shows and hides the panel on the right of the heatmap (hotkey
+Solve**, shows and hides the panel on the right of the heatmap (hotkey
 **W** does the same). The panel is always hidden when a design loads.
 
 What-Ifs are a viewer-mode tool: in editor mode the button is hidden, and
@@ -230,7 +230,7 @@ return (N) pin.
 A What-If run against an older base is marked **out of date**. That happens
 when the design, the directives or the base properties have changed
 since it ran. Press **Run again** to compare it against the current base.
-If the design has editor changes that aren't solved yet, Resolve first so
+If the design has editor changes that aren't solved yet, Solve first so
 that the base and the What-If come from the same design.
 
 ## 9.7 Saving

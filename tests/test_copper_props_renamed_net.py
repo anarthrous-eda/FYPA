@@ -1,7 +1,7 @@
 """Viewer-mode copper properties show the editor-mode copper name.
 
 Naming unnamed copper in editor mode stores a ``CopperName`` on the
-project; the primitive metadata keeps net ``"(none)"`` until a Resolve
+project; the primitive metadata keeps net ``"(none)"`` until a Solve
 rebuilds it. Clicking that copper in viewer mode must show the user's
 name, not "(none)" (Gerber import of the Hermes Mezz showed "(none)").
 """
@@ -48,7 +48,7 @@ def test_renamed_copper_shows_the_user_name(viewer):
     viewer._project.upsert_copper_name(
         CopperName(anchor_xy=(21.0, 21.0), layer_id=1, name="VDD_MEZZ"))
     assert viewer._display_net_for_hit(_hit(21.5, 20.5)) == (
-        "VDD_MEZZ  [pending resolve]")
+        "VDD_MEZZ  [pending solve]")
 
 
 def test_real_net_is_unchanged(viewer):

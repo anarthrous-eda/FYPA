@@ -168,9 +168,9 @@ def test_bridges_banner_names_the_active_variant(prjpcb) -> None:
     meta = _meta(prjpcb, None)
     html = V.banner_html(meta, None, theme)
     assert "Bringup" in html and "following Altium" in html
-    assert "2 part(s) not fitted" in html and "next Resolve" not in html
+    assert "2 part(s) not fitted" in html and "next Solve" not in html
     pending = V.banner_html(meta, "Production", theme)
-    assert "Changes to Production on the next Resolve" in pending
+    assert "Changes to Production on the next Solve" in pending
     assert "no Altium variants" in V.banner_html(None, None, theme)
     assert "Will load [No Variations]" in V.picker_status_html(meta, "", theme)
 
@@ -260,8 +260,8 @@ def test_picker_lists_variants_and_changes_the_project(viewer) -> None:
     combo.setCurrentIndex(3)
     viewer._on_variant_chosen(3)
     assert viewer._project.variant == "Production" and viewer._dirty_calls
-    assert "press Resolve" in viewer.variant_status_label.text()
-    assert "Changes to Production on the next Resolve" in \
+    assert "press Solve" in viewer.variant_status_label.text()
+    assert "Changes to Production on the next Solve" in \
         viewer.bridges_variant_banner.text()
     viewer._on_variant_chosen(1)                         # [No Variations]
     assert viewer._project.variant == ""

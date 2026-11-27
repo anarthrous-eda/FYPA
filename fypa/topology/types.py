@@ -88,11 +88,11 @@ class NodeGauge:
         limits = f"min {self.min_v:.4g} V" + (
             f", max {self.max_v:.4g} V" if self.max_v is not None else "")
         if self.reading is None:
-            return (f"Allowed: {limits}\nNo solved voltage yet: Resolve to "
+            return (f"Allowed: {limits}\nNo solved voltage yet: Solve to "
                     "check this load.")
         tip = self.reading.tooltip
         if self.stale:
-            tip += "\n(From the last solve; Resolve to include pending edits.)"
+            tip += "\n(From the last solve; Solve to include pending edits.)"
         return tip
 
 

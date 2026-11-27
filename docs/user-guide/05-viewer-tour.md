@@ -102,7 +102,7 @@ The Properties tab holds everything that defines **this design's solve**.
   (per-layer copper thickness and resistivity). A collapsed *Advanced*
   section holds *Mesh* (accuracy and speed, not physics) and the
   *Capacitor loop inductance* knobs. A changed field is outlined;
-  **Re-run Solver** (or **↻ Resolve**) replaces the base result with one
+  **Re-run Solver** (or **↻ Solve**) replaces the base result with one
   solved from the new values. To try an alternative *without* changing
   the base, make a What-If instead ([Section 9](09-what-if-scenarios.md)).
 - **Right - design report** (read-only): what the solver was actually
@@ -141,7 +141,7 @@ labelled input/output ports; wires connect ports that share the same net.
 This is **not** the PCB layout; for spatial placement use the Board tab.
 
 The icon-only squares at the diagram's top-left are **Auto setup**,
-**Manual setup**, **What-If** and **↻ Resolve**; rest the mouse on one
+**Manual setup**, **What-If** and **↻ Solve**; rest the mouse on one
 for a moment and it widens to show its name.
 
 - **Rows** - each SOURCE starts a row, and each REGULATOR gets its own
@@ -228,7 +228,7 @@ for a moment and it widens to show its name.
   Hover a gauge for the numbers: the range at the pins, the limits, the
   margin, and the drop with its return-path share. Readings come from the
   last solve; with edits pending, the gauges are faded until you
-  **Resolve**. Before the first solve a gauge shows its limits and *not
+  **Solve**. Before the first solve a gauge shows its limits and *not
   solved yet*.
 - **Port voltages** (under **View options**, on by default) - the solved
   voltage on the wire beside each SOURCE, REGULATOR and SINK supply port:
@@ -264,9 +264,9 @@ for a moment and it widens to show its name.
   right: the same form as the Board's PDN editor panel. A part set up in
   the schematic shows its values read-only with **🔓 Unlock to edit**; a
   part with several FYPA directives (one per rail) gets a picker above the
-  form. **Apply** updates the diagram straight away; **↻ Resolve** on the
+  form. **Apply** updates the diagram straight away; **↻ Solve** on the
   toolbar re-solves.
-- **What-If** (under **Manual setup…**, above **↻ Resolve**; or **W**) -
+- **What-If** (under **Manual setup…**, above **↻ Solve**; or **W**) -
   shows the What-If panel on the right of this tab, the same panel as on
   the Board. It shares that side with the part sidebar: whichever you
   opened last is shown. Open / closed is remembered separately for the
@@ -303,6 +303,13 @@ as two lists, **Sources & regulators** and **Sinks**, each with **Add**,
   connector), *LDO* (input current = output current) or *Switcher* (input
   power = output power ÷ efficiency). A regulator also needs its **Input
   net**, and a switcher takes an efficiency and an optional topology.
+  **Sense at** sets remote sense: *at its own pins* (local sense) or a
+  part on the output net, usually the load, with an optional pin list.
+  **Sense return at** does the same on the ground net. The supply then
+  holds its voltage there and its own pins rise by the copper's drop
+  (see [Remote sense](01-sources-and-sinks.md#remote-sense-pdn_sense_des)).
+  Changing the output or ground net drops a sense point that is no
+  longer on it.
 - **Sinks** take a current and an optional minimum voltage; the Nodes tab
   flags the sink if its pins sag below that.
 - Every row is picked the same way: the **net** (type to search; rails
@@ -322,9 +329,10 @@ as two lists, **Sources & regulators** and **Sinks**, each with **Add**,
   shifter on both its VCC(A) and VCC(B) rails.
 - Directives defined in the Altium schematic are listed locked (🔒).
   **Override** turns one into an editable FYPA copy that replaces it on
-  the next resolve; removing the copy brings the schematic one back.
+  the next solve; removing the copy brings the schematic one back.
 - Problems are listed under the tabs. Errors, such as a missing value,
-  pins that aren't on the chosen net, input = output, or an ideal-return
+  pins that aren't on the chosen net, a sense part or sense pin that
+  isn't on the supply's net, input = output, or an ideal-return
   sink on a rail supplied through copper, must be fixed
   before **Apply**. Warnings, such as a sink on a rail nothing supplies
   yet, don't block it.
@@ -373,7 +381,7 @@ review it before anything changes:
    like any other.
 
 Auto setup only reads the design and proposes values; nothing is solved
-until you press **↻ Resolve**. Datasheet values are typical figures pulled
+until you press **↻ Solve**. Datasheet values are typical figures pulled
 from the text, so treat every suggestion as a starting point to check.
 
 ### Navigation and zoom
@@ -576,7 +584,7 @@ shows its markers when clicked.
 | Click a piece of copper         | Selects it - the bottom bar reports the net, the area, and (where applicable) the layer-local current. |
 | Click a marker                  | Reports the directive value (source voltage, sink current, etc.) in the bottom bar. |
 | Left-drag on empty board (editor mode, 2D) | Rubber-band selects every PDN marker fully inside the box, for editing several sinks at once (see [Section 2.6](02-sources-and-sinks-editor.md#26-editing-several-sinks-at-once)). |
-| Resolve after editor edits      | Click the green **↻ Resolve** button at the top-left of the viewport (see [Section 2.7](02-sources-and-sinks-editor.md#27-re-solving-and-saving)). |
+| Solve after editor edits        | Click the green **↻ Solve** button at the top-left of the viewport (see [Section 2.7](02-sources-and-sinks-editor.md#27-re-solving-and-saving)). |
 
 ## 5.11 Hotkeys worth remembering
 
@@ -595,6 +603,7 @@ shows its markers when clicked.
 | **E**        | Toggle editor mode (see [Section 2.2](02-sources-and-sinks-editor.md#22-entering-editor-mode)). |
 | **S** / **L** | In editor mode, arm a free **S**OURCE / sink (**L**oad) drop - the keyboard equivalent of the red / blue triangle buttons. |
 | **Ctrl+S**   | Save the project (the dialog offers project-only or project+solution). |
+| **Ctrl+R**   | Reload the design: read the Altium project from disk again and solve with the same setup (see [Section 1.6](01-sources-and-sinks.md#after-changing-the-design-in-altium)). |
 
 The Help tab inside the viewer has the authoritative, always-current
 list - if a hotkey here looks wrong, that tab is the source of truth.

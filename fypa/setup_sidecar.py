@@ -55,6 +55,9 @@ _SCHEMATIC_SPEC_CLASSES = {"SourceSpec", "SinkSpec", "RegulatorSpec"}
 _NET_FIELDS = ("p_net", "n_net", "in_p_net", "in_n_net")
 _DES_FIELDS = ("p_des", "n_des", "sense_des", "sense_n_des")
 _PIN_FIELDS = ("p_pins", "n_pins", "in_p_pins", "in_n_pins")
+# Anchor key holding the fingerprints of the other parts an entry names in
+# its designator lists ({upper designator: fingerprint}).
+_RELATED = "related"
 
 
 # --- where it lives ----------------------------------------------------------
@@ -256,10 +259,29 @@ def save_setup(prjpcb_path: Path, pcbdoc_path: Path | None,
             continue
         fp = (component_fingerprint(extracted, d.designator, pins)
               if extracted is not None else None)
-        if fp is None and previous is not None:
-            fp = previous.anchors.get(d.id)
-        if fp is not None:
-            anchors[d.id] = fp
+        old = previous.anchors.get(d.id) if previous is not None else None
+        if fp is None:
+            fp = dict(old) if old else None
+        if fp is None:
+            continue
+        # The other parts the entry names (sense parts, P / N DES), so a
+        # renamed one can be followed like the entry's own part.
+        related = dict((old or {}).get(_RELATED) or {})
+        for x in {x.strip().upper() for f in _DES_FIELDS
+                  for x in getattr(d, f) or []}:
+            rfp = (component_fingerprint(extracted, x, pins)
+                   if extracted is not None else None)
+            if rfp is not None:
+                rfp.pop(_RELATED, None)
+                related[x] = rfp
+        wanted = {x.strip().upper() for f in _DES_FIELDS
+                  for x in getattr(d, f) or []}
+        related = {k: v for k, v in related.items() if k in wanted}
+        if related:
+            fp[_RELATED] = related
+        else:
+            fp.pop(_RELATED, None)
+        anchors[d.id] = fp
     setup = SavedSetup(
         directives=list(directives), copper_names=list(copper_names),
         anchors=anchors, held=held,
@@ -532,10 +554,90 @@ def _identity_problem(fp: dict[str, Any] | None,
     return None
 
 
+def _find_part(fp: dict[str, Any], now_fps: list[dict[str, Any]]) -> int | None:
+    """Where the part ``fp`` describes is now: the one part with its Altium
+    unique id (schematic link, else PCB id), else the one part with its
+    footprint and value on its side, where it was. ``None`` when neither is
+    unique."""
+    for key in ("source_unique_id", "unique_id"):
+        want = fp.get(key) or ""
+        if want:
+            idx = [i for i, now in enumerate(now_fps) if now.get(key) == want]
+            if len(idx) == 1:
+                return idx[0]
+    spots = [i for i, now in enumerate(now_fps) if _score(fp, now)[2]]
+    return spots[0] if len(spots) == 1 else None
+
+
+def _follow_related(d: EditorDirective, anchor: dict[str, Any] | None,
+                    by_des: dict[str, list[int]], now_fps: list[dict[str, Any]]
+                    ) -> tuple[EditorDirective, dict[str, Any] | None,
+                               list[str], str | None]:
+    """``(d, anchor)`` with the other parts ``d`` names (sense parts, P / N
+    DES) moved to their designators now, what changed, and why one couldn't
+    be followed (``None`` when all were). The anchor is a copy whenever it
+    changes, its fingerprints keyed by the new designators.
+
+    A part still on its designator, and still the same part, stays. One
+    that was renamed is found by :func:`_find_part` from the fingerprint
+    saved with the entry. Without a fingerprint only the designator is
+    checked (the caller reports it missing)."""
+    related: dict[str, Any] = (anchor or {}).get(_RELATED) or {}
+    rename: dict[str, str] = {}
+    for f in _DES_FIELDS:
+        for x in getattr(d, f) or []:
+            key = x.strip().upper()
+            if key in rename:
+                continue
+            fp = related.get(key)
+            idx = by_des.get(key, [])
+            if fp is None:
+                continue
+            if len(idx) == 1 and _identity_problem(fp, now_fps[idx[0]]) is None:
+                continue
+            hit = _find_part(fp, now_fps)
+            if hit is None:
+                why = (_identity_problem(fp, now_fps[idx[0]]) if len(idx) == 1
+                       else None) or f"{x} is not on this board"
+                return d, anchor, [], why
+            new_des = now_fps[hit]["designator"]
+            if new_des.strip().upper() != key:
+                rename[key] = new_des
+    if not rename:
+        return d, anchor, [], None
+    new = EditorDirective.from_dict(d.to_dict())     # same id, same values
+    for f in _DES_FIELDS:
+        lst = getattr(d, f)
+        if lst:
+            out: list[str] = []
+            for x in lst:
+                y = rename.get(x.strip().upper(), x)
+                if y.upper() not in {z.upper() for z in out}:
+                    out.append(y)
+            setattr(new, f, out)
+    # Each renamed part's fingerprint goes with it to its new designator.
+    moved = {**(anchor or {}),
+             _RELATED: {rename.get(k, k).strip().upper(): v
+                        for k, v in related.items()}}
+    changes = [f"{old} → {des} (a part it names)"
+               for old, des in rename.items()]
+    return new, moved, changes, None
+
+
 def match_exact(saved: SavedSetup, extracted, schematic_directives=()
                 ) -> RestoreReport:
     """Check each saved entry (and each previously held one) against
-    ``extracted``. Applied entries keep their ids and values unchanged."""
+    ``extracted``. Applied entries keep their ids and values, except that a
+    sense / DES part renamed since (found by its saved fingerprint, see
+    :func:`_follow_related`) is followed to its new designator, noted in
+    ``changes``."""
+    return _prune_changes(_match_exact(saved, extracted, schematic_directives))
+
+
+def _match_exact(saved: SavedSetup, extracted, schematic_directives=()
+                 ) -> RestoreReport:
+    """:func:`match_exact`, with change notes kept for held entries too (the
+    held ones :func:`match_saved` places carry them on)."""
     report = RestoreReport(copper_names=list(saved.copper_names),
                            path=saved.path)
     by_des = _components_by_designator(extracted)
@@ -544,11 +646,19 @@ def match_exact(saved: SavedSetup, extracted, schematic_directives=()
     nets.update(c.name for c in saved.copper_names)
     from_schematic = schematic_designators(schematic_directives)
 
+    now_fps = [_fingerprint_at(extracted, i, pins)
+               for i in range(len(getattr(extracted, "pcb_components", ()) or ()))]
+
     candidates = [(d, saved.anchors.get(d.id)) for d in saved.directives]
     candidates += [(h.directive, h.anchor) for h in saved.held]
     for d, anchor in candidates:
         problem: str | None = None
-        if d.kind == "component" and d.designator:
+        # Renamed sense / DES parts first, so every check below (and the
+        # entry's own part matching in match_saved) sees them where they are.
+        d, anchor, followed, problem = _follow_related(d, anchor, by_des, now_fps)
+        if followed:
+            report.changes[d.id] = followed
+        if problem is None and d.kind == "component" and d.designator:
             des = d.designator.strip().upper()
             idx = by_des.get(des, [])
             if not idx:
@@ -593,6 +703,13 @@ def match_exact(saved: SavedSetup, extracted, schematic_directives=()
     return report
 
 
+def _prune_changes(report: RestoreReport) -> RestoreReport:
+    """Keep change notes only for the entries actually applied."""
+    ids = {d.id for d in report.applied}
+    report.changes = {k: v for k, v in report.changes.items() if k in ids}
+    return report
+
+
 # --- matching parts that changed ---------------------------------------------
 
 # A part within this distance of where the entry's part was counts as "the
@@ -624,7 +741,8 @@ def _dist(a: dict[str, Any] | None, b: dict[str, Any] | None) -> float | None:
 
 
 def _retarget(d: EditorDirective, anchor: dict[str, Any] | None,
-              now: dict[str, Any], nets: set[str], by_des: dict[str, list[int]]
+              now: dict[str, Any], nets: set[str], by_des: dict[str, list[int]],
+              now_fps: list[dict[str, Any]] | None = None
               ) -> tuple[EditorDirective, list[str], bool] | None:
     """``(d rewritten for the part now, what changed, whether a net had
     to be followed by pin)`` - or ``None`` when it can't go there (a pin it is restricted to
@@ -650,6 +768,9 @@ def _retarget(d: EditorDirective, anchor: dict[str, Any] | None,
     for f in _DES_FIELDS:
         if any(x.strip().upper() not in by_des for x in getattr(new, f) or []):
             return None
+    # The parts it names must still be the parts it was set up with.
+    if now_fps is not None and _follow_related(new, anchor, by_des, now_fps)[3]:
+        return None
     pins_now: dict[str, str] = now.get("pins") or {}
     pins_old: dict[str, str] = (anchor or {}).get("pins") or {}
     for f in _PIN_FIELDS:
@@ -746,7 +867,9 @@ def match_saved(saved: SavedSetup, extracted, schematic_directives=()
     Nothing in review is applied; the dialog does that once the user
     agrees. Free markers and entries saved without a fingerprint are only
     ever matched exactly."""
-    report = match_exact(saved, extracted, schematic_directives)
+    report = _match_exact(saved, extracted, schematic_directives)
+    # Renamed sense / DES parts match_exact already followed, per entry id.
+    followed = dict(report.changes)
     comps = getattr(extracted, "pcb_components", ()) or ()
     by_des = _components_by_designator(extracted)
     pins = _pins_by_component(extracted)
@@ -787,7 +910,8 @@ def match_saved(saved: SavedSetup, extracted, schematic_directives=()
         """Every entry of ``group`` retargeted to part ``i``, or ``None``."""
         out = []
         for h in group:
-            r = _retarget(h.directive, h.anchor, now_fps[i], nets, by_des)
+            r = _retarget(h.directive, h.anchor, now_fps[i], nets, by_des,
+                          now_fps)
             if r is None:
                 return None
             out.append(r)
@@ -805,8 +929,11 @@ def match_saved(saved: SavedSetup, extracted, schematic_directives=()
                          "schematic, which take precedence", h.anchor))
                 continue
             report.applied.append(new)
+            notes = [*followed.get(new.id, []), *changes]
             if changes:
-                report.changes[new.id] = [*changes, why]
+                notes.append(why)
+            if notes:
+                report.changes[new.id] = notes
 
     def _hold(group, status: str, options) -> None:
         """Hold every entry of ``group`` for review. ``options`` is a list
@@ -814,7 +941,8 @@ def match_saved(saved: SavedSetup, extracted, schematic_directives=()
         rewritten copy for each candidate part."""
         for k, h in enumerate(group):
             cands = [Candidate(now_fps[i]["designator"], fits[k][0], why,
-                               fits[k][1], score, _xy(now_fps[i]))
+                               [*followed.get(h.directive.id, []), *fits[k][1]],
+                               score, _xy(now_fps[i]))
                      for i, fits, why, score in options]
             report.held.append(h)
             report.review.append(ReviewItem(h, status, cands))
@@ -929,7 +1057,7 @@ def match_saved(saved: SavedSetup, extracted, schematic_directives=()
     for h in loose:
         report.held.append(h)
         report.review.append(ReviewItem(h, REVIEW_MISSING, []))
-    return report
+    return _prune_changes(report)
 
 
 # --- importing a setup from another design ----------------------------------

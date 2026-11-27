@@ -760,7 +760,7 @@ class _TopologyTabMixin:
         toolbar.addWidget(view_btn)
         toolbar.addStretch()
 
-        # Setup, What-If + Resolve: 34 x 34 icon-only squares (6 px radius,
+        # Setup, What-If + Solve: 34 x 34 icon-only squares (6 px radius,
         # bold, the Board's badge icons) that widen on hover to reveal their
         # label, like the Board's editor-mode column (hover_expand). The
         # icon is held left at its centred spot (1 + 8 + 16 + 8 + 1) so it
@@ -843,9 +843,9 @@ class _TopologyTabMixin:
         wbtn.toggled.connect(
             lambda on: self._set_whatif_panel_visible(on, where="topology"))
         self._topology_whatif_btn = wbtn
-        # Same green and refresh badge as the Board's Resolve button.
+        # Same green and refresh badge as the Board's Solve button.
         self._topology_resolve_btn = _big_btn(
-            "Resolve", _resolve_icon("#2ca92c", _t["bg"], _t["fg_dim"]),
+            "Solve", _resolve_icon("#2ca92c", _t["bg"], _t["fg_dim"]),
             "#2ca92c",
             "Re-run the solver with the current editor changes applied",
             self._on_topology_resolve)
@@ -855,7 +855,7 @@ class _TopologyTabMixin:
         from fypa.viewer.empty_state import EmptyStatePanel, run_empty_state_action
         self._topology_view.set_empty_panel(EmptyStatePanel(
             lambda what: run_empty_state_action(self, what)))
-        # Setup, What-If + Resolve: a column of squares floating over the
+        # Setup, What-If + Solve: a column of squares floating over the
         # diagram's top-left corner (like the Board's buttons), so the
         # diagram runs the tab's full width. Parented straight to the view
         # (not its viewport, so they stay put while the diagram scrolls, and
@@ -880,10 +880,7 @@ class _TopologyTabMixin:
                 self._topology_manual_btn, lambda: "Manual setup…", always),
             wbtn: HoverExpander(wbtn, lambda: "What-If", always),
             self._topology_resolve_btn: HoverExpander(
-                self._topology_resolve_btn,
-                lambda: ("Solve" if getattr(self, "_awaiting_first_solve",
-                                            False) else "Resolve"),
-                always),
+                self._topology_resolve_btn, lambda: "Solve", always),
         }
         self._topology_setup_btns = setup_btns
         self._topology_view.set_background(_t["bg"])
@@ -1108,7 +1105,7 @@ class _TopologyTabMixin:
         else:
             self._topology_refresh_resolve_btn()
 
-    # --- Resolve ------------------------------------------------------------
+    # --- Solve ------------------------------------------------------------
 
     def _topology_refresh_resolve_btn(self) -> None:
         btn = getattr(self, "_topology_resolve_btn", None)
@@ -1119,8 +1116,8 @@ class _TopologyTabMixin:
         except Exception:  # noqa: BLE001 - viewer without editor state
             enabled = False
         btn.setEnabled(enabled)
-        # Icon-only; the label ("Solve" before the first solve, else
-        # "Resolve") shows only while a hover has the button expanded.
+        # Icon-only; the label ("Solve") shows only while a hover has the
+        # button expanded.
         exp = getattr(self, "_topology_expanders", {}).get(btn)
         if exp is not None:
             btn.setText(exp.current_label())
@@ -1167,7 +1164,7 @@ class _TopologyTabMixin:
         Import setup, whichever asked).
 
         A viewer opened through the solve cache (or from a bare solve
-        pickle) carries no design in memory. Fetch it the way a Resolve
+        pickle) carries no design in memory. Fetch it the way a Solve
         does - the project's design-info cache, else a fresh extract - and
         if the Altium project isn't where the solve says it was, ask the
         user to locate the .PrjPcb rather than sending them to re-import."""
@@ -1218,7 +1215,7 @@ class _TopologyTabMixin:
         msg = f"Auto setup added {added} directive(s)"
         if skipped:
             msg += f"; {skipped} skipped (already present)"
-        self.statusBar().showMessage(msg + " - press Resolve to solve.", 10000)
+        self.statusBar().showMessage(msg + " - press Solve.", 10000)
 
     def _topology_apply_suggestions(self, suggestions) -> tuple[int, int]:
         """Turn accepted suggestions into editor directives (no duplicates)."""
@@ -1308,7 +1305,7 @@ class _TopologyTabMixin:
             self._topology_close_sidebar()
             self._topology_directives_changed()
             self.statusBar().showMessage(
-                "Manual setup applied - press Resolve to solve.", 8000)
+                "Manual setup applied - press Solve.", 8000)
         if dlg.locate_id:
             self._topology_show_marker_on_board(dlg.locate_id)
 

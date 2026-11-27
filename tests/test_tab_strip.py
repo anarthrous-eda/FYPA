@@ -6,7 +6,7 @@
 * the Capacitors tab carries the pending icon until its check has run for
   the loaded design, since its warning count isn't known before then;
 * Messages / Settings / Help follow the results, not pushed to the right;
-* the strip has no Solve / Resolve button of its own; those stay on the
+* the strip has no Solve button of its own; those stay on the
   Board and Topology tabs.
 """
 from __future__ import annotations

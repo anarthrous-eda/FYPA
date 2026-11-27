@@ -253,7 +253,7 @@ def test_rail_tree_pending_style_metadata_keeps_source_aliases():
     # Every directive is carried through, not just the SERIES/alias roles:
     # _rail_tree_adjacency reads requested_net aliases off any role, so
     # dropping some here made the pending tree nest differently from the
-    # solved one and rails jumped levels on Resolve.
+    # solved one and rails jumped levels on Solve.
     assert [d.get("role") for d in tree_meta["directives"]] == [
         d.get("role") for d in metadata["directives"]
     ]

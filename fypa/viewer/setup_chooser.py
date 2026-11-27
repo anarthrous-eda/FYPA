@@ -267,8 +267,8 @@ class SetupChooserDialog(QDialog):
                      ("PDN_OUT_P_NET / PDN_OUT_N_NET", "+3V3 / GND"),
                      ("PDN_IN_P_NET / PDN_IN_N_NET", "+5V / GND")])
             + "<p style='margin:2px 0;'><b>4. Back in FYPA</b> - save and "
-            "recompile in Altium, then press <b>Reload Design Info</b> on "
-            "the Properties tab (or import the project again).</p>"
+            "recompile in Altium, then choose <b>File &gt; Reload Design</b> "
+            "(Ctrl+R).</p>"
             f"<p style='margin:10px 0 2px 0; color:{t['fg_muted']};'>"
             f"Tip: the {c('FYPA_PdnParams')} script in FYPA's "
             f"{c('altium_scripts')} folder adds these from a dialog inside "

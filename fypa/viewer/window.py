@@ -36,6 +36,7 @@ from fypa.viewer.editor.pending import _PendingRailsMixin
 from fypa.viewer.editor.selection import _EditorSelectionMixin
 from fypa.viewer.editor.series_info import _SeriesInfoMixin
 from fypa.viewer.file_menu import _FileMenuMixin
+from fypa.viewer.design_watch import _DesignWatchMixin
 from fypa.viewer.global_focus import _GlobalFocusMixin
 from fypa.viewer.markers import _MarkerOverlayMixin
 from fypa.viewer.copper_layers import _CopperLayersMixin
@@ -109,6 +110,7 @@ class PdnViewer(
     _WhatIfMixin,
     _WhatIfPunchMixin,
     _GlobalFocusMixin,
+    _DesignWatchMixin,
     QMainWindow,
 ):
     """Main window - composes the side panel and the matplotlib plot area.
@@ -152,7 +154,7 @@ class PdnViewer(
         self._project = project           # ProjectFile | None
         self._project_path = project_path  # Path | None
         # In-memory LoadedProject (pristine design extract) from the worker
-        # that produced this viewer's solution. The editor 'Resolve' hands
+        # that produced this viewer's solution. The editor 'Solve' hands
         # it straight back to the next worker, so a resolve never re-reads
         # the design-info cache or re-stats the Altium project files. None
         # when opened from a bare pickle - a resolve then falls back to the
@@ -163,7 +165,7 @@ class PdnViewer(
         # _display_dirty: cosmetic edits not yet written to the .fypa that do
         #                 NOT invalidate the solve (overlay colours). Kept
         #                 separate so a display-only colour pick can't light
-        #                 up the Resolve button (see _on_overlay_color).
+        #                 up the Solve button (see _on_overlay_color).
         # _settings_dirty: Settings-tab fields differ from the values
         #                  the current solve was run against.
         # _initial_solve_stale: viewer loaded with edits not yet
@@ -171,14 +173,14 @@ class PdnViewer(
         #                       editor directives + a stale solve pickle).
         # _solve_stale: derived = OR of _project_dirty / _settings_dirty /
         #               _initial_solve_stale (NOT _display_dirty); drives the
-        #               Resolve overlay button.
+        #               Solve overlay button.
         self._project_dirty: bool = False
         self._display_dirty: bool = False
         self._settings_dirty: bool = False
         self._initial_solve_stale: bool = False
         self._solve_stale: bool = False
         # True while the viewer holds a stub and the user has not run the
-        # FEM yet - drives the overlay button label ("Solve" vs "Resolve").
+        # FEM yet - drives the Solve button's tooltip and the stale flag.
         self._awaiting_first_solve: bool = False
         self._has_adaptive_smps: bool = _viewer_has_adaptive_smps(
             getattr(self, "metadata", None),
@@ -962,6 +964,9 @@ class PdnViewer(
                 reload_btn.setEnabled(True)
 
             self._refresh_solve_stale_overlay()
+            # The design just swapped in has its own record of the files it
+            # was read from: compare the disk against that one.
+            self._check_design_changed()
             # For a re-solve / resolve _need_initial_fit stays False so pan /
             # zoom survive the swap; the import path above flips it back on so
             # a different board re-fits.

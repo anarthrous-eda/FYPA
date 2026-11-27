@@ -96,6 +96,26 @@ class _ProjectSaveDialog(QDialog):
             super().keyPressEvent(event)
 
 
+def _ask_reload_unchanged(parent, project_name: str) -> bool:
+    """Reload Design with nothing changed on disk: True to reload anyway."""
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Icon.Question)
+    box.setWindowTitle("Reload Design")
+    box.setText(f"No changes found in {project_name} or its schematic and "
+                "board files since FYPA read them.")
+    box.setInformativeText(
+        "Reloading reads the design again and solves it, which gives the "
+        "result already on screen. If you changed the design in Altium, "
+        "save it there first.")
+    reload_btn = box.addButton("Reload Anyway",
+                               QMessageBox.ButtonRole.AcceptRole)
+    cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+    box.setDefaultButton(cancel)
+    box.setEscapeButton(cancel)
+    box.exec()
+    return box.clickedButton() is reload_btn
+
+
 class _FileMenuMixin:
     """File menu, and project file save / open."""
 
@@ -135,6 +155,17 @@ class _FileMenuMixin:
             lambda: self._on_menu_open_project(clean=True)
         )
         file_menu.addAction(open_proj_clean)
+
+        reload_design = QAction("Reload &Design", self)
+        reload_design.setShortcut("Ctrl+R")
+        reload_design.setStatusTip(
+            "Read the Altium project from disk again and solve it with the "
+            "same setup - for a design edited in Altium since FYPA read it."
+        )
+        reload_design.triggered.connect(
+            lambda: self._on_reload_design_info())
+        file_menu.addAction(reload_design)
+        self._act_reload_design = reload_design
 
         # "Solve automatically on import" is set in Settings > General options,
         # not the File menu; the import flow reads the persisted pref directly.
@@ -561,7 +592,7 @@ class _FileMenuMixin:
         """File > Save Solution…  →  prompt for a path (defaulting to this
         project's cache folder) and write the current solution there. The
         embedded metadata still carries ``prjpcb_path`` + ``pcbdoc_path``
-        so the saved file can drive a later Re-run / Reload Design Info."""
+        so the saved file can drive a later Re-run / Reload Design."""
         self._whatif_ensure_base()
         if self.solution is None:
             QMessageBox.information(
@@ -1122,33 +1153,79 @@ class _FileMenuMixin:
             adaptive_regulator_gain=adaptive_gain,
         )
 
-    def _on_reload_design_info(self) -> None:
-        """Re-extract the design (geometry + annotations) from the on-disk
-        project ignoring the design-info cache, then re-solve with whatever
-        is currently in the Settings tab. Used when the user has edited the
-        .PrjPcb / .PcbDoc in Altium and wants FYPA to pick up the change
-        without going via File > Import Altium Design (Clean).
+    def _reload_would_change_nothing(self, prjpcb_path: Path) -> bool:
+        """True when FYPA can tell that a reload would read the design it
+        already has: the files match the record the design carries, and no
+        Bridges / variant change is waiting for a rebuild. False when
+        something changed - and when it can't be told (no record)."""
+        md = self.metadata if isinstance(self.metadata, dict) else {}
+        record = md.get("design_files")
+        if not record:
+            return False
+        try:
+            if self._design_reload_pending():
+                return False
+            from fypa.viewer.design_watch import changed_design_files
+            return not changed_design_files(record, prjpcb_path)
+        except Exception:  # noqa: BLE001 - when in doubt, don't ask
+            logging.getLogger(__name__).debug(
+                "couldn't compare the design files", exc_info=True)
+            return False
 
-        Pinned to the same PcbDoc this pickle was solved with, so multi-PCB
+    # Keyword-only: a button's clicked(bool) must not land on the flag.
+    def _on_reload_design_info(self, *, ask_if_unchanged: bool = True) -> None:
+        """File > Reload Design, the design-changed chip and the Properties
+        tab's Reload Design button: read the Altium project from disk again
+        (ignoring the design-info cache) and solve it with the setup and
+        settings this window has now. For a design edited in Altium since
+        FYPA read it - a Solve alone keeps working from the design as read.
+
+        The editor setup (sources, sinks, regulators, copper names) is kept
+        and applied to the new design; an entry whose part or net is gone is
+        left out of the solve with a warning in the Messages tab. A design
+        still waiting for its first solve is solved only when "Solve
+        automatically on import" is on, as on import.
+
+        When the files are known to be unchanged since they were read, the
+        user is asked first (``ask_if_unchanged``): the reload would cost a
+        full read and solve for the result already on screen.
+
+        Pinned to the same PcbDoc this result was solved with, so multi-PCB
         projects don't silently switch boards or re-prompt the user."""
         prjpcb_str = ""
         if self.metadata:
             prjpcb_str = str(self.metadata.get("prjpcb_path") or "")
         prjpcb_path = Path(prjpcb_str) if prjpcb_str else None
-        if prjpcb_path is None or not prjpcb_path.exists():
-            self._settings_status_label.setText(
-                f"<span style='color:{_T()['err']};'>Can't reload: this pickle has "
-                "no project path, or the .PrjPcb is no longer on disk.</span>"
-            )
+        if prjpcb_path is None or prjpcb_path.suffix.lower() != ".prjpcb":
+            self._reload_design_refused(
+                "Can't reload: this design didn't come from an Altium "
+                "project, so there is nothing to read again.")
             return
+        if not prjpcb_path.exists():
+            self._reload_design_refused(
+                f"Can't reload: {prjpcb_path} is no longer on disk.")
+            return
+        if _reject_if_solve_running(self):
+            return
+        # Nothing to pick up: a reload costs a full read and solve for the
+        # result already on screen, so ask first. (A caller that reloads
+        # for another reason - a newly chosen pdn.json - passes False.)
+        if (ask_if_unchanged
+                and self._reload_would_change_nothing(prjpcb_path)
+                and not _ask_reload_unchanged(self, prjpcb_path.name)):
+            return
+        # Before the setup is read: a What-If view parks the base aside.
+        self._whatif_ensure_base()
+        setup = self._solve_setup_or_none()
+        if setup is None:
+            return
+        editor_directives, copper_names = setup
 
         try:
             (new_settings, warn_a, pct,
              stackup_overrides) = self._gather_settings_from_form()
         except ValueError as e:
-            self._settings_status_label.setText(
-                f"<span style='color:{_T()['err']};'>Invalid input - {_esc(str(e))}</span>"
-            )
+            self._reload_design_refused(f"Invalid input - {e}")
             return
 
         new_settings.apply_to_modules()
@@ -1156,7 +1233,7 @@ class _FileMenuMixin:
         self._settings_rerun_btn.setEnabled(False)
         self._settings_reload_design_btn.setEnabled(False)
         self._settings_status_label.setText(
-            f"<span style='color:{_T()['accent']};'>Re-extracting design info and re-solving…</span>"
+            f"<span style='color:{_T()['accent']};'>Reading the design again and solving…</span>"
         )
 
         pcbdoc_selector = None
@@ -1164,16 +1241,42 @@ class _FileMenuMixin:
             pinned = self.metadata.get("pcbdoc_path")
             if pinned:
                 pcbdoc_selector = str(pinned)
+        load_only = (bool(self._awaiting_first_solve)
+                     and not load_auto_solve_on_import())
+        adaptive_gain = (
+            getattr(self, "_adaptive_gain_check", None) is not None
+            and self._adaptive_gain_check.isEnabled()
+            and self._adaptive_gain_check.isChecked()
+        )
         self._start_solve_worker(
             prjpcb_path, new_settings, warn_a, pct,
             stackup_overrides=stackup_overrides,
             pcbdoc_selector=pcbdoc_selector,
             use_design_cache=False,
-            dialog_title="Reloading design info",
-            dialog_text=("Re-extracting design info from the .PrjPcb and "
-                         "re-solving…\nThis can take 10-60 s depending on "
+            refresh_design_cache=True,
+            editor_directives=editor_directives,
+            copper_names=copper_names,
+            load_only=load_only,
+            adaptive_regulator_gain=adaptive_gain and not load_only,
+            dialog_title="Reloading design",
+            dialog_text=(f"Reading {prjpcb_path.name} again"
+                         + ("…" if load_only else " and solving…")
+                         + "\nThis can take 10-60 s depending on "
                          "board size and mesh density."),
         )
+
+    def _reload_design_refused(self, message: str) -> None:
+        """Say why Reload Design did nothing: on the Properties tab's status
+        line and, for whoever asked from the menu or the chip, the status
+        bar."""
+        label = getattr(self, "_settings_status_label", None)
+        if label is not None:
+            label.setText(
+                f"<span style='color:{_T()['err']};'>{_esc(message)}</span>")
+        try:
+            self.statusBar().showMessage(message, 10000)
+        except RuntimeError:
+            pass
 
     def _start_solve_worker(
         self, prjpcb_path: Path, settings, warn_a: float, pct: float,
@@ -1201,6 +1304,7 @@ class _FileMenuMixin:
         on_failed=None,
         on_cancelled=None,
         write_solve_cache: bool = True,
+        refresh_design_cache: bool = False,
         dialog_width_text: str | None = None,
         added_vias: list | None = None,
         via_clearance_mm: float | None = None,
@@ -1210,7 +1314,7 @@ class _FileMenuMixin:
         :meth:`_apply_solve_result`. Called by the Re-run button (with the
         Settings-tab form values) and by File > Import Altium Design (with
         defaults from the current viewer). Set ``use_design_cache=False`` for
-        the "Clean" / Reload Design Info flows that must re-extract.
+        the "Clean" / Reload Design flows that must re-extract.
 
         ``on_finished(solution, metadata, loaded)`` / ``on_failed(message)``
         / ``on_cancelled()`` replace the default handlers (which swap the
@@ -1219,7 +1323,7 @@ class _FileMenuMixin:
 
         With ``dialog_width_text`` the pop-up is sized as if it showed that
         text and then shows ``dialog_text``, so it can match another pop-up's
-        width (the What-If runner matches the Resolve pop-up)."""
+        width (the What-If runner matches the Solve pop-up)."""
         if _reject_if_solve_running(self):
             return
         self._whatif_ensure_base()
@@ -1270,7 +1374,7 @@ class _FileMenuMixin:
             load_only=load_only,
             adaptive_regulator_gain=adaptive_regulator_gain,
             # Bridges-tab opt-outs. Read from the live project rather than
-            # passed in: every solve path (Resolve, Re-run, import) must
+            # passed in: every solve path (Solve button, Re-run, import) must
             # honour them, and they live with the editor directives.
             no_auto_bridge={
                 d.strip().upper()
@@ -1282,6 +1386,7 @@ class _FileMenuMixin:
             auto_series_max_ohm=getattr(
                 getattr(self, "_project", None), "auto_series_max_ohm", None),
             write_solve_cache=write_solve_cache,
+            refresh_design_cache=refresh_design_cache,
             # Assembly variant (Properties tab); None follows Altium.
             variant=getattr(getattr(self, "_project", None), "variant", None),
             # An Altium import brings back the setup saved beside the design.
@@ -1440,7 +1545,7 @@ class _FileMenuMixin:
         self, new_solution, metadata: dict, loaded_project,
         warn_a: float, pct: float, new_settings,
     ) -> None:
-        """Resolve worker finished - refresh this viewer in place."""
+        """Solve worker finished - refresh this viewer in place."""
         self._apply_solve_result(
             new_solution, metadata, loaded_project, new_settings,
             warn_a, pct, mark_solved_since_save=True,

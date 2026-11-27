@@ -640,7 +640,7 @@ def test_a_link_already_changed_here_says_press_resolve(
     _select(v)
     status = v.bridges_pin_status.text()
     assert "already changed R1" in status
-    assert "press Resolve" in status
+    assert "press Solve" in status
     assert "Break any link" not in status
 
 

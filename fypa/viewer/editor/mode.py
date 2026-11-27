@@ -115,7 +115,7 @@ class _EditorModeMixin:
         # handler are unchanged, so the solve-time reads and the resolve-enable
         # logic keep working regardless of where the widget is.
 
-        # Auto / Manual setup - editor mode only, stacked above Resolve.
+        # Auto / Manual setup - editor mode only, stacked above Solve.
         # Same handlers as the Topology tab's pair, but icon-only squares
         # here, like the marker row above; no tooltip - a hover reveals
         # the label instead (hover_expand, below).
@@ -132,7 +132,7 @@ class _EditorModeMixin:
             sbtn.hide()
             setattr(self, attr, sbtn)
 
-        rbtn = QPushButton("Resolve", self._gl_viewer)
+        rbtn = QPushButton("Solve", self._gl_viewer)
         rbtn.setIconSize(QSize(16, 16))
         rbtn.setCursor(Qt.PointingHandCursor)
         rbtn.setToolTip(
@@ -142,7 +142,7 @@ class _EditorModeMixin:
         rbtn.hide()
         self._resolve_btn = rbtn
 
-        # What-If panel toggle - sits above Resolve. Viewer mode only:
+        # What-If panel toggle - sits above Solve. Viewer mode only:
         # hidden (and the panel closed) while editor mode is on.
         wbtn = QPushButton(self._gl_viewer)
         wbtn.setIconSize(QSize(16, 16))
@@ -158,8 +158,8 @@ class _EditorModeMixin:
 
         # The column buttons are icon-only squares that reveal their label
         # after a short hover (widen, then show the text) and shrink back on
-        # leave: Edit, What-If and Resolve in viewer mode; Auto setup,
-        # Manual setup and Resolve in editor mode. The edit toggle reveals
+        # leave: Edit, What-If and Solve in viewer mode; Auto setup,
+        # Manual setup and Solve in editor mode. The edit toggle reveals
         # nothing in editor mode, where it leads the marker row and would
         # widen over the SOURCE / SINK buttons. The label stands in for the
         # tooltip, except on a greyed-out button (hover_expand).
@@ -167,7 +167,6 @@ class _EditorModeMixin:
         editing = lambda: bool(getattr(self, "_editor_mode", False))  # noqa: E731
         viewing = lambda: not editing()  # noqa: E731
         always = lambda: True  # noqa: E731
-        first = lambda: bool(getattr(self, "_awaiting_first_solve", False))  # noqa: E731
         self._overlay_expanders = {
             btn: HoverExpander(btn, lambda: "Edit Mode", viewing),
             self._board_autosetup_btn: HoverExpander(
@@ -175,8 +174,7 @@ class _EditorModeMixin:
             self._board_manual_btn: HoverExpander(
                 self._board_manual_btn, lambda: "Manual setup…", editing),
             wbtn: HoverExpander(wbtn, lambda: "What-If", always),
-            rbtn: HoverExpander(
-                rbtn, lambda: "Solve" if first() else "Resolve", always),
+            rbtn: HoverExpander(rbtn, lambda: "Solve", always),
         }
         self._restyle_editor_overlay_buttons()
         self._position_editor_overlays()
@@ -240,7 +238,7 @@ class _EditorModeMixin:
             # rebuilt here so a theme switch recolours it.
             rbtn.setIcon(_resolve_icon("#2ca92c", t["bg"], t["fg_dim"]))
             # Border + text use a fixed "go" green (not a theme token) so the
-            # Resolve action reads as a positive call-to-action in both themes.
+            # Solve action reads as a positive call-to-action in both themes.
             rbtn.setStyleSheet(
                 # Icon-only square, icon held left at its centred spot
                 # (1 + 8 + 16 + 8 + 1) so a hover can widen it to reveal
@@ -257,17 +255,17 @@ class _EditorModeMixin:
             )
         wbtn = getattr(self, "_whatif_btn", None)
         if wbtn is not None:
-            # Fixed pastel orange (not a theme token), like Resolve's fixed
+            # Fixed pastel orange (not a theme token), like Solve's fixed
             # green, so the two read as a pair; a touch deeper on the light
             # theme so it still stands out against near-white.
             orange = (self._WHATIF_ORANGE_DARK
                       if current_theme_mode() == "dark"
                       else self._WHATIF_ORANGE_LIGHT)
-            # Question-mark badge left of the label, like Resolve's arrow;
+            # Question-mark badge left of the label, like Solve's arrow;
             # rebuilt here so a theme switch recolours it.
             wbtn.setIcon(_whatif_icon(orange, t["bg"]))
             wbtn.setStyleSheet(
-                # Icon-only square like Resolve (hover reveals the label).
+                # Icon-only square like Solve (hover reveals the label).
                 "QPushButton {{ border: 1px solid {accent}; border-radius: 6px;"
                 "  padding: 0px 0px 0px 8px; text-align: left;"
                 "  font-weight: bold;"
@@ -285,7 +283,7 @@ class _EditorModeMixin:
     def _sync_editor_toggle_look(self, force: bool = False) -> None:
         """Give the editor toggle its per-mode look - a 34 x 34 icon-only
         square either way. Viewer mode: the theme's pastel blue accent,
-        styled like the What-If / Resolve squares it heads the column of,
+        styled like the What-If / Solve squares it heads the column of,
         widening on hover to reveal "Edit Mode" (hover_expand). Editor mode:
         accent-filled while checked, leading the SOURCE / SINK marker row.
         Skips the restyle when the mode hasn't changed since the last call,
@@ -352,9 +350,8 @@ class _EditorModeMixin:
                 btn.resize(34, 34)
 
     def _sync_resolve_label(self) -> None:
-        """Keep the icon-only Resolve square blank, unless a hover has it
-        expanded - then its label is "Solve" before the first solve,
-        "Resolve" after (hover_expand)."""
+        """Keep the icon-only Solve square blank, unless a hover has it
+        expanded - then it shows its label, "Solve" (hover_expand)."""
         rbtn = getattr(self, "_resolve_btn", None)
         if rbtn is None:
             return
@@ -460,9 +457,9 @@ class _EditorModeMixin:
 
     def _position_editor_overlays(self) -> None:
         """Pin the overlay buttons to the GL viewer's top-left corner, as a
-        column: Edit, then What-If (viewer mode), then Resolve. In editor
+        column: Edit, then What-If (viewer mode), then Solve. In editor
         mode the top row is the square edit toggle plus the SOURCE / SINK
-        marker buttons, with Auto setup, Manual setup and Resolve beneath
+        marker buttons, with Auto setup, Manual setup and Solve beneath
         it and What-If hidden. Safe before the widgets exist (no-op); wired to every
         GL-viewer resize via :meth:`eventFilter`."""
         gl = getattr(self, "_gl_viewer", None)
@@ -489,7 +486,7 @@ class _EditorModeMixin:
         self._sync_resolve_label()
         stack = (abtn, mbtn, wbtn, rbtn)
         # Every button in the column is an icon-only square (Edit, What-If
-        # and Resolve in viewer mode; Auto setup, Manual setup and Resolve
+        # and Solve in viewer mode; Auto setup, Manual setup and Solve
         # in editor mode, matching the marker row above them).
         column = [b for b in stack if b is not None and not b.isHidden()]
         if not editing:
@@ -517,7 +514,7 @@ class _EditorModeMixin:
                 y += b.height() + gap
 
         # Size the click-absorbing backdrop to wrap the edit toggle + the two
-        # free-marker buttons (not the Resolve button, which sits apart), with
+        # free-marker buttons (not the Solve button, which sits apart), with
         # a few px of slop so a near-miss click is caught. Only shown in
         # editor mode, when the free-marker buttons are visible.
         bg = getattr(self, "_editor_overlay_bg", None)

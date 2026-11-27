@@ -50,6 +50,8 @@ def viewer(qapp):
             _pad("U1-3", "VOUT"), _pad("U1-5", "GND"),
             _pad("J1-1", "VIN"), _pad("J1-2", "GND"),
             _pad("J2-1", "VIN"), _pad("J2-3", "VIN"),
+            # J2 also stands in for a load on VOUT: a remote-sense point.
+            _pad("J2-4", "VOUT"), _pad("J2-5", "VOUT"), _pad("J2-6", "GND"),
         ],
     }
     v._mm_per_pixel = 0.01
@@ -215,6 +217,83 @@ def test_a_net_without_the_parts_pads_shows_all(viewer):
     # empty list Apply would refuse.
     assert v._ef_npins.value() is None
     assert not v._ef_npins.all.isEnabled()
+
+
+def test_regulator_remote_sense_lists_the_sense_parts_pads(viewer):
+    from PySide6.QtCore import Qt
+    v = _open(viewer)
+    _make_regulator(v)
+    assert not v._ef_sense.isHidden() and not v._ef_nsense.isHidden()
+    assert v._ef_nsense_label.text() == "Sense GND DES"
+    assert v._ef_spins.isHidden()            # no sense part yet: no pin list
+    v._ef_sense.setText("J2")
+    v._ef_sense.editingFinished.emit()
+    assert not v._ef_spins.isHidden() and v._ef_snpins.isHidden()
+    assert _pads(v._ef_spins) == ["4", "5"]  # J2's VOUT pads, not U1's
+    v._ef_spins.all.setChecked(False)
+    v._ef_spins.list.item(0).setCheckState(Qt.Unchecked)
+    v._on_editor_apply()
+    (d,) = v._project.editor_directives
+    assert d.sense_des == ["J2"] and d.sense_pins == ["5"]
+    assert d.sense_n_des is None and d.sense_n_pins is None
+
+
+def test_saved_remote_sense_comes_back(viewer):
+    viewer._project.upsert_directive(EditorDirective(
+        role="REGULATOR", kind="component", designator="U1",
+        single_net=False, p_net="VOUT", n_net="GND", voltage=3.3,
+        in_p_net="VIN", in_n_net="GND", regulator_type="LDO",
+        sense_des=["J2"], sense_pins=["5"], sense_n_des=["J2"]))
+    v = _open(viewer)
+    assert v._ef_sense.text() == "J2" and _ticked(v._ef_spins) == ["5"]
+    assert v._ef_nsense.text() == "J2" and v._ef_snpins.all.isChecked()
+    assert _pads(v._ef_snpins) == ["6"]
+    v._on_editor_apply()
+    (d,) = v._project.editor_directives
+    assert (d.sense_des, d.sense_pins, d.sense_n_des, d.sense_n_pins) == (
+        ["J2"], ["5"], ["J2"], None)
+
+
+def test_sink_hides_and_drops_remote_sense(viewer):
+    v = _open(viewer)
+    _make_regulator(v)
+    v._ef_sense.setText("J2")
+    v._ef_sense.editingFinished.emit()
+    v._ef_role.setCurrentText("SINK")
+    assert v._ef_sense.isHidden() and v._ef_spins.isHidden()
+    v._ef_value.setText("1")
+    v._on_editor_apply()
+    (d,) = v._project.editor_directives
+    assert d.role == "SINK" and d.sense_des is None
+
+
+def test_unlock_carries_schematic_remote_sense_across(viewer):
+    def term(net, *pads):
+        return {"requested_net": net,
+                "pins": [{"pad": p, "net": net, "component": c}
+                         for c, p in pads]}
+    viewer.metadata["directives"] = [{
+        "role": "REGULATOR", "designator": "U1", "schdoc": "a.SchDoc",
+        "value": 3.3, "regulator_type": "LDO",
+        "terminals": {"OUT_P": term("VOUT", ("U1", "3"), ("U1", "10")),
+                      "OUT_N": term("GND", ("U1", "2"), ("U1", "5")),
+                      "IN_P": term("VIN", ("U1", "1")),
+                      "IN_N": term("GND", ("U1", "2"), ("U1", "5"))},
+        "remote_sense": {"P": term("VOUT", ("J2", "5")),
+                         "N": term("GND", ("J2", "6"))},
+    }]
+    v = _open(viewer)
+    v._editor_selection["unlocked"] = True
+    v._populate_editor_form()
+    assert v._ef_role.currentText() == "REGULATOR"
+    assert v._ef_sense.text() == "J2" and _ticked(v._ef_spins) == ["5"]
+    # J2's only GND pad: "all of its pins", not a hand-picked list.
+    assert v._ef_nsense.text() == "J2" and v._ef_snpins.all.isChecked()
+    v._on_editor_apply()
+    (d,) = v._project.editor_directives
+    assert d.overrides_designator == "U1"
+    assert (d.sense_des, d.sense_pins, d.sense_n_des, d.sense_n_pins) == (
+        ["J2"], ["5"], ["J2"], None)
 
 
 def test_free_marker_hides_the_pickers(viewer):

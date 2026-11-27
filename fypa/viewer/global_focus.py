@@ -528,6 +528,10 @@ class _GlobalFocusMixin:
         place = getattr(self, "_position_whatif_view_chip", None)
         if place is not None:
             place(chip)
+        # The design-changed chip keeps to the right-hand end.
+        place = getattr(self, "_position_design_changed_chip", None)
+        if place is not None:
+            place()
 
     def _sync_global_focus_chip(self) -> None:
         chip = self._global_focus_chip

@@ -575,7 +575,7 @@ class _OverlayPanelMixin:
             self._overlay_colors[key] = rgb
         # Display-only change: it needs saving to the .fypa but does NOT make
         # the solve stale, so use _display_dirty rather than _project_dirty -
-        # otherwise a cosmetic colour pick would light the ↻ Resolve button.
+        # otherwise a cosmetic colour pick would light the ↻ Solve button.
         self._display_dirty = True
         QTimer.singleShot(0, self._build_overlay_list)
         self._on_overlay_changed(key)

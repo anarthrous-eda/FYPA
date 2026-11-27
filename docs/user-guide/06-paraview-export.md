@@ -1,7 +1,7 @@
 # 6. Exporting to ParaView
 
 FYPA's built-in viewer is tuned for fast design iteration - switch
-layers, tweak a sink current, resolve, look at the heatmap. For deeper
+layers, tweak a sink current, solve again, look at the heatmap. For deeper
 post-processing - 3-D layer-stackup views, slicing through the voltage
 field at arbitrary planes, publication-quality figures, comparison
 against measured data - FYPA can export the solve to **ParaView**.

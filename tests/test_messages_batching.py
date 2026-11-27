@@ -2,7 +2,7 @@
 
 Each record used to re-sort the whole table and recount every row on the GUI
 thread (~16 ms on a few thousand rows), which held the GIL against the solve
-worker: a Resolve's ~270 annotation warnings took 4 s to log. Records are now
+worker: a Solve's ~270 annotation warnings took 4 s to log. Records are now
 queued and added together by a short timer.
 """
 from __future__ import annotations

@@ -935,7 +935,7 @@ class _ViewportMixin:
         )
         self._apply_sidebar_content_width(start + int(delta_px))
         # Cosmetic and solve-independent, so _display_dirty rather than
-        # _mark_project_dirty: a panel drag must not light up Resolve, but it
+        # _mark_project_dirty: a panel drag must not light up Solve, but it
         # does need to count as an unsaved change or the width the user just
         # set is silently lost on close.
         self._display_dirty = True

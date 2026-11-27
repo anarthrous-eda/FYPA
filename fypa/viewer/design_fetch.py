@@ -4,7 +4,7 @@ A viewer opened through the solve cache (a non-clean import of a project
 that was solved before), or from a bare solve pickle, never ran the extract,
 so ``_loaded_project`` is ``None``. Features that read the design itself -
 Auto setup, the Capacitors / Impedance tabs, the report's decoupling
-section - load it here on first use, the way a Resolve does: the project's
+section - load it here on first use, the way a Solve does: the project's
 design-info cache, else a fresh extract.
 """
 from __future__ import annotations
@@ -58,7 +58,7 @@ class _DesignFetchMixin:
                 self, title,
                 f"Could not load the Altium project\n{prj}\n\n{error}")
             return None
-        # Keep it: the next Resolve reuses it instead of reloading (it still
+        # Keep it: the next Solve reuses it instead of reloading (it still
         # checks the bridge / auto-SERIES settings and reloads on a change).
         self._loaded_project = loaded
         return loaded

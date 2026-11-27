@@ -362,8 +362,13 @@ sensed load reads ~0 drop and the source pins read high - compare a
 locally-sensed source, whose pins hold `PDN_V` and whose load sees the
 drop. A sense line carries no current. Sense pads that land on no
 meshed copper fall back to local sense for that side, with a warning.
-Indexed channels use `PDNn_SENSE_DES` and so on; editor-mode SOURCE
-markers have *Sense DES* / *Sense N DES* fields.
+Indexed channels use `PDNn_SENSE_DES` and so on. Without the schematic,
+set it on a component-bound SOURCE or REGULATOR in the Board editor
+(*Sense DES* / *Sense N DES* and their pin lists - see
+Step 6c of [Section 2.3](02-sources-and-sinks-editor.md#23-attaching-a-source-or-sink-to-a-component))
+or in Manual setup (*Sense at* / *Sense return at*). Overriding a
+remote-sensed schematic directive carries its sense parts and pins
+across.
 
 ### Several rails on one part (multi-channel)
 
@@ -706,6 +711,33 @@ row to open its folder or remove it from the list; **Clear list**
 forgets every entry (no files are touched). An entry whose files have
 gone is shown greyed out, and is dropped from the list if you try to
 open it.
+
+### After changing the design in Altium
+
+FYPA keeps working from the design as it read it: **Solve** does not look
+at the Altium files again. When you save a change in Altium (a new
+`PDN_*` parameter, a moved via, a wider pour) and come back to FYPA, a
+**DESIGN CHANGED  Reload** chip appears at the right-hand end of the menu
+bar. Hover it to see which files changed. Click it, or choose **File >
+Reload Design** (`Ctrl+R`), and FYPA reads the project again and solves it
+with the same setup:
+
+- Sources, sinks and regulators you added in FYPA are kept and applied to
+  the new design. One whose part or net no longer exists is left out of
+  the solve, with a warning in the Messages tab.
+- The view, the layer and rail toggles, and the project file you have
+  open all stay as they are.
+- A design that has not been solved yet is solved only if **Solve
+  automatically on import** is on, as on import.
+
+The chip watches the `.PrjPcb` and the `.SchDoc` / `.PcbDoc` files it
+lists, and only for Altium designs - a Gerber import has no project to
+read again. Altium has to save the file for FYPA to see the change.
+
+If you choose **Reload Design** when none of those files has changed,
+FYPA says so and asks before going ahead, since the reload would take a
+full read and solve to give the result already on screen. Choose **Reload
+Anyway** to do it regardless.
 
 ## 1.7 What you should see
 

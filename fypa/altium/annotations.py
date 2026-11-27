@@ -3797,7 +3797,7 @@ class AnnotationResult:
     # Per-rail "won't be solved" notices for single-type rails (only sources
     # or only sinks). A subset of ``warnings`` (also shown in the Setup tab),
     # kept separately so the GUI can pop them as an active dialog on load /
-    # after Resolve. Populated by
+    # after Solve. Populated by
     # :func:`fypa.altium.loader._flag_open_loop_rails`.
     open_loop_rails: list[str] = field(default_factory=list)
     # Per-net "source and sink are on disconnected copper" notices. Unlike

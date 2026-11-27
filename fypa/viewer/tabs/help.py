@@ -148,6 +148,12 @@ no one set of properties applies across roles.</p>
     picker is unchanged), and a new regulator can't be added. Click the
     rail name to switch, <b>&times;</b> to show every rail again. Focus is
     not saved and goes off when another design is opened.</li>
+  <li><b>Design changed</b> - a <i>DESIGN CHANGED &nbsp;Reload</i> chip at
+    the right-hand end of the menu bar says the Altium files were saved
+    since FYPA read them (hover it for which ones). Solve keeps working
+    from the design as read; click the chip, or <b>File &gt; Reload
+    Design</b> (<kbd>Ctrl+R</kbd>), to read the project again and solve
+    with the same setup. Altium designs only.</li>
   <li><b>Mode</b> - Voltage / Voltage Drop / Current Density /
     Power Density. Voltage Drop measures each rail from its own source
     (0 V there, negative toward the loads), so several rails shown
@@ -249,7 +255,7 @@ properties:</b> what the real board is - physics (temperature, copper
 resistivity, via plating, electro-thermal), conductive via fill and
 per-layer copper thickness and resistivity, with mesh accuracy and the
 capacitor loop-inductance knobs under a collapsed <b>Advanced</b> section.
-Edited fields are outlined; <b>Re-run Solver</b> (or Resolve) replaces the
+Edited fields are outlined; <b>Re-run Solver</b> (or Solve) replaces the
 base result with one solved from the new values. To try alternatives
 without changing the base, use What-Ifs. <b>Right:</b> a read-only
 report of what the solver was given: extracted records, stackup, physics
@@ -260,7 +266,7 @@ to analyse. <i>Altium default</i> uses the variant last selected in Altium;
 <i>[No Variations]</i> is the base design with every part fitted. A variant's
 Not Fitted parts are left open - a 0&nbsp;&Omega; link or option strap that
 isn't fitted never joins two nets - and its alternate parts' values replace
-the base ones. Saved in the .fypa; applied on the next Resolve.</p>
+the base ones. Saved in the .fypa; applied on the next Solve.</p>
 """),
     ("Topology", """
 <p>The power tree of the PDN simulation model (not the PCB layout). Each
@@ -281,7 +287,7 @@ design and, optionally, a folder of datasheets, for you to review and apply.
 edit by hand: pick the net, the part on it and its pins.
 <b>What-If</b> (or <b>W</b>) shows the What-If panel on the right, in place of
 the part sidebar - open / closed is kept separately from the Board's.
-<b>&#8635; Resolve</b> re-solves with your changes.</p>
+<b>&#8635; Solve</b> runs the solver again with your changes.</p>
 
 <h3>Keyboard shortcuts</h3>
 <table>
@@ -339,7 +345,7 @@ the Board.</p>
 resistance into <i>Selected part</i>, and click <b>Model as SERIES</b>.
 <b>Disable auto-bridge</b> leaves an automatically shorted part open at DC;
 <b>Remove</b> undoes either. Changes are saved to the .fypa and take effect
-on the next Resolve.</p>
+on the next Solve.</p>
 <p>The banner at the top names the active <b>assembly variant</b>. Parts it
 leaves off show as <i>not fitted</i> (struck through, filter <i>Not
 fitted</i>) and are never bridged. Change the variant in the Properties
@@ -401,7 +407,7 @@ base properties are on the Properties tab.</p>
     ("What-Ifs", """
 <p>Try a change and see whether it helps or hurts, without losing the
 current (base) result. The <b>What-If</b> button at the top-left of the
-heatmap, next to Resolve, shows and hides the panel on the right (<b>W</b>
+heatmap, next to Solve, shows and hides the panel on the right (<b>W</b>
 does the same). It is not available in editor mode: the button is hidden
 there, and entering editor mode closes the panel. Drag the panel's left
 edge to make it wider if the tables don't fit.</p>

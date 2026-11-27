@@ -66,7 +66,7 @@ class _SettingsTabMixin:
     :class:`LauncherWindow` (no design - a subset built in launcher mode).
     Launcher mode is signalled by ``self._settings_launcher_mode`` being
     truthy; the design-only sections (Project/PcbDoc labels, stackup, the
-    Re-run Solver / Reload Design Info actions) are skipped in that mode.
+    Re-run Solver / Reload Design actions) are skipped in that mode.
     """
 
     # --- Settings tab --------------------------------------------------------
@@ -549,7 +549,7 @@ class _SettingsTabMixin:
         """Which Altium assembly variant the design loads. Its Not Fitted
         parts are left open - never bridged or merged - and its alternate
         parts' values replace the base ones. Saved in the project; applied
-        on the next Resolve (it acts while the design is read, so the
+        on the next Solve (it acts while the design is read, so the
         design reloads)."""
         t = _T()
         box = QGroupBox("Assembly variant")
@@ -560,7 +560,7 @@ class _SettingsTabMixin:
             "whichever variant was last selected in Altium (the project's "
             "CurrentVariant). Not Fitted parts are left open - a 0 Ω link "
             "or option strap that isn't fitted never joins two nets. "
-            "Applied on the next Resolve.")
+            "Applied on the next Solve.")
         self.variant_combo.activated.connect(self._on_variant_chosen)
         form.addRow("Variant:", self.variant_combo)
         self.variant_status_label = QLabel("")
@@ -617,10 +617,10 @@ class _SettingsTabMixin:
         """The Properties tab's editable half: every input that changes the
         solve result for THIS design - physics, mesh, via fill, stackup and
         the capacitor loop-inductance knobs - plus Re-run Solver / Reload
-        Design Info / Reset.
+        Design / Reset.
 
         Editing a field does NOT immediately re-solve; the field is outlined
-        as out of date and the Resolve button appears. Widget attribute
+        as out of date and the Solve button appears. Widget attribute
         names are unchanged from when these lived on the Settings tab, so
         the shared reset / dirty / gather code finds them as before."""
         t = _T()
@@ -637,7 +637,7 @@ class _SettingsTabMixin:
         intro = QLabel(
             "What the real board is - the base result is solved with these. "
             "Set them to match your fabrication and operating conditions, "
-            "then press <b>Re-run Solver</b> (or Resolve). To try "
+            "then press <b>Re-run Solver</b> (or Solve). To try "
             "alternatives without changing the base, use the "
             "<b>What-If</b> button on the heatmap."
         )
@@ -853,17 +853,17 @@ class _SettingsTabMixin:
         self._settings_rerun_btn.clicked.connect(self._on_rerun_solver)
         button_row.addWidget(self._settings_rerun_btn)
 
-        self._settings_reload_design_btn = QPushButton("Reload Design Info")
+        self._settings_reload_design_btn = QPushButton("Reload Design")
         self._settings_reload_design_btn.setToolTip(
-            "Re-extract the design (geometry + annotations) from the on-disk "
-            "Altium project, ignoring the design-info cache. Then re-solve "
-            "with the current inputs. Use this when you've edited the "
-            ".PrjPcb / .PcbDoc and want to be sure FYPA picks up the change."
+            "Read the Altium project from disk again (geometry + annotations, "
+            "ignoring the design-info cache), then solve with the same "
+            "setup and the current inputs. Use this after editing the "
+            "design in Altium. Also File > Reload Design (Ctrl+R)."
         )
         self._settings_reload_design_btn.setStyleSheet(
             self._secondary_button_qss())
         self._settings_reload_design_btn.clicked.connect(
-            self._on_reload_design_info)
+            lambda _checked=False: self._on_reload_design_info())
         button_row.addWidget(self._settings_reload_design_btn)
 
         reset_btn = QPushButton("Reset to defaults")
@@ -1536,7 +1536,7 @@ class _SettingsTabMixin:
     def _on_settings_field_changed(self, *_args) -> None:
         """Slot wired to every Settings-tab editor's change signal:
         refresh per-field dirty outlines and update ``_settings_dirty``
-        against the current solve baseline, then refresh the Resolve
+        against the current solve baseline, then refresh the Solve
         overlay button.
 
         In launcher mode there is no committed solve to be stale against and
