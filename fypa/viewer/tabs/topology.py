@@ -1632,6 +1632,9 @@ class _TopologyTabMixin:
         else:
             preview_md = self._topology_preview_metadata()
             self._topology_md_cache = (key, preview_md)
+        # Global Focus: only the parts on the focused rail. Applied after the
+        # cache so switching rail doesn't rebuild the preview metadata.
+        preview_md = self._global_focus_metadata(preview_md)
         self._topology_show_setup_panel(False)
         if preview_md is None:
             self._topology_view.set_empty_message("No setup metadata available.")

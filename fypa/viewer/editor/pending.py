@@ -158,7 +158,11 @@ class _PendingRailsMixin:
                 self._insert_subnet_rows(
                     name, after_item=item, pending=True,
                 )
-        self._update_rail_list_height()
+        apply_focus = getattr(self, "_apply_focus_to_rail_list", None)
+        if apply_focus is not None:
+            apply_focus()  # Global Focus hides unsolved rails; sets height
+        else:
+            self._update_rail_list_height()
 
     def _on_pending_rail_expand_toggled(self, rail: str, expanded: bool) -> None:
         self._pending_rail_expanded[rail] = expanded
@@ -392,6 +396,10 @@ class _PendingRailsMixin:
             return
         if ring_cleared:
             self._render()
+        if getattr(self, "_whatif_punch_armed", False):
+            # What-If punch tool armed: the click adds / removes a via.
+            self._whatif_punch_click(_world_x, _world_y)
+            return
         hit = self._primitive_at_point(_world_x, _world_y)
         if hit is not None:
             self._select_copper_primitive(hit)

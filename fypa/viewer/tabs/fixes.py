@@ -240,7 +240,9 @@ class _FixesTabMixin:
                 self._roi_scores = []
         tbl = self.fixes_loads_table
         tbl.blockSignals(True)
-        rows = [s for s in self._roi_scores if s.has_field]
+        # Global Focus: only the focused rail's loads.
+        rows = [s for s in self._roi_scores
+                if s.has_field and self._global_focus_allows_rail(s.rail)]
         tbl.setRowCount(len(rows))
         # Over-budget rows in the same red the Nodes tab uses for FAIL.
         t = _T()
@@ -261,7 +263,10 @@ class _FixesTabMixin:
         tbl.resizeColumnsToContents()
         tbl.blockSignals(False)
         if not rows:
-            self.fixes_summary.setText("No solved sinks to rank copper for.")
+            focus = self._global_focus_rail()
+            self.fixes_summary.setText(
+                f"No solved sinks on {focus} to rank copper for."
+                if focus is not None else "No solved sinks to rank copper for.")
             self.fixes_table.setRowCount(0)
             return
         pending = getattr(self, "_fixes_pending", None)
@@ -269,8 +274,9 @@ class _FixesTabMixin:
             # A Nodes row names the designator; a channel label adds "#n".
             pending = next((s.label for s in rows
                             if s.label.split("#")[0] == pending), None)
-        key = (pending or self._roi_key
-               or copper_roi.default_target(self._roi_scores).label)
+        shown = {s.label for s in rows}
+        key = next((k for k in (pending, self._roi_key) if k in shown),
+                   None) or copper_roi.default_target(rows).label
         self._select_fixes_load(key)
 
     def _select_fixes_load(self, key: str) -> None:

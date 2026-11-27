@@ -96,7 +96,8 @@ class _NodesTabMixin:
         filter_row.addWidget(self.nodes_filter_combo)
 
         filter_row.addSpacing(12)
-        filter_row.addWidget(QLabel("Rail:"))
+        self.nodes_rail_label = QLabel("Rail:")
+        filter_row.addWidget(self.nodes_rail_label)
         self.nodes_rail_combo = QComboBox()
         self.nodes_rail_combo.addItem("All rails")
         for r in self._rails:
@@ -440,6 +441,7 @@ class _NodesTabMixin:
         idx = getattr(self, "_nodes_tab_index", -1)
         if idx < 0:
             return
+        warn_count = self._global_focus_warn_count("nodes", warn_count)
         title = "Nodes" if warn_count == 0 else f"Nodes ⚠ {warn_count}"
         self.tabs.setTabText(idx, title)
 
@@ -584,11 +586,15 @@ class _NodesTabMixin:
         Both must pass for a row to remain visible."""
         role_choice = (self.nodes_filter_combo.currentText()
                        if hasattr(self, "nodes_filter_combo") else "All roles")
-        rail_choice = (self.nodes_rail_combo.currentText()
-                       if hasattr(self, "nodes_rail_combo") else "All rails")
+        rail_choice = self._global_focus_rail_choice(
+            getattr(self, "nodes_rail_combo", None))
         # Resolve the rail choice into the set of member net names. "All
-        # rails" → no filtering; an explicit rail → the rail group's nets.
-        if rail_choice == "All rails":
+        # rails" → no filtering; an explicit rail → the rail group's nets;
+        # Global Focus → the focused rail's nets (its picker is hidden).
+        focus_nets = self._global_focus_nets()
+        if focus_nets is not None:
+            allowed_nets = set(focus_nets)
+        elif rail_choice == "All rails":
             allowed_nets: set[str] | None = None
         else:
             allowed_nets = set(self._rail_to_members.get(rail_choice, [rail_choice]))

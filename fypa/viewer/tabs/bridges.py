@@ -412,6 +412,9 @@ class _BridgesTabMixin:
             return
         mode = self.bridges_state_combo.currentText()
         col_filter = getattr(self, "bridges_col_filter", None)
+        # Global Focus: only parts touching the focused rail.
+        from fypa.viewer.global_focus import bridge_row_in_focus
+        focus_nets = self._global_focus_nets()
         shown = 0
         impacted = 0
         for i in range(table.rowCount()):
@@ -437,6 +440,8 @@ class _BridgesTabMixin:
                 keep = bool(r.get("fet"))
             if keep and col_filter is not None:
                 keep = col_filter.accepts(i)
+            if keep and focus_nets is not None:
+                keep = bridge_row_in_focus(r, focus_nets)
             table.setRowHidden(i, not keep)
             shown += int(keep)
         total = table.rowCount()
@@ -1030,7 +1035,8 @@ class _BridgesTabMixin:
 
         # Filter bar - rail combo + "warnings only" toggle + summary.
         filter_row = QHBoxLayout()
-        filter_row.addWidget(QLabel("Rail:"))
+        self.vias_rail_label = QLabel("Rail:")
+        filter_row.addWidget(self.vias_rail_label)
         self.vias_rail_combo = QComboBox()
         self.vias_rail_combo.addItem("All rails")
         for r in self._rails:
@@ -1280,16 +1286,20 @@ class _BridgesTabMixin:
         idx = getattr(self, "_vias_tab_index", -1)
         if idx < 0:
             return
+        warn_count = self._global_focus_warn_count("vias", warn_count)
         title = "Vias" if warn_count == 0 else f"Vias ⚠ {warn_count}"
         self.tabs.setTabText(idx, title)
 
     def _apply_vias_filter(self, *_args) -> None:
         """Hide rows that fail the Rail filter or the warnings-only toggle."""
-        rail_choice = (self.vias_rail_combo.currentText()
-                       if hasattr(self, "vias_rail_combo") else "All rails")
+        rail_choice = self._global_focus_rail_choice(
+            getattr(self, "vias_rail_combo", None))
         warn_only = (self.vias_warn_only_box.isChecked()
                      if hasattr(self, "vias_warn_only_box") else False)
-        if rail_choice == "All rails":
+        focus_nets = self._global_focus_nets()
+        if focus_nets is not None:
+            allowed_nets = set(focus_nets)
+        elif rail_choice == "All rails":
             allowed_nets: set[str] | None = None
         else:
             allowed_nets = set(self._rail_to_members.get(rail_choice, [rail_choice]))

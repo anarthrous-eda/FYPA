@@ -188,6 +188,7 @@ def export_lean_solution(
     *,
     via_rows: list[dict] | None = None,
     voltage_drop_reference: float | None = None,
+    voltage_drop_references: dict[int, float] | None = None,
     copper_conductivity: float | None = None,
     metadata: dict | None = None,
 ) -> int:
@@ -206,12 +207,13 @@ def export_lean_solution(
     conductivity instead; without it every layer uses
     ``copper_conductivity``.
 
-    ``voltage_drop`` is measured against ``voltage_drop_reference`` (pass the
-    viewer's drop reference so the export matches the interactive heatmap).
-    When unset it defaults to the global max potential across all layers - note
-    that on a multi-rail board this references every layer to the single
-    highest rail, so prefer passing the viewer reference when exporting a
-    specific rail.
+    ``voltage_drop`` is measured per layer against
+    ``voltage_drop_references[layer index]`` - pass the viewer's per-rail
+    references so each rail reads its drop from its own source, as the
+    interactive heatmap does. A layer with no entry there is measured
+    against ``voltage_drop_reference``, which defaults to the global max
+    potential across all layers (on a multi-rail board that is the single
+    highest rail, so such a layer's drop is only meaningful on that rail).
 
     Returns the number of files written. Layers with no mesh components
     are skipped.
@@ -253,13 +255,15 @@ def export_lean_solution(
         layer_sigma = copper_conductivity
         if stackup_layer_name(layer_name) in layer_sigmas:
             layer_sigma = solve_copper_conductivity(metadata, layer_name)
+        layer_drop_reference = (voltage_drop_references or {}).get(
+            layer_idx, voltage_drop_reference)
         stem = sanitize_filename(layer_name, used_names)
         pieces = []
         for xys, tris, pots, pd in components:
             fields = per_vertex_fields(
                 tris, pots, pd, conductance,
                 copper_conductivity=layer_sigma,
-                voltage_drop_reference=voltage_drop_reference,
+                voltage_drop_reference=layer_drop_reference,
             )
             pieces.append(_write_piece(xys, tris, fields))
 

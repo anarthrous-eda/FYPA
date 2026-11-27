@@ -971,6 +971,42 @@ def save_show_board_origin(enabled: bool) -> None:
         )
 
 
+_SHOW_RELIEF_AXIS_QS_KEY = "ui/show_relief_axis"
+
+
+def load_show_relief_axis() -> bool:
+    """Read whether the ignoring-layers relief view shows its axis (the
+    vertical ruler beside the copper). ``False`` (the default)."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        val = qs.value(_SHOW_RELIEF_AXIS_QS_KEY, False)
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            return val.strip().lower() in ("1", "true", "yes", "on")
+        return bool(int(val))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not read show-relief-axis preference (%s); using "
+            "default.", e,
+        )
+    return False
+
+
+def save_show_relief_axis(enabled: bool) -> None:
+    """Persist the show-relief-axis preference for next launch."""
+    try:
+        from PySide6.QtCore import QSettings
+        qs = QSettings(_THEME_QS_ORG, _THEME_QS_APP)
+        qs.setValue(_SHOW_RELIEF_AXIS_QS_KEY, bool(enabled))
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            "Could not persist show-relief-axis preference (%s); "
+            "ignoring.", e,
+        )
+
+
 def load_adaptive_regulator_gain() -> bool:
     """Read whether manual solves should iterate SMPS regulator gain."""
     try:

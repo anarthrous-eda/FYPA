@@ -56,6 +56,40 @@ below.
 
 ![Viewer layout overview](screenshots/05-layout.png)
 
+### Global Focus - one rail on every tab
+
+On the menu bar, above the Nodes tab, is a gold eye reading
+**GLOBAL FOCUS Off**. Click it and pick a rail (or right-click a rail
+in the Board tab's **Rails** list and choose **Global Focus on ...**),
+and every tab shows only that rail until you leave:
+
+- **Board** - only that rail's copper, vias, pads and markers are drawn,
+  and the Rails list shows only that rail.
+- **Nodes, Vias, Bridges, Fixes, Capacitors, Impedance** - only that
+  rail's rows. Their own **Rail** pickers are hidden, and the warning
+  counts on the tab names are for that rail.
+- **Topology and Properties** - only the sources, sinks, regulators and
+  series parts on that rail.
+- **What-If** comparison - only that rail's nodes; the headline numbers
+  are worked out from those (copper loss and temperature rise are whole-
+  board figures, so they are left out).
+- **Editor mode** - only that rail's copper can be clicked, and the P
+  and IN net pickers list only its nets. The N net picker is unchanged.
+  A new regulator can't be added while focused, because it joins a
+  second rail - leave focus first, as you would to set up a new rail.
+
+The rail's return net (GND) and any rail upstream of a regulator are
+not part of the focus, so a sink's ground pins and a regulator's far
+end are hidden. A thin gold line under the menu bar shows that focus is
+on. Click the rail name to switch to another rail, or the **x** next to
+it to show every rail again - your rail eyes come back as they were.
+
+Focus is a view filter: it never changes or re-runs a solve. It is not
+saved, so a window always opens with it off, and it goes off by itself
+when another design is opened or the focused rail no longer exists
+after a solve. The **Messages** and **Settings** tabs, and the design
+report, are not filtered.
+
 ## 5.2 The Properties tab
 
 The Properties tab holds everything that defines **this design's solve**.
@@ -372,7 +406,7 @@ to cycle back) changes what each mesh vertex's colour represents:
 | Mode               | Units    | What it shows                                                                                  |
 |--------------------|----------|------------------------------------------------------------------------------------------------|
 | **Voltage**        | V        | Absolute potential at every node. The hottest colour is the supply, the coldest is the return. |
-| **Voltage Drop**   | V        | Signed drop relative to the rail's source. Useful for "how much voltage have I lost between J1 and U5?" |
+| **Voltage Drop**   | V        | Signed drop relative to the rail's source. Useful for "how much voltage have I lost between J1 and U5?" Each rail is measured from its own source, so several rails shown together share one scale whatever their voltages. |
 | **Current Density**| A / mm²  | Magnitude of the current density `|J|` per mm² of copper cross-section at every node, so layers of different copper weight compare directly. Highlights bottlenecks. Via barrels show their current over the plated wall's cross-section; series resistors are drawn grey. |
 | **Power Density**  | W / mm²  | Resistive power dissipation per unit area. Highlights hot spots - where copper will warm up. |
 | **Via Current**    | A        | Current through each via; the copper is drawn grey as context. |

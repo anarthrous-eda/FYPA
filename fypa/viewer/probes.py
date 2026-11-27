@@ -79,6 +79,12 @@ class _ProbeMixin:
             return True
         elif (et == QEvent.KeyPress and event.key() == Qt.Key_Escape
               and not event.isAutoRepeat() and self.isActiveWindow()
+              and getattr(self, "_whatif_punch_armed", False)):
+            # Escape stops What-If via punching (same as its button).
+            self._whatif_punch_disarm()
+            return True
+        elif (et == QEvent.KeyPress and event.key() == Qt.Key_Escape
+              and not event.isAutoRepeat() and self.isActiveWindow()
               and self._copper_selection is not None
               and not self._editor_mode):
             # Escape clears the viewer-mode copper selection (mirrors the
@@ -1894,6 +1900,8 @@ class _ProbeMixin:
             self._build_settings_tab(), "Settings")
         self._help_tab_index = self.tabs.addTab(self._build_help_tab(), "Help")
         self._rebuild_tab_strip()
+        # New tab widgets (and theme colours): re-apply Global Focus to them.
+        self._sync_global_focus()
         # Restore tab selection. "Nodes" and "Vias" both get a warning
         # suffix appended on failures, so match by prefix.
         for i in range(self.tabs.count()):

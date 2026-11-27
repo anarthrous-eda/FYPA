@@ -1007,7 +1007,12 @@ def _changed_nets(old: dict, new: dict) -> set[int] | None:
     assignment changed (then only a full rebuild is safe).
 
     A primitive that moved from net A to net B changes both A's and B's
-    copper; a plane whose net name changed changes both planes' sheets."""
+    copper; a plane whose net name changed changes both planes' sheets.
+
+    Vias appended after the cached ones (a What-If scenario's added vias,
+    :mod:`fypa.whatif_vias`) change their own nets' copper. They also cut
+    anti-pads in the planes they pass through, which this function can't
+    see - :func:`incremental_per_net_geometry` adds those plane nets."""
     import numpy as np
     if (old.get("nets") != new.get("nets")
             or old.get("stackup") != new.get("stackup")
@@ -1019,7 +1024,10 @@ def _changed_nets(old: dict, new: dict) -> set[int] | None:
         a = np.asarray(old_c.get(name, ()), dtype=np.int64)
         b = np.asarray(new_c.get(name, ()), dtype=np.int64)
         if a.shape != b.shape:
-            return None
+            if name != "vias" or b.shape[0] < a.shape[0]:
+                return None
+            changed.update(int(x) for x in np.unique(b[a.shape[0]:]))
+            b = b[:a.shape[0]]
         moved = a != b
         if moved.any():
             changed.update(int(x) for x in np.unique(a[moved]))
@@ -1034,6 +1042,22 @@ def _changed_nets(old: dict, new: dict) -> set[int] | None:
                 if n in index_of:
                     changed.add(index_of[n])
     return changed
+
+
+def _plane_nets_crossed(extracted, vias) -> set[int]:
+    """Nets of the plane layers ``vias`` reach: each plane sheet cuts an
+    anti-pad for every other-net via on its layer, so adding a via changes
+    those sheets. Same layer rule the plane sheets use (``_via_on_layer``)."""
+    from fypa.altium_geometry import _plane_nets, _via_on_layer
+    enabled = extracted.enabled_copper_layer_ids()
+    pos = {lid: i for i, lid in enumerate(enabled)}
+    out: set[int] = set()
+    for s in extracted.stackup:
+        if not s.is_plane or s.layer_id not in pos:
+            continue
+        if any(_via_on_layer(v, s.layer_id, enabled, pos) for v in vias):
+            out |= _plane_nets(extracted, s)
+    return out
 
 
 def _read_per_net_geometry_file(f):
@@ -1090,6 +1114,9 @@ def incremental_per_net_geometry(extracted, cache_path: Path,
     changed = _changed_nets(state, _per_net_net_state(extracted))
     if changed is None:
         return None
+    n_old_vias = len(state.get("collections", {}).get("vias", ()))
+    if len(extracted.vias) > n_old_vias:
+        changed |= _plane_nets_crossed(extracted, extracted.vias[n_old_vias:])
     t_read = time.monotonic() - t0
     from fypa.altium_geometry import (
         _build_net_layer_buckets,
@@ -1239,7 +1266,8 @@ def _save_per_net_geometry(cache_path: Path, fingerprint: dict,
 
 
 def per_net_geometry_for_solve(extracted, cache_path: Path,
-                               fingerprint: dict, *, read_cache: bool = True):
+                               fingerprint: dict, *, read_cache: bool = True,
+                               write_cache: bool = True):
     """The board's per-net copper for ``build_problem(loaded, <this>)``, or
     ``None`` to let ``build_problem`` union the active rails itself.
 
@@ -1253,6 +1281,10 @@ def per_net_geometry_for_solve(extracted, cache_path: Path,
     cached (on a background thread) for the next solve; that costs about
     what the rails-only union did. A small board returns ``None``: building
     every net to save a second or two of union would be a loss.
+
+    ``write_cache=False`` (What-If solves) reads the cache but never writes
+    it: there is one cache file per board and it must stay the base
+    design's, or the next plain Resolve would rebuild every net too.
     """
     log = logging.getLogger(__name__)
     if read_cache:
@@ -1273,6 +1305,10 @@ def per_net_geometry_for_solve(extracted, cache_path: Path,
     else:
         layers, _ = build_per_net_and_layer_geometry(extracted,
                                                      with_layers=False)
+    if not write_cache:
+        log.info("Per-net geometry built for the solve in %.2fs (not cached: "
+                 "what-if).", time.monotonic() - t0)
+        return layers
     log.info("Per-net geometry built for the solve in %.2fs; caching it.",
              time.monotonic() - t0)
     # Not a daemon: a solve subprocess must not exit with the file half

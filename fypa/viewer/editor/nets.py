@@ -29,13 +29,46 @@ class _EditorNetsMixin:
     # attribute would leak one viewer's focus into the next, so make it fail
     # loudly instead.
     _editor_focus_net: str | None = None
-    _editor_focus_nets: frozenset | set = frozenset()
+    _editor_focus_user_nets: frozenset | set = frozenset()
     _editor_focus_polys: frozenset | set = frozenset()
+    _editor_focus_nets_memo: tuple | None = None
+
+    @property
+    def _editor_focus_nets(self) -> frozenset | set:
+        """Net names that survive the focus. The user's own net focus
+        (editor mode only), narrowed to the Global Focus rail when that is on;
+        Global Focus alone, in either mode, keeps just the rail's nets (see
+        :mod:`fypa.viewer.global_focus`). Assigning sets the user's focus."""
+        user = self._editor_focus_user_nets
+        gf = getattr(self, "_global_focus_net_set", None)
+        if getattr(self, "_global_focus_rail_name", None) is None:
+            gf = None
+        if gf is None:
+            return user
+        editor = bool(getattr(self, "_editor_mode", False))
+        memo = self._editor_focus_nets_memo
+        if memo is not None and memo[0] is user and memo[1] is gf \
+                and memo[2] == editor:
+            return memo[3]
+        out = gf
+        if editor and user:
+            # A user focus outside the rail can't be reached (the rail's
+            # copper is all there is to click), but never let an empty
+            # intersection read as "no focus" and show everything.
+            out = frozenset(user & gf) or gf
+        self._editor_focus_nets_memo = (user, gf, editor, out)
+        return out
+
+    @_editor_focus_nets.setter
+    def _editor_focus_nets(self, value) -> None:
+        self._editor_focus_user_nets = value
 
     def _editor_focus_active(self) -> bool:
-        """True while a net focus is held - i.e. copper outside the focused
-        net is being suppressed. Requires editor mode: focus is an editor
-        control and must not leak into the viewer-mode heatmap."""
+        """True while copper outside a net set is being suppressed: the
+        editor's net focus (editor mode only - it must not leak into the
+        viewer-mode heatmap), or Global Focus in either mode."""
+        if getattr(self, "_global_focus_rail_name", None) is not None:
+            return True
         return bool(
             getattr(self, "_editor_mode", False)
             and (self._editor_focus_nets or self._editor_focus_polys)
@@ -125,7 +158,11 @@ class _EditorNetsMixin:
 
     def _clear_editor_focus(self, *, render: bool = True) -> None:
         """Release the net focus; all copper comes back."""
-        had = bool(self._editor_focus_nets or self._editor_focus_polys
+        # The user's own focus, not the Global Focus rail it may be narrowed to.
+        user = getattr(self, "_editor_focus_user_nets", None)
+        if user is None:
+            user = self._editor_focus_nets
+        had = bool(user or self._editor_focus_polys
                    or self._editor_focus_net)
         self._editor_focus_net = None
         self._editor_focus_nets = set()
@@ -503,6 +540,10 @@ class _EditorNetsMixin:
         except Exception:
             logging.getLogger(__name__).exception("net table build failed")
             rows = []
+        focus = getattr(self, "_global_focus_nets", lambda: None)()
+        if focus is not None:
+            # Global Focus: only the focused rail's nets can be picked.
+            rows = [r for r in rows if r.get("name") in focus]
         self._net_table_rows = rows
         # Remember the current sort so a rebuild (e.g. after a rename) keeps
         # the column / direction the user clicked, defaulting to area-desc.

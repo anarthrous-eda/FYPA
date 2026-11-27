@@ -364,7 +364,7 @@ class _MarkerOverlayMixin:
     def _push_stubs(self, phys_list: list[str],
                     rail_names: list[str] | str,
                     *, mode: str | None = None,
-                    drop_reference: float | None = None) -> None:
+                    drop_refs: dict[str, float] | None = None) -> None:
         """Build triangle geometry for every stub copper piece on the
         visible layers + selected rail groups, and push it as one batch
         to the GL viewer.
@@ -428,7 +428,7 @@ class _MarkerOverlayMixin:
         if positions is None:
             self._gl_viewer.clear_stub_triangles()
             return
-        colors = self._bake_stub_colors(spans, mode, drop_reference)
+        colors = self._bake_stub_colors(spans, mode, drop_refs)
         self._gl_viewer.set_stub_triangles(positions, colors)
 
     def _build_stub_geometry(
@@ -479,7 +479,7 @@ class _MarkerOverlayMixin:
 
     def _bake_stub_colors(
         self, spans: list[tuple[dict, str | None, int]],
-        mode: str | None, drop_reference: float | None,
+        mode: str | None, drop_refs: dict[str, float] | None,
     ) -> np.ndarray:
         """Build the per-vertex stub colour array for cached geometry.
 
@@ -487,6 +487,8 @@ class _MarkerOverlayMixin:
         (:meth:`_stubs_coloured_by_voltage`), in which case it takes the
         LUT colour of its sampled centroid voltage. ``spans`` is the list
         :meth:`_build_stub_geometry` returned alongside the positions.
+        ``drop_refs`` is the Voltage Drop reference per net
+        (:meth:`_drop_references`).
         """
         total = sum(n for _stub, _net, n in spans)
         colors = np.empty((total, 3), dtype=np.float32)
@@ -506,8 +508,7 @@ class _MarkerOverlayMixin:
             if vmax <= vmin:
                 vmax = vmin + 1e-30
         use_drop = colour_by_v and mode == _VOLTAGE_DROP_MODE
-        drop_ref_f = (float(drop_reference)
-                      if (use_drop and drop_reference is not None) else 0.0)
+        refs = drop_refs or {}
 
         offset = 0
         for stub, net, n in spans:
@@ -515,7 +516,8 @@ class _MarkerOverlayMixin:
             if colour_by_v and lut is not None:
                 v_sample = self._sample_stub_voltage(stub, net)
                 if v_sample is not None:
-                    val = v_sample - drop_ref_f if use_drop else v_sample
+                    val = (v_sample - refs.get(net, 0.0) if use_drop
+                           else v_sample)
                     piece_color = self._lut_lookup(lut, val, vmin, vmax)
             colors[offset:offset + n] = piece_color
             offset += n
@@ -612,7 +614,7 @@ class _MarkerOverlayMixin:
     def _push_series_bars(self, phys_list: list[str],
                           rail_names: list[str] | str,
                           mode: str,
-                          drop_reference: float | None = None) -> None:
+                          drop_refs: dict[str, float] | None = None) -> None:
         """Build gradient-filled rectangle geometry for every RESISTOR
         (series) directive visible on the current layers + selected rails,
         and push it as one triangle batch to the GL viewer.
@@ -646,7 +648,8 @@ class _MarkerOverlayMixin:
         vmax = float(self._vmax)
         if vmax <= vmin:
             vmax = vmin + 1e-30
-        drop_ref = float(drop_reference) if drop_reference is not None else 0.0
+        # Voltage Drop reference per net; empty in every other mode.
+        refs = drop_refs or {}
 
         # Two chunk lists. ``under_*`` rects are drawn BEFORE the heatmap
         # mesh so a bottom-side bar sits visually beneath the bottom
@@ -772,8 +775,17 @@ class _MarkerOverlayMixin:
 
             # Convert raw voltages to the display value for this mode.
             if mode in ("Voltage", _VOLTAGE_DROP_MODE):
-                val1 = v1 - drop_ref
-                val2 = v2 - drop_ref
+                # Both ends of a series part are on one rail, so they share
+                # a reference; an end whose net has none (its subnet is
+                # hidden) borrows the other end's.
+                ref1 = refs.get(p_pin.get("net", ""))
+                ref2 = refs.get(n_pin.get("net", ""))
+                if ref1 is None:
+                    ref1 = ref2 if ref2 is not None else 0.0
+                if ref2 is None:
+                    ref2 = ref1
+                val1 = v1 - ref1
+                val2 = v2 - ref2
                 c1 = self._shade(lut, val1, vmin, vmax)
                 c2 = self._shade(lut, val2, vmin, vmax)
             elif mode in (_VIA_CURRENT_MODE, "Current Density"):

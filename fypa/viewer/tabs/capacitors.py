@@ -182,7 +182,8 @@ class _CapacitorsTabMixin:
         outer.setContentsMargins(8, 8, 8, 8)
 
         filter_row = QHBoxLayout()
-        filter_row.addWidget(QLabel("Rail:"))
+        self.caps_rail_label = QLabel("Rail:")
+        filter_row.addWidget(self.caps_rail_label)
         self.caps_rail_combo = QComboBox()
         self.caps_rail_combo.addItem("All rails")
         for r in self._rails:
@@ -1349,7 +1350,8 @@ class _CapacitorsTabMixin:
         idx = getattr(self, "_caps_tab_index", -1)
         if idx < 0:
             return
-        count = getattr(self, "_caps_warn_count", 0)
+        count = self._global_focus_warn_count(
+            "caps", getattr(self, "_caps_warn_count", 0))
         if count and not self._caps_unchecked():
             title = f"Capacitors ⚠ {count}"
         else:
@@ -1580,8 +1582,9 @@ class _CapacitorsTabMixin:
             self.caps_summary_label.setText(
                 getattr(self, "_caps_empty_reason", "") or "")
             return
-        rail_choice = (self.caps_rail_combo.currentText()
-                       if hasattr(self, "caps_rail_combo") else "All rails")
+        rail_choice = self._global_focus_rail_choice(
+            getattr(self, "caps_rail_combo", None))
+        focused = self._global_focus_active()
         flagged_only = (self.caps_flagged_only_box.isChecked()
                         if hasattr(self, "caps_flagged_only_box") else False)
         included_only = (self.caps_included_only_box.isChecked()
@@ -1597,8 +1600,11 @@ class _CapacitorsTabMixin:
             row = (rows[orig_idx]
                    if isinstance(orig_idx, int) and 0 <= orig_idx < len(rows)
                    else {})
-            rail_ok = (rail_choice == "All rails"
-                       or row.get("rail") == rail_choice)
+            if focused:
+                rail_ok = self._cap_row_in_focus(row)
+            else:
+                rail_ok = (rail_choice == "All rails"
+                           or row.get("rail") == rail_choice)
             is_warn = self._cap_row_is_warn(row)
             warn_ok = (not flagged_only) or is_warn
             incl_ok = (not included_only) or row.get("included", True)
@@ -1609,6 +1615,9 @@ class _CapacitorsTabMixin:
                 visible += 1
                 if is_warn:
                     warn_visible += 1
+        if focused:
+            # Counts for the focused rail, not the whole board.
+            rows = [r for r in rows if self._cap_row_in_focus(r)]
         included_total = sum(1 for r in rows if r.get("included", True))
         text = (f"{visible} of {len(rows)} capacitor(s) shown - "
                 f"{included_total} included, {warn_visible} flagged")
@@ -1617,6 +1626,8 @@ class _CapacitorsTabMixin:
         # it must not hide behind the rail filter - with "All rails" selected
         # we list the rails compactly rather than showing nothing.
         rollup = getattr(self, "_caploop_rollup", None)
+        if rollup and focused and rail_choice not in rollup:
+            rollup = None  # no other rail's roll-up under Global Focus
         if rollup:
             if rail_choice in rollup:
                 shown = [rollup[rail_choice]]

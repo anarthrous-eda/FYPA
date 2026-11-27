@@ -135,9 +135,23 @@ no one set of properties applies across roles.</p>
   <li><b>Rails</b> - tick one or more bridged rail groups to
     show their copper (e.g. <code>+3V3</code> bundles <code>+3V3</code>
     + <code>3V3_SW</code> if a series resistor / inductor links them).
-    Use the <i>All Rails</i> row to toggle every rail at once.</li>
+    Use the <i>All Rails</i> row to toggle every rail at once.
+    Right-click a rail for <i>Global Focus on</i> it.</li>
+  <li><b>Global Focus</b> - the gold eye on the menu bar, above the Nodes
+    tab. Pick a rail and every tab shows only that rail: the Board draws
+    only its copper, vias and markers, and Nodes, Vias, Bridges, Fixes,
+    Capacitors, Impedance, Topology, Properties and the What-If comparison
+    list only its rows. The per-tab rail pickers are hidden and the tab
+    warning counts are for that rail. Return nets (GND) and rails upstream
+    of a regulator are left out. In editor mode only that rail's copper
+    can be picked, its P / IN net pickers list only its nets (the N net
+    picker is unchanged), and a new regulator can't be added. Click the
+    rail name to switch, <b>&times;</b> to show every rail again. Focus is
+    not saved and goes off when another design is opened.</li>
   <li><b>Mode</b> - Voltage / Voltage Drop / Current Density /
-    Power Density.</li>
+    Power Density. Voltage Drop measures each rail from its own source
+    (0 V there, negative toward the loads), so several rails shown
+    together share one scale whatever their voltages.</li>
   <li><b>Layer outlines</b> - the contour button on the
     <i>All Rails</i> row (hotkey <kbd>O</kbd>) traces each visible rail's
     copper polygons in the owning layer's swatch colour.</li>
@@ -200,7 +214,15 @@ no one set of properties applies across roles.</p>
         Layers at the same value keep a tiny stackup-order offset so they
         don't flicker through each other. <i>Layer spacing</i> is hidden in
         this variant, and no-current stub copper sits on the base. The
-        hover readout still names the layer.</li>
+        hover readout still names the layer.
+        <i>Show relief axis</i> (also <i>View &gt; Relief axis</i>) stands
+        a ruler beside the copper that shows what value each height is.
+        It runs from the colour scale's Min to its Max in the colour
+        bar's unit, follows the <i>Relief height</i> slider, and moves to
+        whichever corner keeps it clear of the copper as you turn the
+        board. Off by default and remembered. Layers below the top one
+        sit a touch lower than the ruler reads (the stackup-order
+        offset, at most 2% of the full height).</li>
     </ul>
     Layer outlines (<kbd>O</kbd>) follow the raised copper edge, so the
     outline colour still shows which layer each piece of copper is on
@@ -388,6 +410,13 @@ edge to make it wider if the tables don't fit.</p>
 resistivity, via plating, via fill, the electro-thermal model, or a layer's
 copper thickness (with ½-3 oz quick picks) or resistivity. Blank fields keep
 the base value.</li>
+<li><b>Punch vias</b> adds vias to the selected what-if (2D Board, base
+view): click copper for one via, drag for a grid at the <b>Pitch</b> beside
+it, click an added via to remove it, <b>Esc</b> to stop. Each copies the
+nearest via on that net. A via is refused when its net has copper on fewer
+than two of its layers (it would carry no current), when its pad would
+touch another net on a signal layer, or when it overlaps another via. Added
+vias exist only in the what-if; <b>Clear</b> removes them.</li>
 <li><b>Run</b> solves the design with those changes. The base result is
 untouched; each what-if keeps its own result.</li>
 <li><b>Show:</b> <i>Base</i>, <i>What-if</i> (every tab then shows the
@@ -402,7 +431,8 @@ against an older base (the design, directives or base inputs changed since)
 is marked <i>out of date</i>; Run it again to refresh.</li>
 <li><b>Make this the base</b> copies a what-if's changes into the Properties
 tab's Base properties and makes its result the base result (re-solving if
-the result is missing or out of date).</li>
+the result is missing or out of date). A what-if that adds vias can't be
+made the base: they aren't on the board.</li>
 <li>What-ifs and their results are saved with the project (.fypa).</li>
 </ul>
 """),

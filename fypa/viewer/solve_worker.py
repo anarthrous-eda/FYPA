@@ -363,8 +363,14 @@ class _SolveWorker(QThread):
                   variant: str | None = None,
                   restore_setup: bool = False,
                   set_aside_setup: bool = False,
+                  added_vias: list | None = None,
                   parent=None) -> None:
         super().__init__(parent)
+        # What-If punched vias (fypa.whatif_vias.AddedVia), appended to the
+        # extract for this solve only. Set only by the What-If runner, which
+        # also passes write_solve_cache=False.
+        self._added_vias = list(added_vias or [])
+        self._n_added_vias = 0
         # Import Altium Design (Clean): the saved setup is renamed to .bak
         # at the start of run() and not restored - the design opens as if
         # FYPA had never seen it. The backups go to the viewer in the
@@ -1109,6 +1115,17 @@ class _SolveWorker(QThread):
                 for w in cn_warnings:
                     _cn_log.debug("Copper name not applied: %s", w)
 
+            # After copper names, so a via on a newly named net resolves.
+            # Builds a new LoadedProject - the pristine one is untouched.
+            if self._added_vias:
+                self.stage_changed.emit(
+                    f"Adding {len(self._added_vias)} what-if via(s)…")
+                from fypa.whatif_vias import apply_added_vias
+                loaded, av_warnings, self._n_added_vias = apply_added_vias(
+                    loaded, self._added_vias)
+                for w in av_warnings:
+                    logging.getLogger(__name__).warning("%s", w)
+
             if self._editor_directives:
                 self.stage_changed.emit(
                     f"Applying {len(self._editor_directives)} editor "
@@ -1234,6 +1251,10 @@ class _SolveWorker(QThread):
             if _packaged is None:
                 return
             new_solution, metadata = _packaged
+            if self._n_added_vias and isinstance(metadata, dict):
+                from fypa.whatif_vias import METADATA_KEY, added_via_report
+                metadata[METADATA_KEY] = added_via_report(
+                    metadata, self._n_added_vias)
 
             # Persist the solve to the FYPA solve cache so the next
             # "Import Altium Design" can skip both extract and solve.
@@ -1392,7 +1413,8 @@ class _SolveWorker(QThread):
         with _timer.stage("Load copper geometry"):
             prebuilt_layers = load_per_net_geometry(
                 loaded, self._per_net_geometry_key(loaded),
-                read_cache=self._use_design_cache)
+                read_cache=self._use_design_cache,
+                write_cache=self._write_solve_cache)
         with _timer.stage("Mesh + solve"):
             try:
                 (padne_solution, problem, via_segment_records,
@@ -1502,6 +1524,7 @@ class _SolveWorker(QThread):
             adaptive_regulator_gain=self._adaptive_regulator_gain,
             per_net_geometry_key=self._per_net_geometry_key(loaded),
             read_per_net_geometry_cache=self._use_design_cache,
+            write_per_net_geometry_cache=self._write_solve_cache,
         )
         try:
             with _timer.stage("Mesh + solve (subprocess)"):

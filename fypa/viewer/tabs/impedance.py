@@ -108,7 +108,8 @@ class _ImpedanceTabMixin:
         side.setSpacing(8)
 
         rail_row = QHBoxLayout()
-        rail_row.addWidget(QLabel("Rail:"))
+        self.imp_rail_label = QLabel("Rail:")
+        rail_row.addWidget(self.imp_rail_label)
         self.imp_rail_combo = QComboBox()
         self.imp_rail_combo.setToolTip(
             "Rails carrying at least one included decoupling capacitor.")
@@ -436,7 +437,8 @@ class _ImpedanceTabMixin:
         rows = getattr(self, "_caps_rows_cache", None) or []
         seen: list[str] = []
         for row in rows:
-            if row.get("included", True) and row["rail"] not in seen:
+            if (row.get("included", True) and row["rail"] not in seen
+                    and self._cap_row_in_focus(row)):
                 seen.append(row["rail"])
         return seen
 
@@ -646,6 +648,11 @@ class _ImpedanceTabMixin:
             # than guess.
             return (getattr(self, "_caps_empty_reason", "")
                     or "No decoupling capacitors were found on this design.")
+        focus = self._global_focus_rail()
+        if focus is not None:
+            return (f"{focus} has no included decoupling capacitor.\n"
+                    "Tick Use on the Capacitors tab to include one, or exit "
+                    "Global Focus to plot another rail.")
         return (f"All {len(rows)} detected capacitor(s) are excluded from the "
                 f"analysis.\nTick Use on the Capacitors tab to include one.")
 

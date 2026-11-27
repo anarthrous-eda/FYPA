@@ -2,7 +2,8 @@
 
 A scenario is a named set of *overrides* on top of the base design's solve
 inputs: board temperature, copper resistivity, via plating, via fill, the
-coupled thermal model, and per-layer copper thickness / resistivity. Running
+coupled thermal model, per-layer copper thickness / resistivity, and vias
+added to the board (:mod:`fypa.whatif_vias`). Running
 one solves the same design (same directives, same mesh settings) with those
 overrides applied, and the result is only ever compared against the base
 solve, never against another scenario.
@@ -31,6 +32,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
+
+from fypa.whatif_vias import AddedVia, vias_from_dicts
+from fypa.whatif_vias import describe as describe_added_vias
 
 # ---------------------------------------------------------------------------
 # What a scenario may change
@@ -92,6 +96,9 @@ class WhatIfScenario:
     stackup_thickness_mm: dict[int, float] = field(default_factory=dict)
     # Copper layer id -> resistivity at 20 °C (µΩ·cm). Absent = same as base.
     layer_resistivity: dict[int, float] = field(default_factory=dict)
+    # Vias this scenario adds to the board (fypa.whatif_vias). They exist
+    # only in this scenario's solve.
+    added_vias: list[AddedVia] = field(default_factory=list)
     # Absolute path of the result pickle (made relative on project save).
     result_pickle: str | None = None
     # base_fingerprint() of the base the result was solved against.
@@ -105,7 +112,7 @@ class WhatIfScenario:
 
     def has_changes(self) -> bool:
         return bool(self.settings_overrides or self.stackup_thickness_mm
-                    or self.layer_resistivity)
+                    or self.layer_resistivity or self.added_vias)
 
     def is_stale(self, current_fingerprint: str | None) -> bool:
         return (self.status == STATUS_OK and current_fingerprint is not None
@@ -118,6 +125,7 @@ class WhatIfScenario:
             settings_overrides=dict(self.settings_overrides),
             stackup_thickness_mm=dict(self.stackup_thickness_mm),
             layer_resistivity=dict(self.layer_resistivity),
+            added_vias=list(self.added_vias),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -132,6 +140,7 @@ class WhatIfScenario:
             "layer_resistivity": {
                 str(int(k)): float(v)
                 for k, v in sorted(self.layer_resistivity.items())},
+            "added_vias": [v.to_dict() for v in self.added_vias],
             "result_pickle": self.result_pickle,
             "base_fingerprint": self.base_fingerprint,
             "status": self.status,
@@ -166,6 +175,7 @@ class WhatIfScenario:
             settings_overrides=overrides,
             stackup_thickness_mm=_int_map(d.get("stackup_thickness_mm")),
             layer_resistivity=_int_map(d.get("layer_resistivity")),
+            added_vias=vias_from_dicts(d.get("added_vias")),
             result_pickle=(None if not d.get("result_pickle")
                            else str(d["result_pickle"])),
             base_fingerprint=(None if d.get("base_fingerprint") is None
@@ -320,6 +330,7 @@ def describe_changes(scenario: WhatIfScenario, base_settings,
         old = base_rho.get(lid, board_rho)
         lines.append(f"{names.get(lid, f'L{lid}')} resistivity: "
                      f"{_fmt_num(old)} → {_fmt_num(rho)} µΩ·cm")
+    lines.extend(describe_added_vias(scenario.added_vias))
     return lines
 
 

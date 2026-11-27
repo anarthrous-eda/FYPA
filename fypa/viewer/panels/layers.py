@@ -411,7 +411,11 @@ class _LayerPanelMixin:
                 self._insert_subnet_rows(rail, after_item=item)
 
         self._sync_all_rails_eye()
-        self._update_rail_list_height()
+        apply_focus = getattr(self, "_apply_focus_to_rail_list", None)
+        if apply_focus is not None:
+            apply_focus()  # also sets the height
+        else:
+            self._update_rail_list_height()
 
     def _insert_subnet_rows(
         self, rail: str, *, after_item: QListWidgetItem, pending: bool = False,
@@ -546,7 +550,10 @@ class _LayerPanelMixin:
         if not hasattr(self, "rail_list"):
             return
         approx = self.rail_list.sizeHintForRow(0) or 22
-        self.rail_list.setFixedHeight(self.rail_list.count() * approx + 6)
+        # Global Focus hides every row but the focused rail's.
+        shown = sum(1 for i in range(self.rail_list.count())
+                    if not self.rail_list.item(i).isHidden())
+        self.rail_list.setFixedHeight(shown * approx + 6)
 
     def _fan_out_rail_eye_to_subnets(self, rail: str, on: bool) -> None:
         for eye in self._subnet_eye_buttons.get(rail, {}).values():
@@ -1121,4 +1128,9 @@ class _LayerPanelMixin:
                     out.append(name)
             elif _qt_widget_alive(eye) and eye.isVisibleState():
                 out.append(name)
+        focus = getattr(self, "_global_focus_rail_name", None)
+        if focus is not None:
+            # Global Focus: no other rail draws, whatever its eye says (the
+            # Fixes tab's Go, for one, switches rail eyes on).
+            out = [r for r in out if r == focus]
         return out

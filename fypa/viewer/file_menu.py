@@ -300,6 +300,17 @@ class _FileMenuMixin:
         self._act_relief.triggered.connect(self._hotkey_toggle_relief)
         view_menu.addAction(self._act_relief)
 
+        # Same remembered choice as the side panel's "Show relief axis".
+        self._act_relief_axis = QAction(self)
+        self._act_relief_axis.setStatusTip(
+            "Ignoring layers relief: stand a ruler beside the copper that "
+            "shows what value each height is, from the colour scale's Min "
+            "to its Max. Remembered across launches."
+        )
+        self._act_relief_axis.triggered.connect(
+            lambda: self.relief_axis_box.toggle())
+        view_menu.addAction(self._act_relief_axis)
+
         self._act_heatmap_vias = QAction(self)
         self._act_heatmap_vias.setStatusTip(
             "Colour via and plated-through-hole cylinders by the active "
@@ -376,6 +387,14 @@ class _FileMenuMixin:
         self._act_relief.setText(
             "Relief View [{}] (Z)".format(
                 ("off", "per layer", "ignoring layers")[relief_mode]))
+        axis_act = getattr(self, "_act_relief_axis", None)
+        axis_box = getattr(self, "relief_axis_box", None)
+        if axis_act is not None and axis_box is not None:
+            axis_act.setText(
+                "Relief axis [shown]" if axis_box.isChecked()
+                else "Relief axis [hidden]")
+            # Only that relief has one base for every layer to measure from.
+            axis_act.setEnabled(relief_mode == 2)
         self._act_heatmap_vias.setText(
             "Heatmap vias / PTH [enabled] (V)"
             if self.heatmap_vias_box.isChecked()
@@ -587,6 +606,17 @@ class _FileMenuMixin:
                 f"{_esc(path_str)}</span>"
             )
 
+    def _export_drop_references(self) -> dict[int, float]:
+        """Voltage Drop reference for each solved layer of the whole board,
+        keyed by its index in the solution: its rail's own source voltage,
+        the same reference the Voltage Drop heatmap uses (every net of
+        every rail, whatever is showing)."""
+        refs = self._drop_references(
+            list(self._rail_to_members), all_members=True)
+        return {index: refs[net]
+                for (_phys, net), index in self._index_by_pair.items()
+                if net in refs}
+
     def _on_menu_export_paraview(self) -> None:
         """File > Export > ParaView…  →  prompt for an output directory and
         write one ``.vtu`` per copper layer there (per-vertex voltage scalar
@@ -625,7 +655,7 @@ class _FileMenuMixin:
                 self.solution,
                 Path(out_dir_str),
                 via_rows=via_rows,
-                voltage_drop_reference=self._last_drop_reference,
+                voltage_drop_references=self._export_drop_references(),
                 copper_conductivity=solve_copper_conductivity(self.metadata),
                 metadata=self.metadata,
             )
@@ -1172,6 +1202,7 @@ class _FileMenuMixin:
         on_cancelled=None,
         write_solve_cache: bool = True,
         dialog_width_text: str | None = None,
+        added_vias: list | None = None,
     ) -> None:
         """Show an indeterminate progress dialog and run :class:`_SolveWorker`
         off-thread; on success, refresh this viewer in place via
@@ -1255,6 +1286,8 @@ class _FileMenuMixin:
             # An Altium import brings back the setup saved beside the design.
             restore_setup=restore_setup,
             set_aside_setup=set_aside_setup,
+            # What-If punched vias (this solve only).
+            added_vias=added_vias,
             parent=self,
         )
         if is_import:

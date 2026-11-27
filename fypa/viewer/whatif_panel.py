@@ -427,11 +427,13 @@ class WhatIfDialog(QDialog):
                 raise ValueError(f"Layer {lid} resistivity must be > 0.")
             if abs(val - base_rho.get(lid, board_rho)) > 1e-12:
                 rho[lid] = val
-        if not (overrides or thick or rho):
+        s = self._scenario
+        # Added vias are placed on the board, not in this form; they count
+        # as a change on their own.
+        if not (overrides or thick or rho or s.added_vias):
             raise ValueError(
                 "Nothing is changed from the base yet - set at least one "
                 "value.")
-        s = self._scenario
         changed = (overrides != s.settings_overrides
                    or thick != s.stackup_thickness_mm
                    or rho != s.layer_resistivity)
@@ -597,6 +599,8 @@ class _WhatIfMixin:
         btns.addWidget(more)
         btns.addStretch(1)
         lay.addLayout(btns)
+        # Punch vias / Pitch / Clear (fypa.viewer.whatif_punch).
+        self._build_whatif_punch_row(lay)
 
         self._whatif_changes = QLabel("")
         self._whatif_changes.setWordWrap(True)
@@ -801,6 +805,11 @@ class _WhatIfMixin:
         panel.setVisible(visible)
         if visible and not was_visible:
             self._refresh_whatif_compare()
+        # Punching needs the panel open on the Board; its markers show
+        # only then too.
+        if not (visible and where == "board"):
+            self._whatif_punch_disarm()
+        self._sync_whatif_punch_controls()
 
     def _position_whatif_banner(self) -> None:
         banner = getattr(self, "_whatif_banner", None)
@@ -1039,6 +1048,7 @@ class _WhatIfMixin:
             b.blockSignals(True)
             b.setChecked(key == self._whatif_view)
             b.blockSignals(False)
+        self._sync_whatif_punch_controls()
         self._refresh_whatif_compare()
 
     def _whatif_has_result(self, s: W.WhatIfScenario) -> bool:
@@ -1054,6 +1064,8 @@ class _WhatIfMixin:
         sid = item.data(Qt.UserRole) if item is not None else None
         if sid == self._whatif_selected_id:
             return
+        # The tool punches into one named what-if; re-arm for another.
+        self._whatif_punch_disarm()
         self._whatif_selected_id = sid
         if self._whatif_view != "base":
             s = self._whatif_selected()
@@ -1163,6 +1175,16 @@ class _WhatIfMixin:
         base result (when it is current - no re-solve) or re-solve."""
         s = self._whatif_selected()
         if s is None:
+            return
+        if s.added_vias:
+            # The base is the board as designed; a punched via only exists
+            # in the what-if until it is added in the layout tool.
+            QMessageBox.information(
+                self, "Make this the base",
+                f"“{s.name}” adds {len(s.added_vias)} via(s) that aren't on "
+                "the board, so it can't become the base. Add them to the "
+                "layout and re-import, or duplicate the what-if and clear "
+                "its vias to make the rest of its changes the base.")
             return
         fresh = (self._whatif_has_result(s)
                  and not s.is_stale(self._whatif_base_fp))
@@ -1306,6 +1328,7 @@ class _WhatIfMixin:
             on_failed=lambda msg: self._on_whatif_failed(sid, msg),
             on_cancelled=lambda: self._on_whatif_cancelled(sid),
             write_solve_cache=False,
+            added_vias=list(s.added_vias),
         )
         # _start_solve_worker may refuse (another solve running).
         if getattr(self, "_solve_worker", None) is None:
@@ -1439,6 +1462,8 @@ class _WhatIfMixin:
         if view != "base":
             if getattr(self, "_solve_worker", None) is not None:
                 return
+            # Vias are punched into the base copper; another view stops it.
+            self._whatif_punch_disarm()
             pair = self._whatif_load(s) if s is not None else None
             if pair is None:
                 QMessageBox.information(
@@ -1660,14 +1685,27 @@ class _WhatIfMixin:
             return
         base_rows, scen_rows = rows
         base_sol, _bm = self._whatif_base_pair()
-        base_summary = self._whatif_rows_cache.get(
-            ("__base_summary__", id(base_sol))) or {}
-        # The stored summary has the copper loss (needs the full solution);
-        # where each worst case sits is re-read from the rows, so results
-        # saved before rails were recorded still name them.
-        scen_summary = {**(s.summary or {}), **{
-            k: v for k, v in W.summarise(scen_rows).items()
-            if k.endswith(("_rail", "_node")) or k == "fails_rails"}}
+        focus_nets = self._global_focus_nets()
+        if focus_nets is not None:
+            # Global Focus: the focused rail's nodes, and headline numbers
+            # worked out from those alone. Copper loss and temperature rise
+            # are whole-board figures, so they drop out of the summary.
+            def _in_focus(r: dict) -> bool:
+                return (r.get("net") in focus_nets
+                        or self._global_focus_allows_rail(r.get("rail")))
+            base_rows = [r for r in base_rows if _in_focus(r)]
+            scen_rows = [r for r in scen_rows if _in_focus(r)]
+            base_summary = W.summarise(base_rows)
+            scen_summary = W.summarise(scen_rows)
+        else:
+            base_summary = self._whatif_rows_cache.get(
+                ("__base_summary__", id(base_sol))) or {}
+            # The stored summary has the copper loss (needs the full
+            # solution); where each worst case sits is re-read from the rows,
+            # so results saved before rails were recorded still name them.
+            scen_summary = {**(s.summary or {}), **{
+                k: v for k, v in W.summarise(scen_rows).items()
+                if k.endswith(("_rail", "_node")) or k == "fails_rails"}}
         colors = {"better": t["ok"], "worse": t["err"], "same": t["fg_hint"]}
 
         def _cell(text, verdict="", align=Qt.AlignRight, sort=None):

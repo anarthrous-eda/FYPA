@@ -14,6 +14,8 @@ Typical uses:
   electro-thermal model switched on?
 - **Fabrication:** what if the fab plates vias to IPC Class 2 instead of
   Class 3, or the vias are filled with conductive paste?
+- **More vias:** would six more stitching vias next to the regulator fix
+  the worst load? (See 9.3, Punching vias.)
 
 ## 9.1 Opening the panel
 
@@ -43,11 +45,47 @@ blank to keep the base value, and fill in only what you want to try:
 A What-If is solved with the same design, the same directives and the same
 mesh settings as the base, so the comparison reflects only your change.
 Load currents, source voltages and copper shapes can't be changed in a
-What-If.
+What-If. Vias can be added - see 9.3.
 
 **Save** keeps it; **Save and Run** also solves it straight away.
 
-## 9.3 Running and viewing
+## 9.3 Punching vias
+
+**Punch vias** in the panel adds vias to the selected What-If by clicking
+the Board. It works in 2D on the base view: pressing it switches to both.
+
+- **Click** on copper to add one via on that copper's net.
+- **Drag** a box to add a grid of vias at the **Pitch** set beside the
+  button, all on the net under the corner you started the drag from.
+- **Click a via you added** to remove it. **Clear (n)** removes them all.
+- **Esc**, the button again, switching to 3D or to another view stops it.
+
+Each new via copies the drill, pad and layer span of the nearest via
+already on that net. If the net has no vias, it copies the board's most
+common via, and on a board with no vias it is a 0.3 / 0.6 mm through via.
+The toast says which.
+
+A via is refused, with the reason in a toast, when:
+
+- its net has copper on fewer than two of the layers it spans, so it would
+  carry no current;
+- its pad would touch another net's copper on a signal layer;
+- it would overlap another net's via, or sit inside a via already on its
+  net.
+
+Planes don't refuse a via: the plane's own sheet gets a clearance hole
+for it, just as it has for the board's existing vias. Poured copper on a
+signal layer doesn't, which is why a via touching another net's pour is
+refused rather than drawn through it.
+
+Added vias are drawn as orange pads with a dark drill while the panel is
+open, and exist only in that What-If. Its Run solves the board with them;
+the base, the report and the solve caches never see them. Adding or
+removing a via clears the What-If's old result. A What-If with added vias
+can't be **made the base** (9.6), because the vias aren't on the board: add
+them in the layout and re-import instead.
+
+## 9.4 Running and viewing
 
 Select a What-If and press **Run**. The solve takes about as long as the
 base solve, and the base result is untouched. When it finishes, the viewer
@@ -77,7 +115,7 @@ difference scale.
 Editing directives, saving, exporting a report or running a solve always
 switches the viewer back to **Base** first.
 
-## 9.4 Reading the comparison
+## 9.5 Reading the comparison
 
 The panel's top table compares the headline numbers, base against What-If:
 
@@ -100,7 +138,7 @@ density**), worst change first. **Changed only** hides pins that didn't
 move. For *Voltage*, a rise counts as better on a supply pin and worse on a
 return (N) pin.
 
-## 9.5 Managing What-Ifs
+## 9.6 Managing What-Ifs
 
 - **Edit…** (or double-click) changes a What-If. Changing its inputs clears
   its old result.
@@ -120,7 +158,7 @@ since it ran. Press **Run again** to compare it against the current base.
 If the design has editor changes that aren't solved yet, Resolve first so
 that the base and the What-If come from the same design.
 
-## 9.6 Saving
+## 9.7 Saving
 
 What-Ifs are saved in the project file (`.fypa`). Their results are copied
 into a `<project>_whatifs` folder beside it, so the project folder stays

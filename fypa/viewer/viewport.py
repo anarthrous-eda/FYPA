@@ -475,16 +475,16 @@ class _ViewportMixin:
         if is_via_current and not self.view_3d_box.isChecked():
             self._render()
             return
-        drop_reference = self._last_drop_reference
+        drop_refs = self._last_drop_refs
         # Stub copper carries baked LUT colours only when "colour by V"
         # is active; otherwise it's flat grey and the scheme change can't
         # touch it - skip the (geometry-rebuilding) re-push in that case.
         if self._stubs_coloured_by_voltage(mode):
             self._push_stubs(phys_list, rails, mode=mode,
-                             drop_reference=drop_reference)
+                             drop_refs=drop_refs)
         # Series-component bars always carry a baked LUT gradient.
         self._push_series_bars(phys_list, rails, mode,
-                               drop_reference=drop_reference)
+                               drop_refs=drop_refs)
         # Via cylinders (3D) carry baked LUT colours only when the
         # heatmap is painted onto them - Via Current mode, or any mode
         # with the Heatmap-vias toggle on. Otherwise they're solid orange.
@@ -511,9 +511,11 @@ class _ViewportMixin:
             self._gl_viewer.set_levels(float(self._gl_scale(vmin)),
                                         float(self._gl_scale(vmax)))
             # The relief height follows the colour window, so markers
-            # sitting on the surface must follow it too.
+            # sitting on the surface must follow it too - and so must the
+            # values along the relief axis.
             if self._gl_viewer.relief_z_span() > 0.0:
                 self._schedule_relief_marker_refresh()
+                self._push_relief_axis()
         self._reshade_baked_via_overlays()
 
     def _apply_via_no_current_opacity(self, alpha: float) -> None:
@@ -628,6 +630,11 @@ class _ViewportMixin:
         via :meth:`gl_mesh_viewer.set_view_mode_preserving` - skip the
         standard re-fit path so the preserved camera survives.
         """
+        if checked:
+            # What-If via punching is 2D only.
+            disarm = getattr(self, "_whatif_punch_disarm", None)
+            if disarm is not None:
+                disarm()
         if not getattr(self, "_preserve_view_on_toggle", False):
             self._gl_viewer.set_view_mode("3d" if checked else "2d")
         self._sync_relief_controls()
@@ -680,7 +687,8 @@ class _ViewportMixin:
         """Relief selector and layer spacing show only in 3D; the relief
         height slider only while a relief mode is on. Layer spacing has
         nothing to separate in the ignoring-layers relief, so it is hidden
-        there too."""
+        there too; the relief axis box shows only there (it needs the one
+        common base)."""
         if getattr(self, "relief_combo", None) is None:
             return
         in_3d = self.view_3d_box.isChecked()
@@ -692,6 +700,9 @@ class _ViewportMixin:
         show_spacing = in_3d and mode != self._RELIEF_IGNORE_LAYERS
         self.layer_spacing_label.setVisible(show_spacing)
         self.layer_spacing_slider.setVisible(show_spacing)
+        axis_box = getattr(self, "relief_axis_box", None)
+        if axis_box is not None:
+            axis_box.setVisible(mode == self._RELIEF_IGNORE_LAYERS)
         if hasattr(self, "_act_relief"):
             self._refresh_view_menu_labels()
 
@@ -728,6 +739,41 @@ class _ViewportMixin:
         else:
             self._gl_viewer.set_relief_layers_ignored(False)
         self._gl_viewer.set_relief_height(self._relief_height_mm())
+
+    def _push_relief_axis(self) -> None:
+        """Hand the GL viewer the relief axis for the current colour window:
+        round values between the scale's Min and Max, in the unit the colour
+        bar's title names, standing beside the copper now drawn. Called
+        whenever the window, the mode or the drawn copper changes; the GL
+        viewer follows the relief height and the camera on its own. Cleared
+        when the axis is off or the relief is not the ignoring-layers one."""
+        gl = getattr(self, "_gl_viewer", None)
+        if gl is None:
+            return
+        box = getattr(self, "relief_axis_box", None)
+        bounds = getattr(self, "_data_bounds", None)
+        if (box is None or not box.isChecked() or not bounds
+                or self._relief_mode() != self._RELIEF_IGNORE_LAYERS):
+            gl.clear_relief_axis()
+            return
+        from fypa.viewer.relief_axis import relief_axis_ticks
+        from fypa.viewer.scale_controls import _GradientBar
+        unit = getattr(self, "_probe_unit", "") or ""
+        divisor, prefix = _GradientBar._si_scale(
+            *self.scale_controller.bar.dataRange(), unit)
+        ticks = relief_axis_ticks(
+            float(self._vmin), float(self._vmax),
+            log=bool(self._log_active), divisor=divisor)
+        gl.set_relief_axis(ticks, prefix + unit, bounds)
+
+    def _on_relief_axis_toggled(self, checked: bool) -> None:
+        """Relief axis box / View menu: remember the choice and apply it."""
+        from fypa.viewer.prefs import save_show_relief_axis
+        save_show_relief_axis(bool(checked))
+        self._gl_viewer.set_relief_axis_visible(bool(checked))
+        self._push_relief_axis()
+        if hasattr(self, "_act_relief"):
+            self._refresh_view_menu_labels()
 
     def _relief_lift_for_value(self, value: float) -> float:
         """Pre-exaggeration z lift the shader applies to a vertex carrying

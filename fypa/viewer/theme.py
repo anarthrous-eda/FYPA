@@ -62,6 +62,10 @@ _THEME_PRESETS: dict[str, dict[str, str]] = {
         "eye_open":        "#f0f0f0",
         "eye_closed":      "#7a7a7a",
         "eye_partial":     "#b8b8b8",
+        # Global Focus control (eye icon, caption, menu-bar rule). Its own
+        # gold: "warn" amber means a warning and #ffff00 is the jump ring.
+        "focus_gold":      "#f2c14e",
+        "focus_gold_dim":  "#8a7440",
     },
     "light": {
         # Core surfaces
@@ -103,6 +107,8 @@ _THEME_PRESETS: dict[str, dict[str, str]] = {
         "eye_open":        "#2d2d2d",
         "eye_closed":      "#9a9a9a",
         "eye_partial":     "#5c5c5c",
+        "focus_gold":      "#a87400",
+        "focus_gold_dim":  "#b8a070",
     },
 }
 

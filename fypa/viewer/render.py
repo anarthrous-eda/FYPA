@@ -321,6 +321,114 @@ class _RenderMixin:
         v = float(vs[idx])
         return v if np.isfinite(v) else None
 
+    def _drop_references(self, rails, phys_list=(), layer_probes=(),
+                         *, all_members: bool = False) -> dict[str, float]:
+        """Voltage Drop reference per net: ``{net: reference voltage}``.
+
+        Every rail is measured from its OWN source - the highest-voltage
+        SOURCE pin on the rail's nets, or, on a rail no SOURCE feeds (a
+        regulator output), the highest-voltage pin of any directive on it.
+        Each of the rail's nets gets that one reference, so the drop across
+        a series part inside the rail still counts and every rail reads 0 V
+        at its source whatever else is showing. (One reference shared by
+        all the visible rails made a 1 V rail read about -11 V of "drop"
+        beside a 12 V one.) A rail with no pin that samples gets no entry
+        and is left at absolute potential.
+
+        A pin on a visible layer is read from that layer's probe in
+        ``layer_probes``; any other pin from the full solution, so hiding
+        the source's layer does not move the reference. ``all_members``
+        takes every net of each rail rather than only the ones whose subnet
+        eye is on (the ParaView export, which writes the whole board).
+        """
+        net_rail: dict[str, str] = {}
+        for rail in rails:
+            members = (self._rail_to_members.get(rail, [rail]) if all_members
+                       else self._effective_rail_members([rail]))
+            for net in members:
+                net_rail.setdefault(net, rail)
+        if not net_rail:
+            return {}
+        target_layer_ids = {self._phys_name_to_layer_id.get(p)
+                            for p in phys_list}
+        target_layer_ids.discard(None)
+        # layer_id -> probes (more than one when several of the rails' nets
+        # share a physical layer).
+        probes_by_layer: dict[int, list[dict]] = {}
+        for lp in layer_probes:
+            probes_by_layer.setdefault(lp["layer_id"], []).append(lp)
+
+        def _probe_voltage(layer_id, x_mm, y_mm, net: str) -> float | None:
+            # Prefer the probe whose net matches the pin's net; fall back
+            # to whichever probe on the same layer reports a sample.
+            ordered = sorted(probes_by_layer.get(layer_id, []),
+                             key=lambda lp: 0 if lp["net"] == net else 1)
+            for lp in ordered:
+                interp = self._ensure_interpolator(lp)
+                if interp is None:
+                    continue
+                s = interp(x_mm, y_mm)
+                try:
+                    if hasattr(s, "mask") and \
+                            bool(np.ma.getmaskarray(s).item()):
+                        continue
+                    v = float(s)
+                except (TypeError, ValueError):
+                    continue
+                if np.isfinite(v):
+                    return v
+            return None
+
+        def _best_by_rail(sources: bool, wanted: set[str]) -> dict[str, float]:
+            best: dict[str, float] = {}
+            for d in (self.metadata or {}).get("directives", []):
+                if (d.get("role") == "SOURCE") != sources:
+                    continue
+                for term in (d.get("terminals") or {}).values():
+                    for pin in term.get("pins", []):
+                        pnet = pin.get("net", "")
+                        rail = net_rail.get(pnet)
+                        if rail is None or rail not in wanted:
+                            continue
+                        lid = pin.get("layer_id")
+                        v_at = None
+                        if lid in target_layer_ids:
+                            v_at = _probe_voltage(
+                                lid, pin.get("x_mm"), pin.get("y_mm"), pnet)
+                        if v_at is None:
+                            v_at = self._solution_pin_potential(
+                                lid, pnet, pin.get("x_mm"), pin.get("y_mm"))
+                        if v_at is not None and v_at > best.get(
+                                rail, float("-inf")):
+                            best[rail] = v_at
+            return best
+
+        wanted = set(net_rail.values())
+        by_rail = _best_by_rail(True, wanted)
+        unfed = wanted - set(by_rail)
+        if unfed:
+            by_rail.update(_best_by_rail(False, unfed))
+        return {net: by_rail[rail] for net, rail in net_rail.items()
+                if rail in by_rail}
+
+    def _per_vertex_net_offsets(self, offsets: dict[str, float],
+                                n: int) -> np.ndarray | None:
+        """Per-vertex copy of a per-net ``offsets`` map, aligned to the
+        concatenated value array of the current mesh batch (``n`` long), or
+        ``None`` when no vertex has an offset. ``_mesh_blocks`` is in
+        concatenation order and covers the hidden layers' vertices too."""
+        off_vec = np.zeros(n, dtype=np.float64)
+        pos = 0
+        any_off = False
+        for block in self._mesh_blocks:
+            count = int(block["n_vertices"])
+            off = offsets.get(block["net"], 0.0)
+            if off:
+                off_vec[pos:pos + count] = off
+                any_off = True
+            pos += count
+        return off_vec if (any_off and pos == n) else None
+
     def _build_rail_arrays(
         self, phys_list: list[str], rail_names: list[str], derive_fn,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray,
@@ -1433,8 +1541,8 @@ class _RenderMixin:
         ys_arr = ys
         vs_arr = vs
         tris_arr = tris
-        drop_reference: float | None = None
-        drop_reference_at: str = ""
+        # Voltage Drop reference per net (empty outside that mode).
+        drop_refs: dict[str, float] = {}
 
         if is_via_current:
             # Range comes from the per-via |I| report, restricted to vias
@@ -1458,90 +1566,18 @@ class _RenderMixin:
             if vmax <= vmin:
                 vmax = vmin + 1e-12
 
-        # Voltage Drop mode: anchor the reference at the SOURCE (highest
-        # voltage on the rail across every layer, visible or not) and subtract it
-        # so the heatmap reads 0 V at the source and goes NEGATIVE
-        # toward the sinks. Pin voltages are sampled from the
-        # *per-layer* interpolator matching each pin's layer_id, so the
-        # reference is correct even when multiple physical layers are on.
+        # Voltage Drop mode: subtract each rail's own source voltage (see
+        # _drop_references) so the heatmap reads 0 V at every rail's source
+        # and goes NEGATIVE toward its sinks. The reference is per rail, so
+        # several rails share one scale: each hangs below its own zero.
         if mode == _VOLTAGE_DROP_MODE and diff_live is None:
-            target_layer_ids = {self._phys_name_to_layer_id.get(p)
-                                for p in phys_list}
-            target_layer_ids.discard(None)
-            rail_members = set(self._effective_rail_members(rails))
-            # layer_id → list of layer_probes (could be >1 if multiple
-            # nets in the rail group are on the same physical layer).
-            probes_by_layer: dict[int, list[dict]] = {}
-            for lp in layer_probes:
-                probes_by_layer.setdefault(lp["layer_id"], []).append(lp)
-
-            def _sample_pin_voltage(layer_id: int, x_mm: float,
-                                     y_mm: float, net: str) -> float | None:
-                # Prefer the probe whose net matches the pin's net; fall
-                # back to whichever probe on the same layer reports a
-                # non-masked sample.
-                candidates = probes_by_layer.get(layer_id, [])
-                ordered = sorted(candidates,
-                                  key=lambda lp: 0 if lp["net"] == net else 1)
-                for lp in ordered:
-                    interp = self._ensure_interpolator(lp)
-                    if interp is None:
-                        continue
-                    s = interp(x_mm, y_mm)
-                    try:
-                        if hasattr(s, "mask") and \
-                                bool(np.ma.getmaskarray(s).item()):
-                            continue
-                        v = float(s)
-                    except (TypeError, ValueError):
-                        continue
-                    if np.isfinite(v):
-                        return v
-                return None
-
-            def _collect_candidates(role_filter: str | None
-                                    ) -> list[tuple[float, str]]:
-                out: list[tuple[float, str]] = []
-                for d in (self.metadata or {}).get("directives", []):
-                    if role_filter is not None and d.get("role") != role_filter:
-                        continue
-                    for term in (d.get("terminals") or {}).values():
-                        for pin in term.get("pins", []):
-                            lid = pin.get("layer_id")
-                            pnet = pin.get("net", "")
-                            if rail_members and pnet not in rail_members:
-                                continue
-                            # Pins on hidden layers still anchor the drop:
-                            # hiding the source's layer must not lose the
-                            # reference and fall back to absolute voltage.
-                            v_at = None
-                            if lid in target_layer_ids:
-                                v_at = _sample_pin_voltage(
-                                    lid, pin.get("x_mm"), pin.get("y_mm"), pnet,
-                                )
-                            if v_at is None:
-                                v_at = self._solution_pin_potential(
-                                    lid, pnet, pin.get("x_mm"), pin.get("y_mm"),
-                                )
-                            if v_at is None:
-                                continue
-                            out.append(
-                                (v_at, f"{d.get('label') or d.get('designator', '?')}"
-                                       f".{self._pin_display_pad(pin) or '?'}")
-                            )
-                return out
-
-            candidates = _collect_candidates("SOURCE")
-            if not candidates:
-                candidates = _collect_candidates(None)
-
-            if candidates:
-                drop_reference, drop_reference_at = max(candidates,
-                                                         key=lambda t: t[0])
-                vs_arr = vs_arr - drop_reference
+            drop_refs = self._drop_references(rails, phys_list, layer_probes)
+            ref_vec = self._per_vertex_net_offsets(drop_refs, vs_arr.size)
+            if ref_vec is not None:
+                vs_arr = vs_arr - ref_vec
                 # Recompute range against the used (non-orphan) subset
-                # only, otherwise orphan pins shifted by -drop_reference
-                # would set a fake floor at -V_source.
+                # only, otherwise orphan pins shifted by their rail's
+                # reference would set a fake floor at -V_source.
                 vs_used = vs_arr[used_idx] if used_idx.size > 0 else vs_arr
                 vmin, vmax = float(vs_used.min()), float(vs_used.max())
                 vmax = _slider_data_max(vs_used, mode, vmax)
@@ -1556,7 +1592,11 @@ class _RenderMixin:
                 # plain Voltage mode (which uses the same _layer_cache entry) -
                 # and the costly per-render rebuild disappears. (Finding 3.7.)
                 for lp in layer_probes:
-                    lp["value_offset"] = drop_reference
+                    ref = drop_refs.get(lp["net"])
+                    if ref:
+                        lp["value_offset"] = ref
+            else:
+                drop_refs = {}
 
         # Voltage mode: reference each net to its own SOURCE return pin, so
         # the heatmap reads each net's true differential (<= rail voltage)
@@ -1575,24 +1615,10 @@ class _RenderMixin:
                 or (diff_live is not None and mode == _VOLTAGE_DROP_MODE)):
             offsets = (diff_live["offsets"] if diff_live is not None
                        else self._source_return_offsets())
-            # Build a per-vertex offset aligned to vs_arr. vs_arr is
-            # concatenated in the original (bottom-first) loop order, while
-            # layer_probes was reversed to top-first - so walk the probes in
-            # reverse to recover the concatenation order and slice by the
-            # vertex count each slab contributed. (``_mesh_blocks`` is
-            # already in concatenation order and covers the hidden layers'
-            # vertices too.)
-            off_vec = np.zeros(vs_arr.size, dtype=np.float64)
-            pos = 0
-            any_off = False
-            for lp in self._mesh_blocks:
-                n = int(lp["n_vertices"])
-                off = offsets.get(lp["net"], 0.0)
-                if off:
-                    off_vec[pos:pos + n] = off
-                    any_off = True
-                pos += n
-            if any_off and pos == vs_arr.size:
+            # Per-vertex offset aligned to vs_arr (the batch's concatenation
+            # order, hidden layers included).
+            off_vec = self._per_vertex_net_offsets(offsets, vs_arr.size)
+            if off_vec is not None:
                 vs_arr = vs_arr - off_vec
                 vs_used = vs_arr[used_idx] if used_idx.size > 0 else vs_arr
                 vmin, vmax = float(vs_used.min()), float(vs_used.max())
@@ -1791,6 +1817,9 @@ class _RenderMixin:
                                        log_active=self._log_active)
         # The difference palette is temporary - keep the user's choice.
         self._cmap_name = user_cmap
+        # Relief axis values: needs the window, unit and data range the
+        # scale controller was just given.
+        self._push_relief_axis()
         _mark("scale_controller")
 
         # Markers + legend (also overlaid via the GLMeshViewer's QPainter
@@ -1808,12 +1837,12 @@ class _RenderMixin:
         # Always pushed so users see what's there even when arrows /
         # outlines / heatmap-vias are off. Default is flat grey; if the
         # user opts into colour-by-V we sample the same-net solved
-        # layer at each stub's centroid using ``mode`` + ``drop_reference``.
+        # layer at each stub's centroid using ``mode`` + ``drop_refs``.
         # In a What-If difference these overlays would show BASE values on
         # a difference scale, so they are left off.
         if diff_live is None:
             self._push_stubs(phys_list, rails, mode=mode,
-                             drop_reference=drop_reference)
+                             drop_refs=drop_refs)
         else:
             self._gl_viewer.clear_stub_triangles()
         _mark("stubs")
@@ -1822,7 +1851,7 @@ class _RenderMixin:
         # terminal pin positions of each RESISTOR directive.
         if diff_live is None:
             self._push_series_bars(phys_list, rails, mode,
-                                   drop_reference=drop_reference)
+                                   drop_refs=drop_refs)
         else:
             self._gl_viewer.clear_series_bars()
         _mark("series_bars")
@@ -1833,7 +1862,7 @@ class _RenderMixin:
         # Via Current mode always pushes cylinders in 3D; in 2D the
         # per-via colours are emitted via the marker overlay path inside
         # :meth:`_update_markers_and_legend`.
-        self._last_drop_reference = drop_reference
+        self._last_drop_refs = drop_refs
         if self.view_3d_box.isChecked() and diff_live is None:
             self._push_via_cylinders(phys_list, rails, mode=mode)
         else:

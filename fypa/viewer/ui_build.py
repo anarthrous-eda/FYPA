@@ -62,6 +62,12 @@ class _UiBuildMixin:
         self.tabs = GroupedTabWidget(shell)
         self._tab_strip = TabStrip(self.tabs, shell)
         self.tabs.strip = self._tab_strip
+        # Thin gold rule under the menu bar while Global Focus is on, so a
+        # filtered window never passes for the whole board.
+        self._global_focus_rule = QFrame(shell)
+        self._global_focus_rule.setFixedHeight(2)
+        self._global_focus_rule.hide()
+        shell_lay.addWidget(self._global_focus_rule)
         shell_lay.addWidget(self._tab_strip)
         shell_lay.addWidget(self.tabs, 1)
         self.setCentralWidget(shell)
@@ -449,6 +455,21 @@ class _UiBuildMixin:
             "percentage of the board's larger side."
         )
         side.addWidget(self.relief_height_slider)
+        # Relief axis - a vertical ruler beside the copper, so a height can
+        # be read as a value. Only the ignoring-layers relief has one base
+        # for every layer, so the box only shows there. Remembered.
+        from fypa.viewer.prefs import load_show_relief_axis
+        self.relief_axis_box = QCheckBox("Show relief axis")
+        self.relief_axis_box.setChecked(load_show_relief_axis())
+        self.relief_axis_box.setToolTip(
+            "Stand a ruler beside the copper that shows what value each "
+            "height is. It runs from the colour scale's Min to its Max in "
+            "the colour bar's unit, and moves to whichever corner keeps it "
+            "clear of the copper as you turn the board. Ignoring layers "
+            "relief only. Remembered across launches."
+        )
+        side.addWidget(self.relief_axis_box)
+        self.relief_axis_box.setVisible(False)
         self.relief_row.setVisible(False)
         self.layer_spacing_label.setVisible(False)
         self.layer_spacing_slider.setVisible(False)
@@ -765,6 +786,9 @@ class _UiBuildMixin:
         self._help_tab_index = self.tabs.addTab(self._build_help_tab(), "Help")
         self._init_log.info("PdnViewer init: Help tab (%.2fs)", time.monotonic() - _t)
         self._rebuild_tab_strip()
+        # The Global Focus control rides on the menu bar above the Nodes tab.
+        self._build_global_focus_chip()
+        self._sync_global_focus()
         self._init_log.info(
             "PdnViewer init: all tabs done (total %.2fs)",
             time.monotonic() - self._init_t0,
@@ -798,6 +822,9 @@ class _UiBuildMixin:
             self._on_relief_mode_changed)
         self.relief_height_slider.valueChanged.connect(
             self._on_relief_height_changed)
+        self._gl_viewer.set_relief_axis_visible(
+            self.relief_axis_box.isChecked())
+        self.relief_axis_box.toggled.connect(self._on_relief_axis_toggled)
         self.heatmap_vias_box.toggled.connect(self._render_with_busy_popup)
         self.show_arrows_box.toggled.connect(self._on_arrows_toggled)
         # Keep the View-menu item labels in step whenever one of their

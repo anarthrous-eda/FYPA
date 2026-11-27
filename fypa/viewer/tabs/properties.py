@@ -466,8 +466,11 @@ class _PropertiesTabMixin:
         toggling a directive doesn't jump the view."""
         scroll_bar = self.properties_browser.verticalScrollBar()
         scroll_pos = scroll_bar.value()
+        # Global Focus: directives, active nets and shorted-net bridges of the
+        # focused rail only.
         self.properties_browser.setHtml(_format_properties_html(
-            self.solution, self.metadata, self._expanded_directives,
+            self.solution, self._global_focus_metadata(self.metadata),
+            self._expanded_directives,
             phys_color_fn=self._layer_color_for,
         ))
         scroll_bar.setValue(scroll_pos)

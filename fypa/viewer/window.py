@@ -36,6 +36,7 @@ from fypa.viewer.editor.pending import _PendingRailsMixin
 from fypa.viewer.editor.selection import _EditorSelectionMixin
 from fypa.viewer.editor.series_info import _SeriesInfoMixin
 from fypa.viewer.file_menu import _FileMenuMixin
+from fypa.viewer.global_focus import _GlobalFocusMixin
 from fypa.viewer.markers import _MarkerOverlayMixin
 from fypa.viewer.copper_layers import _CopperLayersMixin
 from fypa.viewer.panels.layers import _LayerPanelMixin
@@ -60,6 +61,7 @@ from fypa.viewer.vias import _ViaRenderMixin
 from fypa.viewer.viewport import _ViewportMixin
 from fypa.viewer.tabs.fixes import _FixesTabMixin
 from fypa.viewer.whatif_panel import _WhatIfMixin
+from fypa.viewer.whatif_punch import _WhatIfPunchMixin
 from fypa.viewer.widgets import _esc
 
 
@@ -105,6 +107,8 @@ class PdnViewer(
     _FixesTabMixin,
     _SettingsTabMixin,
     _WhatIfMixin,
+    _WhatIfPunchMixin,
+    _GlobalFocusMixin,
     QMainWindow,
 ):
     """Main window - composes the side panel and the matplotlib plot area.
@@ -471,7 +475,7 @@ class PdnViewer(
         ] = {}
         # Updated each _render() so :meth:`_push_via_cylinders` can apply
         # the same Voltage-Drop offset that the layer heatmap uses.
-        self._last_drop_reference: float | None = None
+        self._last_drop_refs: dict[str, float] = {}
 
         # Single-entry cache of the stub triangle geometry - see
         # :meth:`_push_stubs`. Stub positions depend only on the visible
@@ -778,6 +782,8 @@ class PdnViewer(
 
         if (self.metadata or {}).get("mesh_failures"):
             _activate_mesh_failure_layer(self)
+        # Keep (or drop, if its rail went) Global Focus over the new rails.
+        self._sync_global_focus()
 
     def _apply_solve_result(
         self,
@@ -851,6 +857,10 @@ class PdnViewer(
 
             project_swap = is_import or project is not None
             if project_swap:
+                # Global Focus is never carried to another design.
+                self._exit_global_focus(
+                    reason="Global Focus off - a different design is open.",
+                    apply=False)
                 # Held sidecar entries belong to the previous design.
                 self._setup_held = []
                 self._setup_review = []

@@ -81,6 +81,8 @@ class SolveJob:
     per_net_geometry_key: tuple | None = None
     # False on a clean load: rebuild (and refresh the cache), don't read it.
     read_per_net_geometry_cache: bool = True
+    # False on a What-If solve: the cache must stay the base design's.
+    write_per_net_geometry_cache: bool = True
     # Set by _slim_job only: ``loaded.extracted`` has been left out and the
     # child rebuilds it from the design-info cache file ``design_ref`` names
     # (``(path, size, mtime_ns)``) plus ``extracted_delta``; the result must
@@ -91,7 +93,7 @@ class SolveJob:
 
 
 def load_per_net_geometry(loaded, key: tuple | None, *,
-                          read_cache: bool = True):
+                          read_cache: bool = True, write_cache: bool = True):
     """Per-net copper for the solve from the geometry cache ``key`` names
     (``(cache_path, fingerprint)``), or ``None`` - in which case the solve
     unions it from the primitives, as it always could. Never raises: the
@@ -101,7 +103,8 @@ def load_per_net_geometry(loaded, key: tuple | None, *,
     try:
         from fypa.cli import per_net_geometry_for_solve
         return per_net_geometry_for_solve(
-            loaded.extracted, key[0], key[1], read_cache=read_cache)
+            loaded.extracted, key[0], key[1], read_cache=read_cache,
+            write_cache=write_cache)
     except Exception as e:  # noqa: BLE001
         log.warning("Per-net geometry cache unavailable (%s: %s); building "
                     "the copper from the primitives.", type(e).__name__, e)
@@ -130,6 +133,8 @@ class SolveSubprocessError(RuntimeError):
 # Marks a collection element-wise patch in an extracted delta.
 _PATCH = "patch"
 _REPLACE = "replace"
+# Elements added after an otherwise identical collection (What-If vias).
+_APPEND = "append"
 # A same-length collection with more than this fraction of its elements
 # changed is sent whole.
 _PATCH_MAX_FRACTION = 0.25
@@ -148,8 +153,10 @@ def design_cache_ref_is_current(ref) -> bool:
 
 def _extracted_delta(base, edited) -> dict:
     """What turns ``base`` into ``edited`` (both ExtractedProject), keyed by
-    field: ``("replace", value)``, or ``("patch", [(index, element), ...])``
-    for a same-length tuple/list in which only a few elements differ.
+    field: ``("replace", value)``, ``("patch", [(index, element), ...])``
+    for a same-length tuple/list in which only a few elements differ, or
+    ``("append", [element, ...])`` for one that only gained elements at
+    the end (a What-If scenario's added vias).
     Unchanged fields - compared by identity, which is what the edit steps
     preserve - are left out."""
     delta: dict = {}
@@ -170,6 +177,11 @@ def _extracted_delta(base, edited) -> dict:
             if len(changed) <= _PATCH_MAX_FRACTION * len(new):
                 delta[f.name] = (_PATCH, changed)
                 continue
+        if (type(old) is type(new) and isinstance(new, (tuple, list))
+                and len(new) > len(old) > 0
+                and all(x is y for x, y in zip(old, new))):
+            delta[f.name] = (_APPEND, list(new[len(old):]))
+            continue
         delta[f.name] = (_REPLACE, new)
     return delta
 
@@ -186,6 +198,9 @@ def _apply_extracted_delta(base, delta: dict):
             for i, element in payload:
                 items[i] = element
             changes[name] = type(old)(items)
+        elif kind == _APPEND:
+            old = getattr(base, name)
+            changes[name] = type(old)(list(old) + list(payload))
         else:
             changes[name] = payload
     return dataclasses.replace(base, **changes)
@@ -369,7 +384,8 @@ def _child_entry(job: SolveJob, q: mp.Queue,
             q.put(("stage", "Loading copper geometry…"))
             per_net_layers = load_per_net_geometry(
                 job.loaded, job.per_net_geometry_key,
-                read_cache=job.read_per_net_geometry_cache)
+                read_cache=job.read_per_net_geometry_cache,
+                write_cache=getattr(job, "write_per_net_geometry_cache", True))
         try:
             (padne_solution, problem, via_segment_records,
              stub_pieces_by_pair, per_net_layers,

@@ -286,6 +286,37 @@ class _EditorFormMixin:
             combo.addItem(value)
         combo.setCurrentText(value)
 
+    def _focus_restrict_net_pickers(self) -> None:
+        """Global Focus: the P (OUT) and IN net pickers list only the focused
+        rail's nets. A picker already set to another rail's net (a
+        regulator's far end) keeps that one entry, read-only. The N net
+        picker is left alone - a return net is never on the rail itself."""
+        nets = getattr(self, "_global_focus_nets", lambda: None)()
+        if nets is None:
+            return
+        rail = self._global_focus_rail()
+        for attr in ("_ef_pnet", "_ef_innet"):
+            combo = getattr(self, attr, None)
+            if combo is None:
+                continue
+            current = combo.currentText()
+            inside = current in nets or not current
+            combo.blockSignals(True)
+            try:
+                for i in range(combo.count() - 1, -1, -1):
+                    text = combo.itemText(i)
+                    keep = (text in nets) if inside else (text == current)
+                    if not keep:
+                        combo.removeItem(i)
+                if inside and current and combo.findText(current) >= 0:
+                    combo.setCurrentText(current)
+            finally:
+                combo.blockSignals(False)
+            combo.setEnabled(inside)
+            combo.setToolTip(
+                "" if inside else
+                f"On another rail - exit Global Focus ({rail}) to change it.")
+
     def _form_p_nets(self, sel: dict) -> list[str]:
         """Candidate P-net names for the form's P picker, given the
         selection: a component offers its pins' nets; a free marker offers
@@ -1282,6 +1313,13 @@ class _EditorFormMixin:
             )
         else:
             self._ef_remove.setEnabled(False)
+        # A regulator the form was opened on (editor or schematic); Global
+        # Focus refuses to add a new one - it joins a second rail.
+        self._ef_loaded_regulator = (
+            (existing is not None and existing.role == "REGULATOR")
+            or (sch_unlock is not None
+                and sch_unlock.get("role") == "REGULATOR"))
+        self._focus_restrict_net_pickers()
         # Pickers fill from here on: the seeding above set their nets and
         # ticks without each combo change rebuilding a list half-way.
         self._ef_pin_fill_ready = True
@@ -1713,6 +1751,13 @@ class _EditorFormMixin:
                 return
 
         existing = self._directive_for_selection()
+        focus = getattr(self, "_global_focus_rail", lambda: None)()
+        if (focus is not None and role == "REGULATOR"
+                and not getattr(self, "_ef_loaded_regulator", False)):
+            self._ef_status.setText(
+                f"<span style='color:{_T()['err']};'>A regulator joins two "
+                f"rails - exit Global Focus ({focus}) to add one.</span>")
+            return
         if role == "SINK" and single:
             stranded = self._ideal_return_stranded(existing, sel, p_net, value)
             if stranded is not None:
@@ -1989,7 +2034,8 @@ class _EditorFormMixin:
             self._render()
             return
         self._gl_viewer.set_markers(
-            list(cached) + self._editor_marker_groups())
+            list(cached) + self._editor_marker_groups()
+            + self._whatif_punch_marker_groups())
         self._push_series_links()
         # Keep the hover index in step with the moved marker - recombine
         # the cached solved-directive rows with freshly rebuilt editor rows.

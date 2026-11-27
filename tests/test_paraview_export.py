@@ -131,6 +131,21 @@ class TestExportLeanSolution:
         drop = _read_field((tmp_path / "L3.vtu").read_text(), "voltage_drop")
         assert np.allclose(drop, [-1.7, -1.8, -1.9])
 
+    def test_per_layer_references_measure_each_rail_from_its_own_source(
+            self, tmp_path):
+        sol = _solution(("L12", [12.0, 11.98, 11.95]),
+                        ("L1", [1.0, 0.99, 0.97]),
+                        ("Sig", [3.3, 3.2, 3.1]))
+        export_lean_solution(sol, tmp_path,
+                             voltage_drop_references={0: 12.0, 1: 1.0})
+        drop = _read_field((tmp_path / "L12.vtu").read_text(), "voltage_drop")
+        assert np.allclose(drop, [0.0, -0.02, -0.05])
+        drop = _read_field((tmp_path / "L1.vtu").read_text(), "voltage_drop")
+        assert np.allclose(drop, [0.0, -0.01, -0.03])
+        # A layer with no reference of its own falls back to the global max.
+        drop = _read_field((tmp_path / "Sig.vtu").read_text(), "voltage_drop")
+        assert np.allclose(drop, [-8.7, -8.8, -8.9])
+
     def test_via_rows_emit_vias_vtu(self, tmp_path):
         sol = _solution(("Top", [1.0, 0.9, 0.8]))
         n = export_lean_solution(

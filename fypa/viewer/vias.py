@@ -220,7 +220,8 @@ class _ViaRenderMixin:
         )
         lut: np.ndarray | None = None
         vmin = vmax = 0.0
-        drop_ref = 0.0
+        # Voltage Drop reference per net (each rail's own source voltage).
+        drop_refs: dict[str, float] = {}
         # Stackup order + fallback via R are needed for the no-current
         # barrel-fade in *every* mode (not just the heatmap ones), so they're
         # computed unconditionally. Each via dict carries its own per-hop R;
@@ -237,9 +238,8 @@ class _ViaRenderMixin:
             vmax = float(self._vmax)
             if vmax <= vmin:
                 vmax = vmin + 1e-30
-            if (mode == _VOLTAGE_DROP_MODE
-                    and self._last_drop_reference is not None):
-                drop_ref = float(self._last_drop_reference)
+            if mode == _VOLTAGE_DROP_MODE:
+                drop_refs = self._last_drop_refs or {}
 
         # Plain (non-heatmap) barrels depend only on the solve, the stackup
         # z and the fade setting - not on which layers are showing - so each
@@ -337,7 +337,8 @@ class _ViaRenderMixin:
                 heatmap_chunks = self._heatmap_via_chunks(
                     v, x, y, radius, lo_id, hi_id,
                     stackup_ids, id_to_phys,
-                    mode, lut, vmin, vmax, fallback_r_seg, drop_ref,
+                    mode, lut, vmin, vmax, fallback_r_seg,
+                    drop_refs.get(v.get("net", ""), 0.0),
                 )
 
             if heatmap_chunks:
@@ -400,7 +401,8 @@ class _ViaRenderMixin:
                 heatmap_chunks = self._heatmap_via_chunks(
                     p, x, y, radius, lo_id, hi_id,
                     stackup_ids, id_to_phys,
-                    mode, lut, vmin, vmax, fallback_r_seg, drop_ref,
+                    mode, lut, vmin, vmax, fallback_r_seg,
+                    drop_refs.get(p.get("net", ""), 0.0),
                     slot=slot,
                 )
 
@@ -1484,6 +1486,8 @@ class _ViaRenderMixin:
         # _refresh_editor_markers without re-walking every pin.
         self._non_editor_marker_groups = list(groups)
         groups.extend(self._editor_marker_groups())
+        # What-If punched vias of the selected scenario (on top).
+        groups.extend(self._whatif_punch_marker_groups())
 
         self._gl_viewer.set_markers(groups)
         self._solved_series_links = series_links

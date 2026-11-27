@@ -59,6 +59,7 @@ from PySide6.QtGui import (
     QFontMetricsF,
     QMatrix4x4,
     QPainter,
+    QPainterPath,
     QPen,
     QPixmap,
     QPolygonF,
@@ -441,7 +442,8 @@ def _windows_arrow_image(px: int):
         return None
 
 
-def _marker_drop_cursor(color: str, up: bool, dpr: float) -> QCursor:
+def _marker_drop_cursor(color: str, up: bool, dpr: float,
+                        via: bool = False) -> QCursor:
     """Arrow cursor badged with a small filled role triangle (up for
     SOURCE, down for SINK) below-right of the tip, so an armed free-marker
     drop reads at the pointer. The badge sits clear of the hotspot so it
@@ -456,7 +458,7 @@ def _marker_drop_cursor(color: str, up: bool, dpr: float) -> QCursor:
     that ratio to cancel it out - otherwise it comes out ``dpr`` times
     larger than the arrow it stands in for."""
     px = _system_cursor_px()
-    key = (color, up, round(dpr, 2), px)
+    key = (color, up, round(dpr, 2), px, via)
     cur = _MARKER_DROP_CURSOR_CACHE.get(key)
     if cur is not None:
         return cur
@@ -484,14 +486,22 @@ def _marker_drop_cursor(color: str, up: bool, dpr: float) -> QCursor:
         p.setPen(QPen(QColor("#000000"), 1.0))
         p.setBrush(QColor("#ffffff"))
         p.drawPolygon(QPolygonF(arrow))
-    # Role badge, the same red / blue triangle as the viewport buttons.
-    if up:
-        tri = [QPointF(18.5, 14), QPointF(25, 25), QPointF(12, 25)]
+    # Role badge, the same red / blue triangle as the viewport buttons -
+    # or, for a What-If via punch, a via: a ring around a dark drill.
+    if via:
+        p.setPen(QPen(QColor("#101010"), 1.2))
+        p.setBrush(QColor(color))
+        p.drawEllipse(QPointF(18.5, 20.0), 6.0, 6.0)
+        p.setBrush(QColor("#101010"))
+        p.drawEllipse(QPointF(18.5, 20.0), 2.4, 2.4)
     else:
-        tri = [QPointF(12, 14.5), QPointF(25, 14.5), QPointF(18.5, 25.5)]
-    p.setPen(QPen(QColor("#101010"), 1.2))
-    p.setBrush(QColor(color))
-    p.drawPolygon(QPolygonF(tri))
+        if up:
+            tri = [QPointF(18.5, 14), QPointF(25, 25), QPointF(12, 25)]
+        else:
+            tri = [QPointF(12, 14.5), QPointF(25, 14.5), QPointF(18.5, 25.5)]
+        p.setPen(QPen(QColor("#101010"), 1.2))
+        p.setBrush(QColor(color))
+        p.drawPolygon(QPolygonF(tri))
     p.end()
     # Qt takes the hotspot in logical pixels and multiplies it by ``dpr``
     # on the way to the platform, so hand it the physical hotspot divided
@@ -858,6 +868,9 @@ class GLMeshViewer(QOpenGLWidget):
     # (past the drag threshold the click is already suppressed).
     #   x0_mm, y0_mm, x1_mm, y1_mm, additive, toggle
     editorMarqueeSelected = Signal(float, float, float, float, bool, bool)
+    # The same rubber band in What-If punch mode (set_punch_mode): the box
+    # in world mm, press corner first. x0_mm, y0_mm, x1_mm, y1_mm
+    punchBandSwept = Signal(float, float, float, float)
     # Top-right legend chip row clicked. Carries the row's ``key`` as
     # supplied via :meth:`set_overlay_top_right_legend`. The host uses it
     # to toggle the corresponding marker category's visibility.
@@ -1140,6 +1153,12 @@ class GLMeshViewer(QOpenGLWidget):
         self._relief_ignore_layers: bool = False
         self._relief_pivot_z: float = 0.0
         self._relief_stack_depth: float = 0.0
+        # Relief axis: a vertical ruler beside the copper in the
+        # ignoring-layers relief (see set_relief_axis). ``_relief_axis`` is
+        # ``(ticks, unit, bounds)`` or None; ``_relief_axis_on`` is the
+        # user's show / hide choice.
+        self._relief_axis_on: bool = False
+        self._relief_axis: tuple | None = None
         self._u_z_pivot_loc: int = -1
         self._u_z_scale_loc: int = -1
         # Perspective field-of-view (vertical), in degrees.
@@ -1244,6 +1263,8 @@ class GLMeshViewer(QOpenGLWidget):
         self._marquee_px: tuple[float, float, float, float] | None = None
         # Modifiers held when the marquee drag began: (additive, toggle).
         self._marquee_mods: tuple[bool, bool] = (False, False)
+        # What-If via punching (see set_punch_mode).
+        self._punch_mode = False
         # World-mm closed rings outlining a click-selected copper primitive
         # (viewer mode). Drawn as a dashed yellow polygon over the copper.
         # ``None`` when nothing is selected. A track / arc gets one ring; a
@@ -1543,6 +1564,88 @@ class GLMeshViewer(QOpenGLWidget):
             return float(layer_z)
         p = self._relief_pivot_z
         return p + s * (float(layer_z) - p)
+
+    def set_relief_axis_visible(self, on: bool) -> None:
+        """Show or hide the relief axis (it only ever draws in the
+        ignoring-layers relief; see :meth:`set_relief_axis`)."""
+        on = bool(on)
+        if on == self._relief_axis_on:
+            return
+        self._relief_axis_on = on
+        self.update()
+
+    def relief_axis_visible(self) -> bool:
+        return self._relief_axis_on
+
+    def set_relief_axis(self, ticks, unit: str, bounds) -> None:
+        """Describe the relief axis: a vertical ruler standing just outside
+        the copper, as tall as the relief, so a height can be read as a
+        value. Only the ignoring-layers relief has one base for every
+        layer, so that is the only relief it is drawn in.
+
+        ``ticks`` is ``[(t, text), ...]`` with ``t`` the 0..1 position
+        between the bottom and the top of the colour scale (the same
+        normalised value the mesh shader lifts by); ``unit`` heads the
+        ruler; ``bounds`` is ``(x_min, x_max, y_min, y_max)`` of the copper
+        it stands beside, in mm. The height itself is read from the relief
+        state at paint time, so the relief-height slider needs no re-push.
+        """
+        self._relief_axis = (
+            [(float(t), str(text)) for t, text in ticks],
+            str(unit or ""),
+            tuple(float(b) for b in bounds),
+        )
+        self.update()
+
+    def clear_relief_axis(self) -> None:
+        if self._relief_axis is not None:
+            self._relief_axis = None
+            self.update()
+
+    # How far outside the copper's bounding box the relief axis stands, as
+    # a fraction of the box's larger side.
+    _RELIEF_AXIS_MARGIN_FRAC: float = 0.03
+
+    def relief_axis_world(self) -> tuple | None:
+        """Where the relief axis stands right now: ``(x, y, z_base, z_top)``
+        in world mm (z pre-exaggeration), or ``None`` when it is not drawn
+        (hidden, no ticks, or not the ignoring-layers relief).
+
+        Of the four corners of the copper's bounding box (each pushed a
+        little outward) it takes the one that projects furthest left on
+        screen. That vertical edge is on the box's silhouette, so the
+        ruler - whose ticks and labels point away from the copper - never
+        has the copper behind it, whatever the camera angle. A corner
+        whose ruler would fall outside the view (zoomed in on part of the
+        board) is passed over for the leftmost one that is in view."""
+        if (not self._relief_axis_on or self._relief_axis is None
+                or not self.relief_ignores_layers()):
+            return None
+        ticks, _unit, (x_min, x_max, y_min, y_max) = self._relief_axis
+        if not ticks:
+            return None
+        z_base = self._relief_pivot_z
+        z_top = z_base + self.relief_z_span()
+        m = self._RELIEF_AXIS_MARGIN_FRAC * max(x_max - x_min,
+                                                 y_max - y_min, 1e-9)
+        corners = ((x_min - m, y_min - m), (x_max + m, y_min - m),
+                   (x_max + m, y_max + m), (x_min - m, y_max + m))
+        w, h = float(self.width()), float(self.height())
+        best = None
+        for cx, cy in corners:
+            bx, by = self.world_to_screen(cx, cy, z_base)
+            tx, ty = self.world_to_screen(cx, cy, z_top)
+            if min(bx, by, tx, ty) < -1e8:
+                continue        # behind the camera
+            in_view = (0.0 <= bx <= w and 0.0 <= tx <= w
+                       and 0.0 <= by <= h and 0.0 <= ty <= h)
+            # In-view corners first, then furthest left.
+            key = (not in_view, 0.5 * (bx + tx))
+            if best is None or key < best[0]:
+                best = (key, cx, cy)
+        if best is None:
+            return None
+        return best[1], best[2], z_base, z_top
 
     def relief_flat_z(self, layer_z: float) -> float:
         """z for unsolved, value-less copper (stubs) on a layer at
@@ -2640,12 +2743,26 @@ class GLMeshViewer(QOpenGLWidget):
         self._apply_editor_cursor("default")
         self.update()
 
+    def set_punch_mode(self, on: bool) -> None:
+        """What-If via punching (viewer mode): like editor mode for the
+        armed cursor and the 2D left-drag rubber band, which then fires
+        :attr:`punchBandSwept` instead of :attr:`editorMarqueeSelected`.
+        Arm the cursor with ``set_armed_marker("VIA", colour)``."""
+        on = bool(on)
+        if on == self._punch_mode:
+            return
+        self._punch_mode = on
+        self._marquee_px = None
+        self._apply_editor_cursor("default")
+        self.update()
+
     def set_armed_marker(self, role: str | None,
                          color: str | None = None) -> None:
         """Show (``role`` + ``color``) or clear (``None``) the armed
         free-marker drop cursor: the arrow with a small SOURCE up-triangle
-        or SINK down-triangle at its lower right. Only shown in editor
-        mode and only when no other cursor (legend chip hover) applies."""
+        or SINK down-triangle at its lower right (``"VIA"``: a via ring,
+        for What-If punching). Only shown in editor or punch mode and only
+        when no other cursor (legend chip hover) applies."""
         armed = (role, color or "#ffffff") if role else None
         if armed == self._armed_marker:
             return
@@ -2668,7 +2785,8 @@ class GLMeshViewer(QOpenGLWidget):
         dragging one) and for the top-right legend chip (``"pointing"``
         hovering a clickable row). ``"default"`` resets to the inherited
         cursor. A no-op when unchanged so per-move calls don't churn."""
-        if (state == "default" and self._editor_mode
+        if (state == "default"
+                and (self._editor_mode or self._punch_mode)
                 and self._armed_marker is not None):
             state = "armed:" + self._armed_marker[0]
         if state == self._editor_cursor_state:
@@ -2677,7 +2795,8 @@ class GLMeshViewer(QOpenGLWidget):
         if state.startswith("armed:"):
             role, color = self._armed_marker
             self.setCursor(_marker_drop_cursor(
-                color, role != "SINK", self.devicePixelRatioF()))
+                color, role != "SINK", self.devicePixelRatioF(),
+                via=(role == "VIA")))
         elif state == "open":
             self.setCursor(Qt.OpenHandCursor)
         elif state == "closed":
@@ -4706,6 +4825,7 @@ class GLMeshViewer(QOpenGLWidget):
         # above the marker dots so they stay legible inside the via.
         self._draw_overlay_labels(painter, on_top=True)
         self._draw_board_origin(painter)
+        self._draw_relief_axis(painter)
         self._draw_measurement_line(painter)
         self._draw_overlay_chip(
             painter, self._overlay_top_left_html, anchor_right=False
@@ -5035,6 +5155,93 @@ class GLMeshViewer(QOpenGLWidget):
                              QPointF(x_px + arm, y_px))
             painter.drawLine(QPointF(x_px, y_px - arm),
                              QPointF(x_px, y_px + arm))
+        painter.restore()
+
+    def _draw_relief_axis(self, painter: QPainter) -> None:
+        """Draw the relief axis (see :meth:`set_relief_axis`): a vertical
+        ruler from the bottom to the top of the relief, with a tick and a
+        value at each entry of ``ticks`` and the unit above it. White over
+        a dark halo so it reads on copper and background alike. Ticks
+        and values sit on the side of the ruler facing away from the
+        copper. Skipped when the ruler is seen too nearly end-on to carry
+        labels."""
+        placed = self.relief_axis_world()
+        if placed is None:
+            return
+        x, y, z_base, z_top = placed
+        ticks, unit, (x_min, x_max, y_min, y_max) = self._relief_axis
+        bx, by = self.world_to_screen(x, y, z_base)
+        tx, ty = self.world_to_screen(x, y, z_top)
+        if min(bx, by, tx, ty) < -1e8:
+            return
+        length = math.hypot(tx - bx, ty - by)
+        if length < 24.0:
+            return
+        base, top = QPointF(bx, by), QPointF(tx, ty)
+        tick_len = 6.0
+        # Unit normal of the ruler on screen, turned to point away from
+        # the middle of the copper: the side the ticks and values go on.
+        nx, ny = (ty - by) / length, -(tx - bx) / length
+        mx_px, my_px = self.world_to_screen(
+            0.5 * (x_min + x_max), 0.5 * (y_min + y_max),
+            0.5 * (z_base + z_top))
+        if mx_px > -1e8 and (nx * (mx_px - 0.5 * (bx + tx))
+                              + ny * (my_px - 0.5 * (by + ty))) > 0.0:
+            nx, ny = -nx, -ny
+        painter.save()
+        painter.setBrush(Qt.NoBrush)
+        font = QFont(painter.font())
+        font.setPixelSize(12)
+        fm = QFontMetricsF(font)
+        cap = fm.capHeight() if fm.capHeight() > 0 else fm.ascent()
+        # Tick positions along the ruler, bottom to top. Labels closer
+        # together than a line of text are dropped (the tick stays).
+        marks: list[tuple[float, float, str]] = []
+        last_d: float | None = None
+        for t, text in sorted(ticks):
+            if not 0.0 <= t <= 1.0:
+                continue
+            mx = bx + (tx - bx) * t
+            my = by + (ty - by) * t
+            if last_d is not None and (t * length - last_d) < fm.height():
+                text = ""
+            else:
+                last_d = t * length
+            marks.append((mx, my, text))
+        for colour, width in (("#000000", 3.5), ("#ffffff", 1.4)):
+            pen = QPen(QColor(colour))
+            pen.setWidthF(width)
+            pen.setCosmetic(True)
+            pen.setCapStyle(Qt.RoundCap)
+            painter.setPen(pen)
+            painter.drawLine(base, top)
+            for mx, my, _text in marks:
+                painter.drawLine(QPointF(mx, my),
+                                 QPointF(mx + nx * tick_len,
+                                         my + ny * tick_len))
+        # Text as an outlined path: a dark rim keeps it legible on any
+        # colour without a backing box hiding the copper.
+        path = QPainterPath()
+        for mx, my, text in marks:
+            if not text:
+                continue
+            w = fm.horizontalAdvance(text)
+            # Centre of the text box, just past the end of its tick.
+            reach = tick_len + 4.0 + 0.5 * (abs(nx) * w + abs(ny) * cap)
+            path.addText(QPointF(mx + nx * reach - 0.5 * w,
+                                 my + ny * reach + 0.5 * cap), font, text)
+        if unit:
+            w = fm.horizontalAdvance(unit)
+            # Past the top end, in line with the ruler.
+            ux, uy = (tx - bx) / length, (ty - by) / length
+            reach = 8.0 + 0.5 * (abs(ux) * w + abs(uy) * cap)
+            path.addText(QPointF(tx + ux * reach - 0.5 * w,
+                                 ty + uy * reach + 0.5 * cap), font, unit)
+        rim = QPen(QColor("#000000"))
+        rim.setWidthF(3.0)
+        rim.setJoinStyle(Qt.RoundJoin)
+        painter.strokePath(path, rim)
+        painter.fillPath(path, QBrush(QColor("#ffffff")))
         painter.restore()
 
     def _draw_measurement_line(self, painter: QPainter) -> None:
@@ -5606,7 +5813,8 @@ class GLMeshViewer(QOpenGLWidget):
             # Past the threshold in 2D editor mode the drag is a marquee.
             # ``_is_panning`` already suppresses the release-click, so the
             # band costs nothing but the repaint.
-            if (self._is_panning and self._editor_mode
+            if (self._is_panning
+                    and (self._editor_mode or self._punch_mode)
                     and self._view_mode == "2d"):
                 self._marquee_px = (float(self._press_origin.x()),
                                     float(self._press_origin.y()),
@@ -5730,8 +5938,11 @@ class GLMeshViewer(QOpenGLWidget):
                 wx0, wy0 = self.screen_to_world(band[0], band[1])
                 wx1, wy1 = self.screen_to_world(band[2], band[3])
                 additive, toggle = self._marquee_mods
-                self.editorMarqueeSelected.emit(
-                    wx0, wy0, wx1, wy1, additive, toggle)
+                if self._editor_mode:
+                    self.editorMarqueeSelected.emit(
+                        wx0, wy0, wx1, wy1, additive, toggle)
+                else:
+                    self.punchBandSwept.emit(wx0, wy0, wx1, wy1)
                 ev.accept()
                 return
             if not was_panning:
